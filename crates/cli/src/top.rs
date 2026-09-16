@@ -277,6 +277,7 @@ mod tests {
         let activity = vec![
             AgentActivity {
                 queued_inputs: None,
+                awaiting_receipt: None,
                 agent: writer.id.clone(),
                 name: "writer".into(),
                 project: None,
@@ -286,6 +287,7 @@ mod tests {
             },
             AgentActivity {
                 queued_inputs: None,
+                awaiting_receipt: None,
                 agent: reviewer.id.clone(),
                 name: "reviewer".into(),
                 project: None,

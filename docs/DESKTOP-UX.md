@@ -75,19 +75,53 @@ Project tabs provide:
 - **More → Command line:** the real bundled `agentdocker` CLI in the selected project folder.
   It keeps command history and output with a bounded execution deadline.
 
-## Inbox and tools
+## Messages, Inbox and tools
 
 Sessions are shown by name. Default app launches and adapter-generated names
 carry the same generated-name marker. A name generated from a runtime and
 an identifier (the record says so, or it is exactly that adapter's form for the
-record's own pid or session) reads as the tool's label, Claude Code or Codex,
-numbered by first appearance when more than one session of that tool has been
-in the project, live or ended, so a number never changes when a neighbour
-finishes. A name somebody chose is shown as chosen, whatever it looks like. An
-author the window has no record of reads as an unknown session. The session id
-stays under Details. In a narrow window Inbox shows either the conversation
-list or one conversation; choosing one, a notification, or the next question
-opens that conversation, and **Conversations** returns to the list.
+record's own pid or session) reads as the tool and the branch it is on,
+`Codex · main`; a number is added only while two live sessions of one tool
+share a branch, and an ended session is never numbered. A name somebody chose
+is shown as chosen, whatever it looks like. An author the window has no record
+of reads as an unknown session. The session id stays under Details. In a
+narrow window Messages and Inbox show either the conversation list or one
+conversation; choosing one, a notification, or the next question opens that
+conversation, and **Conversations** returns to the list.
+
+**Messages** is what the rail item (named Messages then, Inbox otherwise)
+opens against a daemon that keeps conversations (schema 21 and later); an
+older daemon still gets the inbox below. It is shaped like a chat workspace.
+The sidebar lists **Channels** (`#everyone` for the selected project, `#all`,
+and named channels), collision rooms behind **Collisions**, **Direct
+messages** with a presence dot for a live session (a conversation between two
+agents reads `A ↔ B`), and **AgentDocker → agent** notices per agent; a
+search box filters by name. Ended sessions' conversations sit behind
+**Earlier (n)**. Each row shows the latest line and its unread count; the rail
+badge is the sum. The pane shows the newest 200 archived messages, newest
+last, with **Show earlier messages** at the top until the first is on view,
+day dividers and a **New** divider before the unread part; a question keeps
+its card (Answer, Allow, Deny) in place; other kinds of message carry a small
+kind pill; long ones fold behind **Show more**. The window keeps as much of
+one conversation as the daemon does (5,000 messages), so paging back reaches
+the earliest it has; when the daemon prunes, the window drops every archive
+and the open thread, reads the open conversation again, and ignores replies
+from before the prune; a thread whose root was pruned closes. Opening a conversation
+marks it read, which acknowledges those rows for you and nothing an agent
+still owns; in a narrow window only the conversation on view is read, never
+the list or a thread shown instead of it. **Reply** (or *n replies*) under a message opens
+its thread beside the conversation, or in place of it when narrow with
+**‹ Conversation** to return; the thread is read whole. The thread has a
+composer of its own with its own draft, and only it sends with `reply_to`;
+the conversation's composer stays under the conversation and never becomes a
+reply. It sends to the channel, to the project (`#everyone`), to every agent
+(`#all`) or to that agent; it reads **This session has ended** for a direct
+conversation whose agent is gone, says so for one between two agents, and has
+nothing to send for notices. Drafts survive navigation, a failed request and
+disconnection. A notification opens the message's conversation even after it
+has been read, and even when the sender's record or the channel is gone: the
+archive outlives both.
+The selected project also scopes archived direct conversations. Project message search retains finished sessions' direct messages and AgentDocker notices after restart.
 
 Inbox reads like a messenger. The left column lists one conversation per agent
 with its mark, the latest line and how many items wait; **Everyone** shows all
@@ -115,7 +149,11 @@ Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
 each live session's contact and delivery evidence, plus **Review setup**,
 **Check connections** and **Setup history**; **Other supported tools** expands
 the inventory. Delivery distinguishes an active receiver awaiting its first
-receipt, verified delivery, paused delivery and stale evidence. The session
+receipt, verified delivery, paused delivery and stale evidence; with words
+queued behind a current receiver that no receipt names it reads **Queued ·
+awaiting provider receipt**, since an earlier receipt says nothing about them
+(a message still in the queue with a receipt from the current process counts
+as delivered). The session
 inspector shows the same readiness alongside the queue and latest receipt.
 Applying a plan says **Setup saved**, with **Undo** available afterwards. Fresh
 sessions load saved setup; only the provider can request its required approval.

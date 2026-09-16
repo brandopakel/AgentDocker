@@ -44,6 +44,7 @@ mod binding;
 mod channels;
 mod containers;
 mod contests;
+mod conversations;
 mod handoff;
 pub mod humans;
 mod images;
@@ -1607,11 +1608,38 @@ impl Daemon {
                 all,
                 agent,
             } => self.channels(&project, all, agent).await,
+            Request::Conversations { project, reader } => self.conversations(project, reader).await,
+            Request::History {
+                conversation,
+                before_seq,
+                limit,
+            } => self.history(conversation, before_seq, limit),
+            Request::Thread {
+                message,
+                after_seq,
+                limit,
+            } => self.thread(message, after_seq, limit),
+            Request::MarkRead {
+                conversation,
+                through,
+                reader,
+            } => self.mark_read(conversation, through, reader),
+            Request::SearchMessages {
+                query,
+                project,
+                reader,
+                before_seq,
+                limit,
+            } => {
+                self.search_messages(query, project, reader, before_seq, limit)
+                    .await
+            }
             Request::ChannelOpen {
                 agent,
                 task,
                 members,
-            } => self.channel_open(&agent, task, members),
+                name,
+            } => self.channel_open(&agent, task, members, name),
             Request::ChannelClose {
                 agent,
                 channel,
@@ -7383,11 +7411,36 @@ mod tests {
             1,
             "a receipt report does not silently remove input"
         );
+        // Still queued, but the receipt covers it: nothing awaits a receipt.
+        // A later message the receipt does not name does.
+        let awaiting = |daemon: &Arc<Daemon>| {
+            let daemon = daemon.clone();
+            let id = receiver.id.to_string();
+            async move {
+                let Response::Activity { activity } = daemon
+                    .handle(Request::Activity {
+                        agent: Some(id),
+                        project: None,
+                        all: true,
+                    })
+                    .await
+                else {
+                    panic!("activity")
+                };
+                (activity[0].queued_inputs, activity[0].awaiting_receipt)
+            }
+        };
+        assert_eq!(awaiting(&daemon).await, (Some(1), Some(0)));
+        let Response::Sent { message: later, .. } = send(&daemon, "user", "receipt-status").await
+        else {
+            panic!("not queued")
+        };
+        assert_eq!(awaiting(&daemon).await, (Some(2), Some(1)));
         assert!(matches!(
             daemon
                 .handle(Request::AckInbox {
                     agent: receiver.id.to_string(),
-                    messages: vec![message]
+                    messages: vec![message, later]
                 })
                 .await,
             Response::Ok
@@ -10009,6 +10062,7 @@ deny = ["send:all"]
                 agent: "sender".into(),
                 task: "legacy membership".into(),
                 members: vec!["receiver".into()],
+                name: None,
             })
             .await
         else {
