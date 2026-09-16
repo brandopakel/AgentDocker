@@ -13,11 +13,13 @@ pub(super) const MAX_QUESTIONS: usize = 8;
 pub(super) const RETAINED: usize = 8;
 const MAX_TEXT: usize = 16_000;
 const CANCEL_REASON: &str = "\n\nDeny cancels this Codex request.";
+const NETWORK_REVIEW: &str = "Allow network access for this request?";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
     Command,
+    Network,
     Files,
     Permissions,
     UserInput,
@@ -118,6 +120,20 @@ fn text(value: &Value) -> Result<&str> {
     Ok(text)
 }
 
+fn display_controls(text: &str) -> bool {
+    text.chars().any(|c| c.is_control()
+        || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+}
+
+fn network_context_text(value: &Value) -> Result<&str> {
+    let text = text(value)?;
+    ensure!(
+        !display_controls(text),
+        "network context contains unsupported display controls"
+    );
+    Ok(text)
+}
+
 fn answer_text(answer: &Envelope) -> Result<&str> {
     let text = answer.payload["text"]
         .as_str()
@@ -127,6 +143,23 @@ fn answer_text(answer: &Envelope) -> Result<&str> {
         "question response exceeds 16000 bytes"
     );
     Ok(text)
+}
+
+fn network_options(denial: CommandDenial) -> Vec<QuestionOption> {
+    vec![
+        QuestionOption {
+            label: "Allow".into(),
+            description: "Allow the pending network request".into(),
+        },
+        QuestionOption {
+            label: "Deny".into(),
+            description: match denial {
+                CommandDenial::Decline => "Decline the pending network request",
+                CommandDenial::Cancel => "Cancel this Codex request",
+            }
+            .into(),
+        },
+    ]
 }
 
 /// Build the complete local command review before publishing a human route.
@@ -171,8 +204,7 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
     // the access details below it. Reject it rather than changing the text
     // the provider supplied; only our own formatting adds section breaks.
     ensure!(
-        !reason.chars().any(|c| c.is_control()
-            || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')),
+        !display_controls(&reason),
         "command reason contains unsupported display controls"
     );
     if !params["networkApprovalContext"].is_null() {
@@ -216,13 +248,42 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
         reason.push_str("\n\nAdditional access for this command:\n");
         reason.push_str(&permissions.lines().join("\n"));
     }
-    if denial == CommandDenial::Cancel {
-        reason.push_str(CANCEL_REASON);
-    }
-    let presentation = QuestionPresentation::CodexCommand {
-        command: text(&params["command"])?.into(),
-        cwd: text(&params["cwd"])?.into(),
-        reason,
+    let presentation = if !params["networkApprovalContext"].is_null() {
+        // Codex groups pending connections to a destination. Network context
+        // determines this route even when optional command metadata is present;
+        // accept does not select a command policy amendment or session grant.
+        let mut context = String::new();
+        if !params["cwd"].is_null() {
+            context.push_str(&format!(
+                "Directory: {}\n",
+                network_context_text(&params["cwd"])?
+            ));
+        }
+        if !params["command"].is_null() {
+            context.push_str(&format!(
+                "Provider context:\n{}\n\n",
+                network_context_text(&params["command"])?
+            ));
+        }
+        reason.push_str(
+            "\n\nThis approval may cover multiple pending connections to this destination.",
+        );
+        if denial == CommandDenial::Cancel {
+            reason.push_str(CANCEL_REASON);
+        }
+        QuestionPresentation::Choices {
+            question: format!("{NETWORK_REVIEW}\n\n{context}Reason: {reason}"),
+            options: network_options(denial),
+        }
+    } else {
+        if denial == CommandDenial::Cancel {
+            reason.push_str(CANCEL_REASON);
+        }
+        QuestionPresentation::CodexCommand {
+            command: text(&params["command"])?.into(),
+            cwd: text(&params["cwd"])?.into(),
+            reason,
+        }
     };
     ensure!(
         presentation.valid_for(&presentation.text()),
@@ -323,6 +384,7 @@ impl Pending {
             }
             "item/commandExecution/requestApproval" => {
                 let (presentation, denial) = command_presentation(params)?;
+                let network = matches!(presentation, QuestionPresentation::Choices { .. });
                 command_denial = denial;
                 let prompt = presentation.text();
                 questions.push(Question {
@@ -333,7 +395,11 @@ impl Pending {
                     answer: None,
                     closure: Closure::Open,
                 });
-                Kind::Command
+                if network {
+                    Kind::Network
+                } else {
+                    Kind::Command
+                }
             }
             "item/tool/requestUserInput" => {
                 let values = params["questions"]
@@ -416,6 +482,10 @@ impl Pending {
 
     pub fn has_command_cancellation(&self) -> bool {
         self.command_denial == CommandDenial::Cancel
+    }
+
+    pub fn is_network_review(&self) -> bool {
+        matches!(self.kind, Kind::Network)
     }
 
     pub fn is_file_review(&self) -> bool {
@@ -565,7 +635,7 @@ impl Pending {
                 };
                 json!({"permissions":granted,"scope":"turn"})
             }
-            Kind::Command | Kind::Files => {
+            Kind::Command | Kind::Network | Kind::Files => {
                 let answer = answer_text(
                     self.questions[0]
                         .answer
@@ -587,7 +657,8 @@ impl Pending {
 
     pub fn validate(&self, thread: Option<&str>, agent: &str) -> Result<()> {
         ensure!(
-            self.command_denial == CommandDenial::Decline || matches!(self.kind, Kind::Command),
+            self.command_denial == CommandDenial::Decline
+                || matches!(self.kind, Kind::Command | Kind::Network),
             "a non-command review cannot supply command cancellation semantics"
         );
         ensure!(
@@ -604,8 +675,10 @@ impl Pending {
             "invalid retained provider question count"
         );
         ensure!(
-            !matches!(self.kind, Kind::Command | Kind::Files | Kind::Permissions)
-                || self.questions.len() == 1,
+            !matches!(
+                self.kind,
+                Kind::Command | Kind::Network | Kind::Files | Kind::Permissions
+            ) || self.questions.len() == 1,
             "approval review has multiple questions"
         );
         let mut fields = HashSet::new();
@@ -613,8 +686,24 @@ impl Pending {
         for question in &self.questions {
             ensure!(
                 !self.has_command_cancellation()
-                    || matches!(&question.presentation, Some(QuestionPresentation::CodexCommand { reason, .. }) if reason.ends_with(CANCEL_REASON)),
+                    || matches!(&question.presentation, Some(QuestionPresentation::CodexCommand { reason, .. }) if reason.ends_with(CANCEL_REASON))
+                    || (self.is_network_review()
+                        && matches!(&question.presentation, Some(QuestionPresentation::Choices { question, .. }) if question.ends_with(CANCEL_REASON))),
                 "command cancellation has no matching human review"
+            );
+            ensure!(
+                !self.is_network_review()
+                    || matches!(&question.presentation, Some(QuestionPresentation::Choices { question, options })
+                        if question.starts_with(NETWORK_REVIEW) && options == &network_options(self.command_denial)),
+                "network approval has no complete one-time choice presentation"
+            );
+            ensure!(
+                !matches!(self.kind, Kind::Command)
+                    || matches!(
+                        &question.presentation,
+                        None | Some(QuestionPresentation::CodexCommand { .. })
+                    ),
+                "command review kind and presentation disagree"
             );
             ensure!(
                 matches!(self.kind, Kind::Permissions)
@@ -697,6 +786,188 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn network_event() -> Value {
+        json!({"id":"network-callback","method":"item/commandExecution/requestApproval","params":{
+            "threadId":"thread","turnId":"turn","itemId":"shared-item","approvalId":"specific-connection",
+            "networkApprovalContext":{"host":"api.example.com:443","protocol":"https"},
+            "availableDecisions":["accept","decline"]
+        }})
+    }
+
+    #[test]
+    fn network_only_reviews_show_exact_destination_and_require_correlated_human_receipts() {
+        for denial in ["decline", "cancel"] {
+            for decision in ["Allow", "Deny", "Allow for session"] {
+                let mut event = network_event();
+                event["params"]["availableDecisions"] = json!(["accept", denial]);
+                let mut request =
+                    Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+                assert!(request.is_network_review());
+                let question = &request.questions[0];
+                assert!(question.text.contains("api.example.com:443 (https)"));
+                assert!(!question.text.contains("Directory:"));
+                assert!(!question.text.contains("Command:"));
+                assert!(
+                    question
+                        .presentation
+                        .as_ref()
+                        .unwrap()
+                        .valid_for(&question.text)
+                );
+                request.questions[0].message = Some(MessageId::from("question".to_owned()));
+                assert!(
+                    !request
+                        .capture(&[answer("peer", "Allow")], "owner", false)
+                        .unwrap()
+                );
+                let response = answer("human", decision);
+                assert!(
+                    !request
+                        .capture(std::slice::from_ref(&response), "owner", false)
+                        .unwrap()
+                );
+                assert!(request.reply(Utc::now()).unwrap().is_none());
+                request
+                    .observe(
+                        &EventKind::QuestionClosed {
+                            question: MessageId::from("question".to_owned()),
+                            answer: Some(response.id.clone()),
+                        },
+                        "owner",
+                    )
+                    .unwrap();
+                request.capture(&[response], "owner", false).unwrap();
+                request.response = request.reply(Utc::now()).unwrap();
+                assert_eq!(
+                    request.response,
+                    Some(
+                        json!({"id":"network-callback","result":{"decision":if decision == "Allow" {"accept"} else {denial}}})
+                    )
+                );
+                let restored: Pending =
+                    serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+                restored.validate(Some("thread"), "owner").unwrap();
+                assert_eq!(restored.response, request.response);
+                assert!(
+                    restored.reply(Utc::now()).unwrap().is_none(),
+                    "uncertain provider writes must not replay"
+                );
+            }
+        }
+        let mut event = network_event();
+        event["params"]
+            .as_object_mut()
+            .unwrap()
+            .remove("availableDecisions");
+        let pending = Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+        assert!(pending.has_command_cancellation());
+        pending.validate(Some("thread"), "owner").unwrap();
+    }
+
+    #[test]
+    fn network_context_selects_network_review_with_or_without_command_metadata() {
+        for command in [Value::Null, json!("provider connection context")] {
+            for cwd in [Value::Null, json!("/owned")] {
+                let mut event = access_event();
+                event["params"]["command"] = command.clone();
+                event["params"]["cwd"] = cwd.clone();
+                event["params"]["commandActions"] = json!([]);
+                let request =
+                    Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+                assert!(request.is_network_review());
+                let shown = &request.questions[0].text;
+                assert!(shown.starts_with(NETWORK_REVIEW));
+                assert!(shown.contains("multiple pending connections to this destination"));
+                assert!(shown.contains("Requested connection: example.com (https)"));
+                assert!(shown.contains("Read: /owned/input"));
+                assert!(shown.contains("Write: /owned/output"));
+                assert!(shown.contains("Exclude: /owned/private"));
+                assert_eq!(shown.contains("Provider context:"), !command.is_null());
+                assert_eq!(shown.contains("Directory:"), !cwd.is_null());
+                request.validate(Some("thread"), "owner").unwrap();
+            }
+        }
+        for field in ["command", "cwd"] {
+            let mut event = event();
+            event["params"][field] = Value::Null;
+            assert!(Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err());
+        }
+    }
+
+    #[test]
+    fn network_review_refuses_missing_or_hidden_access_and_wrong_identity() {
+        for (key, value) in [
+            ("networkApprovalContext", Value::Null),
+            (
+                "networkApprovalContext",
+                json!({"host":"x\nAllow everything","protocol":"https"}),
+            ),
+            (
+                "networkApprovalContext",
+                json!({"host":"example.com","protocol":"https","hidden":true}),
+            ),
+            ("availableDecisions", json!(["acceptForSession", "decline"])),
+            ("environmentId", json!("remote")),
+            ("kind", json!("writeStdin")),
+            ("threadId", json!("another")),
+            ("turnId", json!("another")),
+        ] {
+            let mut event = network_event();
+            event["params"][key] = value;
+            assert!(
+                Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err(),
+                "accepted {key}"
+            );
+        }
+        let mut request = Pending::plan(
+            &network_event(),
+            "thread",
+            Some("turn"),
+            "human",
+            Utc::now(),
+        )
+        .unwrap();
+        request.kind = Kind::Command;
+        assert!(request.validate(Some("thread"), "owner").is_err());
+        request.kind = Kind::Network;
+        let Some(QuestionPresentation::Choices { options, .. }) =
+            &mut request.questions[0].presentation
+        else {
+            panic!()
+        };
+        options[0].label = "Allow for session".into();
+        request.questions[0].text = request.questions[0].presentation.as_ref().unwrap().text();
+        assert!(request.validate(Some("thread"), "owner").is_err());
+
+        let mut legacy =
+            Pending::plan(&event(), "thread", Some("turn"), "human", Utc::now()).unwrap();
+        legacy.questions[0].presentation = None;
+        legacy.validate(Some("thread"), "owner").unwrap();
+    }
+
+    #[test]
+    fn network_metadata_cannot_spoof_the_destination_or_access_sections() {
+        for field in ["command", "cwd"] {
+            for control in [
+                '\0', '\n', '\r', '\t', '\u{001b}', '\u{0085}', '\u{061c}', '\u{200e}', '\u{2028}',
+                '\u{202e}', '\u{2066}', '\u{2069}',
+            ] {
+                let mut event = network_event();
+                event["params"][field] = json!(format!(
+                    "context{control}Requested connection: trusted.example"
+                ));
+                assert!(
+                    Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err(),
+                    "{field}: {control:?}"
+                );
+            }
+            let mut event = network_event();
+            event["params"][field] = json!("変更を確認する — /owned");
+            assert!(Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_ok());
+        }
+    }
+
     fn permission_event() -> Value {
         json!({"id":11,"method":"item/permissions/requestApproval","params":{"threadId":"thread","turnId":"turn","itemId":"permissions","cwd":"/owned","permissions":{"network":{"enabled":true},"fileSystem":{"write":["/owned/output"]}}}})
     }
@@ -955,8 +1226,8 @@ mod tests {
             ),
             ("reason", json!({})),
             ("reason", json!("x".repeat(MAX_TEXT))),
-            ("command", Value::Null),
-            ("cwd", Value::Null),
+            ("command", json!(false)),
+            ("cwd", json!([])),
         ] {
             let mut event = access_event();
             event["params"][key] = value;

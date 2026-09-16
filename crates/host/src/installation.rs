@@ -8,6 +8,108 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub const LOCK_FORMAT: u32 = 1;
+pub const LAUNCHER_REDIRECT_FORMAT: u32 = 1;
+
+/// A visible macOS application is an intact signed copy. Its entrypoints run
+/// the selected immutable release before parsing commands or starting services.
+/// Ownership is outside the signed bundle, in the installer's existing record.
+pub fn redirect_managed_launcher() -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::process::CommandExt;
+        let executable = crate::procinfo::executable_path()?;
+        if let Some(target) = launcher_target(&executable, std::env::home_dir().as_deref())? {
+            let _pin = pin_executable(&target)?.ok_or_else(|| {
+                io::Error::other("launcher target is not an immutable installed release")
+            })?;
+            // exec preserves the invocation's terminal, arguments and process
+            // identity. CLOEXEC closes this pin when the new image loads; that
+            // image acquires its own pin before using release resources. If
+            // activation and pruning win this handoff, startup fails closed
+            // under pin_executable's lock and existence check.
+            return Err(std::process::Command::new(target)
+                .args(std::env::args_os().skip(1))
+                .exec());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn launcher_target(executable: &Path, home: Option<&Path>) -> io::Result<Option<PathBuf>> {
+    use std::io::Read;
+    let Some(binary) = executable.file_name().and_then(|name| name.to_str()) else {
+        return Ok(None);
+    };
+    if !matches!(binary, "agentdocker" | "agentd" | "agentdocker-ui") {
+        return Ok(None);
+    }
+    let Some(macos) = executable.parent() else {
+        return Ok(None);
+    };
+    let Some(contents) = macos.parent() else {
+        return Ok(None);
+    };
+    let Some(application) = contents.parent() else {
+        return Ok(None);
+    };
+    if macos.file_name() != Some(std::ffi::OsStr::new("MacOS"))
+        || contents.file_name() != Some(std::ffi::OsStr::new("Contents"))
+        || application.file_name() != Some(std::ffi::OsStr::new("AgentDocker.app"))
+        || application.parent().and_then(Path::file_name)
+            != Some(std::ffi::OsStr::new("Applications"))
+    {
+        return Ok(None);
+    }
+    let prefix = application.parent().and_then(Path::parent);
+    for prefix in home.into_iter().chain(prefix) {
+        let root = prefix.join(".local/share/agentdocker/desktop");
+        let record = root.join("launcher.json");
+        let metadata = match record.symlink_metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if !metadata.is_file() || metadata.len() > 4096 {
+            return Err(io::Error::other("invalid managed launcher record"));
+        }
+        let mut text = String::new();
+        std::fs::File::open(&record)?
+            .take(4097)
+            .read_to_string(&mut text)?;
+        if text.len() > 4096 {
+            return Err(io::Error::other(
+                "managed launcher record exceeds its bound",
+            ));
+        }
+        let value: serde_json::Value = serde_json::from_str(&text)?;
+        let matches = value["application"].as_str().is_some_and(|path| {
+            Path::new(path).canonicalize().ok().as_deref() == Some(application)
+        });
+        if !matches {
+            continue;
+        }
+        if value["format"] != 1 {
+            return Err(io::Error::other("unknown managed launcher record format"));
+        }
+        let root = root.canonicalize()?;
+        let target = root
+            .join("current/payload/Contents/MacOS")
+            .join(binary)
+            .canonicalize()?;
+        let Some((target_root, version, id)) = managed(&target) else {
+            return Err(io::Error::other("launcher target escaped its installation"));
+        };
+        pin_path(&root, id)?;
+        if target_root != root
+            || target != version.join("AgentDocker.app/Contents/MacOS").join(binary)
+        {
+            return Err(io::Error::other("launcher target escaped its installation"));
+        }
+        return Ok(Some(target));
+    }
+    Ok(None)
+}
 
 pub fn pin_current_executable() -> io::Result<Option<lock::Lock>> {
     pin_executable(&crate::procinfo::executable_path()?)
@@ -57,6 +159,123 @@ pub fn pin_executable(executable: &Path) -> io::Result<Option<lock::Lock>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn launcher_fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let prefix = temp.path().canonicalize().unwrap();
+        let root = prefix.join(".local/share/agentdocker/desktop");
+        dirs::secure_state_dir(&root).unwrap();
+        let application = prefix.join("Applications/AgentDocker.app");
+        let launcher = application.join("Contents/MacOS/agentdocker");
+        let payload = root
+            .join("versions")
+            .join("a".repeat(64))
+            .join("AgentDocker.app");
+        let selected = payload.join("Contents/MacOS/agentdocker");
+        for file in [&launcher, &selected] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "fixture").unwrap();
+        }
+        std::fs::create_dir_all(root.join("generations/first")).unwrap();
+        symlink(payload, root.join("generations/first/payload")).unwrap();
+        symlink(root.join("generations/first"), root.join("current")).unwrap();
+        std::fs::write(
+            root.join("launcher.json"),
+            serde_json::json!({
+                "format": 1, "application": application,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        (temp, root, launcher, selected)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_recorded_launchers_forward_to_an_exact_immutable_entrypoint() {
+        use std::os::unix::fs::symlink;
+        let (_temp, root, launcher, selected) = launcher_fixture();
+        assert_eq!(
+            launcher_target(&launcher, None).unwrap(),
+            Some(selected.clone())
+        );
+        assert!(
+            launcher_target(&selected, None).unwrap().is_none(),
+            "no redirect loop"
+        );
+        assert!(
+            launcher_target(&launcher.with_file_name("another"), None)
+                .unwrap()
+                .is_none()
+        );
+        let record = std::fs::read(root.join("launcher.json")).unwrap();
+        std::fs::remove_file(root.join("launcher.json")).unwrap();
+        assert!(
+            launcher_target(&launcher, None).unwrap().is_none(),
+            "unmanaged bundles run normally"
+        );
+        std::fs::write(root.join("launcher.json"), record).unwrap();
+        let escaped = root.join("outside");
+        std::fs::write(&escaped, "unrelated executable").unwrap();
+        std::fs::remove_file(&selected).unwrap();
+        symlink(escaped, &selected).unwrap();
+        assert!(
+            launcher_target(&launcher, None).is_err(),
+            "selected executable cannot escape the store"
+        );
+        std::fs::write(root.join("launcher.json"), " ".repeat(4097)).unwrap();
+        assert!(
+            launcher_target(&launcher, None).is_err(),
+            "bounded ownership record"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "owned subprocess invoked by copied_launcher_executes_and_pins_the_selected_release"]
+    fn launcher_exec_fixture() {
+        redirect_managed_launcher().unwrap();
+        let root = std::env::current_dir()
+            .unwrap()
+            .join(".local/share/agentdocker/desktop");
+        let expected = root
+            .join("versions")
+            .join("a".repeat(64))
+            .join("AgentDocker.app/Contents/MacOS/agentdocker");
+        assert_eq!(crate::procinfo::executable_path().unwrap(), expected);
+        let _pin = pin_current_executable()
+            .unwrap()
+            .expect("selected release pinned");
+        assert!(
+            lock::try_exclusive(&pin_path(&root, &"a".repeat(64)).unwrap())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn copied_launcher_executes_and_pins_the_selected_release() {
+        let (temp, _root, launcher, selected) = launcher_fixture();
+        for file in [&launcher, &selected] {
+            std::fs::copy(crate::procinfo::executable_path().unwrap(), file).unwrap();
+        }
+        let output = crate::command::run(
+            temp.path(),
+            &[
+                launcher.to_str().unwrap().into(),
+                "--exact".into(),
+                "installation::tests::launcher_exec_fixture".into(),
+                "--ignored".into(),
+                "--nocapture".into(),
+            ],
+            std::time::Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(output.success, "{}", output.text);
+    }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]

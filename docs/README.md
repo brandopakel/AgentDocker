@@ -30,15 +30,18 @@ Native delivery follow-ups: [desktop packaging and installation](DESKTOP-DISTRIB
 
 - [Claude channel input](CLAUDE-CHANNEL-INPUT.md) — explicit local opt-in, retained offers/receipts and provider acceptance limits.
 
+- [Portable AgentDocker coordination skill](../crates/cli/skills/agentdocker/SKILL.md) — requested September 15; one source for provider setup and MCP onboarding. Private Codex/Claude loader discovery passed; full integration and other-provider acceptance remain.
+
 ## Existing-document audit, September 14, 2026
 
-The audit covers all **37 tracked Markdown files**: 34 here, the root README and
+The September 14 audit covered **37 tracked Markdown files**: 34 here, the root README and
 coding instructions, and the container test README. It also checks the **61
 existing verification JSON reports**, source contracts, merged PRs and current
 CI/build state. No additional plan or report is needed: current open work stays
 in [Remaining work](REMAINING-WORK.md), test status stays in the
 [delivery crosswalk](DELIVERY-PLAN.md#testing-standard-crosswalk), and this table
-records coverage. The inventory baseline is `aaa1b61`, PR #119; current outcomes
+records coverage. The September 15 portable skill adds one requested instruction
+asset, bringing the tracked inventory to 38; it is not another project plan. The inventory baseline is `aaa1b61`, PR #119; current outcomes
 below include merged PRs #125–#128 and #130, and the reviewed follow-ups in
 PRs #129 and #131. Remaining acceptance is not an open implementation claim.
 
@@ -64,14 +67,14 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Guided setup](GUIDED-SETUP.md) | Implemented preview/apply/undo, configuration locks and per-session contact/input evidence. PR #125 is merged after review and CI; native and bounded actual-provider readiness checks passed. Installed-candidate acceptance remains. |
 | [Activity and messaging](ACTIVITY-AND-MESSAGING.md) | Partial: activity/hooks and opt-in input adapters exist; ordinary hooks alone cannot wake idle models. |
 | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md) | Implemented durable shared queue and exact receipts. PR #131 adds provider availability, quota isolation, queue gating and recovery, with actual isolated Claude/Codex trials, 135 runtime/interruption cases and [184 native steps at `66c4247`](https://github.com/brandopakel/AgentDocker/pull/131#issuecomment-5673268646). Combined `ec45cea` also passed mid-tool, pending-denial and same-identity controller replacement cases. Broader reviews, provider/account-reset and sustained acceptance remain. |
-| [Codex input](CODEX-INPUT.md) | Partial: managed bridge, question/MCP receipts and supported review forms implemented; broader elicitation/secret input and recovery remain. |
+| [Codex input](CODEX-INPUT.md) | Partial: managed bridge and existing-terminal native queue implemented; six actual Codex 0.154.0 release trials and the 962-Rust/70-Python gate passed at `7133023`. PR #148 is merged; one installed existing-session auto-bootstrap, peer wake and exact receipt passed. Zero-prompt startup/reopen, broader elicitation/secret input and historical reconciliation remain. |
 | [Claude channel input](CLAUDE-CHANNEL-INPUT.md) | Partial: explicit channel input and question queue implemented; authorization/version and longer recovery acceptance remain. |
-| [Notification routing audit](NOTIFICATION-ROUTING-AUDIT.md) | Partial: AppleScript fallback removed and native routes implemented; physical installed notification clicks and signed posting remain. |
+| [Notification routing audit](NOTIFICATION-ROUTING-AUDIT.md) | Partial: fallback removed; signed-copy launcher installation, actual older-release rollback and 26 copied-launcher navigation steps passed. Production activation and strict signature verification passed; physical clicks and signed posting remain. |
 | [Identity repair](IDENTITY-REPAIR.md) | Partial: offline preview/apply implemented and tested; production reconciliation and live transfer not done. |
-| [Live daemon upgrades](LIVE-DAEMON-UPGRADES.md) | PR #130 merged independent process/I/O ownership and durable exit recovery. Actual distinct-source crash/restart acceptance passed, alongside event continuation, reconnect and output drain. Graceful replacement, successor fencing/readiness and failed-transfer recovery remain unbuilt; explicit shutdown still stops managed agents. |
+| [Live daemon upgrades](LIVE-DAEMON-UPGRADES.md) | PR #130 merged independent process/I/O ownership and durable exit recovery. Actual distinct-source crash/restart acceptance passed, alongside event continuation, reconnect and output drain. PR #155 implements graceful replacement, successor fencing/readiness and failed-transfer recovery behind the experimental reload gate; review and acceptance remain open. Explicit shutdown still stops managed agents. |
 | [Native delivery](NATIVE-DELIVERY.md) | Partial: merged implementation record; installation complete on this Mac, broader release acceptance incomplete. |
-| [Local build](LOCAL-BUILD.md) | Reference: build, Applications installation, compatibility paths, rollback and the two-way `install.sh`/managed-install protection implemented; running-daemon switch remains operational work. |
-| [Desktop distribution](DESKTOP-DISTRIBUTION.md) | Partial: packaging, installer, update consumer and retention implemented; signing and final distribution acceptance remain. |
+| [Local build](LOCAL-BUILD.md) | Reference: build, Applications installation, compatibility paths, rollback and the two-way `install.sh`/managed-install protection implemented; the backed-up coordinator switch to verified `cf64ca3` is complete on this Mac with all four external provider identities preserved. |
+| [Desktop distribution](DESKTOP-DISTRIBUTION.md) | Partial: packaging, installer, update consumer and retention implemented; signed-copy launcher and actual older-release rollback passed private acceptance. Production activation passed; public signing and final distribution acceptance remain. |
 | [Distribution setup](DISTRIBUTION-SETUP.md) | Partial: tap/formula and automation exist; Developer ID, notarization and published app cask remain. |
 | [Release automation](RELEASE-AUTOMATION.md) | Partial: archives/feed workflow implemented; protected-tag execution, hosted update and clean-Mac acceptance remain. |
 | [Integration acceptance](INTEGRATION-ACCEPTANCE.md) | Historical bounded trials: later source/runtime evidence is in the input guides and verification reports; no universal-provider claim. |
@@ -105,7 +108,7 @@ fails when it and the records disagree.
 
 | Record | Says |
 | --- | --- |
-| [2026-09-07-claude-profile-setup.json](verification/2026-09-07-claude-profile-setup.json) | recorded undated; 34195804495 |
+| [2026-09-07-claude-profile-setup.json](verification/2026-09-07-claude-profile-setup.json) | portable_coordination_skill_2026_09_15: Combined full release gate, independent source review, actual setup/discovery and native-TUI queue acceptance passed; final CI and installation pending. |
 | [2026-09-07-desktop-maintenance.json](verification/2026-09-07-desktop-maintenance.json) | owned native desktop fixtures; private paths and captures excluded |
 | [2026-09-07-identity-lifecycle.json](verification/2026-09-07-identity-lifecycle.json) | Packaged adapter lifecycle with a synthetic host; separate from actual model-provider trials |
 | [2026-09-07-integration-benchmark-failure.json](verification/2026-09-07-integration-benchmark-failure.json) | Original failed integrated benchmark; not a completed performance acceptance campaign |
@@ -133,7 +136,7 @@ fails when it and the records disagree.
 | [2026-09-11-codex-appserver-input.json](verification/2026-09-11-codex-appserver-input.json) | passed |
 | [2026-09-11-codex-hook-discovery.json](verification/2026-09-11-codex-hook-discovery.json) | passed |
 | [2026-09-11-codex-input-bridge.json](verification/2026-09-11-codex-input-bridge.json) | Experimental managed native Codex input, queue ownership and bounded crash recovery |
-| [2026-09-11-codex-input-review.json](verification/2026-09-11-codex-input-review.json) | Native identity-repair acceptance compares migrated schema to the same daemon fresh database, instead of stale schema 11. |
+| [2026-09-11-codex-input-review.json](verification/2026-09-11-codex-input-review.json) | network_review_2026_09_15: Full release gate passed; actual managed-network callback acceptance remains open after a private configuration denied the connection before emitting a callback. |
 | [2026-09-11-codex-queue-recovery.json](verification/2026-09-11-codex-queue-recovery.json) | passed |
 | [2026-09-11-daily-updates.json](verification/2026-09-11-daily-updates.json) | passed_for_listed_scope |
 | [2026-09-11-desktop-identity.json](verification/2026-09-11-desktop-identity.json) | Iced desktop identity round of 2026-09-11 on codex/desktop-delivery: per-project monogram tiles, the window-local unviewed-done badge, the Connections hooks copy and the per-launch Claude channel checkbox. |
@@ -159,7 +162,7 @@ fails when it and the records disagree.
 | [2026-09-12-file-change-review.json](verification/2026-09-12-file-change-review.json) | Bounded Codex file-change approval through the shared human answer queue and compact native full-diff review. |
 | [2026-09-12-input-delivery-status.json](verification/2026-09-12-input-delivery-status.json) | PR #108 merged as 1e2914270b59fcb6721d463999eed80229e15e5d after final 5778212 CI and actual source inspection. |
 | [2026-09-12-integrated-desktop.json](verification/2026-09-12-integrated-desktop.json) | Combined PR119: messenger Inbox, minimal home and Tools, permission validation, sender identity, launcher compatibility and persisted Applications destination |
-| [2026-09-12-launcher-hook-repair.json](verification/2026-09-12-launcher-hook-repair.json) | macOS launcher hook/MCP regression, real bundle discovery/opening, legacy paths across activation and rollback |
+| [2026-09-12-launcher-hook-repair.json](verification/2026-09-12-launcher-hook-repair.json) | Historical hook repair and September15 intact launcher: private install/legacy rollback/routes and production activation passed; an existing Codex session auto-bound, then a peer message started its next ordinary turn... |
 | [2026-09-12-output-drain.json](verification/2026-09-12-output-drain.json) | Managed output ownership through pipe/terminal EOF and final log flush before publishing exit, releasing protection or restarting; not cross-process daemon handover. |
 | [2026-09-12-permission-review.json](verification/2026-09-12-permission-review.json) | local acceptance passed; final CI/source review pending |
 | [2026-09-12-provider-event-reconnect.json](verification/2026-09-12-provider-event-reconnect.json) | Local implementation and actual Codex event-only reconnect acceptance passed at 687e57f. |
@@ -167,7 +170,7 @@ fails when it and the records disagree.
 | [2026-09-12-thirty-minute-codex-queue.json](verification/2026-09-12-thirty-minute-codex-queue.json) | passed |
 | [2026-09-12-ux-home.json](verification/2026-09-12-ux-home.json) | functional acceptance passed; UI CPU increase under investigation; final CI/source review pending |
 | [2026-09-14-overnight-sustained-use.json](verification/2026-09-14-overnight-sustained-use.json) | passed_for_listed_scope |
-| [2026-09-15-native-codex-queue.json](verification/2026-09-15-native-codex-queue.json) | Provider capability trials using actual installed Codex TUI and queue binaries with a private profile and loopback Responses fixture; not AgentDocker forwarding acceptance. |
+| [2026-09-15-native-codex-queue.json](verification/2026-09-15-native-codex-queue.json) | Native Codex queue, supervised recovery, canonical resume with a prompt and schema20 historical-answer migration passed at recorded sources. |
 | [2026-09-15-retention-sustained-use.json](verification/2026-09-15-retention-sustained-use.json) | passed: 20-minute retention trial rerun with every claimed assertion (source 33f8117 of the retention branch on main 51a1a9f, hashed private daemon copy): ten registered agents, journal retention 120s applied by the d... |
 
 <!-- verification-index:end -->

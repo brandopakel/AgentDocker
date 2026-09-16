@@ -7,7 +7,11 @@ not provide idle wake. The opt-in [managed Codex bridge](CODEX-INPUT.md)
 (`--codex-input`) polls the queue while idle and starts a turn in its owned
 app-server conversation; it does not attach to an existing Codex TUI. The enabled
 [Claude channel adapter](CLAUDE-CHANNEL-INPUT.md) (`--claude-channel`) can also
-deliver input while idle. Each guide records its source-specific acceptance limits.
+deliver input while idle. Existing Codex CLI terminals can also use the
+[verified-hook native receiver](CODEX-INPUT.md#existing-codex-terminals-native-queue-candidate-september-15),
+which submits through Codex's own input queue; installed auto-bootstrap, peer
+wake and exact receipt passed for one existing 0.154.0 session. Each guide
+records its source-specific acceptance limits.
 
 Discovery proves that a runtime process is present. Configuration does not prove
 that a running session has connected, read a message or begun a model turn.
@@ -64,7 +68,8 @@ messages. It cannot wake an already idle process by itself. MCP agents must call
 `read_inbox` or `wait_for_messages`; configured MCP does not make agents poll or
 answer.
 
-Codex hooks now deliver inbox context on `UserPromptSubmit` and `PostToolUse`,
+Codex `SessionStart` verifies the session and starts a supported native receiver
+without claiming turn activity. Other Codex hooks deliver inbox context on `UserPromptSubmit` and `PostToolUse`,
 and request one `Stop` continuation when messages wait. `stop_hook_active`
 prevents repeated continuations. Interrupt, compaction and pre-tool observations
 do not read inboxes. Post-tool context preserves the original tool result.
@@ -116,8 +121,9 @@ provider; nothing in the inbox controls repairs a receiver. The started process 
 same token: the daemon restarts receivers, never provider sessions, and never
 rebinds or changes the provider generation on its own. The descriptor is kept
 on the agent record in the open, so the token belongs in a private file, not
-in its arguments or environment. The daemon side is in source; the Codex
-native-queue controller that uses it is separate work.
+in its arguments or environment. Both the daemon supervisor and the Codex 0.154 native-queue receiver are in source.
+See [Codex input](CODEX-INPUT.md) for the supported hook bootstrap, idle delivery,
+receipt recovery and the retained no-prompt startup/resume limitation.
 
 ## Channels and reviews
 

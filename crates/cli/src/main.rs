@@ -14,6 +14,7 @@ mod rtk;
 mod sender;
 mod service;
 mod setup;
+mod skill;
 mod teams;
 mod top;
 
@@ -65,6 +66,8 @@ enum Command {
         #[arg(long, value_name = "PLAN_SHA256")]
         apply: Option<String>,
     },
+    /// Print the portable coordination SKILL.md without connecting to a daemon.
+    Skill,
     /// Check that agentd is reachable.
     Ping,
     /// Build an image with an explicit engine and retain immutable input provenance.
@@ -663,6 +666,9 @@ enum Command {
         /// Remove queued messages before replying; a broken connection can lose this delivery.
         #[arg(long)]
         drain: bool,
+        /// Inspect queued input without consuming it or acting as a receiver.
+        #[arg(long, conflicts_with_all = ["drain", "ack"])]
+        peek: bool,
         /// Acknowledge only these received message IDs, preserving later arrivals.
         #[arg(long, num_args = 1.., conflicts_with = "drain")]
         ack: Vec<String>,
@@ -710,6 +716,9 @@ enum Command {
     /// Supervised Codex input controller (launched by run --codex-input).
     #[command(hide = true)]
     CodexInput(codex_input::Args),
+    /// Feed an existing Codex conversation through its native input queue.
+    #[command(hide = true)]
+    CodexQueue(codex_input::external::Args),
     /// Start the agents in an Agentfile.toml that are not already running.
     Up {
         /// Agentfile to read (default: ./Agentfile.toml).
@@ -1111,6 +1120,7 @@ struct ClaimArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    agentdocker_host::installation::redirect_managed_launcher()?;
     let _installation_pin = agentdocker_host::installation::pin_current_executable()?;
     let cli = Cli::parse();
     let socket = cli.socket.clone();
@@ -1426,6 +1436,7 @@ async fn main() -> Result<()> {
                 bail!("unexpected access response");
             }
         }
+        Command::Skill => print!("{}", skill::installed_document()),
         Command::Ping => {
             if let Response::Pong {
                 version,
@@ -2199,19 +2210,42 @@ async fn main() -> Result<()> {
                 })
                 .await?;
         }
-        Command::Inbox { agent, drain, ack } => {
+        Command::Inbox {
+            agent,
+            drain,
+            peek,
+            ack,
+        } => {
             if !ack.is_empty() {
-                client
+                match client
                     .call(&Request::AckInbox {
                         agent,
                         messages: ack.into_iter().map(MessageId::from).collect(),
                     })
-                    .await?;
-            } else if let Response::Messages { messages } =
-                client.call(&Request::Inbox { agent, drain }).await?
-            {
-                for message in &messages {
-                    println!("{}", format::message_line(message));
+                    .await?
+                {
+                    Response::Ok => (),
+                    Response::InputOwned { .. } => bail!(
+                        "The input receiver owns these messages; only a confirmed provider receipt can acknowledge them."
+                    ),
+                    other => bail!("unexpected acknowledgement response: {other:?}"),
+                }
+            } else {
+                let request = if peek {
+                    Request::PeekInput { agent }
+                } else {
+                    Request::Inbox { agent, drain }
+                };
+                match client.call(&request).await? {
+                    Response::Messages { messages } => {
+                        for message in &messages {
+                            println!("{}", format::message_line(message));
+                        }
+                    }
+                    Response::InputOwned { .. } => eprintln!(
+                        "The input receiver owns this queue. Use --peek to inspect it without consuming messages."
+                    ),
+                    other => bail!("unexpected inbox response: {other:?}"),
                 }
             }
         }
@@ -2284,6 +2318,7 @@ async fn main() -> Result<()> {
         Command::Hook(args) => hooks::run(client, args).await?,
         Command::Mcp(args) => mcp::serve(client, args).await?,
         Command::CodexInput(args) => codex_input::run(client, socket, args).await?,
+        Command::CodexQueue(args) => codex_input::external::run(client, socket, args).await?,
         Command::Up { file, names } => teams::up(&client, file.as_deref(), &names).await?,
         Command::Down { file, names, force } => {
             teams::down(&client, file.as_deref(), &names, force).await?;

@@ -21,7 +21,36 @@ agentdocker setup --undo PLAN_ID
 
 Preview prints the new plan ID on stdout and its redacted description on stderr. `--json` prints a machine-readable description instead. The public description includes paths, channels and the AgentDocker executable, never the contents of existing provider configuration. Plain `agentdocker setup` and `--dry-run` retain their existing CLI behavior; the native window uses the saved-plan flow.
 
-Guided Claude Code setup installs the complete six-event hooks adapter in `.claude/settings.json`. When MCP registration is missing and the Claude CLI is available, setup delegates registration to that CLI; it does not restore or rewrite `.claude.json` as a file snapshot. The receipt tracks ownership for undo. Identity reuse is verified; existing duplicates are repaired offline with `identity-repair` ([IDENTITY-REPAIR.md](IDENTITY-REPAIR.md)). Codex receives both stdio MCP and activity hooks; other supported JSON MCP hosts receive their stdio adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
+Guided Claude Code setup installs the complete seven-event hooks adapter in `.claude/settings.json`. When MCP registration is missing and the Claude CLI is available, setup delegates registration to that CLI; it does not restore or rewrite `.claude.json` as a file snapshot. The receipt tracks ownership for undo. Identity reuse is verified; existing duplicates are repaired offline with `identity-repair` ([IDENTITY-REPAIR.md](IDENTITY-REPAIR.md)). Codex receives both stdio MCP and activity hooks; other supported JSON MCP hosts receive their stdio adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
+
+## Shared coordination skill
+
+Setup also installs the bundled [AgentDocker skill](../crates/cli/skills/agentdocker/SKILL.md)
+for Codex, Claude Code and Gemini CLI. MCP onboarding uses the same instruction
+source, with receipt guidance selected for the active delivery adapter. The
+skill includes CLI equivalents, so its workflow is independent of a model vendor.
+`agentdocker skill` prints the installable file without contacting the daemon.
+
+The destination is `skills/agentdocker/SKILL.md` beneath the selected Codex or
+Claude profile (`CODEX_HOME` / `CLAUDE_CONFIG_DIR`, defaulting to `~/.codex` /
+`~/.claude`), or `~/.gemini` for Gemini CLI. Saved plans show the skill alongside
+MCP/hooks and support the same apply, recovery and undo. An unchanged generated
+copy can be upgraded using its complete-content SHA-256 stamp; a custom or edited
+copy is preserved and reported for comparison. Undo refuses later edits.
+
+The [Codex skill loader](https://learn.chatgpt.com/docs/build-skills),
+[Claude skill loader](https://code.claude.com/docs/en/skills) and
+[Gemini skill loader](https://geminicli.com/docs/cli/skills/) support the common
+SKILL.md format. Actual Codex 0.154.0 profile discovery and Claude Code 2.1.273's SDK
+initialization found the installed skill in isolated profiles on September 15,
+without a model call. Combined `d7bd90c` passed 969 Rust tests, 70 Python checks,
+the release gate and an actual Codex TUI queue/answer trial.
+[Recorded setup and discovery evidence](verification/2026-09-07-claude-profile-setup.json) preserves source/binary provenance and limits. This proves discovery, not automatic activation for every
+prompt. Gemini's path follows its documentation and still needs an actual CLI
+trial here. Other tools can use the exported file through their own documented
+loader; desktop inventory alone does not imply skill support. Provider trust,
+skill policy and tool permissions still apply. No AGENTS.md, CLAUDE.md or global
+approval settings are rewritten.
 
 ## Apply, recovery and undo
 
@@ -86,7 +115,12 @@ An available executable is not a successful adapter call. Checks never execute c
 
 The [local trial](LOCAL-TRIAL.md) requires a fresh real-provider round trip. During the native delivery work, a disposable Claude Code session received a token through hooks and wrote it to its fixture file; a fresh Codex session received a different token through MCP, echoed it to its fixture peer and recorded it in the journal. Both used private fixture IPC and left the monitored provider settings unchanged. This is bounded acceptance of those installed CLI versions, not certification of every provider/version or sustained use. The first Codex run correctly failed consumption assertions because tool approval was not configured; the passing run explicitly approved only its five fixture tools for that invocation.
 
-The September 14 readiness candidate in [PR #125](https://github.com/brandopakel/AgentDocker/pull/125) passed 882 Rust tests, 65 Python checks and 165 native workflow steps at `0dedf24`. Native controls distinguished activity-only, adapter contact, an active receiver awaiting its first receipt, verified receipt and paused delivery. A 90-second actual Codex 0.154.0 conversation completed six ordered human/peer inputs and replies, survived a dropped read response, retained one controller/conversation and refreshed readiness after the last receipt. The separate Claude channel transport trial refreshed while idle without duplicating its outstanding offer or acknowledging any input. Provider settings were unchanged and fixture processes exited. These are bounded source-specific trials; installed-candidate and broader platform acceptance remain separate.
+The September 14 readiness candidate in [PR #125](https://github.com/brandopakel/AgentDocker/pull/125) passed 882 Rust tests, 65 Python checks and 165 native workflow steps at `0dedf24`. Native controls distinguished activity-only, adapter contact, an active receiver awaiting its first receipt, verified receipt and paused delivery. A 90-second actual Codex 0.154.0 conversation completed six ordered human/peer inputs and replies, survived a dropped read response, retained one controller/conversation and refreshed readiness after the last receipt. The separate Claude channel transport trial refreshed while idle without duplicating its outstanding offer or acknowledging any input. Provider settings were unchanged and fixture processes exited. These are bounded source-specific trials. September 15 installed acceptance at
+`cf64ca3` additionally verified automatic receiver startup in an existing Codex
+0.154.0 session, a peer message starting the next ordinary turn without a human
+prompt, and its exact receipt/queue acknowledgement. Hook and Claude settings
+were unchanged. See the [native input record](verification/2026-09-15-native-codex-queue.json);
+zero-prompt startup/reopen and broader platform acceptance remain separate.
 
 Provider configuration follows the installed CLI capabilities and the official [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and [Claude Code hooks reference](https://code.claude.com/docs/en/hooks). Private raw trial records remain outside the repository. Packaging and signing are documented in [DESKTOP-DISTRIBUTION.md](DESKTOP-DISTRIBUTION.md).
 

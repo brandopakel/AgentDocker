@@ -42,6 +42,8 @@ fn logging() {
 }
 
 fn main() -> iced::Result {
+    agentdocker_host::installation::redirect_managed_launcher()
+        .unwrap_or_else(|error| usage_error(&format!("cannot open installed release: {error}")));
     logging();
     let _installation_pin = agentdocker_host::installation::pin_current_executable()
         .unwrap_or_else(|error| usage_error(&format!("cannot open installed release: {error}")));

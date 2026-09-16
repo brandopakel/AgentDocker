@@ -22,6 +22,86 @@ terminal. Repeated pings must not create duplicate turns or unbounded reply loop
 
 ## Current evidence and gap
 
+### September 15: AgentDocker native queue implementation
+
+The native Codex receiver is merged in PR #148, using
+Claude's provider-neutral input binding from PR #142 and schema-20 answer routing from PR #147. The existing
+Codex hook verifies the provider process and thread and starts a detached
+receiver. It uses `thread/queue/add` and read-only queue/history APIs, with no
+`thread/resume`, second conversation, terminal keystrokes or profile rewrite.
+A durable token, one outstanding attempt and exact provider receipts protect
+binding, restart and queue acknowledgement. The daemon fences legacy consumers;
+messages exposed before binding remain uncertain until reconciled.
+
+Bounded real-TUI/local-Responses trials passed idle wake (about seven seconds),
+an unsubmitted draft, busy peer/human ordering and controller restart without
+replay. Automatic startup through the verified hook path also passed. The first
+integration harness incorrectly expected six queue receipts for five submitted
+messages; the corrected count passed. Bootstrap testing first used a restricted
+shell that cannot inspect ancestors, then found and fixed a real missing-human
+identity on a fresh daemon. Further trials passed asynchronous MCP answers, old
+synchronous MCP answers without an extra user turn, HTTP 429 queue holds and
+explicit resumption, recovery of a lost enqueue reply, and a retained ambiguous
+submission without resubmission. The repeatable driver is
+`scripts/native_codex_queue_smoke.py`; its scenarios use actual Codex with an
+isolated daemon/profile and a loopback model fixture.
+
+Combined release `8b2afe3` passed daemon-supervised receiver crash recovery,
+legacy MCP answers, rate-limit hold/resume and ambiguous-submission retention.
+Its full local gate passed 954 Rust tests (six skipped), 70 Python checks, lint,
+doctests, packaging and release build. The existing verification report records
+the exact source, binaries and original failures.
+
+An explicit same-thread TUI restart then exposed stranded input on the old agent
+record. The follow-up now resumes its canonical identity and retained queue,
+aliases the new registration, and preserves the receiver token, outstanding
+attempt and receipt history. The daemon also settles synchronous versus queued
+answers: tool-result offers stay uncertain until exact provider receipt proof;
+unoffered posted/disconnected answers use ordinary input. Later messages wait
+behind a held answer so cancellation cannot reorder the queue. Six release trials
+at `7133023` passed, including explicit resume with a prompt and disconnected/generic
+legacy replies. Later `2a7656c` passed the full 964-Rust/70-Python gate.
+
+The actual trusted `SessionStart` hook bootstraps after an initial prompt and then
+passes idle wake, draft/FIFO and controller crash recovery. Codex 0.154.0 emits no
+SessionStart before a first turn, including after reopening an existing thread
+without a prompt. The no-prompt lifecycle trial failed with its queue preserved.
+MCP starts eagerly but supplies no thread/profile identity in its environment.
+That exact-binding gap remains open; inferring it from a display name or PID
+would not be safe. The original diagnostic trials are retained. The schema-20
+migration fixture at `8831524` passed on release binaries: an answer already
+consumed by an old synchronous MCP tool was reconciled after daemon restart
+without an extra provider turn. Those bounded fixtures do not establish delivery
+for every provider; the installed existing-session acceptance is recorded below.
+
+Long-busy trials 26/27 subsequently exposed a false idle pause: a readonly
+sidecar reconstructed a running direct user turn as interrupted. Source now
+removes that inferred deadline while the exact native entry remains queued;
+the new `long-busy` scenario holds a user turn for 65 seconds and checks retained
+human/peer order before consumption and receiver recovery. Validation of this
+correction now includes a passing actual 65-second trial at `5aeb651`, plus
+idle/draft/FIFO/receiver recovery and a separate rate-limit hold/resume. Its full
+gate passed 967 Rust tests (six skipped) and 70 Python checks. A recovery trial
+failed cleanup despite an incorrect raw pass label; that failure is retained and
+corrected recovery34 at `bc0ea04` passed its repeat under daemon supervision,
+reconciling the original native queue entry and retaining unconfirmed input
+without replay. The injected late-error trial also returned failure as required.
+PRs #148/#149 are merged after final review and CI. The verified `cf64ca3`
+package (same production inputs as merged `4074275`) is now installed. Its
+receiver automatically bound this existing Codex 0.154.0 session. A real Claude
+peer message waited during a busy turn, then started the next ordinary Codex
+turn without another human prompt. The receiver recorded the exact provider
+thread/turn/item receipt and acknowledged the original queue row. Two old
+legacy offers were explicitly read and reconciled before this new-message
+trial; the native-owned message was not manually read through legacy tools or
+acknowledged. The [existing native record](verification/2026-09-15-native-codex-queue.json)
+contains the receipt and source. Zero-prompt startup/reopen, sustained use and
+broader provider acceptance remain.
+
+PR #135's feedback/readiness correction is merged as `d6d7dab` after the full
+local gate, all final-head CI checks and independent Claude source review. Its
+branch was deleted. The remaining adapter work proceeds independently.
+
 ### September 14 PDT / September 15 UTC: current sessions and the native Codex queue
 
 The [retained verification report](verification/2026-09-15-native-codex-queue.json)
@@ -66,10 +146,10 @@ receipt recovery did not resume or fork the live conversation. The private
 driver/result are `agentdocker-native-codex-queue-api-trial-2026-09-15.py` and
 `agentdocker-native-codex-queue-api-result-2026-09-15/` under `/private/tmp`.
 
-**Still required:** connect AgentDocker's durable peer/human queue to this
-external-session route; verify exact profile/thread/process binding; prevent
-simultaneous hook consumption; persist attempts and recover exact provider
-receipts without blind retries. Native enqueue success alone cannot mark a
+**At this earlier capability checkpoint:** AgentDocker integration was still
+required. The September 15 implementation above now supplies the native queue
+receiver, exact binding, exclusive consumption and durable receipt recovery;
+final acceptance and installation remain open. Native enqueue success alone cannot mark a
 message received. Keep permission waits, provider limits, interruption, process
 exit, reconnect and draft preservation in the acceptance gate.
 
@@ -78,7 +158,7 @@ exit, reconnect and draft preservation in the acceptance gate.
 | Current external Codex and Claude sessions, hooks only | No automatic wake; messages can wait for another user/tool event. |
 | Managed Codex input bridge | Existing opt-in adapter trials below; does not attach an existing terminal. |
 | Enabled Claude channel | Existing opt-in idle/busy/draft trials below; must be enabled for the actual session. |
-| Native Codex 0.154.0 queue | Provider route demonstrated above; AgentDocker integration remains open. |
+| Native Codex 0.154.0 queue | AgentDocker receiver implemented and bounded TUI integration passed; final acceptance and installation remain open. |
 | Other providers, models and hosts | Require a supported input route and their own idle/busy/limit tests. Generic MCP or hook contact supplies no wake guarantee. |
 
 The CLI/MCP feedback correction labels successful sends as accepted by
@@ -95,7 +175,7 @@ The release MCP receipt smoke passed all four reconnect/acknowledgement
 scenarios with no surviving fixture processes. A send through the candidate
 MCP binary to the live Claude session returned routing acceptance with receipt
 and wake unconfirmed (`e1e6256b16cb48ed`); compact inspections reported both live
-sessions' input readiness as `unverified`. Final CI and source review remain.
+sessions' input readiness as `unverified`. PR #135's final CI/source review subsequently passed and it is merged.
 
 The [September 12 sender audit](verification/2026-09-12-cli-sender-identity.json)
 reproduces a separate routing problem: CLI sends and questions without an

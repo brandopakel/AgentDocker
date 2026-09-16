@@ -10,20 +10,28 @@ evidence; an old “pending” entry is not by itself a current implementation g
 ## Product and engineering requirements
 
 
-### Current integration and installation (audited September 14)
+### Current integration and installation (September 15)
 
-Latest closeout: PRs #127, #128 and #130 are merged after final-source review
-and five successful CI workflows each. PR #130 closes independent process
-ownership and durable exit recovery, with 911 Rust tests, 70 Python checks and
-real owned-process restart/retirement/pressure trials at `5120f03`. Full reload
-fencing, successor readiness and transfer acceptance remain open. Current
-installed/serving versions are reported by `agentdocker desktop status` and
-`agentdocker daemon status`; source updates do not replace an active daemon.
-PR #129's narrow Inbox/readable-name work and PR #131's provider
-availability/queue recovery are implemented and included in this combined
-closeout. Remaining review, installation and acceptance limits are recorded in
-[Remaining work](REMAINING-WORK.md); neither implementation waits for Claude.
-The following PR #119 details are historical checkpoints.
+Merged source now includes PRs #148/#149 (existing-terminal native Codex input
+and the shared coordination skill), #151 (managed-network review) and #153
+(intact copied launcher and compatible legacy rollback). Their final local gates,
+CI and source reviews passed; bounded acceptance is linked from
+[Remaining work](REMAINING-WORK.md). Messaging, Sessions simplification, reload
+and diagnostic followups are still being integrated.
+
+The installed app and serving daemon now use verified `cf64ca3` (schema20),
+whose production inputs match merged `4074275`. The intact launcher passes
+strict signature verification; all four external provider identities, PIDs and
+birth times survived the coordinator switch. The existing Codex receiver
+auto-bound and queued a peer message after two legacy offers were reconciled.
+That message then started the next ordinary Codex turn without a human prompt;
+the controller recorded its exact thread/turn/item receipt and acknowledged the
+original queue row. This closes one installed existing-session wake/receipt
+trial; zero-prompt startup/reopen and broader provider acceptance remain.
+Use `agentdocker desktop status` and `agentdocker daemon status` for actual
+versions. Installing an app does not replace the active daemon.
+
+### Historical integration and installation checkpoints
 
 PR #119 merged #115–#118 and Claude's messenger, minimal attention and
 Applications-folder work into `aaa1b61`. Final review and CI are complete.
@@ -35,15 +43,15 @@ pre-package binaries match that reviewed build. The earlier
 [combined report](verification/2026-09-12-integrated-desktop.json) retains its
 separate 869-test/265-step checkpoint and quiet UI comparison at `462c1b3`.
 
-The installed app and open GUI use main `aaa1b61` in `/Applications`; the serving
-daemon remains the old schema15 release. Installing the schema16-capable app
+At the September 14 checkpoint, the installed app and open GUI used main
+`aaa1b61` in `/Applications`; the serving daemon remained the old schema15 release. Installing the schema16-capable app
 preserved provider sessions and old hook/MCP paths. Daemon replacement and
 production identity repair remain open. There are no pre-audit PRs or branches
 left to integrate: the final clean, merged Claude worktree was removed with its
 owner's confirmation on September 14. Superseded drafts remain in archive tags.
 
 The [documentation inventory](README.md#existing-document-audit-september-14-2026)
-covers all 37 Markdown files and 61 existing verification reports. The sequence
+lists every project Markdown file and the retained verification reports. The sequence
 and crosswalk below now distinguish passed source-specific checks from partial
 acceptance. Newly identified omissions are existing promises: verified input
 capabilities, automatic journal retention/vacuum/checkpoint maintenance and the
@@ -101,6 +109,21 @@ actual Claude/Codex idle conversations. Hooks that only run on another lifecycle
 event do not complete this requirement, and an inbox acknowledgement does not
 prove provider acceptance. The audit document defines the required artifacts and
 negative-path acceptance cases.
+
+September 15 blocking checkpoint: the native Codex candidate at `5f72f37`
+falsely paused delivery while a direct user turn was still running beyond
+45 seconds. Queued input remained retained without resubmission. That defect
+blocked PRs #148/#149 until the corrected live-activity decision and actual
+long-busy, idle-wake and recovery acceptance below. Earlier short-busy passes
+did not close this failure. Live diagnostic trial 27 traced it to the
+sidecar reporting an active turn as interrupted; source removes that inferred
+idle deadline. Corrected `5aeb651` passed the full 967-Rust/70-Python gate and
+actual 65-second direct-user busy, idle/draft/FIFO and rate-limit acceptance.
+Corrected recovery34 at `bc0ea04` passed real-supervisor recovery after separate
+harness cleanup/race failures were retained and fixed. PRs #148/#149 are merged
+after final review and CI; installed-session acceptance and zero-prompt
+startup/reopen remain. The existing
+[native queue evidence](verification/2026-09-15-native-codex-queue.json) retains it.
 
 The first queue correction is in source: schema 10 retains addressed messages while subscribed and rejects count/byte pressure without evicting accepted work. The full standard gate and actual-daemon reconnect/crash, mixed-sender, upgrade/downgrade and atomic-fanout trials passed. This closes neither provider acceptance nor idle wake; both still require the adapters and actual-provider trials above.
 
