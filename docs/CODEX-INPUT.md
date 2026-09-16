@@ -11,7 +11,9 @@ ordinary input and preserves the terminal's unfinished draft and permission UI.
 
 This candidate requires the schema-20 controller binding and answer migration and Codex's experimental
 native queue API (tested with CLI 0.154.0). It is under integration and acceptance
-test and is **not yet the installed application's behavior**. An accepted hook
+test. The verified `cf64ca3` package is now installed with a schema-20 daemon;
+the existing Codex session auto-started its receiver and offered a queued peer
+message. Exact provider receipt and idle wake remain under test. An accepted hook
 configuration is needed to start a receiver for an existing terminal. Setup now
 includes `SessionStart`, which verifies identity and starts the receiver without
 asserting working/idle activity or consuming hook context. Actual CLI 0.154.0

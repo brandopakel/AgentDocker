@@ -92,7 +92,7 @@
     "Signed/notarized distribution and physical Notification Center acceptance.",
     "Earlier PRs and broader remaining-work items are not closed by this repair."
   ],
-  "summary": "Historical hook repair and September 15 signed-copy launcher follow-up: private installation, actual older-release rollback and copied-launcher navigation passed; production activation, native posting and physical clicks remain open.",
+  "summary": "Historical hook repair and September 15 intact launcher: private install/legacy rollback/routes and production activation passed; existing native Codex receiver auto-bound. Physical notification clicks, posting authorization and provider input receipt remain open.",
   "signed_copy_followup_2026_09_15": {
     "scope": "Intact signed macOS application copies, entrypoint forwarding, same-release legacy wrapper repair, actual pre-capability upgrade/rollback, and private existing/cold-window notification navigation.",
     "source": {
@@ -323,13 +323,68 @@
     "review": {
       "claude_source": "Approved b619..90be implementation design, contingent on focused tests and real older-payload trial; both have now passed. Peer message a993028fb7334417.",
       "github_pr": 153,
-      "final_ci": "pending"
+      "final_ci": "passed at00973a1 on all CI platforms; CodeRabbit final-head review had no actionable findings; PR153 merged as4074275"
     },
     "remaining": [
-      "Production installation and Launch Services replacement acceptance.",
       "Native notification authorization/posting and actual Notification Center clicks while foregrounded, hidden and closed.",
       "Developer ID signing, notarization and Gatekeeper acceptance.",
       "Latest combined UI/native-queue/reload integration and installed-provider acceptance remain separate."
-    ]
+    ],
+    "production_activation_2026_09_15": {
+      "result": "passed_for_listed_scope",
+      "source_commit": "cf64ca398f8117445938ede20dd60672c9e005d3",
+      "same_production_inputs_as_merged_main": "4074275a4e9cd58ad052f78390be4254e30e79cd",
+      "state_schema": 20,
+      "application": "/Applications/AgentDocker.app",
+      "strict_signature_verification": "passed (local ad-hoc signature, not Developer ID/notarization)",
+      "binary_sha256": {
+        "agentdocker": "b74b1a27202440484ca87db55d735b0a977353243c52b4f4f363ca7e4a66808c",
+        "agentd": "9c5e2ac8ff4f9bcd69095e6fea8b3cb7e7cebb1344f7e57547d47a2fa5ee5b7d",
+        "agentdocker-ui": "46cd659691850ee7de63ba8aa4bdae50133b4757efac5a266cd83ff7d52fa1cb"
+      },
+      "state_backup": "/private/tmp/agentdocker-state-backup-before-switch-2026-09-15c",
+      "backup_schema": 18,
+      "backup_integrity_check": "ok",
+      "old_daemon_pid": 75531,
+      "new_daemon_pid": 94726,
+      "open_app_pid": 94732,
+      "external_provider_ids_pids_birth_and_status_preserved": 4,
+      "codex_hooks_and_claude_settings_unchanged": true,
+      "claude_receipt_message": "7acad71d0fa54750",
+      "native_input": {
+        "controller_pid": 94744,
+        "same_existing_thread_and_process": true,
+        "bootstrap": "automatic after the verified hook contacted the upgraded daemon",
+        "legacy_uncertain_messages": 2,
+        "legacy_reconciliation": "Both messages were actually read through administrative peek, then only their exact IDs were acknowledged via the allowed in-flight legacy route. New bound input was not manually acknowledged.",
+        "paused_after_reconciliation": false,
+        "pending_peer_message": "7acad71d0fa54750",
+        "native_queue_id": "01a0a810-ce1c-7ed2-a1ed-dfcb2d912f1d",
+        "provider_receipt": "pending while current Codex turn is active"
+      },
+      "artifacts": {
+        "preview": {
+          "private_path": "/private/tmp/agentdocker-production-install-preview-2026-09-15c.json",
+          "sha256": "d041d949781b8f81d722c6789b2893a055e3ea93ff33f2b1b354f4dad46d93ed"
+        },
+        "installed": {
+          "private_path": "/private/tmp/agentdocker-production-installed-2026-09-15c.json",
+          "sha256": "f72e326fccebee1ab9c4259163df3cc6b234ceb101d05b08edda2412849e85bc"
+        },
+        "switch": {
+          "private_path": "/private/tmp/agentdocker-production-switch-2026-09-15c.json",
+          "sha256": "4bbce3cf7e46c090e781b6e5a4a1c7ab25052f2dbbfc3965cba888068ec9a24d"
+        },
+        "native_receiver": {
+          "private_path": "/private/tmp/agentdocker-installed-native-input-state-2026-09-15c.json",
+          "sha256": "a9a263610e350b2f15c4b677d2c5eef4c616115009232f1f3444df9a772b0418"
+        }
+      },
+      "limits": [
+        "Coordinator stop/start with external providers preserved; not an in-place daemon reload trial.",
+        "Native bootstrap and queue offer observed; idle wake and exact installed-provider receipt require the next turn.",
+        "Physical Notification Center clicks and native posting authorization remain open."
+      ]
+    }
   }
 }

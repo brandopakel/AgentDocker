@@ -19,9 +19,12 @@ CI and source reviews passed; bounded acceptance is linked from
 [Remaining work](REMAINING-WORK.md). Messaging, Sessions simplification, reload
 and diagnostic followups are still being integrated.
 
-The installed app and serving daemon remain at `3c8c2e1` (schema18), with four
-external provider identities preserved at that checkpoint. The newer native
-receiver and copied launcher have not yet been activated in this installation.
+The installed app and serving daemon now use verified `cf64ca3` (schema20),
+whose production inputs match merged `4074275`. The intact launcher passes
+strict signature verification; all four external provider identities, PIDs and
+birth times survived the coordinator switch. The existing Codex receiver
+auto-bound and queued a peer message after two legacy offers were reconciled.
+Its exact receipt and idle-wake acceptance are still pending at this checkpoint.
 Use `agentdocker desktop status` and `agentdocker daemon status` for actual
 versions. Installing an app does not replace the active daemon.
 
