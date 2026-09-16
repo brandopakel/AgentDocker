@@ -11,12 +11,26 @@ const MAX_STATE_BYTES: u64 = 2 * 1024 * 1024;
 pub struct Entry {
     pub project: ProjectRef,
     pub pinned: bool,
+    /// A name the person gave this project here, instead of its folder's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl Entry {
+    /// What the sidebar calls the project: the chosen name, else the folder.
+    pub fn name(&self) -> String {
+        self.label.clone().unwrap_or_else(|| self.project.name())
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Catalog {
     pub projects: Vec<Entry>,
+    /// Folders the person removed from the list; discovery does not bring
+    /// them back, adding one again does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<PathBuf>,
     pub selected: Option<PathBuf>,
     pub dark: bool,
     pub unassigned: bool,
@@ -46,6 +60,11 @@ impl Catalog {
         catalog
             .projects
             .retain(|entry| entry.project.root.is_absolute());
+        catalog.hidden.retain(|root| root.is_absolute());
+        anyhow::ensure!(
+            catalog.hidden.len() <= MAX_PROJECTS,
+            "Too many removed folders"
+        );
         catalog
             .projects
             .sort_by(|a, b| a.project.root.cmp(&b.project.root));
@@ -61,6 +80,11 @@ impl Catalog {
 
     pub fn remember(&mut self, project: ProjectRef, pin: bool) -> bool {
         if !project.root.is_absolute() {
+            return false;
+        }
+        if pin {
+            self.hidden.retain(|h| h != &project.root);
+        } else if self.hidden.contains(&project.root) {
             return false;
         }
         if let Some(entry) = self
@@ -85,6 +109,7 @@ impl Catalog {
         self.projects.push(Entry {
             project,
             pinned: pin,
+            label: None,
         });
         self.sort_projects();
         // Discovery changes the catalog, not the user's selection. None is the
@@ -100,11 +125,79 @@ impl Catalog {
 
     fn sort_projects(&mut self) {
         self.projects.sort_by(|a, b| {
-            a.project
-                .name()
-                .cmp(&b.project.name())
+            a.name()
+                .cmp(&b.name())
                 .then_with(|| a.project.root.cmp(&b.project.root))
         });
+    }
+
+    /// Drop discovered folders that no longer exist: a fixture's checkout
+    /// or a scratch worktree that was deleted is not a project any more. A
+    /// pinned folder stays and says it is unavailable. Whether anything
+    /// went.
+    pub fn forget_missing(&mut self) -> bool {
+        let before = self.projects.len();
+        self.projects
+            .retain(|e| e.pinned || e.project.root.is_dir());
+        if self.projects.len() == before {
+            return false;
+        }
+        if self.selected.is_some() && self.selected().is_none() {
+            self.selected = self.projects.first().map(|e| e.project.root.clone());
+        }
+        true
+    }
+
+    /// Take a project off the list and keep it off until it is added again.
+    /// The list of removed folders is bounded like the list itself, and a
+    /// removal at the bound is refused rather than forget an earlier one:
+    /// what was removed stays removed.
+    pub fn remove(&mut self, root: &Path) -> anyhow::Result<bool> {
+        if !self.projects.iter().any(|e| e.project.root == root) {
+            return Ok(false);
+        }
+        if !self.hidden.iter().any(|h| h == root) {
+            anyhow::ensure!(
+                self.hidden.len() < MAX_PROJECTS,
+                "The list of removed folders is full ({MAX_PROJECTS}); add one of them back before removing another"
+            );
+            self.hidden.push(root.to_path_buf());
+        }
+        self.projects.retain(|e| e.project.root != root);
+        if self.selected.as_deref() == Some(root) {
+            self.selected = self.projects.first().map(|e| e.project.root.clone());
+        }
+        Ok(true)
+    }
+
+    /// Name a project here; an empty name goes back to the folder's.
+    pub fn rename(&mut self, root: &Path, label: &str) -> bool {
+        let Some(entry) = self.projects.iter_mut().find(|e| e.project.root == root) else {
+            return false;
+        };
+        let label = label.trim();
+        let next = (!label.is_empty() && label != entry.project.name())
+            .then(|| label.chars().take(80).collect::<String>());
+        if entry.label == next {
+            return false;
+        }
+        entry.label = next;
+        self.sort_projects();
+        true
+    }
+
+    /// The names more than one listed project shares, so the list can say
+    /// which folder each of those is.
+    pub fn shared_names(&self) -> std::collections::BTreeSet<String> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut shared = std::collections::BTreeSet::new();
+        for entry in &self.projects {
+            let name = entry.name();
+            if !seen.insert(name.clone()) {
+                shared.insert(name);
+            }
+        }
+        shared
     }
 
     pub fn pin(&mut self, project: ProjectRef) -> anyhow::Result<()> {
@@ -143,6 +236,29 @@ impl Catalog {
     }
 }
 
+/// Whether a folder lives under the per-user temporary directory (the
+/// system's `temp_dir`, on macOS `/var/folders/…/T`), where test fixtures
+/// make and drop folders by the hundred: such a folder is listed only when
+/// pinned by hand, never because an agent happened to run in it. `/tmp`
+/// is not that: people put checkouts there on purpose.
+pub fn is_temporary(root: &Path) -> bool {
+    is_temporary_under(root, &std::env::temp_dir())
+}
+
+fn is_temporary_under(root: &Path, temp: &Path) -> bool {
+    // Linux's default temp_dir is a shared scratch directory, not a
+    // per-user fixture root. Never hide every checkout there (or below a
+    // filesystem root accidentally selected as TMPDIR).
+    let shared = temp.parent().is_none()
+        || ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"]
+            .iter()
+            .any(|path| temp == Path::new(path));
+    let private = Path::new("/private").join(temp.strip_prefix("/").unwrap_or(temp));
+    (!shared && (root.starts_with(temp) || root.starts_with(&private)))
+        || root.starts_with("/private/var/folders")
+        || root.starts_with("/var/folders")
+}
+
 pub fn resolve(folder: &Path) -> anyhow::Result<ProjectRef> {
     anyhow::ensure!(folder.is_dir(), "Choose an existing project folder");
     Ok(agentdocker_host::project::discover(folder))
@@ -173,6 +289,125 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn temporary_discovery_filter_keeps_shared_scratch_checkouts() {
+        for temp in ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/"] {
+            assert!(
+                !is_temporary_under(&Path::new(temp).join("checkout"), Path::new(temp)),
+                "{temp}"
+            );
+        }
+        assert!(!is_temporary_under(
+            Path::new("/private/tmp/checkout"),
+            Path::new("/tmp")
+        ));
+        for root in [
+            "/var/folders/ab/user/T/fixture",
+            "/private/var/folders/ab/user/T/fixture",
+        ] {
+            assert!(is_temporary_under(
+                Path::new(root),
+                Path::new("/var/folders/ab/user/T")
+            ));
+        }
+        assert!(is_temporary_under(
+            Path::new("/run/user/1000/tmp/fixture"),
+            Path::new("/run/user/1000/tmp")
+        ));
+        assert!(!is_temporary_under(
+            Path::new("/run/user/1000/tmp-checkout"),
+            Path::new("/run/user/1000/tmp")
+        ));
+        assert!(!is_temporary_under(
+            Path::new("/home/person/project"),
+            Path::new("/run/user/1000/tmp")
+        ));
+    }
+
+    /// A discovered folder that no longer exists leaves the list; a pinned
+    /// one stays, unavailable, and the selection moves off a vanished one.
+    #[test]
+    fn vanished_discovered_folders_leave_the_list_and_pinned_ones_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("here");
+        std::fs::create_dir(&existing).unwrap();
+        let gone = dir.path().join("gone");
+        let pinned_gone = dir.path().join("pinned-gone");
+        let mut catalog = Catalog::default();
+        catalog.remember(ProjectRef::directory(existing.clone()), false);
+        catalog.remember(ProjectRef::directory(gone.clone()), false);
+        catalog.remember(ProjectRef::directory(pinned_gone.clone()), true);
+        catalog.selected = Some(gone.clone());
+        assert!(catalog.forget_missing());
+        let roots: Vec<_> = catalog
+            .projects
+            .iter()
+            .map(|e| e.project.root.clone())
+            .collect();
+        assert_eq!(roots, vec![existing.clone(), pinned_gone.clone()]);
+        assert_eq!(catalog.selected.as_ref(), Some(&existing));
+        assert!(!catalog.forget_missing(), "nothing more to forget");
+    }
+
+    #[test]
+    fn a_removed_project_stays_off_the_list_until_added_again_and_a_name_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = |name: &str| ProjectRef::directory(dir.path().join(name));
+        let mut catalog = Catalog::default();
+        catalog.remember(project("alpha"), false);
+        catalog.remember(project("beta"), false);
+        catalog.selected = Some(project("alpha").root);
+        assert!(catalog.remove(&project("alpha").root).unwrap());
+        assert_eq!(catalog.projects.len(), 1);
+        assert_eq!(catalog.selected, Some(project("beta").root));
+        // Discovery does not bring it back; adding it does.
+        assert!(!catalog.remember(project("alpha"), false));
+        assert_eq!(catalog.projects.len(), 1);
+        assert!(catalog.remember(project("alpha"), true));
+        assert!(catalog.hidden.is_empty());
+        // A chosen name sorts and saves; the folder's name is no label.
+        assert!(catalog.rename(&project("beta").root, "  zed  "));
+        assert_eq!(catalog.projects.last().unwrap().name(), "zed");
+        assert!(catalog.rename(&project("beta").root, "beta"));
+        assert_eq!(catalog.projects[1].label, None);
+        let home = dir.path().join("state");
+        catalog.rename(&project("beta").root, "zed");
+        catalog.remove(&project("alpha").root).unwrap();
+        catalog.save(&home).unwrap();
+        assert_eq!(Catalog::load(&home).unwrap(), catalog);
+        // Two folders called the same are told apart by name.
+        catalog.remember(project("nested/zed"), true);
+        assert_eq!(catalog.shared_names().len(), 1);
+        // The hidden list is bounded like the list itself: at the bound a
+        // removal is refused and the project stays, and nothing removed
+        // earlier comes back.
+        for i in 0..MAX_PROJECTS - 1 {
+            let folder = project(&format!("gone-{i}"));
+            catalog.remember(folder.clone(), false);
+            catalog.remove(&folder.root).unwrap();
+        }
+        assert_eq!(catalog.hidden.len(), MAX_PROJECTS);
+        let one_more = project("one-more");
+        catalog.remember(one_more.clone(), false);
+        assert!(catalog.remove(&one_more.root).is_err());
+        assert!(
+            catalog
+                .projects
+                .iter()
+                .any(|e| e.project.root == one_more.root)
+        );
+        assert!(catalog.hidden.contains(&project("alpha").root));
+        assert!(catalog.hidden.contains(&project("gone-0").root));
+        // Removing one already hidden (listed again by hand) needs no room.
+        catalog.projects.push(Entry {
+            project: project("gone-0"),
+            pinned: false,
+            label: None,
+        });
+        assert!(catalog.remove(&project("gone-0").root).unwrap());
+    }
+
     #[test]
     fn project_name_order_survives_reopening() {
         let dir = tempfile::tempdir().unwrap();

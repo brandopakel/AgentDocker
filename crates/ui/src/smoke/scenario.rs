@@ -15,6 +15,7 @@ pub enum Step {
     Click { id: String },
     Fill { id: String, text: String },
     WaitText { text: String },
+    WaitTextAbsent { text: String },
     WaitControl { id: String, present: bool },
     Focus { id: String },
     WaitFocus { id: String },
@@ -103,11 +104,12 @@ impl Scenario {
                 };
                 Task::done(change(text.clone()))
             }
-            Step::WaitText { text } => {
-                if !self.snapshot.nodes.iter().any(|(_, n)| {
+            Step::WaitText { text } | Step::WaitTextAbsent { text } => {
+                let present = self.snapshot.nodes.iter().any(|(_, n)| {
                     n.value().is_some_and(|v| v.contains(text))
                         || n.label().is_some_and(|v| v.contains(text))
-                }) {
+                });
+                if present != matches!(step, Step::WaitText { .. }) {
                     return Task::none();
                 }
                 Task::none()

@@ -161,8 +161,9 @@ Blue marks selection and primary actions; status always has words. Session
 actions sit beside a wide list and replace a narrow one, with an explicit
 return button. Long content scrolls; focused controls are revealed.
 Socket paths and installation internals live in diagnostics and detailed reports.
-Current sessions are the default; finished runs live in History and unanswered
-questions have a project-scoped Needs input filter. Current rows prioritize
+Current sessions are the default; finished runs sit in the collapsed Earlier
+group under them (`sessions-earlier`) and unanswered questions have a
+project-scoped Needs input filter. Current rows prioritize
 questions, then newest sessions, with ID as a stable tie-breaker. Search includes
 name, runtime, branch and session ID. Filter counts reflect that search.
 Channels, Files in use, Command line and project management live under More, the one Advanced door. Tools shows

@@ -442,7 +442,7 @@ impl App {
             self.shell
                 .catalog
                 .selected()
-                .map(|e| e.project.name())
+                .map(|e| e.name())
                 .unwrap_or_else(|| {
                     if self.shell.catalog.unassigned {
                         "Other sessions"
@@ -463,7 +463,7 @@ impl App {
         let mut heading_row = row![].spacing(10).align_y(Center);
         if in_project && let Some(entry) = self.shell.catalog.selected() {
             heading_row = heading_row.push(monogram(
-                &entry.project.name(),
+                &entry.name(),
                 &entry.project.id().to_string(),
                 30.0,
                 c,
@@ -851,10 +851,12 @@ impl App {
             .push(container(eyebrow("Projects", c)).padding([0, 12]))
             .push(Space::new().height(2));
         let mut projects = column![].spacing(2).width(Fill);
+        let shared = self.shell.catalog.shared_names();
         for entry in &self.shell.catalog.projects {
             let path = entry.project.root.clone();
             let selected = project_page && self.selected_root() == Some(path.as_path());
-            let name = entry.project.name();
+            let name = entry.name();
+            let menu_open = self.shell.project_menu.as_deref() == Some(path.as_path());
             let live = self
                 .agents
                 .iter()
@@ -876,12 +878,29 @@ impl App {
                 hint_text.push_str(&format!(" · {done} finished, not yet viewed"));
             }
             let seed = entry.project.id().to_string();
-            let mut content = row![
-                hint(monogram(&name, &seed, 20.0, c), hint_text, c),
-                text(name.clone()).size(14).width(Fill)
+            // One line each, clipped rather than wrapped or drawn over the
+            // marks beside it. Two folders called the same are told apart
+            // by where they are, in one short line.
+            let mut label = column![
+                text(name.clone())
+                    .size(14)
+                    .wrapping(iced::widget::text::Wrapping::None)
             ]
-            .spacing(6)
-            .align_y(Center);
+            .spacing(1)
+            .width(Fill);
+            if shared.contains(&name) {
+                label = label.push(
+                    text(parent_folder(&path))
+                        .size(12)
+                        .color(c.muted)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                );
+            }
+            let label = container(label).width(Fill).clip(true);
+            let mut content = row![hint(monogram(&name, &seed, 20.0, c), hint_text, c), label]
+                .spacing(6)
+                .width(Fill)
+                .align_y(Center);
             if done > 0 {
                 content = content.push(pill(done.to_string(), c.accent_soft, c.accent_ink, c));
             }
@@ -892,6 +911,26 @@ impl App {
                         .align_y(Center),
                 );
             }
+            // The row's own menu, at the row's right edge: a quiet button
+            // would otherwise take half the row's width as if it were a
+            // row itself.
+            content = content.push(
+                container(custom(
+                    format!("project-menu-{}", path.display()),
+                    format!("Options for {name}"),
+                    icon(
+                        Icon::More,
+                        if menu_open { c.accent_ink } else { c.muted },
+                        12.0,
+                    ),
+                    Some(Message::ProjectMenu(path.clone())),
+                    menu_open,
+                    Kind::Quiet,
+                    [4, 4],
+                ))
+                .width(26.0)
+                .align_x(iced::alignment::Horizontal::Right),
+            );
             projects = projects.push(custom(
                 format!("project-{}", path.display()),
                 format!("{}{}", if entry.pinned { "• " } else { "" }, name),
@@ -901,6 +940,9 @@ impl App {
                 Kind::Quiet,
                 [8, 12],
             ));
+            if menu_open {
+                projects = projects.push(self.project_menu(entry, c));
+            }
         }
         if self
             .agents
@@ -945,6 +987,71 @@ impl App {
             .width(if self.narrow() { 204 } else { 236 })
             .height(Fill)
             .style(move |_| c.surface(c.sidebar, false))
+            .into()
+    }
+
+    /// The menu under a project row: rename, pin, remove. Removing keeps
+    /// the folder off the list until it is added again; nothing on disk
+    /// changes and no session stops.
+    fn project_menu(&self, entry: &crate::catalog::Entry, c: Colors) -> Element<'_, Message> {
+        let path = entry.project.root.clone();
+        let key = path.display().to_string();
+        let mut items = column![].spacing(4).width(Fill);
+        if let Some((_, draft)) = self
+            .shell
+            .project_rename
+            .as_ref()
+            .filter(|(root, _)| root == &path)
+        {
+            items = items.push(
+                row![
+                    input(
+                        format!("project-rename-{key}"),
+                        "Name",
+                        draft,
+                        Message::ProjectRenameDraft,
+                    ),
+                    primary(
+                        format!("project-rename-save-{key}"),
+                        "Save",
+                        Some(Message::ProjectRenameSubmit),
+                    ),
+                ]
+                .spacing(6)
+                .align_y(Center),
+            );
+            items = items.push(small("Empty goes back to the folder's name.", c));
+        } else {
+            items = items.push(
+                row![
+                    action(
+                        format!("project-rename-start-{key}"),
+                        "Rename…",
+                        Some(Message::ProjectRenameStart(path.clone())),
+                        false,
+                    ),
+                    action(
+                        format!("project-pin-{key}"),
+                        if entry.pinned { "Unpin" } else { "Pin" },
+                        Some(Message::ProjectPin(path.clone())),
+                        entry.pinned,
+                    ),
+                    action(
+                        format!("project-remove-{key}"),
+                        "Remove from list",
+                        Some(Message::ProjectRemove(path.clone())),
+                        false,
+                    ),
+                ]
+                .spacing(6)
+                .wrap(),
+            );
+        }
+        items = items.push(small(shorten_home(&path), c));
+        container(items)
+            .padding([8, 10])
+            .width(Fill)
+            .style(move |_| c.surface(c.raised, true))
             .into()
     }
 
@@ -1045,7 +1152,12 @@ impl App {
             for process in self.available_processes() {
                 items.push((
                     dot(c.cyan, 8.0, c),
-                    format!("{} is running here, not connected", process.default_name()),
+                    // The tool, not a process number: nothing else tells
+                    // them apart until one is connected and named.
+                    format!(
+                        "{} is running here, not connected",
+                        super::runtime_label(&process.runtime)
+                    ),
                     action(
                         format!("needs-you-connect-{}", process.pid),
                         "Connect",
@@ -1139,7 +1251,7 @@ impl App {
         use super::sessions::Filter;
         let current = self.session_records(Filter::Current);
         let attention_rows = self.session_records(Filter::NeedsInput);
-        let history = self.session_records(Filter::History);
+        let earlier = self.session_records(Filter::Earlier);
         let available = self.available_processes();
         let filter = self.shell.session_filter;
         let filters = segmented(
@@ -1155,12 +1267,6 @@ impl App {
                     format!("Needs input ({})", attention_rows.len()),
                     Some(Message::SessionFilter(Filter::NeedsInput)),
                     filter == Filter::NeedsInput,
-                ),
-                segment(
-                    "sessions-history",
-                    format!("History ({})", history.len()),
-                    Some(Message::SessionFilter(Filter::History)),
-                    filter == Filter::History,
                 ),
             ],
             c,
@@ -1214,7 +1320,7 @@ impl App {
         let records = match filter {
             Filter::Current => current,
             Filter::NeedsInput => attention_rows,
-            Filter::History => history,
+            Filter::Earlier => Vec::new(),
         };
         let count = records.len()
             + if filter == Filter::Current {
@@ -1222,6 +1328,118 @@ impl App {
             } else {
                 0
             };
+        if !records.is_empty() {
+            panel_col = panel_col.push(panel(self.session_rows(&records, c), c));
+        }
+        if filter == Filter::Current && !available.is_empty() {
+            let mut discovered = column![
+                eyebrow("Running here, not connected", c),
+                note(
+                    "Started outside AgentDocker. Connect one to see what it is doing and message it.",
+                    c
+                )
+            ]
+            .spacing(6);
+            for process in available {
+                discovered = discovered.push(
+                    row![
+                        dot(c.cyan, 8.0, c),
+                        column![
+                            text(super::runtime_label(&process.runtime)).size(14),
+                            small(
+                                process
+                                    .cwd
+                                    .as_ref()
+                                    .map(|cwd| shorten_home(cwd))
+                                    .unwrap_or_else(|| format!("pid {}", process.pid)),
+                                c
+                            )
+                        ]
+                        .spacing(2)
+                        .width(Fill),
+                        action(
+                            format!("adopt-{}", process.pid),
+                            "Connect",
+                            self.connected
+                                .is_ok()
+                                .then_some(Message::Adopt(process.pid)),
+                            false
+                        ),
+                    ]
+                    .spacing(12)
+                    .align_y(Center),
+                );
+            }
+            panel_col = panel_col.push(card(discovered.spacing(10), c));
+        }
+        // A search can match only the Earlier group, which opens below.
+        // Those results must not be paired with a "No matching sessions" card.
+        let earlier_matches = filter == Filter::Current
+            && !earlier.is_empty()
+            && !self.shell.search.trim().is_empty();
+        if count == 0 && !earlier_matches {
+            let (title_text, hint) = if !self.shell.search.is_empty() {
+                ("No matching sessions", "Try another name, tool, or branch.")
+            } else {
+                match filter {
+                    Filter::Current if self.all_projects() => (
+                        "No agents running",
+                        "Start Claude Code or Codex in any folder and it appears here, \
+                         or choose a project on the left and launch one.",
+                    ),
+                    Filter::Current => (
+                        "No agents in this project",
+                        "Press Launch agent, or start Claude Code or Codex in this folder \
+                         and it appears here.",
+                    ),
+                    Filter::NeedsInput => (
+                        "Nothing needs your input",
+                        "When an agent asks you something, it appears here and in Inbox.",
+                    ),
+                    Filter::Earlier => ("No sessions", "Nothing has run here yet."),
+                }
+            };
+            panel_col = panel_col.push(empty(title_text, hint, None, c));
+        }
+        if filter == Filter::Current && !earlier.is_empty() {
+            // Ended sessions are not a tab: one collapsed group under the
+            // current ones, opened by a search that finds something there.
+            let open = self.shell.earlier_open || !self.shell.search.trim().is_empty();
+            let mut group = column![custom(
+                "sessions-earlier",
+                format!("Earlier ({})", earlier.len()),
+                row![
+                    text(if open { "▾" } else { "▸" }).size(11).color(c.muted),
+                    eyebrow(format!("Earlier ({})", earlier.len()), c),
+                ]
+                .spacing(8)
+                .align_y(Center),
+                Some(Message::ToggleEarlier),
+                false,
+                Kind::Quiet,
+                [6, 12],
+            )]
+            .spacing(6);
+            if open {
+                group = group.push(panel(self.session_rows(&earlier, c), c));
+            }
+            panel_col = panel_col.push(group);
+        }
+        if let Some(agent) = selected {
+            let inspector = self.inspector(agent, c);
+            if self.shell.width / self.scale_factor() >= 1120.0 {
+                return row![panel_col, container(inspector).width(320)]
+                    .spacing(20)
+                    .into();
+            }
+            return inspector;
+        }
+        panel_col.into()
+    }
+
+    /// The rows of one list of sessions, with a project eyebrow before each
+    /// project's rows when every project is on view.
+    fn session_rows<'a>(&'a self, records: &[&'a AgentRecord], c: Colors) -> Element<'a, Message> {
         let mut rows = column![].spacing(if self.settings.roomy { 6 } else { 2 });
         let mut previous_project = None;
         for (index, agent) in records.iter().enumerate() {
@@ -1232,7 +1450,15 @@ impl App {
                         agent
                             .project
                             .as_ref()
-                            .map(|p| p.name())
+                            .map(|p| {
+                                self.shell
+                                    .catalog
+                                    .projects
+                                    .iter()
+                                    .find(|entry| entry.project.root == p.root)
+                                    .map(|entry| entry.name())
+                                    .unwrap_or_else(|| p.name())
+                            })
                             .unwrap_or_else(|| "Other sessions".into()),
                         c,
                     ))
@@ -1242,13 +1468,19 @@ impl App {
             }
             let id = agent.id.to_string();
             let activity = self.activity_label(agent);
-            let branch = agent.vcs.as_ref().and_then(|v| v.branch.as_deref());
+            let name = self.display_name(agent);
+            // The branch is in the name already when the record has one;
+            // the line under it says what the session is doing.
+            let branch = agent
+                .vcs
+                .as_ref()
+                .and_then(|v| v.branch.as_deref())
+                .filter(|b| !name.contains(b));
             let meta = format!(
                 "{}{}",
                 branch.map(|b| format!("{b} · ")).unwrap_or_default(),
                 activity
             );
-            let name = self.display_name(agent);
             let spoken = format!("{name}\n{} · {}", agent.spec.runtime, meta);
             let mut lines = column![
                 text(name.clone())
@@ -1289,80 +1521,7 @@ impl App {
                 [if self.settings.roomy { 13 } else { 10 }, 12],
             ));
         }
-        if !records.is_empty() {
-            panel_col = panel_col.push(panel(rows, c));
-        }
-        if filter == Filter::Current && !available.is_empty() {
-            let mut discovered = column![
-                eyebrow("Running here, not connected", c),
-                note(
-                    "Started outside AgentDocker. Connect one to see what it is doing and message it.",
-                    c
-                )
-            ]
-            .spacing(6);
-            for process in available {
-                discovered = discovered.push(
-                    row![
-                        dot(c.cyan, 8.0, c),
-                        column![
-                            text(process.default_name()).size(14),
-                            small(process.runtime.clone(), c)
-                        ]
-                        .spacing(2)
-                        .width(Fill),
-                        action(
-                            format!("adopt-{}", process.pid),
-                            "Connect",
-                            self.connected
-                                .is_ok()
-                                .then_some(Message::Adopt(process.pid)),
-                            false
-                        ),
-                    ]
-                    .spacing(12)
-                    .align_y(Center),
-                );
-            }
-            panel_col = panel_col.push(card(discovered.spacing(10), c));
-        }
-        if count == 0 {
-            let (title_text, hint) = if !self.shell.search.is_empty() {
-                ("No matching sessions", "Try another name, tool, or branch.")
-            } else {
-                match filter {
-                    Filter::Current if self.all_projects() => (
-                        "No agents running",
-                        "Start Claude Code or Codex in any folder and it appears here, \
-                         or choose a project on the left and launch one.",
-                    ),
-                    Filter::Current => (
-                        "No agents in this project",
-                        "Press Launch agent, or start Claude Code or Codex in this folder \
-                         and it appears here.",
-                    ),
-                    Filter::NeedsInput => (
-                        "Nothing needs your input",
-                        "When an agent asks you something, it appears here and in Inbox.",
-                    ),
-                    Filter::History => (
-                        "No finished sessions",
-                        "Completed sessions will appear here.",
-                    ),
-                }
-            };
-            panel_col = panel_col.push(empty(title_text, hint, None, c));
-        }
-        if let Some(agent) = selected {
-            let inspector = self.inspector(agent, c);
-            if self.shell.width / self.scale_factor() >= 1120.0 {
-                return row![panel_col, container(inspector).width(320)]
-                    .spacing(20)
-                    .into();
-            }
-            return inspector;
-        }
-        panel_col.into()
+        rows.into()
     }
 
     fn inspector(&self, agent: &AgentRecord, c: Colors) -> Element<'_, Message> {
@@ -3639,6 +3798,35 @@ fn compact_question(value: &str) -> String {
         preview.push('…');
     }
     preview
+}
+
+/// Where a folder is, short enough for one line: the home folder as `~`,
+/// and a deep path kept to its last two folders, to tell two folders of
+/// one name apart.
+fn parent_folder(path: &std::path::Path) -> String {
+    let Some(parent) = path.parent() else {
+        return path.display().to_string();
+    };
+    let shown = shorten_home(parent);
+    let parts: Vec<&str> = shown.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.len() <= 3 {
+        shown
+    } else {
+        format!("…/{}/{}", parts[parts.len() - 2], parts[parts.len() - 1])
+    }
+}
+
+/// A path with the home folder as `~`.
+fn shorten_home(path: &std::path::Path) -> String {
+    let shown = path.display().to_string();
+    match std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        Some(home) if path.starts_with(&home) => match path.strip_prefix(&home) {
+            Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+            Ok(rest) => format!("~/{}", rest.display()),
+            Err(_) => shown,
+        },
+        _ => shown,
+    }
 }
 
 #[cfg(test)]

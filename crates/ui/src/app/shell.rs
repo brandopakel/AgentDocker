@@ -46,6 +46,12 @@ pub(super) struct State {
     /// Whether the collapsed sidebar groups are open.
     pub collisions_open: bool,
     pub earlier_open: bool,
+    /// Whether the conversations between agents are unfolded.
+    pub peers_open: bool,
+    /// The project row whose menu is open.
+    pub project_menu: Option<PathBuf>,
+    /// The project being renamed, and the name so far.
+    pub project_rename: Option<(PathBuf, String)>,
     /// The conversation open in Inbox: one agent, or every agent at once.
     pub inbox_thread: Option<String>,
     /// In a narrow window Inbox shows either the list or one conversation;
@@ -144,7 +150,20 @@ impl ChannelDraft {
 impl State {
     pub fn load(home: &std::path::Path) -> Self {
         let (catalog, error, save_enabled) = match Catalog::load(home) {
-            Ok(catalog) => (catalog, None, true),
+            Ok(mut catalog) => {
+                // Folders discovered under the temporary directories before
+                // discovery stopped listing them go, and so does any
+                // discovered folder that no longer exists; a pinned one
+                // stays.
+                catalog
+                    .projects
+                    .retain(|e| e.pinned || !crate::catalog::is_temporary(&e.project.root));
+                catalog.forget_missing();
+                if catalog.selected().is_none() {
+                    catalog.selected = None;
+                }
+                (catalog, None, true)
+            }
             Err(error) => (
                 Catalog::default(),
                 Some(format!(
@@ -207,6 +226,17 @@ pub enum Message {
     MessagesSearch(String),
     ToggleCollisions,
     ToggleEarlier,
+    TogglePeers,
+    /// Every conversation the person owes a read is read through its head.
+    MarkAllRead,
+    /// Open or close the menu under a project row.
+    ProjectMenu(PathBuf),
+    ProjectRenameStart(PathBuf),
+    ProjectRenameDraft(String),
+    ProjectRenameSubmit,
+    ProjectPin(PathBuf),
+    /// Take a project off the list, and keep it off until it is added again.
+    ProjectRemove(PathBuf),
     /// The page of the conversation's archive before what is shown.
     EarlierHistory(String),
     /// Unfold or fold one archived message's full text.
@@ -459,9 +489,13 @@ impl App {
                     .iter()
                     .filter_map(|p| p.project.clone())
                     .chain(self.agents.iter().filter_map(|a| a.project.clone()))
+                    // A fixture's folder under the temporary directories is
+                    // not a project the person keeps; only a pin lists it.
+                    .filter(|p| !crate::catalog::is_temporary(&p.root))
                 {
                     self.shell.catalog.remember(project, false);
                 }
+                self.shell.catalog.forget_missing();
                 if before != self.shell.catalog {
                     self.shell.changed();
                 }
@@ -597,7 +631,7 @@ impl App {
                 };
                 let project = agent.project.clone();
                 let root = project.as_ref().map(|p| p.root.clone());
-                if let Some(project) = project {
+                if let Some(project) = project.filter(|p| !crate::catalog::is_temporary(&p.root)) {
                     self.shell.catalog.remember(project, false);
                     if !self
                         .shell
@@ -735,6 +769,84 @@ impl App {
             }
             Message::ToggleCollisions => self.shell.collisions_open = !self.shell.collisions_open,
             Message::ToggleEarlier => self.shell.earlier_open = !self.shell.earlier_open,
+            Message::TogglePeers => self.shell.peers_open = !self.shell.peers_open,
+            Message::MarkAllRead => {
+                if self.connected.is_ok() {
+                    let heads: Vec<(String, u64)> = self
+                        .conversations
+                        .iter()
+                        .filter(|s| s.unread > 0 && self.counts_for_person(s))
+                        .filter_map(|s| {
+                            s.last_seq
+                                .map(|seq| (s.conversation.as_str().to_owned(), seq))
+                        })
+                        .collect();
+                    for (conversation, seq) in heads {
+                        self.send(Cmd::MarkRead(conversation, seq));
+                    }
+                }
+            }
+            Message::ProjectMenu(path) => {
+                let open = self.shell.project_menu.as_ref() == Some(&path);
+                self.shell.project_menu = (!open).then_some(path);
+                self.shell.project_rename = None;
+            }
+            Message::ProjectRenameStart(path) => {
+                let name = self
+                    .shell
+                    .catalog
+                    .projects
+                    .iter()
+                    .find(|e| e.project.root == path)
+                    .map(|e| e.name())
+                    .unwrap_or_default();
+                self.shell.project_rename = Some((path, name));
+            }
+            Message::ProjectRenameDraft(text) => {
+                if let Some((_, draft)) = self.shell.project_rename.as_mut() {
+                    *draft = text.chars().take(80).collect();
+                }
+            }
+            Message::ProjectRenameSubmit => {
+                if let Some((path, name)) = self.shell.project_rename.take()
+                    && self.shell.catalog.rename(&path, &name)
+                {
+                    self.shell.changed();
+                }
+                self.shell.project_menu = None;
+            }
+            Message::ProjectPin(path) => {
+                if let Some(entry) = self
+                    .shell
+                    .catalog
+                    .projects
+                    .iter_mut()
+                    .find(|e| e.project.root == path)
+                {
+                    entry.pinned = !entry.pinned;
+                    self.shell.changed();
+                }
+                self.shell.project_menu = None;
+            }
+            Message::ProjectRemove(path) => {
+                let was_selected = self.shell.catalog.selected.as_ref() == Some(&path);
+                match self.shell.catalog.remove(&path) {
+                    Ok(true) => {
+                        if was_selected {
+                            self.shell.selected = None;
+                            self.reset_session_view();
+                            self.refresh_project_context();
+                        }
+                        self.shell.changed();
+                    }
+                    Ok(false) => {}
+                    // At the bound the project stays on the list and the
+                    // person is told why.
+                    Err(error) => self.say(error.to_string()),
+                }
+                self.shell.project_menu = None;
+                self.shell.project_rename = None;
+            }
             Message::SendSession(id) => {
                 if self.connected.is_ok()
                     && self.agents.iter().any(|a| {
@@ -901,21 +1013,19 @@ impl App {
                 }
             }
             Message::ForgetProject => {
-                let selected = self.shell.catalog.selected.clone();
-                self.shell
-                    .catalog
-                    .projects
-                    .retain(|e| Some(&e.project.root) != selected.as_ref());
-                self.shell.catalog.selected = self
-                    .shell
-                    .catalog
-                    .projects
-                    .first()
-                    .map(|e| e.project.root.clone());
-                self.shell.selected = None;
-                self.reset_session_view();
-                self.shell.changed();
-                self.refresh_project_context();
+                // Off the list, and kept off: discovery brought a forgotten
+                // folder straight back before.
+                if let Some(selected) = self.shell.catalog.selected.clone() {
+                    match self.shell.catalog.remove(&selected) {
+                        Ok(_) => {
+                            self.shell.selected = None;
+                            self.reset_session_view();
+                            self.shell.changed();
+                            self.refresh_project_context();
+                        }
+                        Err(error) => self.say(error.to_string()),
+                    }
+                }
             }
             Message::CatalogSaved(generation, result) => {
                 self.shell.saving = false;
@@ -1682,6 +1792,48 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    /// The menu under a project row renames the entry here, pins it, or
+    /// takes it off the list for good; nothing else moves.
+    #[test]
+    fn a_project_row_menu_renames_pins_and_removes_the_entry() {
+        let (mut app, _requests, _messages) = app();
+        let dir = tempfile::tempdir().unwrap();
+        let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
+        let beta = agentdocker_core::ProjectRef::directory(dir.path().join("beta"));
+        app.shell.catalog.remember(alpha.clone(), true);
+        app.shell.catalog.remember(beta.clone(), false);
+        let root = alpha.root.clone();
+        let _ = app.update(Message::ProjectMenu(root.clone()));
+        assert_eq!(app.shell.project_menu.as_ref(), Some(&root));
+        let _ = app.update(Message::ProjectRenameStart(root.clone()));
+        assert_eq!(
+            app.shell.project_rename,
+            Some((root.clone(), "alpha".to_owned()))
+        );
+        let _ = app.update(Message::ProjectRenameDraft("Alpha project".into()));
+        let _ = app.update(Message::ProjectRenameSubmit);
+        assert_eq!(app.shell.catalog.projects[0].name(), "Alpha project");
+        assert!(app.shell.project_menu.is_none(), "saving closes the menu");
+        // Opening the menu again and renaming to nothing goes back to the folder.
+        let _ = app.update(Message::ProjectMenu(root.clone()));
+        let _ = app.update(Message::ProjectRenameStart(root.clone()));
+        assert_eq!(
+            app.shell.project_rename,
+            Some((root.clone(), "Alpha project".to_owned()))
+        );
+        let _ = app.update(Message::ProjectRenameDraft(String::new()));
+        let _ = app.update(Message::ProjectRenameSubmit);
+        assert_eq!(app.shell.catalog.projects[0].name(), "alpha");
+        let _ = app.update(Message::ProjectPin(beta.root.clone()));
+        assert!(app.shell.catalog.projects[1].pinned);
+        let _ = app.update(Message::ProjectRemove(beta.root.clone()));
+        assert_eq!(app.shell.catalog.projects.len(), 1);
+        assert!(
+            !app.shell.catalog.remember(beta, false),
+            "kept off the list"
+        );
     }
 
     #[test]
