@@ -159,8 +159,7 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
                 return stream_attach(
                     &daemon,
                     &agent,
-                    cols,
-                    rows,
+                    cols.zip(rows),
                     frame.handover_retry,
                     &mut reader,
                     &mut writer,
@@ -352,8 +351,7 @@ async fn stream_events(
 async fn stream_attach(
     daemon: &Arc<Daemon>,
     agent: &str,
-    cols: Option<u16>,
-    rows: Option<u16>,
+    size: Option<(u16, u16)>,
     handover_retry: bool,
     reader: &mut Reader,
     writer: &mut OwnedWriteHalf,
@@ -372,7 +370,7 @@ async fn stream_attach(
         )
         .await;
     };
-    if let (Some(cols), Some(rows)) = (cols, rows) {
+    if let Some((cols, rows)) = size {
         let _admitted = match daemon.admit_background() {
             Ok(guard) => guard,
             Err(response) => {
