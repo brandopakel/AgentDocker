@@ -143,5 +143,54 @@
     "The launch descriptor is /bin/sh, outside any managed installation, so the controller's installation pin is not exercised here; it is unit-tested (pin_controllers under the fence) and needs an installed trial.",
     "The launched controller ends on its own after two seconds; a controller that starts and never binds (bind grace, SIGTERM, SIGKILL) is unit-tested, not trialled here.",
     "Replay retention limits and Windows are not covered; provider-side acceptance (live Claude/Codex conversations across a switch) is codex's."
-  ]
+  ],
+  "review_rerun": {
+    "note": "After the review fixes (deferred recovery takes its sequence numbers at the flush; Terminate revalidated under the guard; the successor pins its controllers before it answers serving; the trial ends its own processes and fails on any survivor), the same trial on the rebuilt release binaries.",
+    "release_binaries": {
+      "agentd": "255ec574ab659bb6508c17b6d352e603763979aed63f1e05c5fecdc212b842b9",
+      "agentdocker": "8740365ae0c72e0ec445a39279f8aaf942d5cef24f3f1ad71c71e0ac7df347a5"
+    },
+    "reloads": 20,
+    "controller_episode": {
+      "attempts": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "launched_pids": [
+        37463,
+        38063,
+        38982,
+        40646,
+        42684
+      ],
+      "handovers_during": 20
+    },
+    "survivors": [],
+    "sends": {
+      "delivered": 900,
+      "errors": []
+    },
+    "launches": {
+      "finished": 432,
+      "errors": []
+    },
+    "log_lines": {
+      "logger-a": 2000194,
+      "logger-b": 2000696
+    },
+    "daemon_log_warnings": {
+      "agentd::supervisor: exit not recorded durably; the owner's exit report is kept": 5,
+      "agentd::daemon::restore: recovered exit not durable; owner report kept without acknowledgement": 5
+    },
+    "warnings_note": "Ten fenced-skip warnings on short agents' exits that landed during an offer; each exit was recovered after the acceptance, as the launches check requires (every launched agent reached a durable end).",
+    "artifacts": {
+      "result": {
+        "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/reload-acc20b/result.json",
+        "sha256": "2ed6517c9ece622e7d6acfcd3caf14afe14f38f5a7e03f8700a2a402214eb84f"
+      }
+    }
+  }
 }

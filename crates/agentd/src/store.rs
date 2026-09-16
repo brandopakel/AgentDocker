@@ -742,35 +742,66 @@ impl Store {
         let rows: Vec<(String, String)> = agents
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<std::result::Result<_, _>>()?;
-        let mut queued = conn.prepare("SELECT json FROM inbox WHERE agent = ?1")?;
         for (id, json) in rows {
-            let messages: Vec<MessageId> = queued
-                .query_map(params![id], |row| row.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-                .into_iter()
-                .filter_map(|json| serde_json::from_str::<Envelope>(&json).ok())
-                .filter(|envelope| offered(envelope))
-                .map(|envelope| envelope.id)
-                .collect();
-            if messages.is_empty() {
-                continue;
-            }
             let mut record: AgentRecord = match serde_json::from_str(&json) {
                 Ok(record) => record,
                 Err(_) => continue,
             };
-            for message in messages {
-                record.legacy_offers.entry(message.clone()).or_insert(now);
-                if let Some(binding) = record.input_binding.as_mut()
-                    && !binding.uncertain.contains(&message)
-                {
-                    binding.uncertain.push(message);
-                }
+            if Self::offer_queued_to(conn, &mut record, &offered, now)? {
+                conn.execute(
+                    "UPDATE agents SET json = ?1 WHERE id = ?2",
+                    params![serde_json::to_string(&record)?, id],
+                )?;
             }
-            conn.execute(
-                "UPDATE agents SET json = ?1 WHERE id = ?2",
-                params![serde_json::to_string(&record)?, id],
-            )?;
+        }
+        Ok(())
+    }
+
+    /// Mark one record's queued messages that `offered` picks as offered,
+    /// in the record only; whether anything changed.
+    fn offer_queued_to(
+        conn: &Connection,
+        record: &mut AgentRecord,
+        offered: &impl Fn(&Envelope) -> bool,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let mut queued = conn.prepare("SELECT json FROM inbox WHERE agent = ?1")?;
+        let messages: Vec<MessageId> = queued
+            .query_map(params![record.id.as_str()], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|json| serde_json::from_str::<Envelope>(&json).ok())
+            .filter(|envelope| offered(envelope))
+            .map(|envelope| envelope.id)
+            .collect();
+        if messages.is_empty() {
+            return Ok(false);
+        }
+        for message in messages {
+            record.legacy_offers.entry(message.clone()).or_insert(now);
+            if let Some(binding) = record.input_binding.as_mut()
+                && !binding.uncertain.contains(&message)
+            {
+                binding.uncertain.push(message);
+            }
+        }
+        Ok(true)
+    }
+
+    /// What the pending data migrations would make of one record, in
+    /// memory only: a successor reads its registry through this before it
+    /// accepts, so the rows it serves and later writes back already carry
+    /// the offers the acceptance records.
+    fn project_pending(&self, record: &mut AgentRecord) -> Result<()> {
+        let Some(found) = self.pending_from.get() else {
+            return Ok(());
+        };
+        let now = Utc::now();
+        if found < 19 {
+            Self::offer_queued_to(&self.conn, record, &|_| true, now)?;
+        }
+        if found < 20 {
+            Self::offer_queued_to(&self.conn, record, &|e| e.reply_to.is_some(), now)?;
         }
         Ok(())
     }
@@ -819,7 +850,13 @@ impl Store {
             .conn
             .prepare("SELECT json FROM agents ORDER BY created_at, id")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+        let mut records: Vec<AgentRecord> = rows
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect::<Result<_>>()?;
+        for record in &mut records {
+            self.project_pending(record)?;
+        }
+        Ok(records)
     }
 
     // ----- leases ---------------------------------------------------------
@@ -2064,7 +2101,26 @@ mod tests {
             settled_at: None,
         };
         let pending = Store::open_pending(&path).unwrap();
-        assert_eq!(offers(&pending), 0, "pending: the row is as v18 wrote it");
+        let stored = |store: &Store| -> usize {
+            let json: String = store
+                .conn
+                .query_row(
+                    "SELECT json FROM agents WHERE id = ?1",
+                    [record.id.as_str()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            serde_json::from_str::<AgentRecord>(&json)
+                .unwrap()
+                .legacy_offers
+                .len()
+        };
+        assert_eq!(stored(&pending), 0, "pending: the row is as v18 wrote it");
+        assert_eq!(
+            offers(&pending),
+            1,
+            "but the registry it loads already reads the queue as offered"
+        );
         assert!(
             pending
                 .offer_transfer(
@@ -2090,7 +2146,7 @@ mod tests {
                 )
                 .unwrap()
         );
-        assert_eq!(offers(&pending), 0, "aborted: still as v18 wrote it");
+        assert_eq!(stored(&pending), 0, "aborted: still as v18 wrote it");
         drop(pending);
         let pending = Store::open_pending(&path).unwrap();
         assert!(
@@ -2117,11 +2173,13 @@ mod tests {
                 )
                 .unwrap()
         );
-        assert_eq!(offers(&pending), 1, "accepted: the queued row is an offer");
+        assert_eq!(stored(&pending), 1, "accepted: the queued row is an offer");
+        assert_eq!(offers(&pending), 1);
         assert_eq!(pending.recorded_schema_version().unwrap(), SCHEMA_VERSION);
         drop(pending);
         let reopened = Store::open(&path).unwrap();
         assert_eq!(offers(&reopened), 1, "and once only");
+        assert_eq!(stored(&reopened), 1);
     }
 
     #[test]

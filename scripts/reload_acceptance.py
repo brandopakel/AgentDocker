@@ -70,6 +70,11 @@ def trial(args):
             except (OSError, AssertionError):
                 assert daemon.poll() is None and time.monotonic() < deadline, "daemon did not start"
                 time.sleep(.05)
+        # The trial's own processes, ended in `finally` whatever happens
+        # above, and counted: a survivor fails the trial rather than the
+        # trial passing over it.
+        provider_process = None
+        controller_process = None
         try:
             def run(name, script, tty=False):
                 r = rpc(sock, {"op": "run", "spec": {"name": name, "workdir": str(work), "tty": tty,
@@ -108,6 +113,7 @@ def trial(args):
             # successor, never restarted or doubled, until it is exhausted.
             provider_process = subprocess.Popen(["sleep", "600"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             controller_process = subprocess.Popen(["sleep", "600"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            result["trial_processes"] = {"provider": provider_process.pid, "controller": controller_process.pid}
             provider = rpc(sock, {"op": "register", "spec": {"name": "provider", "workdir": str(work), "labels": {"session_id": "trial-thread"}},
                                   "pid": provider_process.pid, "session": None})["agent"]
             # The daemon knows a process's birth exactly; a throwaway record
@@ -327,8 +333,9 @@ def trial(args):
             assert binding["restart"]["attempts"] == 5 and not binding["restart"].get("launched"), binding
             result["scenarios"].append(f"a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts {attempts}, {sum(launches[0][0] < seq < launches[-1][0] for seq in accepted)} handovers accepted in between")
             result["controller_episode"] = {"attempts": attempts, "launched_pids": launched_pids, "handovers_during": sum(launches[0][0] < seq < launches[-1][0] for seq in accepted)}
-            provider_process.kill()
-            provider_process.wait()
+            # Every launched controller has ended on its own by now.
+            for pid in launched_pids:
+                assert retired(pid), f"launched controller {pid} is still running"
 
             result["passed"] = True
         except Exception:  # noqa: BLE001 - the record must say what failed
@@ -346,6 +353,28 @@ def trial(args):
                 daemon.kill()
             daemon.wait(timeout=10)
             log.close()
+            # The trial's own processes, and anything the daemons left:
+            # a survivor is recorded and fails the trial.
+            survivors = []
+            for name, process in (("provider", provider_process), ("controller", controller_process)):
+                if process is None:
+                    continue
+                if process.poll() is None:
+                    process.kill()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        survivors.append(f"{name} {process.pid}")
+            for pid in result.get("daemon_pids", []) + result.get("controller_episode", {}).get("launched_pids", []):
+                try:
+                    os.kill(pid, 0)
+                except (ProcessLookupError, PermissionError):
+                    continue
+                survivors.append(f"pid {pid}")
+            result["survivors"] = survivors
+            if survivors:
+                result["passed"] = False
+                result["error"] = (result.get("error") or "") + f"\nprocesses survived the trial: {survivors}"
             # Every warning or error any daemon in the chain logged, counted
             # by message with agent ids removed, so the record carries what
             # the daemons said and not only what the clients saw.

@@ -145,7 +145,11 @@ tokio::task_local! {
 }
 
 /// A recovery write held back until this process is allowed to write.
-type DeferredWrite = Box<dyn FnOnce(&Store) -> anyhow::Result<()> + Send>;
+/// A recovery write a fenced open held back for the acceptance. It takes
+/// its event sequence numbers when it runs, from the number given, and
+/// says how many it used: assigned at open they would sit below the
+/// acceptance's, a hole in the durable head if anything stopped between.
+type DeferredWrite = Box<dyn FnOnce(&Store, u64) -> anyhow::Result<u64> + Send>;
 
 /// Who may write the database from this process.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1051,16 +1055,18 @@ impl Daemon {
                     },
                     now,
                 );
-                event.seq = next_seq;
                 if fenced {
                     let record = record.clone();
-                    deferred.push(Box::new(move |store| {
-                        store.agent_transition(&record, &event)
+                    deferred.push(Box::new(move |store, seq| {
+                        event.seq = seq;
+                        store.agent_transition(&record, &event)?;
+                        Ok(1)
                     }));
                 } else {
+                    event.seq = next_seq;
                     store.agent_transition(&record, &event)?;
+                    next_seq += 1;
                 }
-                next_seq += 1;
             }
             let stored = registry.get_mut(&record.id).expect("record was validated");
             *stored = record;
@@ -1088,16 +1094,18 @@ impl Daemon {
                     }
                 };
                 let mut event = Event::new(kind, now);
-                event.seq = next_seq;
                 if fenced {
                     let id = lease.id.clone();
-                    deferred.push(Box::new(move |store| {
-                        store.delete_lease_with_event(&id, &event)
+                    deferred.push(Box::new(move |store, seq| {
+                        event.seq = seq;
+                        store.delete_lease_with_event(&id, &event)?;
+                        Ok(1)
                     }));
                 } else {
+                    event.seq = next_seq;
                     store.delete_lease_with_event(&lease.id, &event)?;
+                    next_seq += 1;
                 }
-                next_seq += 1;
                 continue;
             }
             if lease.resource.kind() == "file" {
@@ -1112,7 +1120,10 @@ impl Daemon {
                     ResourceKey::new(format!("path:{}", project::try_canonical(&path)?.display()));
                 if fenced {
                     let lease = lease.clone();
-                    deferred.push(Box::new(move |store| store.upsert_lease(&lease)));
+                    deferred.push(Box::new(move |store, _| {
+                        store.upsert_lease(&lease)?;
+                        Ok(0)
+                    }));
                 } else {
                     store.upsert_lease(&lease)?;
                 }
@@ -1163,28 +1174,32 @@ impl Daemon {
             .map(|question| question.id.clone())
             .collect();
         expired.sort();
-        let expiration_events: Vec<_> = expired
+        let mut expiration_events: Vec<_> = expired
             .iter()
-            .enumerate()
-            .map(|(index, question)| {
-                let mut event = Event::new(
+            .map(|question| {
+                Event::new(
                     EventKind::QuestionClosed {
                         question: question.clone(),
                         answer: None,
                     },
                     now,
-                );
-                event.seq = next_seq + index as u64;
-                event
+                )
             })
             .collect();
-        next_seq += expiration_events.len() as u64;
         if fenced {
             let expired = expired.clone();
-            deferred.push(Box::new(move |store| {
-                store.close_questions(&expired, &expiration_events)
+            deferred.push(Box::new(move |store, seq| {
+                for (index, event) in expiration_events.iter_mut().enumerate() {
+                    event.seq = seq + index as u64;
+                }
+                store.close_questions(&expired, &expiration_events)?;
+                Ok(expiration_events.len() as u64)
             }));
         } else {
+            for (index, event) in expiration_events.iter_mut().enumerate() {
+                event.seq = next_seq + index as u64;
+            }
+            next_seq += expiration_events.len() as u64;
             store.close_questions(&expired, &expiration_events)?;
         }
         for id in expired {

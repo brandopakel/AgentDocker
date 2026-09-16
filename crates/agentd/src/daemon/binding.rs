@@ -185,6 +185,20 @@ impl Daemon {
                     });
                 }
                 ControllerStep::Terminate { kill: hard } => {
+                    // Under the guard, and only if the binding is still the
+                    // one decided on: a bind that landed since made this
+                    // process the controller, and a fence since makes it
+                    // the successor's to judge.
+                    let state = lock(&self.state);
+                    if state.fenced()
+                        || state
+                            .registry
+                            .get(&id)
+                            .and_then(|r| r.input_binding.as_ref())
+                            != Some(&binding)
+                    {
+                        continue;
+                    }
                     if let Some(launched) = &binding.restart.launched {
                         warn!(agent = %id, pid = launched.pid, "launched controller did not bind in time");
                         signal(
@@ -2038,7 +2052,31 @@ mod tests {
             .launched
             .expect("launched once authority is back");
         assert!(is_running(&launched));
-        signal(&launched, Signal::SIGKILL);
+        // Its bind grace runs out while a new offer is up: a fenced tick
+        // signals nothing either, since the successor is the one to judge;
+        // once authority is back the tick tells it to stop.
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&receiver.id).unwrap();
+            let binding = record.input_binding.as_mut().unwrap();
+            binding.restart.launched_at = Some(
+                Utc::now() - agentdocker_core::CONTROLLER_BIND_GRACE - chrono::Duration::seconds(1),
+            );
+        }
+        daemon.offer_transfer(1).unwrap();
+        daemon.tend_controllers();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(is_running(&launched), "a fenced tick signals nobody");
+        assert!(daemon.abort_transfer("cleanup"));
+        daemon.tend_controllers();
+        let gone = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while is_running(&launched) && std::time::Instant::now() < gone {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            !is_running(&launched),
+            "told to stop once authority is back"
+        );
     }
 
     /// A delivery read records the offer it makes, so it is a mutation: a

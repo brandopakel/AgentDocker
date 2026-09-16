@@ -188,8 +188,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         None => Daemon::open(home, socket)?,
     });
     daemon.reload_policies();
-    // A successor is fenced here and takes no pins; it takes them from
-    // its first controller tick once it serves.
+    // A successor is fenced here and takes no pins; it takes them right
+    // after accepting, before the predecessor hears it serves.
     daemon.pin_controllers();
     // Bind before any restored command can execute. Poll serving alongside
     // restoration so an agent's first hook/MCP request can receive a reply.
@@ -220,6 +220,10 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 );
                 anyhow::bail!("take-over refused: {reason}");
             }
+            // The bindings' releases are held before the predecessor is told
+            // and lets go of its own pins: a retained version with a dormant
+            // or restarting controller must never be unpinned in between.
+            daemon.pin_controllers();
             info!(
                 transfer = %handover.handover.transfer,
                 "took over from the predecessor; serving on its listener"

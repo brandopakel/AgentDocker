@@ -606,13 +606,25 @@ impl Daemon {
                 state.next_seq += 1;
                 let _ = state.events.send(event);
                 // Authority is ours: run the recovery a fenced open held
-                // back, in the order it was decided.
+                // back, in the order it was decided, each taking its
+                // sequence numbers above the acceptance's now, so the
+                // durable head grows without a hole. Nobody subscribes to
+                // this daemon before it serves, and a stop in between loses
+                // nothing: the same recovery is derived again at the next
+                // open.
                 state.coordination = Coordination::Serving;
                 let deferred = std::mem::take(&mut state.deferred_recovery);
                 for write in deferred {
-                    if state.persist("deferred recovery", write) == Persisted::Failed {
+                    let seq = state.next_seq;
+                    let mut used = 0;
+                    if state.persist("deferred recovery", |store| {
+                        used = write(store, seq)?;
+                        Ok(())
+                    }) == Persisted::Failed
+                    {
                         return Err("deferred recovery write failed; storage disabled".into());
                     }
+                    state.next_seq += used;
                 }
                 Ok(())
             }
@@ -1429,17 +1441,29 @@ mod fence_tests {
             "deferred recovery ran"
         );
         let after = successor.recent_events(10);
+        let accepted = after
+            .iter()
+            .find(|e| matches!(e.kind, EventKind::DaemonTransferAccepted { .. }))
+            .expect("acceptance recorded");
+        let released = after
+            .iter()
+            .find(|e| matches!(e.kind, EventKind::LeaseReleased { .. }))
+            .expect("deferred release recorded");
+        // The acceptance is the first write and the held-back recovery
+        // follows it: no sequence number below the head is missing, and
+        // memory's next number is the head's successor.
+        assert_eq!(accepted.seq, events_before + 1);
+        assert_eq!(released.seq, events_before + 2);
+        let seqs: Vec<u64> = after.iter().map(|e| e.seq).collect();
         assert!(
-            after
-                .iter()
-                .any(|e| matches!(e.kind, EventKind::DaemonTransferAccepted { .. }))
+            seqs.windows(2).all(|w| w[1] == w[0] + 1),
+            "contiguous: {seqs:?}"
         );
-        assert!(
-            after
-                .iter()
-                .any(|e| matches!(e.kind, EventKind::LeaseReleased { .. }))
-        );
-        assert!(after.iter().map(|e| e.seq).max().unwrap() > events_before);
+        // One guard at a time: two in one expression self-deadlock.
+        {
+            let state = lock(&successor.state);
+            assert_eq!(state.next_seq, state.store.max_event_seq().unwrap() + 1);
+        }
         register(&successor, "after-accept").await;
     }
 
