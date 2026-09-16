@@ -101,6 +101,12 @@ mod tests {
         );
         assert_eq!(ledger.record().completed.back().unwrap().receipt, accepted);
         assert!(ledger.prepare_steering(&next, "turn").is_err());
+        let third = message();
+        let third_input = ledger.prepare_steering(&third, "turn").unwrap();
+        let prepared = std::fs::read(&path).unwrap();
+        assert!(ledger.accept(&third_input, accepted.clone()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), prepared);
+        ledger.reject_steering().unwrap();
         ledger.finish("turn").unwrap();
         assert_eq!(ledger.record().completed.len(), 2);
     }
@@ -826,9 +832,14 @@ impl Record {
             self.completed.len() <= RETAINED_RECEIPTS,
             "too many retained Codex receipts"
         );
+        let mut input_receipts = std::collections::HashSet::new();
         for completed in &self.completed {
             ensure!(valid_id(&completed.message), "invalid retained message ID");
             self.validate_receipt(&completed.receipt)?;
+            ensure!(
+                input_receipts.insert((&completed.receipt.turn, &completed.receipt.item)),
+                "multiple inputs share a provider receipt"
+            );
         }
         ensure!(
             self.reviews.len() <= review::MAX_QUESTIONS
@@ -934,6 +945,10 @@ impl Record {
             );
             if let Some(receipt) = &attempt.receipt {
                 self.validate_receipt(receipt)?;
+                ensure!(
+                    input_receipts.insert((&receipt.turn, &receipt.item)),
+                    "multiple inputs share a provider receipt"
+                );
             }
             ensure!(
                 !self
