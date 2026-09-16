@@ -109,8 +109,11 @@ are draft; merge and installation wait for a corrected live-activity decision
 and actual long-busy, idle-wake and recovery acceptance. Earlier short-busy
 passes do not close this failure. Live diagnostic trial 27 traced it to the
 sidecar reporting an active turn as interrupted; source removes that inferred
-idle deadline and adds a 65-second direct-user busy regression, awaiting
-validation. The existing
+idle deadline. Corrected `5aeb651` passed the full967-Rust/70-Python gate and
+actual65-second direct-user busy, idle/draft/FIFO and rate-limit acceptance.
+Corrected recovery34 at `bc0ea04` passed real-supervisor recovery after separate
+harness cleanup/race failures were retained and fixed. Final review/CI and
+installation remain. The existing
 [native queue evidence](verification/2026-09-15-native-codex-queue.json) retains it.
 
 The first queue correction is in source: schema 10 retains addressed messages while subscribed and rejects count/byte pressure without evicting accepted work. The full standard gate and actual-daemon reconnect/crash, mixed-sender, upgrade/downgrade and atomic-fanout trials passed. This closes neither provider acceptance nor idle wake; both still require the adapters and actual-provider trials above.

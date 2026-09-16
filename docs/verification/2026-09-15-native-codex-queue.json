@@ -1558,7 +1558,7 @@
     "source_note": "Trial sourceb2c3938 merges retention evidence from main; Rust and native driver unchanged from compiledbb1e50c."
   },
   "long_busy_blocker_5f72f37": {
-    "status": "65-second-regression-passed-recovery-repeat-pending",
+    "status": "fixed-and-bounded-acceptance-passed-awaiting-final-review-ci-installation",
     "merge_and_installation": "PRs 148 and 149 are draft; do not merge/install until fixed and actual acceptance passes.",
     "trials": [
       {
@@ -1816,7 +1816,7 @@
     ],
     "follow_up_diagnostic": "A read-only sidecar over only the copied rollout returned notLoaded metadata and an empty turn page. The private profile/database had already been retired, so this reconstruction does not reproduce the live sidecar response. Capture live responses in the next isolated trial; do not infer an idle session from absent history.",
     "correction": "Remove the speculative idle deadline while the exact native queue entry remains verified. Keep one outstanding offer, exact receipts, generation checks, provider blocks and missing-entry/receipt reconciliation. Add tracked long-busy scenario with 65-second direct user turn, ordered retained daemon inputs, no false receipt/pause, FIFO consumption and receiver crash recovery.",
-    "correction_validation": "Fixed source5aeb651 passed actual65.054-second direct-user turn, queued human/peer retention without false receipt/pause, FIFO consumption, idle wake, preserved draft and receiver crash recovery. Separate rate-limit trial passed. Recovery29 cleanup failed and its inaccurate raw pass is not accepted; repeat with corrected driver required."
+    "correction_validation": "5aeb651 passed full967-Rust/70-Python gate and actual65-second long-busy, idle/draft/FIFO and receiver-crash acceptance. Rate-limit hold/resume passed. Corrected recovery34 atbc0ea04 passed lost enqueue reply reconciliation to the original native queue ID and missing-entry/receipt retention without replay under real daemon supervision. Cleanup29 and restart-race31 remain failed; injected late-error32 correctly failed rather than falsely passing."
   },
   "combined_gate_5aeb651": {
     "source_commit": "5aeb651b4eabee88703da9c839e33e30ebf9e476",
@@ -2177,5 +2177,56 @@
       "process_exit_code": 1
     }
   ],
-  "recovery_harness_correction": "Fault injection now suspends the private daemon, acquires the stopped receiver owner.lock before changing its private ledger, then resumes the daemon as the sole restart owner. The lost enqueue reply must recover the original native queue ID. No manual replacement competes with supervision."
+  "recovery_harness_correction": "Fault injection now suspends the private daemon, acquires the stopped receiver owner.lock before changing its private ledger, then resumes the daemon as the sole restart owner. The lost enqueue reply must recover the original native queue ID. No manual replacement competes with supervision.",
+  "supervised_recovery_bc0ea04": {
+    "started_at": "2026-09-16T00:10:52.964180+00:00",
+    "scenario": "recovery",
+    "result": "passed",
+    "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+    "driver_sha256": "37dbbb14f23820d23fa43fc705ce97c16d33633059a4c648e6ebf862bb4391b5",
+    "source": {
+      "commit": "bc0ea04c4fb21a40168b8236ee845ee571670f27",
+      "dirty": false,
+      "rust_and_driver_sha256": "de3d42c52bda298edffd30db0bf071741251b4c016c0a50b9cd134686c5ce1e6"
+    },
+    "provider_version": "codex-cli 0.154.0",
+    "cli_sha256": "880355fa5b878874270cef00ea0eb93f1578d846a5fbb1de5c4792098651e574",
+    "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+    "pid": 9236,
+    "thread": "01a0a78d-57fb-7443-99a9-92b8a1bb62e1",
+    "agent": "650578c8c92c4df1b1734edad949ce35",
+    "automatic_hook_bootstrap": true,
+    "idle_wake_seconds": 7.666451958997641,
+    "lost_queue_reply_recovered_without_resubmission": true,
+    "cross_process_receipt": {
+      "thread": "01a0a78d-57fb-7443-99a9-92b8a1bb62e1",
+      "turn": "01a0a78d-7f08-7f52-bfb5-52a71c4fd0e0",
+      "item": "01a0a78d-7f18-71c2-964b-247212e94504"
+    },
+    "no_conversation_resume": true,
+    "daemon_receipt": {
+      "messages": [
+        "b66fba6c76784591"
+      ],
+      "receipt": {
+        "provider": "codex",
+        "thread": "01a0a78d-57fb-7443-99a9-92b8a1bb62e1",
+        "turn": "01a0a78d-cd32-7710-bd5e-c1210f5a6d58",
+        "item": "01a0a78d-cd3d-7fe0-8233-9824ebff2e9c"
+      }
+    },
+    "completed_receipts": 4,
+    "automatic_receiver_restart_no_replay": true,
+    "unconfirmed_attempt_paused_without_resubmission": true,
+    "same_live_tui": true,
+    "draft_preserved": true,
+    "busy_order_preserved": true,
+    "model_requests": 7,
+    "agentdocker_integration": true,
+    "raw_result_sha256": "785d59dd7f7948d3ab9d367347d93455eed7485f44119f64045fe3bc4601626f",
+    "artifact_path": "/private/tmp/agentdocker-native-fixed-recovery34-2026-09-15/result.json",
+    "artifact_sha256": "f0e995d7ec1b80c0dd52f3abbc9d66cc75872e483ede8e1c7d4d520c32b29627",
+    "binary_source_commit": "5aeb651b4eabee88703da9c839e33e30ebf9e476",
+    "source_note": "bc0ea04 adds only acceptance-driver/docs corrections after the5aeb651 production fix; CLI/daemon hashes match the fully gated release."
+  }
 }

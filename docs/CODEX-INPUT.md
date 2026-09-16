@@ -92,7 +92,11 @@ after a process-group signal error. A deliberate late cleanup exception then
 correctly failed with exit 1. The next recovery repeat exposed the fixture
 competing with automatic receiver restart; fault injection now takes the
 receiver lock and leaves replacement solely to the daemon. PRs #148/#149 stay
-draft pending the corrected recovery repeat, final review/CI and installation. Trial 25 was a
+draft while the final evidence/review is collected. Corrected recovery34 at
+`bc0ea04` passed both lost-enqueue-reply reconciliation to the original native
+queue ID and uncertain-input retention without resubmission, using the real
+daemon supervisor. The long-busy defect is fixed and has bounded acceptance;
+final CI/review and installed-session verification still gate delivery. Trial 25 was a
 separate fixture input failure; trial 26 is the application defect. Both are
 retained in the [source-specific evidence](verification/2026-09-15-native-codex-queue.json).
 Use the existing driver's `--scenario long-busy` to hold a direct user turn for
