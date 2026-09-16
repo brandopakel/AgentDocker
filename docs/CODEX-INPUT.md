@@ -417,7 +417,7 @@ receipt-history and provider-queue scans now have a one-minute total bound.
 The receiver flags document their verified identity/path inputs. The fixture
 serializes bootstrap/question claims and response numbering, including auxiliary
 requests. The preceding `153fad3` integration gate passed 965 Rust tests (six
-skipped),70 Python checks and release packaging; the corrected `bb1e50c` source then passed 967 Rust tests (six skipped),70 Python
+skipped), 70 Python checks and release packaging; the corrected `bb1e50c` source then passed 967 Rust tests (six skipped), 70 Python
 checks and the same full gate. The final release-TUI legacy-reply trial at
 `b2c3938` then passed idle wake, preserved drafts, mixed-origin FIFO, automatic
 receiver restart and exact legacy human-answer consumption without another turn
