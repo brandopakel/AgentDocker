@@ -543,5 +543,73 @@
       "Callbacks from rendered controls do not establish physical keyboard, screen-reader or IME acceptance.",
       "Production installation was not changed by this trial."
     ]
+  },
+  "ui_final_review_2026_09_16": {
+    "source_commit": "2a51d13eb9761bbf1006a8ec52150a3f32b6d377",
+    "source_input_sha256": "c89ea38d52e6e94938ec843e5482b7b017e16ad969e9de1cee06b71e39521c80",
+    "clean_source": true,
+    "source_and_binary_hashes_unchanged_after_trial": true,
+    "binary_sha256": {
+      "agentd": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65",
+      "agentdocker": "4257bc3b06dedfe34462a200dcde72c183468259e94de8ff18db14937b09daeb",
+      "agentdocker-ui": "ab69d4d165bcf142fbc7abfce56f94f78a2093ca21fe7e2a36a728aab9c31c12"
+    },
+    "fixes": [
+      "Interpreter-launched Codex app-server is excluded from agent discovery just like native app-server; interactive wrappers remain discoverable.",
+      "Fallback room names truncate by Unicode characters, preserving code-point boundaries.",
+      "All Projects headings use the same saved custom project name as the sidebar."
+    ],
+    "standard_gate": {
+      "command": "bash scripts/verify.sh check",
+      "exit_code": 0,
+      "rust_passed": 1007,
+      "rust_skipped": 7,
+      "python_passed": 77,
+      "log": "/private/tmp/agentdocker-ui-final-review-gate1-2026-09-15.log"
+    },
+    "native_acceptance": {
+      "result": "passed",
+      "scenario_steps": 275,
+      "elapsed_seconds": 94.08905937502277,
+      "environment": {
+        "TMPDIR": "/tmp",
+        "AGENTDOCKER_NO_NOTIFICATIONS": "1"
+      },
+      "result_path": "/private/tmp/agentdocker-ui-final-review-workflows1-2026-09-15/result.json",
+      "result_sha256": "9c6c620cee9845a352826e9755be032570cb274475085436ab7842be675ad99e",
+      "renamed_project_heading_screenshot": "/private/tmp/agentdocker-ui-final-review-workflows1-2026-09-15/workflows/renamed-all-projects.png",
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "renamed_all_projects_heading_uses_saved_project_name"
+      ]
+    },
+    "limits": [
+      "Rendered controls exercise production callbacks; physical keyboard, screen-reader and IME acceptance remain separate.",
+      "Existing sidebar label clipping was sent to the connected Claude session working on resizable panes.",
+      "No production installation or provider session was changed by this trial; final GitHub CI and review remain pending."
+    ]
   }
 }

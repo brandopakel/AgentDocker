@@ -130,7 +130,12 @@ impl App {
             _ => summary
                 .conversation
                 .channel_id()
-                .map(|id| format!("room-{}", &id.to_string()[..id.to_string().len().min(6)]))
+                .map(|id| {
+                    format!(
+                        "room-{}",
+                        id.to_string().chars().take(6).collect::<String>()
+                    )
+                })
                 .unwrap_or_else(|| "room".to_owned()),
         }
     }
@@ -1034,5 +1039,27 @@ impl App {
     #[allow(dead_code)]
     fn last_moved(summary: &ConversationSummary) -> Option<String> {
         summary.last_at.map(|at| ago(Utc::now(), at))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_room_names_keep_unicode_boundaries() {
+        for (id, expected) in [
+            ("a", "room-a"),
+            ("abcdefg", "room-abcdef"),
+            ("abcde💬z", "room-abcde💬"),
+            ("💬📦🌍1234", "room-💬📦🌍123"),
+        ] {
+            let summary: ConversationSummary = serde_json::from_value(serde_json::json!({
+                "conversation": format!("channel:{id}"), "kind": "channel", "title": "",
+                "members": [], "unread": 0,
+            }))
+            .unwrap();
+            assert_eq!(App::short_room_name(&summary), expected);
+        }
     }
 }

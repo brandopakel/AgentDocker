@@ -28,7 +28,7 @@ project and retain their session checkout details.
 
 Quiet projects remain available. An unavailable folder stays selected and offers
 **Check folder again**. Each project row has its own **⋯** menu: **Rename…**
-gives the entry a name of your own here (an empty name goes back to the
+gives the entry a name of your own in the sidebar and All projects headings (an empty name goes back to the
 folder's), **Pin**/**Unpin**, and **Remove from list**, which keeps the folder
 off the list even when its sessions are discovered again, until you add it
 again (the list of removed folders is bounded like the project list, at 512;
