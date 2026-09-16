@@ -153,7 +153,10 @@ The next reload review also found the transfer-refusal reply still used a
 blocking write on the async startup path. Both readiness outcomes now share the
 blocking-worker helper; a regression holds the predecessor socket unread and
 checks that async work progresses. Combined validation with merged active-input
-steering is pending.
+steering is pending. The first regression fixture filled the socket before
+sending its descriptor header, causing an immediate macOS refusal instead of
+exercising the intended blocked write. The corrected fixture sends a large
+failure body into an unread socket; its verification is pending.
 
 PR #155 next review found discovery scans could mutate the cached projection
 while fenced, and reload could race restricted-listener registration. Source now

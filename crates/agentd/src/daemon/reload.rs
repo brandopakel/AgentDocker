@@ -702,42 +702,29 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn unread_readiness_reply_does_not_block_async_progress() {
-        for ready in [
-            Ready::Serving,
+        let (successor, predecessor) = UnixStream::pair().unwrap();
+        nix::sys::socket::setsockopt(&successor, nix::sys::socket::sockopt::SndBuf, &4096).unwrap();
+        // Leave room for the descriptor header. Filling the socket first
+        // makes macOS reject sendmsg's control message immediately instead of
+        // blocking. A large failure body exercises the actual blocking write
+        // while the predecessor retains its socket without reading anything.
+        let writer = tokio::spawn(answer_async(
+            successor,
             Ready::Failed {
-                reason: "refused".into(),
+                reason: "r".repeat(256 * 1024),
             },
-        ] {
-            let (mut successor, predecessor) = UnixStream::pair().unwrap();
-            successor.set_nonblocking(true).unwrap();
-            // Exhaust the send capacity before handing the stream to the real
-            // readiness writer. The predecessor deliberately retains its socket
-            // without reading anything until the async timer has made progress.
-            for size in [8192, 1] {
-                let bytes = vec![0_u8; size];
-                loop {
-                    match successor.write(&bytes) {
-                        Ok(0) => panic!("socket unexpectedly stopped accepting bytes"),
-                        Ok(_) => {}
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                        Err(error) => panic!("filling socket: {error}"),
-                    }
-                }
-            }
-            successor.set_nonblocking(false).unwrap();
-            let writer = tokio::spawn(answer_async(successor, ready));
-            tokio::time::sleep(Duration::from_millis(30)).await;
-            assert!(
-                !writer.is_finished(),
-                "the predecessor has not read the reply"
-            );
-            drop(predecessor);
-            let result = tokio::time::timeout(Duration::from_secs(2), writer)
-                .await
-                .expect("readiness worker did not finish after peer closed")
-                .expect("readiness task panicked");
-            assert!(result.is_err());
-        }
+        ));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !writer.is_finished(),
+            "the predecessor has not read the reply"
+        );
+        drop(predecessor);
+        let result = tokio::time::timeout(Duration::from_secs(2), writer)
+            .await
+            .expect("readiness worker did not finish after peer closed")
+            .expect("readiness task panicked");
+        assert!(result.is_err());
     }
 
     /// A stand-in for the daemon lock, which every handover names at
