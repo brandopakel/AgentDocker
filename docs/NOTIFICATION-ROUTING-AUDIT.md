@@ -104,6 +104,8 @@ that would modify an immutable release. A private alternative using a linked
 `Contents` directory also failed strict verification with unsealed root contents;
 that approach is not a validated fix. No installed files or settings changed.
 
+The September 15 repair replaces the neutral wrapper with an intact payload copy and keeps ownership outside its signature. All three entry points redirect to the selected immutable release, retaining hook/MCP and GUI roles. Private linked-executable alternatives failed strict verification and were rejected. Source regression checks and actual signed-copy installation acceptance are pending; the live launcher remains unchanged, and notification posting/click acceptance remains separate.
+
 ## Work and acceptance
 
 1. (Partial: installed app/daemon identity verified; original notification poster not captured.) Identify the actual daemon, app bundle, notification sender and source version

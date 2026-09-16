@@ -6,6 +6,7 @@ unless --previous-source supplies a separately built older package. No real
 provider configuration, user launchers or existing daemon is changed.
 """
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -91,8 +92,17 @@ def trial(args):
             assert info["CFBundleExecutable"] == "agentdocker-ui"
             for name in ["agentdocker", "agentd", "agentdocker-ui"]:
                 entry = launcher / BIN / name
-                assert entry.is_symlink()
-                assert entry.resolve() == root_install / "versions" / generation / PAYLOAD / BIN / name
+                assert entry.is_file() and not entry.is_symlink()
+            retained = root_install / "versions" / generation / PAYLOAD
+
+            def files(bundle):
+                return {str(path.relative_to(bundle)): (path.stat().st_mode & 0o777,
+                        hashlib.sha256(path.read_bytes()).hexdigest())
+                        for path in bundle.rglob("*") if path.is_file()}
+
+            assert files(launcher) == files(retained), "visible bundle differs from signed payload"
+            subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(launcher)],
+                           check=True, capture_output=True, timeout=30)
             entry = str(launcher / BIN / "agentdocker")
             # Exercise the exact old integration paths on the host filesystem.
             for runtime in ["claude-code", "codex"]:
@@ -116,6 +126,9 @@ def trial(args):
                     assert "error" not in response and response["result"]["serverInfo"]["name"] == "agentdocker"
                     response = mcp_call(process, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
                     assert any(tool["name"] == "send_message" for tool in response["result"]["tools"])
+                    executable = subprocess.run(["/bin/ps", "-ww", "-p", str(process.pid), "-o", "comm="],
+                                                capture_output=True, text=True, check=True, timeout=5)
+                    assert Path(executable.stdout.strip()) == retained / BIN / "agentdocker", executable.stdout
                     process.stdin.close()
                     assert process.wait(timeout=5) == 0
                 finally:
@@ -136,6 +149,21 @@ def trial(args):
             root_install = prefix / ".local/share/agentdocker/desktop"
             assert root_install.stat().st_mode & 0o777 == 0o700
             assert (root_install / "current/activation.json").stat().st_mode & 0o777 == 0o600
+            if MAC:
+                # Reinstall the same release over the old managed wrapper:
+                # repair its signature without losing the rollback record.
+                launcher = prefix / "Applications/AgentDocker.app"
+                activation = (root_install / "current/activation.json").read_bytes()
+                shutil.rmtree(launcher)
+                (launcher / "Contents/Resources").mkdir(parents=True)
+                (launcher / "Contents/Resources/managed-launcher.json").write_text(json.dumps({
+                    "format": 1, "product": "agentdocker", "root": str(root_install)}))
+                (launcher / BIN).mkdir()
+                for name in ["agentdocker", "agentd", "agentdocker-ui"]:
+                    (launcher / BIN / name).symlink_to(root_install / "current/payload" / BIN / name)
+                cli("install", "--from", first, "--expect-release", first_id, "--expect-current", first_id)
+                assert (root_install / "current/activation.json").read_bytes() == activation
+                result["scenarios"].append("same-release repair replaces the old wrapper and preserves activation")
             binaries = prefix / ".local/bin"
             with (args.output / "daemon.log").open("wb") as daemon_log:
                 daemon = subprocess.Popen([str(binaries / "agentd"), "--home", environment["AGENTDOCKER_HOME"],

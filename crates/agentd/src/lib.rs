@@ -98,6 +98,7 @@ pub struct Args {
 
 /// Parse the command line and run the daemon until SIGTERM or Ctrl-C.
 pub fn main() -> anyhow::Result<()> {
+    agentdocker_host::installation::redirect_managed_launcher()?;
     run(Args::parse())
 }
 

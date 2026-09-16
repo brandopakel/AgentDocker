@@ -614,7 +614,7 @@ binary a shared lifetime pin; cleanup holds the exclusive pin through deletion
 and rechecks content identity. Pins outlive deleted versions to prevent inode
 replacement races. Active, rollback, legacy unpinned and running versions remain;
 an installed user service protects retained binaries and blocks uninstall.
-These are local host operations, not daemon protocol mutations. They preserve
+The macOS Applications entry is an intact signed copy whose three entry points redirect to the selected immutable release before dispatch. External launcher ownership and exact retained payload hashes permit replacement without modifying signed metadata. An atomic app exchange follows activation; a failed exchange restores the previous activation. App publication and pointer selection are separate filesystem operations, and a surviving older copy follows the selected release. These are local host operations, not daemon protocol mutations. They preserve
 state/provider configuration and do not replace a running daemon. See
 [desktop distribution](DESKTOP-DISTRIBUTION.md) for commands and limitations.
 

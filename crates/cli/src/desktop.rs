@@ -397,7 +397,7 @@ impl Layout {
     }
 
     /// The command links. On macOS the application is not among them: it
-    /// is a real launcher bundle written by `write_launcher_bundle`,
+    /// is an intact signed bundle copied by `prepare_launcher_bundle`,
     /// because Launchpad, Spotlight and the Dock ignore a symlinked bundle
     /// and only show one whose Info.plist they can read in place.
     fn links(&self) -> Vec<(PathBuf, PathBuf)> {
@@ -418,6 +418,10 @@ impl Layout {
     /// and only for the real home prefix: trial prefixes must not register
     /// throwaway bundles on the machine.
     fn register_launcher(&self) {
+        self.launch_services("-f", &self.application);
+    }
+
+    fn launch_services(&self, operation: &str, application: &Path) {
         if !cfg!(target_os = "macos")
             || Some(self.prefix.as_path()) != std::env::home_dir().as_deref()
         {
@@ -428,44 +432,17 @@ impl Layout {
             return;
         }
         let _ = std::process::Command::new(lsregister)
-            .arg("-f")
-            .arg(&self.application)
+            .arg(operation)
+            .arg(application)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
     }
 
-    /// The marker that says a launcher bundle is ours and which store it
-    /// points at, so preflight can tell it from an app somebody else put
-    /// at the same path.
-    fn launcher_marker(&self) -> Result<String> {
-        Ok(serde_json::to_string_pretty(&serde_json::json!({
-            "format": 1,
-            "product": "agentdocker",
-            "root": self.root.to_str().context("store path must be UTF-8")?,
-        }))? + "\n")
-    }
-
-    #[cfg(all(test, target_os = "macos"))]
-    fn launcher_is_ours(&self) -> Result<bool> {
-        let marker = self
-            .application
-            .join("Contents/Resources/managed-launcher.json");
-        let Ok(text) = std::fs::read_to_string(&marker) else {
-            return Ok(false);
-        };
-        let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-        Ok(value["product"] == "agentdocker" && value["root"].as_str() == self.root.to_str())
-    }
-
-    /// Write the macOS launcher bundle: a real `AgentDocker.app` directory
-    /// with release-neutral metadata and links through the active pointer.
-    /// Preparing the launcher must not advertise a candidate before the
-    /// current-pointer switch succeeds. Bundle version 1 is the launcher format;
-    /// the payload and desktop status report the installed product version.
-    /// The GUI and old absolute hook/MCP commands keep distinct entry points.
-    /// Built beside its destination and swapped in with renames.
-    fn write_launcher_bundle(&self) -> Result<()> {
+    /// Copy the signed bundle without adding markers, changing Info.plist or
+    /// substituting executables. Ownership stays in launcher.json outside it.
+    /// Preparation never changes the app the person can launch.
+    fn prepare_launcher_bundle(&self, release: &Release) -> Result<tempfile::TempDir> {
         let parent = self
             .application
             .parent()
@@ -474,95 +451,65 @@ impl Layout {
         let staging = tempfile::Builder::new()
             .prefix(".AgentDocker.app.")
             .tempdir_in(parent)?;
-        let contents = staging.path().join("Contents");
-        std::fs::create_dir_all(contents.join("MacOS"))?;
-        std::fs::create_dir_all(contents.join("Resources"))?;
-        let plist = concat!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" ",
-            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n",
-            "<plist version=\"1.0\">\n<dict>\n",
-            "\t<key>CFBundleName</key><string>AgentDocker</string>\n",
-            "\t<key>CFBundleDisplayName</key><string>AgentDocker</string>\n",
-            "\t<key>CFBundleExecutable</key><string>agentdocker-ui</string>\n",
-            "\t<key>CFBundleIdentifier</key><string>dev.agentdocker.launcher</string>\n",
-            "\t<key>CFBundleIconFile</key><string>AgentDocker</string>\n",
-            "\t<key>CFBundlePackageType</key><string>APPL</string>\n",
-            "\t<key>CFBundleVersion</key><string>1</string>\n",
-            "\t<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n",
-            "\t<key>LSMinimumSystemVersion</key><string>11.0</string>\n",
-            "\t<key>LSApplicationCategoryType</key>",
-            "<string>public.app-category.developer-tools</string>\n",
-            "\t<key>NSHighResolutionCapable</key><true/>\n",
-            "</dict>\n</plist>\n"
+        let bundle = staging.path().join("AgentDocker.app");
+        copy_payload(&self.payload(release), &bundle)?;
+        ensure!(
+            tree_hash(&bundle)? == release.id,
+            "launcher copy differs from the inspected release"
         );
-        std::fs::write(contents.join("Info.plist"), plist)?;
-        std::fs::write(contents.join("PkgInfo"), "APPL????")?;
-        std::fs::write(
-            contents.join("Resources/managed-launcher.json"),
-            self.launcher_marker()?,
-        )?;
         sync_tree(staging.path())?;
-        // Keep payload validation strict: only these installer-created links
-        // are allowed in the launcher, after syncing its regular files. Sync
-        // the directory entries without following a possibly dangling current
-        // pointer on first install.
-        for name in BINARIES {
-            symlink(
-                self.root.join("current/payload/Contents/MacOS").join(name),
-                contents.join("MacOS").join(name),
-            )?;
+        Ok(staging)
+    }
+
+    /// Publish after activation: copied entrypoints follow current before
+    /// parsing arguments. macOS exchanges existing bundles atomically, leaving
+    /// the old copy in the private staging directory for cleanup.
+    fn publish_launcher_bundle(&self, staging: tempfile::TempDir) -> Result<()> {
+        let bundle = staging.path().join("AgentDocker.app");
+        let parent = self
+            .application
+            .parent()
+            .context("launcher has no parent")?;
+        let existed = self.application.symlink_metadata().is_ok();
+        self.unregister_launcher(&self.application);
+        if let Err(error) = replace_application(&bundle, &self.application, existed) {
+            self.register_launcher();
+            return Err(error);
         }
-        symlink(
-            self.root
-                .join("current/payload/Contents/Resources/AgentDocker.icns"),
-            contents.join("Resources/AgentDocker.icns"),
-        )?;
-        std::fs::File::open(contents.join("MacOS"))?.sync_all()?;
-        std::fs::File::open(contents.join("Resources"))?.sync_all()?;
-        // Whatever is there is ours (preflight said so): a launcher from an
-        // earlier activation, or the symlink earlier releases installed.
-        let retired = parent.join(format!(".AgentDocker.app.retired-{}", uuid::Uuid::new_v4()));
-        match self.application.symlink_metadata() {
-            Ok(_) => std::fs::rename(&self.application, &retired)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => return Err(error.into()),
-        }
-        std::fs::rename(staging.keep(), &self.application)?;
-        std::fs::File::open(parent)?.sync_all()?;
-        match retired.symlink_metadata() {
-            Ok(metadata) if metadata.file_type().is_symlink() => std::fs::remove_file(&retired)?,
-            Ok(_) => std::fs::remove_dir_all(&retired)?,
-            Err(_) => (),
-        }
-        self.record_application()?;
-        if let Some(legacy) = &self.legacy_application {
-            // Preflight checked this path is ours. Replace whatever earlier
-            // release left with a link to the launcher, so old absolute
-            // hook and MCP command paths still run the active release.
-            std::fs::create_dir_all(legacy.parent().context("launcher has no parent")?)?;
-            let retired = legacy.with_extension(format!("app.retired-{}", uuid::Uuid::new_v4()));
-            match legacy.symlink_metadata() {
-                Ok(metadata)
-                    if metadata.file_type().is_symlink()
-                        && legacy.read_link()? == self.application => {}
-                Ok(_) => {
-                    std::fs::rename(legacy, &retired)?;
-                    symlink(&self.application, legacy)?;
-                    match retired.symlink_metadata() {
-                        Ok(metadata) if metadata.file_type().is_symlink() => {
-                            std::fs::remove_file(&retired)?
-                        }
-                        Ok(_) => std::fs::remove_dir_all(&retired)?,
-                        Err(_) => (),
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    symlink(&self.application, legacy)?;
-                }
-                Err(error) => return Err(error.into()),
+        if let Err(error) = std::fs::File::open(parent).and_then(|file| file.sync_all()) {
+            // A failed publication restores the old app before the caller
+            // restores current. The staged candidate is removed on drop.
+            if existed {
+                replace_application(&bundle, &self.application, true)?;
+            } else {
+                std::fs::rename(&self.application, &bundle)?;
             }
+            self.register_launcher();
+            return Err(error.into());
         }
+        self.register_launcher();
+        Ok(())
+    }
+
+    fn unregister_launcher(&self, application: &Path) {
+        self.launch_services("-u", application);
+    }
+
+    fn repair_legacy_launcher(&self) -> Result<()> {
+        let Some(legacy) = &self.legacy_application else {
+            return Ok(());
+        };
+        if legacy.read_link().ok().as_ref() == Some(&self.application) {
+            return Ok(());
+        }
+        let parent = legacy.parent().context("launcher has no parent")?;
+        std::fs::create_dir_all(parent)?;
+        let staging = tempfile::tempdir_in(parent)?;
+        let link = staging.path().join("AgentDocker.app");
+        symlink(&self.application, &link)?;
+        self.unregister_launcher(legacy);
+        replace_application(&link, legacy, legacy.symlink_metadata().is_ok())?;
+        std::fs::File::open(parent)?.sync_all()?;
         Ok(())
     }
 
@@ -586,12 +533,37 @@ impl Layout {
             }
             Ok(metadata) if metadata.is_dir() => {
                 let marker = path.join("Contents/Resources/managed-launcher.json");
-                let Ok(text) = std::fs::read_to_string(&marker) else {
+                // Migrate the old neutral launcher, whose linked signed
+                // executables did not match its Info.plist.
+                if let Ok(text) = std::fs::read_to_string(&marker) {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+                    if value["product"] == "agentdocker"
+                        && value["root"].as_str() == self.root.to_str()
+                    {
+                        return Ok(true);
+                    }
+                }
+                let record: serde_json::Value = std::fs::read(self.root.join("launcher.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                    .unwrap_or_default();
+                if record["format"] != 1
+                    || record["application"].as_str() != self.application.to_str()
+                {
+                    return Ok(false);
+                }
+                // An externally recorded app is replaceable only while it is
+                // byte-for-byte one of this store's immutable releases. An
+                // unrelated or user-edited app is preserved.
+                let Ok(hash) = tree_hash(path) else {
                     return Ok(false);
                 };
-                let value: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-                Ok(value["product"] == "agentdocker"
-                    && value["root"].as_str() == self.root.to_str())
+                let retained = self
+                    .root
+                    .join("versions")
+                    .join(&hash)
+                    .join("AgentDocker.app");
+                Ok(retained.is_dir() && tree_hash(&retained)? == hash)
             }
             Ok(_) => Ok(false),
         }
@@ -812,9 +784,14 @@ impl Layout {
                 Err(error) => return Err(error.into()),
             }
         }
-        if cfg!(target_os = "macos") {
-            self.write_launcher_bundle()?;
-        }
+        let launcher = if cfg!(target_os = "macos") {
+            let launcher = self.prepare_launcher_bundle(&activation.current)?;
+            self.record_application()?;
+            self.repair_legacy_launcher()?;
+            Some(launcher)
+        } else {
+            None
+        };
         if !cfg!(target_os = "macos") && !self.application.exists() {
             std::fs::create_dir_all(
                 self.application
@@ -829,12 +806,52 @@ impl Layout {
             file.sync_all()?;
         }
         self.preflight()?;
+        let old_generation = self.root.join("current").read_link().ok();
         let pointer = tempfile::tempdir_in(&self.root)?;
         symlink(&generation, pointer.path().join("current"))?;
         std::fs::rename(pointer.path().join("current"), self.root.join("current"))?;
-        std::fs::File::open(&self.root)?.sync_all()?;
+        let published = (|| -> Result<()> {
+            std::fs::File::open(&self.root)?.sync_all()?;
+            if let Some(launcher) = launcher {
+                self.publish_launcher_bundle(launcher)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = published {
+            if let Some(old) = old_generation {
+                symlink(old, pointer.path().join("restore"))?;
+                std::fs::rename(pointer.path().join("restore"), self.root.join("current"))?;
+            } else {
+                std::fs::remove_file(self.root.join("current"))?;
+            }
+            std::fs::File::open(&self.root)?.sync_all()?;
+            return Err(error.context("launcher publication failed; previous activation restored"));
+        }
         Ok(())
     }
+}
+
+/// Exchange unlike entries (including an old app symlink) without a missing
+/// Applications path. Both entries are on the destination filesystem.
+fn replace_application(staged: &Path, destination: &Path, existed: bool) -> Result<()> {
+    if !existed {
+        std::fs::rename(staged, destination)?;
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let source = std::ffi::CString::new(staged.as_os_str().as_bytes())?;
+        let target = std::ffi::CString::new(destination.as_os_str().as_bytes())?;
+        // SAFETY: both C strings remain valid during the syscall; RENAME_SWAP
+        // atomically exchanges the entries without following their symlinks.
+        if unsafe { libc::renamex_np(source.as_ptr(), target.as_ptr(), libc::RENAME_SWAP) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    bail!("application bundle exchange is only supported on macOS")
 }
 
 fn validate_release(release: &Release) -> Result<()> {
@@ -1328,6 +1345,13 @@ fn perform(
         .is_none_or(|active| active.current.id != candidate.id)
     {
         layout.activate(candidate, current.map(|active| active.current))?;
+    } else if cfg!(target_os = "macos") {
+        // Reinstalling the active release also repairs an older managed
+        // launcher, without changing the retained rollback generation.
+        let launcher = layout.prepare_launcher_bundle(&candidate)?;
+        layout.record_application()?;
+        layout.repair_legacy_launcher()?;
+        layout.publish_launcher_bundle(launcher)?;
     }
     Ok(report)
 }
@@ -1358,6 +1382,31 @@ mod tests {
         for name in BINARIES {
             std::fs::write(payload.join(layout.binary_subdir()).join(name), marker).unwrap();
         }
+        if cfg!(target_os = "macos") {
+            std::fs::create_dir_all(payload.join("Contents/Resources")).unwrap();
+            std::fs::write(
+                payload.join("Contents/Info.plist"),
+                concat!(
+                    "<plist><dict><key>CFBundleName</key><string>AgentDocker</string>",
+                    "<key>CFBundleExecutable</key><string>agentdocker-ui</string>",
+                    "<key>CFBundleIdentifier</key><string>dev.agentdocker.desktop</string>",
+                    "<key>CFBundleVersion</key><string>0.1.0</string></dict></plist>"
+                ),
+            )
+            .unwrap();
+            std::fs::write(payload.join("Contents/Resources/AgentDocker.icns"), marker).unwrap();
+        }
+        rehash(layout, release)
+    }
+
+    fn rehash(layout: &Layout, mut release: Release) -> Release {
+        let old = layout.root.join("versions").join(&release.id);
+        release.id = tree_hash(&layout.payload(&release)).unwrap();
+        release.tree_sha256 = release.id.clone();
+        let new = layout.root.join("versions").join(&release.id);
+        if old != new {
+            std::fs::rename(old, new).unwrap();
+        }
         release
     }
 
@@ -1378,32 +1427,28 @@ mod tests {
         let plist =
             std::fs::read_to_string(layout.application.join("Contents/Info.plist")).unwrap();
         assert!(plist.contains("<key>CFBundleName</key><string>AgentDocker</string>"));
-        assert!(plist.contains("<key>CFBundleDisplayName</key><string>AgentDocker</string>"));
         assert!(plist.contains("<key>CFBundleExecutable</key><string>agentdocker-ui</string>"));
-        assert!(plist.contains("<key>CFBundleVersion</key><string>1</string>"));
-        assert!(!plist.contains("CFBundleShortVersionString"));
+        assert!(plist.contains("<key>CFBundleVersion</key><string>0.1.0</string>"));
+        assert_eq!(tree_hash(&layout.application).unwrap(), first.id);
         for name in BINARIES {
-            assert_eq!(
+            assert!(
                 layout
                     .application
                     .join("Contents/MacOS")
                     .join(name)
-                    .read_link()
-                    .unwrap(),
-                layout
-                    .root
-                    .join("current/payload/Contents/MacOS")
-                    .join(name),
-                "each entry follows activation without case-based dispatch"
+                    .symlink_metadata()
+                    .unwrap()
+                    .is_file(),
+                "signed executables stay intact"
             );
         }
-        assert!(layout.launcher_is_ours().unwrap());
+        assert!(layout.application_is_replaceable().unwrap());
 
         // A second activation replaces the bundle in place and keeps it ours.
         let second = release(&layout, "second");
         layout.activate(second, Some(first)).unwrap();
         assert!(layout.application.join("Contents/Info.plist").is_file());
-        assert!(layout.launcher_is_ours().unwrap());
+        assert!(layout.application_is_replaceable().unwrap());
         assert_eq!(
             std::fs::read_dir(layout.application.parent().unwrap())
                 .unwrap()
@@ -1436,13 +1481,23 @@ mod tests {
             std::fs::create_dir_all(&resources).unwrap();
             std::fs::write(resources.join("AgentDocker.icns"), icon).unwrap();
         }
+        let first = rehash(&layout, first);
+        std::fs::write(
+            layout.payload(&second).join("Contents/Info.plist"),
+            "<plist><dict><key>CFBundleVersion</key><string>9.9.9</string></dict></plist>",
+        )
+        .unwrap();
+        let second = rehash(&layout, second);
         layout.activate(first.clone(), None).unwrap();
         let contents = layout.application.join("Contents");
         let plist = std::fs::read(contents.join("Info.plist")).unwrap();
 
-        // This is the state left if the later preflight or pointer switch
-        // fails: only the neutral launcher has been published.
-        layout.write_launcher_bundle().unwrap();
+        // A prepared candidate remains private until the pointer switch.
+        let prepared = layout.prepare_launcher_bundle(&second).unwrap();
+        assert_eq!(
+            tree_hash(&prepared.path().join("AgentDocker.app")).unwrap(),
+            second.id
+        );
         assert_eq!(layout.active().unwrap().unwrap().current, first);
         assert_eq!(std::fs::read(contents.join("Info.plist")).unwrap(), plist);
         assert_eq!(
@@ -1455,7 +1510,7 @@ mod tests {
         );
 
         layout.activate(second, Some(first)).unwrap();
-        assert_eq!(std::fs::read(contents.join("Info.plist")).unwrap(), plist);
+        assert_ne!(std::fs::read(contents.join("Info.plist")).unwrap(), plist);
         assert_eq!(
             std::fs::read_to_string(contents.join("Resources/AgentDocker.icns")).unwrap(),
             "second icon"
@@ -1463,6 +1518,41 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(contents.join("MacOS/agentdocker")).unwrap(),
             "second"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn migration_preserves_signed_files_and_failed_publication_preserves_the_old_app() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = Layout::new(tmp.path().to_owned()).unwrap();
+        layout.ensure_root().unwrap();
+        let first = release(&layout, "first");
+        let second = release(&layout, "second");
+        let resources = layout.application.join("Contents/Resources");
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(
+            resources.join("managed-launcher.json"),
+            json!({
+                "format": 1, "product": "agentdocker", "root": layout.root,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        layout.activate(first.clone(), None).unwrap();
+        assert_eq!(tree_hash(&layout.application).unwrap(), first.id);
+        assert!(!resources.join("managed-launcher.json").exists());
+        let staging = layout.prepare_launcher_bundle(&second).unwrap();
+        std::fs::remove_dir_all(staging.path().join("AgentDocker.app")).unwrap();
+        assert!(layout.publish_launcher_bundle(staging).is_err());
+        assert_eq!(tree_hash(&layout.application).unwrap(), first.id);
+        assert_eq!(layout.active().unwrap().unwrap().current, first);
+        std::fs::write(layout.application.join("Contents/Info.plist"), "user edit").unwrap();
+        assert!(!layout.application_is_replaceable().unwrap());
+        assert!(layout.activate(second, None).is_err());
+        assert_eq!(
+            std::fs::read_to_string(layout.application.join("Contents/Info.plist")).unwrap(),
+            "user edit"
         );
     }
 
@@ -1491,6 +1581,8 @@ mod tests {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
         }
+        let first = rehash(&layout, first);
+        let second = rehash(&layout, second);
         // Simulate the old installation; its absolute provider paths must
         // still execute the correct binary after replacing the app symlink.
         std::fs::create_dir_all(layout.application.parent().unwrap()).unwrap();
