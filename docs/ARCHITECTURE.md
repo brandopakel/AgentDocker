@@ -857,6 +857,53 @@ Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `
 | Request | Response | Phase |
 |---|---|---|
 | Additional execution adapters (Apple `container`, others) | capability-specific | 4 |
+| `usage {project?, agent?, since?, until?, by?}` | `usage {rows}` | 5 |
+
+**Token usage by agent, model and provider** (requested September 15). Every
+runtime already writes its own account of what it spent, next to its
+transcript: Codex rollouts (`~/.codex/sessions/<y>/<m>/<d>/rollout-*.jsonl`)
+carry a `token_count` event per turn with `last_token_usage` (input, cached
+input, cache-write input, output, reasoning output) and a `turn_context`
+naming the model; Claude Code transcripts (`~/.claude/projects/<slug>/<session>.jsonl`)
+carry a `usage` object on each assistant message (input, cache creation, cache
+read, output, thinking) with the model. AgentDocker never sees a provider
+request, so it cannot count tokens itself; what it can do is attribute those
+accounts to the agents it knows. The design:
+
+- **A host collector, not a daemon reader.** `agentdocker_host::usage` reads
+  the two formats and yields `UsageSample {provider, model, session_id,
+  at, input, cached, output, reasoning}` per turn; it is pure file parsing
+  (bounded by file, with a cursor per file so a rollout is read once), and
+  the same function serves `agentdocker usage` without a daemon.
+- **Attribution by session id.** A registered record carries its provider
+  session in `spec.labels["session_id"]` (the receiver binding names it too),
+  so each sample is credited to the record whose session it names, and
+  through `identity_ids` to a record retired into it; samples from sessions
+  nobody registered are counted under *unattributed* rather than dropped.
+  The provider is the runtime (`codex`, `claude-code`), which is the company
+  the tokens were bought from; the model is the runtime's own name for it.
+- **Durable aggregation, bounded.** The daemon's minute tick runs the
+  collector for the live records' sessions only (a finished record's file
+  is read once more, then left) and folds the samples into a `usage` table
+  (agent, provider, model, hour bucket, the four counts, turns), one row per
+  agent-model-hour, kept under the same retention as the journal; no
+  transcript text is stored, only counts. `usage_recorded {agent, model,
+  provider, turns}` is the event.
+- **Reading it.** `usage` answers rows grouped `by` agent, model, provider,
+  project or hour, over `since`/`until`; the CLI is `agentdocker usage
+  [--project] [--agent] [--since 24h] [--by agent|model|provider|hour]`;
+  the app's Usage screen shows the sums per agent with the model beside
+  each, a provider total, and a per-project view, over today, seven days and
+  all time. Cost is not computed: prices change and differ by plan, so the
+  screen shows tokens, with a note of the provider's cached-input share,
+  which is what a person can act on.
+- **AgentDocker's own overhead** is shown apart: the tokens its MCP
+  results and hook context cost each agent (measured from the transcript's
+  tool-result sizes, an estimate) so the product can say what it adds.
+
+Done when a person can see, for the last day and week, how many tokens each
+agent, model and provider spent in each project, from the runtimes' own
+records, without a daemon for the CLI and without storing any transcript.
 
 Shipped events include `policy_updated` (effective rules or load diagnostic changed), `policy_denied` (what was asked and which rule refused it), `agent_restarted` (a managed agent started again by its policy, with the attempt number), `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`, `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended`, `journal_read`, `journal_pruned` (a project's entries below a sequence were deleted, on request or by retention) and `checkpoints_pruned`, `answer_routed` (which way an answer reached its asker: the waiting `ask` or the queue), and the input binding events `input_bound` (an external controller became, or resumed being, the sole consumer of an agent's queued input), `input_unbound`, `input_controller_ended` (the bound controller, or a process launched to replace it, is gone), `input_controller_launched` (the daemon started the binding's launch descriptor, with the attempt number), `input_controller_launch_failed`, `input_restarts_exhausted` (the episode's launches are used up), `input_restarts_reset` (a person asked for the controller to be started again) and `input_resumed` (a provider session that came back as a new process was joined to the record holding its thread's queue; the new record's id is an alias of it). The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
