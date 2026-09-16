@@ -37,6 +37,11 @@ const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
 const JOURNAL_WINDOW: usize = 200;
 /// One page of a conversation's archive, and of a thread's replies.
 const HISTORY_PAGE: usize = 200;
+/// The most of one conversation's archive the window keeps: ten pages.
+/// Beyond that the earliest go, and earlier pages can be asked for again.
+const HISTORY_KEEP: usize = 10 * HISTORY_PAGE;
+/// How many conversations' archives the window keeps.
+const HISTORY_CONVERSATIONS: usize = 32;
 /// The most replies one thread is read to, the archive's own cap.
 const THREAD_CAP: usize = 5_000;
 const CONSOLE_BYTES: usize = 256 * 1024;
@@ -848,8 +853,8 @@ impl App {
                         .filter(|m| messages.first().is_none_or(|first| m.seq < first.seq))
                         .collect();
                     merged.extend(messages);
-                    self.history.insert(conversation, merged);
-                    while self.history.len() > 32
+                    self.keep_history(conversation, merged);
+                    while self.history.len() > HISTORY_CONVERSATIONS
                         && let Some(oldest) = self
                             .history
                             .keys()
@@ -857,20 +862,21 @@ impl App {
                             .cloned()
                     {
                         self.history.remove(&oldest);
+                        self.history_complete.remove(&oldest);
                     }
                 }
                 Msg::HistoryEarlier(conversation, earlier) => {
                     if earlier.len() < HISTORY_PAGE {
                         self.history_complete.insert(conversation.clone());
                     }
-                    let shown = self.history.entry(conversation).or_default();
+                    let mut shown = self.history.remove(&conversation).unwrap_or_default();
                     let first = shown.first().map(|m| m.seq);
                     let mut merged: Vec<_> = earlier
                         .into_iter()
                         .filter(|m| first.is_none_or(|f| m.seq < f))
                         .collect();
-                    merged.append(shown);
-                    *shown = merged;
+                    merged.append(&mut shown);
+                    self.keep_history(conversation, merged);
                 }
                 Msg::Thread(root, replies) => {
                     if self.shell.thread.as_ref() == Some(&root.envelope.id) {
@@ -1039,6 +1045,13 @@ impl App {
             | EventKind::ChannelOpened { .. }
             | EventKind::ChannelJoined { .. }
             | EventKind::ChannelClosed { .. } => self.on_conversation_activity(),
+            // What the daemon pruned must not live on here: the archives
+            // are dropped and the open one read again.
+            EventKind::MessagesPruned { .. } => {
+                self.history.clear();
+                self.history_complete.clear();
+                self.on_conversation_activity();
+            }
             EventKind::QuestionClosed { .. } | EventKind::QuestionCancelled { .. } => {
                 self.send(Cmd::Questions)
             }
@@ -1227,7 +1240,8 @@ impl App {
     pub(crate) fn conversation_pane_visible(&self) -> bool {
         self.screen == Screen::Questions
             && self.shell.conversation.is_some()
-            && (!self.narrow() || self.shell.inbox_open)
+            // Narrow, the list or a thread stands in for the pane.
+            && (!self.narrow() || (self.shell.inbox_open && self.shell.thread.is_none()))
     }
 
     pub(crate) fn is_human(&self, id: &str) -> bool {
@@ -1269,6 +1283,22 @@ impl App {
 
     /// Something was said or read: the sidebar and the open conversation
     /// are fetched again, if this daemon has conversations at all.
+    /// Keep one conversation's archive within the window's bound: the
+    /// newest rows stay, and once the earliest have gone they can be paged
+    /// in again.
+    fn keep_history(
+        &mut self,
+        conversation: String,
+        mut messages: Vec<agentdocker_core::ArchivedMessage>,
+    ) {
+        if messages.len() > HISTORY_KEEP {
+            let drop = messages.len() - HISTORY_KEEP;
+            messages.drain(..drop);
+            self.history_complete.remove(&conversation);
+        }
+        self.history.insert(conversation, messages);
+    }
+
     fn on_conversation_activity(&mut self) {
         if self.conversations_supported == Some(false) {
             return;
@@ -3683,12 +3713,105 @@ mod tests {
             "the conversation's own draft is untouched"
         );
 
-        // Narrow, list on view: nothing is marked read.
+        // Narrow, list on view: nothing is marked read; nor behind a thread.
         app.shell.width = 700.0;
         app.shell.inbox_open = false;
         assert!(!app.conversation_pane_visible());
         app.shell.inbox_open = true;
+        assert!(
+            !app.conversation_pane_visible(),
+            "the thread stands in for the pane"
+        );
+        app.shell.thread = None;
         assert!(app.conversation_pane_visible());
+    }
+
+    /// Narrow with a thread open nothing marks read, the window keeps ten
+    /// pages of one archive and forgets that it had the earliest, and a
+    /// pruned archive is dropped.
+    #[test]
+    fn a_hidden_thread_marks_nothing_read_and_the_archive_cache_is_bounded() {
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        app.conversations_supported = Some(true);
+        app.screen = Screen::Questions;
+        let room = "channel:abc".to_owned();
+        app.shell.conversation = Some(room.clone());
+        app.shell.inbox_open = true;
+        app.shell.width = 700.0;
+        app.shell.thread = Some(MessageId::from("root".to_owned()));
+        assert!(
+            !app.conversation_pane_visible(),
+            "a thread stands in for the pane"
+        );
+        let archived = |seq: u64| agentdocker_core::ArchivedMessage {
+            seq,
+            conversation: agentdocker_core::ConversationId::from(room.clone()),
+            envelope: agentdocker_core::Envelope::new(
+                "a",
+                agentdocker_core::Destination::Broadcast,
+                "chat",
+                serde_json::json!({ "text": format!("{seq}") }),
+                None,
+                Utc::now(),
+            ),
+            replies: 0,
+        };
+        app.conversations = vec![agentdocker_core::ConversationSummary {
+            conversation: agentdocker_core::ConversationId::from(room.clone()),
+            kind: agentdocker_core::ConversationKind::Channel,
+            name: None,
+            title: "room".into(),
+            members: Vec::new(),
+            unread: 3,
+            last_seq: Some(3),
+            last_at: None,
+            last_from: None,
+            last_line: None,
+        }];
+        messages
+            .send(Msg::History(room.clone(), (1..=3).map(archived).collect()))
+            .unwrap();
+        app.drain();
+        assert!(
+            !requests
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::MarkRead(..))),
+            "nothing is read behind a thread"
+        );
+        assert!(
+            app.history_complete.contains(&room),
+            "a short page is the whole archive"
+        );
+        // Earlier pages arrive until the bound; then the earliest go and
+        // the archive is no longer known to be complete.
+        let big = "channel:big".to_owned();
+        let base = 20 * HISTORY_PAGE as u64;
+        let full: Vec<_> = (base..base + HISTORY_PAGE as u64).map(archived).collect();
+        messages.send(Msg::History(big.clone(), full)).unwrap();
+        app.drain();
+        for page in 0..12u64 {
+            let start = base - (page + 1) * HISTORY_PAGE as u64;
+            let earlier: Vec<_> = (start..start + HISTORY_PAGE as u64).map(archived).collect();
+            messages
+                .send(Msg::HistoryEarlier(big.clone(), earlier))
+                .unwrap();
+            app.drain();
+        }
+        assert_eq!(app.history[&big].len(), HISTORY_KEEP);
+        assert_eq!(
+            app.history[&big].last().unwrap().seq,
+            base + HISTORY_PAGE as u64 - 1
+        );
+        assert!(!app.history_complete.contains(&big));
+        app.on_event(agentdocker_core::Event {
+            seq: 1,
+            at: Utc::now(),
+            kind: EventKind::MessagesPruned { removed: 5 },
+        });
+        assert!(app.history.is_empty() && app.history_complete.is_empty());
     }
 
     #[test]

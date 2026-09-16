@@ -102,10 +102,12 @@ badge is the sum. The pane shows the newest 200 archived messages, newest
 last, with **Show earlier messages** at the top until the first is on view,
 day dividers and a **New** divider before the unread part; a question keeps
 its card (Answer, Allow, Deny) in place; other kinds of message carry a small
-kind pill; long ones fold behind **Show more**. Opening a conversation marks
-it read, which acknowledges those rows for you and nothing an agent still
-owns; in a narrow window only the conversation on view is read, never the
-list shown instead of it. **Reply** (or *n replies*) under a message opens
+kind pill; long ones fold behind **Show more**. The window keeps ten pages of
+one conversation and drops the earliest beyond that (they can be paged in
+again), and drops every archive when the daemon prunes. Opening a conversation
+marks it read, which acknowledges those rows for you and nothing an agent
+still owns; in a narrow window only the conversation on view is read, never
+the list or a thread shown instead of it. **Reply** (or *n replies*) under a message opens
 its thread beside the conversation, or in place of it when narrow with
 **‹ Conversation** to return; the thread is read whole. The thread has a
 composer of its own with its own draft, and only it sends with `reply_to`;
@@ -143,7 +145,9 @@ Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
 each live session's contact and delivery evidence, plus **Review setup**,
 **Check connections** and **Setup history**; **Other supported tools** expands
 the inventory. Delivery distinguishes an active receiver awaiting its first
-receipt, verified delivery, paused delivery and stale evidence. The session
+receipt, verified delivery, paused delivery and stale evidence; with words
+still queued behind a current receiver it reads **Queued · awaiting provider
+receipt**, since an earlier receipt says nothing about the pending ones. The session
 inspector shows the same readiness alongside the queue and latest receipt.
 Applying a plan says **Setup saved**, with **Undo** available afterwards. Fresh
 sessions load saved setup; only the provider can request its required approval.

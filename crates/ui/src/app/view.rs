@@ -416,7 +416,22 @@ impl App {
         if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
             return state.issue.as_ref().expect("blocked").kind.label();
         }
-        agentdocker_core::InputReadiness::for_agent(agent, Utc::now()).label()
+        let readiness = agentdocker_core::InputReadiness::for_agent(agent, Utc::now());
+        // A current receiver with words still queued is waiting on the
+        // provider to take them; an earlier receipt does not make the
+        // pending one delivered. Limits, pauses and silence come first.
+        if matches!(
+            readiness,
+            agentdocker_core::InputReadiness::Verified
+                | agentdocker_core::InputReadiness::AwaitingFirstReceipt
+        ) && self
+            .queued_inputs
+            .get(agent.id.as_str())
+            .is_some_and(|count| *count > 0)
+        {
+            return "Queued · awaiting provider receipt";
+        }
+        readiness.label()
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -3692,6 +3707,27 @@ mod tests {
             app.input_readiness(&agent),
             "Receiver active, awaiting first receipt"
         );
+        // Words queued behind a current receiver are waiting on the provider,
+        // and an earlier receipt does not make them delivered.
+        app.queued_inputs.insert(agent.id.to_string(), 2);
+        assert_eq!(
+            app.input_readiness(&agent),
+            "Queued · awaiting provider receipt"
+        );
+        agent.input_delivery.as_mut().unwrap().received = Some(agentdocker_core::ReceivedInput {
+            messages: vec!["m1".to_owned().into()],
+            receipt: agentdocker_core::InputReceipt::ClaudeChannel,
+        });
+        agent.input_delivery.as_mut().unwrap().received_at = Some(now);
+        assert_eq!(
+            app.input_readiness(&agent),
+            "Queued · awaiting provider receipt"
+        );
+        app.queued_inputs.insert(agent.id.to_string(), 0);
+        assert_eq!(app.input_readiness(&agent), "Delivery verified");
+        agent.input_delivery.as_mut().unwrap().received = None;
+        agent.input_delivery.as_mut().unwrap().received_at = None;
+        app.queued_inputs.remove(agent.id.as_str());
         agent.process_started_at = Some(now);
         app.agents[0] = agent.clone();
         assert!(
