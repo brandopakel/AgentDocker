@@ -53,6 +53,142 @@ def second_generation(source, root, generation):
     return copy
 
 
+def pin_held(path):
+    """Whether somebody holds the pin file: a shared lock refuses an
+    exclusive one."""
+    import fcntl
+    try:
+        with open(path, "rb") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            return False
+    except FileNotFoundError:
+        return False
+
+
+def pin_trial(args, root, prefix, source, controller, environment, cli, result):
+    """A controller bound to the first release keeps that release across
+    two handovers to later generations and a prune that would otherwise
+    remove it; unbinding lets it go."""
+    home = root / "state"
+    sock = root / "daemon.sock"
+    store = prefix / ".local/share/agentdocker/desktop"
+    first_id = cli("install", "--from", source, "--preview")["candidate"]["id"]
+    cli("install", "--from", source, "--expect-release", first_id, "--expect-current", "none")
+    binaries = prefix / ".local/bin"
+    daemon_env = {**environment, "AGENTDOCKER_EXPERIMENTAL_RELOAD": "1", "RUST_LOG": "info"}
+    daemon_log = (args.output / "pin-daemon.log").open("wb")
+    daemon = subprocess.Popen([str(binaries / "agentd"), "--home", str(home), "--socket", str(sock)],
+                              env=daemon_env, stdin=subprocess.DEVNULL, stdout=daemon_log, stderr=daemon_log,
+                              start_new_session=True)
+    provider_process = subprocess.Popen(["sleep", "600"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    controller_process = subprocess.Popen(["sleep", "600"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    serving_pid = daemon.pid
+    try:
+        deadline = time.monotonic() + 15
+        while True:
+            try:
+                pong = rpc(sock, {"op": "ping"})
+                assert pong["type"] == "pong"
+                break
+            except (OSError, AssertionError):
+                assert daemon.poll() is None and time.monotonic() < deadline, "fixture daemon did not become ready"
+                time.sleep(.05)
+        work = root / "pin-work"
+        work.mkdir()
+        # The launch descriptor lives in the first release: a controller
+        # the daemon would start from there, which pins that release.
+        first_executable = (store / "versions" / first_id / PAYLOAD / BIN / "agentdocker").resolve()
+        assert first_executable.is_file(), first_executable
+        provider = rpc(sock, {"op": "register", "spec": {"name": "pin-provider", "workdir": str(work), "labels": {"session_id": "pin-thread"}},
+                              "pid": provider_process.pid, "session": None})["agent"]
+        probe = rpc(sock, {"op": "register", "spec": {"name": "pin-probe", "workdir": str(work)}, "pid": controller_process.pid, "session": None})["agent"]
+        rpc(sock, {"op": "deregister", "agent": probe["id"]})
+        bound = rpc(sock, {"op": "bind_input", "agent": provider["id"],
+                           "provider": {"process": {"pid": provider_process.pid, "started_at": provider["process_started_at"]},
+                                        "session": "pin-thread", "profile": str(work / "profile")},
+                           "controller": {"pid": controller_process.pid, "started_at": probe["process_started_at"]},
+                           "token": "desktop-reload-pin-trial-token-0123456789",
+                           "launch": {"executable": str(first_executable), "args": ["events"], "cwd": str(work),
+                                      "env": {"AGENTDOCKER_HOME": str(home), "AGENTDOCKER_SOCKET": str(sock), "AGENTDOCKER_NO_AUTOSTART": "1"}}})
+        assert bound["type"] != "error", bound
+        pin = store / "pins" / f"{first_id}.lock"
+        deadline = time.monotonic() + 10
+        while not pin_held(pin):
+            assert time.monotonic() < deadline, "the first daemon did not pin the descriptor's release"
+            time.sleep(.1)
+        result["scenarios"].append("a bound controller's launch descriptor in the first release pins that release")
+        controller_process.kill()
+        controller_process.wait()
+
+        def handover(generation):
+            nonlocal serving_pid
+            candidate = second_generation(source, root, generation)
+            candidate_id = cli("install", "--from", candidate, "--preview")["candidate"]["id"]
+            report = cli("install", "--from", candidate, "--expect-release", candidate_id)
+            assert report["daemon"]["reloaded"] is True, report["daemon"]
+            assert report["daemon"]["serving"]["pid"] != serving_pid
+            serving_pid = report["daemon"]["serving"]["pid"]
+            # Held by the successor before its predecessor let go: never
+            # a moment with nobody holding it.
+            assert pin_held(pin), f"the release pin was dropped across the handover to generation {generation}"
+            return candidate_id
+
+        second_id = handover(2)
+        third_id = handover(3)
+        assert len({first_id, second_id, third_id}) == 3
+        status = cli("status")
+        assert status["installation"]["current"]["id"] == third_id
+        assert status["installation"]["previous"]["id"] == second_id
+        assert pin_held(pin), "the pin is held under the third generation"
+        # Neither current nor previous: a prune would remove the first
+        # release, and the pin keeps it.
+        plan = cli("prune", "--keep", "0", "--preview")
+        removed = [entry.get("id") for entry in plan["maintenance"].get("remove", [])]
+        assert first_id not in removed, plan["maintenance"]
+        cli("prune", "--keep", "0")
+        assert (store / "versions" / first_id).is_dir(), "a pinned release was pruned"
+        result["scenarios"].append("with the first release neither current nor previous, a prune keeps it while a controller's binding pins it")
+        warnings = [line for line in (args.output / "pin-daemon.log").read_text(errors="replace").splitlines()
+                    if " WARN " in line and "pin" in line]
+        assert not warnings, warnings
+        # Unbound, the pin goes with the binding, and so does the release.
+        unbound = rpc(sock, {"op": "unbind_input", "agent": provider["id"], "force": True})
+        assert unbound["type"] != "error", unbound
+        deadline = time.monotonic() + 10
+        while pin_held(pin):
+            assert time.monotonic() < deadline, "the pin was not released with the binding"
+            time.sleep(.1)
+        cli("prune", "--keep", "0")
+        assert not (store / "versions" / first_id).exists(), "an unpinned, unused release stays"
+        result["scenarios"].append("unbinding releases the pin, and the next prune removes the release")
+        result["pin_trial"] = {"first": first_id, "second": second_id, "third": third_id, "serving_pid": serving_pid}
+    finally:
+        try:
+            rpc(sock, {"op": "shutdown"})
+        except OSError:
+            pass
+        deadline = time.monotonic() + 10
+        while sock.exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        if sock.exists():
+            try:
+                os.killpg(serving_pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if daemon.poll() is None:
+            daemon.kill()
+        daemon.wait(timeout=10)
+        daemon_log.close()
+        for process in (provider_process, controller_process):
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+
 def trial(args):
     args.output.mkdir(parents=True, mode=0o700)
     result = {"passed": False, "scenarios": []}
@@ -80,6 +216,13 @@ def trial(args):
                                       "stdout": output.stdout, "stderr": output.stderr}) + "\n")
             assert output.returncode == 0, output.stderr
             return json.loads(output.stdout)
+
+        if args.pin_trial:
+            pin_trial(args, root, prefix, source, controller, environment, cli, result)
+            result["passed"] = True
+            (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+            print(json.dumps(result, indent=2))
+            return
 
         def serving_release(report_daemon):
             executable = Path(report_daemon["serving"]["executable"])
@@ -189,6 +332,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True, help="a built desktop payload or its parent directory")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--pin-trial", action="store_true",
+                        help="instead: a bound controller's release stays pinned across two handovers and a prune")
     trial(parser.parse_args())
 
 
