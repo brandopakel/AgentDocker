@@ -127,9 +127,26 @@ impl Daemon {
             None => None,
         };
         let state = lock(&self.state);
-        let scope: Option<Vec<ConversationId>> = project
-            .as_ref()
-            .map(|project| state.conversation_ids_in(project).into_iter().collect());
+        let scope = if let Some(project) = project.as_ref() {
+            let mut ids: BTreeSet<_> = state.conversation_ids_in(project).into_iter().collect();
+            let heads = match state.store.conversation_heads() {
+                Ok(heads) => heads,
+                Err(error) => {
+                    return Response::error(ErrorCode::StorageUnavailable, error.to_string());
+                }
+            };
+            // Live pairs supply empty conversations, but finished records
+            // still have searchable history. Add only archived conversations
+            // belonging to this project, without enumerating historical pairs.
+            ids.extend(heads.into_iter().filter_map(|head| {
+                state
+                    .archived_in_project(&head.conversation, project)
+                    .then_some(head.conversation)
+            }));
+            Some(ids.into_iter().collect::<Vec<_>>())
+        } else {
+            None
+        };
         match state
             .store
             .search_messages(&query, scope.as_deref(), before_seq, limit)
@@ -383,9 +400,9 @@ impl State {
                         .channel_id()
                         .and_then(|c| self.channels.get(&c))
                         .is_some_and(|c| c.project == *project),
-                    // An archived direct conversation or notices: the
-                    // reader's own, or, for the person, any in the project.
-                    _ => is_reader(id) || (human && self.archived_in_project(id, project)),
+                    // Membership is checked below; being the reader's own
+                    // does not move a conversation into every project.
+                    _ => self.archived_in_project(id, project),
                 },
                 None => {
                     is_reader(id)
@@ -424,8 +441,6 @@ impl State {
             let Some((kind, name, title, members)) = self.describe(&id, reader) else {
                 continue;
             };
-            // Only what the reader is in: rooms and broadcasts by
-            // membership or project, direct ones by party.
             // Only what the reader is in: direct ones by party, rooms by
             // membership. The person is in no room and sees every one of
             // the project's, as the Channels screen does; nothing lets an
@@ -644,6 +659,108 @@ mod tests {
             Response::History { messages } => messages,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn project_conversation_list_keeps_archived_direct_messages_in_their_project() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let alice = register(&daemon, "alice", &first).await;
+        let bob = register(&daemon, "bob", &second).await;
+        let Response::Agent { agent: human } = daemon.me(None).await else {
+            panic!("human registration failed");
+        };
+        send(&daemon, HUMAN, "alice", "first project", None).await;
+        send(&daemon, HUMAN, "bob", "second project", None).await;
+        daemon
+            .handle(Request::Deregister {
+                agent: "alice".into(),
+            })
+            .await;
+        let first_id = alice.project.as_ref().unwrap().id();
+        let second_id = bob.project.as_ref().unwrap().id();
+        assert_ne!(first_id, second_id);
+        for (project, included, excluded) in [
+            (first_id, &alice.id, &bob.id),
+            (second_id, &bob.id, &alice.id),
+        ] {
+            let Response::Conversations { conversations } = daemon
+                .handle(Request::Conversations {
+                    project: Some(project.to_string()),
+                    reader: Some(human.id.to_string()),
+                })
+                .await
+            else {
+                panic!("conversation list failed");
+            };
+            assert!(conversations.iter().any(
+                |c| c.conversation == ConversationId::dm(human.id.as_str(), included.as_str())
+            ));
+            assert!(
+                !conversations
+                    .iter()
+                    .any(|c| c.conversation
+                        == ConversationId::dm(human.id.as_str(), excluded.as_str())),
+                "another project's direct messages entered the selected project"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn project_search_retains_finished_agents_direct_messages_and_notices() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let alice = register(&daemon, "alice", &work).await;
+        register(&daemon, "bob", &other).await;
+        let Response::Agent { .. } = daemon.me(None).await else {
+            panic!("human registration failed");
+        };
+        let direct = send(&daemon, HUMAN, "alice", "retainedneedle direct", None).await;
+        send(&daemon, HUMAN, "bob", "retainedneedle other project", None).await;
+        lock(&daemon.state).send(
+            "agentd".into(),
+            Destination::Agent(alice.id.clone()),
+            "notice".into(),
+            serde_json::json!({"text": "retainedneedle notice"}),
+            None,
+        );
+        daemon
+            .handle(Request::Deregister {
+                agent: "alice".into(),
+            })
+            .await;
+        drop(daemon);
+        let reopened = open(&dir);
+        let Response::History { messages } = reopened
+            .handle(Request::SearchMessages {
+                query: "retainedneedle".into(),
+                project: Some(alice.project.unwrap().id().to_string()),
+                before_seq: None,
+                limit: 50,
+            })
+            .await
+        else {
+            panic!("project search failed");
+        };
+        assert_eq!(
+            messages.len(),
+            2,
+            "finished records stay searchable without another project's messages"
+        );
+        assert!(messages.iter().any(|m| m.envelope.id == direct));
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.conversation == ConversationId::notices(&alice.id))
+        );
     }
 
     /// Every message is archived beside the queue it is delivered to, in

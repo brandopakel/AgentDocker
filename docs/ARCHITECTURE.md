@@ -942,3 +942,5 @@ signals remain unverified; discovery alone is not provider-limit detection.
 The desktop shows the reason and queue count, suppresses Done for known blocked
 turns and preserves drafts. See the existing [message audit](MESSAGE-DELIVERY-AUDIT.md#provider-limit-and-session-exhaustion-acceptance-september-14)
 for adapter coverage and remaining actual-provider acceptance.
+
+Message archive review follow-up: project-scoped search includes archived direct conversations and notices involving finished records; selected-project conversation lists apply project membership independently of reader membership. An unindexed archive insertion or deletion invalidates the durable FTS completeness marker in the same transaction, including after a prior rollback restored that marker while leaving the index disabled in memory. Equal archive/index row counts alone cannot prove completeness. The [regression evidence](verification/2026-09-11-session-messages.json) retains all three pre-fix failures and the corrected focused run.

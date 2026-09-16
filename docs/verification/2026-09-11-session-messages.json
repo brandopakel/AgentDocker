@@ -267,5 +267,45 @@
     },
     "visual_fix": "When the selected agent panel is open, search moves below the filters, keeping the History count on one line. Before/after native captures were inspected.",
     "limits": "Includes macOS watcher isolation and socket fixture fixes. Uses immutable binary copies. No actual-provider repeat is claimed; that trial remains bound to 0c7bd7a. Final CI/review, including the newly reported forced-soak cleanup finding in PR99, remain open."
+  },
+  "archive_review_followup_2026_09_15": {
+    "scope": "Project-scoped archived conversations/search and search-index recovery after a rolled-back index failure.",
+    "base_commit": "ec24a6a",
+    "source_files_sha256": {
+      "crates/agentd/src/daemon/conversations.rs": "73e9bd3d1f3899b0c8110d0cfc3c5fbdfe6e392a2417f4424d35ce5a1dd9d433",
+      "crates/agentd/src/store.rs": "37600d7bee6cfc49423afe2bc175d00e9ada1ea4b0dfead389e85ee651a83b76"
+    },
+    "before_fix": {
+      "passed": false,
+      "tests": 3,
+      "failures": [
+        "A user direct conversation from another project entered the selected project.",
+        "Project search returned zero rather than two archived direct/notice messages after the agent finished and the daemon reopened.",
+        "FTS search returned zero rather than one appended message after an index failure rolled back, then an append and prune left equal archive/index row counts."
+      ],
+      "log": {
+        "private_path": "/private/tmp/agentdocker-message-review-red1.log",
+        "sha256": "f1d137fbb9daf761126aaba567c3e585782f8d30e62c5dec81227c6854c3bdb2"
+      }
+    },
+    "after_fix": {
+      "passed": true,
+      "tests": 9,
+      "scope": "All conversation tests plus index rollback/rebuild/punctuation regressions; includes shared owned-queue read behavior.",
+      "log": {
+        "private_path": "/private/tmp/agentdocker-message-review-green1.log",
+        "sha256": "a6e7b44930e9b53376660c5fb248fd21e1e44a36c959ad25eba5ecb2df4994c9"
+      }
+    },
+    "behavior": [
+      "Archived direct messages and notices are scoped by their recorded project, then by reader membership.",
+      "Project search includes archived conversations involving finished records without enumerating every historical pair.",
+      "Every successful unindexed archive insertion or deletion also invalidates the durable completeness marker, even after a previous rollback restored it. Equal row counts cannot hide skipped indexing."
+    ],
+    "standard_gate": "pending",
+    "limits": [
+      "Unit/integration source evidence; final native graphical, CI and review gates remain.",
+      "These fixes do not apply production identity reconciliation or establish live daemon replacement."
+    ]
   }
 }

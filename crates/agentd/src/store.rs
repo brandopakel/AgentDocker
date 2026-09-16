@@ -1025,8 +1025,13 @@ impl Store {
             ) {
                 tracing::warn!(%err, "messages_fts insert failed; search falls back to LIKE until restart");
                 self.messages_fts.set(false);
-                conn.execute("DELETE FROM meta WHERE key='messages_fts_complete'", [])?;
             }
+        }
+        if inserted == 1 && !self.messages_fts.get() {
+            // A prior transaction may have rolled its marker deletion back
+            // while leaving the in-memory index disabled. Every committed
+            // unindexed mutation must commit an incomplete marker too.
+            conn.execute("DELETE FROM meta WHERE key='messages_fts_complete'", [])?;
         }
         Ok(())
     }
@@ -1411,9 +1416,11 @@ impl Store {
             {
                 tracing::warn!(%err, "messages_fts delete failed; search falls back to LIKE until restart");
                 self.messages_fts.set(false);
-                self.conn
-                    .execute("DELETE FROM meta WHERE key='messages_fts_complete'", [])?;
             }
+        }
+        if removed > 0 && !self.messages_fts.get() {
+            self.conn
+                .execute("DELETE FROM meta WHERE key='messages_fts_complete'", [])?;
         }
         Ok(removed)
     }
@@ -2556,6 +2563,92 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn a_rolled_back_index_failure_stays_incomplete_when_row_counts_balance() {
+        use agentdocker_core::Destination;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let store = Store::open(&path).unwrap();
+        if !store.messages_fts.get() {
+            return;
+        }
+        let said = |text: &str| {
+            Envelope::new(
+                "sender",
+                Destination::Broadcast,
+                "chat",
+                serde_json::json!({"text": text}),
+                None,
+                Utc::now(),
+            )
+        };
+        let old = said("oldsearchtoken");
+        store
+            .publish_message(&old, &[], 1000, None, None, None, &[])
+            .unwrap();
+        let old_seq = store.archived(&old.id).unwrap().unwrap().seq;
+        // The index failure disables it in memory, while rollback restores
+        // its table, archive rows and the old durable completeness marker.
+        let tx = store.conn.unchecked_transaction().unwrap();
+        store
+            .conn
+            .execute("ALTER TABLE messages_fts RENAME TO messages_fts_away", [])
+            .unwrap();
+        let failed = said("rolledbacktoken");
+        store
+            .archive_message(&store.conn, &failed, &ConversationId::of(&failed).unwrap())
+            .unwrap();
+        assert!(!store.messages_fts.get());
+        tx.rollback().unwrap();
+        let marker: String = store
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='messages_fts_complete'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(marker, "1");
+        // A successful append and deletion have the same final row count
+        // as before the failure. Counts alone cannot establish completeness.
+        let new = said("newsearchtoken");
+        store
+            .publish_message(&new, &[], 1000, None, None, None, &[])
+            .unwrap();
+        let tx = store.conn.unchecked_transaction().unwrap();
+        store
+            .delete_archived(&[i64::try_from(old_seq).unwrap()])
+            .unwrap();
+        tx.commit().unwrap();
+        let count = |table: &str| -> i64 {
+            store
+                .conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        assert_eq!(count("messages"), count("messages_fts"));
+        drop(store);
+        let reopened = Store::open(&path).unwrap();
+        assert!(reopened.messages_fts.get());
+        let found = reopened
+            .search_messages("newsearchtoken", None, None, 50)
+            .unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "the successful append must be indexed after restart"
+        );
+        assert_eq!(found[0].envelope.id, new.id);
+        assert!(
+            reopened
+                .search_messages("oldsearchtoken", None, None, 50)
+                .unwrap()
+                .is_empty()
         );
     }
 
