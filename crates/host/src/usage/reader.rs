@@ -536,7 +536,9 @@ mod tests {
             Err(Error::Io(_))
         ));
         let fifo = dir.path().join("fifo");
-        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRUSR).unwrap();
+        let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: the fixture path is a valid NUL-terminated string.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
         assert!(matches!(
             scan(&fifo, Runtime::Claude, None, budget()),
             Err(Error::Io(_))
