@@ -33,6 +33,26 @@ const TRANSFER_WINDOW: Duration = Duration::from_secs(35);
 /// serving; a stopped daemon takes its socket path with it.
 const RESUME_WINDOW: Duration = Duration::from_secs(3);
 
+/// Limit consecutive reconnects that produced no application data. A useful
+/// stream resets the budget; even successful handovers wait before reopening.
+#[derive(Default)]
+pub(crate) struct StreamRetries(u32);
+
+impl StreamRetries {
+    pub(crate) async fn wait(&mut self, progressed: bool) -> Result<()> {
+        if progressed {
+            self.0 = 0;
+        }
+        if self.0 >= 5 {
+            bail!("stream repeatedly closed without data; reconnect limit reached");
+        }
+        let delay = Duration::from_millis(250 * (1_u64 << self.0)).min(Duration::from_secs(2));
+        self.0 += 1;
+        tokio::time::sleep(delay).await;
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct Client {
     socket: PathBuf,
@@ -276,15 +296,19 @@ impl Client {
             other => other.clone(),
         };
         let mut current = request;
+        let mut retries = StreamRetries::default();
         loop {
+            let mut progressed = false;
             let ended = self
                 .stream_inner(current, async { Ok(()) }, |(), response| {
+                    progressed = true;
                     on_response(response)
                 })
                 .await?;
             if ended != Ended::Silently || !self.still_served().await {
                 return Ok(());
             }
+            retries.wait(progressed).await?;
             resumed();
             current = &again;
         }

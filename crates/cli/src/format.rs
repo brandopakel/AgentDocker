@@ -731,23 +731,20 @@ pub fn event_line(event: &Event) -> String {
             successor_pid,
         } => format!(
             "transfer offered {} to pid {successor_pid}",
-            &transfer[..12.min(transfer.len())]
+            short(transfer)
         ),
         EventKind::DaemonTransferReaddressed {
             transfer,
             successor_pid,
         } => format!(
             "transfer {} now addressed to pid {successor_pid}",
-            &transfer[..12.min(transfer.len())]
+            short(transfer)
         ),
         EventKind::DaemonTransferAccepted { transfer } => {
-            format!("transfer accepted {}", &transfer[..12.min(transfer.len())])
+            format!("transfer accepted {}", short(transfer))
         }
         EventKind::DaemonTransferAborted { transfer, reason } => {
-            format!(
-                "transfer aborted {} {reason}",
-                &transfer[..12.min(transfer.len())]
-            )
+            format!("transfer aborted {} {reason}", short(transfer))
         }
         // A newer daemon than this CLI. Saying so beats a blank line,
         // and beats refusing to print the rest of the stream.
@@ -776,6 +773,32 @@ fn single_line(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transfer_event_ids_can_contain_multibyte_text() {
+        use agentdocker_core::{Event, EventKind};
+        let transfer = "abcdefgé🙂𐍈more".to_owned();
+        for kind in [
+            EventKind::DaemonTransferOffered {
+                transfer: transfer.clone(),
+                successor_pid: 1,
+            },
+            EventKind::DaemonTransferReaddressed {
+                transfer: transfer.clone(),
+                successor_pid: 1,
+            },
+            EventKind::DaemonTransferAccepted {
+                transfer: transfer.clone(),
+            },
+            EventKind::DaemonTransferAborted {
+                transfer: transfer.clone(),
+                reason: "fixture".into(),
+            },
+        ] {
+            let rendered = super::event_line(&Event::new(kind, chrono::Utc::now()));
+            assert!(rendered.contains(super::short(&transfer)));
+        }
+    }
+
     #[test]
     fn control_characters_cannot_inject_event_rows() {
         let event = agentdocker_core::Event::new(

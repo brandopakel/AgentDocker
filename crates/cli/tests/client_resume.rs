@@ -161,6 +161,36 @@ fn a_stream_ended_by_a_replaced_daemon_is_subscribed_again() {
     assert_eq!(*seen.lock().unwrap(), vec!["events", "ping", "events"]);
 }
 
+/// A daemon that keeps answering Ping but immediately closes every event
+/// subscription must not make the client spin or retry forever.
+#[test]
+fn repeatedly_empty_streams_back_off_and_stop_at_the_reconnect_limit() {
+    let (_tmp, socket) = private_socket("empty-streams");
+    let answers = (0..6)
+        .flat_map(|_| {
+            [
+                answer(vec![json!({"type":"events_ready"})], true),
+                answer(vec![pong()], true),
+            ]
+        })
+        .collect();
+    let seen = fake_daemon(&socket, answers);
+    let started = Instant::now();
+    let output = cli(&socket, &["events"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("reconnect limit reached"));
+    assert_eq!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|op| *op == "events")
+            .count(),
+        6
+    );
+    assert!(started.elapsed() >= Duration::from_secs(5));
+    assert!(started.elapsed() < Duration::from_secs(20));
+}
+
 /// The same silent end with nobody answering afterwards is the daemon
 /// stopping: the stream ends, without a claim that it was replaced.
 #[test]

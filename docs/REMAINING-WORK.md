@@ -143,6 +143,13 @@ replacement acceptance.
 
 ## Engineering and acceptance still open
 
+PR #155 final-head review follow-up (September 16) now rolls back an agent
+whose first write fails or is fenced, cleans an isolated pane worktree after
+successful pane retirement, reports failed aborts without implying writes resumed,
+and bounds repeated empty stream/attachment reconnects with backoff. Transfer IDs
+use Unicode-safe formatting. New regression and full/native gates are pending;
+the earlier source-specific reload trials remain historical evidence.
+
 | Priority | Work remaining | Completion condition and evidence |
 | --- | --- | --- |
 | User request, September 15 | Portable coordination instructions | One bundled SKILL.md supplies MCP onboarding and preview/apply/undo setup; `agentdocker skill` exports it without a daemon. Combined source `4eb92a7` passed 969 Rust tests (six skipped), 70 Python checks and the full release gate. Actual Codex and Claude skill discovery passed on the recorded earlier release; actual Claude setup/undo also passed; the unchanged skill plus the native queue fix passed a 65-second direct-user busy trial at `528e4e0`, including idle wake, drafts, FIFO and receiver recovery. PR #149 merged after final CI and review; installation, implicit model activation and additional runtime loader acceptance remain. See [guided setup](GUIDED-SETUP.md#shared-coordination-skill). |

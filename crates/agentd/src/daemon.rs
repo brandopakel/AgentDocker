@@ -5934,7 +5934,10 @@ impl State {
         if let Err(err) = self.registry.insert(record.clone()) {
             return registry_error(err);
         }
-        let _ = self.persist("agent", |store| store.upsert_agent(&record));
+        if self.persist("agent", |store| store.upsert_agent(&record)) != Persisted::Committed {
+            self.registry.remove(&record.id);
+            return self.write_failure().expect("a refused write has a reason");
+        }
         self.emit(EventKind::AgentCreated {
             agent: record.id.clone(),
             name: record.spec.name.clone(),

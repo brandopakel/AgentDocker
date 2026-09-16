@@ -30,12 +30,18 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
     let _raw = agentdocker_host::pty::RawMode::enter(stdin.as_raw_fd())
         .context("cannot put this terminal in raw mode")?;
     let mut keys = input::Input::open(stdin.as_fd()).context("cannot open terminal input")?;
+    let mut retries = crate::client::StreamRetries::default();
     let outcome = loop {
         match pump(reader, write_half, &mut keys, tokio::io::stdout()).await {
-            Ok(Left::Lost) if client.still_served().await => {
+            Ok(Left::Lost { progressed }) if client.still_served().await => {
                 // The daemon was replaced underneath this attachment. The
                 // terminal itself never moved: its session owner outlives
                 // any daemon, so the successor attaches to the same one.
+                if let Err(error) = retries.wait(progressed).await {
+                    break Err(error).with_context(|| {
+                        format!("cannot reconnect attachment to {agent}; its exit is unconfirmed")
+                    });
+                }
                 match open(client, agent, stdin.as_raw_fd()).await {
                     Ok(reopened) => {
                         eprint!("\r\n[the daemon was replaced; attached again to {agent}]\r\n");
@@ -50,7 +56,7 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
                     }
                 }
             }
-            Ok(Left::Lost) => {
+            Ok(Left::Lost { .. }) => {
                 break Err(anyhow::anyhow!(
                     "lost attachment to {agent}; its exit is unconfirmed"
                 ));
@@ -117,7 +123,7 @@ enum Left {
     Ended,
     /// The connection closed with nothing said: the daemon went away,
     /// which is not the same as the agent ending.
-    Lost,
+    Lost { progressed: bool },
 }
 
 /// Keystrokes out, terminal bytes in, until the agent ends, the human
@@ -136,6 +142,7 @@ where
 {
     let mut buffer = [0_u8; 4096];
     let mut line = String::new();
+    let mut progressed = false;
     let mut winch = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
         .context("cannot watch for window changes")?;
 
@@ -145,11 +152,12 @@ where
             // What the agent printed.
             read = tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line) => {
                 if read? == 0 {
-                    return Ok(Left::Lost);
+                    return Ok(Left::Lost { progressed });
                 }
                 match serde_json::from_str::<Response>(&line)? {
                     Response::Output { data } => {
                         if let Some(bytes) = protocol::decode_bytes(&data) {
+                            progressed |= !bytes.is_empty();
                             screen.write_all(&bytes).await?;
                             screen.flush().await?;
                         }
@@ -269,7 +277,7 @@ mod tests {
         let left = pump(BufReader::new(read_half), write_half, keys, &mut screen)
             .await
             .unwrap();
-        assert_eq!(left, Left::Lost);
+        assert_eq!(left, Left::Lost { progressed: true });
         assert_eq!(String::from_utf8_lossy(&screen), "still here");
     }
 }

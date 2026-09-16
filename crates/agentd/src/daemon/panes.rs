@@ -190,6 +190,8 @@ impl Daemon {
             .await;
             if !matches!(cleanup, Ok(Ok(()))) {
                 warn!(agent = %record.id, pane = %pane.id, ?cleanup, "could not retire pane after recording its start failed");
+            } else {
+                self.cleanup_isolate(&record).await;
             }
             return updated;
         }

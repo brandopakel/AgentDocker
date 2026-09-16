@@ -456,20 +456,14 @@ impl Daemon {
         let child = match command.spawn() {
             Ok(child) => child,
             Err(e) => {
-                self.abort_transfer("successor did not spawn");
-                return Err(Self::unavailable(format!(
-                    "cannot spawn the successor: {e}"
-                )));
+                return Err(self.abort_reload(&format!("cannot spawn the successor: {e}")));
             }
         };
         drop(theirs);
         let successor_pid = child.id();
         if !lock(&self.state).readdress_offer(&transfer_id, successor_pid) {
             let _ = kill_child(child);
-            self.abort_transfer("offer could not be addressed to the successor");
-            return Err(Self::unavailable(
-                "could not address the offer to the spawned successor",
-            ));
+            return Err(self.abort_reload("could not address the offer to the spawned successor"));
         }
         let mut fds = vec![held.listener.as_fd(), held.lock.as_fd()];
         let restricted = held.restricted.as_ref().map(|fd| {
@@ -490,8 +484,7 @@ impl Daemon {
         let offered = offer(&ours, &handover, &fds);
         if let Err(e) = offered {
             let _ = kill_child(child);
-            self.abort_transfer("handover could not be sent");
-            return Err(Self::unavailable(format!("cannot send the handover: {e}")));
+            return Err(self.abort_reload(&format!("cannot send the handover: {e}")));
         }
         let ready = tokio::task::spawn_blocking(move || await_ready(&ours, READY_WITHIN))
             .await
@@ -509,19 +502,21 @@ impl Daemon {
                     }
                     _ => {
                         let _ = kill_child(child);
-                        if self.abort_transfer(&reason) {
-                            Err(Self::unavailable(format!(
-                                "successor failed and the offer was withdrawn: {reason}"
-                            )))
-                        } else {
-                            Err(Self::unavailable(format!(
-                                "successor failed and the offer could not be withdrawn; check `daemon status`: {reason}"
-                            )))
-                        }
+                        Err(self.abort_reload(&reason))
                     }
                 }
             }
         }
+    }
+
+    /// Report whether the failed successor's offer was durably withdrawn.
+    fn abort_reload(&self, reason: &str) -> Box<Response> {
+        let outcome = if self.abort_transfer(reason) {
+            "successor failed and the offer was withdrawn"
+        } else {
+            "successor failed and the offer could not be withdrawn; writing remains disabled, check `daemon status`"
+        };
+        Self::unavailable(format!("{outcome}: {reason}"))
     }
 
     /// Resolves once a completed handover says this daemon may leave.
@@ -1139,6 +1134,46 @@ mod fence_tests {
     fn open(dir: &TempDir) -> Arc<Daemon> {
         let home = dir.path().to_path_buf();
         Arc::new(Daemon::open(home.clone(), home.join("sock")).unwrap())
+    }
+
+    #[tokio::test]
+    async fn a_new_agent_is_not_kept_when_its_first_write_is_failed_or_fenced() {
+        for fenced in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let daemon = open(&dir);
+            if fenced {
+                daemon.offer_transfer(1).unwrap();
+            }
+            let mut state = lock(&daemon.state);
+            if !fenced {
+                state.store.reject_writes_for_test();
+            }
+            let next_seq = state.next_seq;
+            let mut events = state.events.subscribe();
+            let record = agentdocker_core::AgentRecord::new(
+                AgentSpec {
+                    name: "uncommitted-agent".into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            let id = record.id.clone();
+            let response = state.insert_record(record);
+            assert!(matches!(response, Response::Error { code, .. }
+                if code == if fenced { ErrorCode::Transferring } else { ErrorCode::StorageUnavailable }));
+            assert!(state.registry.get(&id).is_none());
+            assert!(
+                !state
+                    .store
+                    .load_agents()
+                    .unwrap()
+                    .iter()
+                    .any(|record| record.id == id)
+            );
+            assert_eq!(state.next_seq, next_seq);
+            assert!(events.try_recv().is_err());
+        }
     }
 
     async fn register(daemon: &Arc<Daemon>, name: &str) -> AgentId {
