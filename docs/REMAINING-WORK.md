@@ -1,6 +1,6 @@
 # Remaining engineering and release work
 
-Audited September 14 against `aaa1b61`, with merged PR #154, the September 15
+Audited September 14 against `aaa1b61`, with merged PRs #150/#154, the September 15
 `72b1eb4` installed preview and PR #155 review acceptance recorded below. This is the current
 backlog for the requirements already in the project documents. The
 [documentation index](README.md) records coverage of all 38 Markdown files;
@@ -17,8 +17,11 @@ PID 67791 and GUI PID 67836, with strict bundle signature verification passing.
 This Codex provider and receiver retained their PIDs; the switch itself was done
 by Claude. Final PR #152 review/integration remains pending. See the
 [observed installation](verification/2026-09-12-integrated-desktop.json).
-The separate schema20 reload candidate must integrate the messaging/UI work
-before any future production activation.
+The reload candidate now integrates messaging/schema21 and the validated UI
+changes, including Linux shared-temporary-root discovery. Archive migration,
+cursor acknowledgement and retention now obey the handover fence and atomic
+event contract; combined validation and final review remain pending before
+production activation.
 
 September 15 prior installed checkpoint: verified `cf64ca3` (schema20), with
 production inputs identical to merged `4074275` (PR #153). The intact copied

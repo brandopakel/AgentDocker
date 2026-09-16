@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use agentdocker_core::session::{Transfer, TransferState};
 use agentdocker_core::{
-    AgentId, AgentRecord, ArchivedMessage, Change, ConversationId, Envelope, Event, JournalEntry,
-    JournalKind, Lease, LeaseId, MessageId, ProjectId, ReadCursor,
+    AgentId, AgentRecord, ArchivedMessage, Change, ConversationId, Envelope, Event, EventKind,
+    JournalEntry, JournalKind, Lease, LeaseId, MessageId, ProjectId, ReadCursor,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -1465,11 +1465,9 @@ impl Store {
             Err(err) if indexed && self.messages_fts.get() => {
                 tracing::warn!(%err, "messages_fts query failed; search falls back to LIKE until restart");
                 self.messages_fts.set(false);
-                // Writes from here on skip the index, so the next start
-                // must rebuild it rather than trust what it holds.
-                let _ = self
-                    .conn
-                    .execute("DELETE FROM meta WHERE key='messages_fts_complete'", []);
+                // Search remains read-only during a coordinator transfer.
+                // Any subsequent unindexed archive mutation clears the durable
+                // completeness marker in its own transaction.
                 self.search_messages(
                     query,
                     conversations,
@@ -1486,6 +1484,7 @@ impl Store {
     /// never a conversation's last message: the head stays, so the sidebar
     /// keeps its last line and the sequence its meaning. Returns how many
     /// went.
+    #[cfg(test)]
     pub fn prune_messages(
         &self,
         cutoff: Option<DateTime<Utc>>,
@@ -1493,6 +1492,40 @@ impl Store {
         batch: usize,
     ) -> Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
+        let removed = self.prune_messages_inner(cutoff, cap, batch)?;
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    /// Commit a bounded prune with its exact-count event, or neither.
+    pub fn prune_messages_with_event(
+        &self,
+        cutoff: Option<DateTime<Utc>>,
+        cap: usize,
+        batch: usize,
+        seq: u64,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Event>> {
+        let tx = self.conn.unchecked_transaction()?;
+        let removed = self.prune_messages_inner(cutoff, cap, batch)?;
+        let event = (removed > 0).then(|| {
+            let mut event = Event::new(EventKind::MessagesPruned { removed }, now);
+            event.seq = seq;
+            event
+        });
+        if let Some(event) = &event {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(event)
+    }
+
+    fn prune_messages_inner(
+        &self,
+        cutoff: Option<DateTime<Utc>>,
+        cap: usize,
+        batch: usize,
+    ) -> Result<usize> {
         let mut budget = i64::try_from(batch).unwrap_or(i64::MAX);
         let mut removed = 0usize;
         // A row is a head when it is its conversation's newest.
@@ -1533,7 +1566,6 @@ impl Store {
             removed += went;
             budget -= i64::try_from(went).unwrap_or(i64::MAX);
         }
-        tx.commit()?;
         Ok(removed)
     }
 
@@ -2702,6 +2734,10 @@ mod tests {
                 .len()
         };
         assert_eq!(stored(&pending), 0, "pending: the row is as v18 wrote it");
+        assert!(
+            pending.conversation_heads().unwrap().is_empty(),
+            "pending archive is empty"
+        );
         assert_eq!(
             offers(&pending),
             1,
@@ -2733,6 +2769,10 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(stored(&pending), 0, "aborted: still as v18 wrote it");
+        assert!(
+            pending.conversation_heads().unwrap().is_empty(),
+            "aborted archive is empty"
+        );
         drop(pending);
         let pending = Store::open_pending(&path).unwrap();
         assert!(
@@ -2746,6 +2786,35 @@ mod tests {
                 )
                 .unwrap()
         );
+        pending.reject_event_for_test("daemon_transfer_accepted");
+        assert!(
+            pending
+                .settle_transfer(
+                    "t2",
+                    Some(2),
+                    TransferState::Accepted,
+                    now,
+                    &event(EventKind::DaemonTransferAccepted {
+                        transfer: "t2".into()
+                    }),
+                )
+                .is_err()
+        );
+        assert_eq!(pending.recorded_schema_version().unwrap(), 18);
+        assert_eq!(
+            stored(&pending),
+            0,
+            "failed acceptance rolls back migration"
+        );
+        assert!(pending.conversation_heads().unwrap().is_empty());
+        assert_eq!(
+            pending.transfer().unwrap().unwrap().state,
+            TransferState::Offered
+        );
+        pending
+            .conn
+            .execute_batch("DROP TRIGGER reject_event")
+            .unwrap();
         assert!(
             pending
                 .settle_transfer(
@@ -2762,8 +2831,24 @@ mod tests {
         assert_eq!(stored(&pending), 1, "accepted: the queued row is an offer");
         assert_eq!(offers(&pending), 1);
         assert_eq!(pending.recorded_schema_version().unwrap(), SCHEMA_VERSION);
+        let found = pending.search_messages("old", None, None, 50).unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "new archive is searchable immediately after acceptance"
+        );
+        let archived_id = found[0].envelope.id.clone();
+        let archived_seq = found[0].seq;
         drop(pending);
         let reopened = Store::open(&path).unwrap();
+        let found = reopened.search_messages("old", None, None, 50).unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "index rebuild does not duplicate the backfill"
+        );
+        assert_eq!(found[0].envelope.id, archived_id);
+        assert_eq!(found[0].seq, archived_seq);
         assert_eq!(offers(&reopened), 1, "and once only");
         assert_eq!(stored(&reopened), 1);
     }
@@ -2806,7 +2891,7 @@ mod tests {
     fn archive_fixture() -> (Store, Vec<Envelope>) {
         use agentdocker_core::{AgentSpec, Destination};
         let conn = Connection::open_in_memory().unwrap();
-        let store = Store::init(conn).unwrap();
+        let store = Store::init(conn, true).unwrap();
         let a = AgentRecord::new(AgentSpec::default(), false, Utc::now());
         let b = AgentRecord::new(AgentSpec::default(), false, Utc::now());
         let mut sent = Vec::new();
@@ -3190,7 +3275,7 @@ mod tests {
     fn a_thread_pages_by_seq_within_its_conversation() {
         use agentdocker_core::Destination;
         let conn = Connection::open_in_memory().unwrap();
-        let store = Store::init(conn).unwrap();
+        let store = Store::init(conn, true).unwrap();
         let root = Envelope::new(
             "a",
             Destination::Broadcast,
@@ -3312,7 +3397,7 @@ mod tests {
             )
             .unwrap();
         }
-        let store = Store::init(conn).unwrap();
+        let store = Store::init(conn, true).unwrap();
         let dm = ConversationId::dm(human.id.as_str(), agent.id.as_str());
         let archived = store.history(&dm, None, 10).unwrap();
         assert_eq!(archived.len(), 2, "both queued rows are in the archive");

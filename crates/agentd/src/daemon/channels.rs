@@ -780,7 +780,7 @@ mod tests {
                 let mut channels = Vec::new();
                 for task in ["first", "second"] {
                     let Response::Channel { channel } =
-                        daemon.channel_open("writer", task.into(), vec!["reviewer".into()])
+                        daemon.channel_open("writer", task.into(), vec!["reviewer".into()], None)
                     else {
                         panic!("open failed")
                     };

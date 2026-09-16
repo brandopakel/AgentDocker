@@ -197,6 +197,10 @@ fn mutates(request: &Request) -> bool {
             | Request::Contests { .. }
             | Request::Journal { digest: None, .. }
             | Request::Channels { .. }
+            | Request::Conversations { .. }
+            | Request::History { .. }
+            | Request::Thread { .. }
+            | Request::SearchMessages { .. }
             | Request::Leases { .. }
             | Request::Events { .. }
             | Request::ResumeEvents { .. }

@@ -435,6 +435,17 @@ Message archive review follow-up: project-scoped search includes archived direct
 
 **Read state.** The person has a read cursor per conversation (`read_cursors`: reader, conversation, `through` seq, at). Unread is what the archive holds past the cursor; opening a conversation moves the cursor forward, never back, to a seq that belongs to that conversation, and acknowledges only the person's own queued rows in it, so *Clear* per message becomes *read* per conversation; later arrivals have higher seqs and stay unread. Reading never closes a question (a question closes through an accepted answer, its asker's cancellation or its expiry); agents keep acknowledging their queues as today; cursors are for readers, not receivers.
 
+**Archive during handover.** Conversation lists, history, threads and search
+remain readable while writes are fenced. A read cursor changes its queue and
+publishes its event only after the cursor/acknowledgement transaction commits.
+Retention removes archive rows and records the exact-count `messages_pruned`
+event atomically, leaving delivery queues intact. Schema-21 history backfill
+waits for the successor's acceptance transaction with the schema bump; refusal,
+failure or abort leaves both rows and version unchanged. Immediately after a
+successful deferred backfill, search uses the complete literal path until the
+next start rebuilds the index. Search fallback changes only in-memory index
+availability; later unindexed writes clear the completeness marker atomically.
+
 **Protocol (daemon side in source; the rows in the table above are the contract):** `conversations {project?}` → `[{conversation, kind: everyone|all|channel|collision|dm|notices, name, title, members, unread, last_seq, last_at, last_line}]`; `history {conversation, before_seq?, limit}` → messages with reply counts on roots, newest last, paginated by seq; `thread {message}` → a root and its replies; `mark_read {conversation, through}` → `ok`, event `conversation_read {reader, conversation, through}`; `search_messages {project?, query, before_seq?, limit}`; `channel_open` gains `name?`. Schema bump for the archive and the cursors. Existing queues, receipts, bindings and the question lifecycle are untouched; the archive is written beside the inbox rows, not instead of them.
 
 **Not Elixir.** Phoenix Channels and OTP are the right inspiration (a process per conversation, PubSub, presence tracking) and the model above takes those shapes; a second runtime inside a native desktop app is a cost with no return at a handful of agents on one machine, and the Rust daemon already has the bus and the presence facts. If federation across machines ever needs it, that is the moment to reconsider.
