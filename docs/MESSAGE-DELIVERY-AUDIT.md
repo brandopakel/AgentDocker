@@ -22,6 +22,26 @@ It does not retrofit the live Claude process. Safe same-session reconnect with
 old queue/receipt/draft preservation, other providers' input adapters, and installed
 acceptance remain open. No live provider was restarted for this finding.
 
+## September 16: CLI broadcast pause did not reach the active Codex turn
+
+The user's `agentdocker send --to all` request `5d0f2b149aa44cb6`, asking every
+agent to pause for laptop sleep, was saved at 07:55:46 UTC. A read-only `history
+all` lookup confirms its human sender and original text. Codex continued working
+until the user repeated the request directly. At 08:04 UTC the Codex record had a
+fresh receiver heartbeat, but its last recorded receipt was for a different
+message at 05:49 UTC. That heartbeat does not establish receipt of this broadcast.
+
+This is distinct from Claude's missing channel connection. Determine whether
+fan-out, retained earlier input, provider offer handling or the active-turn
+scheduling boundary caused the delay; the cause is not yet established. Require
+CLI human input to use the same priority and active-turn input procedure as typing
+into the provider, with equivalent peer routing but unchanged peer trust. Test a
+broadcast pause with idle and busy recipients, exact IDs and per-recipient
+receipts, provider waits, preserved drafts, retries and no duplicate execution.
+The original message remains subject to its normal receiver; inspecting its
+archive did not acknowledge or drain it. Codex paused after the direct request,
+and interrupted its verification campaign. This bug is open.
+
 ## Required behavior
 
 An agent-to-agent message must enter the same provider input workflow and queue

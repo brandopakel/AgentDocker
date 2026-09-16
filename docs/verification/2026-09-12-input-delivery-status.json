@@ -760,5 +760,34 @@
         "sha256": "b95f9314cd7926a713353dd5cdc86bc46e0cff04aa42494d1820066111c4eefc"
       }
     ]
+  },
+  "live_cli_broadcast_pause_2026_09_16": {
+    "result": "failed_delivery_observation_cause_not_yet_established",
+    "message_id": "5d0f2b149aa44cb6",
+    "sent_at": "2026-09-16T07:55:46Z",
+    "destination": "all",
+    "sender": "human",
+    "user_report": "CLI pause broadcast was accepted; Codex continued until the same pause was supplied directly.",
+    "archive_verification": "Read-only history all confirmed the message, human sender, and pause-for-sleep text.",
+    "codex_receiver_observation": {
+      "observed_at": "2026-09-16T08:04:29Z",
+      "reported_at": "2026-09-16T08:04:23.693292Z",
+      "paused": false,
+      "last_received_message": "b76fa0ce74ca4519",
+      "last_received_at": "2026-09-16T05:49:38.374885Z",
+      "pause_message_receipt_confirmed": false
+    },
+    "effects": {
+      "original_message_acknowledged_by_inspection": false,
+      "queue_drained": false,
+      "production_processes_restarted": false,
+      "verification_campaign_interrupted": true
+    },
+    "open": [
+      "per-recipient broadcast fan-out and queue position",
+      "active-turn provider input/steering parity with direct human input",
+      "controller offers, receipts and prior retained input",
+      "idle and busy pause acceptance with drafts preserved"
+    ]
   }
 }
