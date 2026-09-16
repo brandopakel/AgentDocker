@@ -95,7 +95,13 @@
         "private_path": "/private/tmp/agentdocker-installed-watcher-result-abd8q22m/result.json",
         "sha256": "4b804ab75849b2e310864a171b82f6dbd5408b278bca1d43406189e8d7f3b8fb"
       },
-      "driver_sha256": "b4869cdebe2dc125869c0ed67405e4475582cce0ac7ab56574eed48bbba05446"
+      "driver_sha256": "b4869cdebe2dc125869c0ed67405e4475582cce0ac7ab56574eed48bbba05446",
+      "failed_warmup": {
+        "private_path": "/private/tmp/agentdocker-installed-watcher-result-a65zvhgc/result.json",
+        "sha256": "e569e8e3eac866613aa69793390db5f216108e4d07b7beb436335e3f8ba4017a",
+        "result": "failed",
+        "reason": "the driver's deletion deadline passed before the removed-checkout gap and the surviving-file change were both observed; retained, not counted"
+      }
     },
     "notes": [
       "Run by codex-51242 against the installed production daemon (source 3c8c2e1) with a disposable project and no provider turn; the four live provider sessions kept pid, birth and binding.",
