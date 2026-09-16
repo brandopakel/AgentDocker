@@ -424,5 +424,56 @@
       "result_sha256": "0270c53aa3542520e947d0893cdb8de19d91d06f490d2b33a03ef58fb884002f",
       "scope": "Rendered native callbacks; no cleanup errors and observed fixture PIDs absent after exit. Predates the exception-only diagnostic-stream correction; does not explain the historical Linux refusal or establish physical keyboard/accessibility acceptance."
     }
+  },
+  "parallel_ui_install_observed_2026_09_16": {
+    "observed_at": "2026-09-16T05:37:41.204751+00:00",
+    "source": "read-only verification after Claude journal1210/1211 reported installation",
+    "installation": {
+      "application": "/Applications/AgentDocker.app",
+      "homebrew": null,
+      "installation": {
+        "current": {
+          "id": "271e24563508cdacada723b57a1d9bf115a7d9aeec4987f70b3fd5a8fd76108e",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "72b1eb40663cf51786bc817b1c51fb2fc23f5435",
+          "state_schema": 21,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "271e24563508cdacada723b57a1d9bf115a7d9aeec4987f70b3fd5a8fd76108e",
+          "version": "0.1.0"
+        },
+        "format": 1,
+        "previous": {
+          "id": "fc49e0265b5a7990af2641d1143825b77a86fe70501c76f76975dc935524989d",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "651354a642e5646deb7bffaeda7aa1b91781411b",
+          "state_schema": 21,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "fc49e0265b5a7990af2641d1143825b77a86fe70501c76f76975dc935524989d",
+          "version": "0.1.0"
+        }
+      },
+      "prefix": "/Users/brandopakel"
+    },
+    "binary_sha256": {
+      "agentdocker": "d9fca8cdd87538b810509a9213780d5de87758d39d179dac656bf8595471b395",
+      "agentd": "4ac0757d184e9e85fc6d22cf9d69bd7829c24a20420a9c3bd285c0c4390715ba",
+      "agentdocker-ui": "6fd2c04f20a4fc6956bc34fc6afe68803f658c49e8bf32317ee4dba59ac8245c"
+    },
+    "strict_codesign_exit": 0,
+    "observed_processes": {
+      "daemon": 67791,
+      "gui": 67836,
+      "codex_controller": 94744,
+      "codex_provider": 51242
+    },
+    "limitations": [
+      "The switch itself was performed by the parallel Claude session; root observed resulting state, not its activation steps.",
+      "This is unmerged PR152 source; final integration review/CI remains pending.",
+      "Retained process identity and successful MCP calls do not establish a fresh post-switch provider queue receipt."
+    ]
   }
 }

@@ -24,7 +24,7 @@ idle/draft/busy/question handovers with a loopback model fixture, exact answer
 receipt and clean retirement. These results leave real model services, Claude,
 attached-terminal drafts and broader replacement acceptance open.
 
-The installed app and serving daemon now use verified `cf64ca3` (schema20),
+The prior installed app and serving daemon used verified `cf64ca3` (schema20),
 whose production inputs match merged `4074275`. The intact launcher passes
 strict signature verification; all four external provider identities, PIDs and
 birth times survived the coordinator switch. The existing Codex receiver
@@ -33,6 +33,11 @@ That message then started the next ordinary Codex turn without a human prompt;
 the controller recorded its exact thread/turn/item receipt and acknowledged the
 original queue row. This closes one installed existing-session wake/receipt
 trial; zero-prompt startup/reopen and broader provider acceptance remain.
+Claude subsequently installed `72b1eb4` (schema21); read-only verification
+confirms that release's daemon and GUI are running with a valid intact bundle.
+The Codex provider and receiver PIDs are retained. PR #152 final review/integration
+remains pending; this observation does not certify its activation procedure.
+See [the observed checkpoint](verification/2026-09-12-integrated-desktop.json).
 Use `agentdocker desktop status` and `agentdocker daemon status` for actual
 versions. Installing an app does not replace the active daemon.
 

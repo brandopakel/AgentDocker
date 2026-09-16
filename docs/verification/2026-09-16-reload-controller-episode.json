@@ -973,5 +973,231 @@
       },
       "provenance": "Clean committed drivers 8ba6ac9 (handover/startup failure) and b81a1f5 (resume) used the same055f45f release hashes. Production Rust/Cargo inputs remain unchanged. Source/driver and executable hashes stayed unchanged in successful native trials."
     }
+  },
+  "post_review_2026_09_16": {
+    "result": "passed",
+    "source": {
+      "arch": "aarch64",
+      "format": 1,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "os": "macos",
+      "state_schema": 20,
+      "version": "0.1.0",
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "155ff704bb2b09dccdac3faae3bfe8cb48b9ca297c7036768493dfc9d5967035",
+        "agentd": "19c6a23631577327a354650ee2faa09f257892ac20755eabb3667703de2906cb",
+        "agentdocker-ui": "fa88a7ec111b36febff40fc8cabbeefa4fa2ed1ebb957443ee6c5be0185c9de8"
+      },
+      "source_commit": "ad9d0750e41bee70ef4b66b86acd06f5f409b623",
+      "source_tree": "3c3fef4d34a50c2dbc269ffe9ea96f098569a1c9",
+      "source_input_sha256": "d8875f8b026e4220ba0531ac5873e78287019de309332819281a3fcec1c53180",
+      "source_dirty": false,
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "target": "aarch64-apple-darwin"
+    },
+    "review": "5218709694",
+    "scope": "Atomic channel/human/pane transitions; durable restart recovery after abort/takeover; explicit handover capability and legacy refusal; attach errors and safe successor cleanup.",
+    "gate": {
+      "rust_passed": 1023,
+      "rust_skipped": 7,
+      "python_passed": 81,
+      "focused_rust_passed": 6,
+      "cleanup_tests_passed": 4,
+      "checks": [
+        "documentation",
+        "format",
+        "strict clippy",
+        "doctests",
+        "packaging",
+        "release build"
+      ]
+    },
+    "stress": {
+      "reloads": 20,
+      "scenarios": [
+        "416 messages sent through 20 reloads arrived once, in order; 0 send errors",
+        "165 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+        "both loggers' logs are contiguous across every reload",
+        "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+        "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+        "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 20 handovers accepted in between"
+      ],
+      "sends": {
+        "delivered": 416,
+        "errors": []
+      },
+      "launches": {
+        "finished": 165,
+        "errors": []
+      },
+      "log_lines": {
+        "logger-a": 838109,
+        "logger-b": 835683
+      },
+      "controller_episode": {
+        "attempts": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "launched_pids": [
+          79549,
+          80255,
+          81255,
+          81627,
+          82130
+        ],
+        "handovers_during": 20
+      },
+      "survivors": [],
+      "cleanup_errors": [],
+      "daemon_log_warnings": {}
+    },
+    "native_codex": {
+      "result": "passed",
+      "source": {
+        "commit": "ad9d0750e41bee70ef4b66b86acd06f5f409b623",
+        "dirty": false,
+        "rust_and_driver_sha256": "9430a6da6a22788a1311a60e36218f2af14da4b9232625a852d1453759062a7c"
+      },
+      "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+      "provider_version": "codex-cli 0.154.0",
+      "driver_sha256": "da75a7e59a149accee7ed731867d3d8b978ba1fd532c2ec22b3298a90a2b4407",
+      "cli_sha256": "155ff704bb2b09dccdac3faae3bfe8cb48b9ca297c7036768493dfc9d5967035",
+      "daemon_sha256": "19c6a23631577327a354650ee2faa09f257892ac20755eabb3667703de2906cb",
+      "handovers": [
+        {
+          "stage": "idle",
+          "predecessor": 82760,
+          "successor": 83058,
+          "seconds_until_retired": 0.13448266699560918,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        },
+        {
+          "stage": "unsubmitted-draft",
+          "predecessor": 83058,
+          "successor": 83258,
+          "seconds_until_retired": 0.13629162500728853,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        },
+        {
+          "stage": "busy-with-human-and-peer-queued",
+          "predecessor": 83258,
+          "successor": 83889,
+          "seconds_until_retired": 0.12944170902483165,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        },
+        {
+          "stage": "pending-question",
+          "predecessor": 83889,
+          "successor": 84428,
+          "seconds_until_retired": 0.13254220801172778,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        }
+      ],
+      "idle_wake_seconds": 7.524243916006526,
+      "answer_receipt_after_handover": {
+        "message": "8956dcfcbb444ce4",
+        "receipt": {
+          "thread": "01a0a8b8-ce89-7431-9cd1-7426d757cee6",
+          "turn": "01a0a8b9-b8fe-7360-a230-e209c990d641",
+          "item": "01a0a8b9-b91c-70b3-8d4d-d4bd6796811c"
+        }
+      },
+      "model_requests": 10,
+      "daemon_survivors": [],
+      "controller_survivors": [],
+      "cleanup_errors": []
+    },
+    "attach": {
+      "cli_sha256": "155ff704bb2b09dccdac3faae3bfe8cb48b9ca297c7036768493dfc9d5967035",
+      "cases": [
+        {
+          "mode": "reconnect-refused",
+          "exit": 1,
+          "requests": [
+            "attach",
+            "ping",
+            "attach"
+          ],
+          "transcript_sha256": "ab34fe6d55f35250f6bf0353930d51dfd89bbeda2215afa7670e306986cb8e7d",
+          "passed": true
+        },
+        {
+          "mode": "daemon-gone",
+          "exit": 1,
+          "requests": [
+            "attach"
+          ],
+          "transcript_sha256": "62666db5a1f593d17ec099184281d3589da8dd6cf9d544ea7a74a2b25904250b",
+          "passed": true
+        },
+        {
+          "mode": "confirmed-end",
+          "exit": 0,
+          "requests": [
+            "attach"
+          ],
+          "transcript_sha256": "1f3eef692af6091a352994a9cb6edcb3ec6f8696121ff83a043791e9dc5a32ed",
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "driver_sha256": "f07af5b1fb50345294ea747f6ccb26c6099142729733c9469d0d29a734d51dc7"
+    },
+    "source_and_binaries_unchanged": true,
+    "artifacts": [
+      {
+        "path": "/private/tmp/agentdocker-reload-review-gate1-2026-09-15.log",
+        "sha256": "949f0e5a2e75f15e74399fd7fbea91d5382f0287d8183b0094acd78dd5ccd55b"
+      },
+      {
+        "path": "/private/tmp/agentdocker-reload-review-targeted1-2026-09-15.log",
+        "sha256": "2bee5ceb8123272c7b86bd24ca9f4ebccaee544175e53d71428ec630a8dd6330"
+      },
+      {
+        "path": "/private/tmp/agentdocker-reload-review-native-build1-2026-09-15.json",
+        "sha256": "cd709894db55b001455982969ae4dd4c9773c748467f3e0d499524e75dfc8694"
+      },
+      {
+        "path": "/private/tmp/agentdocker-reload-review-trial1-2026-09-15/result.json",
+        "sha256": "b13da7d77080a4f0484ef3273eff0bfeb62fc4c09f33c324f977d5ea6e3b207c"
+      },
+      {
+        "path": "/private/tmp/agentdocker-native-reload-review-question1-2026-09-15/result.json",
+        "sha256": "d72de66e38ca1c44449f439538f9148474587169468206ab0b20c2a659f0af3f"
+      },
+      {
+        "path": "/private/tmp/agentdocker-attach-refusal-trial1-2026-09-15/result.json",
+        "sha256": "802382b2400a509f897963d6fd68f2843bc192e691d2c574a398e75d848632f3"
+      },
+      {
+        "path": "/private/tmp/agentdocker-attach-refusal-trial-2026-09-15.py",
+        "sha256": "f07af5b1fb50345294ea747f6ccb26c6099142729733c9469d0d29a734d51dc7"
+      },
+      {
+        "path": "/private/tmp/agentdocker-reload-review-manifest1-2026-09-15.json",
+        "sha256": "f07f2ef81a1c9e0b1e4806c4849da21f4f9e87e2bc67db9bb04979b9e6ebd1d2"
+      },
+      {
+        "path": "/private/tmp/agentdocker-reload-review-manifest-after-native1-2026-09-15.json",
+        "sha256": "f07f2ef81a1c9e0b1e4806c4849da21f4f9e87e2bc67db9bb04979b9e6ebd1d2"
+      }
+    ],
+    "limits": [
+      "Stress uses disposable owned provider/controller process fixtures; Codex uses its actual CLI with a loopback model fixture, not a remote model account.",
+      "Each native switch preserves the provider and bound controller; intentional receiver crash/restart between stages is a separate recovery check.",
+      "Legacy clients decode the established unavailable refusal and may be retried manually; automatic retry requires an updated client.",
+      "No production activation used this schema20 reload candidate; installed UI source72b1eb4 is schema21 and must be integrated before a future install.",
+      "Broader provider, cross-version, attached-terminal, uncertain-write, retention and Windows acceptance remains open."
+    ]
   }
 }

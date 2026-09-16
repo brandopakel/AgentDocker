@@ -252,6 +252,14 @@ an in-process Tokio test cannot establish this boundary.
   Ten deferred-exit warnings recovered durably; source and all three binary
   hashes stayed unchanged. The same source passed the full 1,017-Rust/79-Python
   gate and six focused failure/transfer regressions.
+  Post-review `ad9d075` passed the full 1,023-Rust/81-Python gate, six more
+  focused regressions, and a fresh 20-handover run with 416 ordered messages,
+  165 completed launches and contiguous logs. No warnings, survivors or cleanup
+  errors were recorded. Actual Codex 0.154.0 with a loopback model passed its four
+  handover stages and exact answer receipt again; CLI terminal checks distinguished
+  refused reconnect, lost daemon and confirmed exit. The source and executable
+  hashes remained unchanged throughout. Legacy frames now receive a decodable
+  not-applied refusal; automatic retry requires the current client capability.
   *Passed* for the controller's installation pin across a handover
   (`desktop_reload_smoke.py --pin-trial`, in the same record): a live
   controller bound with a launch descriptor inside the first installed
