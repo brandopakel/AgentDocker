@@ -878,13 +878,28 @@ impl App {
                 hint_text.push_str(&format!(" · {done} finished, not yet viewed"));
             }
             let seed = entry.project.id().to_string();
-            // Two folders called the same are told apart by where they are.
-            let mut label = column![text(name.clone()).size(14)].spacing(1).width(Fill);
+            // One line each, clipped rather than wrapped or drawn over the
+            // marks beside it. Two folders called the same are told apart
+            // by where they are, in one short line.
+            let mut label = column![
+                text(name.clone())
+                    .size(14)
+                    .wrapping(iced::widget::text::Wrapping::None)
+            ]
+            .spacing(1)
+            .width(Fill);
             if shared.contains(&name) {
-                label = label.push(small(parent_folder(&path), c));
+                label = label.push(
+                    text(parent_folder(&path))
+                        .size(12)
+                        .color(c.muted)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                );
             }
+            let label = container(label).width(Fill).clip(true);
             let mut content = row![hint(monogram(&name, &seed, 20.0, c), hint_text, c), label]
                 .spacing(6)
+                .width(Fill)
                 .align_y(Center);
             if done > 0 {
                 content = content.push(pill(done.to_string(), c.accent_soft, c.accent_ink, c));
@@ -896,20 +911,26 @@ impl App {
                         .align_y(Center),
                 );
             }
-            // The row's own menu: what can be done to this entry, here.
-            content = content.push(custom(
-                format!("project-menu-{}", path.display()),
-                format!("Options for {name}"),
-                icon(
-                    Icon::More,
-                    if menu_open { c.accent_ink } else { c.muted },
-                    12.0,
-                ),
-                Some(Message::ProjectMenu(path.clone())),
-                menu_open,
-                Kind::Quiet,
-                [4, 4],
-            ));
+            // The row's own menu, at the row's right edge: a quiet button
+            // would otherwise take half the row's width as if it were a
+            // row itself.
+            content = content.push(
+                container(custom(
+                    format!("project-menu-{}", path.display()),
+                    format!("Options for {name}"),
+                    icon(
+                        Icon::More,
+                        if menu_open { c.accent_ink } else { c.muted },
+                        12.0,
+                    ),
+                    Some(Message::ProjectMenu(path.clone())),
+                    menu_open,
+                    Kind::Quiet,
+                    [4, 4],
+                ))
+                .width(26.0)
+                .align_x(iced::alignment::Horizontal::Right),
+            );
             projects = projects.push(custom(
                 format!("project-{}", path.display()),
                 format!("{}{}", if entry.pinned { "• " } else { "" }, name),
@@ -1131,7 +1152,12 @@ impl App {
             for process in self.available_processes() {
                 items.push((
                     dot(c.cyan, 8.0, c),
-                    format!("{} is running here, not connected", process.default_name()),
+                    // The tool, not a process number: nothing else tells
+                    // them apart until one is connected and named.
+                    format!(
+                        "{} is running here, not connected",
+                        super::runtime_label(&process.runtime)
+                    ),
                     action(
                         format!("needs-you-connect-{}", process.pid),
                         "Connect",
@@ -1319,8 +1345,15 @@ impl App {
                     row![
                         dot(c.cyan, 8.0, c),
                         column![
-                            text(process.default_name()).size(14),
-                            small(process.runtime.clone(), c)
+                            text(super::runtime_label(&process.runtime)).size(14),
+                            small(
+                                process
+                                    .cwd
+                                    .as_ref()
+                                    .map(|cwd| shorten_home(cwd))
+                                    .unwrap_or_else(|| format!("pid {}", process.pid)),
+                                c
+                            )
                         ]
                         .spacing(2)
                         .width(Fill),
@@ -1427,13 +1460,19 @@ impl App {
             }
             let id = agent.id.to_string();
             let activity = self.activity_label(agent);
-            let branch = agent.vcs.as_ref().and_then(|v| v.branch.as_deref());
+            let name = self.display_name(agent);
+            // The branch is in the name already when the record has one;
+            // the line under it says what the session is doing.
+            let branch = agent
+                .vcs
+                .as_ref()
+                .and_then(|v| v.branch.as_deref())
+                .filter(|b| !name.contains(b));
             let meta = format!(
                 "{}{}",
                 branch.map(|b| format!("{b} · ")).unwrap_or_default(),
                 activity
             );
-            let name = self.display_name(agent);
             let spoken = format!("{name}\n{} · {}", agent.spec.runtime, meta);
             let mut lines = column![
                 text(name.clone())
@@ -3753,12 +3792,20 @@ fn compact_question(value: &str) -> String {
     preview
 }
 
-/// A folder's parent, with the home folder as `~`, to tell two folders of
+/// Where a folder is, short enough for one line: the home folder as `~`,
+/// and a deep path kept to its last two folders, to tell two folders of
 /// one name apart.
 fn parent_folder(path: &std::path::Path) -> String {
-    path.parent()
-        .map(shorten_home)
-        .unwrap_or_else(|| path.display().to_string())
+    let Some(parent) = path.parent() else {
+        return path.display().to_string();
+    };
+    let shown = shorten_home(parent);
+    let parts: Vec<&str> = shown.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.len() <= 3 {
+        shown
+    } else {
+        format!("…/{}/{}", parts[parts.len() - 2], parts[parts.len() - 1])
+    }
 }
 
 /// A path with the home folder as `~`.

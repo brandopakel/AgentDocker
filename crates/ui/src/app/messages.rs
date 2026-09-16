@@ -28,9 +28,29 @@ impl App {
         self.conversations_supported == Some(true)
     }
 
-    /// Unread across every conversation, for the rail.
+    /// Unread across the conversations that are the person's to answer:
+    /// rooms, broadcasts and their own direct messages. What two agents say
+    /// to each other and what AgentDocker told them is read here, not owed.
     pub(super) fn unread_total(&self) -> u64 {
-        self.conversations.iter().map(|c| c.unread).sum()
+        self.conversations
+            .iter()
+            .filter(|c| self.counts_for_person(c))
+            .map(|c| c.unread)
+            .sum()
+    }
+
+    pub(super) fn counts_for_person(&self, summary: &ConversationSummary) -> bool {
+        match summary.kind {
+            ConversationKind::Dm => self.counterpart(summary).is_some(),
+            ConversationKind::Notices => false,
+            _ => true,
+        }
+    }
+
+    /// The tool an agent is, without the branch: `Codex`, `Claude Code`.
+    fn tool_of(&self, id: &str) -> String {
+        let name = self.name_of(id);
+        name.split(" · ").next().unwrap_or(&name).to_owned()
     }
 
     /// The other party of a direct conversation the person is in; none for
@@ -47,13 +67,6 @@ impl App {
         }
     }
 
-    /// Both parties of a direct conversation, named, for one the person is
-    /// not in.
-    fn parties(&self, summary: &ConversationSummary) -> Option<(String, String)> {
-        let (a, b) = summary.conversation.dm_parties()?;
-        Some((self.name_of(a), self.name_of(b)))
-    }
-
     fn agent_live(&self, id: &str) -> bool {
         self.agents
             .iter()
@@ -65,17 +78,29 @@ impl App {
     /// room's task for a collision, AgentDocker for notices.
     fn conversation_label(&self, summary: &ConversationSummary) -> String {
         match summary.kind {
-            ConversationKind::Everyone => "#everyone".to_owned(),
+            // Every project has one; when more than one is on view, say
+            // whose.
+            ConversationKind::Everyone => {
+                if self.conversation_scope().is_some() {
+                    "#everyone".to_owned()
+                } else {
+                    format!("#everyone · {}", summary.title)
+                }
+            }
             ConversationKind::All => "#all".to_owned(),
-            ConversationKind::Channel => match &summary.name {
-                Some(name) => format!("#{name}"),
-                None => summary.title.clone(),
+            // A room opened before names, or a collision room, is called
+            // by a short name made from its task or paths, never by the
+            // whole task; the header carries the rest.
+            ConversationKind::Channel | ConversationKind::Collision => match &summary.name {
+                Some(name) if !name.is_empty() => format!("#{name}"),
+                _ => format!("#{}", Self::short_room_name(summary)),
             },
-            ConversationKind::Collision => summary.title.clone(),
+            // A pair of agents reads as their tools: the branch each is on
+            // belongs under the header, not in the list.
             ConversationKind::Dm => match self.counterpart(summary) {
                 Some(id) => self.name_of(id),
-                None => match self.parties(summary) {
-                    Some((a, b)) => format!("{a} ↔ {b}"),
+                None => match summary.conversation.dm_parties() {
+                    Some((a, b)) => format!("{} ↔ {}", self.tool_of(a), self.tool_of(b)),
                     None => summary.title.clone(),
                 },
             },
@@ -85,6 +110,28 @@ impl App {
                 .notices_agent()
                 .map(|agent| format!("AgentDocker → {}", self.name_of(agent.as_str())))
                 .unwrap_or_else(|| "AgentDocker".to_owned()),
+        }
+    }
+
+    /// A slug from the room's task or first path, at most a few words; an
+    /// empty title falls back to the room's short id.
+    fn short_room_name(summary: &ConversationSummary) -> String {
+        let title = summary.title.trim();
+        let from_title = agentdocker_core::conversation::channel_name_from(title);
+        match from_title {
+            Some(name) if !name.is_empty() => {
+                // At most four words of the slug, so the list stays a list.
+                name.split('-')
+                    .filter(|w| !w.is_empty())
+                    .take(4)
+                    .collect::<Vec<_>>()
+                    .join("-")
+            }
+            _ => summary
+                .conversation
+                .channel_id()
+                .map(|id| format!("room-{}", &id.to_string()[..id.to_string().len().min(6)]))
+                .unwrap_or_else(|| "room".to_owned()),
         }
     }
 
@@ -244,16 +291,26 @@ impl App {
             .center(24.0)
             .into(),
         };
-        let unread = summary.unread;
+        // Unread is shown where it is the person's to answer; a room two
+        // agents share or a notice is listed quietly with its last line.
+        let unread = if self.counts_for_person(summary) {
+            summary.unread
+        } else {
+            0
+        };
         let mut name = row![
-            text(label.clone())
-                .size(14)
-                .font(weight(if unread > 0 {
-                    iced::font::Weight::Semibold
-                } else {
-                    iced::font::Weight::Normal
-                }))
-                .width(Fill)
+            container(
+                text(label.clone())
+                    .size(14)
+                    .font(weight(if unread > 0 {
+                        iced::font::Weight::Semibold
+                    } else {
+                        iced::font::Weight::Normal
+                    }))
+                    .wrapping(iced::widget::text::Wrapping::None)
+            )
+            .width(Fill)
+            .clip(true)
         ]
         .spacing(6)
         .align_y(Center);
@@ -283,7 +340,16 @@ impl App {
             } else {
                 first_line(&format!("{who}: {line}"), 44)
             };
-            body = body.push(small(preview, c));
+            body = body.push(
+                container(
+                    text(preview)
+                        .size(12)
+                        .color(c.muted)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                )
+                .width(Fill)
+                .clip(true),
+            );
         }
         let mut content = row![mark, body].spacing(10).align_y(Center);
         if unread > 0 {
@@ -344,6 +410,7 @@ impl App {
         let mut channels: Vec<&ConversationSummary> = Vec::new();
         let mut collisions: Vec<&ConversationSummary> = Vec::new();
         let mut direct: Vec<&ConversationSummary> = Vec::new();
+        let mut peers: Vec<&ConversationSummary> = Vec::new();
         let mut earlier: Vec<&ConversationSummary> = Vec::new();
         let mut notices: Vec<&ConversationSummary> = Vec::new();
         for summary in self.conversations.iter().filter(|s| matches(s)) {
@@ -352,16 +419,13 @@ impl App {
                     channels.push(summary);
                 }
                 ConversationKind::Collision => collisions.push(summary),
-                ConversationKind::Dm => {
-                    let live = self
-                        .counterpart(summary)
-                        .is_some_and(|id| self.agent_live(id));
-                    if live {
-                        direct.push(summary);
-                    } else {
-                        earlier.push(summary);
-                    }
-                }
+                // The person's own direct messages are the list; what two
+                // agents said to each other is a group of its own, folded.
+                ConversationKind::Dm => match self.counterpart(summary) {
+                    Some(id) if self.agent_live(id) => direct.push(summary),
+                    Some(_) => earlier.push(summary),
+                    None => peers.push(summary),
+                },
                 ConversationKind::Notices => notices.push(summary),
             }
         }
@@ -389,20 +453,37 @@ impl App {
         );
         let unread_total = self.unread_total();
         if unread_total > 0 {
+            let owed = self
+                .conversations
+                .iter()
+                .filter(|s| s.unread > 0 && self.counts_for_person(s))
+                .count();
+            // The count, and one way to be done with it.
             list = list.push(
-                container(small(
-                    format!(
-                        "{unread_total} unread in {} conversation{}",
-                        self.conversations.iter().filter(|s| s.unread > 0).count(),
-                        if self.conversations.iter().filter(|s| s.unread > 0).count() == 1 {
-                            ""
-                        } else {
-                            "s"
-                        }
-                    ),
-                    c,
-                ))
-                .padding([4, 10]),
+                container(
+                    row![
+                        small(
+                            format!(
+                                "{unread_total} unread in {owed} conversation{}",
+                                if owed == 1 { "" } else { "s" }
+                            ),
+                            c,
+                        )
+                        .width(Fill),
+                        custom(
+                            "mark-all-read",
+                            "Mark all read",
+                            text("Mark all read").size(12).color(c.accent),
+                            self.connected.is_ok().then_some(Message::MarkAllRead),
+                            false,
+                            Kind::Quiet,
+                            [2, 4],
+                        ),
+                    ]
+                    .spacing(6)
+                    .align_y(Center),
+                )
+                .padding([2, 10]),
             );
         }
         list = list.push(container(eyebrow("Channels", c)).padding(iced::Padding {
@@ -448,6 +529,21 @@ impl App {
         }
         for summary in notices {
             list = list.push(self.conversation_row(summary, None, c));
+        }
+        if !peers.is_empty() {
+            let open = self.shell.peers_open;
+            list = list.push(Self::group_toggle(
+                "peers-toggle",
+                format!("Between agents ({})", peers.len()),
+                open,
+                Message::TogglePeers,
+                c,
+            ));
+            if open {
+                for summary in peers {
+                    list = list.push(self.conversation_row(summary, None, c));
+                }
+            }
         }
         if !earlier.is_empty() {
             let open = self.shell.earlier_open;
@@ -660,30 +756,37 @@ impl App {
         };
         let label = self.conversation_label(&summary);
         let key = summary.conversation.as_str().to_owned();
-        let mut header = row![
-            text(label.clone())
-                .size(18)
-                .font(weight(iced::font::Weight::Semibold)),
-        ]
-        .spacing(10)
-        .align_y(Center);
-        let subtitle = match summary.kind {
-            ConversationKind::Everyone => format!(
-                "everyone in {} · {} live",
-                summary.title,
-                summary.members.len()
-            ),
+        // The name on one line, what the room is about on the next: a
+        // channel's task or contested paths, a pair's branches, a
+        // broadcast's members. Neither repeats the other.
+        let members = summary.members.len();
+        let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+        let topic = match summary.kind {
+            ConversationKind::Everyone => {
+                format!("{} · {}", summary.title, plural(members, "live agent"))
+            }
             ConversationKind::All => "every agent on this machine".to_owned(),
-            ConversationKind::Channel | ConversationKind::Collision => format!(
-                "{} · {} member{}",
-                summary.title,
-                summary.members.len(),
-                if summary.members.len() == 1 { "" } else { "s" }
-            ),
+            ConversationKind::Channel => {
+                format!("{} · {}", summary.title, plural(members, "member"))
+            }
+            ConversationKind::Collision => {
+                format!(
+                    "contested: {} · {}",
+                    summary.title,
+                    plural(members, "member")
+                )
+            }
             ConversationKind::Dm => match self.counterpart(&summary) {
                 Some(id) if self.agent_live(id) => "direct message".to_owned(),
                 Some(_) => "direct message · this session has ended".to_owned(),
-                None => "between two agents · read only".to_owned(),
+                None => match summary.conversation.dm_parties() {
+                    Some((a, b)) => format!(
+                        "{} and {} · between two agents, read only",
+                        self.name_of(a),
+                        self.name_of(b)
+                    ),
+                    None => "between two agents · read only".to_owned(),
+                },
             },
             ConversationKind::Notices => format!(
                 "what AgentDocker told {}",
@@ -694,19 +797,41 @@ impl App {
                     .unwrap_or_else(|| "this agent".to_owned())
             ),
         };
-        header = header.push(small(subtitle, c));
-        header = header.push(Space::new().width(Fill));
+        let mut title_row = row![
+            container(
+                text(label.clone())
+                    .size(18)
+                    .font(weight(iced::font::Weight::Semibold))
+                    .wrapping(iced::widget::text::Wrapping::None)
+            )
+            .width(Fill)
+            .clip(true),
+        ]
+        .spacing(10)
+        .align_y(Center);
         if matches!(
             summary.kind,
             ConversationKind::Channel | ConversationKind::Collision
         ) {
-            header = header.push(action(
+            title_row = title_row.push(action(
                 "open-channel-tools",
                 "Reviews",
                 Some(Message::Navigate(Screen::Channels)),
                 false,
             ));
         }
+        let header = column![
+            title_row,
+            container(
+                text(topic)
+                    .size(12)
+                    .color(c.muted)
+                    .wrapping(iced::widget::text::Wrapping::None)
+            )
+            .width(Fill)
+            .clip(true),
+        ]
+        .spacing(2);
 
         let history = self.history.get(&key);
         let mut list = column![].spacing(2).width(Fill);

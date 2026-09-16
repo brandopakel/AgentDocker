@@ -30,7 +30,7 @@ pub fn owns_codex_process(
     let Some(process) = table.iter().find(|p| p.pid == pid) else {
         return false;
     };
-    if crate::procinfo::runtime_of(&process.argv) != Some("codex")
+    if !crate::procinfo::is_codex_binary(&process.argv)
         || !process
             .argv
             .windows(2)

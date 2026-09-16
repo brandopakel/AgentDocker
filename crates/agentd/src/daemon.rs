@@ -2278,12 +2278,25 @@ impl Daemon {
     /// cache or announce a repository.
     async fn scan(&self) -> Result<Vec<DiscoveredProcess>, String> {
         let mine = std::process::id();
-        let owners: Vec<_> = lock(&self.state)
-            .registry
-            .live()
-            .filter(|a| agentdocker_host::provider_input::is_codex_input(a))
-            .cloned()
-            .collect();
+        let (owners, controllers): (Vec<_>, HashSet<u32>) = {
+            let state = lock(&self.state);
+            let owners = state
+                .registry
+                .live()
+                .filter(|a| agentdocker_host::provider_input::is_codex_input(a))
+                .cloned()
+                .collect();
+            let controllers = state
+                .registry
+                .live()
+                .filter_map(|a| a.input_binding.as_ref())
+                .flat_map(|b| {
+                    std::iter::once(b.controller.pid)
+                        .chain(b.restart.launched.as_ref().map(|p| p.pid))
+                })
+                .collect();
+            (owners, controllers)
+        };
         tokio::task::spawn_blocking(move || {
             let table = procinfo::processes().map_err(|e| e.to_string())?;
             let launchers = procinfo::codex_launchers(&table);
@@ -2300,10 +2313,17 @@ impl Daemon {
             // about, so it is built once rather than per candidate.
             let by_pid: BTreeMap<u32, procinfo::Process> =
                 table.iter().map(|p| (p.pid, p.clone())).collect();
+            // A process a bound controller started (a receiver's own
+            // helpers) is that controller's, not a session to connect.
+            let sidecars: HashSet<u32> = table
+                .iter()
+                .filter(|p| controllers.contains(&p.ppid))
+                .map(|p| p.pid)
+                .collect();
             let mut found: Vec<DiscoveredProcess> = table
                 .into_iter()
                 .filter(|p| p.pid != mine && !launchers.contains(&p.pid))
-                .filter(|p| !controlled.contains(&p.pid))
+                .filter(|p| !controlled.contains(&p.pid) && !sidecars.contains(&p.pid))
                 .filter_map(|p| {
                     let runtime = procinfo::runtime_of(&p.argv)?;
                     let cwd = procinfo::cwd(p.pid);

@@ -131,6 +131,23 @@ impl Catalog {
         });
     }
 
+    /// Drop discovered folders that no longer exist: a fixture's checkout
+    /// or a scratch worktree that was deleted is not a project any more. A
+    /// pinned folder stays and says it is unavailable. Whether anything
+    /// went.
+    pub fn forget_missing(&mut self) -> bool {
+        let before = self.projects.len();
+        self.projects
+            .retain(|e| e.pinned || e.project.root.is_dir());
+        if self.projects.len() == before {
+            return false;
+        }
+        if self.selected.is_some() && self.selected().is_none() {
+            self.selected = self.projects.first().map(|e| e.project.root.clone());
+        }
+        true
+    }
+
     /// Take a project off the list and keep it off until it is added again.
     /// The list of removed folders is bounded like the list itself, and a
     /// removal at the bound is refused rather than forget an earlier one:
@@ -219,6 +236,20 @@ impl Catalog {
     }
 }
 
+/// Whether a folder lives under the per-user temporary directory (the
+/// system's `temp_dir`, on macOS `/var/folders/…/T`), where test fixtures
+/// make and drop folders by the hundred: such a folder is listed only when
+/// pinned by hand, never because an agent happened to run in it. `/tmp`
+/// is not that: people put checkouts there on purpose.
+pub fn is_temporary(root: &Path) -> bool {
+    let temp = std::env::temp_dir();
+    let private = Path::new("/private").join(temp.strip_prefix("/").unwrap_or(&temp));
+    root.starts_with(&temp)
+        || root.starts_with(&private)
+        || root.starts_with("/private/var/folders")
+        || root.starts_with("/var/folders")
+}
+
 pub fn resolve(folder: &Path) -> anyhow::Result<ProjectRef> {
     anyhow::ensure!(folder.is_dir(), "Choose an existing project folder");
     Ok(agentdocker_host::project::discover(folder))
@@ -249,6 +280,31 @@ mod tests {
     }
 
     use super::*;
+
+    /// A discovered folder that no longer exists leaves the list; a pinned
+    /// one stays, unavailable, and the selection moves off a vanished one.
+    #[test]
+    fn vanished_discovered_folders_leave_the_list_and_pinned_ones_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("here");
+        std::fs::create_dir(&existing).unwrap();
+        let gone = dir.path().join("gone");
+        let pinned_gone = dir.path().join("pinned-gone");
+        let mut catalog = Catalog::default();
+        catalog.remember(ProjectRef::directory(existing.clone()), false);
+        catalog.remember(ProjectRef::directory(gone.clone()), false);
+        catalog.remember(ProjectRef::directory(pinned_gone.clone()), true);
+        catalog.selected = Some(gone.clone());
+        assert!(catalog.forget_missing());
+        let roots: Vec<_> = catalog
+            .projects
+            .iter()
+            .map(|e| e.project.root.clone())
+            .collect();
+        assert_eq!(roots, vec![existing.clone(), pinned_gone.clone()]);
+        assert_eq!(catalog.selected.as_ref(), Some(&existing));
+        assert!(!catalog.forget_missing(), "nothing more to forget");
+    }
 
     #[test]
     fn a_removed_project_stays_off_the_list_until_added_again_and_a_name_is_kept() {

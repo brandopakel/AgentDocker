@@ -46,6 +46,8 @@ pub(super) struct State {
     /// Whether the collapsed sidebar groups are open.
     pub collisions_open: bool,
     pub earlier_open: bool,
+    /// Whether the conversations between agents are unfolded.
+    pub peers_open: bool,
     /// The project row whose menu is open.
     pub project_menu: Option<PathBuf>,
     /// The project being renamed, and the name so far.
@@ -148,7 +150,20 @@ impl ChannelDraft {
 impl State {
     pub fn load(home: &std::path::Path) -> Self {
         let (catalog, error, save_enabled) = match Catalog::load(home) {
-            Ok(catalog) => (catalog, None, true),
+            Ok(mut catalog) => {
+                // Folders discovered under the temporary directories before
+                // discovery stopped listing them go, and so does any
+                // discovered folder that no longer exists; a pinned one
+                // stays.
+                catalog
+                    .projects
+                    .retain(|e| e.pinned || !crate::catalog::is_temporary(&e.project.root));
+                catalog.forget_missing();
+                if catalog.selected().is_none() {
+                    catalog.selected = None;
+                }
+                (catalog, None, true)
+            }
             Err(error) => (
                 Catalog::default(),
                 Some(format!(
@@ -211,6 +226,9 @@ pub enum Message {
     MessagesSearch(String),
     ToggleCollisions,
     ToggleEarlier,
+    TogglePeers,
+    /// Every conversation the person owes a read is read through its head.
+    MarkAllRead,
     /// Open or close the menu under a project row.
     ProjectMenu(PathBuf),
     ProjectRenameStart(PathBuf),
@@ -471,9 +489,13 @@ impl App {
                     .iter()
                     .filter_map(|p| p.project.clone())
                     .chain(self.agents.iter().filter_map(|a| a.project.clone()))
+                    // A fixture's folder under the temporary directories is
+                    // not a project the person keeps; only a pin lists it.
+                    .filter(|p| !crate::catalog::is_temporary(&p.root))
                 {
                     self.shell.catalog.remember(project, false);
                 }
+                self.shell.catalog.forget_missing();
                 if before != self.shell.catalog {
                     self.shell.changed();
                 }
@@ -609,7 +631,7 @@ impl App {
                 };
                 let project = agent.project.clone();
                 let root = project.as_ref().map(|p| p.root.clone());
-                if let Some(project) = project {
+                if let Some(project) = project.filter(|p| !crate::catalog::is_temporary(&p.root)) {
                     self.shell.catalog.remember(project, false);
                     if !self
                         .shell
@@ -747,6 +769,23 @@ impl App {
             }
             Message::ToggleCollisions => self.shell.collisions_open = !self.shell.collisions_open,
             Message::ToggleEarlier => self.shell.earlier_open = !self.shell.earlier_open,
+            Message::TogglePeers => self.shell.peers_open = !self.shell.peers_open,
+            Message::MarkAllRead => {
+                if self.connected.is_ok() {
+                    let heads: Vec<(String, u64)> = self
+                        .conversations
+                        .iter()
+                        .filter(|s| s.unread > 0 && self.counts_for_person(s))
+                        .filter_map(|s| {
+                            s.last_seq
+                                .map(|seq| (s.conversation.as_str().to_owned(), seq))
+                        })
+                        .collect();
+                    for (conversation, seq) in heads {
+                        self.send(Cmd::MarkRead(conversation, seq));
+                    }
+                }
+            }
             Message::ProjectMenu(path) => {
                 let open = self.shell.project_menu.as_ref() == Some(&path);
                 self.shell.project_menu = (!open).then_some(path);
