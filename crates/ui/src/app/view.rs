@@ -1339,7 +1339,12 @@ impl App {
             }
             panel_col = panel_col.push(card(discovered.spacing(10), c));
         }
-        if count == 0 {
+        // A search can match only the Earlier group, which opens below.
+        // Those results must not be paired with a "No matching sessions" card.
+        let earlier_matches = filter == Filter::Current
+            && !earlier.is_empty()
+            && !self.shell.search.trim().is_empty();
+        if count == 0 && !earlier_matches {
             let (title_text, hint) = if !self.shell.search.is_empty() {
                 ("No matching sessions", "Try another name, tool, or branch.")
             } else {

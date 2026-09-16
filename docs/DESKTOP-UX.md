@@ -42,7 +42,9 @@ their parent folder under it. Sessions whose project is unknown appear under
 unanswered, unexpired questions, including questions from a session that has
 since finished. Ended sessions are not a tab: they sit in one collapsed
 **Earlier (n)** group under the current ones, including previous runs with the
-same name, and a search that finds one opens the group. Search applies to the
+same name, and a search that finds one opens the group. When only an earlier
+session matches, its result appears without a contradictory empty-state card.
+Search applies to the
 selected project, both filters and the Earlier group. Switching projects
 returns to Current. Nothing is deleted when a row moves to Earlier.
 

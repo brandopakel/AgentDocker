@@ -218,6 +218,18 @@ def smoke(binary_dir, output):
                          step("click", id="sessions-earlier"), step("wait_control", id=f"session-{previous['id']}", present=True),
                          step("wait_control", id=f"session-{agent['id']}", present=True), step("capture", name="session-earlier"),
                          step("click", id="sessions-earlier"), step("wait_control", id=f"session-{previous['id']}", present=False),
+                         # A search matching only an ended session opens Earlier without
+                         # also claiming that no sessions match. A missing term still does.
+                         step("fill", id="session-search", text=previous["id"]),
+                         step("wait_control", id=f"session-{previous['id']}", present=True),
+                         step("wait_control", id=f"session-{agent['id']}", present=False),
+                         step("wait_text_absent", text="No matching sessions"),
+                         step("capture", name="earlier-search-match"),
+                         step("fill", id="session-search", text="fixture-no-session-matches"),
+                         step("wait_control", id=f"session-{previous['id']}", present=False),
+                         step("wait_text", text="No matching sessions"),
+                         step("fill", id="session-search", text=""),
+                         step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("click", id="sessions-attention"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("click", id="sessions-current"),
                          # Messages: the direct conversation with the fixture holds its
@@ -297,6 +309,7 @@ def smoke(binary_dir, output):
                     steps.insert(2, step("native_accessibility"))
                 try:
                     report["first_window"] = launch("workflows", steps)
+                    checks.append("ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state")
                     assert answer.result(timeout=5).get("text") == "Use API v2", "answer did not reach asking agent"
                     agent_inbox = rpc(endpoint, {"op": "inbox", "agent": agent["id"], "drain": False})["messages"]
                     for question_id, decision in reviews:
