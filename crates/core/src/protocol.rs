@@ -614,6 +614,61 @@ pub enum Request {
         #[serde(default)]
         agent: Option<String>,
     },
+    /// What a reader can read: every conversation with its unread count,
+    /// for a project (an id prefix or an absolute path inside it) or, when
+    /// absent, everywhere. The reader is the person unless `reader` names
+    /// an agent. Answers `conversations`.
+    Conversations {
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        reader: Option<String>,
+    },
+    /// The newest `limit` archived messages of one conversation before
+    /// `before_seq`, oldest first, each thread root with its reply count.
+    /// Answers `history`.
+    History {
+        conversation: crate::ConversationId,
+        #[serde(default)]
+        before_seq: Option<u64>,
+        #[serde(default = "default_history_limit")]
+        limit: usize,
+    },
+    /// A thread: one root and the replies under it, in its conversation,
+    /// after `after_seq`, at most `limit`; page by the last reply's seq.
+    /// Answers `thread`.
+    Thread {
+        message: MessageId,
+        #[serde(default)]
+        after_seq: Option<u64>,
+        #[serde(default = "default_history_limit")]
+        limit: usize,
+    },
+    /// A reader has read a conversation through an archived seq: the
+    /// cursor moves forward, never back, and only the reader's own queued
+    /// rows in that conversation are acknowledged. Answers `ok`.
+    MarkRead {
+        conversation: crate::ConversationId,
+        through: u64,
+        #[serde(default)]
+        reader: Option<String>,
+    },
+    /// Archived messages whose text matches, newest first, before
+    /// `before_seq`, within a project's conversations when given.
+    /// Answers `history`.
+    SearchMessages {
+        query: String,
+        #[serde(default)]
+        project: Option<String>,
+        /// Whose search: the person unless an agent is named; only what
+        /// that reader could list is searched.
+        #[serde(default)]
+        reader: Option<String>,
+        #[serde(default)]
+        before_seq: Option<u64>,
+        #[serde(default = "default_history_limit")]
+        limit: usize,
+    },
     /// Channels of a project: the rooms agents share when they turn out to
     /// be on the same work. An empty `project` means the agent's own.
     Channels {
@@ -634,6 +689,9 @@ pub enum Request {
         task: String,
         #[serde(default)]
         members: Vec<String>,
+        /// The `#name` people will use; made from the task when absent.
+        #[serde(default)]
+        name: Option<String>,
     },
     /// The work is final: close the channel and tell its members. Closed
     /// channels are pruned by `channel_prune`.
@@ -746,6 +804,10 @@ pub enum Request {
         #[serde(default = "default_tail")]
         tail: usize,
     },
+}
+
+fn default_history_limit() -> usize {
+    100
 }
 
 fn default_ttl() -> u64 {
@@ -1046,6 +1108,16 @@ pub enum Response {
     },
     Channels {
         channels: Vec<crate::Channel>,
+    },
+    Conversations {
+        conversations: Vec<crate::ConversationSummary>,
+    },
+    History {
+        messages: Vec<crate::ArchivedMessage>,
+    },
+    Thread {
+        root: crate::ArchivedMessage,
+        replies: Vec<crate::ArchivedMessage>,
     },
     Pruned {
         removed: usize,

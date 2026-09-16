@@ -58,6 +58,9 @@ impl State {
     fn agents_in(&self, project: &ProjectId, checkouts: &[PathBuf]) -> Vec<AgentRecord> {
         self.registry
             .live()
+            // A person's record sits in the checkout but edits nothing: a
+            // collision is between the agents.
+            .filter(|a| a.spec.runtime != agentdocker_core::HUMAN_RUNTIME)
             .filter(|a| {
                 a.project.as_ref().is_some_and(|p| {
                     p.id() == *project && checkouts.contains(&project::canonical(p.dir()))
@@ -130,6 +133,7 @@ impl State {
         let channel = Channel {
             id: ChannelId::generate(),
             project: project.clone(),
+            name: None,
             subject: ChannelSubject::Contested {
                 paths: vec![path.to_path_buf()],
             },
@@ -354,11 +358,26 @@ impl Daemon {
         reference: &str,
         task: String,
         members: Vec<String>,
+        name: Option<String>,
     ) -> Response {
+        use agentdocker_core::conversation::{channel_name_from, valid_channel_name};
         let task = task.trim().to_owned();
         if task.is_empty() {
             return Response::error(ErrorCode::Invalid, "a channel needs a task");
         }
+        // The name people will use: chosen, or made from the task. A name
+        // is unique among the project's open channels; a closed one keeps
+        // its own in history.
+        let name = match name.map(|n| n.trim().to_owned()) {
+            Some(chosen) if !valid_channel_name(&chosen) => {
+                return Response::error(
+                    ErrorCode::Invalid,
+                    "a channel name is lowercase letters, digits and hyphens, at most 40 characters",
+                );
+            }
+            Some(chosen) => Some(chosen),
+            None => channel_name_from(&task),
+        };
         let mut state = lock(&self.state);
         let opener = match state.resolve(reference) {
             Ok(id) => id,
@@ -394,9 +413,22 @@ impl Daemon {
             .iter()
             .filter_map(|id| state.registry.get(id).cloned())
             .collect();
+        if let Some(name) = &name
+            && let Some(taken) = state
+                .channels
+                .values()
+                .find(|c| c.is_open() && c.project == project && c.name.as_deref() == Some(name))
+        {
+            return Response::Error {
+                code: ErrorCode::Conflict,
+                message: format!("#{name} is open already in this project"),
+                details: Some(serde_json::json!({ "channel": taken.id })),
+            };
+        }
         let channel = Channel {
             id: ChannelId::generate(),
             project,
+            name,
             subject: ChannelSubject::Task { task: task.clone() },
             members: ids,
             opened_by: Some(opener),
@@ -741,6 +773,7 @@ mod tests {
                 agent: "writer".into(),
                 task: "settle the parser".into(),
                 members: vec!["reviewer".into()],
+                name: None,
             })
             .await
         else {
@@ -914,6 +947,7 @@ mod tests {
                 agent: "writer".into(),
                 task: "second round".into(),
                 members: vec![],
+                name: None,
             })
             .await
         else {

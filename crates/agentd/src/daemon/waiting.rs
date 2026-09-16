@@ -452,12 +452,27 @@ impl Daemon {
             .collect();
         let mut activity: Vec<AgentActivity> = records
             .iter()
-            .map(|record| AgentActivity {
-                agent: record.id.clone(),
-                name: record.spec.name.clone(),
-                project: record.project.as_ref().map(ProjectRef::id),
-                activity: state.activity_of(record, now),
-                queued_inputs: Some(state.inboxes.get(&record.id).map_or(0, |queue| queue.len())),
+            .map(|record| {
+                let queue = state.inboxes.get(&record.id);
+                // A receipt from the current process covers the messages it
+                // names; what it does not name is still waiting.
+                let receipted = record
+                    .input_delivery
+                    .as_ref()
+                    .filter(|d| d.received_for(record.process_started_at, now))
+                    .and_then(|d| d.received.as_ref())
+                    .map(|r| r.messages.as_slice())
+                    .unwrap_or(&[]);
+                AgentActivity {
+                    agent: record.id.clone(),
+                    name: record.spec.name.clone(),
+                    project: record.project.as_ref().map(ProjectRef::id),
+                    activity: state.activity_of(record, now),
+                    queued_inputs: Some(queue.map_or(0, |queue| queue.len())),
+                    awaiting_receipt: Some(queue.map_or(0, |queue| {
+                        queue.iter().filter(|m| !receipted.contains(&m.id)).count()
+                    })),
+                }
             })
             .collect();
         // Blocked first, because that is the one somebody has to do

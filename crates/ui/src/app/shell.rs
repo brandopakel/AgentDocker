@@ -35,6 +35,17 @@ pub(super) struct State {
     pub answer_errors: BTreeMap<MessageId, String>,
     pub file_review: Option<MessageId>,
     pub message_detail: Option<MessageId>,
+    /// The conversation open in Messages, by its id (`everyone:<project>`,
+    /// `channel:<id>`, `dm:<a>:<b>`, ...), and the thread root open beside
+    /// it, if any.
+    pub conversation: Option<String>,
+    pub thread: Option<MessageId>,
+    pub conversation_drafts: BTreeMap<String, ChannelDraft>,
+    /// The sidebar's filter text.
+    pub messages_search: String,
+    /// Whether the collapsed sidebar groups are open.
+    pub collisions_open: bool,
+    pub earlier_open: bool,
     /// The conversation open in Inbox: one agent, or every agent at once.
     pub inbox_thread: Option<String>,
     /// In a narrow window Inbox shows either the list or one conversation;
@@ -188,6 +199,18 @@ pub enum Message {
     QuestionDetails(MessageId),
     /// Open one agent's conversation in Inbox, or all of them.
     SelectThread(Option<String>),
+    SelectConversation(String),
+    ConversationDraft(String, String),
+    SendConversation(String),
+    OpenThread(MessageId),
+    CloseThread,
+    MessagesSearch(String),
+    ToggleCollisions,
+    ToggleEarlier,
+    /// The page of the conversation's archive before what is shown.
+    EarlierHistory(String),
+    /// Unfold or fold one archived message's full text.
+    ExpandArchived(MessageId),
     /// Back from a conversation to the list, in a narrow window.
     InboxList,
     /// Send the agent's draft to everyone in its project as well.
@@ -264,6 +287,56 @@ async fn notifications(mut output: iced::futures::channel::mpsc::Sender<Message>
 }
 
 impl App {
+    /// Open the conversation with one agent: the inbox thread, and with a
+    /// daemon that has conversations, the direct conversation between the
+    /// person and that agent.
+    pub(super) fn open_thread_with(&mut self, agent: String) {
+        self.shell.inbox_thread = Some(agent.clone());
+        self.shell.inbox_open = true;
+        if self.has_conversations() {
+            self.adopt_inbox_thread();
+        }
+    }
+
+    /// The direct conversation of the thread the person opened, once the
+    /// daemon's conversations and the person's own record are known. A
+    /// notification can open a thread before either has arrived; the
+    /// conversation is settled here when they do.
+    pub(super) fn adopt_inbox_thread(&mut self) {
+        let Some(agent) = self.shell.inbox_thread.clone() else {
+            return;
+        };
+        let listed = self
+            .conversations
+            .iter()
+            .filter(|c| c.kind == agentdocker_core::ConversationKind::Dm)
+            .find(|c| {
+                c.conversation.dm_parties().is_some_and(|(a, b)| {
+                    (a == agent && self.is_human(b)) || (b == agent && self.is_human(a))
+                })
+            })
+            .map(|c| c.conversation.as_str().to_owned());
+        let conversation = listed.unwrap_or_else(|| {
+            let human = self
+                .agents
+                .iter()
+                .find(|a| a.spec.runtime == agentdocker_core::HUMAN_RUNTIME)
+                .map(|a| a.id.as_str().to_owned())
+                .unwrap_or_else(|| agentdocker_core::HUMAN.to_owned());
+            agentdocker_core::ConversationId::dm(&human, &agent)
+                .as_str()
+                .to_owned()
+        });
+        if self.shell.conversation.as_deref() != Some(conversation.as_str()) {
+            self.shell.thread = None;
+            self.thread = None;
+        }
+        self.shell.conversation = Some(conversation.clone());
+        if self.connected.is_ok() {
+            self.send(Cmd::History(conversation, self.history_epoch));
+        }
+    }
+
     fn take_answer_reveal(&mut self) -> Option<MessageId> {
         if std::mem::take(&mut self.shell.reveal_next_question)
             && self.screen == Screen::Questions
@@ -275,8 +348,7 @@ impl App {
                 .find(|q| !q.expired(Utc::now()))
                 .map(|q| (q.id.clone(), self.canonical_agent(&q.from).to_owned()));
             if let Some((_, agent)) = &next {
-                self.shell.inbox_thread = Some(agent.clone());
-                self.shell.inbox_open = true;
+                self.open_thread_with(agent.clone());
             }
             next.map(|(id, _)| id)
         } else {
@@ -319,7 +391,9 @@ impl App {
             &message,
             Message::Draft(..)
                 | Message::SessionDraft(..)
+                | Message::ConversationDraft(..)
                 | Message::SelectThread(_)
+                | Message::SelectConversation(_)
                 | Message::InboxList
                 | Message::Navigate(_)
                 | Message::SelectProject(_)
@@ -467,8 +541,8 @@ impl App {
                     .iter()
                     .find(|q| q.id == id && !q.expired(Utc::now()))
                 {
-                    self.shell.inbox_thread = Some(self.canonical_agent(&question.from).to_owned());
-                    self.shell.inbox_open = true;
+                    let agent = self.canonical_agent(&question.from).to_owned();
+                    self.open_thread_with(agent);
                     self.shell.message_detail = Some(id.clone());
                     tasks.push(crate::controls::reveal(format!(
                         "notification-question-{id}"
@@ -577,6 +651,90 @@ impl App {
                         Some("Finish or clear an earlier message draft first.".into());
                 }
             }
+            Message::SelectConversation(id) => {
+                if self.shell.conversation.as_deref() != Some(id.as_str()) {
+                    self.shell.thread = None;
+                    self.thread = None;
+                }
+                self.shell.conversation = Some(id.clone());
+                self.shell.inbox_open = true;
+                if self.connected.is_ok() {
+                    self.send(Cmd::History(id, self.history_epoch));
+                }
+            }
+            Message::ConversationDraft(id, text) => {
+                if self.shell.conversation_drafts.contains_key(&id)
+                    || self.shell.conversation_drafts.len() < 128
+                {
+                    self.shell
+                        .conversation_drafts
+                        .entry(id)
+                        .or_default()
+                        .edit(text);
+                } else {
+                    self.shell.error =
+                        Some("Finish or clear an earlier message draft first.".into());
+                }
+            }
+            Message::SendConversation(key) => {
+                // The key says where the words were typed: the conversation's
+                // own composer, or a thread's, which alone sets `reply_to`.
+                let (conversation, reply_to) = super::split_draft_key(&key);
+                let conversation = conversation.to_owned();
+                let to = self.conversation_destination(&conversation);
+                if self.connected.is_ok()
+                    && let Some(to) = to
+                    && let Some(draft) = self.shell.conversation_drafts.get_mut(&key)
+                    && let Some(text) = draft.begin()
+                {
+                    self.send(Cmd::ConversationSend {
+                        draft: key,
+                        to,
+                        text,
+                        reply_to,
+                    });
+                }
+            }
+            Message::EarlierHistory(conversation) => {
+                if self.connected.is_ok()
+                    && let Some(first) = self
+                        .history
+                        .get(&conversation)
+                        .and_then(|messages| messages.first())
+                {
+                    self.send(Cmd::HistoryBefore(
+                        conversation.clone(),
+                        first.seq,
+                        self.history_epoch,
+                    ));
+                }
+            }
+            Message::ExpandArchived(id) => {
+                let archived = self.history.values().flatten().any(|m| m.envelope.id == id)
+                    || self.thread.as_ref().is_some_and(|(root, replies)| {
+                        root.envelope.id == id || replies.iter().any(|m| m.envelope.id == id)
+                    });
+                if archived {
+                    self.shell.message_detail =
+                        (self.shell.message_detail.as_ref() != Some(&id)).then_some(id);
+                }
+            }
+            Message::OpenThread(root) => {
+                self.shell.thread = Some(root.clone());
+                self.thread = None;
+                if self.connected.is_ok() {
+                    self.send(Cmd::Thread(root, self.history_epoch));
+                }
+            }
+            Message::CloseThread => {
+                self.shell.thread = None;
+                self.thread = None;
+            }
+            Message::MessagesSearch(text) => {
+                self.shell.messages_search = text.chars().take(200).collect();
+            }
+            Message::ToggleCollisions => self.shell.collisions_open = !self.shell.collisions_open,
+            Message::ToggleEarlier => self.shell.earlier_open = !self.shell.earlier_open,
             Message::SendSession(id) => {
                 if self.connected.is_ok()
                     && self.agents.iter().any(|a| {
@@ -1304,7 +1462,14 @@ impl App {
             agentdocker_core::Destination::Channel(id) => Some(id.clone()),
             _ => None,
         });
-        let found = question.is_some() || envelope.is_some();
+        // A message the person has already read is no longer in the inbox
+        // but is archived in its conversation; with conversations, the
+        // notification's own agent and channel name where it sits, and it
+        // is there even when that agent's record or the channel is gone:
+        // the archive outlives both.
+        let archived = question.is_none() && envelope.is_none() && self.has_conversations();
+        let channel = channel.or_else(|| archived.then(|| target.channel.clone()).flatten());
+        let found = question.is_some() || envelope.is_some() || archived;
         if !found {
             if started.elapsed() >= Duration::from_secs(10) {
                 self.shell.pending_notification = None;
@@ -1349,7 +1514,10 @@ impl App {
                 return Task::none();
             }
         }
+        // The Channels screen needs the channel open; an archived
+        // conversation needs only its id.
         if let Some(channel) = &channel
+            && !archived
             && !self.channels.iter().any(|c| &c.id == channel)
         {
             if started.elapsed() < Duration::from_secs(10) {
@@ -1370,14 +1538,33 @@ impl App {
         self.screen = if channel.is_some() {
             Screen::Channels
         } else {
-            self.shell.inbox_thread = self.shell.selected.clone();
             // Opened, not merely selected: in the narrow layout the list
             // would otherwise hide the conversation the notification names.
-            self.shell.inbox_open = true;
+            // An archived conversation sits under the id its party had at
+            // the time, so a retired identity opens its own, not the one of
+            // the record it became; the inbox's threads go by the current.
+            let thread_with = if archived {
+                target.agent.to_string()
+            } else {
+                self.canonical_agent(target.agent.as_str()).to_owned()
+            };
+            self.open_thread_with(thread_with);
             Screen::Questions
         };
         if let Some(channel) = channel {
             self.shell.channel_target = Some(channel.to_string());
+            if self.has_conversations() {
+                self.screen = Screen::Questions;
+                let conversation = format!("channel:{channel}");
+                // Another conversation's thread does not follow.
+                if self.shell.conversation.as_deref() != Some(conversation.as_str()) {
+                    self.shell.thread = None;
+                    self.thread = None;
+                }
+                self.shell.conversation = Some(conversation.clone());
+                self.shell.inbox_open = true;
+                self.send(Cmd::History(conversation, self.history_epoch));
+            }
         }
         // Revealing the card expands its retained text and scrolls to it. Existing answer/channel
         // drafts and their keyboard focus are not submitted or rewritten.
@@ -1915,6 +2102,78 @@ mod tests {
             cmd,
             Cmd::Answer(..) | Cmd::ChannelSend(..) | Cmd::Launch(..) | Cmd::Stop(..)
         )));
+    }
+
+    /// An archived message's notification opens its conversation even when
+    /// its sender's record is gone and its channel is closed: the archive
+    /// outlives both, and no ten-second wait ends in "no longer available".
+    #[test]
+    fn an_archived_notification_opens_its_conversation_without_a_live_sender_or_channel() {
+        // A direct message from a sender nobody has a record of.
+        let (mut app, commands, messages, _home, action) = notification_app();
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action),
+        ));
+        let _ = app.update(Message::Tick);
+        assert!(app.shell.pending_notification.is_none(), "routed at once");
+        assert_eq!(app.screen, Screen::Questions);
+        assert!(app.shell.inbox_open);
+        assert_eq!(
+            app.shell.conversation.as_deref(),
+            Some(agentdocker_core::ConversationId::dm("user", "sender-1").as_str())
+        );
+        assert!(
+            commands
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::History(ref c, _) if c.starts_with("dm:"))),
+            "the conversation's archive is asked for"
+        );
+        assert!(app.status.is_empty(), "nothing said to be unavailable");
+
+        // A sender retired into another record: its archive sits under the
+        // id it had, and that is the conversation opened.
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        app.aliases
+            .insert("sender-1".to_owned(), "sender-now".to_owned());
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action),
+        ));
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.shell.selected.as_deref(), Some("sender-now"));
+        assert_eq!(
+            app.shell.conversation.as_deref(),
+            Some(agentdocker_core::ConversationId::dm("user", "sender-1").as_str()),
+            "the archived conversation, not the current record's"
+        );
+
+        // A channel message whose channel is no longer open.
+        let (mut app, commands, messages, _home, mut action) = notification_app();
+        action.target.channel = Some(agentdocker_core::ChannelId::from("closed-room".to_owned()));
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action),
+        ));
+        let _ = app.update(Message::Tick);
+        assert!(app.shell.pending_notification.is_none(), "routed at once");
+        assert_eq!(app.screen, Screen::Questions);
+        assert_eq!(
+            app.shell.conversation.as_deref(),
+            Some("channel:closed-room")
+        );
+        assert!(
+            commands
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::History(ref c, _) if c == "channel:closed-room"))
+        );
+        assert!(app.status.is_empty());
     }
 
     #[test]

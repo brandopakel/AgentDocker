@@ -40,7 +40,7 @@ appearance preferences are read when no new appearance has been saved.
 | Destination | Everyday purpose |
 | --- | --- |
 | Projects | All projects home with the Needs you strip; per project: Sessions, Activity, and under More (Advanced) Channels, Files in use, Command line |
-| Inbox | Questions, retained answer drafts and messages addressed to the user |
+| Inbox | Questions, retained answer drafts and messages addressed to the user; Messages (conversations, threads, read cursors) against a daemon that keeps them |
 | Tools (rail id `connections`) | Installed tools and connection status. **Set up** appears for an installed tool missing MCP or hooks when no active session report exists. Expanded Details offers **Review setup**, health and history; setup plans use **Connect**, and applied plans offer **Undo** |
 | Settings | Appearance, installation, retained versions and diagnostics |
 
@@ -131,6 +131,18 @@ system, which is drawn from the mark:
   160-character first-line preview and explicit Show/Hide question controls.
   Their full text remains intact. Notification routing expands its target before
   revealing it; details and navigation never submit or rewrite another draft.
+  On the Messages screen the sidebar rows are `thread-<agent>` for a direct
+  conversation (the inbox's id, so the same smoke drives both) and
+  `conversation-<id>` otherwise; the composer is `reply-<agent>` or
+  `compose-<conversation>`, a thread's `reply-thread-<message>` (its draft is
+  keyed `<conversation>#<message>`, apart from the conversation's), thread
+  links `thread-<message>`, the back controls `thread-back` (to the list) and
+  `close-thread` (the thread's one close, a header action when wide and the
+  way back when narrow, never both), earlier pages `earlier-<conversation>`. The screen takes an explicit height from the window (the
+  window less the chrome, at least 320) because it sits inside the workspace's
+  own scroll, where `Fill` has nothing to fill; `scripts/iced_workflow_smoke.py`
+  asserts that reading a conversation acknowledges its rows and clears its
+  unread count.
 - **Layout.** A 236-point rail (204 when narrow) with the selected entry marked
   by an accent bar, then a workspace that leads with the project name, its
   path and the project's one primary action, then the section tabs over a
