@@ -1274,6 +1274,7 @@ try:
                     start_new_session=True,
                 )
                 os.close(slave)
+                slave = None
                 thread = threading.Thread(target=reader, daemon=True)
                 thread.start()
                 registered = wait(
