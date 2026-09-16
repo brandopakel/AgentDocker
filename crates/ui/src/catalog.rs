@@ -11,12 +11,26 @@ const MAX_STATE_BYTES: u64 = 2 * 1024 * 1024;
 pub struct Entry {
     pub project: ProjectRef,
     pub pinned: bool,
+    /// A name the person gave this project here, instead of its folder's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+impl Entry {
+    /// What the sidebar calls the project: the chosen name, else the folder.
+    pub fn name(&self) -> String {
+        self.label.clone().unwrap_or_else(|| self.project.name())
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Catalog {
     pub projects: Vec<Entry>,
+    /// Folders the person removed from the list; discovery does not bring
+    /// them back, adding one again does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<PathBuf>,
     pub selected: Option<PathBuf>,
     pub dark: bool,
     pub unassigned: bool,
@@ -63,6 +77,11 @@ impl Catalog {
         if !project.root.is_absolute() {
             return false;
         }
+        if pin {
+            self.hidden.retain(|h| h != &project.root);
+        } else if self.hidden.contains(&project.root) {
+            return false;
+        }
         if let Some(entry) = self
             .projects
             .iter_mut()
@@ -85,6 +104,7 @@ impl Catalog {
         self.projects.push(Entry {
             project,
             pinned: pin,
+            label: None,
         });
         self.sort_projects();
         // Discovery changes the catalog, not the user's selection. None is the
@@ -100,11 +120,56 @@ impl Catalog {
 
     fn sort_projects(&mut self) {
         self.projects.sort_by(|a, b| {
-            a.project
-                .name()
-                .cmp(&b.project.name())
+            a.name()
+                .cmp(&b.name())
                 .then_with(|| a.project.root.cmp(&b.project.root))
         });
+    }
+
+    /// Take a project off the list and keep it off until it is added again.
+    pub fn remove(&mut self, root: &Path) -> bool {
+        let before = self.projects.len();
+        self.projects.retain(|e| e.project.root != root);
+        if self.projects.len() == before {
+            return false;
+        }
+        if !self.hidden.iter().any(|h| h == root) {
+            self.hidden.push(root.to_path_buf());
+        }
+        if self.selected.as_deref() == Some(root) {
+            self.selected = self.projects.first().map(|e| e.project.root.clone());
+        }
+        true
+    }
+
+    /// Name a project here; an empty name goes back to the folder's.
+    pub fn rename(&mut self, root: &Path, label: &str) -> bool {
+        let Some(entry) = self.projects.iter_mut().find(|e| e.project.root == root) else {
+            return false;
+        };
+        let label = label.trim();
+        let next = (!label.is_empty() && label != entry.project.name())
+            .then(|| label.chars().take(80).collect::<String>());
+        if entry.label == next {
+            return false;
+        }
+        entry.label = next;
+        self.sort_projects();
+        true
+    }
+
+    /// The names more than one listed project shares, so the list can say
+    /// which folder each of those is.
+    pub fn shared_names(&self) -> std::collections::BTreeSet<String> {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut shared = std::collections::BTreeSet::new();
+        for entry in &self.projects {
+            let name = entry.name();
+            if !seen.insert(name.clone()) {
+                shared.insert(name);
+            }
+        }
+        shared
     }
 
     pub fn pin(&mut self, project: ProjectRef) -> anyhow::Result<()> {
@@ -173,6 +238,38 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_removed_project_stays_off_the_list_until_added_again_and_a_name_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = |name: &str| ProjectRef::directory(dir.path().join(name));
+        let mut catalog = Catalog::default();
+        catalog.remember(project("alpha"), false);
+        catalog.remember(project("beta"), false);
+        catalog.selected = Some(project("alpha").root);
+        assert!(catalog.remove(&project("alpha").root));
+        assert_eq!(catalog.projects.len(), 1);
+        assert_eq!(catalog.selected, Some(project("beta").root));
+        // Discovery does not bring it back; adding it does.
+        assert!(!catalog.remember(project("alpha"), false));
+        assert_eq!(catalog.projects.len(), 1);
+        assert!(catalog.remember(project("alpha"), true));
+        assert!(catalog.hidden.is_empty());
+        // A chosen name sorts and saves; the folder's name is no label.
+        assert!(catalog.rename(&project("beta").root, "  zed  "));
+        assert_eq!(catalog.projects.last().unwrap().name(), "zed");
+        assert!(catalog.rename(&project("beta").root, "beta"));
+        assert_eq!(catalog.projects[1].label, None);
+        let home = dir.path().join("state");
+        catalog.rename(&project("beta").root, "zed");
+        catalog.remove(&project("alpha").root);
+        catalog.save(&home).unwrap();
+        assert_eq!(Catalog::load(&home).unwrap(), catalog);
+        // Two folders called the same are told apart by name.
+        catalog.remember(project("nested/zed"), true);
+        assert_eq!(catalog.shared_names().len(), 1);
+    }
+
     #[test]
     fn project_name_order_survives_reopening() {
         let dir = tempfile::tempdir().unwrap();

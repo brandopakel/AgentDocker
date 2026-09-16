@@ -6,7 +6,9 @@ pub enum Filter {
     #[default]
     Current,
     NeedsInput,
-    History,
+    /// Sessions that have ended: not a tab, the collapsed *Earlier* group
+    /// under the current ones.
+    Earlier,
 }
 
 impl App {
@@ -48,7 +50,7 @@ impl App {
                     && match filter {
                         Filter::Current => a.status.is_live(),
                         Filter::NeedsInput => self.needs_attention(a),
-                        Filter::History => !a.status.is_live(),
+                        Filter::Earlier => !a.status.is_live(),
                     }
                     && format!(
                         "{} {} {} {}",
@@ -201,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn current_sessions_exclude_history_and_humans_without_losing_records() {
+    fn current_sessions_exclude_earlier_ones_and_humans_without_losing_records() {
         let mut app = app();
         let live = record("codex");
         let mut finished = record("codex");
@@ -211,11 +213,11 @@ mod tests {
         app.agents = vec![finished.clone(), live.clone(), human];
         assert_eq!(app.session_records(Filter::Current)[0].id, live.id);
         assert_eq!(app.session_records(Filter::Current).len(), 1);
-        assert_eq!(app.session_records(Filter::History)[0].id, finished.id);
+        assert_eq!(app.session_records(Filter::Earlier)[0].id, finished.id);
         assert_eq!(app.agents.len(), 3);
         app.shell.search = finished.id.to_string();
         assert!(app.session_records(Filter::Current).is_empty());
-        assert_eq!(app.session_records(Filter::History).len(), 1);
+        assert_eq!(app.session_records(Filter::Earlier).len(), 1);
     }
 
     #[test]

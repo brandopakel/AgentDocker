@@ -27,16 +27,22 @@ in the same repository appear there automatically. Linked worktrees share a
 project and retain their session checkout details.
 
 Quiet projects remain available. An unavailable folder stays selected and offers
-**Check folder again**. **More → Unpin project** keeps it in recent projects; **More → Forget
-project** removes its workspace entry. Neither deletes files nor stops sessions.
-A project with active agents can be discovered again. Sessions whose project is
-unknown appear under **Other sessions**.
+**Check folder again**. Each project row has its own **⋯** menu: **Rename…**
+gives the entry a name of your own here (an empty name goes back to the
+folder's), **Pin**/**Unpin**, and **Remove from list**, which keeps the folder
+off the list even when its sessions are discovered again, until you add it
+again. **More → Forget project** does the same for the selected project. None
+of these deletes files or stops sessions. Two projects with one name show
+their parent folder under it. Sessions whose project is unknown appear under
+**Other sessions**.
 
-**Current** shows live sessions; **History** holds finished sessions, including
-previous runs with the same name. **Needs input** shows this project's unanswered,
-unexpired questions, including questions from a session that has since finished.
-Search applies to the selected project and all three filters. Switching projects
-returns to Current. Nothing is deleted when a row moves to History.
+**Current** shows live sessions; **Needs input** shows this project's
+unanswered, unexpired questions, including questions from a session that has
+since finished. Ended sessions are not a tab: they sit in one collapsed
+**Earlier (n)** group under the current ones, including previous runs with the
+same name, and a search that finds one opens the group. Search applies to the
+selected project, both filters and the Earlier group. Switching projects
+returns to Current. Nothing is deleted when a row moves to Earlier.
 
 Session rows show the name, runtime, branch and observed activity. Sessions needing
 input appear first within each project. Select a row for terminal access, reply, or stop. On a narrow
@@ -55,7 +61,7 @@ Installation or configuration alone does not prove that an agent is working.
 
 **Stop session…** changes to **Confirm stop** for five seconds. Confirm sends the
 stop request. A managed live PTY offers **Open terminal**; **Detach** closes the
-view while the process continues. Finished sessions remain available in History.
+view while the process continues. Finished sessions remain available under Earlier.
 
 **Message** opens a small composer for the selected agent. **Send message** uses
 the same inbox queue as messages from other agents. Its queued receipt confirms
