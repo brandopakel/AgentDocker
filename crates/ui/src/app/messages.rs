@@ -199,8 +199,12 @@ impl App {
         (self.shell.height / self.scale_factor() - 250.0).max(320.0)
     }
 
+    pub(super) fn messages_compact(&self) -> bool {
+        self.narrow() || self.panes.compact_messages()
+    }
+
     pub(super) fn messages_view(&self, c: Colors) -> Element<'_, Message> {
-        let narrow = self.narrow();
+        let narrow = self.messages_compact();
         let height = self.workspace_height();
         if narrow {
             if self.shell.inbox_open && self.shell.conversation.is_some() {
@@ -979,7 +983,7 @@ impl App {
         .spacing(8)
         .align_y(Center);
         // Narrow, the way back above the pane closes it; one control, one id.
-        if !self.narrow() {
+        if !self.messages_compact() {
             header = header.push(action(
                 "close-thread",
                 "Close",

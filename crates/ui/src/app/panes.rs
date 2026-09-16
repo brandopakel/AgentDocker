@@ -50,6 +50,8 @@ const THREAD: (f32, f32) = (240.0, 640.0);
 /// The workspace's own padding beside the rail, which the Messages grid
 /// does not get.
 const WORKSPACE_CHROME: f32 = 61.0;
+/// Keep the message body and composer usable after side columns shrink.
+const CONVERSATION_MIN: f32 = 320.0;
 
 pub struct Panes {
     pub shell: State<Slot>,
@@ -118,6 +120,7 @@ impl Panes {
             (false, Some((pane, _))) => {
                 self.messages.close(pane);
                 self.thread = None;
+                self.apply();
             }
             _ => {}
         }
@@ -126,6 +129,9 @@ impl Panes {
     /// A divider was dragged: the column it moves keeps the whole pixels
     /// this ratio means now. Whether a saved width changed.
     pub fn resized(&mut self, grid: Grid, event: pane_grid::ResizeEvent) -> bool {
+        if !event.ratio.is_finite() {
+            return false;
+        }
         let before = self.widths;
         match grid {
             Grid::Shell if event.split == self.rail_split => {
@@ -137,7 +143,7 @@ impl Panes {
                     .clamp(SIDEBAR.0, SIDEBAR.1);
             }
             Grid::Messages if self.thread.is_some_and(|(_, split)| split == event.split) => {
-                let rest = self.messages_width() - self.widths.sidebar;
+                let rest = self.messages_width() - self.effective_widths().sidebar;
                 self.widths.thread = ((1.0 - event.ratio) * rest)
                     .round()
                     .clamp(THREAD.0, THREAD.1);
@@ -148,22 +154,57 @@ impl Panes {
         self.widths != before
     }
 
-    fn messages_width(&self) -> f32 {
-        (self.window - self.widths.rail - WORKSPACE_CHROME).max(1.0)
+    fn minimum_messages_width(&self) -> f32 {
+        SIDEBAR.0 + CONVERSATION_MIN + if self.thread.is_some() { THREAD.0 } else { 0.0 }
     }
 
-    /// Ratios from pixels, for the window as it is now.
+    /// Preferred widths survive a constrained window. Only the rendered
+    /// columns shrink; growing the window restores the person's preferences.
+    fn effective_widths(&self) -> Widths {
+        let rail = self
+            .widths
+            .rail
+            .min((self.window - WORKSPACE_CHROME - self.minimum_messages_width()).max(RAIL.0));
+        let available = (self.window - rail - WORKSPACE_CHROME).max(1.0);
+        let thread_min = if self.thread.is_some() { THREAD.0 } else { 0.0 };
+        let sidebar = self
+            .widths
+            .sidebar
+            .min((available - CONVERSATION_MIN - thread_min).max(SIDEBAR.0));
+        let thread = self
+            .widths
+            .thread
+            .min((available - sidebar - CONVERSATION_MIN).max(THREAD.0));
+        Widths {
+            rail,
+            sidebar,
+            thread,
+        }
+    }
+
+    fn messages_width(&self) -> f32 {
+        (self.window - self.effective_widths().rail - WORKSPACE_CHROME).max(1.0)
+    }
+
+    /// When even the minimum columns do not fit, use the existing
+    /// conversation/thread navigation instead of squeezing the composer.
+    pub fn compact_messages(&self) -> bool {
+        self.messages_width() < self.minimum_messages_width()
+    }
+
+    /// Ratios from effective pixels, for the window as it is now.
     fn apply(&mut self) {
+        let widths = self.effective_widths();
         let ratio = |part: f32, whole: f32| (part / whole.max(1.0)).clamp(0.05, 0.95);
         self.shell
-            .resize(self.rail_split, ratio(self.widths.rail, self.window));
+            .resize(self.rail_split, ratio(widths.rail, self.window));
         let width = self.messages_width();
         self.messages
-            .resize(self.sidebar_split, ratio(self.widths.sidebar, width));
+            .resize(self.sidebar_split, ratio(widths.sidebar, width));
         if let Some((_, split)) = self.thread {
-            let rest = (width - self.widths.sidebar).max(1.0);
+            let rest = (width - widths.sidebar).max(1.0);
             self.messages
-                .resize(split, 1.0 - ratio(self.widths.thread, rest));
+                .resize(split, 1.0 - ratio(widths.thread, rest));
         }
     }
 }
@@ -171,6 +212,48 @@ impl Panes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn constrained_windows_keep_a_usable_conversation_and_restore_preferences() {
+        let preferred = Widths {
+            rail: 440.0,
+            sidebar: 560.0,
+            thread: 640.0,
+        };
+        let mut panes = Panes::new(preferred, 2400.0);
+        for thread in [false, true] {
+            panes.sync_thread(thread);
+            for width in [900.0, 1000.0, 1200.0, 1600.0, 2400.0] {
+                panes.window_width(width);
+                assert_eq!(
+                    panes.widths, preferred,
+                    "shrinking must not save new preferences"
+                );
+                if !panes.compact_messages() {
+                    let regions = panes.messages.layout().pane_regions(
+                        0.0,
+                        50.0,
+                        iced::Size::new(panes.messages_width(), 600.0),
+                    );
+                    assert!(
+                        regions[&panes.conversation].width >= CONVERSATION_MIN - 0.01,
+                        "conversation collapsed at width {width}, thread {thread}"
+                    );
+                } else {
+                    assert!(thread && width < 1001.0);
+                }
+            }
+            assert_eq!(panes.effective_widths(), preferred);
+        }
+        panes.window_width(950.0);
+        assert!(panes.compact_messages());
+        panes.sync_thread(false);
+        assert!(
+            !panes.compact_messages(),
+            "closing a thread restores columns when they fit"
+        );
+        assert_eq!(panes.widths, preferred);
+    }
 
     /// Widths are pixels: a wider window leaves the rail where it was, a
     /// drag sets it, and the thread column comes and goes with the thread.

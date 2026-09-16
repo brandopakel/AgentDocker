@@ -1397,7 +1397,6 @@ impl App {
             Message::Event(iced::Event::Window(window::Event::Resized(size))) => {
                 self.shell.width = size.width;
                 self.shell.height = size.height;
-                self.panes.window_width(size.width / self.scale_factor());
             }
             Message::Event(iced::Event::Keyboard(keyboard::Event::KeyPressed {
                 key,
@@ -1508,6 +1507,8 @@ impl App {
         }
         // The thread column follows the thread, whichever message opened or
         // closed it; the grid is checked here once rather than at each.
+        self.panes
+            .window_width(self.shell.width / self.scale_factor());
         self.panes.sync_thread(self.shell.thread.is_some());
         tasks.push(crate::accessibility::collect());
         Task::batch(tasks)

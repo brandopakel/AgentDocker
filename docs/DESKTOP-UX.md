@@ -127,8 +127,10 @@ sidebar, the conversation and the thread are columns with a divider between
 each that drags, like the rail's beside the workspace: a name the sidebar
 clips gets its room by dragging, and the widths are kept in pixels and
 remembered with the workspace preferences, so a wider window gives the
-conversation the room and the columns stay as set (the rail 180–440 points,
-the sidebar 200–560, the thread 240–640; a narrow window has no dividers).
+conversation the room. In a smaller window or with larger text, side columns
+shrink to keep the conversation usable; when the columns cannot fit, Messages
+shows one pane with a way back. Expanding restores saved widths (rail 180–440
+points, sidebar 200–560, thread 240–640).
 The pane's header is the name on one line and, under it, what the room is
 about (the task or contested paths, a pair's branches, a broadcast's
 members). The pane shows the newest 200 archived messages, newest

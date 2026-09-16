@@ -395,13 +395,16 @@ impl App {
             let _ = cmd_tx.send(cmd);
         }
         let shell = shell::State::load(&home);
-        let panes = panes::Panes::new(shell.catalog.panes, shell.width.max(1180.0));
         let settings = shell
             .catalog
             .appearance
             .clone()
             .unwrap_or_else(|| crate::theme::Settings::load(&home))
             .clamped();
+        let panes = panes::Panes::new(
+            shell.catalog.panes,
+            shell.width.max(1180.0) / (settings.text_size / 14.0),
+        );
         Self {
             shell,
             panes,
@@ -2261,6 +2264,29 @@ pub(crate) fn runtime_label(runtime: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_zoom_reflows_messages_without_a_window_resize() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.shell.thread = Some("thread-fixture".into());
+        let _ = app.update(Message::TextSize(14.0));
+        let preferred = app.panes.widths;
+        assert!(!app.messages_compact());
+        let _ = app.update(Message::TextSize(18.0));
+        assert!(
+            !app.narrow(),
+            "exercise the wide shell with a constrained workspace"
+        );
+        assert!(
+            app.messages_compact(),
+            "zoom alone must prevent collapsed columns"
+        );
+        let _ = app.update(Message::TextSize(14.0));
+        assert!(!app.messages_compact());
+        assert_eq!(app.panes.widths, preferred);
+    }
 
     /// The window looks at the conversation; it does not consume it.
     ///

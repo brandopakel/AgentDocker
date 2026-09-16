@@ -151,9 +151,13 @@ system, which is drawn from the mark:
   Messages screen the sidebar, the conversation and the thread, are
   `pane_grid` panes with a draggable divider between each (`app/panes.rs`):
   the widths are kept in logical pixels, not shares, so a window resize
-  leaves the columns where they were, each is clamped to its bounds (rail
-  180–440, sidebar 200–560, thread 240–640) and rounded to whole pixels, and
-  a drag that changed one saves it in `workspace.json` (`panes`). The two
+  restores preferred widths whenever they fit. Preferred widths are bounded
+  (rail 180–440, sidebar 200–560, thread 240–640) and rounded to whole pixels;
+  a changed drag saves them in `workspace.json` (`panes`). Rendered side columns
+  shrink to reserve at least 320 logical pixels for the conversation. If even
+  the minimum columns cannot fit, Messages uses its existing one-pane
+  conversation/thread navigation. Window resizing and text zoom recompute this
+  layout without overwriting saved preferences. The two
   grids number their splits separately, so a resize event carries which grid
   it came from. The thread column is split off and closed with the thread.
   The dividers are 8 points wide, drawn as a 2-point accent line while
