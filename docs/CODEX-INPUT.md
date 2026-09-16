@@ -73,7 +73,7 @@ Unknown historical offers still require reconciliation. The fixture includes
 `posted-question`, `disconnected-question` and explicit TUI `resume` scenarios;
 those passed on the recorded sources. Startup/reopen without a prompt failed the actual lifecycle trial and remains
 open; historical schema-19 answer migration passed its bounded fixture.
-The candidate's former 45-second idle guard is **under correction after a real long-busy failure**.
+The candidate's former 45-second idle guard caused a real long-busy failure.
 At `5f72f37`, a direct user turn held open for over 45 seconds retained peer input
 in the native queue, but the receiver incorrectly classified the turn as idle
 and paused delivery. Its historical turn query does not establish live TUI
@@ -83,8 +83,13 @@ completion time. The correction removes the inferred idle deadline while the
 exact native queue entry remains present. One outstanding offer, exact receipts,
 provider-generation checks and the missing-entry reconciliation deadline remain.
 A queue offer still does not prove provider consumption or task completion.
-PRs #148/#149 are draft and installation is on hold until the correction passes
-the long-busy, idle-wake and recovery trials together. Trial 25 was a
+Fixed `5aeb651` passed the full 967-Rust/70-Python gate and actual 65-second
+long-busy, idle-wake, draft/FIFO and receiver-crash acceptance. A separate
+rate-limit hold/resume also passed. The recovery trial passed its functional
+checks but failed process cleanup; its raw pass label was incorrect and is not
+accepted. The driver now marks every exception failed and rechecks child exit
+after a process-group signal error. PRs #148/#149 stay draft pending the recovery
+repeat, final review/CI and installation. Trial 25 was a
 separate fixture input failure; trial 26 is the application defect. Both are
 retained in the [source-specific evidence](verification/2026-09-15-native-codex-queue.json).
 Use the existing driver's `--scenario long-busy` to hold a direct user turn for

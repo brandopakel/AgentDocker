@@ -22,7 +22,10 @@ long-busy trial at `5f72f37` falsely paused a running direct user turn. Fixing
 that guard and repeating actual acceptance are required before integration.
 Trial 27 confirmed the sidecar reconstructs an active turn as interrupted; the
 source correction removes the inferred idle deadline while preserving exact
-queue/receipt reconciliation. The new 65-second regression awaits validation.
+queue/receipt reconciliation. Corrected `5aeb651` passed the full 967-Rust/70-Python
+gate and actual 65-second regression plus rate-limit recovery. A separate recovery
+trial had a cleanup failure incorrectly labeled passed; the harness is corrected
+and that trial must repeat before integration.
 Thirty queued human/peer inputs passed exact FIFO
 receipts in its local fixture, with about five minutes to consume the burst;
 no-prompt startup/resume and burst latency remain acceptance gaps.

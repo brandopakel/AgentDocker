@@ -350,6 +350,30 @@ def wait(fn, timeout=30):
     raise TimeoutError("condition not reached")
 
 
+def stop_child(child):
+    """Reap our child even if its process group disappears during cleanup."""
+    if child is None or child.poll() is not None:
+        return
+
+    def signal_group(sig):
+        try:
+            os.killpg(child.pid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            # Recheck a group signal error; ignore it only once waitpid proves
+            # this owned child has already exited.
+            if child.poll() is None:
+                raise
+
+    signal_group(signal.SIGTERM)
+    try:
+        child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        signal_group(signal.SIGKILL)
+        child.wait(timeout=5)
+
+
 try:
     with tempfile.TemporaryDirectory(prefix="ad-native-queue-", dir="/tmp") as tmp:
         root = Path(tmp).resolve()
@@ -1283,16 +1307,7 @@ try:
                 ]
             except (OSError, KeyError, NameError, AssertionError):
                 pass
-            if provider is not None and provider.returncode is None:
-                try:
-                    os.killpg(provider.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    provider.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    os.killpg(provider.pid, signal.SIGKILL)
-                    provider.wait(timeout=5)
+            stop_child(provider)
             if "controller_pid" in locals():
                 try:
                     os.killpg(controller_pid, signal.SIGCONT)
@@ -1300,16 +1315,7 @@ try:
                 except ProcessLookupError:
                     pass
             for child in [controller, daemon]:
-                if child is not None and child.poll() is None:
-                    try:
-                        os.killpg(child.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        child.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(child.pid, signal.SIGKILL)
-                        child.wait(timeout=5)
+                stop_child(child)
             done.set()
             thread.join(timeout=2)
             (out / "terminal.bin").write_bytes(output)
@@ -1320,6 +1326,7 @@ try:
             for p in profile.glob("sessions/**/*.jsonl"):
                 (out / p.name).write_bytes(p.read_bytes())
 except (Exception, KeyboardInterrupt) as e:  # noqa: BLE001 - Save evidence, clean up, and exit nonzero.
+    report["result"] = "failed"
     report["error"] = str(e)
     traceback.print_exc()
 finally:

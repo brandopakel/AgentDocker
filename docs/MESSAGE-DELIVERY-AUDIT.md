@@ -79,8 +79,12 @@ sidecar reconstructed a running direct user turn as interrupted. Source now
 removes that inferred deadline while the exact native entry remains queued;
 the new `long-busy` scenario holds a user turn for 65 seconds and checks retained
 human/peer order before consumption and receiver recovery. Validation of this
-correction is pending, and #148/#149 remain draft. Earlier short-busy passes
-do not close this failure.
+correction now includes a passing actual 65-second trial at `5aeb651`, plus
+idle/draft/FIFO/receiver recovery and a separate rate-limit hold/resume. Its full
+gate passed 967 Rust tests (six skipped) and 70 Python checks. A recovery trial
+failed cleanup despite an incorrect raw pass label; that failure is retained and
+the corrected driver must pass its repeat. #148/#149 remain draft pending that
+repeat, review/CI and installed acceptance.
 
 PR #135's feedback/readiness correction is merged as `d6d7dab` after the full
 local gate, all final-head CI checks and independent Claude source review. Its
