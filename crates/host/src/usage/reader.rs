@@ -219,7 +219,7 @@ pub fn scan(
         file.seek(SeekFrom::Start(cursor.offset - 1))?;
         let mut byte = [0];
         file.read_exact(&mut byte)?;
-        if byte != [b'\n'] {
+        if byte[0] != b'\n' {
             return Err(Error::Cursor);
         }
     }
