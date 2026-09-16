@@ -156,7 +156,8 @@ were cleaned up, the test draft returned to its original empty value, and strict
 bundle signature verification still passed. Initial incomplete and harness-failed
 attempts remain in the [existing launcher record](verification/2026-09-12-launcher-hook-repair.json).
 
-Still open: zero-process app launch, old AppleScript notifications,
+Still open: installed-release explicit-Hide restoration (the fix has passed
+only on a private candidate window), zero-process app launch, old AppleScript notifications,
 expired-question variants, archived-history and broader project/account cases,
 and Developer ID/notarized release acceptance. Notification Center accessibility
 actions establish native activation; they do not establish physical mouse,
@@ -195,7 +196,7 @@ Zero-process OS launch and broader release acceptance remain open.
    reaches AgentDocker. If a platform cannot provide actionable notifications,
    expose that limitation and retain the inbox entry; do not report working
    click routing from a successful notification post.
-5. (Partial: installed foreground/background message, pending-question, stale-message and private-origin clicks pass; candidate explicit-Hide restoration also passes.) Complete real Notification Center clicks with the app hidden and fully closed;
+5. (Partial: installed foreground/background message, pending-question, stale-message and private-origin clicks pass; candidate explicit-Hide restoration also passes, while installed-release Hide acceptance remains open.) Complete real Notification Center clicks with the app hidden and fully closed;
    multiple projects/agents; pending and expired questions; retained history;
    stale notifications; old/new app installations; denied notification access;
    unsigned/local-preview and signed release candidates. Assert the correct

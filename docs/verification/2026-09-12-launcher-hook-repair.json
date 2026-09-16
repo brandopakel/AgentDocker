@@ -677,7 +677,10 @@
       "rust_passed": 1013,
       "rust_skipped": 7,
       "python_passed": 77,
-      "log": "/private/tmp/agentdocker-idle-wake-gate5-2026-09-16.log"
+      "log": "/private/tmp/agentdocker-idle-wake-gate5-2026-09-16.log",
+      "format_and_strict_lint": "passed",
+      "packaging": "passed",
+      "release_build": "passed"
     },
     "retained_trials": [
       {
