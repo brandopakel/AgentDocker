@@ -66,7 +66,41 @@
     "Source content matches the recorded commit; targeted/stress and the standard gate began before that identical content was committed.",
     "Retains the failed baseline and CI failures; passing stress runs do not erase them.",
     "One native FSEvents stream per checkout changes macOS resource use; this is not overnight or many-project resource acceptance.",
-    "No installed launcher, production daemon, registry or user session was replaced.",
-    "Final-head CI and CodeRabbit review remain required."
-  ]
+    "Final-head CI and CodeRabbit review remain required.",
+    "The installed acceptance covers one removed secondary checkout on the production daemon at 3c8c2e1; the launcher and daemon were not replaced by it."
+  ],
+  "installed_acceptance": {
+    "date": "2026-09-15",
+    "result": "passed",
+    "scope": "installed production daemon; disposable project; no provider turn",
+    "installed_source_commit": "3c8c2e139df3519514c28c17bf0fb947b1cf225a",
+    "installed_daemon_sha256": "bdaf1883fc39fbe2f1107cd06208b6f4159b537e87d13a95d85d4ea81c60dcff",
+    "serving_pid": 75531,
+    "secondary_watch_confirmed": true,
+    "removed_checkout_recovery_seconds": 0.3107,
+    "checks": [
+      "surviving deletion recorded",
+      "removed checkout gap reported",
+      "removed checkout creates no competing changes",
+      "no false conflict channels"
+    ],
+    "watcher_gaps": 1,
+    "changes_recorded": 3,
+    "fixture_events": 22,
+    "fixture_record_removed": true,
+    "live_providers": 4,
+    "providers_unchanged": true,
+    "artifacts": {
+      "result": {
+        "private_path": "/private/tmp/agentdocker-installed-watcher-result-abd8q22m/result.json",
+        "sha256": "4b804ab75849b2e310864a171b82f6dbd5408b278bca1d43406189e8d7f3b8fb"
+      },
+      "driver_sha256": "b4869cdebe2dc125869c0ed67405e4475582cce0ac7ab56574eed48bbba05446"
+    },
+    "notes": [
+      "Run by codex-51242 against the installed production daemon (source 3c8c2e1) with a disposable project and no provider turn; the four live provider sessions kept pid, birth and binding.",
+      "An earlier warm-up attempt failed on fixture timing and is retained beside the passing result; it is not counted as acceptance.",
+      "Bounded acceptance: one removed secondary checkout; not overnight or many-project resource acceptance."
+    ]
+  }
 }
