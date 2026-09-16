@@ -116,7 +116,11 @@ Usage-accounting implementation has started from merged PR #159's contract:
 optional counters, cumulative-reset handling, strict time bounds and versioned
 Codex/Claude normalization are in source. Collection, atomic storage, protocol,
 CLI, UI and coverage/rotation/replay acceptance remain open. No new project
-plan was created; verification of this initial code is pending.
+plan was created. The accounting/parser foundation passed its full gate below.
+The next source step adds bounded resumable file batches, explicit partial tails
+and gaps, and metadata-only cursors that reject changed file generations. Reader
+verification is pending; directory discovery, growing-file prefix reuse and
+atomic daemon ingestion remain open.
 
 September 16 owned Codex active-input source `7fbb8c4` passed the full
 1,015-Rust/77-Python gate. Actual Codex 0.154.0 with a local model fixture

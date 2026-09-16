@@ -1060,6 +1060,23 @@ cache/reasoning overlap and missing fields. Source `63f1dd3` also passed the ful
 1,026-Rust/77-Python gate (seven Rust tests skipped), strict lint, packaging and
 release compilation. File scanning and ingestion acceptance remain separate.
 
+The next source step adds `usage::reader`, a bounded per-file JSONL reader.
+A batch proposes samples, explicit malformed/unsupported-record gaps and a
+serializable parser cursor; it never commits progress itself. The cursor holds
+native file identity, length and change metadata, a complete-record prefix digest
+and accounting context, never transcript text. Reads reject final symlinks and
+special files, cap byte reads (including read-ahead), record size and result count,
+and check a cooperative time deadline between bounded reads. A trailing partial
+record does not advance the offset. Both the open object and current path are
+checked after reading, and the caller can validate again before committing.
+
+This primitive conservatively rejects any changed generation, including append,
+so a caller must retain the old cursor, record the generation gap and start a
+new scan with source-ID deduplication. It does not yet reuse validated prefixes
+across growing-file generations. That optimization, bounded directory discovery,
+atomic ingestion and collection watermarks remain open; file completion alone
+never means collection is caught up. Reader verification is pending.
+
 Counter normalization follows [OpenAI usage breakdowns](https://developers.openai.com/api/reference/cli/resources/responses/methods/retrieve)
 and [Claude cache input semantics](https://platform.claude.com/docs/en/build-with-claude/prompt-caching):
 Codex input/output totals include their cache/reasoning components; Claude total
