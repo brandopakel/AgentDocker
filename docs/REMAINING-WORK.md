@@ -1,6 +1,6 @@
 # Remaining engineering and release work
 
-Audited September 14 against `aaa1b61`, with merged PRs #150/#154, the September 15
+Audited September 14 against `aaa1b61`, with merged PRs #150/#152/#154, the September 15
 `72b1eb4` installed preview and PR #155 review acceptance recorded below. This is the current
 backlog for the requirements already in the project documents. The
 [documentation index](README.md) records coverage of all 38 Markdown files;
@@ -17,8 +17,9 @@ PID 67791 and GUI PID 67836, with strict bundle signature verification passing.
 This Codex provider and receiver retained their PIDs; the switch itself was done
 by Claude. A subsequent read-only check confirms native receipt of queued message
 `b76fa0ce74ca4519` at 05:49:38 UTC in the unchanged Codex thread, after this
-installation. No manual inbox read or acknowledgement was used. Final PR #152
-review/integration and broader startup/provider acceptance remain pending. See the
+installation. No manual inbox read or acknowledgement was used. PR #152 subsequently merged
+as `ece76fd` after final review and CI; broader startup/provider and installation
+acceptance remain pending. See the
 [observed installation](verification/2026-09-12-integrated-desktop.json).
 The reload candidate now integrates messaging/schema21 and the validated UI
 changes, including Linux shared-temporary-root discovery. Archive migration,
@@ -27,8 +28,11 @@ event contract. Combined `a1475a1` passed 1,053 Rust tests and 81 Python checks,
 plus an actual schema20-to-21 handover preserving queued/history messages,
 lease and native batch/PTY identity and exits. Later review fixes now make
 channel actions atomic with their ancillary effects, fence terminal mutations,
-and join stress-test workers; their full validation and final review remain
-pending before production activation.
+and join stress-test workers. Combined `64d4762` passed 1,056 Rust tests, 83
+Python checks, 275 native UI steps, 20 pressured handovers (334 ordered
+messages, 127 completed launches, no warnings/survivors), four native Codex
+loopback handovers and another distinct-source schema20-to21 migration. Final
+PR #155 review/CI and production activation remain pending.
 
 September 15 prior installed checkpoint: verified `cf64ca3` (schema20), with
 production inputs identical to merged `4074275` (PR #153). The intact copied
@@ -95,7 +99,7 @@ represent pending integration; their failed trials and acceptance limits remain.
 
 | Delivered behavior | Evidence and limits |
 | --- | --- |
-| Simpler home, Inbox and Tools | Home groups agents by project with a short attention strip. Inbox has agent conversations, visible direct-message/question badges, folded text, draft-preserving replies and project-wide send. Setup details are available on demand. Native sends were verified against schema15 and schema16 daemons.  The PR #152 Linux graphical failure exposed shared `/tmp` projects being hidden by the new temporary-directory filter; source now distinguishes shared scratch roots from per-user fixture roots, with the path-classifier regression passing. Corrected `e0d6f8a` passed the full 1006-Rust/77-Python gate and 263 rendered native workflow steps with `TMPDIR=/tmp`, preserving discovery, conversation reads, drafts and provider-limit recovery. Linux ARM/x86 and both Mac CI jobs passed that candidate. Final review fixes at `2a51d13` exclude interpreter-launched sidecars, prevent a Unicode room-name panic and use saved renamed-project headings. The full 1007-Rust/77-Python gate and 275 rendered native workflow steps passed, including the renamed heading; final GitHub CI/review and installed acceptance remain. See [integrated evidence](verification/2026-09-12-integrated-desktop.json).|
+| Simpler home, Inbox and Tools | Home groups agents by project with a short attention strip. Inbox has agent conversations, visible direct-message/question badges, folded text, draft-preserving replies and project-wide send. Setup details are available on demand. Native sends were verified against schema15 and schema16 daemons.  The PR #152 Linux graphical failure exposed shared `/tmp` projects being hidden by the new temporary-directory filter; source now distinguishes shared scratch roots from per-user fixture roots, with the path-classifier regression passing. Corrected `e0d6f8a` passed the full 1006-Rust/77-Python gate and 263 rendered native workflow steps with `TMPDIR=/tmp`, preserving discovery, conversation reads, drafts and provider-limit recovery. Linux ARM/x86 and both Mac CI jobs passed that candidate. Final review fixes at `2a51d13` exclude interpreter-launched sidecars, prevent a Unicode room-name panic and use saved renamed-project headings. The full 1007-Rust/77-Python gate and 275 rendered native workflow steps passed, including the renamed heading. PR #152 merged as `ece76fd` after final GitHub CI/review; installed acceptance remains. See [integrated evidence](verification/2026-09-12-integrated-desktop.json).|
 | Narrow conversations and readable names | PR #129 implementation is complete: narrow Inbox switches between the list and the chosen conversation, notifications open that conversation, drafts survive resizing/navigation, and generated adapter/app-launch identifiers render as tool names. Returning to the list cancels delayed answer navigation. Final source `3b39a10` passed 916 Rust tests, 70 Python checks and 211 native workflow steps. |
 | Permission review and correct sender identity | Turn-scoped concrete paths/network grants are shown and returned exactly; ambiguous lexical paths fail closed. Implicit CLI sends use the actual registered provider. Actual Claude shell and interactive channel trials verify sender identity, queue receipts and replies. Broader review types remain below. |
 | Applications destination and compatible command paths | The hook/MCP executable collision is repaired. A writable system Applications folder is preferred, destination selection persists, and the old per-user path remains compatible. Trial prefixes stay contained. Packaged activation/rollback/uninstall and Launch Services checks pass; actual activation evidence is recorded on PR #119. |
@@ -156,7 +160,7 @@ replacement acceptance.
 
 | Priority | Work remaining | Completion condition and evidence |
 | --- | --- | --- |
-| Partial | Messaging as a workspace (Slack/Discord shape) | PR #150 merged as `93b76b8` after final review and CI: schema21 archives, destination-scoped conversations, named channels, read cursors, unread counts, search, threads and the Messages workspace are implemented. Reading acknowledges only the person's displayed rows; agent input queues remain separate. The reviewed integration passed 999 Rust tests, 77 Python checks and 233 native workflow steps, with retained archive/index regression evidence in [session messages](verification/2026-09-11-session-messages.json). PR #152 adds the Earlier group, persistent project menus, saved names and corrected discovery; final source `2a51d13` passed 1007 Rust tests, 77 Python checks and 275 native steps. Its final CI/review remain pending. Installed schema21 source `72b1eb4` is observed serving and has one subsequent Codex native receipt; that does not close all installed acceptance. Still unbuilt: mentions/counts and an explicit project-wide pause request/control. See [desktop behavior](DESKTOP-UX.md#messages-inbox-and-tools) and [integrated evidence](verification/2026-09-12-integrated-desktop.json). |
+| Partial | Messaging as a workspace (Slack/Discord shape) | PR #150 merged as `93b76b8` after final review and CI: schema21 archives, destination-scoped conversations, named channels, read cursors, unread counts, search, threads and the Messages workspace are implemented. Reading acknowledges only the person's displayed rows; agent input queues remain separate. The reviewed integration passed 999 Rust tests, 77 Python checks and 233 native workflow steps, with retained archive/index regression evidence in [session messages](verification/2026-09-11-session-messages.json). PR #152 adds the Earlier group, persistent project menus, saved names and corrected discovery; final source `2a51d13` passed 1007 Rust tests, 77 Python checks and 275 native steps. It merged as `ece76fd` after final CI/review. Installed schema21 source `72b1eb4` is observed serving and has one subsequent Codex native receipt; that does not close all installed acceptance. Still unbuilt: mentions/counts and an explicit project-wide pause request/control. See [desktop behavior](DESKTOP-UX.md#messages-inbox-and-tools) and [integrated evidence](verification/2026-09-12-integrated-desktop.json). |
 | Acceptance | Portable coordination skill | Source implementation and review are complete in merged PR #149; the bundled `SKILL.md` supplies MCP instructions and preview/apply/undo setup without duplicated instruction text. Bounded Codex/Claude loader and Claude setup/undo trials passed. Fresh-session implicit activation, installed-candidate checks and other runtime loaders remain open, as detailed in the portable coordination instructions row above and [guided setup](GUIDED-SETUP.md#shared-coordination-skill). |
 | Next | Token usage by agent, model and provider | A host collector reads each runtime's own local log (Codex rollouts under `~/.codex/sessions`, Claude Code transcripts under `~/.claude/projects`), attributes turns to registered agents by session id, and the daemon aggregates input, cached, output and reasoning tokens by agent, model and provider over a time range; a Usage screen and `agentdocker usage` show tokens (never money unless the user configures prices), with AgentDocker's own overhead (bytes it injected as hook context, MCP results and queued messages, with an estimated token count labelled as such) kept apart from provider tokens, and coverage explicit: a runtime whose log is not read shows unknown, not zero. |
 

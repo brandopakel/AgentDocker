@@ -260,6 +260,17 @@ an in-process Tokio test cannot establish this boundary.
   refused reconnect, lost daemon and confirmed exit. The source and executable
   hashes remained unchanged throughout. Legacy frames now receive a decodable
   not-applied refusal; automatic retry requires the current client capability.
+  The schema21 integration at `64d4762` passed 1,056 Rust tests, 83 Python
+  checks and 275 rendered native UI steps. A fresh pressure trial preserved
+  334 ordered messages and 127 completed launches across 20 handovers with
+  no warnings or survivors; native Codex loopback acceptance passed all four
+  handover stages again. A distinct-source schema20-to21 switch preserved
+  12 queued/archive messages, immediate search, lease identity/expiry and
+  batch/PTY process ownership, logs and exact exits. Channel close/review
+  effects now commit atomically with their messages and journal entries;
+  terminal input, resize and initial attach dimensions are fenced while
+  output remains available. These are bounded private trials; final integration,
+  production activation and the broader acceptance matrix above remain open.
   *Passed* for the controller's installation pin across a handover
   (`desktop_reload_smoke.py --pin-trial`, in the same record): a live
   controller bound with a launch descriptor inside the first installed

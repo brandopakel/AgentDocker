@@ -1302,5 +1302,362 @@
       "Owned native batch/PTY and local queued messages; not a provider service or a production activation.",
       "Later channel/terminal/worker-cleanup review fixes require fresh validation."
     ]
+  },
+  "final_schema21_review_2026_09_16": {
+    "source_commit": "64d4762010be0c79cdf90fc9adcb95742b792c7d",
+    "source_input_sha256": "bc7f5032d77527cc1533b68d710ac9ce61a88c0a88631c4d9b269820080ed251",
+    "source_clean": true,
+    "source_and_binaries_unchanged_after_trials": true,
+    "binary_sha256": {
+      "agentd": "dc99c4b8de62b6eb90f2bcc483fe3c904467a9d73a4a64811bd2d3d046a83c86",
+      "agentdocker": "01d39a63f0eca08e2c9b620665a1e2e01c6642cd1a208cba171de0611309bd26",
+      "agentdocker-ui": "8d0a8398917a9a5ec53869310e34bd755d0d67d083a806023032acd69a279e18"
+    },
+    "immutable_binary_directory": "/private/tmp/agentdocker-reload-64d4762-binaries",
+    "standard_gate": {
+      "command": "bash scripts/verify.sh check",
+      "exit_code": 0,
+      "rust_passed": 1056,
+      "rust_skipped": 7,
+      "python_passed": 83,
+      "log": "/private/tmp/agentdocker-reload-schema21-final-gate1-2026-09-16.log"
+    },
+    "review_fixes": [
+      "Channel close/review commits primary state, queued/archive message, journal and ordered events in one transaction. Injected ancillary failures leave durable and live state unchanged; restart/retry commits once.",
+      "Existing terminal input/resize and new attach initial dimensions are refused during a transfer fence for current and legacy clients while existing output remains available.",
+      "Stress workers are stopped and joined after daemon cleanup, including early-failure/unstarted-thread paths."
+    ],
+    "pressure": {
+      "path": "/private/tmp/agentdocker-reload-schema21-final-pressure1-2026-09-16/result.json",
+      "sha256": "e3933a98167ec2ea036c6ec13478c6178e0bc64de80c112aa17c9dec46f00a65",
+      "result": {
+        "passed": true,
+        "reloads": 20,
+        "build_info": {
+          "arch": "aarch64",
+          "format": 1,
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "os": "macos",
+          "state_schema": 21,
+          "version": "0.1.0"
+        },
+        "scenarios": [
+          "334 messages sent through 20 reloads arrived once, in order; 0 send errors",
+          "127 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+          "both loggers' logs are contiguous across every reload",
+          "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+          "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+          "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 19 handovers accepted in between"
+        ],
+        "trial_processes": {
+          "provider": 12293,
+          "controller": 12296
+        },
+        "reload_seconds": [
+          0.545,
+          3.635,
+          0.026,
+          0.027,
+          0.024,
+          0.028,
+          0.029,
+          0.54,
+          0.026,
+          0.027,
+          0.028,
+          0.031,
+          0.028,
+          0.026,
+          0.026,
+          0.031,
+          0.035,
+          0.027,
+          0.026,
+          0.034
+        ],
+        "daemon_pids": [
+          12188,
+          12537,
+          13075,
+          13107,
+          13152,
+          13199,
+          13244,
+          13353,
+          13495,
+          13542,
+          13578,
+          13615,
+          13653,
+          13700,
+          13746,
+          13816,
+          13861,
+          13897,
+          13946,
+          13991,
+          14085
+        ],
+        "predecessor_retired_seconds": [
+          0.549,
+          3.638,
+          0.031,
+          0.03,
+          0.028,
+          0.032,
+          0.033,
+          0.543,
+          0.029,
+          0.031,
+          0.051,
+          0.055,
+          0.032,
+          0.03,
+          0.029,
+          0.034,
+          0.059,
+          0.031,
+          0.051,
+          0.038
+        ],
+        "sends": {
+          "delivered": 334,
+          "errors": []
+        },
+        "launches": {
+          "finished": 127,
+          "errors": []
+        },
+        "log_lines": {
+          "logger-a": 671298,
+          "logger-b": 665192
+        },
+        "controller_episode": {
+          "attempts": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "launched_pids": [
+            12540,
+            13247,
+            14183,
+            14549,
+            15259
+          ],
+          "handovers_during": 19
+        },
+        "survivors": [],
+        "cleanup_errors": [],
+        "daemon_log_warnings": {}
+      }
+    },
+    "native_codex": {
+      "path": "/private/tmp/agentdocker-reload-schema21-final-native1-2026-09-16/result.json",
+      "sha256": "e36c33088f6b2a5721f3d582a54b702a2cdaa2e1c3a72e3e2ae7de8059af5c6d",
+      "result": {
+        "started_at": "2026-09-16T06:53:47.742695+00:00",
+        "scenario": "question",
+        "reload_enabled": true,
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "da75a7e59a149accee7ed731867d3d8b978ba1fd532c2ec22b3298a90a2b4407",
+        "source": {
+          "commit": "64d4762010be0c79cdf90fc9adcb95742b792c7d",
+          "dirty": false,
+          "rust_and_driver_sha256": "877684bde2936541a94a95c786d8f4723b00334767f5afcc357de45516bae71e"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "01d39a63f0eca08e2c9b620665a1e2e01c6642cd1a208cba171de0611309bd26",
+        "daemon_sha256": "dc99c4b8de62b6eb90f2bcc483fe3c904467a9d73a4a64811bd2d3d046a83c86",
+        "pid": 12184,
+        "thread": "01a0a8fe-393f-76d1-9e76-2e93c6c47f42",
+        "agent": "5c07db1f98ed45aa85247efa317d9292",
+        "automatic_hook_bootstrap": true,
+        "handovers": [
+          {
+            "stage": "idle",
+            "predecessor": 12182,
+            "successor": 12775,
+            "seconds_until_retired": 0.13363891700282693,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "unsubmitted-draft",
+            "predecessor": 12775,
+            "successor": 13938,
+            "seconds_until_retired": 0.12503008299972862,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "busy-with-human-and-peer-queued",
+            "predecessor": 13938,
+            "successor": 14883,
+            "seconds_until_retired": 0.04189258301630616,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "pending-question",
+            "predecessor": 14883,
+            "successor": 15449,
+            "seconds_until_retired": 0.14107187499757856,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          }
+        ],
+        "idle_wake_seconds": 7.202466791000916,
+        "cross_process_receipt": {
+          "thread": "01a0a8fe-393f-76d1-9e76-2e93c6c47f42",
+          "turn": "01a0a8fe-604a-7e53-b7ef-4cfec7e6fe38",
+          "item": "01a0a8fe-6055-7be1-9e07-24c70c4436aa"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "d60918da5f004470"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0a8fe-393f-76d1-9e76-2e93c6c47f42",
+            "turn": "01a0a8fe-d588-7122-a372-0d8887949120",
+            "item": "01a0a8fe-d599-7d31-bc10-03ac43ad781c"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "answer_receipt_after_handover": {
+          "message": "a21baa6a2b114fc7",
+          "receipt": {
+            "thread": "01a0a8fe-393f-76d1-9e76-2e93c6c47f42",
+            "turn": "01a0a8ff-23b2-7de1-920e-0893f612404d",
+            "item": "01a0a8ff-23c3-7c40-8b2c-0129f9d3be27"
+          }
+        },
+        "async_question_answer_once": true,
+        "question_id": "94f0c17600a04386",
+        "same_live_tui": true,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 10,
+        "agentdocker_integration": true,
+        "daemon_pids": [
+          12182,
+          12775,
+          13938,
+          14883,
+          15449
+        ],
+        "daemon_survivors": [],
+        "controller_survivors": [],
+        "cleanup_errors": [],
+        "raw_result_sha256": "dbe6642f72bd013a7ec0bdcd18e4d9b601eaf3baa04098d98bfe3b4b91531edc"
+      }
+    },
+    "distinct_source_migration": {
+      "path": "/private/tmp/agentdocker-reload-schema21-final-migration1-2026-09-16/result.json",
+      "sha256": "17f9e40d05644f1b474651361c10c496786de57be78cb87a726d5b50f18e9169",
+      "result": {
+        "passed": true,
+        "source_commit": "64d4762010be0c79cdf90fc9adcb95742b792c7d",
+        "versions": {
+          "predecessor": {
+            "build_info": {
+              "arch": "aarch64",
+              "format": 1,
+              "installation_lock": 1,
+              "launcher_redirect": 1,
+              "os": "macos",
+              "state_schema": 20,
+              "version": "0.1.0"
+            },
+            "sha256": {
+              "agentd": "19c6a23631577327a354650ee2faa09f257892ac20755eabb3667703de2906cb",
+              "agentdocker": "155ff704bb2b09dccdac3faae3bfe8cb48b9ca297c7036768493dfc9d5967035",
+              "agentdocker-ui": "fa88a7ec111b36febff40fc8cabbeefa4fa2ed1ebb957443ee6c5be0185c9de8"
+            }
+          },
+          "successor": {
+            "build_info": {
+              "arch": "aarch64",
+              "format": 1,
+              "installation_lock": 1,
+              "launcher_redirect": 1,
+              "os": "macos",
+              "state_schema": 21,
+              "version": "0.1.0"
+            },
+            "sha256": {
+              "agentd": "dc99c4b8de62b6eb90f2bcc483fe3c904467a9d73a4a64811bd2d3d046a83c86",
+              "agentdocker": "01d39a63f0eca08e2c9b620665a1e2e01c6642cd1a208cba171de0611309bd26",
+              "agentdocker-ui": "8d0a8398917a9a5ec53869310e34bd755d0d67d083a806023032acd69a279e18"
+            }
+          }
+        },
+        "daemon_pids": [
+          16170,
+          16185
+        ],
+        "handover_seconds": 0.031186958018224686,
+        "checks": [
+          "schema 20 predecessor retired after schema 21 successor accepted",
+          "12 queued messages unchanged, archived once and immediately searchable",
+          "lease identity and expiry unchanged",
+          "batch and PTY process/birth/owner identities preserved",
+          "exact batch exit 7 and PTY exit 3 with pre/post logs"
+        ],
+        "survivors": [],
+        "cleanup_errors": [],
+        "driver_sha256": "336a780b42c0cb29ece584e82fddf68464940f8530911c39ff7d32b4b3c972b4"
+      }
+    },
+    "desktop_workflows": {
+      "passed": true,
+      "steps": 275,
+      "path": "/private/tmp/agentdocker-reload-schema21-final-workflows1-2026-09-16/result.json",
+      "sha256": "de81a4626e3f6004b2e2de6bcfed5407eead9270f97c67ca21795f6d6d645087",
+      "environment": {
+        "TMPDIR": "/tmp",
+        "AGENTDOCKER_NO_NOTIFICATIONS": "1"
+      },
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize"
+      ]
+    },
+    "limits": [
+      "Private fixtures only; production activation and final GitHub CI/review remain pending.",
+      "Actual Codex0.154 CLI with a loopback model fixture; no external model service or other-provider claim.",
+      "The distinct-source schema20-to21 trial covers local queues/archive and owned batch/PTY processes, not a distinct-source provider-service handover.",
+      "Terminal fence regression proves refusal and continued output, not preservation or replay of uncertain terminal writes across a completed switch.",
+      "Trial timings are observations under concurrent host workloads, not a performance guarantee; physical accessibility/IME, sleep/reboot, broader provider and Windows acceptance remain open."
+    ]
   }
 }

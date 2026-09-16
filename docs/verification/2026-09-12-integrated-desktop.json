@@ -499,6 +499,37 @@
         "reported_at": "2026-09-16T06:32:44.579146Z"
       },
       "scope": "Read-only whoami native receipt metadata; no inbox read or acknowledgement. Confirms one model-input receipt after observed schema21 installation; does not establish every provider or restart path."
+    },
+    "live_peer_coordination": {
+      "observed_at": "2026-09-16T06:50:00Z",
+      "route": "installed AgentDocker send_message and read-only CLI history without --read",
+      "root_agent": "50fd100f4310452fae0435fd4b6a1981",
+      "peer_agent": "573d2472438f49f99fda26c1e7e93929",
+      "peer_confirmed_consumption": [
+        {
+          "sent_id": "3d2ee03696a54cf0",
+          "reply_id": "c8c6af1b5d914935",
+          "reply_to_matches": true
+        },
+        {
+          "sent_id": "fe456878e508479f",
+          "reply_id": "c1ab76c0a0a24c5b",
+          "reply_to_matches": true
+        }
+      ],
+      "peer_build_release_message": "d3189a5ad5104431",
+      "peer_followup_message": "2578dd8d6cbf40eb",
+      "root_reply": "ef73e0f32459438a",
+      "build_handoff": {
+        "peer_lease": "7fdca04cc26c",
+        "root_lease_after_release": "d07ca7ea0cba",
+        "conflicting_claim_refused_before_release": true
+      },
+      "limits": [
+        "Peer confirms consumption in its replies; its record has hook contact but no native input_delivery receipt metadata.",
+        "This is coordinated use during active sessions, not a fresh Claude idle-wake or restart trial.",
+        "Root read archived history only; native input acknowledgement remains with its controller."
+      ]
     }
   },
   "linux_shared_temporary_discovery_2026_09_16": {
@@ -635,6 +666,18 @@
       "Rendered controls exercise production callbacks; physical keyboard, screen-reader and IME acceptance remain separate.",
       "Existing sidebar label clipping was sent to the connected Claude session working on resizable panes.",
       "No production installation or provider session was changed by this trial; final GitHub CI and review remain pending."
-    ]
+    ],
+    "integration": {
+      "pr": 152,
+      "approved_head": "1b26a67dc2804d469c27d87cc5cf0aa79b293777",
+      "merge_commit": "ece76fd67f0a0ab9bfbdbc181331d6fb2b9aa340",
+      "merged_at": "2026-09-16T06:54:32Z",
+      "checks_passed": 13,
+      "optional_report_skipped": true,
+      "review_comment": 5690445808,
+      "review_reply": 5693158972,
+      "risk": "Low; no blocking issues. Earlier-doc location note declined with current source proving Earlier exists in both views.",
+      "remote_branch_deleted": true
+    }
   }
 }

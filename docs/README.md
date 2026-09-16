@@ -42,8 +42,8 @@ in [Remaining work](REMAINING-WORK.md), test status stays in the
 [delivery crosswalk](DELIVERY-PLAN.md#testing-standard-crosswalk), and this table
 records coverage. The September 15 portable skill adds one requested instruction
 asset, bringing the tracked inventory to 38; it is not another project plan. The inventory baseline is `aaa1b61`, PR #119; current outcomes
-below include merged messaging PR #150 and portable-skill PR #149, the reviewed
-UI candidate in PR #152, and the experimental reload integration in PR #155. Remaining acceptance is not an open implementation claim.
+below include merged messaging PR #150 and portable-skill PR #149, merged
+UI PR #152, and the experimental reload integration in PR #155. Remaining acceptance is not an open implementation claim.
 
 **Reference** means the document describes an implemented workflow or engineering
 rule; it is not a release certificate. **Partial** means named implementation or
@@ -62,7 +62,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Architecture](ARCHITECTURE.md) | Partial: protocol/phase inventory, journal/checkpoint maintenance and an environment-free core exist; live replacement is in source behind `AGENTDOCKER_EXPERIMENTAL_RELOAD` with provider-side acceptance still ahead, and Windows is incomplete. Optional protocol proposals remain deferred. |
 | [Implementation notes](IMPLEMENTATION-NOTES.md) | Reference: implemented coordination/recovery contracts; distinguish command relaunch from conversation restoration. |
 | [Guide](GUIDE.md) | Reference: command/tool inventory and current Tools/terminal navigation reconciled with source. |
-| [Desktop UX](DESKTOP-UX.md) | Implemented home/Tools simplification and capability evidence. PR #150's Messages workspace, archive, read state, threads and drafts are merged after review and CI. PR #152's final UI fixes passed 1007 Rust tests, 77 Python checks and 275 native workflow steps; final CI/review, physical input and broader installed-candidate acceptance remain. |
+| [Desktop UX](DESKTOP-UX.md) | Implemented home/Tools simplification and capability evidence. PR #150's Messages workspace, archive, read state, threads and drafts are merged after review and CI. PR #152's final UI fixes passed 1007 Rust tests, 77 Python checks and 275 native workflow steps, then merged after final CI/review. Physical input and broader installed-candidate acceptance remain. |
 | [Iced design](ICED-DESIGN.md) | Partial: native migration and automated interactions implemented; VoiceOver/IME and other-platform hands-on acceptance remain. |
 | [Guided setup](GUIDED-SETUP.md) | Implemented preview/apply/undo, configuration locks and per-session contact/input evidence. PR #125 is merged after review and CI; native and bounded actual-provider readiness checks passed. Installed-candidate acceptance remains. |
 | [Activity and messaging](ACTIVITY-AND-MESSAGING.md) | Partial: activity/hooks and opt-in input adapters exist; ordinary hooks alone cannot wake idle models. |
