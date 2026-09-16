@@ -297,7 +297,8 @@ def run(args):
                 canonical = register_life("resume-old", old_parent, "fixture-resumed-session")
                 old_message = send_to(canonical, "older queued message")
                 old_parent.kill(); old_parent.wait(timeout=5)
-                assert rpc(endpoint, {"op": "deregister", "agent": canonical})["type"] == "ok"
+                retired = rpc(endpoint, {"op": "deregister", "agent": canonical})
+                assert retired["type"] == "agent" and retired["agent"]["finished_at"], retired
                 new_parent = spawn(["sleep", "120"], env)
                 fresh = register_life("resume-new", new_parent)
                 assert fresh != canonical
@@ -320,7 +321,8 @@ def run(args):
 
                 retained = send_to(canonical, "retained older backlog")
                 new_parent.kill(); new_parent.wait(timeout=5)
-                assert rpc(endpoint, {"op": "deregister", "agent": canonical})["type"] == "ok"
+                retired = rpc(endpoint, {"op": "deregister", "agent": canonical})
+                assert retired["type"] == "agent" and retired["agent"]["finished_at"], retired
                 next_parent = spawn(["sleep", "120"], env)
                 next_id = register_life("resume-next", next_parent)
                 initialized = channel_for(next_id, initialize=True)
