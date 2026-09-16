@@ -2268,7 +2268,8 @@ mod tests {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.shell.thread = Some("thread-fixture".into());
+        app.shell.width = 1180.0;
+        app.shell.thread = Some("thread-fixture".to_owned().into());
         let _ = app.update(Message::TextSize(14.0));
         let preferred = app.panes.widths;
         assert!(!app.messages_compact());
