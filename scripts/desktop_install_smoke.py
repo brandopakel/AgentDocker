@@ -50,6 +50,11 @@ def trial(args):
         source = payload(args.source)
         controller = source / BIN / "agentdocker"
         first = payload(args.previous_source) if args.previous_source else source
+        legacy_first = MAC and json.loads((first / META).read_text()).get("launcher_redirect", 0) == 0
+        if legacy_first:
+            # Establish the historical installation using its actual installer;
+            # the new one intentionally cannot create a legacy-only launcher.
+            controller = first / BIN / "agentdocker"
         second = root / "second" / PAYLOAD
         if MAC:
             subprocess.run(["/usr/bin/ditto", str(source), str(second)], check=True)
@@ -82,7 +87,7 @@ def trial(args):
 
         daemon = None
 
-        def check_bundle_commands(generation):
+        def check_bundle_commands(generation, bundle_generation=None):
             if not MAC:
                 return
             launcher = prefix / "Applications/AgentDocker.app"
@@ -90,9 +95,11 @@ def trial(args):
             info = plistlib.loads((launcher / "Contents/Info.plist").read_bytes())
             assert info["CFBundleName"] == info["CFBundleDisplayName"] == "AgentDocker"
             assert info["CFBundleExecutable"] == "agentdocker-ui"
+            historical_links = (launcher / BIN / "agentdocker").is_symlink()
+            assert not historical_links or (legacy_first and generation == first_id)
             for name in ["agentdocker", "agentd", "agentdocker-ui"]:
                 entry = launcher / BIN / name
-                assert entry.is_file() and not entry.is_symlink()
+                assert entry.is_file() and entry.is_symlink() == historical_links
             retained = root_install / "versions" / generation / PAYLOAD
 
             def files(bundle):
@@ -100,9 +107,11 @@ def trial(args):
                         hashlib.sha256(path.read_bytes()).hexdigest())
                         for path in bundle.rglob("*") if path.is_file()}
 
-            assert files(launcher) == files(retained), "visible bundle differs from signed payload"
-            subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(launcher)],
-                           check=True, capture_output=True, timeout=30)
+            if not historical_links:
+                copied = root_install / "versions" / (bundle_generation or generation) / PAYLOAD
+                assert files(launcher) == files(copied), "visible bundle differs from signed payload"
+                subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(launcher)],
+                               check=True, capture_output=True, timeout=30)
             entry = str(launcher / BIN / "agentdocker")
             # Exercise the exact old integration paths on the host filesystem.
             for runtime in ["claude-code", "codex"]:
@@ -145,11 +154,12 @@ def trial(args):
             assert not prefix.exists(), "read-only preview created an installation"
             first_id = preview["candidate"]["id"]
             cli("install", "--from", first, "--expect-release", first_id, "--expect-current", "none")
+            controller = source / BIN / "agentdocker"
             result["scenarios"].append("preview without writes and pinned initial installation")
             root_install = prefix / ".local/share/agentdocker/desktop"
             assert root_install.stat().st_mode & 0o777 == 0o700
             assert (root_install / "current/activation.json").stat().st_mode & 0o777 == 0o600
-            if MAC:
+            if MAC and not legacy_first:
                 # Reinstall the same release over the old managed wrapper:
                 # repair its signature without losing the rollback record.
                 launcher = prefix / "Applications/AgentDocker.app"
@@ -200,7 +210,7 @@ def trial(args):
                     assert (binaries / name).resolve() == root_install / "versions" / first_id / PAYLOAD / BIN / name
                 assert (root_install / "versions" / second_id).is_dir()
                 result["scenarios"].append("compatible rollback switches all commands and retains both releases")
-                check_bundle_commands(first_id)
+                check_bundle_commands(first_id, second_id if legacy_first else None)
                 with (second / BIN / "agentdocker").open("ab") as executable:
                     executable.write(b"corrupt fixture\n")
                 cli("install", "--from", second, success=False)

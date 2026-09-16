@@ -197,6 +197,8 @@ struct Release {
     tree_sha256: String,
     #[serde(default)]
     installation_lock: u32,
+    #[serde(default)]
+    launcher_redirect: u32,
     payload: String,
 }
 
@@ -443,6 +445,10 @@ impl Layout {
     /// substituting executables. Ownership stays in launcher.json outside it.
     /// Preparation never changes the app the person can launch.
     fn prepare_launcher_bundle(&self, release: &Release) -> Result<tempfile::TempDir> {
+        ensure!(
+            release.launcher_redirect == 1,
+            "release has no managed launcher redirect contract"
+        );
         let parent = self
             .application
             .parent()
@@ -459,6 +465,48 @@ impl Layout {
         );
         sync_tree(staging.path())?;
         Ok(staging)
+    }
+
+    /// A rollback may select an older payload, but must retain a launcher
+    /// that execs it under its immutable path and lifetime pin.
+    fn check_launcher_support(&self, release: &Release) -> Result<()> {
+        if !cfg!(target_os = "macos") || release.launcher_redirect == 1 {
+            return Ok(());
+        }
+        let metadata = self.application.join("Contents/Resources/build.json");
+        let value: serde_json::Value = match agentdocker_host::files::open_regular(&metadata) {
+            Ok(file) if file.metadata()?.len() <= 1024 * 1024 => {
+                serde_json::from_reader(file.take(1024 * 1024)).unwrap_or_default()
+            }
+            _ => serde_json::Value::Null,
+        };
+        ensure!(
+            self.copied_launcher_version()?.is_some() && value["launcher_redirect"] == 1,
+            "this older release needs an existing compatible launcher; install a current package first"
+        );
+        Ok(())
+    }
+
+    fn copied_launcher_version(&self) -> Result<Option<String>> {
+        if !cfg!(target_os = "macos")
+            || !self
+                .application
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+            || !self.application_is_replaceable()?
+        {
+            return Ok(None);
+        }
+        let Ok(hash) = tree_hash(&self.application) else {
+            return Ok(None);
+        };
+        Ok(self
+            .root
+            .join("versions")
+            .join(&hash)
+            .join("AgentDocker.app")
+            .is_dir()
+            .then_some(hash))
     }
 
     /// Publish after activation: copied entrypoints follow current before
@@ -748,6 +796,7 @@ impl Layout {
 
     fn activate(&self, current: Release, previous: Option<Release>) -> Result<()> {
         self.preflight()?;
+        self.check_launcher_support(&current)?;
         // The prior release is part of the immutable generation. There is no
         // separate mutable "previous" pointer to lose in a crash.
         let generation = self
@@ -784,7 +833,7 @@ impl Layout {
                 Err(error) => return Err(error.into()),
             }
         }
-        let launcher = if cfg!(target_os = "macos") {
+        let launcher = if cfg!(target_os = "macos") && activation.current.launcher_redirect == 1 {
             let launcher = self.prepare_launcher_bundle(&activation.current)?;
             self.record_application()?;
             self.repair_legacy_launcher()?;
@@ -855,6 +904,10 @@ fn replace_application(staged: &Path, destination: &Path, existed: bool) -> Resu
 }
 
 fn validate_release(release: &Release) -> Result<()> {
+    ensure!(
+        release.launcher_redirect <= 1,
+        "unknown launcher redirect contract"
+    );
     ensure!(
         release.id.len() == 64
             && release.id.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -1102,6 +1155,13 @@ fn inspect(source: &Path, local_preview: bool) -> Result<(PathBuf, Release)> {
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
             .unwrap_or(0),
+        launcher_redirect: match &value["launcher_redirect"] {
+            serde_json::Value::Null => 0,
+            value => value
+                .as_u64()
+                .filter(|n| *n <= 1)
+                .context("unknown launcher redirect contract")? as u32,
+        },
         payload: payload_name.to_owned(),
     };
     validate_release(&release)?;
@@ -1302,6 +1362,7 @@ fn perform(
         "artifact uses an older state schema; binary replacement cannot roll back the database"
     );
     layout.preflight()?;
+    layout.check_launcher_support(&candidate)?;
     let report = json!({"source":source, "candidate":candidate, "previous":active.as_ref().map(|active| &active.current),
         "application":layout.application, "bin":layout.bin, "versions":layout.root.join("versions"),
         "preview":preview, "local_preview":local_preview,
@@ -1345,7 +1406,7 @@ fn perform(
         .is_none_or(|active| active.current.id != candidate.id)
     {
         layout.activate(candidate, current.map(|active| active.current))?;
-    } else if cfg!(target_os = "macos") {
+    } else if cfg!(target_os = "macos") && candidate.launcher_redirect == 1 {
         // Reinstalling the active release also repairs an older managed
         // launcher, without changing the retained rollback generation.
         let launcher = layout.prepare_launcher_bundle(&candidate)?;
@@ -1370,6 +1431,7 @@ mod tests {
             target: "fixture".into(),
             tree_sha256: id,
             installation_lock: agentdocker_host::installation::LOCK_FORMAT,
+            launcher_redirect: agentdocker_host::installation::LAUNCHER_REDIRECT_FORMAT,
             payload: if cfg!(target_os = "macos") {
                 "AgentDocker.app"
             } else {
@@ -1384,6 +1446,14 @@ mod tests {
         }
         if cfg!(target_os = "macos") {
             std::fs::create_dir_all(payload.join("Contents/Resources")).unwrap();
+            std::fs::write(
+                payload.join("Contents/Resources/build.json"),
+                json!({
+                    "format": 1, "product": "agentdocker", "launcher_redirect": 1,
+                })
+                .to_string(),
+            )
+            .unwrap();
             std::fs::write(
                 payload.join("Contents/Info.plist"),
                 concat!(
@@ -1553,6 +1623,41 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(layout.application.join("Contents/Info.plist")).unwrap(),
             "user edit"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn older_payloads_keep_a_compatible_launcher_and_cannot_bootstrap_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layout = Layout::new(tmp.path().to_owned()).unwrap();
+        layout.ensure_root().unwrap();
+        let modern = release(&layout, "modern");
+        let mut legacy = release(&layout, "legacy");
+        legacy.launcher_redirect = 0;
+        std::fs::write(
+            layout
+                .payload(&legacy)
+                .join("Contents/Resources/build.json"),
+            json!({
+                "format": 1, "product": "agentdocker", "installation_lock": 1,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let legacy = rehash(&layout, legacy);
+        assert!(layout.activate(legacy.clone(), None).is_err());
+        assert!(layout.active().unwrap().is_none());
+        layout.activate(modern.clone(), None).unwrap();
+        layout
+            .activate(legacy.clone(), Some(modern.clone()))
+            .unwrap();
+        assert_eq!(layout.active().unwrap().unwrap().current, legacy);
+        assert_eq!(tree_hash(&layout.application).unwrap(), modern.id);
+        assert_eq!(layout.copied_launcher_version().unwrap(), Some(modern.id));
+        assert_eq!(
+            std::fs::read_to_string(layout.bin.join("agentdocker")).unwrap(),
+            "legacy"
         );
     }
 

@@ -8,6 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub const LOCK_FORMAT: u32 = 1;
+pub const LAUNCHER_REDIRECT_FORMAT: u32 = 1;
 
 /// A visible macOS application is an intact signed copy. Its entrypoints run
 /// the selected immutable release before parsing commands or starting services.

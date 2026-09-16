@@ -127,6 +127,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 "arch": std::env::consts::ARCH,
                 "state_schema": store::SCHEMA_VERSION,
                 "installation_lock": agentdocker_host::installation::LOCK_FORMAT,
+                "launcher_redirect": agentdocker_host::installation::LAUNCHER_REDIRECT_FORMAT,
             })
         );
         return Ok(());
