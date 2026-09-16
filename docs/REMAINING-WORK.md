@@ -121,7 +121,9 @@ replacement acceptance.
 The next idle-connection review found thread replies still enabled for ended
 direct sessions. Both composers and the submit handler now share canonical
 recipient liveness, preserve both drafts after an ended-session submit, and
-allow replies again when the canonical session is live. Verification is pending.
+allow replies again when the canonical session is live. Source `f974f3d` passed
+the full 1,018-Rust/77-Python release gate, including the ended-thread draft and
+submission regression; final GitHub CI and review remain pending.
 
 September 16 notification Hide trial on installed `1e90f83` routed the exact
 message but left the private window hidden. Source now explicitly unhides the
