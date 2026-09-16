@@ -880,7 +880,7 @@ Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `
 | Request | Response | Phase |
 |---|---|---|
 | Additional execution adapters (Apple `container`, others) | capability-specific | 4 |
-| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, effective_since, effective_until, coverage}` | 5 |
+| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage}` | 5 |
 
 **Token usage by agent, model and provider** (requested September 15;
 proposal, not implemented). The initial adapters will read local Codex rollouts
@@ -902,8 +902,15 @@ are unknown, never zero. The design:
   cache hit is not added again to an inclusive input total, and reasoning is not
   added again to an inclusive output total. Cache reads and cache writes remain
   separate. Cumulative snapshots become deltas against a durable baseline;
-  per-response usage and cumulative usage are never both counted. Unsupported
-  fields stay unknown, with coverage shown beside aggregates.
+  per-response usage and cumulative usage are never both counted. A decrease
+  starts a new counter epoch: store the reset value as the baseline, emit no
+  negative delta and mark that interval as a gap. Subsequent increases in that
+  epoch count normally. A newly discovered complete session may use a zero
+  baseline only when its adapter proves the snapshot covers that session from
+  its start; otherwise the first snapshot establishes a baseline with unknown
+  prior coverage. Reset/rewrite identities must distinguish new epochs from
+  replay. Each supported format needs restart, truncation, rotation and rewrite
+  fixtures. Unsupported fields stay unknown, with coverage beside aggregates.
 - **Restart-safe ingestion.** The collector returns samples with stable source
   identities plus the proposed next file cursor. One daemon transaction accepts
   previously unseen samples, updates aggregates and durable cursor/baseline
@@ -920,8 +927,16 @@ are unknown, never zero. The design:
   on the usage bucket at ingestion; deleting, moving or retiring a current agent
   cannot move its historical usage into another project. Unmatched or ambiguous
   sessions remain unattributed, with unknown project, until an explicit
-  idempotent reconciliation has enough evidence. Runtime names are not billing
-  companies: provider comes from reliable runtime metadata or explicit user
+  idempotent reconciliation has enough evidence. Reconciliation uses the
+  retained sample identities and their bucket contributions, not a second
+  ingestion: in one transaction it subtracts each still-unattributed contribution
+  from its original hourly bucket, merges it into the resolved agent/project
+  bucket, updates its attribution and emits the reconciliation event. Counter
+  sums and known/sample counts move together; no separate agent/project totals
+  may lag this transaction. Repeating the operation is a no-op, and re-ingestion
+  uses the same dedupe identity. Preserve unresolved contributions through the
+  usage retention window; expired contributions cannot recreate totals. Runtime
+  names are not billing companies: provider comes from reliable runtime metadata or explicit user
   configuration, otherwise it is unknown. Model names are retained as reported.
 - **Bounded aggregation.** Rows are keyed by agent/project attribution, runtime,
   provider, model and UTC hour, with separate sums and coverage counts for every
@@ -929,17 +944,43 @@ are unknown, never zero. The design:
   follow the configured retention window; the UI says *Available history*, not
   an unqualified all-time total. No prompt, response or tool-result text is
   stored in the usage tables.
-- **Reading it.** `usage` groups by agent, model, provider, project or hour. The
-  proposed CLI remains `agentdocker usage [--project] [--agent] [--since 24h]
-  [--by agent|model|provider|hour]`. Since only hourly aggregates are retained,
-  `since` rounds down to a UTC hour and `until` rounds up; an already aligned
-  bound stays unchanged. Buckets use the half-open interval
-  `[effective_since, effective_until)`. Responses and the UI show these effective
-  bounds, so a partial-hour request never appears to be an exact sub-hour count.
-  Reversed or empty requested ranges are rejected before rounding. The Usage
-  screen shows day/week/available-history totals, per-agent model and provider
-  totals, project filters and explicit unknown/partial coverage. It shows
-  tokens; monetary cost is outside this initial proposal.
+- **Reading it.** `usage` groups by agent (the default), model, provider, project
+  or hour. The proposed CLI is `agentdocker usage [--project <id>]
+  [--agent <id>] [--since <RFC3339|duration>] [--until <RFC3339>]
+  [--by agent|model|provider|project|hour]`. Omitted `since` means 24 hours before
+  the query's captured UTC `as_of`; omitted `until` means `as_of`. Reversed or
+  empty requested ranges and a `since` later than `as_of` are rejected before
+  rounding. Future `until` is clamped to `as_of`. Since only hourly aggregates
+  are retained, `since` rounds down and `until` rounds up to UTC hours; aligned
+  bounds stay unchanged. Clamp the lower bound to the configured oldest retained
+  hour. If the requested history is wholly expired, return no rows and equal
+  effective bounds at that retention boundary. Otherwise buckets use the
+  half-open interval `[effective_since, effective_until)`. An upper bound rounded
+  past `as_of` includes only observed data, never predicted future usage.
+  Responses and the UI show the effective bounds, requested-history truncation
+  and whether the current hour is included. Retention loss and an incomplete
+  current hour are separate from missing parser fields or ingestion gaps.
+  The Usage screen shows day/week/available-history totals, per-agent model and
+  provider totals, project filters and explicit unknown/partial coverage. It
+  shows tokens; monetary cost is outside this initial proposal.
+- **Proposed response schema.** `usage` returns `rows` (array), `by` (one of the
+  grouping values above), `as_of`, `effective_since`, `effective_until` (UTC
+  RFC3339 strings), and `coverage` (object). `coverage` contains
+  `retained_since` (UTC hour), `history_truncated`, `future_until_clamped` and
+  `includes_current_hour` (booleans), plus `source_gaps` (a nonnegative integer
+  count of known unreadable/unsupported/reset intervals in the requested scope).
+  It does not claim discovery of every provider log. Every row has `key`
+  (string, or null for unknown/unattributed; UTC hour string when `by=hour`),
+  `samples` (nonnegative integer contribution count), and `counters` (object with
+  exactly `input_tokens`, `cache_read_input_tokens`, `cache_write_input_tokens`,
+  `output_tokens`, `reasoning_output_tokens`). Each counter is
+  `{sum: u64|null, known_samples: u64, coverage: "complete"|"partial"|"unknown"}`.
+  `sum` is tokens from known contributions only; null means none are known,
+  whereas a reported zero remains zero. `known_samples` cannot exceed `samples`;
+  counter coverage is complete when all contributions report it, partial when
+  some do, and unknown when none do. An empty query returns `rows: []`, not a
+  fabricated zero row. Complete counter coverage does not override top-level
+  source gaps, retention truncation or the current hour's partial duration.
 - **AgentDocker overhead.** Record injected hook/MCP/message byte counts apart
   from provider-reported usage, with any token conversion labelled as an
   estimate. These estimates are neither additional provider tokens nor a precise
