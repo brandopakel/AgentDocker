@@ -883,7 +883,7 @@ Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `
 | `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage, overhead}` | 5 |
 
 **Token usage by agent, model and provider** (requested September 15;
-proposal, not implemented). The initial adapters will read local Codex rollouts
+implementation in progress; the collector, protocol, CLI and Usage screen are not delivered). The initial adapters read local Codex rollouts
 and Claude Code transcripts. These are versioned runtime formats: an adapter
 must identify a supported usage record and model context, rather than assume
 every turn or runtime reports every counter. Missing or unsupported counters
@@ -1042,6 +1042,21 @@ are unknown, never zero. The design:
   from provider-reported usage, with any token conversion labelled as an
   estimate. These estimates are neither additional provider tokens nor a precise
   measure of billed overhead; never add them to the provider total.
+
+Initial source work adds pure optional counters, reset-aware deltas and strict
+hourly query bounds, plus local format normalization for Codex 0.153.4/0.154.0 and
+Claude Code 2.1.268/2.1.270. These parsers emit metadata and counters only; they do
+not yet scan, persist or display usage. Claude content-record UUIDs do not count
+as distinct responses: dedupe uses the provider message ID with runtime/session.
+Missing fields stay unknown. Unsupported versions or malformed counters report
+a gap rather than zero. Initial local verification is pending.
+
+Counter normalization follows [OpenAI usage breakdowns](https://developers.openai.com/api/reference/cli/resources/responses/methods/retrieve)
+and [Claude cache input semantics](https://platform.claude.com/docs/en/build-with-claude/prompt-caching):
+Codex input/output totals include their cache/reasoning components; Claude total
+input combines uncached input, cache reads and cache creation once. The observed
+local rollout/transcript formats, rather than API compatibility alone, determine
+which adapter versions are supported.
 
 Completion requires parser fixtures for supported versions and missing fields;
 crash/replay/rotation/truncation and partial-line trials; cache/reasoning overlap
