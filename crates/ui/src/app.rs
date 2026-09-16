@@ -1295,12 +1295,13 @@ impl App {
     }
 
     /// Whether the open conversation's pane is on the screen: the Messages
-    /// screen, and in a narrow window the conversation rather than the list.
+    /// screen, and in a compact layout the conversation rather than the list.
     pub(crate) fn conversation_pane_visible(&self) -> bool {
         self.screen == Screen::Questions
             && self.shell.conversation.is_some()
-            // Narrow, the list or a thread stands in for the pane.
-            && (!self.narrow() || (self.shell.inbox_open && self.shell.thread.is_none()))
+            // A compact layout replaces this pane with the list or a thread.
+            && (!self.messages_compact()
+                || (self.shell.inbox_open && self.shell.thread.is_none()))
     }
 
     pub(crate) fn is_human(&self, id: &str) -> bool {
@@ -3895,6 +3896,74 @@ mod tests {
         );
         app.shell.thread = None;
         assert!(app.conversation_pane_visible());
+    }
+
+    #[test]
+    fn history_marks_read_only_when_the_conversation_is_rendered() {
+        for (width, text_size, inbox_open, thread_open, visible) in [
+            (1000.0, 14.0, true, true, false),
+            (1180.0, 18.0, true, true, false),
+            (1000.0, 14.0, true, false, true),
+            (1000.0, 14.0, false, true, false),
+            (1180.0, 14.0, true, true, true),
+            (700.0, 14.0, false, false, false),
+            (700.0, 14.0, true, false, true),
+        ] {
+            let (commands, requests) = queue::channel();
+            let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+            let mut app = App::bare(commands, results);
+            app.screen = Screen::Questions;
+            app.shell.width = width;
+            app.shell.inbox_open = inbox_open;
+            app.shell.thread = thread_open.then(|| MessageId::from("root".to_owned()));
+            let room = "channel:unread-fixture".to_owned();
+            app.shell.conversation = Some(room.clone());
+            app.conversations = vec![agentdocker_core::ConversationSummary {
+                conversation: room.clone().into(),
+                kind: agentdocker_core::ConversationKind::Channel,
+                name: None,
+                title: "room".into(),
+                members: Vec::new(),
+                unread: 1,
+                last_seq: Some(7),
+                last_at: None,
+                last_from: None,
+                last_line: None,
+            }];
+            let _ = app.update(Message::TextSize(text_size));
+            messages
+                .send(Msg::History(
+                    room.clone(),
+                    app.history_epoch,
+                    vec![agentdocker_core::ArchivedMessage {
+                        seq: 7,
+                        conversation: room.clone().into(),
+                        replies: 0,
+                        envelope: agentdocker_core::Envelope::new(
+                            "sender",
+                            agentdocker_core::Destination::Broadcast,
+                            "chat",
+                            serde_json::json!({"text":"unread message"}),
+                            None,
+                            Utc::now(),
+                        ),
+                    }],
+                ))
+                .unwrap();
+            app.drain();
+            let read = requests
+                .try_iter()
+                .filter_map(|cmd| match cmd {
+                    Cmd::MarkRead(conversation, through) => Some((conversation, through)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                read,
+                if visible { vec![(room, 7)] } else { vec![] },
+                "width={width}, text={text_size}, inbox={inbox_open}, thread={thread_open}"
+            );
+        }
     }
 
     /// Narrow with a thread open nothing marks read; paging back keeps every

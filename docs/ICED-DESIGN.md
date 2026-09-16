@@ -157,7 +157,9 @@ system, which is drawn from the mark:
   shrink to reserve at least 320 logical pixels for the conversation. If even
   the minimum columns cannot fit, Messages uses its existing one-pane
   conversation/thread navigation. Window resizing and text zoom recompute this
-  layout without overwriting saved preferences. The two
+  layout without overwriting saved preferences. History only marks a conversation read
+  when that same effective layout actually shows it; an open compact thread
+  cannot acknowledge the hidden conversation. The two
   grids number their splits separately, so a resize event carries which grid
   it came from. The thread column is split off and closed with the thread.
   The dividers are 8 points wide, drawn as a 2-point accent line while
