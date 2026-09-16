@@ -510,6 +510,168 @@
         "No-prompt native startup/reopen and other provider adapters remain open.",
         "Installation and final CI are separate gates."
       ]
+    },
+    "combined_release_4eb92a7": {
+      "build_source_commit": "4eb92a7",
+      "gate": {
+        "command": "bash scripts/verify.sh check",
+        "result": "passed",
+        "rust_passed": 969,
+        "rust_skipped": 6,
+        "python_passed": 70,
+        "includes": [
+          "format",
+          "strict Clippy",
+          "doctests",
+          "workspace package",
+          "release build"
+        ],
+        "log": "/private/tmp/agentdocker-portable-skill-gate4.log",
+        "log_sha256": "900154a81e1a5da207f48a6bad00ec34d1af0f6661390bf4c0fd65f1b8fb383d"
+      },
+      "actual_native_long_busy": {
+        "started_at": "2026-09-16T00:06:53.324663+00:00",
+        "scenario": "long-busy",
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "4f6f3625ab64ffcc26a1786443b63c26c4baec4f09169178654c57c81ac4fe51",
+        "source": {
+          "commit": "528e4e02bc91aabac94647ba5481c7794c51408a",
+          "dirty": false,
+          "rust_and_driver_sha256": "7c8845a957447ccd935c3e1e767afa5597038e59e61cb6e785be1b8c40857e10"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "9d534ace1bacd4955b41872d1859fa737b594e1c2ffb56a8708949d6bf16cadc",
+        "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+        "pid": 93018,
+        "thread": "01a0a789-b112-7591-8086-f568852ee667",
+        "agent": "03ea38a0779048ef9f30ea3ec1940052",
+        "automatic_hook_bootstrap": true,
+        "idle_wake_seconds": 7.32707954198122,
+        "long_busy_samples": [
+          {
+            "at_seconds": 5.006234458007384,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 10.011562125000637,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 15.014975375001086,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 20.017084999999497,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 25.02334308301215,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 30.02738162499736,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 35.029098791012075,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 40.03478920800262,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 45.03576637498918,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 50.04109979100758,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 55.045768874988426,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 60.04800579100265,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 65.0533518329903,
+            "paused": false,
+            "native_queue_id_retained": true,
+            "daemon_inputs_retained_in_order": 2,
+            "provider_receipt_absent": true
+          }
+        ],
+        "direct_user_busy_seconds": 65.0533532499976,
+        "cross_process_receipt": {
+          "thread": "01a0a789-b112-7591-8086-f568852ee667",
+          "turn": "01a0a789-d81e-7ce2-a441-7259edec29cb",
+          "item": "01a0a789-d829-7cb2-b792-94118dd58d63"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "6916fbd6799c473b"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0a789-b112-7591-8086-f568852ee667",
+            "turn": "01a0a78b-109d-7582-87eb-330671a62fff",
+            "item": "01a0a78b-10a8-7380-beaa-8b83dd9e6b04"
+          }
+        },
+        "completed_receipts": 4,
+        "automatic_receiver_restart_no_replay": true,
+        "idle_wake_after_receiver_crash": true,
+        "same_live_tui": true,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 8,
+        "agentdocker_integration": true,
+        "raw_result_sha256": "51c8d75c02c429c0edf3ed435c0e29100956ab1efa33646264dbfe7146abee7e"
+      },
+      "artifact_path": "/private/tmp/agentdocker-skill-native-long-busy33-2026-09-15/result.json",
+      "artifact_sha256": "4f6fcccbff9579ff1f3f9ac83341d568133a482fd8300feae00045b1b6195cea",
+      "source_note": "Trial source528e4e0 adds only driver/docs corrections to build source4eb92a7; Rust, Cargo and bundled skill content are unchanged. The current integration also includes subsequent native recovery-driver/evidence corrections. No new skill loader behavior is claimed."
     }
   }
 }

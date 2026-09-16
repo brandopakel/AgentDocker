@@ -83,8 +83,10 @@ correction now includes a passing actual 65-second trial at `5aeb651`, plus
 idle/draft/FIFO/receiver recovery and a separate rate-limit hold/resume. Its full
 gate passed 967 Rust tests (six skipped) and 70 Python checks. A recovery trial
 failed cleanup despite an incorrect raw pass label; that failure is retained and
-the corrected driver must pass its repeat. #148/#149 remain draft pending that
-repeat, review/CI and installed acceptance.
+corrected recovery34 at `bc0ea04` passed its repeat under daemon supervision,
+reconciling the original native queue entry and retaining unconfirmed input
+without replay. The injected late-error trial also returned failure as required.
+Final review/CI and installed acceptance remain.
 
 PR #135's feedback/readiness correction is merged as `d6d7dab` after the full
 local gate, all final-head CI checks and independent Claude source review. Its
