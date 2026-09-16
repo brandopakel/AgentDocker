@@ -1556,5 +1556,677 @@
     "raw_result_sha256": "fc18a853850c927e40065fc86ad17ff1e41b24552221fc7b58bf1837ea8a4670",
     "binary_build_source": "bb1e50c",
     "source_note": "Trial sourceb2c3938 merges retention evidence from main; Rust and native driver unchanged from compiledbb1e50c."
+  },
+  "long_busy_blocker_5f72f37": {
+    "status": "fixed-and-bounded-acceptance-passed-awaiting-final-review-ci-installation",
+    "merge_and_installation": "PRs 148 and 149 are draft; do not merge/install until fixed and actual acceptance passes.",
+    "trials": [
+      {
+        "started_at": "2026-09-15T22:02:06.817556+00:00",
+        "scenario": "baseline",
+        "result": "failed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "61f188d22da2fdd1e4181b09338d9fae7cc1b43f8b4d82dc55205d1668cfcc26",
+        "source": {
+          "commit": "5f72f370cdd7dd1393a46bba331825d74027652d",
+          "dirty": false,
+          "rust_and_driver_sha256": "490f7b4217635edcd4e0195af07da58a9f5737419e0a2ec8fb06ae85bbf2cd18"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "e871e3f002871b9d12a945287c6eb8278b3616f0740a2800b354fb00111592ef",
+        "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+        "pid": 94309,
+        "thread": "01a0a717-73cc-7791-a5fa-eeb515cb2d8d",
+        "agent": "d941865459dc4fbb84c568b004a6f92c",
+        "automatic_hook_bootstrap": true,
+        "idle_wake_seconds": 7.633691166993231,
+        "failure": "See the private result and terminal capture; raw exception text may include local state.",
+        "raw_result_sha256": "07385edc2eb7c2d4e845abf2aecd426d5eee1b010951f1f88264c90cdbe9bbf2",
+        "artifact_path": "/private/tmp/agentdocker-native-long-busy25-2026-09-15/result.json",
+        "artifact_sha256": "3fbaac08418a0ee884df8f128017e06f03a5322bd604928d541e82991a7c14ca",
+        "classification": "fixture-input-failure",
+        "finding": "Text and Enter in the same PTY burst left the busy-start prompt as a draft. Corrected trial 26 separated text, a 0.5-second delay, and Enter."
+      },
+      {
+        "started_at": "2026-09-15T22:04:17.793266+00:00",
+        "scenario": "baseline",
+        "result": "failed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "967fe1783a87a31f80395e2d0d8eddf8059d44ddecfba6cf467da7a92c063114",
+        "source": {
+          "commit": "5f72f370cdd7dd1393a46bba331825d74027652d",
+          "dirty": false,
+          "rust_and_driver_sha256": "1874e1f9b9c2f1b1be711f52fce124f5179939854da0dcd22ac4159b29179fd5"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "e871e3f002871b9d12a945287c6eb8278b3616f0740a2800b354fb00111592ef",
+        "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+        "pid": 1866,
+        "thread": "01a0a719-734b-7483-933b-6c7835e74e12",
+        "agent": "c4c8393d0ff242c4a9508198a4bc2b00",
+        "automatic_hook_bootstrap": true,
+        "idle_wake_seconds": 7.632111749990145,
+        "long_busy_samples": [
+          {
+            "at_seconds": 5.005241000006208,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 10.006393750023562,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 15.007043209014228,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 20.00886983401142,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 25.012740792008117,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 30.01485329202842,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 35.01994862500578,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 40.02208662501653,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 45.025295459025074,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          }
+        ],
+        "failure": "See the private result and terminal capture; raw exception text may include local state.",
+        "raw_result_sha256": "9c22393a89ccd9ae8b41bb21a960de0ea23404083d8e6db7bc86a90dd964805e",
+        "artifact_path": "/private/tmp/agentdocker-native-long-busy26-2026-09-15/result.json",
+        "artifact_sha256": "e6c789b123d5e2808bf3e71feca5c88c7bee2e90c48a09d34c55eacadecc7d47",
+        "classification": "application-defect",
+        "finding": "A real direct user turn stayed active while peer input remained in the native queue without a receipt. At about 50 seconds the receiver falsely paused it as idle. The copied rollout records task_started without task_complete for this turn. Historical turn status is not sufficient evidence of live TUI idleness."
+      },
+      {
+        "started_at": "2026-09-15T23:45:43.384770+00:00",
+        "scenario": "baseline",
+        "result": "failed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "c10c3ef1ae5589d07492456f7072191336c9d21fd5c7a75b570d2f1ce25b1d02",
+        "source": {
+          "commit": "145d2159c0bfc0dca7e7089b69778e7c8fbc480f",
+          "dirty": false,
+          "rust_and_driver_sha256": "27a98b45d36ccba9451dc287c0bd625c86b6d881f48fdf4a6550ac8740aeb2c1"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "e871e3f002871b9d12a945287c6eb8278b3616f0740a2800b354fb00111592ef",
+        "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+        "pid": 23687,
+        "thread": "01a0a776-4f4a-7e32-87c9-dc220877f921",
+        "agent": "af16b139081b45bfbcd018111b84eb18",
+        "automatic_hook_bootstrap": true,
+        "idle_wake_seconds": 7.647142875008285,
+        "long_busy_samples": [
+          {
+            "at_seconds": 5.038174792018253,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 10.041737750027096,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 15.043882083002245,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 20.046526750025805,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 25.05247470800532,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 30.052833625028143,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 35.05450600001495,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 40.06020870801876,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          },
+          {
+            "at_seconds": 45.06523429200752,
+            "paused": false,
+            "native_queue_entry_present": true,
+            "provider_receipt_absent": true
+          }
+        ],
+        "live_busy_sidecar": {
+          "metadata": {
+            "id": 2,
+            "result": {
+              "thread": {
+                "id": "01a0a776-4f4a-7e32-87c9-dc220877f921",
+                "environments": null,
+                "extra": null,
+                "sessionId": "01a0a776-4f4a-7e32-87c9-dc220877f921",
+                "forkedFromId": null,
+                "parentThreadId": null,
+                "preview": "fixture warmup",
+                "ephemeral": false,
+                "section": null,
+                "sectionEnteredAt": null,
+                "projectId": null,
+                "historyMode": "paginated",
+                "modelProvider": "fixture",
+                "model": "fixture-model",
+                "reasoningEffort": null,
+                "createdAt": 1789515943,
+                "updatedAt": 1789515964,
+                "recencyAt": 1789515964,
+                "status": {
+                  "type": "notLoaded"
+                },
+                "path": "/private/tmp/ad-native-queue-ooju1oii/profile/sessions/2026/09/15/rollout-2026-09-15T16-45-43-01a0a776-4f4a-7e32-87c9-dc220877f921.jsonl",
+                "cwd": "/private/tmp/ad-native-queue-ooju1oii/project",
+                "cliVersion": "0.154.0",
+                "originator": "codex-tui",
+                "source": "cli",
+                "canAcceptDirectInput": null,
+                "threadSource": "user",
+                "agentNickname": null,
+                "agentRole": null,
+                "gitInfo": null,
+                "name": null,
+                "daybreakEnabled": null,
+                "turns": []
+              }
+            }
+          },
+          "turns": {
+            "id": 3,
+            "result": {
+              "data": [
+                {
+                  "id": "01a0a776-a00f-7942-9c9e-4b9099215796",
+                  "items": [],
+                  "itemsView": "notLoaded",
+                  "status": "interrupted",
+                  "error": null,
+                  "startedAt": 1789515964,
+                  "completedAt": null,
+                  "durationMs": null
+                }
+              ],
+              "nextCursor": "{\"requestedThreadId\":\"01a0a776-4f4a-7e32-87c9-dc220877f921\",\"rolloutOrdinal\":47,\"includeAnchor\":false,\"scope\":{\"kind\":\"turns\"}}",
+              "backwardsCursor": "{\"requestedThreadId\":\"01a0a776-4f4a-7e32-87c9-dc220877f921\",\"rolloutOrdinal\":47,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}"
+            }
+          }
+        },
+        "failure": "See the private result and terminal capture; raw exception text may include local state.",
+        "raw_result_sha256": "d37b3bf1e6b6faeb8f095f9979f0113dafc8a0002aa73b8dd04170065abc9efe",
+        "artifact_path": "/private/tmp/agentdocker-native-long-busy27-2026-09-15/result.json",
+        "artifact_sha256": "1b27ece91c5863e810f7c0a1d627915c9874470fe1e4f9f4b49f811816427c22",
+        "classification": "application-defect-reproduced-with-live-provider-history",
+        "finding": "Live sidecar reports notLoaded and reconstructs the still-active direct-user turn as interrupted with completedAt=null. The exact active turn has task_started without task_complete in the retained rollout. The receiver falsely pauses near 50 seconds."
+      }
+    ],
+    "follow_up_diagnostic": "A read-only sidecar over only the copied rollout returned notLoaded metadata and an empty turn page. The private profile/database had already been retired, so this reconstruction does not reproduce the live sidecar response. Capture live responses in the next isolated trial; do not infer an idle session from absent history.",
+    "correction": "Remove the speculative idle deadline while the exact native queue entry remains verified. Keep one outstanding offer, exact receipts, generation checks, provider blocks and missing-entry/receipt reconciliation. Add tracked long-busy scenario with 65-second direct user turn, ordered retained daemon inputs, no false receipt/pause, FIFO consumption and receiver crash recovery.",
+    "correction_validation": "5aeb651 passed full967-Rust/70-Python gate and actual65-second long-busy, idle/draft/FIFO and receiver-crash acceptance. Rate-limit hold/resume passed. Corrected recovery34 atbc0ea04 passed lost enqueue reply reconciliation to the original native queue ID and missing-entry/receipt retention without replay under real daemon supervision. Cleanup29 and restart-race31 remain failed; injected late-error32 correctly failed rather than falsely passing."
+  },
+  "combined_gate_5aeb651": {
+    "source_commit": "5aeb651b4eabee88703da9c839e33e30ebf9e476",
+    "source_dirty": false,
+    "attempts": [
+      {
+        "path": "/private/tmp/agentdocker-native-long-busy-gate28.log",
+        "sha256": "2bda52b4ee07569ebd5c7a11e9ee918d25c294a6b9e7b73af27a8d131144e096",
+        "result": "failed",
+        "rust_passed": 962,
+        "rust_failed": 5,
+        "rust_skipped": 6,
+        "note": "Relocated debug integration test retained CARGO_BIN_EXE paths to the former checkout; five native_restore tests failed with missing executable. Cleaned owned CLI dev artifacts before rerun."
+      },
+      {
+        "path": "/private/tmp/agentdocker-native-long-busy-gate29.log",
+        "sha256": "ccc384c13e6f9eed88869e7e8f839127b3d7f0b69f20a3dce3c029376619a0f3",
+        "result": "passed",
+        "rust_passed": 967,
+        "rust_failed": 0,
+        "rust_skipped": 6,
+        "note": "Full verify.sh check: formatting, strict Clippy,967 Rust tests,6 skipped,doctests,70 Python checks,workspace packaging and release build."
+      }
+    ],
+    "cli_sha256": "880355fa5b878874270cef00ea0eb93f1578d846a5fbb1de5c4792098651e574",
+    "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9"
+  },
+  "native_fixed_5aeb651": [
+    {
+      "started_at": "2026-09-16T00:00:05.090057+00:00",
+      "scenario": "long-busy",
+      "result": "passed",
+      "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+      "driver_sha256": "53ec005d7c505af5064c7fd95c63398c28c5d8ce7e3fb3ad34e78e00b94ac25d",
+      "source": {
+        "commit": "5aeb651b4eabee88703da9c839e33e30ebf9e476",
+        "dirty": false,
+        "rust_and_driver_sha256": "a5c6a5e0fedf0fe7f8fa820fe6cdd856dabc5fdaad51e1fbd197c45835c42f86"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "880355fa5b878874270cef00ea0eb93f1578d846a5fbb1de5c4792098651e574",
+      "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+      "pid": 63775,
+      "thread": "01a0a783-769e-7622-9bca-b9ff0d484871",
+      "agent": "d6e05b16c40f42c4bb82e25d21a93fe6",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.276925665995805,
+      "long_busy_samples": [
+        {
+          "at_seconds": 5.006417374999728,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        },
+        {
+          "at_seconds": 10.007767959003104,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        },
+        {
+          "at_seconds": 15.01317945899791,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        },
+        {
+          "at_seconds": 20.018677625019336,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        },
+        {
+          "at_seconds": 25.023045500012813,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        },
+        {
+          "at_seconds": 30.02582533401437,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        },
+        {
+          "at_seconds": 35.03202916699229,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        },
+        {
+          "at_seconds": 40.038242084003286,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        },
+        {
+          "at_seconds": 45.0433275840187,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        },
+        {
+          "at_seconds": 50.04562733400962,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        },
+        {
+          "at_seconds": 55.04611445899354,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        },
+        {
+          "at_seconds": 60.051490125013515,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        },
+        {
+          "at_seconds": 65.05421133400523,
+          "paused": false,
+          "native_queue_id_retained": true,
+          "daemon_inputs_retained_in_order": 2,
+          "provider_receipt_absent": true
+        }
+      ],
+      "direct_user_busy_seconds": 65.05421262499294,
+      "cross_process_receipt": {
+        "thread": "01a0a783-769e-7622-9bca-b9ff0d484871",
+        "turn": "01a0a783-9da6-7631-a543-0d3e65035066",
+        "item": "01a0a783-9db7-75c0-970a-d054d6c854ab"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "e16f0b2d1a654163"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a783-769e-7622-9bca-b9ff0d484871",
+          "turn": "01a0a784-d625-7910-955c-78d283c80ab4",
+          "item": "01a0a784-d630-7d50-9d17-39cf71ddd77c"
+        }
+      },
+      "completed_receipts": 4,
+      "automatic_receiver_restart_no_replay": true,
+      "idle_wake_after_receiver_crash": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 8,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "5b1a1a99fbe49e40c951dfd5d6d677d5dfb803121869650b1dc3a677f7235cc5",
+      "artifact_path": "/private/tmp/agentdocker-native-fixed-long-busy28-2026-09-15/result.json",
+      "artifact_sha256": "f58ae71dfc9e702bbac2f5104c07b2c09411191918c7e25f81202daba220a168",
+      "parallel_execution": "Three isolated profiles/daemons ran concurrently, overlapping the separate combined-skill Cargo gate. Correctness acceptance only; no latency comparison."
+    },
+    {
+      "started_at": "2026-09-16T00:00:05.090083+00:00",
+      "scenario": "recovery",
+      "result": "failed",
+      "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+      "driver_sha256": "53ec005d7c505af5064c7fd95c63398c28c5d8ce7e3fb3ad34e78e00b94ac25d",
+      "source": {
+        "commit": "5aeb651b4eabee88703da9c839e33e30ebf9e476",
+        "dirty": false,
+        "rust_and_driver_sha256": "a5c6a5e0fedf0fe7f8fa820fe6cdd856dabc5fdaad51e1fbd197c45835c42f86"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "880355fa5b878874270cef00ea0eb93f1578d846a5fbb1de5c4792098651e574",
+      "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+      "pid": 63774,
+      "thread": "01a0a783-769f-78f1-bb26-165b4b17ab16",
+      "agent": "f82fb2cb8d2544beb9c68dfc5a86b2b9",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.282126582984347,
+      "lost_queue_reply_recovered_without_resubmission": true,
+      "cross_process_receipt": {
+        "thread": "01a0a783-769f-78f1-bb26-165b4b17ab16",
+        "turn": "01a0a783-9da7-7a41-a0c8-a779057955a7",
+        "item": "01a0a783-9db8-7a51-904d-23378c94147c"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "58ec6527b7c64188"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a783-769f-78f1-bb26-165b4b17ab16",
+          "turn": "01a0a783-ebd1-7703-ae0a-e6b29e7e5221",
+          "item": "01a0a783-ebdc-79d2-b7a7-acd1425bcadd"
+        }
+      },
+      "completed_receipts": 4,
+      "automatic_receiver_restart_no_replay": true,
+      "unconfirmed_attempt_paused_without_resubmission": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 7,
+      "agentdocker_integration": true,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "5e45d7b9ac4ed89483bac1326f122a686e2b9bfc3de13421bc16f3fd741c4194",
+      "artifact_path": "/private/tmp/agentdocker-native-fixed-recovery29-2026-09-15/result.json",
+      "artifact_sha256": "06b43f33efd8219aa750d6048a1e9d50ac9380857fac4345111ed7afe7bb68ea",
+      "parallel_execution": "Three isolated profiles/daemons ran concurrently, overlapping the separate combined-skill Cargo gate. Correctness acceptance only; no latency comparison.",
+      "raw_report_result": "passed",
+      "classification": "acceptance-cleanup-failure",
+      "finding": "Functional recovery assertions passed, but process-group cleanup raised PermissionError. The old driver incorrectly retained result=passed and exited zero. This record treats the overall trial as failed, preserves the raw artifact, and requires the corrected driver to pass a repeat."
+    },
+    {
+      "started_at": "2026-09-16T00:00:05.090055+00:00",
+      "scenario": "rate-limit",
+      "result": "passed",
+      "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+      "driver_sha256": "53ec005d7c505af5064c7fd95c63398c28c5d8ce7e3fb3ad34e78e00b94ac25d",
+      "source": {
+        "commit": "5aeb651b4eabee88703da9c839e33e30ebf9e476",
+        "dirty": false,
+        "rust_and_driver_sha256": "a5c6a5e0fedf0fe7f8fa820fe6cdd856dabc5fdaad51e1fbd197c45835c42f86"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "880355fa5b878874270cef00ea0eb93f1578d846a5fbb1de5c4792098651e574",
+      "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+      "pid": 63776,
+      "thread": "01a0a783-769e-7633-b261-e1bece51bdf1",
+      "agent": "a3dfcda9fa544b39a5666b2dbbe54e47",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.2769162920012604,
+      "cross_process_receipt": {
+        "thread": "01a0a783-769e-7633-b261-e1bece51bdf1",
+        "turn": "01a0a783-9da6-7072-a78e-59276a00c894",
+        "item": "01a0a783-9db8-7431-a5c5-775bbb7a6d20"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "a10922451ce24649"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a783-769e-7633-b261-e1bece51bdf1",
+          "turn": "01a0a784-12e0-7a31-ac7c-8ca83e84e9d3",
+          "item": "01a0a784-12f0-7be2-9a3c-eef7670f16d2"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "detected_provider_issue": {
+        "kind": "rate"
+      },
+      "rate_limit_holds_queue": true,
+      "explicit_resume_without_replay": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 9,
+      "agentdocker_integration": true,
+      "raw_result_sha256": "b33eec84a5157f8354e56bd1196f40236c23aab90a9a24a9b6aa991bf5c39cf6",
+      "artifact_path": "/private/tmp/agentdocker-native-fixed-rate-limit30-2026-09-15/result.json",
+      "artifact_sha256": "76ec08875c0cc889bfbb8ef7c69f873619e4d2235d0c1197fa4e3b3e6a98ac1d",
+      "parallel_execution": "Three isolated profiles/daemons ran concurrently, overlapping the separate combined-skill Cargo gate. Correctness acceptance only; no latency comparison."
+    }
+  ],
+  "recovery_harness_follow_up_a718d2a": [
+    {
+      "started_at": "2026-09-16T00:05:29.147540+00:00",
+      "scenario": "recovery",
+      "result": "failed",
+      "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+      "driver_sha256": "4f6f3625ab64ffcc26a1786443b63c26c4baec4f09169178654c57c81ac4fe51",
+      "source": {
+        "commit": "a718d2af7cf8cd7d90de9b8869cecce3a7eb6fc9",
+        "dirty": false,
+        "rust_and_driver_sha256": "764e22eca54e688240db40333d7832d573cbc43607f924ef53274dbaec723b00"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "880355fa5b878874270cef00ea0eb93f1578d846a5fbb1de5c4792098651e574",
+      "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+      "pid": 88285,
+      "thread": "01a0a788-6703-7d52-8b8e-4594e26106da",
+      "agent": "7f93c22041744bbd8930b1770134f312",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.635735500021838,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "94a4a59bb5d690a036e2b5516a66d392017cc06320dce1fce940fc26678d36c0",
+      "artifact_path": "/private/tmp/agentdocker-native-fixed-recovery31-2026-09-15/result.json",
+      "artifact_sha256": "bbd363b02050042015c736a88f2ae3377c77aec4e71a8869a5792c7aedf1db2e",
+      "classification": "fixture-restart-race",
+      "finding": "The manual fixture receiver lost owner.lock to the real supervisor replacement. The fixture incorrectly waited for its own losing PID. Controller log and daemon launch record confirm the competing restart; application queue ownership remained exclusive.",
+      "process_exit_code": 1
+    },
+    {
+      "started_at": "2026-09-16T00:06:53.333202+00:00",
+      "scenario": "baseline",
+      "result": "failed",
+      "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+      "driver_sha256": "f05c88916f0edcfbc6902a642e97cb9d840c5b9737593ad13d99181405aff504",
+      "source": {
+        "commit": "a718d2af7cf8cd7d90de9b8869cecce3a7eb6fc9",
+        "dirty": false,
+        "rust_and_driver_sha256": "00251d846fedcc50cb36b819680244ebcb4744601930dd5e6379aed7a78432ee"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "880355fa5b878874270cef00ea0eb93f1578d846a5fbb1de5c4792098651e574",
+      "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+      "pid": 92857,
+      "thread": "01a0a789-afdf-7703-9b2b-b7052dc349c5",
+      "agent": "b0adb6b11a5f48e8994243632758f673",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.637175374984508,
+      "cross_process_receipt": {
+        "thread": "01a0a789-afdf-7703-9b2b-b7052dc349c5",
+        "turn": "01a0a789-d6ea-7143-872e-a3bac664d7ad",
+        "item": "01a0a789-d6f5-7c83-b74e-1e1b4022e032"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "184ad17bff1444e1"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a789-afdf-7703-9b2b-b7052dc349c5",
+          "turn": "01a0a78a-4c23-7231-991d-ab802c17019d",
+          "item": "01a0a78a-4c32-7dc3-a96e-79b84ceeb36d"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "idle_wake_after_receiver_crash": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 8,
+      "agentdocker_integration": true,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "446aa301ddab4b139829a3f49df7b8f44ad86d403c53751ead4d145b30925909",
+      "artifact_path": "/private/tmp/agentdocker-native-negative-cleanup32-2026-09-15/result.json",
+      "artifact_sha256": "266af95803d95c18574bcde9dda1b82953ab0155e0c5d6096fd1ffc990f679cf",
+      "classification": "expected-negative-acceptance",
+      "finding": "Eight ordinary model requests passed all assertions, then the private driver deliberately raised fixture-injected late cleanup error. The corrected exception handler produced result=failed and process exit1, proving that late errors no longer become false passes.",
+      "process_exit_code": 1
+    }
+  ],
+  "recovery_harness_correction": "Fault injection now suspends the private daemon, acquires the stopped receiver owner.lock before changing its private ledger, then resumes the daemon as the sole restart owner. The lost enqueue reply must recover the original native queue ID. No manual replacement competes with supervision.",
+  "supervised_recovery_bc0ea04": {
+    "started_at": "2026-09-16T00:10:52.964180+00:00",
+    "scenario": "recovery",
+    "result": "passed",
+    "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+    "driver_sha256": "37dbbb14f23820d23fa43fc705ce97c16d33633059a4c648e6ebf862bb4391b5",
+    "source": {
+      "commit": "bc0ea04c4fb21a40168b8236ee845ee571670f27",
+      "dirty": false,
+      "rust_and_driver_sha256": "de3d42c52bda298edffd30db0bf071741251b4c016c0a50b9cd134686c5ce1e6"
+    },
+    "provider_version": "codex-cli 0.154.0",
+    "cli_sha256": "880355fa5b878874270cef00ea0eb93f1578d846a5fbb1de5c4792098651e574",
+    "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+    "pid": 9236,
+    "thread": "01a0a78d-57fb-7443-99a9-92b8a1bb62e1",
+    "agent": "650578c8c92c4df1b1734edad949ce35",
+    "automatic_hook_bootstrap": true,
+    "idle_wake_seconds": 7.666451958997641,
+    "lost_queue_reply_recovered_without_resubmission": true,
+    "cross_process_receipt": {
+      "thread": "01a0a78d-57fb-7443-99a9-92b8a1bb62e1",
+      "turn": "01a0a78d-7f08-7f52-bfb5-52a71c4fd0e0",
+      "item": "01a0a78d-7f18-71c2-964b-247212e94504"
+    },
+    "no_conversation_resume": true,
+    "daemon_receipt": {
+      "messages": [
+        "b66fba6c76784591"
+      ],
+      "receipt": {
+        "provider": "codex",
+        "thread": "01a0a78d-57fb-7443-99a9-92b8a1bb62e1",
+        "turn": "01a0a78d-cd32-7710-bd5e-c1210f5a6d58",
+        "item": "01a0a78d-cd3d-7fe0-8233-9824ebff2e9c"
+      }
+    },
+    "completed_receipts": 4,
+    "automatic_receiver_restart_no_replay": true,
+    "unconfirmed_attempt_paused_without_resubmission": true,
+    "same_live_tui": true,
+    "draft_preserved": true,
+    "busy_order_preserved": true,
+    "model_requests": 7,
+    "agentdocker_integration": true,
+    "raw_result_sha256": "785d59dd7f7948d3ab9d367347d93455eed7485f44119f64045fe3bc4601626f",
+    "artifact_path": "/private/tmp/agentdocker-native-fixed-recovery34-2026-09-15/result.json",
+    "artifact_sha256": "f0e995d7ec1b80c0dd52f3abbc9d66cc75872e483ede8e1c7d4d520c32b29627",
+    "binary_source_commit": "5aeb651b4eabee88703da9c839e33e30ebf9e476",
+    "source_note": "bc0ea04 adds only acceptance-driver/docs corrections after the5aeb651 production fix; CLI/daemon hashes match the fully gated release."
   }
 }

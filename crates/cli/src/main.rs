@@ -14,6 +14,7 @@ mod rtk;
 mod sender;
 mod service;
 mod setup;
+mod skill;
 mod teams;
 mod top;
 
@@ -65,6 +66,8 @@ enum Command {
         #[arg(long, value_name = "PLAN_SHA256")]
         apply: Option<String>,
     },
+    /// Print the portable coordination SKILL.md without connecting to a daemon.
+    Skill,
     /// Check that agentd is reachable.
     Ping,
     /// Build an image with an explicit engine and retain immutable input provenance.
@@ -1381,6 +1384,7 @@ async fn main() -> Result<()> {
                 bail!("unexpected access response");
             }
         }
+        Command::Skill => print!("{}", skill::installed_document()),
         Command::Ping => {
             if let Response::Pong {
                 version,

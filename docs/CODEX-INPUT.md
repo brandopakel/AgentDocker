@@ -73,8 +73,35 @@ Unknown historical offers still require reconciliation. The fixture includes
 `posted-question`, `disconnected-question` and explicit TUI `resume` scenarios;
 those passed on the recorded sources. Startup/reopen without a prompt failed the actual lifecycle trial and remains
 open; historical schema-19 answer migration passed its bounded fixture.
-An idle native queue entry without a provider receipt pauses after 45 seconds;
-active turns and permission waits retain their normal ordering.
+The candidate's former 45-second idle guard caused a real long-busy failure.
+At `5f72f37`, a direct user turn held open for over 45 seconds retained peer input
+in the native queue, but the receiver incorrectly classified the turn as idle
+and paused delivery. Its historical turn query does not establish live TUI
+idleness. Live diagnostic trial 27 reproduced it: the sidecar reported
+`notLoaded` and reconstructed the active turn as `interrupted`, without a
+completion time. The correction removes the inferred idle deadline while the
+exact native queue entry remains present. One outstanding offer, exact receipts,
+provider-generation checks and the missing-entry reconciliation deadline remain.
+A queue offer still does not prove provider consumption or task completion.
+Fixed `5aeb651` passed the full 967-Rust/70-Python gate and actual 65-second
+long-busy, idle-wake, draft/FIFO and receiver-crash acceptance. A separate
+rate-limit hold/resume also passed. The recovery trial passed its functional
+checks but failed process cleanup; its raw pass label was incorrect and is not
+accepted. The driver now marks every exception failed and rechecks child exit
+after a process-group signal error. A deliberate late cleanup exception then
+correctly failed with exit 1. The next recovery repeat exposed the fixture
+competing with automatic receiver restart; fault injection now takes the
+receiver lock and leaves replacement solely to the daemon. PRs #148/#149 stay
+draft while the final evidence/review is collected. Corrected recovery34 at
+`bc0ea04` passed both lost-enqueue-reply reconciliation to the original native
+queue ID and uncertain-input retention without resubmission, using the real
+daemon supervisor. The long-busy defect is fixed and has bounded acceptance;
+final CI/review and installed-session verification still gate delivery. Trial 25 was a
+separate fixture input failure; trial 26 is the application defect. Both are
+retained in the [source-specific evidence](verification/2026-09-15-native-codex-queue.json).
+Use the existing driver's `--scenario long-busy` to hold a direct user turn for
+65 seconds, require both human/peer inputs to remain queued without a receipt or
+pause, then verify their ordered consumption and receiver crash recovery.
 
 ## New managed conversations
 

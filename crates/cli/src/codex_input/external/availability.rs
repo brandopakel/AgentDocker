@@ -8,36 +8,9 @@ use agentdocker_core::{AgentRecord, InputReport, ProviderReport};
 use anyhow::{Context, Result, ensure};
 use serde_json::json;
 
-/// A queue entry in an idle TUI must become ordinary input within a bounded
-/// interval. A busy turn (including its permission wait) keeps its normal place.
-pub(super) async fn busy(provider: &mut Provider, thread: &str) -> Result<bool> {
-    let value = provider
-        .request(
-            "thread/turns/list",
-            json!({
-                "threadId": thread, "limit": 1, "itemsView": "notLoaded", "sortDirection": "desc"
-            }),
-        )
-        .await?;
-    let turns = value["data"]
-        .as_array()
-        .context("Codex turn state has no data")?;
-    ensure!(turns.len() <= 1, "Codex turn state exceeds requested bound");
-    match turns.first().map(|t| &t["status"]) {
-        None => Ok(false),
-        Some(value) if value == "inProgress" => Ok(true),
-        Some(value)
-            if ["completed", "interrupted", "failed"]
-                .iter()
-                .any(|s| value == s) =>
-        {
-            Ok(false)
-        }
-        _ => anyhow::bail!("Codex returned an unknown turn state"),
-    }
-}
-
-/// Return false while the last delivered input still owns an active turn.
+/// Wait when history still reports the last delivered input as active.
+/// This sidecar does not own the TUI, so terminal historical turn states do
+/// not prove live idleness. The native queue schedules input in the original TUI.
 /// A completed provider receipt is not task completion or permission to flood
 /// a session that just reached a usage/context/authentication limit.
 pub(super) async fn check(
@@ -80,7 +53,7 @@ pub(super) async fn check(
             Some("completed" | "interrupted" | "failed")
         ));
     }
-    // If subsequent user turns moved the last receipt outside this recent
-    // page, that old turn is no longer active; the TUI serializes its turns.
+    // Missing historical state does not establish live activity either. The
+    // original TUI's native queue remains responsible for scheduling turns.
     Ok(true)
 }

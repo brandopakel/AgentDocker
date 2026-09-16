@@ -22,7 +22,7 @@ def run(binary, manifest_path, output):
     manifest = json.loads(manifest_path.read_text())
     assert digest(binary) == manifest['binary_sha256']['agentdocker']
     report = {
-        'scope': 'Actual packaged preview/apply/health/undo with installed Claude MCP configuration CLI; no model session',
+        'scope': 'Actual binary preview/apply/health/undo with installed Claude MCP configuration CLI; no model session',
         'source_commit': manifest['source_commit'],
         'source_tree': manifest['source_tree'],
         'binary_sha256': digest(binary),

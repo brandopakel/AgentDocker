@@ -2,7 +2,7 @@
 
 Audited September 14, 2026 against merged `aaa1b61` (PR #119). This is the current
 backlog for the requirements already in the project documents. The
-[documentation index](README.md) records coverage of all 37 Markdown files;
+[documentation index](README.md) records coverage of all 38 Markdown files;
 the [delivery crosswalk](DELIVERY-PLAN.md#testing-standard-crosswalk) records
 which test categories are complete or partial. Dated audits and
 [verification reports](verification/) retain the implementation history,
@@ -16,8 +16,18 @@ provider records retained their IDs, PIDs and process birth times; the existing
 Claude/Codex connection exchanged messages after the switch. An old-client
 autostart race initially relaunched the previous daemon, then an explicit
 quit/stop/start selected the current binary; that failure still needs the live
-upgrade contract. The native Codex queue candidate remains uninstalled pending
-PRs #142/#147/#148 integration. Thirty queued human/peer inputs passed exact FIFO
+upgrade contract. PRs #142/#147 are merged. The native Codex queue candidate
+remains uninstalled: PR #148 and its dependent #149 are draft after an actual
+long-busy trial at `5f72f37` falsely paused a running direct user turn. Fixing
+that guard and repeating actual acceptance are required before integration.
+Trial 27 confirmed the sidecar reconstructs an active turn as interrupted; the
+source correction removes the inferred idle deadline while preserving exact
+queue/receipt reconciliation. Corrected `5aeb651` passed the full 967-Rust/70-Python
+gate and actual 65-second regression plus rate-limit recovery. A separate recovery
+trial had a cleanup failure incorrectly labeled passed; the harness is corrected
+and corrected recovery34 at `bc0ea04` passed under real daemon supervision.
+Final CI/review and installed-session acceptance remain before delivery.
+Thirty queued human/peer inputs passed exact FIFO
 receipts in its local fixture, with about five minutes to consume the burst;
 no-prompt startup/resume and burst latency remain acceptance gaps.
 
@@ -103,7 +113,8 @@ replacement acceptance.
 
 | Priority | Work remaining | Completion condition and evidence |
 | --- | --- | --- |
-| Top | Install and verify native input for existing Codex terminals | The receiver connects the human/peer queue to Codex0.154.0 native input with durable receipts and supervised recovery. Corrected `bb1e50c` passed967 Rust tests (six skipped),70 Python checks and the full release gate; final release-TUI acceptance at `b2c3938` passed idle wake, drafts, FIFO, receiver crash recovery and legacy human answers without replay. Earlier resume, rate-limit and schema20 migration trials remain recorded. Final CI and installed-session verification are pending. No-prompt fresh/reopened terminals still emit no SessionStart, and a30-message burst took about five minutes; those gaps stay open. Other providers need their own adapters and acceptance. See [Codex input](CODEX-INPUT.md) and [source-specific evidence](verification/2026-09-15-native-codex-queue.json). |
+| User request, September 15 | Portable coordination instructions | One bundled SKILL.md supplies MCP onboarding and preview/apply/undo setup; `agentdocker skill` exports it without a daemon. Combined source `4eb92a7` passed 969 Rust tests (six skipped), 70 Python checks and the full release gate. Actual Codex/Claude skill discovery and setup/undo passed on the recorded earlier release; the unchanged skill plus the native queue fix passed a 65-second direct-user busy trial at `528e4e0`, including idle wake, drafts, FIFO and receiver recovery. Final CI, installation, implicit model activation and additional runtime loader acceptance remain. See [guided setup](GUIDED-SETUP.md#shared-coordination-skill). |
+| Top | Install and verify native input for existing Codex terminals | The receiver connects the human/peer queue to Codex 0.154.0 native input with exact receipts and supervised recovery. The long-busy fix at `5aeb651` passed 967 Rust tests, 70 Python checks and actual 65-second busy/idle/draft/FIFO acceptance; rate-limit recovery passed. Corrected recovery trial 34 at `bc0ea04` passed lost-reply and uncertain-input handling under daemon supervision. Failed trials remain recorded. Final CI and installed-session verification remain; no-prompt startup/reopen, burst latency and other providers need further work. See [Codex input](CODEX-INPUT.md) and [evidence](verification/2026-09-15-native-codex-queue.json). |
 | Top | Broader provider-limit acceptance and adapter-specific detection | Shared availability state, schema18 persistence, strict recovery, queue gating, shared-quota isolation, Claude StopFailure, managed Codex errors, MCP reporting and desktop status/resume are implemented in the current change. Focused tests cover every catalog runtime plus custom runtimes and all nine normalized interruption classes. Bounded actual Claude/Codex integration, Codex same-session recovery, 181 native steps and the real-daemon pressure/restart matrix passed at `64f8e58`. An actual Codex mid-tool 429 trial at `66c4247` also passed: the owned command completed once and later input recovered without replay. Combined `ec45cea` also passed a pending-denial block/recovery and owned-controller replacement under the same agent/conversation identity. Remaining acceptance: actual account reset, broader provider versions/detection, unrelated replacement identities and sustained use. An unsupported adapter has no inferred limit signal; unknown scope/reset stay unknown. Do not equate the common contract with verified automatic detection for every company/model. See the [message audit](MESSAGE-DELIVERY-AUDIT.md#provider-limit-and-session-exhaustion-acceptance-september-14). |
 | Top | Complete provider input and review handling | Local command review now includes concrete additional permissions and connection context, rejects remote/incomplete requests, and checks the offered one-time decisions; PR #127 merged after final-source review and five successful CI workflows; reviewed `723e794` passed 896 Rust tests, 70 Python checks and 170 native steps, with bounded actual Codex Allow/Deny trials at the recorded candidate. Managed-network approval presentation, grouped-destination scope disclosure and receipt/refusal regressions are now implemented on `codex/network-only-review`, with validation and actual-provider acceptance pending. Finish stdin review, broader permission forms, MCP elicitation and secret-input presentation; test further actual-provider interruptions, uncertain writes and sustained conversations. Preserve one queue/order and exact receipts for human and peer input. Managed Claude channels and the owned Codex bridge have bounded idle/busy/question acceptance; hooks alone cannot wake an idle model. See [message audit](MESSAGE-DELIVERY-AUDIT.md), [Codex input](CODEX-INPUT.md) and [Claude question evidence](verification/2026-09-12-claude-question-queue.json). |
 | Acceptance | Verify setup and input readiness on the installed candidate | Source now separates configuration, generation-bound MCP/hook contact and fresh input receiver/receipt evidence for each session. Generic activity no longer produces Connected; stale receivers, pauses and old-generation receipts cannot produce verified delivery. Required setup guidance stays in Details. PR #125 merged as `4d00bec` after all final-head CI workflows and source review. Its reviewed `ab8d718` passed 884 Rust tests, 65 Python checks and 165 native steps. An actual Codex 0.154.0 managed conversation passed six FIFO human/peer inputs, matching replies, a dropped read response and an idle heartbeat over 90 seconds with one identity and unchanged configuration. Hook/MCP lifecycle and bounded channel receipt tests also pass at their recorded binaries. Installed-candidate checks remain pending. See [guided setup](GUIDED-SETUP.md) and [desktop contracts](DESKTOP-UX.md). |
