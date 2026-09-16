@@ -188,7 +188,7 @@ fn interpreter(exe: &str) -> bool {
 pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
     match executable(argv)?.as_ref() {
         "claude" => claude_runtime(&argv[1..]),
-        "codex" => Some("codex"),
+        "codex" => codex_runtime(&argv[1..]),
         "gemini" => Some("gemini-cli"),
         "cursor-agent" => Some("cursor"),
         "aider" => Some("aider"),
@@ -208,12 +208,10 @@ pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
             ]
             .into_iter()
             .find(|(marker, _)| script.contains(marker))
-            .and_then(|(_, runtime)| {
-                if runtime == "claude-code" {
-                    claude_runtime(&argv[2..])
-                } else {
-                    Some(runtime)
-                }
+            .and_then(|(_, runtime)| match runtime {
+                "claude-code" => claude_runtime(&argv[2..]),
+                "codex" => codex_runtime(&argv[2..]),
+                _ => Some(runtime),
             })
         }
         _ => None,
@@ -222,6 +220,24 @@ pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
 
 /// Known service entry points use the same executable as actual sessions.
 /// Only inspect the first mode argument; a prompt can mention these strings.
+/// `codex app-server` is the API sidecar a receiver or a reviewer speaks
+/// to, not a session anybody could connect or message.
+fn codex_runtime(arguments: &[String]) -> Option<&'static str> {
+    (arguments.first().map(String::as_str) != Some("app-server")).then_some("codex")
+}
+
+/// Whether the process is Codex's own binary in any role, sidecar
+/// included: what the supervised bridge attributes its app-server by.
+pub fn is_codex_binary(argv: &[String]) -> bool {
+    match executable(argv).as_deref() {
+        Some("codex") => true,
+        Some(exe) if interpreter(exe) => argv
+            .get(1)
+            .is_some_and(|script| script.contains("@openai/codex")),
+        _ => false,
+    }
+}
+
 fn claude_runtime(arguments: &[String]) -> Option<&'static str> {
     (!arguments.first().is_some_and(|mode| {
         mode.starts_with("bg-") || matches!(mode.as_str(), "daemon" | "--chrome-native-host")
@@ -523,6 +539,31 @@ mod tests {
         assert_eq!(runtime_of(&argv("node /x/some/other.js")), None);
         assert_eq!(runtime_of(&argv("/bin/zsh -l")), None);
         assert_eq!(runtime_of(&[]), None);
+        // The API sidecar is Codex's binary but not a session.
+        let sidecar: Vec<String> = ["/opt/codex/bin/codex", "app-server", "--stdio"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(runtime_of(&sidecar), None);
+        assert!(is_codex_binary(&sidecar));
+        let session: Vec<String> = ["/opt/codex/bin/codex", "resume", "abc"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(runtime_of(&session), Some("codex"));
+        for interpreter in ["node", "bun", "deno", "python", "python3"] {
+            let args = |mode: &str| {
+                [
+                    interpreter,
+                    "/x/@openai/codex/bin/codex.js",
+                    mode,
+                    "--stdio",
+                ]
+                .map(str::to_owned)
+            };
+            assert_eq!(runtime_of(&args("app-server")), None);
+            assert_eq!(runtime_of(&args("resume")), Some("codex"));
+        }
     }
 
     #[test]

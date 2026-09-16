@@ -27,16 +27,32 @@ in the same repository appear there automatically. Linked worktrees share a
 project and retain their session checkout details.
 
 Quiet projects remain available. An unavailable folder stays selected and offers
-**Check folder again**. **More → Unpin project** keeps it in recent projects; **More → Forget
-project** removes its workspace entry. Neither deletes files nor stops sessions.
-A project with active agents can be discovered again. Sessions whose project is
-unknown appear under **Other sessions**.
+**Check folder again**. Each project row has its own **⋯** menu: **Rename…**
+gives the entry a name of your own in the sidebar and All projects headings (an empty name goes back to the
+folder's), **Pin**/**Unpin**, and **Remove from list**, which keeps the folder
+off the list even when its sessions are discovered again, until you add it
+again (the list of removed folders is bounded like the project list, at 512;
+at the bound a removal is refused with a message and the project stays, so
+nothing removed earlier comes back on its own). **More → Forget project** does the same for the selected project. None
+of these deletes files or stops sessions. Two projects with one name show
+their parent folder under it, on one line. A folder discovered because an
+agent ran there leaves the list by itself once it no longer exists, and a
+folder under the per-user temporary directory (where test fixtures come and
+go) is never listed by discovery, only by a pin; a pinned folder stays
+either way. Shared scratch roots such as `/tmp` and `/var/tmp` remain
+discoverable, including when Linux reports one as its default temporary
+directory. Sessions whose project is unknown appear under
+**Other sessions**.
 
-**Current** shows live sessions; **History** holds finished sessions, including
-previous runs with the same name. **Needs input** shows this project's unanswered,
-unexpired questions, including questions from a session that has since finished.
-Search applies to the selected project and all three filters. Switching projects
-returns to Current. Nothing is deleted when a row moves to History.
+**Current** shows live sessions; **Needs input** shows this project's
+unanswered, unexpired questions, including questions from a session that has
+since finished. Ended sessions are not a tab: they sit in one collapsed
+**Earlier (n)** group under the current ones, including previous runs with the
+same name, and a search that finds one opens the group. When only an earlier
+session matches, its result appears without a contradictory empty-state card.
+Search applies to the
+selected project, both filters and the Earlier group. Switching projects
+returns to Current. Nothing is deleted when a row moves to Earlier.
 
 Session rows show the name, runtime, branch and observed activity. Sessions needing
 input appear first within each project. Select a row for terminal access, reply, or stop. On a narrow
@@ -45,8 +61,11 @@ wide window, it opens beside the list. **Details** reveals the session ID, proce
 checkout, commit and last-seen time.
 **Launch agent…** chooses an installed CLI and starts it at the project root shown
 in the header. **Connect** under **Running here, not connected** adopts a discovered process for
-coordination. Known Codex Node launchers with a native Codex child are omitted
-from discovery. Claude Chrome native-host helpers are also omitted, for native
+coordination; the row names the tool and the folder it runs in, not a
+process number. Known Codex Node launchers with a native Codex child are
+omitted from discovery, as is Codex's `app-server` sidecar (an API helper a
+receiver or reviewer speaks to, never a session) and anything a bound
+receiver started. Claude Chrome native-host helpers are also omitted, for native
 and interpreter entry points; enabling Chrome in a real session keeps the agent
 visible. A discovery row overlapping a live registration is hidden only
 when its PID and process birth time both match. Separate registrations are never
@@ -55,7 +74,7 @@ Installation or configuration alone does not prove that an agent is working.
 
 **Stop session…** changes to **Confirm stop** for five seconds. Confirm sends the
 stop request. A managed live PTY offers **Open terminal**; **Detach** closes the
-view while the process continues. Finished sessions remain available in History.
+view while the process continues. Finished sessions remain available under Earlier.
 
 **Message** opens a small composer for the selected agent. **Send message** uses
 the same inbox queue as messages from other agents. Its queued receipt confirms
@@ -92,13 +111,20 @@ conversation, and **Conversations** returns to the list.
 **Messages** is what the rail item (named Messages then, Inbox otherwise)
 opens against a daemon that keeps conversations (schema 21 and later); an
 older daemon still gets the inbox below. It is shaped like a chat workspace.
-The sidebar lists **Channels** (`#everyone` for the selected project, `#all`,
-and named channels), collision rooms behind **Collisions**, **Direct
-messages** with a presence dot for a live session (a conversation between two
-agents reads `A ↔ B`), and **AgentDocker → agent** notices per agent; a
-search box filters by name. Ended sessions' conversations sit behind
-**Earlier (n)**. Each row shows the latest line and its unread count; the rail
-badge is the sum. The pane shows the newest 200 archived messages, newest
+The sidebar lists **Channels** (`#everyone` for the selected project, or
+`#everyone · project` when every project is on view, `#all`, and named
+channels; a room opened before names or a collision room gets a short name
+from its task or paths), collision rooms behind **Collisions**, **Direct
+messages** with a presence dot for a live session, conversations two agents
+had with each other behind **Between agents** (read as `Codex ↔ Claude
+Code`), and **AgentDocker → agent** notices per agent; a search box filters by
+name. Ended sessions' conversations sit behind **Earlier (n)**. Every row is
+one line each for the name and the latest line. Unread counts and the rail
+badge cover what is yours to answer: rooms, broadcasts and your own direct
+messages, never what two agents said to each other or what AgentDocker told
+them; **Mark all read** beside the count reads all of it at once. The pane's
+header is the name on one line and, under it, what the room is about (the
+task or contested paths, a pair's branches, a broadcast's members). The pane shows the newest 200 archived messages, newest
 last, with **Show earlier messages** at the top until the first is on view,
 day dividers and a **New** divider before the unread part; a question keeps
 its card (Answer, Allow, Deny) in place; other kinds of message carry a small
