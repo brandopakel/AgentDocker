@@ -119,8 +119,7 @@ construction to the first focused-window event. `agentdocker-ui
 macOS authorization/alert/sound/Notification Center settings without prompting or
 posting. It uses Apple's [notification settings query](https://developer.apple.com/documentation/usernotifications/unusernotificationcenter/getnotificationsettings(completionhandler:)).
 This provides evidence to distinguish a denied setting from an unsupported
-notification client. The timing change remains under acceptance and is not an
-established explanation for the refusal.
+notification client. The packaged diagnostic reports `denied` authorization before and after 26 passing rendered navigation steps. No physical focus event was established, and a subsequent console-state query found the screen locked. The first-focus request and real click behavior therefore remain under acceptance; neither signing/payment nor startup timing is an established cause. The full candidate gate passed 979 Rust tests and 71 Python checks. The saved notification permission was not changed; enabling it awaits the user decision.
 
 ## Work and acceptance
 
