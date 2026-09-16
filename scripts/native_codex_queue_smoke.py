@@ -15,6 +15,8 @@ fault injection into the isolated receiver ledger (never the provider database),
 and explicitly closing/reopening the same TUI conversation with queued input.
 The long-busy scenario holds a direct user turn for 65 seconds, verifies retained
 peer input without a false idle pause, then requires ordered provider receipts.
+With --reload, baseline/question also hand the private daemon over while idle,
+with a draft, during a busy turn and (question only) before a pending answer.
 Private profiles/processes are retired; --output keeps private traces and a
 sanitized result.json suitable for review. This driver is explicit acceptance,
 not a hermetic unit test or evidence for other providers/versions/platforms.
@@ -58,6 +60,10 @@ parser.add_argument(
 )
 parser.add_argument("--output", type=Path, required=True, help="New private artifact directory")
 parser.add_argument(
+    "--reload", action="store_true",
+    help="Hand the private gated daemon over during baseline/question acceptance",
+)
+parser.add_argument(
     "--scenario",
     choices=[
         "baseline",
@@ -82,6 +88,8 @@ parser.add_argument(
     help="Older MCP CLI for the synchronous question migration trial",
 )
 args = parser.parse_args()
+if args.reload and args.scenario not in ("baseline", "question"):
+    parser.error("--reload supports baseline and question only")
 if args.scenario in ("legacy-question", "legacy-reply", "migration") and (not args.legacy_cli):
     parser.error("legacy-question, legacy-reply and migration require --legacy-cli")
 if os.name != "posix":
@@ -96,6 +104,7 @@ out.mkdir(mode=0o700)
 report = {
     "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "scenario": args.scenario,
+    "reload_enabled": args.reload,
     "result": "failed",
     "scope": __doc__,
     "requests": [],
@@ -411,11 +420,14 @@ try:
             AGENTDOCKER_HOME=str(adhome),
             AGENTDOCKER_SOCKET=str(sock),
             AGENTDOCKER_NO_AUTOSTART="1",
+            AGENTDOCKER_NO_NOTIFICATIONS="1",
         )
         daemon_log = (out / "agentdocker-daemon.log").open("w")
         daemon_env = {
             key: value for key, value in env.items() if key not in ("CODEX_HOME", "AGENTDOCKER_FIXTURE_KEY")
         }
+        if args.reload:
+            daemon_env["AGENTDOCKER_EXPERIMENTAL_RELOAD"] = "1"
         daemon = subprocess.Popen(
             [str(cli.with_name("agentd"))],
             cwd=repo,
@@ -425,6 +437,16 @@ try:
             stderr=daemon_log,
             start_new_session=True,
         )
+        daemon_pids = {daemon.pid}
+
+        def retired(pid):
+            if pid == daemon.pid:
+                return daemon.poll() is not None
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            return False
 
         def rpc(value):
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
@@ -594,10 +616,40 @@ try:
             report["agent"] = aid
             report["automatic_hook_bootstrap"] = True
             controller_pid = registered["input_binding"]["controller"]["pid"]
+            controller_pids = {controller_pid}
             assert registered["input_binding"].get("launch"), (
                 "receiver must register an automatic restart descriptor"
             )
             peer = rpc({"op": "register", "spec": {"name": "fixture-peer"}, "pid": None})["agent"]["id"]
+
+            def handover(stage):
+                if not args.reload:
+                    return
+                before = rpc({"op": "inspect", "agent": aid})["agent"]
+                predecessor = rpc({"op": "ping"})["pid"]
+                began = time.monotonic()
+                switched = subprocess.run(
+                    [str(cli), "--socket", str(sock), "daemon", "reload"],
+                    cwd=repo, env=env, capture_output=True, text=True, timeout=60,
+                )
+                # Record the serving process even if the command reports a
+                # failure after acceptance, so cleanup still accounts for it.
+                successor = rpc({"op": "ping"})["pid"]
+                daemon_pids.add(successor)
+                assert switched.returncode == 0, switched.stderr
+                assert successor != predecessor
+                wait(lambda: retired(predecessor), 15)
+                after = rpc({"op": "inspect", "agent": aid})["agent"]
+                assert after["id"] == aid and after["pid"] == provider.pid
+                assert after["process_started_at"] == birth
+                for key in ("provider", "controller"):
+                    assert after["input_binding"][key] == before["input_binding"][key], key
+                assert provider.poll() is None
+                report.setdefault("handovers", []).append({
+                    "stage": stage, "predecessor": predecessor, "successor": successor,
+                    "seconds_until_retired": time.monotonic() - began,
+                    "provider_identity_preserved": True, "binding_preserved": True,
+                })
 
             def restart_with_ledger(ledgerpath, previous_controller, mutate):
                 # Suspend supervision while the stopped receiver's own lock is
@@ -654,6 +706,7 @@ try:
                 return began
 
             time.sleep(2)
+            handover("idle")
             began = queued("PEER_IDLE_NONCE")
             wait(lambda: len(report["requests"]) == 2, 25)
             wait(lambda: b"FIXTURE_OK_2" in output)
@@ -662,6 +715,7 @@ try:
             draft = b"UNSUBMITTED_DRAFT_NONCE"
             os.write(master, draft)
             time.sleep(1)
+            handover("unsubmitted-draft")
             began = queued("PEER_WITH_DRAFT_NONCE")
             wait(lambda: len(report["requests"]) == 3, 25)
             wait(lambda: b"FIXTURE_OK_3" in output)
@@ -746,6 +800,8 @@ try:
                 queued("HUMAN_BUSY_B")
                 time.sleep(2)
                 assert len(report["requests"]) == 5
+            handover("busy-with-human-and-peer-queued")
+            assert len(report["requests"]) == 5, "handover must not consume a busy input"
             block.clear()
             release.set()
             wait(lambda: len(report["requests"]) == 7, 25)
@@ -869,6 +925,7 @@ try:
 
             rebound = wait(replacement_controller, 20)
             controller_pid = rebound["controller"]["pid"]
+            controller_pids.add(controller_pid)
             wait(
                 lambda: (
                     rpc({"op": "inspect", "agent": aid})["agent"]["input_delivery"].get("paused") is False
@@ -929,6 +986,10 @@ try:
                 )
                 if args.scenario == "question":
                     wait(lambda: len(report["requests"]) == 9, 20)
+                    handover("pending-question")
+                    retained = next(q for q in rpc({"op": "questions", "agent": "user"})["questions"]
+                                    if q["id"] == question["id"])
+                    assert retained["expires_at"] == question["expires_at"]
                 if args.scenario == "migration":
                     os.killpg(controller_pid, signal.SIGSTOP)
                 if args.scenario == "legacy-reply":
@@ -1027,6 +1088,12 @@ try:
                     lambda: len(rpc({"op": "peek_input", "agent": aid})["messages"]) == 0,
                     40 if args.scenario == "migration" else 15,
                 )
+                if args.reload:
+                    completed = json.loads((adhome / "codex-queue" / aid / "delivery.json").read_text())["completed"]
+                    receipts = [entry for entry in completed if entry["message"] == answered["message"]]
+                    assert len(receipts) == 1, "the answer needs one exact provider receipt"
+                    assert receipts[0]["receipt"]["thread"] == tid
+                    report["answer_receipt_after_handover"] = receipts[0]
                 time.sleep(4)
                 assert len(report["requests"]) == expected
                 report[
@@ -1286,16 +1353,50 @@ try:
                 controller_pid = rpc({"op": "inspect", "agent": aid})["agent"]["input_binding"]["controller"][
                     "pid"
                 ]
+                controller_pids.add(controller_pid)
             except (OSError, KeyError, NameError, AssertionError):
                 pass
-            stop_child(provider)
-            if "controller_pid" in locals():
+            cleanup_errors = []
+
+            def cleanup_step(name, action):
+                try:
+                    action()
+                except Exception as error:  # noqa: BLE001 - finish other cleanup steps too
+                    cleanup_errors.append(f"{name}: {type(error).__name__}: {error}")
+
+            cleanup_step("provider", lambda: stop_child(provider))
+
+            def end_controller():
                 try:
                     os.killpg(controller_pid, signal.SIGCONT)
                     os.killpg(controller_pid, signal.SIGTERM)
-                except ProcessLookupError:
+                except (NameError, ProcessLookupError):
                     pass
-            stop_child(daemon)
+
+            cleanup_step("controller", end_controller)
+            if args.reload:
+                def end_successor():
+                    try:
+                        daemon_pids.add(rpc({"op": "ping"})["pid"])
+                    except (FileNotFoundError, ConnectionRefusedError):
+                        if all(retired(pid) for pid in daemon_pids):
+                            return
+                        raise
+                    rpc({"op": "shutdown"})
+                cleanup_step("successor", end_successor)
+            cleanup_step("daemon", lambda: stop_child(daemon))
+            if args.reload:
+                cleanup_step("daemon retirement", lambda: wait(
+                    lambda: all(retired(pid) for pid in daemon_pids), 15))
+                report["daemon_pids"] = sorted(daemon_pids)
+                report["daemon_survivors"] = [pid for pid in daemon_pids if not retired(pid)]
+                if "controller_pids" in locals():
+                    cleanup_step("controller retirement", lambda: wait(
+                        lambda: all(retired(pid) for pid in controller_pids), 15))
+                    report["controller_survivors"] = [pid for pid in controller_pids if not retired(pid)]
+            report["cleanup_errors"] = cleanup_errors
+            if cleanup_errors or report.get("daemon_survivors") or report.get("controller_survivors"):
+                report["result"] = "failed"
             done.set()
             thread.join(timeout=2)
             (out / "terminal.bin").write_bytes(output)

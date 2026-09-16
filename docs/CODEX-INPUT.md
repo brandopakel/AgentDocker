@@ -69,6 +69,12 @@ see the
 [delivery audit](MESSAGE-DELIVERY-AUDIT.md). Repeat the trials with
 `python3 scripts/native_codex_queue_smoke.py --help` for the required binary paths
 and scenario choices. Each run saves a sanitized result beside private traces.
+`--reload --scenario question` additionally hands the private daemon over while
+idle, with an unsubmitted draft, during mixed-origin busy input and with a
+pending question. It checks unchanged provider/controller identities, exact
+answer receipt and retirement of all trial daemons and controllers. This uses
+the actual native client with a loopback model fixture; real account/provider
+service acceptance and other runtimes remain separate.
 
 The daemon holds a synchronous question's answer until its route is settled.
 An answer handed to that tool stays queued as uncertain until the receiver finds
