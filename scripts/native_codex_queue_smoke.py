@@ -1095,8 +1095,15 @@ try:
                     40 if args.scenario == "migration" else 15,
                 )
                 if args.reload:
-                    completed = json.loads((adhome / "codex-queue" / aid / "delivery.json").read_text())["completed"]
-                    receipts = [entry for entry in completed if entry["message"] == answered["message"]]
+                    def answer_receipts():
+                        completed = json.loads((adhome / "codex-queue" / aid / "delivery.json").read_text())["completed"]
+                        return [entry for entry in completed if entry["message"] == answered["message"]]
+
+                    # The receiver commits its exact receipt, acknowledges the
+                    # daemon queue, then moves the receipt to completed history.
+                    # An empty daemon queue can precede that last local write.
+                    report["answer_completed_at_queue_empty"] = len(answer_receipts())
+                    receipts = wait(answer_receipts, 10)
                     assert len(receipts) == 1, "the answer needs one exact provider receipt"
                     assert receipts[0]["receipt"]["thread"] == tid
                     report["answer_receipt_after_handover"] = receipts[0]
