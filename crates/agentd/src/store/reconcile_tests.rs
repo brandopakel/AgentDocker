@@ -587,6 +587,7 @@ fn repair_moves_typed_protection_and_membership_and_refuses_self_review() {
     let mut channel = Channel {
         id: "room".into(),
         project,
+        name: None,
         subject: agentdocker_core::ChannelSubject::Task {
             task: "retired".into(),
         },

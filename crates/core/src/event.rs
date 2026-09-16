@@ -476,6 +476,16 @@ pub enum EventKind {
         title: String,
         members: Vec<AgentId>,
     },
+    /// A reader read a conversation through an archived seq.
+    ConversationRead {
+        reader: AgentId,
+        conversation: crate::ConversationId,
+        through: u64,
+    },
+    /// Archived messages were dropped by retention or the cap.
+    MessagesPruned {
+        removed: usize,
+    },
     /// Somebody was added to an open channel.
     ChannelJoined {
         channel: crate::ChannelId,

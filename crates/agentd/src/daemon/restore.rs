@@ -1409,6 +1409,7 @@ mod tests {
             let channel = Channel {
                 id: ChannelId::from("exit-fixture"),
                 project: record.project.as_ref().unwrap().id(),
+                name: None,
                 subject: ChannelSubject::Task {
                     task: "exit fixture".into(),
                 },

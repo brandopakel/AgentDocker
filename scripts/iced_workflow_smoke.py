@@ -216,15 +216,12 @@ def smoke(binary_dir, output):
                          step("wait_control", id=f"session-{agent['id']}", present=False), step("capture", name="session-history"),
                          step("click", id="sessions-attention"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("click", id="sessions-current"),
-                         step("click", id="inbox"), step("fill", id=f"answer-{question['id']}", text="Use API v2"),
-                         step("wait_control", id=f"dismiss-message-{question['id']}", present=False),
-                         step("wait_control", id=f"dismiss-message-{dismissible[0]}", present=False),
-                         step("click", id=f"dismiss-message-{dismissible[5]}"),
-                         step("wait_control", id=f"dismiss-message-{dismissible[5]}", present=False),
-                         step("wait_control", id=f"dismiss-message-{dismissible[6]}", present=True),
-                         step("click", id=f"dismiss-shown-{dismissible[4]}"),
-                         step("wait_control", id=f"dismiss-message-{dismissible[6]}", present=False),
-                         step("wait_control", id=f"dismiss-message-{dismissible[0]}", present=True),
+                         # Messages: the direct conversation with the fixture holds its
+                         # question cards and every message it sent; opening it reads
+                         # them, so nothing is cleared by hand.
+                         step("click", id="inbox"), step("click", id=f"thread-{agent['id']}"),
+                         step("wait_text", text="Received message 34"),
+                         step("fill", id=f"answer-{question['id']}", text="Use API v2"),
                          step("wait_text", text="Use API v2"),
                          step("capture", name="inbox-draft"), step("click", id="connections"), step("click", id="inbox"),
                          step("wait_text", text="Use API v2"), step("click", id=f"send-answer-{question['id']}"),
@@ -298,9 +295,13 @@ def smoke(binary_dir, output):
                     checks.append("direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation")
                     remaining = rpc(endpoint, {"op": "inbox", "agent": human["id"], "drain": False})["messages"]
                     retained = {message["id"] for message in remaining}
-                    assert set(dismissible[:4]) <= retained, "unshown messages were dismissed"
-                    assert not set(dismissible[4:]) & retained, "shown messages were not dismissed"
-                    checks.append("explicit_individual_and_bulk_dismissal_preserves_unshown_messages_and_answer_draft")
+                    # Opening the conversation read it: every row of it left the
+                    # person's queue, and nothing else did.
+                    assert not set(dismissible) & retained, "reading the conversation left rows queued"
+                    conversations = rpc(endpoint, {"op": "conversations", "project": str(project)})["conversations"]
+                    with_agent = next(c for c in conversations if c["kind"] == "dm" and agent["id"] in c["conversation"])
+                    assert with_agent["unread"] == 0, with_agent
+                    checks.append("reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count")
                 except BaseException:
                     stop(window)
                     stop(daemon)
@@ -345,6 +346,19 @@ def smoke(binary_dir, output):
                 narrow_steps += [step("wait_control", id=f"reply-{narrow['id']}", present=True), step("wait_control", id="thread-back", present=True),
                                  step("wait_control", id=f"thread-{agent['id']}", present=False), step("wait_text", text="NARROW ROUTE TARGET"),
                                  step("capture", name="narrow-notification-route"),
+                                 # A thread takes the narrow window with its own composer and
+                                 # its own draft; closing it returns to the conversation.
+                                 step("click", id=f"thread-{routed}"), step("wait_control", id="close-thread", present=True),
+                                 step("wait_control", id=f"reply-thread-{routed}", present=True),
+                                 step("wait_control", id=f"reply-{narrow['id']}", present=False),
+                                 step("fill", id=f"reply-thread-{routed}", text="Only in the thread"),
+                                 step("capture", name="narrow-thread"),
+                                 step("click", id="close-thread"), step("wait_control", id=f"reply-{narrow['id']}", present=True),
+                                 step("wait_control", id=f"reply-thread-{routed}", present=False),
+                                 # The thread's draft is its own and survives closing and reopening it.
+                                 step("click", id=f"thread-{routed}"), step("wait_control", id=f"reply-thread-{routed}", present=True),
+                                 step("wait_text", text="Only in the thread"), step("click", id="close-thread"),
+                                 step("wait_control", id=f"reply-thread-{routed}", present=False),
                                  step("click", id="thread-back"), step("click", id=f"thread-{agent['id']}"),
                                  step("wait_text", text="Keep this narrow draft"), step("capture", name="narrow-draft-kept")]
                 def forward_route(name, gate):

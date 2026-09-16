@@ -343,6 +343,57 @@ enum Command {
         #[arg(long, conflicts_with = "all")]
         runtime: Option<String>,
     },
+    /// What you can read: every conversation with its unread count, newest first.
+    Conversations {
+        /// Project: an id prefix or a path inside it (default: everywhere).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Read as this agent rather than as yourself.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", value_name = "AGENT")]
+        agent: Option<String>,
+    },
+    /// The archived messages of one conversation, oldest first.
+    History {
+        /// `everyone:<project>`, `all`, `channel:<id>`, `dm:<a>:<b>` or `notices:<agent>`, as `conversations` lists them.
+        conversation: String,
+        /// Only messages before this archive sequence, for paging back.
+        #[arg(long)]
+        before: Option<u64>,
+        /// How many, at most.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Mark the conversation read through the last message shown.
+        #[arg(long)]
+        read: bool,
+        /// Read as this agent rather than as yourself: `--read` then moves
+        /// that agent's cursor, never the person's.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", value_name = "AGENT")]
+        agent: Option<String>,
+    },
+    /// A thread: one message and the replies under it.
+    Thread {
+        /// The root message id.
+        message: String,
+        /// Only replies after this archive sequence, for paging.
+        #[arg(long)]
+        after: Option<u64>,
+        /// How many replies, at most.
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+    /// Search the archived messages.
+    Search {
+        query: String,
+        /// Project: an id prefix or a path inside it (default: everywhere).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// Search as this agent rather than as yourself: only what it could list.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", value_name = "AGENT")]
+        agent: Option<String>,
+        /// How many matches, at most.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
     /// The rooms agents share when they turn out to be on the same work: who is in them, and how the reviews stand.
     Channels {
         /// Project: an id prefix or a path inside it (default: the agent's own).
@@ -811,6 +862,10 @@ enum ChannelAction {
         #[arg(long = "with", value_name = "AGENT")]
         /// Who to put in it (default: everyone else in the project).
         members: Vec<String>,
+        /// The #name people will use (lowercase, digits, hyphens); made
+        /// from the task when absent.
+        #[arg(long)]
+        name: Option<String>,
     },
     /// The work is final: close it and tell the members.
     Close {
@@ -1546,19 +1601,107 @@ async fn main() -> Result<()> {
                 print_channels(&client, &channels).await?;
             }
         }
+        Command::Conversations { project, agent } => {
+            let request = Request::Conversations {
+                project: project.as_deref().map(project_selector),
+                reader: agent,
+            };
+            if let Response::Conversations { conversations } = client.call(&request).await? {
+                for c in &conversations {
+                    println!("{}", format::conversation_line(c));
+                }
+            }
+        }
+        Command::History {
+            conversation,
+            before,
+            limit,
+            read,
+            agent,
+        } => {
+            let conversation = agentdocker_core::ConversationId::from(conversation);
+            let request = Request::History {
+                conversation: conversation.clone(),
+                before_seq: before,
+                limit,
+            };
+            if let Response::History { messages } = client.call(&request).await? {
+                for m in &messages {
+                    println!("{}", format::archived_line(m));
+                }
+                if read && let Some(last) = messages.last() {
+                    // The reader is whoever runs this: an agent's shell has
+                    // AGENTDOCKER_AGENT_ID, so its --read moves its own
+                    // cursor and acknowledges its own rows, never the
+                    // person's.
+                    client
+                        .call(&Request::MarkRead {
+                            conversation,
+                            through: last.seq,
+                            reader: agent,
+                        })
+                        .await?;
+                }
+            }
+        }
+        Command::Thread {
+            message,
+            after,
+            limit,
+        } => {
+            if let Response::Thread { root, replies } = client
+                .call(&Request::Thread {
+                    message: MessageId::from(message),
+                    after_seq: after,
+                    limit,
+                })
+                .await?
+            {
+                println!("{}", format::archived_line(&root));
+                for m in &replies {
+                    println!("    {}", format::archived_line(m));
+                }
+            }
+        }
+        Command::Search {
+            query,
+            project,
+            agent,
+            limit,
+        } => {
+            let request = Request::SearchMessages {
+                query,
+                project: project.as_deref().map(project_selector),
+                reader: agent,
+                before_seq: None,
+                limit,
+            };
+            if let Response::History { messages } = client.call(&request).await? {
+                for m in &messages {
+                    println!("{}", format::archived_line(m));
+                }
+            }
+        }
         Command::Channel(args) => match args.action {
             ChannelAction::Open {
                 agent,
                 task,
                 members,
+                name,
             } => {
                 let request = Request::ChannelOpen {
                     agent,
                     task,
                     members,
+                    name,
                 };
                 if let Response::Channel { channel } = client.call(&request).await? {
+                    // The id alone on stdout, as every creating command;
+                    // the name is for the person, on stderr.
                     println!("{}", channel.id);
+                    if let Some(name) = &channel.name {
+                        eprintln!("#{name}");
+                    }
                 }
             }
             ChannelAction::Close {
@@ -3215,6 +3358,34 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `history --read` moves the cursor of whoever runs it: an agent's
+    /// shell names itself through AGENTDOCKER_AGENT_ID, so its read never
+    /// acknowledges the person's rows.
+    #[test]
+    fn history_read_is_scoped_to_the_agent_running_it() {
+        let parsed = Cli::try_parse_from([
+            "agentdocker",
+            "history",
+            "dm:a:b",
+            "--read",
+            "--as",
+            "agent-a",
+        ])
+        .unwrap();
+        let Command::History { read, agent, .. } = parsed.command else {
+            panic!("expected history")
+        };
+        assert!(read);
+        assert_eq!(agent.as_deref(), Some("agent-a"));
+        // Without --as or the environment, the person reads.
+        let parsed = Cli::try_parse_from(["agentdocker", "history", "dm:a:b", "--read"]).unwrap();
+        let Command::History { agent, .. } = parsed.command else {
+            panic!("expected history")
+        };
+        // The test process may itself run inside an agent's shell.
+        assert_eq!(agent, std::env::var("AGENTDOCKER_AGENT_ID").ok());
+    }
 
     #[test]
     fn claude_channel_is_a_native_launch_option_and_preserves_provider_arguments() {

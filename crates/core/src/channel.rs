@@ -192,6 +192,10 @@ impl Decision {
 pub struct Channel {
     pub id: ChannelId,
     pub project: ProjectId,
+    /// The `#name` people use for it: a slug, unique among the project's
+    /// open channels; the id stays the identity. Collision rooms have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub subject: ChannelSubject,
     pub members: Vec<AgentId>,
     /// `None` when the daemon opened it because the ledger showed two
@@ -333,6 +337,7 @@ mod tests {
         Channel {
             id: ChannelId::from("c1"),
             project: ProjectId::from("p1"),
+            name: None,
             subject: ChannelSubject::Contested {
                 paths: vec![PathBuf::from("src/parser.rs")],
             },

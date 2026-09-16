@@ -107,6 +107,7 @@ impl Daemon {
             let channel = Channel {
                 id: ChannelId::generate(),
                 project: project.clone(),
+                name: None,
                 subject: ChannelSubject::Task {
                     task: format!("contest: {task}"),
                 },
