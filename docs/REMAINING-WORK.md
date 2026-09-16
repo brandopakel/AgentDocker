@@ -118,9 +118,12 @@ Codex/Claude normalization are in source. Collection, atomic storage, protocol,
 CLI, UI and coverage/rotation/replay acceptance remain open. No new project
 plan was created. The accounting/parser foundation passed its full gate below.
 The next source step adds bounded resumable file batches, explicit partial tails
-and gaps, and metadata-only cursors that reject changed file generations. Reader
-verification is pending; directory discovery, growing-file prefix reuse and
-atomic daemon ingestion remain open.
+and gaps, and metadata-only cursors that reject changed file generations. Source
+`a989ebf` passed seven focused reader tests and the full 1,033-Rust/77-Python gate
+(seven skipped), lint, packaging and release compilation. Directory discovery,
+growing-file prefix reuse and atomic daemon ingestion remain open; this is not
+yet a delivered Usage screen. Initial fixture/lint failures and passing logs are
+listed in the existing architecture document.
 
 September 16 owned Codex active-input source `7fbb8c4` passed the full
 1,015-Rust/77-Python gate. Actual Codex 0.154.0 with a local model fixture

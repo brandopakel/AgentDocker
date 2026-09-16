@@ -1075,7 +1075,17 @@ so a caller must retain the old cursor, record the generation gap and start a
 new scan with source-ID deduplication. It does not yet reuse validated prefixes
 across growing-file generations. That optimization, bounded directory discovery,
 atomic ingestion and collection watermarks remain open; file completion alone
-never means collection is caught up. Reader verification is pending.
+never means collection is caught up. Source `a989ebf` passed seven focused reader
+tests and the full 1,033-Rust/77-Python gate (seven Rust tests skipped), strict
+lint, packaging and release compilation. Fixtures cover restart/replay, parser
+context across batches, malformed context, partial-tail completion, copied logs,
+replacement, truncation, same-length rewrites with restored modification times,
+special files, result limits and byte bounds. Initial fixture compilation and lint
+failures are retained at `/private/tmp/agentdocker-usage-reader-targeted1-2026-09-16.log`
+and `/private/tmp/agentdocker-usage-reader-gate1-2026-09-16.log`; passing logs are
+`/private/tmp/agentdocker-usage-reader-targeted2-2026-09-16.log` and
+`/private/tmp/agentdocker-usage-reader-gate2-2026-09-16.log`. These are local host
+fixtures, not an actual runtime collection or installed Usage-screen trial.
 
 Counter normalization follows [OpenAI usage breakdowns](https://developers.openai.com/api/reference/cli/resources/responses/methods/retrieve)
 and [Claude cache input semantics](https://platform.claude.com/docs/en/build-with-claude/prompt-caching):
