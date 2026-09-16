@@ -149,6 +149,13 @@ replacement acceptance.
 
 ## Engineering and acceptance still open
 
+PR #155 next review found discovery scans could mutate the cached projection
+while fenced, and reload could race restricted-listener registration. Source now
+refuses mutating discovery requests during transfer, retains the pre-transfer
+scan snapshot, and checks/takes descriptors under the registration lock.
+Successor readiness writes run on a blocking worker with a bounded timeout.
+Focused and native validation of this follow-up is pending.
+
 PR #155 final-head review follow-up (September 16) now rolls back an agent
 whose first write fails or is fenced, cleans an isolated pane worktree after
 successful pane retirement, reports failed aborts without implying writes resumed,

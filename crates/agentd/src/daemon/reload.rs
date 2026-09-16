@@ -237,6 +237,7 @@ pub fn accept(socket: &UnixStream) -> io::Result<(Handover, Vec<OwnedFd>)> {
 
 /// Say whether the takeover worked, as the successor.
 pub fn answer(socket: &UnixStream, ready: &Ready) -> io::Result<()> {
+    socket.set_write_timeout(Some(READY_WITHIN))?;
     let payload = serde_json::to_vec(ready).map_err(io::Error::other)?;
     handoff::send(socket, &payload, &[])
 }
@@ -332,23 +333,10 @@ impl Daemon {
                 ),
             );
         }
-        let Some(held) = lock(&self.held).take() else {
-            return Response::error(
-                ErrorCode::Unavailable,
-                "this daemon holds no listener or lock to hand over",
-            );
+        let held = match self.take_held() {
+            Ok(held) => held,
+            Err(refusal) => return *refusal,
         };
-        if let Some(reason) = &held.restricted_unavailable {
-            let refusal = Response::error(
-                ErrorCode::Unavailable,
-                format!(
-                    "the container endpoint's listener cannot be handed over ({reason}); a \
-                     successor would come up without container access, so this daemon keeps serving"
-                ),
-            );
-            *lock(&self.held) = Some(held);
-            return refusal;
-        }
         let outcome = self.replace(&held).await;
         match outcome {
             Ok(()) => {
@@ -529,13 +517,38 @@ impl Daemon {
         *lock(&self.held) = Some(held);
     }
 
+    /// Check readiness and take descriptors under the registration lock. An
+    /// endpoint still binding cannot lose its descriptor to a concurrent reload.
+    fn take_held(&self) -> Result<Held, Box<Response>> {
+        let mut slot = lock(&self.held);
+        let held = slot.as_ref().ok_or_else(|| {
+            Self::unavailable("this daemon holds no listener or lock to hand over")
+        })?;
+        if let Some(reason) = &held.restricted_unavailable {
+            return Err(Self::unavailable(format!(
+                "the container endpoint's listener cannot be handed over ({reason}); \
+                 this daemon keeps serving"
+            )));
+        }
+        if held.restricted.is_none() {
+            return Err(Box::new(Response::error(
+                ErrorCode::Backpressure,
+                "the container endpoint is still starting; retry reload after it is ready",
+            )));
+        }
+        Ok(slot.take().expect("checked descriptor ownership"))
+    }
+
     /// The restricted endpoint came up: keep its listener to hand over,
     /// or remember that it could not be kept, which refuses reloads
     /// rather than handing over to a daemon without container access.
     pub fn hold_restricted(&self, fd: std::io::Result<std::os::fd::OwnedFd>) {
         if let Some(held) = lock(&self.held).as_mut() {
             match fd {
-                Ok(fd) => held.restricted = Some(fd),
+                Ok(fd) => {
+                    held.restricted = Some(fd);
+                    held.restricted_unavailable = None;
+                }
                 Err(e) => {
                     warn!(%e, "cannot keep the restricted listener for a handover; reload is refused until restart");
                     held.restricted_unavailable = Some(e.to_string());
@@ -1174,6 +1187,43 @@ mod fence_tests {
             assert_eq!(state.next_seq, next_seq);
             assert!(events.try_recv().is_err());
         }
+    }
+
+    #[test]
+    fn reload_waits_for_restricted_registration_without_losing_descriptors() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let descriptor = || -> OwnedFd { std::fs::File::open("/dev/null").unwrap().into() };
+        daemon.hold(Held {
+            listener: descriptor(),
+            lock: descriptor(),
+            restricted: None,
+            restricted_unavailable: None,
+        });
+        assert!(matches!(
+            *daemon.take_held().err().unwrap(),
+            Response::Error {
+                code: ErrorCode::Backpressure,
+                ..
+            }
+        ));
+        assert!(lock(&daemon.held).is_some());
+        daemon.hold_restricted(Err(io::Error::other("bind failed")));
+        assert!(matches!(
+            *daemon.take_held().err().unwrap(),
+            Response::Error {
+                code: ErrorCode::Unavailable,
+                ..
+            }
+        ));
+        assert!(lock(&daemon.held).is_some());
+        let restricted = descriptor();
+        let raw = restricted.as_raw_fd();
+        daemon.hold_restricted(Ok(restricted));
+        let held = daemon.take_held().unwrap();
+        assert_eq!(held.restricted.unwrap().as_raw_fd(), raw);
+        assert!(held.restricted_unavailable.is_none());
+        assert!(lock(&daemon.held).is_none());
     }
 
     async fn register(daemon: &Arc<Daemon>, name: &str) -> AgentId {

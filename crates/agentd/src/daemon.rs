@@ -185,8 +185,6 @@ fn mutates(request: &Request) -> bool {
             | Request::Handoffs { .. }
             | Request::Validations { .. }
             | Request::WorktreeDiff { .. }
-            | Request::Discover
-            | Request::Runtimes
             | Request::List { .. }
             | Request::Inspect { .. }
             | Request::Changes { .. }
@@ -2477,6 +2475,11 @@ impl Daemon {
         result: Result<Vec<DiscoveredProcess>, String>,
     ) -> Result<Vec<DiscoveredProcess>, String> {
         let mut state = lock(&self.state);
+        // Background scans may finish after a transfer offer. Keep the prior
+        // snapshot so an aborted transfer's next scan still emits its changes.
+        if state.fenced() {
+            return Err("discovery is paused during coordinator transfer".into());
+        }
         let mut found = match result {
             Ok(found) => found,
             Err(reason) => {
@@ -11749,6 +11752,58 @@ deny = ["send:all"]
                 committed
             );
             assert!(!daemon.scanning.load(Ordering::Acquire));
+        }
+    }
+
+    #[test]
+    fn a_fenced_scan_preserves_discovery_until_transfer_aborts() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let first = discovery_row(123456, Utc::now());
+        let replacement =
+            discovery_row(first.pid, first.started_at.unwrap() + Duration::seconds(1));
+        daemon.apply_scan(Ok(vec![first.clone()])).unwrap();
+        daemon.offer_transfer(4242).unwrap();
+        let mut events = daemon.subscribe_events();
+        let (at, next_seq) = {
+            let state = lock(&daemon.state);
+            (state.discovered.at, state.next_seq)
+        };
+        // Both a completed background scan and its error path leave the last
+        // committed projection intact while the successor takes ownership.
+        for result in [Ok(vec![replacement.clone()]), Err("ps failed".into())] {
+            assert!(daemon.apply_scan(result).is_err());
+            let state = lock(&daemon.state);
+            assert_eq!(state.discovered.processes, vec![first.clone()]);
+            assert_eq!(state.discovered.at, at);
+            assert!(state.discovered.error.is_none());
+            assert_eq!(state.next_seq, next_seq);
+            assert!(events.try_recv().is_err());
+        }
+        assert!(daemon.abort_transfer("scan fixture"));
+        while events.try_recv().is_ok() {}
+        daemon.apply_scan(Ok(vec![replacement.clone()])).unwrap();
+        assert!(matches!(events.try_recv().unwrap().kind,
+            EventKind::AgentVanished { started_at, .. } if started_at == first.started_at));
+        assert!(matches!(events.try_recv().unwrap().kind,
+            EventKind::AgentDiscovered { started_at, .. } if started_at == replacement.started_at));
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn discovery_requests_are_mutations_and_refused_during_transfer() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        daemon.offer_transfer(4242).unwrap();
+        for request in [Request::Discover, Request::Runtimes] {
+            assert!(mutates(&request));
+            assert!(matches!(
+                daemon.handle(request).await,
+                Response::Error {
+                    code: ErrorCode::Transferring,
+                    ..
+                }
+            ));
         }
     }
 

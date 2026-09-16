@@ -88,8 +88,15 @@ event continuity, not just a new socket or a readiness marker.
    `Transferring`. Stop records and events commit together before registry
    changes or process signals, and failed restore/restart-policy clearing
    refuses the stop. Targeted tests cover actual retained rows, unchanged
-   durable records and absent stop signals on refused writes.
-4. **Successor readiness and recovery.** Validate the intended immutable
+   durable records and absent stop signals on refused writes. `discover` and
+   `runtimes` hold mutation admission too. A background scan completing while
+   fenced leaves the cache and discovery events untouched, so an abort can
+   publish the transition on the next scan.
+4. **Successor readiness and recovery.** Reload refuses with `backpressure`
+   while the restricted listener is still starting, or `unavailable` after its
+   failure; checking and taking the descriptors use one registration lock.
+   The successor writes readiness on a blocking worker with a write timeout,
+   leaving its accept loop free to serve. Validate the intended immutable
    executable and compatible state before transfer. Require the successor's
    serving loop, watcher and session routes to be usable before reporting
    success. A lost readiness response requires inspecting the committed transfer

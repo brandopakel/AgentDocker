@@ -576,6 +576,7 @@ pub async fn restricted_endpoint(
 ) {
     if let Err(err) = serve_restricted(daemon.clone(), socket.clone(), inherited).await {
         tracing::error!(%err, socket = %socket.display(), "restricted endpoint unavailable; container access is off");
+        daemon.hold_restricted(Err(io::Error::other(format!("{err:#}"))));
         daemon.restricted_unavailable(format!("{err:#}"));
     }
     std::future::pending::<()>().await;

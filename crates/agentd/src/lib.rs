@@ -291,8 +291,15 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     // bound with its queue drained by the accept loop polled alongside.
     let announcer = async {
         if let Some(socket) = predecessor {
-            if let Err(e) = daemon::reload::answer(&socket, &daemon::reload::Ready::Serving) {
-                warn!(%e, "could not tell the predecessor we are serving; it will time out and check the store");
+            let answered = tokio::task::spawn_blocking(move || {
+                daemon::reload::answer(&socket, &daemon::reload::Ready::Serving)
+            })
+            .await;
+            if !matches!(answered, Ok(Ok(()))) {
+                warn!(
+                    ?answered,
+                    "could not tell the predecessor we are serving; it will time out and check the store"
+                );
             }
         }
         std::future::pending::<()>().await
