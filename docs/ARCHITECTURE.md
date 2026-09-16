@@ -896,7 +896,8 @@ are unknown, never zero. The design:
   sessions and late usage records. The same parsers serve the standalone CLI.
   Reading transcript files does not mean retaining their message text.
   Each collection pass records a durable discovery generation and a fixed
-  per-file high-water byte offset at the end of the last complete JSONL record
+  per-file generation identity, captured-prefix validation data and a high-water
+  byte offset at the end of the last complete JSONL record
   within the captured file length. A trailing partial record remains beyond
   that boundary: retain its start offset, reread it when completed, and expose
   the pending tail in collection coverage. Never advance a cursor over an
@@ -907,6 +908,12 @@ are unknown, never zero. The design:
   generation; scan failures and unsupported formats remain explicit gaps.
   A bounded or unfinished directory enumeration cannot claim that no more files
   exist. Empty aggregates during discovery do not prove zero usage.
+  A path alone is not a generation identity. Each adapter must validate the same
+  opened file generation and captured prefix before committing snapshot coverage;
+  truncation, replacement, rotation or an in-place rewrite invalidates that
+  file's coverage even if its path and length are unchanged. Validation reads
+  share the scan budget. Changed content becomes an explicit source gap or a new
+  generation; it cannot complete the earlier snapshot.
 - **Explicit token semantics.** A normalized sample keeps `runtime`,
   `provider?`, `model?`, `session_id`, timestamp and separate optional counters
   for total input, cache-read input, cache-write input, total output and reasoning
@@ -994,9 +1001,12 @@ are unknown, never zero. The design:
   `coverage.collection` contains `state` (`unknown`, `scanning`, `caught_up`),
   `discovery_generation` (u64 or null), `snapshot_at` and `completed_at` (UTC
   timestamps or null), `discovery_complete` (boolean), `pending_files` (u64 or
-  null while enumeration is incomplete), and `scope` (configured runtime roots
-  and supported format versions). `caught_up` requires completed discovery and
-  committed scans through every fixed high-water offset in that generation;
+  null while enumeration is incomplete), `pending_tail_files` (nonnegative
+  integer, null while discovery is incomplete), and `scope` (configured runtime
+  roots and supported format versions). `caught_up` requires completed discovery,
+  committed scans through every fixed high-water offset in that generation and
+  `pending_tail_files: 0`. A captured partial tail keeps collection `scanning`
+  until it completes or becomes an explicit source gap;
   it is coverage of that declared snapshot/scope, not of logs that appeared
   later or of all provider accounts. Missing/incomplete discovery is `unknown`;
   complete discovery with outstanding known files is `scanning`. A query outside
