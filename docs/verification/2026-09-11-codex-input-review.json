@@ -419,6 +419,178 @@
       "existing standalone TUI active control endpoint",
       "real hosted-model busy/tool/question acceptance",
       "all-provider equivalent adapters and existing-session reconnect"
-    ]
+    ],
+    "final_integration": {
+      "source": "7fbb8c49b49cdd1e1a6cceb6291c7db5d03a3c48",
+      "manifest": {
+        "format": 1,
+        "source_commit": "7fbb8c49b49cdd1e1a6cceb6291c7db5d03a3c48",
+        "source_tree": "62ce5e89e255e0782ec58c14e6e1d392b2c1c707",
+        "source_input_sha256": "13f411ad49ebd1abd0cfd0ed8c2cd858ff153c57f39d67404dce4d3354b1c8bc",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 21,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "17f91f4adbe84b55f109863ad57b608d31a65701f4c87534397da338bd621a52",
+          "agentd": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65",
+          "agentdocker-ui": "ece4c9cd8e3429ea7d50f3e625fb64f35f24e9f2ac9e126adc4587d7894a6a41"
+        }
+      },
+      "full_gate": {
+        "result": "passed",
+        "rust_passed": 1015,
+        "rust_skipped": 7,
+        "python_checks": 77,
+        "log": "/private/tmp/agentdocker-steering-gate3-2026-09-16.log"
+      },
+      "additional_regressions": [
+        "Version-nine records retain their original pending input and bytes until a successful mutation; legacy-version records cannot smuggle steering state.",
+        "Two messages cannot use the same provider turn/item receipt; rejection leaves the prepared record unchanged."
+      ],
+      "trials": [
+        {
+          "path": "/private/tmp/agentdocker-steering-busy4-2026-09-16/result.json",
+          "report": {
+            "result": "passed",
+            "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+            "scenario": "busy",
+            "checks": [
+              "CLI human and peer sends use owned input route",
+              "same active turn",
+              "exact per-message receipt",
+              "no duplicated provider submission"
+            ],
+            "driver_sha256": "19b902770b27fbc2c5a7a2fdde66de943cfd86d6ca143be2327e4495c548adb7",
+            "source": "7fbb8c49b49cdd1e1a6cceb6291c7db5d03a3c48",
+            "binary_sha256": {
+              "agentdocker": "17f91f4adbe84b55f109863ad57b608d31a65701f4c87534397da338bd621a52",
+              "agentd": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65"
+            },
+            "provider_version": "codex-cli 0.154.0",
+            "agent": "f982b6d69a6d42adbdcb96508f8f35dc",
+            "initial_pid": 87102,
+            "messages": [
+              {
+                "id": "70bb2b84b3504925",
+                "text": "BUSY_START_NONCE",
+                "from": "3d116e3f2c0c4329b012538bd94528ab"
+              },
+              {
+                "id": "83d67891b60849cc",
+                "text": "PEER_BUSY_NONCE",
+                "from": "4f544547e5ce4b24b6fe7abc4838a4c2"
+              },
+              {
+                "id": "926a2bf47dfc4342",
+                "text": "HUMAN_BROADCAST_PAUSE_NONCE",
+                "from": "3d116e3f2c0c4329b012538bd94528ab"
+              }
+            ],
+            "receipts": {
+              "83d67891b60849cc": {
+                "thread": "01a0ab7b-40e9-7221-b36e-5ebdc1ffd331",
+                "turn": "01a0ab7b-4312-7500-a20f-df5792b4db03",
+                "item": "01a0ab7b-4541-71f0-a430-707e908d6dba"
+              },
+              "926a2bf47dfc4342": {
+                "thread": "01a0ab7b-40e9-7221-b36e-5ebdc1ffd331",
+                "turn": "01a0ab7b-4312-7500-a20f-df5792b4db03",
+                "item": "01a0ab7b-4708-74a1-bd51-236a74afd799"
+              },
+              "70bb2b84b3504925": {
+                "thread": "01a0ab7b-40e9-7221-b36e-5ebdc1ffd331",
+                "turn": "01a0ab7b-4312-7500-a20f-df5792b4db03",
+                "item": "01a0ab7b-4345-78f1-b28a-079e3edc035e"
+              }
+            },
+            "final_pid": 87102,
+            "same_turn": true,
+            "production_mutations": false,
+            "exact_receipts": true,
+            "no_resubmission": true,
+            "cleanup": {
+              "forced": false,
+              "errors": [],
+              "exit": 0,
+              "fixtures": {
+                "signals": [],
+                "remaining": [],
+                "errors": []
+              }
+            },
+            "elapsed_seconds": 3.0586592920008115
+          }
+        },
+        {
+          "path": "/private/tmp/agentdocker-steering-lost-reply4-2026-09-16/result.json",
+          "report": {
+            "result": "passed",
+            "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+            "scenario": "lost-reply",
+            "checks": [
+              "CLI human and peer sends use owned input route",
+              "same active turn",
+              "exact per-message receipt",
+              "no duplicated provider submission",
+              "lost steering reply reconciled after supervised controller restart"
+            ],
+            "driver_sha256": "19b902770b27fbc2c5a7a2fdde66de943cfd86d6ca143be2327e4495c548adb7",
+            "source": "7fbb8c49b49cdd1e1a6cceb6291c7db5d03a3c48",
+            "binary_sha256": {
+              "agentdocker": "17f91f4adbe84b55f109863ad57b608d31a65701f4c87534397da338bd621a52",
+              "agentd": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65"
+            },
+            "provider_version": "codex-cli 0.154.0",
+            "agent": "6c7f096fa52044588153dc525adc70e9",
+            "initial_pid": 87237,
+            "messages": [
+              {
+                "id": "36146df27ad846aa",
+                "text": "BUSY_START_NONCE",
+                "from": "edd8550318644f5aa8f1e424e3c992d0"
+              },
+              {
+                "id": "e39bb2a16e334e45",
+                "text": "PEER_BUSY_NONCE",
+                "from": "088f1335456842cf90862651883c11a4"
+              }
+            ],
+            "receipts": {
+              "e39bb2a16e334e45": {
+                "thread": "01a0ab7b-438e-7bf2-843e-4c4623f4dedc",
+                "turn": "01a0ab7b-45b1-7ae1-bf04-faec74ea55e2",
+                "item": "01a0ab7b-47c9-7e21-a647-0f40c76a09bf"
+              },
+              "36146df27ad846aa": {
+                "thread": "01a0ab7b-438e-7bf2-843e-4c4623f4dedc",
+                "turn": "01a0ab7b-45b1-7ae1-bf04-faec74ea55e2",
+                "item": "01a0ab7b-45e2-7eb3-8325-46f703360dd4"
+              }
+            },
+            "final_pid": 89335,
+            "same_turn": true,
+            "production_mutations": false,
+            "exact_receipts": true,
+            "no_resubmission": true,
+            "cleanup": {
+              "forced": false,
+              "errors": [],
+              "exit": 0,
+              "fixtures": {
+                "signals": [],
+                "remaining": [],
+                "errors": []
+              }
+            },
+            "elapsed_seconds": 32.61762458301382
+          }
+        }
+      ]
+    }
   }
 }

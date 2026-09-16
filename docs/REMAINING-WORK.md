@@ -112,6 +112,15 @@ replacement acceptance.
 
 ## Engineering and acceptance still open
 
+September 16 owned Codex active-input source `7fbb8c4` passed the full
+1,015-Rust/77-Python gate. Actual Codex 0.154.0 with a local model fixture
+consumed CLI human, peer and human-broadcast inputs in the same active turn,
+with distinct exact receipts. A separate dropped steering response recovered
+automatically under the same agent/thread after controller restart, without
+resubmission. These checks exercise the owned bridge; the existing standalone
+TUI pause-delivery defect, other providers and real model-service acceptance
+remain open. See [input evidence](verification/2026-09-11-codex-input-review.json).
+
 September 16 active-input correction is in progress: the owned Codex bridge
 uses supported active-turn steering with a separate durable attempt and exact
 receipts. Source `13c3e40` passed the full 1,010-Rust/77-Python gate and private actual-Codex
