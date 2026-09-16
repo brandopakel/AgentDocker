@@ -302,7 +302,21 @@
       "Project search includes archived conversations involving finished records without enumerating every historical pair.",
       "Every successful unindexed archive insertion or deletion also invalidates the durable completeness marker, even after a previous rollback restored it. Equal row counts cannot hide skipped indexing."
     ],
-    "standard_gate": "pending",
+    "standard_gate": {
+      "passed": true,
+      "source_commit": "e5255d4055efca358ed42aefa9211f2bf511996a",
+      "rust_tests": 975,
+      "rust_skipped": 6,
+      "python_checks": 70,
+      "fmt": true,
+      "clippy": true,
+      "doctests": true,
+      "cargo_package": true,
+      "release_build": true,
+      "private_log": "/private/tmp/agentdocker-message-review-gate1.log",
+      "log_sha256": "bc8ef2315f87750db790d65dd821c1b554fd5eae58641b896a551b8773c60674",
+      "followup": "Subsequent commit only records this result and relocates the architecture paragraph; executable source matches the file hashes above."
+    },
     "limits": [
       "Unit/integration source evidence; final native graphical, CI and review gates remain.",
       "These fixes do not apply production identity reconciliation or establish live daemon replacement."
