@@ -857,53 +857,76 @@ Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `
 | Request | Response | Phase |
 |---|---|---|
 | Additional execution adapters (Apple `container`, others) | capability-specific | 4 |
-| `usage {project?, agent?, since?, until?, by?}` | `usage {rows}` | 5 |
+| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, effective_since, effective_until, coverage}` | 5 |
 
-**Token usage by agent, model and provider** (requested September 15). Every
-runtime already writes its own account of what it spent, next to its
-transcript: Codex rollouts (`~/.codex/sessions/<y>/<m>/<d>/rollout-*.jsonl`)
-carry a `token_count` event per turn with `last_token_usage` (input, cached
-input, cache-write input, output, reasoning output) and a `turn_context`
-naming the model; Claude Code transcripts (`~/.claude/projects/<slug>/<session>.jsonl`)
-carry a `usage` object on each assistant message (input, cache creation, cache
-read, output, thinking) with the model. AgentDocker never sees a provider
-request, so it cannot count tokens itself; what it can do is attribute those
-accounts to the agents it knows. The design:
+**Token usage by agent, model and provider** (requested September 15;
+proposal, not implemented). The initial adapters will read local Codex rollouts
+and Claude Code transcripts. These are versioned runtime formats: an adapter
+must identify a supported usage record and model context, rather than assume
+every turn or runtime reports every counter. Missing or unsupported counters
+are unknown, never zero. The design:
 
-- **A host collector, not a daemon reader.** `agentdocker_host::usage` reads
-  the two formats and yields `UsageSample {provider, model, session_id,
-  at, input, cached, output, reasoning}` per turn; it is pure file parsing
-  (bounded by file, with a cursor per file so a rollout is read once), and
-  the same function serves `agentdocker usage` without a daemon.
-- **Attribution by session id.** A registered record carries its provider
-  session in `spec.labels["session_id"]` (the receiver binding names it too),
-  so each sample is credited to the record whose session it names, and
-  through `identity_ids` to a record retired into it; samples from sessions
-  nobody registered are counted under *unattributed* rather than dropped.
-  The provider is the runtime (`codex`, `claude-code`), which is the company
-  the tokens were bought from; the model is the runtime's own name for it.
-- **Durable aggregation, bounded.** The daemon's minute tick runs the
-  collector for the live records' sessions only (a finished record's file
-  is read once more, then left) and folds the samples into a `usage` table
-  (agent, provider, model, hour bucket, the four counts, turns), one row per
-  agent-model-hour, kept under the same retention as the journal; no
-  transcript text is stored, only counts. `usage_recorded {agent, model,
-  provider, turns}` is the event.
-- **Reading it.** `usage` answers rows grouped `by` agent, model, provider,
-  project or hour, over `since`/`until`; the CLI is `agentdocker usage
-  [--project] [--agent] [--since 24h] [--by agent|model|provider|hour]`;
-  the app's Usage screen shows the sums per agent with the model beside
-  each, a provider total, and a per-project view, over today, seven days and
-  all time. Cost is not computed: prices change and differ by plan, so the
-  screen shows tokens, with a note of the provider's cached-input share,
-  which is what a person can act on.
-- **AgentDocker's own overhead** is shown apart: the tokens its MCP
-  results and hook context cost each agent (measured from the transcript's
-  tool-result sizes, an estimate) so the product can say what it adds.
+- **Collection outside the state lock.** A bounded host collector reads complete
+  JSONL records from the configured runtime directories, including unregistered
+  sessions, with per-file byte/time budgets and persistent scan progress. Live
+  sessions get priority; a bounded rotating scan also catches new files, finished
+  sessions and late usage records. The same parsers serve the standalone CLI.
+  Reading transcript files does not mean retaining their message text.
+- **Explicit token semantics.** A normalized sample keeps `runtime`,
+  `provider?`, `model?`, `session_id`, timestamp and separate optional counters
+  for total input, cache-read input, cache-write input, total output and reasoning
+  output. Each adapter documents whether its raw counters overlap: a reported
+  cache hit is not added again to an inclusive input total, and reasoning is not
+  added again to an inclusive output total. Cache reads and cache writes remain
+  separate. Cumulative snapshots become deltas against a durable baseline;
+  per-response usage and cumulative usage are never both counted. Unsupported
+  fields stay unknown, with coverage shown beside aggregates.
+- **Restart-safe ingestion.** The collector returns samples with stable source
+  identities plus the proposed next file cursor. One daemon transaction accepts
+  previously unseen samples, updates aggregates and durable cursor/baseline
+  state, and appends `usage_recorded`; only then may in-memory progress move.
+  Retries, rotation, truncation, copied logs and partial final lines must not
+  duplicate counts or skip complete records. Provider event/message identifiers
+  are used when available; each fallback identity and rewrite rule needs a
+  format-specific regression fixture before that format is supported. A replay
+  cursor survives aggregate retention so rereading old files cannot resurrect
+  expired usage. Standalone scans deduplicate within their selected input set
+  and do not alter daemon cursors.
+- **Historical attribution.** Match by runtime plus provider session, following
+  registered identity aliases. Store the resulting `agent_id?` and `project_id?`
+  on the usage bucket at ingestion; deleting, moving or retiring a current agent
+  cannot move its historical usage into another project. Unmatched or ambiguous
+  sessions remain unattributed, with unknown project, until an explicit
+  idempotent reconciliation has enough evidence. Runtime names are not billing
+  companies: provider comes from reliable runtime metadata or explicit user
+  configuration, otherwise it is unknown. Model names are retained as reported.
+- **Bounded aggregation.** Rows are keyed by agent/project attribution, runtime,
+  provider, model and UTC hour, with separate sums and coverage counts for every
+  counter. Dedupe/cursor state and bucket changes commit together. Hour buckets
+  follow the configured retention window; the UI says *Available history*, not
+  an unqualified all-time total. No prompt, response or tool-result text is
+  stored in the usage tables.
+- **Reading it.** `usage` groups by agent, model, provider, project or hour. The
+  proposed CLI remains `agentdocker usage [--project] [--agent] [--since 24h]
+  [--by agent|model|provider|hour]`. Since only hourly aggregates are retained,
+  `since` rounds down to a UTC hour and `until` rounds up; an already aligned
+  bound stays unchanged. Buckets use the half-open interval
+  `[effective_since, effective_until)`. Responses and the UI show these effective
+  bounds, so a partial-hour request never appears to be an exact sub-hour count.
+  Reversed or empty requested ranges are rejected before rounding. The Usage
+  screen shows day/week/available-history totals, per-agent model and provider
+  totals, project filters and explicit unknown/partial coverage. It shows
+  tokens; monetary cost is outside this initial proposal.
+- **AgentDocker overhead.** Record injected hook/MCP/message byte counts apart
+  from provider-reported usage, with any token conversion labelled as an
+  estimate. These estimates are neither additional provider tokens nor a precise
+  measure of billed overhead; never add them to the provider total.
 
-Done when a person can see, for the last day and week, how many tokens each
-agent, model and provider spent in each project, from the runtimes' own
-records, without a daemon for the CLI and without storing any transcript.
+Completion requires parser fixtures for supported versions and missing fields;
+crash/replay/rotation/truncation and partial-line trials; cache/reasoning overlap
+checks; unregistered and retired-session attribution; hour-boundary/retention
+checks; and actual CLI/desktop acceptance showing coverage and effective ranges.
+This proposal does not mark the collector, protocol, CLI or Usage screen built.
 
 Shipped events include `policy_updated` (effective rules or load diagnostic changed), `policy_denied` (what was asked and which rule refused it), `agent_restarted` (a managed agent started again by its policy, with the attempt number), `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`, `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended`, `journal_read`, `journal_pruned` (a project's entries below a sequence were deleted, on request or by retention) and `checkpoints_pruned`, `answer_routed` (which way an answer reached its asker: the waiting `ask` or the queue), and the input binding events `input_bound` (an external controller became, or resumed being, the sole consumer of an agent's queued input), `input_unbound`, `input_controller_ended` (the bound controller, or a process launched to replace it, is gone), `input_controller_launched` (the daemon started the binding's launch descriptor, with the attempt number), `input_controller_launch_failed`, `input_restarts_exhausted` (the episode's launches are used up), `input_restarts_reset` (a person asked for the controller to be started again) and `input_resumed` (a provider session that came back as a new process was joined to the record holding its thread's queue; the new record's id is an alias of it). The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
