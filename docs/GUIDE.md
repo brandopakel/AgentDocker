@@ -45,6 +45,7 @@ Then bring in the agents already on the machine:
 
 ```sh
 agentdocker runtimes        # what is installed, and whether we are wired into it
+                            # (HOOKS `no (StopFailure)` names the events setup would add)
 agentdocker setup           # register the MCP server and install hooks
 agentdocker discover        # agent processes nobody registered
 agentdocker adopt --all     # register all of them
