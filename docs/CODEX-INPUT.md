@@ -474,14 +474,19 @@ lost-reply trial recovered the same agent/thread without repeating input.
 
 Run `python3 scripts/codex_steering_smoke.py --binary-dir target/release
 --output /tmp/steering-trial` (add `--scenario lost-reply` for recovery or
-`--scenario refused` for an injected precondition failure).
+`--scenario refused` for an injected no-active-turn failure, or
+`--scenario changed-turn` for a refusal followed by that other turn's completion).
 Hosted-model and broader provider acceptance remain open. Native TUI
 queue delivery still waits for idle; this change does not establish active-input
 parity for that existing-session route.
 
-An explicit active-turn precondition refusal suppresses further steering for that
-turn. Its completion clears the suppression and the still-queued input can enter
-through the ordinary turn-start path. Ambiguous failures retain the durable
+A no-active-turn precondition refusal suppresses further steering for the
+retained turn. Its completion clears the suppression and the still-queued input
+can enter through the ordinary turn-start path. A different-active-turn refusal
+instead pauses delivery immediately with a clear reason, keeps the original
+receipt and leaves the unsubmitted message queued. It cannot treat that other
+turn's completion as the retained turn or acknowledge its refused input. A later
+controller restart must recover the retained conversation before becoming ready. Ambiguous failures retain the durable
 attempt for receipt reconciliation; they do not authorize another submission.
 
 The refusal follow-up `01531dc` passed the full 1,015-Rust/77-Python gate and all
