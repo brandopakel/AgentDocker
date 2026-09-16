@@ -290,6 +290,13 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<ProjectId>,
     },
+    /// The human's working location changed durably.
+    HumanLocationChanged {
+        agent: AgentId,
+        workdir: std::path::PathBuf,
+        project: Option<ProjectRef>,
+        vcs: Option<VcsState>,
+    },
     AgentStarted {
         agent: AgentId,
         pid: Option<u32>,
@@ -480,6 +487,10 @@ pub enum EventKind {
         channel: crate::ChannelId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resolution: Option<String>,
+    },
+    /// Closed channels were durably removed by housekeeping.
+    ChannelsPruned {
+        channels: Vec<crate::ChannelId>,
     },
     /// A reviewer gave a verdict on another agent's work in a channel.
     ReviewSubmitted {

@@ -442,7 +442,7 @@ impl Daemon {
             .get(&agent)
             .map(|r| r.spec.name.clone())
             .unwrap_or_else(|| agent.short().to_owned());
-        let Some(channel) = state.channels.get_mut(&id) else {
+        let Some(mut channel) = state.channels.get(&id).cloned() else {
             return Response::error(ErrorCode::NotFound, "channel vanished");
         };
         if !channel.is_open() {
@@ -455,10 +455,25 @@ impl Daemon {
             .filter(|r| !r.is_empty());
         channel.closed_at = Some(Utc::now());
         channel.resolution = resolution.clone();
-        let channel = channel.clone();
-        let _ = state.persist("channel", |store| {
-            store.put_document("channel", channel.id.as_str(), &channel)
-        });
+        let mut event = Event::new(
+            EventKind::ChannelClosed {
+                channel: id.clone(),
+                resolution: resolution.clone(),
+            },
+            Utc::now(),
+        );
+        event.seq = state.next_seq;
+        if state.persist("channel close", |store| {
+            store.put_document_with_event("channel", channel.id.as_str(), &channel, &event)
+        }) != Persisted::Committed
+        {
+            return state
+                .write_failure()
+                .expect("refused channel write has a reason");
+        }
+        state.channels.insert(id.clone(), channel.clone());
+        state.next_seq += 1;
+        let _ = state.events.send(event);
         state.tell_channel(
             &channel,
             match &resolution {
@@ -466,10 +481,6 @@ impl Daemon {
                 None => format!("{name} closed this channel."),
             },
         );
-        state.emit(EventKind::ChannelClosed {
-            channel: id,
-            resolution: resolution.clone(),
-        });
         if let Some(record) = state.registry.get(&agent).cloned() {
             let summary = match &resolution {
                 Some(text) => format!("closed the channel on {}: {text}", channel.title()),
@@ -512,19 +523,30 @@ impl Daemon {
             .filter(|c| c.closed_at.is_some_and(|at| at <= cutoff))
             .map(|c| c.id.clone())
             .collect();
+        if gone.is_empty() {
+            return Response::Pruned { removed: 0 };
+        }
+        let ids: Vec<String> = gone.iter().map(|id| id.to_string()).collect();
+        let mut event = Event::new(
+            EventKind::ChannelsPruned {
+                channels: gone.clone(),
+            },
+            Utc::now(),
+        );
+        event.seq = state.next_seq;
+        if state.persist("channel prune", |store| {
+            store.delete_documents_with_event("channel", &ids, &event)
+        }) != Persisted::Committed
+        {
+            return state
+                .write_failure()
+                .expect("refused channel prune has a reason");
+        }
         for id in &gone {
             state.channels.remove(id);
         }
-        let ids: Vec<String> = gone.iter().map(|id| id.to_string()).collect();
-        let _ = state.persist("channel", |store| {
-            for id in &ids {
-                store.delete_document("channel", id)?;
-            }
-            Ok(())
-        });
-        if let Some(error) = state.write_failure() {
-            return error;
-        }
+        state.next_seq += 1;
+        let _ = state.events.send(event);
         Response::Pruned {
             removed: gone.len(),
         }
@@ -635,7 +657,7 @@ impl Daemon {
         let head = author_record
             .as_ref()
             .and_then(|r| r.vcs.as_ref().and_then(|v| v.head.clone()));
-        let Some(channel) = state.channels.get_mut(&id) else {
+        let Some(mut channel) = state.channels.get(&id).cloned() else {
             return Response::error(ErrorCode::NotFound, "channel vanished");
         };
         if !channel.is_open() {
@@ -661,16 +683,27 @@ impl Daemon {
             head,
         };
         channel.reviews.push(review.clone());
-        let channel = channel.clone();
-        let _ = state.persist("channel", |store| {
-            store.put_document("channel", channel.id.as_str(), &channel)
-        });
-        state.emit(EventKind::ReviewSubmitted {
-            channel: id.clone(),
-            by: reviewer,
-            of: author.clone(),
-            verdict,
-        });
+        let mut event = Event::new(
+            EventKind::ReviewSubmitted {
+                channel: id.clone(),
+                by: reviewer,
+                of: author.clone(),
+                verdict,
+            },
+            Utc::now(),
+        );
+        event.seq = state.next_seq;
+        if state.persist("channel review", |store| {
+            store.put_document_with_event("channel", channel.id.as_str(), &channel, &event)
+        }) != Persisted::Committed
+        {
+            return state
+                .write_failure()
+                .expect("refused channel review has a reason");
+        }
+        state.channels.insert(id.clone(), channel.clone());
+        state.next_seq += 1;
+        let _ = state.events.send(event);
         let decision = channel.decision(&author, 1);
         state.send(
             review.by.to_string(),
@@ -705,6 +738,80 @@ impl Daemon {
 mod tests {
     use super::*;
     use agentdocker_core::Decision;
+
+    #[tokio::test]
+    async fn refused_channel_changes_preserve_memory_disk_and_events() {
+        for operation in ["channel_closed", "review_submitted", "channels_pruned"] {
+            for fenced in [false, true] {
+                let tmp = tempfile::tempdir().unwrap();
+                let (daemon, _) = fixture(&tmp).await;
+                let mut channels = Vec::new();
+                for task in ["first", "second"] {
+                    let Response::Channel { channel } =
+                        daemon.channel_open("writer", task.into(), vec!["reviewer".into()])
+                    else {
+                        panic!("open failed")
+                    };
+                    if operation == "channels_pruned" {
+                        assert!(matches!(
+                            daemon.channel_close("writer", channel.id.as_str(), None),
+                            Response::Channel { .. }
+                        ));
+                    }
+                    channels.push(channel.id);
+                }
+                let (before, seq, mut events) = {
+                    let mut state = lock(&daemon.state);
+                    if fenced {
+                        state.offer_transfer(1).unwrap();
+                    } else {
+                        state.store.reject_event_for_test(operation);
+                    }
+                    (
+                        serde_json::to_value(&state.channels).unwrap(),
+                        state.next_seq,
+                        state.events.subscribe(),
+                    )
+                };
+                let response = match operation {
+                    "channel_closed" => {
+                        daemon.channel_close("writer", channels[0].as_str(), Some("done".into()))
+                    }
+                    "review_submitted" => daemon.review(
+                        "reviewer",
+                        channels[0].as_str(),
+                        Some("writer".into()),
+                        "approve",
+                        Some("looks good".into()),
+                    ),
+                    _ => daemon.channel_prune("", 0).await,
+                };
+                assert!(
+                    matches!(response, Response::Error { .. }),
+                    "{operation}: {response:?}"
+                );
+                let state = lock(&daemon.state);
+                assert_eq!(
+                    serde_json::to_value(&state.channels).unwrap(),
+                    before,
+                    "{operation} fenced={fenced}"
+                );
+                for id in channels {
+                    let durable: Channel = state
+                        .store
+                        .document("channel", id.as_str())
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(serde_json::to_value(durable).unwrap(), before[id.as_str()]);
+                }
+                assert_eq!(state.next_seq, seq);
+                assert!(
+                    events.try_recv().is_err(),
+                    "no completion or message may be published"
+                );
+            }
+        }
+    }
 
     async fn fixture(tmp: &tempfile::TempDir) -> (Arc<Daemon>, PathBuf) {
         let root = tmp.path().join("checkout");

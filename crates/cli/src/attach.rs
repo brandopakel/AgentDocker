@@ -42,14 +42,18 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
                         (reader, write_half) = reopened;
                     }
                     Err(error) => {
-                        eprint!("\r\n{agent} ended: {error:#}\r\n");
-                        break Ok(());
+                        break Err(error).with_context(|| {
+                            format!(
+                                "cannot reconnect attachment to {agent}; its exit is unconfirmed"
+                            )
+                        });
                     }
                 }
             }
             Ok(Left::Lost) => {
-                eprint!("\r\n{agent} ended\r\n");
-                break Ok(());
+                break Err(anyhow::anyhow!(
+                    "lost attachment to {agent}; its exit is unconfirmed"
+                ));
             }
             Ok(Left::Ended) => {
                 eprint!("\r\n{agent} ended\r\n");

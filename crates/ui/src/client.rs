@@ -105,7 +105,7 @@ impl Client {
         // keystroke goes down this socket from a thread of its own, and a
         // daemon that stopped draining would block it there forever.
         stream.set_write_timeout(Some(CALL_TIMEOUT))?;
-        let mut line = serde_json::to_string(request)?;
+        let mut line = agentdocker_core::protocol::request_json(request)?;
         line.push('\n');
         stream.write_all(line.as_bytes())?;
         Ok(stream)
@@ -144,7 +144,7 @@ impl Client {
         stream.set_read_timeout(Some(CALL_TIMEOUT))?;
         stream.set_write_timeout(Some(CALL_TIMEOUT))?;
         let mut reader = BufReader::new(stream);
-        let mut line = serde_json::to_string(request)?;
+        let mut line = agentdocker_core::protocol::request_json(request)?;
         line.push('\n');
         reader.get_mut().write_all(line.as_bytes())?;
         let mut reply = String::new();

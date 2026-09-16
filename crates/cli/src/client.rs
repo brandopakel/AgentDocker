@@ -112,7 +112,7 @@ impl Client {
                 bail!("restricted endpoint authentication failed");
             }
         }
-        let mut line = serde_json::to_string(request)?;
+        let mut line = agentdocker_core::protocol::request_json(request)?;
         line.push('\n');
         reader.get_mut().write_all(line.as_bytes()).await?;
         Ok(reader)

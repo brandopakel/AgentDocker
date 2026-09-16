@@ -428,6 +428,22 @@ impl Store {
         Ok(())
     }
 
+    /// Pruning a set of documents and its replay evidence is one commit.
+    pub fn delete_documents_with_event(
+        &self,
+        kind: &str,
+        ids: &[String],
+        event: &Event,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for id in ids {
+            self.delete_document(kind, id)?;
+        }
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Load a durable observation or recovery document.
     pub fn document<T: serde::de::DeserializeOwned>(
         &self,

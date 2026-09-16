@@ -448,6 +448,9 @@ pub fn event_line(event: &Event) -> String {
             Some(reason) => format!("channel closed   {channel}: {reason}"),
             None => format!("channel closed   {channel}"),
         },
+        EventKind::ChannelsPruned { channels } => {
+            format!("channels pruned  {}", channels.len())
+        }
         EventKind::ReviewSubmitted {
             channel,
             by,
@@ -522,6 +525,13 @@ pub fn event_line(event: &Event) -> String {
         }
         EventKind::AgentSessionBound { agent, session } => {
             format!("agent bound      {} to session {session}", agent.short())
+        }
+        EventKind::HumanLocationChanged { agent, workdir, .. } => {
+            format!(
+                "human moved      {} to {}",
+                agent.short(),
+                workdir.display()
+            )
         }
         EventKind::AgentStarted { agent, pid } => {
             let pid = pid.map(|p| format!(" pid {p}")).unwrap_or_default();

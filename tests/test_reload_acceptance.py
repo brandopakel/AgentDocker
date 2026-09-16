@@ -56,6 +56,51 @@ class ReloadAcceptanceCleanup(unittest.TestCase):
         self.assertIn("cleanup:", result["error"])
         self.assertTrue(log.closed)
 
+    def test_failed_shutdown_retires_the_captured_successor_group(self):
+        # This successor is a child here (unlike the real reparented one), so
+        # reap it concurrently after fallback termination to model init.
+        import threading
+        successor = subprocess.Popen(["sleep", "30"],
+                                     start_new_session=True)
+        tracked = {successor.pid: TRIAL.process_identity(successor.pid)}
+        reaper = threading.Thread(target=successor.wait, daemon=True)
+        reaper.start()
+        original = TRIAL.rpc
+        TRIAL.rpc = lambda *args, **kwargs: {"type": "error", "code": "unavailable", "message": "shutdown refused"}
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                log = open(Path(temporary) / "log", "ab")
+                result = {"passed": True, "daemon_pids": [successor.pid]}
+                TRIAL.cleanup(result, Path(temporary) / "missing.sock", FakeDaemon(), log, None, None, set(), tracked)
+            self.assertFalse(result["passed"], "a refused shutdown remains recorded")
+            self.assertEqual(result["survivors"], [])
+            self.assertEqual(len(result["cleanup_errors"]), 1, result)
+            self.assertIsNotNone(successor.poll())
+        finally:
+            TRIAL.rpc = original
+            if successor.poll() is None:
+                successor.kill()
+            reaper.join(timeout=5)
+
+    def test_reused_successor_pid_is_not_signalled(self):
+        successor = subprocess.Popen(["sleep", "30"],
+                                     start_new_session=True)
+        original = TRIAL.rpc
+        TRIAL.rpc = lambda *args, **kwargs: {"type": "ok"}
+        try:
+            identity = TRIAL.process_identity(successor.pid)
+            identity["description"] = "previous process at this PID"
+            with tempfile.TemporaryDirectory() as temporary:
+                log = open(Path(temporary) / "log", "ab")
+                result = {"passed": True, "daemon_pids": [successor.pid]}
+                TRIAL.cleanup(result, Path(temporary) / "missing.sock", FakeDaemon(), log, None, None, set(), {successor.pid: identity})
+            self.assertIsNone(successor.poll(), "the different process must remain alive")
+            self.assertEqual(result["survivors"], [])
+        finally:
+            TRIAL.rpc = original
+            successor.kill()
+            successor.wait()
+
     def test_a_survivor_the_trial_saw_started_fails_the_trial(self):
         survivor = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

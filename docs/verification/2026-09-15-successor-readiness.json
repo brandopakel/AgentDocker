@@ -7,7 +7,7 @@
     "source_tree": "676168a8d8e04fee4d8efa1112596bd87db7af5c",
     "source_input_sha256": "93506e04f37bb2462d777a099eb5e280d8d29ac1b36c8b2e3bfdde9eaacf880c",
     "source_dirty": false,
-    "binary_directory": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/p3-final-bin",
+    "binary_directory": "<session scratchpad>/p3-final-bin",
     "binary_sha256": {
       "agentdocker": "75fc644132ecd4cc89a9d461e39e47489486be3e8949add4a23c7cc3b4e6544f",
       "agentd": "1ae28f35839002a0ec574c8f45ad24fb2f299933e764aec66e28bdab9b6379a2"

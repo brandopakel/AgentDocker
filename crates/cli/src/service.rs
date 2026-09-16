@@ -49,7 +49,8 @@ pub enum DaemonCommand {
     Stop,
     /// Stop, then start.
     Restart,
-    /// Request live replacement (currently unavailable; leaves agents running).
+    /// Request experimental live replacement; requires the daemon reload gate.
+    /// Without AGENTDOCKER_EXPERIMENTAL_RELOAD=1 on the daemon, it is refused.
     Reload,
     /// Reclaim disk freed by pruning: SQLite `VACUUM` on the state database.
     /// Refused while sessions are live, since nothing is answered meanwhile.

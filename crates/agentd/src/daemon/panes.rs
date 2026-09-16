@@ -171,32 +171,28 @@ impl Daemon {
         // and the rule here is that it never holds the coordination guard
         // — every `claim`, `release` and `send` would queue behind it.
         let started_at = procinfo::start_time(pane.pid);
-        let updated = {
-            let mut state = lock(&self.state);
-            if let Some(stored) = state.registry.get_mut(&record.id) {
-                stored.pid = Some(pane.pid);
-                stored.process_started_at = started_at;
-                // Not a process group of ours: tmux made it, and signalling
-                // the pid is what `stop` should do.
-                stored.session = Some(agentdocker_core::multiplexer::Session {
-                    kind: "tmux".to_owned(),
-                    session: Some(pane.session.clone()),
-                    pane: Some(pane.id.clone()),
-                    evidence: agentdocker_core::multiplexer::Evidence::Environment,
-                });
+        let updated = lock(&self.state).commit_pane_start(&record.id, &pane, started_at);
+        if matches!(updated, Response::Error { .. }) {
+            // The pane was created by this request. Retire it on refusal,
+            // checking both its tmux identity and process birth first.
+            let owned = pane.clone();
+            let cleanup = tokio::task::spawn_blocking(move || {
+                if started_at.is_some() && procinfo::start_time(owned.pid) == started_at {
+                    tmux::remove_owned_pane(&owned)
+                } else if !procinfo::alive(owned.pid) {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other(
+                        "pane process identity changed; not signalling it",
+                    ))
+                }
+            })
+            .await;
+            if !matches!(cleanup, Ok(Ok(()))) {
+                warn!(agent = %record.id, pane = %pane.id, ?cleanup, "could not retire pane after recording its start failed");
             }
-            let updated = state
-                .registry
-                .set_status(&record.id, AgentStatus::Running, Utc::now());
-            if let Some(agent) = &updated {
-                let _ = state.persist("agent", |store| store.upsert_agent(agent));
-            }
-            state.emit(EventKind::AgentStarted {
-                agent: record.id.clone(),
-                pid: Some(pane.pid),
-            });
-            updated
-        };
+            return updated;
+        }
         info!(
             agent = %record.id.short(),
             name = %record.spec.name,
@@ -205,9 +201,103 @@ impl Daemon {
             pid = pane.pid,
             "agent started in a tmux pane"
         );
-        match updated {
-            Some(agent) => Response::Agent { agent },
-            None => Response::error(ErrorCode::NotFound, "agent vanished"),
+        updated
+    }
+}
+
+impl State {
+    /// Publish the started pane only when its record and event both commit.
+    fn commit_pane_start(
+        &mut self,
+        id: &AgentId,
+        pane: &tmux::Pane,
+        started_at: Option<DateTime<Utc>>,
+    ) -> Response {
+        let Some(mut agent) = self.registry.get(id).cloned() else {
+            return Response::error(ErrorCode::NotFound, "agent vanished");
+        };
+        let now = Utc::now();
+        agent.pid = Some(pane.pid);
+        agent.process_started_at = started_at;
+        agent.session = Some(agentdocker_core::multiplexer::Session {
+            kind: "tmux".to_owned(),
+            session: Some(pane.session.clone()),
+            pane: Some(pane.id.clone()),
+            evidence: agentdocker_core::multiplexer::Evidence::Environment,
+        });
+        agent.status = AgentStatus::Running;
+        agent.started_at.get_or_insert(now);
+        agent.last_seen = now;
+        let mut event = Event::new(
+            EventKind::AgentStarted {
+                agent: id.clone(),
+                pid: Some(pane.pid),
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        if self.persist("pane start", |store| store.agent_transition(&agent, &event))
+            != Persisted::Committed
+        {
+            return self
+                .write_failure()
+                .expect("refused pane start has a reason");
+        }
+        *self.registry.get_mut(id).expect("pane identity retained") = agent.clone();
+        self.next_seq += 1;
+        let _ = self.events.send(event);
+        Response::Agent { agent }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pane_start_refusal_preserves_record_and_publishes_nothing() {
+        for fenced in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let daemon = Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap();
+            let mut state = lock(&daemon.state);
+            let before = AgentRecord::new(
+                AgentSpec {
+                    name: "pane-test".into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            assert!(matches!(
+                state.insert_record_announcing(before.clone(), false),
+                Response::Agent { .. }
+            ));
+            if fenced {
+                state.offer_transfer(1).unwrap();
+            } else {
+                state.store.reject_event_for_test("agent_started");
+            }
+            let mut events = state.events.subscribe();
+            let seq = state.next_seq;
+            let pane = tmux::Pane {
+                id: "%42".into(),
+                session: "owned-pane".into(),
+                pid: 42,
+            };
+            assert!(matches!(
+                state.commit_pane_start(&before.id, &pane, Some(Utc::now())),
+                Response::Error { .. }
+            ));
+            assert_eq!(
+                serde_json::to_value(state.registry.get(&before.id).unwrap()).unwrap(),
+                serde_json::to_value(&before).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&state.store.load_agents().unwrap()[0]).unwrap(),
+                serde_json::to_value(&before).unwrap()
+            );
+            assert_eq!(state.next_seq, seq);
+            assert!(events.try_recv().is_err());
         }
     }
 }

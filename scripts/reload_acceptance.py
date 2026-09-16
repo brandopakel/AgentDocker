@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -37,7 +38,21 @@ def build_info(agentd):
     return json.loads(subprocess.check_output([str(agentd), "--build-info"], text=True))
 
 
-def cleanup(result, sock, daemon, log, provider_process, controller_process, observed_launched):
+def process_identity(pid):
+    """Match a known trial process before any fallback signal, including its
+    birth, command (with private paths), and process group; a PID alone is not ownership."""
+    status = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "lstart=", "-o", "command="],
+                            capture_output=True, text=True, check=False)
+    if status.returncode != 0 or not status.stdout.strip():
+        return None
+    try:
+        return {"description": status.stdout.strip(), "pgid": os.getpgid(pid)}
+    except ProcessLookupError:
+        return None
+
+
+def cleanup(result, sock, daemon, log, provider_process, controller_process, observed_launched,
+            tracked_daemons=None):
     """End everything the trial started, each step whatever the one before
     it did, and say what went wrong: a survivor or a cleanup failure fails
     the trial rather than the trial passing over it."""
@@ -51,12 +66,35 @@ def cleanup(result, sock, daemon, log, provider_process, controller_process, obs
 
     def shutdown():
         try:
-            rpc(sock, {"op": "shutdown"})
+            response = rpc(sock, {"op": "shutdown"})
+            if response.get("type") != "ok":
+                raise RuntimeError(f"shutdown refused: {response}")
         except OSError:
             pass
         deadline = time.monotonic() + 15
         while sock.exists() and time.monotonic() < deadline:
             time.sleep(.05)
+
+    def end_successor(pid, identity):
+        # Successors start their own sessions. If the socket never answers
+        # shutdown, retire only a process captured while this trial owned it.
+        current = process_identity(pid)
+        if pid == daemon.pid or current is None or current != identity:
+            return
+        if identity is None or identity["pgid"] != pid:
+            raise RuntimeError(f"daemon {pid} has no owned process group")
+        for sig, within in [(signal.SIGTERM, 3), (signal.SIGKILL, 3)]:
+            if process_identity(pid) != identity:
+                break
+            try:
+                os.killpg(pid, sig)
+            except ProcessLookupError:
+                break
+            deadline = time.monotonic() + within
+            while process_identity(pid) == identity and time.monotonic() < deadline:
+                time.sleep(.05)
+        if process_identity(pid) == identity:
+            raise RuntimeError(f"successor {pid} survived fallback termination")
 
     def end_daemon():
         if daemon.poll() is None:
@@ -65,6 +103,8 @@ def cleanup(result, sock, daemon, log, provider_process, controller_process, obs
 
     attempt("shutdown", shutdown)
     attempt("daemon", end_daemon)
+    for pid, identity in (tracked_daemons or {}).items():
+        attempt(f"successor {pid}", lambda pid=pid, identity=identity: end_successor(pid, identity))
     attempt("log", log.close)
     survivors = []
 
@@ -83,6 +123,8 @@ def cleanup(result, sock, daemon, log, provider_process, controller_process, obs
     seen = set(result.get("daemon_pids", []))
     seen.update(observed_launched)
     for pid in sorted(seen):
+        if tracked_daemons and pid in tracked_daemons and process_identity(pid) != tracked_daemons[pid]:
+            continue
         try:
             os.kill(pid, 0)
         except (ProcessLookupError, PermissionError):
@@ -127,7 +169,9 @@ def trial(args):
         provider_process = None
         controller_process = None
         observed_launched = set()
+        tracked_daemons = {}
         try:
+            tracked_daemons[daemon.pid] = process_identity(daemon.pid)
             deadline = time.monotonic() + 15
             while True:
                 try:
@@ -267,6 +311,9 @@ def trial(args):
                 timings.append(round(time.monotonic() - started, 3))
                 assert p.returncode == 0, f"reload {i + 1}: {p.stderr}"
                 pong = rpc(sock, {"op": "ping"})
+                if pong.get("type") == "pong":
+                    tracked_daemons[pong["pid"]] = process_identity(pong["pid"])
+                    assert tracked_daemons[pong["pid"]] is not None, "serving successor vanished"
                 assert pong["type"] == "pong" and pong["pid"] != pids[-1], pong
                 # The predecessor leaves once its successor serves; a
                 # daemon that stayed would be a second coordinator.
@@ -408,7 +455,7 @@ def trial(args):
             result["error"] = traceback.format_exc()
             result["passed"] = False
         finally:
-            cleanup(result, sock, daemon, log, provider_process, controller_process, observed_launched)
+            cleanup(result, sock, daemon, log, provider_process, controller_process, observed_launched, tracked_daemons)
             # Every warning or error any daemon in the chain logged, counted
             # by message with agent ids removed, so the record carries what
             # the daemons said and not only what the clients saw.

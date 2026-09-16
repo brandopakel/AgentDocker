@@ -398,15 +398,38 @@ impl Daemon {
             let project = self.project_for(Some(workdir.clone()), true).await;
             let vcs = Self::vcs_for(Some(workdir.clone())).await;
             let mut state = lock(&self.state);
-            if let Some(record) = state.registry.get_mut(&id) {
-                record.spec.workdir = Some(workdir);
+            if let Some(mut record) = state.registry.get(&id).cloned() {
+                record.spec.workdir = Some(workdir.clone());
                 record.project = project;
                 record.vcs = vcs;
-                let record = record.clone();
-                let _ = state.persist("agent", |store| store.upsert_agent(&record));
+                record.last_seen = Utc::now();
+                let mut event = Event::new(
+                    EventKind::HumanLocationChanged {
+                        agent: id.clone(),
+                        workdir,
+                        project: record.project.clone(),
+                        vcs: record.vcs.clone(),
+                    },
+                    Utc::now(),
+                );
+                event.seq = state.next_seq;
+                if state.persist("human location", |store| {
+                    store.agent_transition(&record, &event)
+                }) != Persisted::Committed
+                {
+                    return state
+                        .write_failure()
+                        .expect("refused human location has a reason");
+                }
+                *state.registry.get_mut(&id).expect("human retained") = record;
+                state.next_seq += 1;
+                let _ = state.events.send(event);
             }
         }
         let mut state = lock(&self.state);
+        if let Some(error) = state.storage_failure().or_else(|| state.transferring()) {
+            return error;
+        }
         state.registry.touch(&id, Utc::now());
         match state.registry.get(&id) {
             Some(record) => Response::Agent {
@@ -722,6 +745,51 @@ mod tests {
             panic!("registration failed")
         };
         agent
+    }
+
+    #[tokio::test]
+    async fn refused_human_move_preserves_location_and_heartbeat() {
+        for fenced in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let original = dir.path().join("original");
+            let moved = dir.path().join("moved");
+            std::fs::create_dir(&original).unwrap();
+            std::fs::create_dir(&moved).unwrap();
+            let daemon =
+                Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+            let Response::Agent { agent: before } = daemon.me(Some(original)).await else {
+                panic!("registration failed")
+            };
+            let (seq, mut events) = {
+                let mut state = lock(&daemon.state);
+                if fenced {
+                    state.offer_transfer(1).unwrap();
+                } else {
+                    state.store.reject_event_for_test("human_location_changed");
+                }
+                (state.next_seq, state.events.subscribe())
+            };
+            let result = daemon.me(Some(moved)).await;
+            assert!(matches!(result, Response::Error { .. }), "{result:?}");
+            let state = lock(&daemon.state);
+            assert_eq!(
+                serde_json::to_value(state.registry.get(&before.id).unwrap()).unwrap(),
+                serde_json::to_value(&before).unwrap()
+            );
+            let durable = state
+                .store
+                .load_agents()
+                .unwrap()
+                .into_iter()
+                .find(|a| a.id == before.id)
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(durable).unwrap(),
+                serde_json::to_value(&before).unwrap()
+            );
+            assert_eq!(state.next_seq, seq);
+            assert!(events.try_recv().is_err());
+        }
     }
 
     #[tokio::test]
