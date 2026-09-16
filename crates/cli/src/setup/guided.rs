@@ -453,6 +453,43 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
             prepare_codex_activity(&mut plan, roots, executable)?;
         }
     }
+    // Skills use the same private preview, mutation locks and undo snapshots
+    // as MCP/hooks. Append after those steps to preserve old receipt ordering.
+    for runtime in &inventory {
+        if (names.is_empty() && !runtime.installed())
+            || (!names.is_empty() && !names.contains(&runtime.name))
+        {
+            continue;
+        }
+        let Some(path) = crate::skill::path(&runtime.name, roots) else {
+            continue;
+        };
+        let before = read_config(&path)?;
+        let after = crate::skill::installed_document();
+        if before.as_deref() == Some(after.as_str()) {
+            continue;
+        }
+        // An identically named user-authored skill is not our configuration.
+        // Never replace it silently or make it ours merely because of its name.
+        if before
+            .as_deref()
+            .is_some_and(|text| !crate::skill::unmodified_install(text))
+        {
+            plan.notes.push(format!(
+                "{}: existing coordination skill preserved at {}; use `agentdocker skill` to compare",
+                runtime.label, path.display()
+            ));
+            continue;
+        }
+        plan.changes.push(Change {
+            runtime: runtime.name.clone(),
+            channel: "coordination skill".into(),
+            target: project::try_canonical(&path)?,
+            path,
+            before,
+            after,
+        });
+    }
     for step in &plan.delegated {
         plan.notes.push(format!(
             "{}: the {} registration is made by the provider's own tool, because {} is its live \
@@ -487,7 +524,7 @@ fn prepare_codex_activity(plan: &mut Plan, roots: &Roots, executable: &Path) -> 
             after: format!("{}\n", serde_json::to_string_pretty(&value)?),
         });
     }
-    plan.notes.push("Codex: hooks report activity and deliver queued messages after prompts/tools, with one Stop continuation. They require lifecycle-hook support and review/trust in /hooks. MCP supplies explicit inbox reads and coordination tools. Setup does not grant hook trust or prove model receipt.".into());
+    plan.notes.push("Codex: SessionStart starts the native input receiver when supported. Other hooks report activity and deliver queued messages after prompts/tools, with one Stop continuation. They require lifecycle-hook support and review/trust in /hooks. MCP supplies explicit inbox reads and coordination tools. Setup does not grant hook trust or prove model receipt.".into());
     Ok(())
 }
 
@@ -977,7 +1014,10 @@ path.write_text(json.dumps(value))
         // Whatever else the plan does, it does not write that file.
         assert!(!plan.changes.is_empty(), "the hooks are still planned");
         for change in &plan.changes {
-            assert_eq!(change.channel, "hooks");
+            assert!(matches!(
+                change.channel.as_str(),
+                "hooks" | "coordination skill"
+            ));
             assert_ne!(change.path, step.path);
         }
         // The reader sees it among the changes all the same, which is
@@ -1382,7 +1422,7 @@ path.write_text(json.dumps(value))
         roots.desktop_dirs.push(applications);
         assert!(selected_inventory(&roots, &[]).is_err());
         let plan = prepare(&roots, &["codex".into()], &std::env::current_exe().unwrap()).unwrap();
-        assert_eq!(plan.changes.len(), 2);
+        assert_eq!(plan.changes.len(), 3);
         assert_eq!(plan.changes[0].runtime, "codex");
         assert!(selected_inventory(&roots, &["unknown-provider".into()]).is_err());
     }
@@ -1425,7 +1465,7 @@ path.write_text(json.dumps(value))
         let executable = tmp.path().join("agentdocker");
         std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &executable).unwrap();
         let mut plan = prepare(&roots, &["codex".into()], &executable).unwrap();
-        assert_eq!(plan.changes.len(), 2);
+        assert_eq!(plan.changes.len(), 3);
         assert!(
             plan.changes
                 .iter()
@@ -1452,12 +1492,105 @@ path.write_text(json.dumps(value))
     }
 
     #[test]
+    fn skill_setup_is_previewed_profile_scoped_undoable_and_preserves_user_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut roots = roots(tmp.path());
+        roots.codex_home = Some(tmp.path().join("codex-profile"));
+        roots.claude_config_dir = Some(tmp.path().join("claude-profile"));
+        let executable = tmp.path().join("agentdocker");
+        std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &executable).unwrap();
+        let names = vec!["codex".into(), "claude-code".into(), "gemini-cli".into()];
+        let mut plan = prepare(&roots, &names, &executable).unwrap();
+        let skills: Vec<_> = plan
+            .changes
+            .iter()
+            .filter(|change| change.channel == "coordination skill")
+            .map(|change| change.path.clone())
+            .collect();
+        assert_eq!(skills.len(), 3);
+        assert!(skills.iter().all(|path| !path.exists()));
+        assert!(skills.contains(&tmp.path().join("codex-profile/skills/agentdocker/SKILL.md")));
+        assert!(
+            skills.contains(
+                &tmp.path()
+                    .join("claude-profile/skills/agentdocker/SKILL.md")
+            )
+        );
+        let directory = directory(&tmp.path().join("state")).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        for path in &skills {
+            assert_eq!(
+                std::fs::read_to_string(path).unwrap(),
+                crate::skill::installed_document()
+            );
+        }
+        assert!(
+            prepare(&roots, &names, &executable)
+                .unwrap()
+                .changes
+                .is_empty()
+        );
+        let edited = format!(
+            "{}\nUser customization\n",
+            crate::skill::installed_document()
+        );
+        std::fs::write(&skills[0], &edited).unwrap();
+        assert!(apply(&directory, &mut plan, true).is_err());
+        assert_eq!(std::fs::read_to_string(&skills[0]).unwrap(), edited);
+        let fresh = prepare(&roots, &names, &executable).unwrap();
+        assert!(
+            fresh.changes.is_empty(),
+            "a fresh plan also preserves the edit"
+        );
+        assert!(
+            fresh
+                .notes
+                .iter()
+                .any(|note| note.contains("existing coordination skill preserved"))
+        );
+        std::fs::write(&skills[0], crate::skill::installed_document()).unwrap();
+        apply(&directory, &mut plan, true).unwrap();
+        assert!(skills.iter().all(|path| !path.exists()));
+        assert!(!tmp.path().join(".codex").exists());
+        assert!(!tmp.path().join(".claude").exists());
+    }
+
+    #[test]
+    fn replacing_an_unedited_generated_skill_has_an_exact_undo() {
+        use sha2::{Digest, Sha256};
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let executable = tmp.path().join("agentdocker");
+        std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &executable).unwrap();
+        let path = crate::skill::path("codex", &roots).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body = "---\nname: agentdocker\ndescription: Previous coordination guidance\n---\nOld guidance.\n";
+        let old = format!(
+            "{body}<!-- agentdocker-source-sha256: {:x} -->\n",
+            Sha256::digest(body.as_bytes())
+        );
+        std::fs::write(&path, &old).unwrap();
+        let mut plan = prepare(&roots, &["codex".into()], &executable).unwrap();
+        let directory = directory(&tmp.path().join("state")).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            crate::skill::installed_document()
+        );
+        apply(&directory, &mut plan, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        std::fs::write(&path, "My independent skill\n").unwrap();
+        let fresh = prepare(&roots, &["codex".into()], &executable).unwrap();
+        assert!(!fresh.changes.iter().any(|change| change.path == path));
+    }
+
+    #[test]
     fn preview_is_read_only_and_public_view_never_contains_configuration_snapshots() {
         let tmp = tempfile::tempdir().unwrap();
         let config = old_codex(tmp.path());
         let before = std::fs::read(&config).unwrap();
         let prepared = plan(tmp.path(), &["codex", "claude-code"]);
-        assert_eq!(prepared.changes.len(), 3);
+        assert_eq!(prepared.changes.len(), 5);
         assert_eq!(std::fs::read(&config).unwrap(), before);
         assert!(!tmp.path().join(".claude").exists());
         assert!(!prepared.view().to_string().contains("PRIVATE-FIXTURE-ONLY"));

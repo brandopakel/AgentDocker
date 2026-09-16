@@ -98,7 +98,7 @@ struct ReturnedAnswer {
     text: String,
 }
 
-fn proof(
+pub(super) fn proof(
     origin: &Origin,
     thread: &str,
     turn: &str,
