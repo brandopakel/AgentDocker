@@ -288,6 +288,9 @@ def smoke(binary_dir, output):
                          step("fill", id=f"project-rename-{pinned}", text=""), step("click", id=f"project-rename-save-{pinned}"),
                          step("wait_control", id=f"project-rename-save-{pinned}", present=False), step("wait_text", text="pinned-api"),
                          step("click", id="launch-agent"), step("click", id="launch-tool-codex"),
+                         step("wait_text", text="Idle messages: On"), step("click", id="launch-idle-input"),
+                         step("wait_text", text="Idle messages: Off"),
+                         # This fake CLI is a terminal fixture, not a provider input server.
                          step("fill", id="launch-name", text="launched-from-iced"), step("click", id="confirm-launch"),
                          step("wait_text", text="Agent launched"), step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="launched-terminal"), step("click", id="detach-terminal"),

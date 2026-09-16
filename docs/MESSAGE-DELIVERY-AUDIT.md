@@ -6,6 +6,22 @@ It tracks partial implementation and the acceptance still needed for each provid
 
 Status on September 14, 2026: every pull request this log names (#103–#108, #115 and #119) is merged on `main`, so the per-checkpoint "final CI/source review remain" sentences below are historical. The opt-in Codex bridge (`--codex-input`) and Claude channel adapter (`--claude-channel`) are shipped, the MCP `ask_human` duplicate-input defect is fixed (`crates/cli/src/codex_input/mcp_answers.rs`), and the structured Iced approval/choice controls are merged. What is still open is the list in [REMAINING-WORK.md](REMAINING-WORK.md).
 
+## September 16: live Claude idle-wake gap reproduced
+
+The user reported the parallel Claude session idle at its prompt. In message
+`835523c328494b82`, Claude confirmed that twelve queued peer messages arrived
+only after a human `/btw` prompt. The running process lacked channel launch flags
+and its current registration had hooks/MCP contact but no input receiver evidence.
+This is a failed existing-session idle-wake trial, not verified provider delivery.
+It invalidates any blanket claim that every connected runtime already wakes.
+
+The current UI change defaults new Claude/Codex launches to **Idle messages: On**,
+retains provider consent, and exposes recipient readiness beside direct and thread
+composers. Unsupported tools disclose the missing automatic route at launch.
+It does not retrofit the live Claude process. Safe same-session reconnect with
+old queue/receipt/draft preservation, other providers' input adapters, and installed
+acceptance remain open. No live provider was restarted for this finding.
+
 ## Required behavior
 
 An agent-to-agent message must enter the same provider input workflow and queue

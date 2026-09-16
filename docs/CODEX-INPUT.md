@@ -111,7 +111,7 @@ pause, then verify their ordered consumption and receiver crash recovery.
 ## New managed conversations
 
 New Codex sessions can receive human and peer messages while idle. In New session,
-choose Codex and tick **Receive messages while idle (experimental)**, or run:
+choose Codex and keep the default **Idle messages: On**, or run:
 
 ```sh
 agentdocker run --runtime codex --codex-input --tty -- codex

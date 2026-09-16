@@ -697,6 +697,25 @@ impl App {
     }
 
     /// The composer under a conversation or a thread: the draft, its
+    /// Resolve only the person's direct recipient, never a broadcast or a
+    /// read-only conversation between two agents.
+    fn direct_input_recipient(&self, conversation: &str) -> Option<&AgentRecord> {
+        let conversation = agentdocker_core::ConversationId::from(conversation.to_owned());
+        let (one, other) = conversation.dm_parties()?;
+        let recipient = if self.is_human(one) {
+            other
+        } else if self.is_human(other) {
+            one
+        } else {
+            return None;
+        };
+        // Resolve retired IDs through the current alias map, just as sends do.
+        let recipient = self.canonical_agent(recipient);
+        self.agents
+            .iter()
+            .find(|agent| agent.id.as_str() == recipient)
+    }
+
     /// receipt or error, and Send. Enter sends.
     /// The composer of a conversation, or of a thread in it when `root` is
     /// given: each keeps its own draft, and only the thread's sets `reply_to`.
@@ -746,6 +765,24 @@ impl App {
         .spacing(4);
         if let Some(error) = draft.and_then(|d| d.error.as_ref()) {
             composer = composer.push(text(error.clone()).size(13).color(c.amber));
+        }
+        // Put the receiver state where a person is about to send, including
+        // thread replies. A working MCP/hook transport alone cannot wake it.
+        if let Some(agent) = self.direct_input_recipient(conversation) {
+            let status = self.input_readiness(agent);
+            composer = composer.push(
+                row![
+                    small(status, c).width(Fill),
+                    action(
+                        format!("input-connection-{key}"),
+                        "Connection",
+                        Some(Message::OpenConnection(agent.spec.runtime.clone())),
+                        false,
+                    )
+                ]
+                .spacing(6)
+                .align_y(Center),
+            );
         }
         composer.into()
     }
@@ -1045,6 +1082,39 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_input_status_uses_the_current_recipient_only() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, receiver) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, receiver);
+        let mut agent = AgentRecord::new(
+            AgentSpec {
+                runtime: "claude-code".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.id = "worker".into();
+        app.agents.push(agent);
+        app.aliases.insert("retired".into(), "worker".into());
+        for conversation in ["dm:user:worker", "dm:worker:user", "dm:retired:user"] {
+            assert_eq!(
+                app.direct_input_recipient(conversation)
+                    .unwrap()
+                    .id
+                    .as_str(),
+                "worker"
+            );
+        }
+        for conversation in ["dm:worker:peer", "channel:room", "all", "dm:user:missing"] {
+            assert!(
+                app.direct_input_recipient(conversation).is_none(),
+                "{conversation}"
+            );
+        }
+    }
 
     #[test]
     fn fallback_room_names_keep_unicode_boundaries() {
