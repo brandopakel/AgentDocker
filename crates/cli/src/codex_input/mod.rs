@@ -1,6 +1,7 @@
 //! One supervised Codex conversation, fed by the daemon's ordinary Send queue.
 mod config;
 mod daemon_io;
+pub mod external;
 mod file_changes;
 mod ledger;
 mod mcp_answers;

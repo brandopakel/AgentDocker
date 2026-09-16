@@ -30,6 +30,10 @@ pub struct Client {
 }
 
 impl Client {
+    pub fn socket_path(&self) -> &Path {
+        &self.socket
+    }
+
     pub fn new(socket: Option<PathBuf>) -> Self {
         let socket = socket.unwrap_or_else(|| dirs::socket_path(&dirs::home()));
         let disabled = std::env::var_os("AGENTDOCKER_TOKEN_FILE").is_some()
