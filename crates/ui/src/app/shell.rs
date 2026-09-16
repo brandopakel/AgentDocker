@@ -207,6 +207,10 @@ pub enum Message {
     MessagesSearch(String),
     ToggleCollisions,
     ToggleEarlier,
+    /// The page of the conversation's archive before what is shown.
+    EarlierHistory(String),
+    /// Unfold or fold one archived message's full text.
+    ExpandArchived(MessageId),
     /// Back from a conversation to the list, in a narrow window.
     InboxList,
     /// Send the agent's draft to everyone in its project as well.
@@ -307,9 +311,9 @@ impl App {
             .iter()
             .filter(|c| c.kind == agentdocker_core::ConversationKind::Dm)
             .find(|c| {
-                c.conversation
-                    .dm_parties()
-                    .is_some_and(|(a, b)| a == agent || b == agent)
+                c.conversation.dm_parties().is_some_and(|(a, b)| {
+                    (a == agent && self.is_human(b)) || (b == agent && self.is_human(a))
+                })
             })
             .map(|c| c.conversation.as_str().to_owned());
         let conversation = listed.unwrap_or_else(|| {
@@ -672,20 +676,43 @@ impl App {
                         Some("Finish or clear an earlier message draft first.".into());
                 }
             }
-            Message::SendConversation(id) => {
-                let to = self.conversation_destination(&id);
+            Message::SendConversation(key) => {
+                // The key says where the words were typed: the conversation's
+                // own composer, or a thread's, which alone sets `reply_to`.
+                let (conversation, reply_to) = super::split_draft_key(&key);
+                let conversation = conversation.to_owned();
+                let to = self.conversation_destination(&conversation);
                 if self.connected.is_ok()
                     && let Some(to) = to
-                    && let Some(draft) = self.shell.conversation_drafts.get_mut(&id)
+                    && let Some(draft) = self.shell.conversation_drafts.get_mut(&key)
                     && let Some(text) = draft.begin()
                 {
-                    let reply_to = self.shell.thread.clone();
                     self.send(Cmd::ConversationSend {
-                        conversation: id,
+                        draft: key,
                         to,
                         text,
                         reply_to,
                     });
+                }
+            }
+            Message::EarlierHistory(conversation) => {
+                if self.connected.is_ok()
+                    && let Some(first) = self
+                        .history
+                        .get(&conversation)
+                        .and_then(|messages| messages.first())
+                {
+                    self.send(Cmd::HistoryBefore(conversation.clone(), first.seq));
+                }
+            }
+            Message::ExpandArchived(id) => {
+                let archived = self.history.values().flatten().any(|m| m.envelope.id == id)
+                    || self.thread.as_ref().is_some_and(|(root, replies)| {
+                        root.envelope.id == id || replies.iter().any(|m| m.envelope.id == id)
+                    });
+                if archived {
+                    self.shell.message_detail =
+                        (self.shell.message_detail.as_ref() != Some(&id)).then_some(id);
                 }
             }
             Message::OpenThread(root) => {

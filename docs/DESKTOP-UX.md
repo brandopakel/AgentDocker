@@ -89,26 +89,33 @@ narrow window Messages and Inbox show either the conversation list or one
 conversation; choosing one, a notification, or the next question opens that
 conversation, and **Conversations** returns to the list.
 
-**Messages** is what the Inbox item opens against a daemon that keeps
-conversations (schema 21 and later); an older daemon still gets the inbox
-below. It is shaped like a chat workspace. The sidebar lists **Channels**
-(`#everyone` for the selected project, `#all`, and named channels), collision
-rooms behind **Collisions**, **Direct messages** with a presence dot for a
-live session, and **AgentDocker** notices per agent; a search box filters by
-name. Ended sessions' conversations sit behind **Earlier (n)**. Each row shows
-the latest line and its unread count; the rail badge is the sum. The pane
-shows the conversation's archive, newest last, with day dividers and a **New**
-divider before the unread part; a question keeps its card (Answer, Allow,
-Deny) in place; other kinds of message carry a small kind pill. Opening a
-conversation marks it read, which acknowledges those rows for you and nothing
-an agent still owns. **Reply in thread** under a message opens its thread on
-the right (or in place when narrow), and replies there are sent with
-`reply_to`. The composer is always under the open conversation: it sends to
-the channel, to the project (`#everyone`), to every agent (`#all`) or to that
-agent; it reads **This session has ended** for a direct conversation whose
-agent is gone and has nothing to send for notices. Drafts survive navigation,
-a failed request and disconnection. A notification opens the message's
-conversation even after it has been read.
+**Messages** is what the rail item (named Messages then, Inbox otherwise)
+opens against a daemon that keeps conversations (schema 21 and later); an
+older daemon still gets the inbox below. It is shaped like a chat workspace.
+The sidebar lists **Channels** (`#everyone` for the selected project, `#all`,
+and named channels), collision rooms behind **Collisions**, **Direct
+messages** with a presence dot for a live session (a conversation between two
+agents reads `A ↔ B`), and **AgentDocker → agent** notices per agent; a
+search box filters by name. Ended sessions' conversations sit behind
+**Earlier (n)**. Each row shows the latest line and its unread count; the rail
+badge is the sum. The pane shows the newest 200 archived messages, newest
+last, with **Show earlier messages** at the top until the first is on view,
+day dividers and a **New** divider before the unread part; a question keeps
+its card (Answer, Allow, Deny) in place; other kinds of message carry a small
+kind pill; long ones fold behind **Show more**. Opening a conversation marks
+it read, which acknowledges those rows for you and nothing an agent still
+owns; in a narrow window only the conversation on view is read, never the
+list shown instead of it. **Reply** (or *n replies*) under a message opens
+its thread beside the conversation, or in place of it when narrow with
+**‹ Conversation** to return; the thread is read whole. The thread has a
+composer of its own with its own draft, and only it sends with `reply_to`;
+the conversation's composer stays under the conversation and never becomes a
+reply. It sends to the channel, to the project (`#everyone`), to every agent
+(`#all`) or to that agent; it reads **This session has ended** for a direct
+conversation whose agent is gone, says so for one between two agents, and has
+nothing to send for notices. Drafts survive navigation, a failed request and
+disconnection. A notification opens the message's conversation even after it
+has been read.
 
 Inbox reads like a messenger. The left column lists one conversation per agent
 with its mark, the latest line and how many items wait; **Everyone** shows all

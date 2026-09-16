@@ -307,6 +307,15 @@ def smoke(binary_dir, output):
                 narrow_steps += [step("wait_control", id=f"reply-{narrow['id']}", present=True), step("wait_control", id="thread-back", present=True),
                                  step("wait_control", id=f"thread-{agent['id']}", present=False), step("wait_text", text="NARROW ROUTE TARGET"),
                                  step("capture", name="narrow-notification-route"),
+                                 # A thread takes the narrow window with its own composer and
+                                 # its own draft; closing it returns to the conversation.
+                                 step("click", id=f"thread-{routed}"), step("wait_control", id="close-thread", present=True),
+                                 step("wait_control", id=f"reply-thread-{routed}", present=True),
+                                 step("wait_control", id=f"reply-{narrow['id']}", present=False),
+                                 step("fill", id=f"reply-thread-{routed}", text="Only in the thread"),
+                                 step("capture", name="narrow-thread"),
+                                 step("click", id="close-thread"), step("wait_control", id=f"reply-{narrow['id']}", present=True),
+                                 step("wait_control", id=f"reply-thread-{routed}", present=False),
                                  step("click", id="thread-back"), step("click", id=f"thread-{agent['id']}"),
                                  step("wait_text", text="Keep this narrow draft"), step("capture", name="narrow-draft-kept")]
                 def forward_route(name, gate):

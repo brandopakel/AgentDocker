@@ -9,7 +9,9 @@ use super::*;
 use crate::controls::{Kind, button as action, custom, input_enabled, primary};
 use agentdocker_core::conversation::line_of;
 use agentdocker_core::journal::ago;
-use agentdocker_core::{AgentId, ArchivedMessage, ConversationKind, ConversationSummary};
+use agentdocker_core::{
+    AgentId, ArchivedMessage, ConversationKind, ConversationSummary, MessageId,
+};
 use iced::{
     Center, Element, Fill,
     widget::{Space, column, container, row, scrollable, text},
@@ -31,18 +33,25 @@ impl App {
         self.conversations.iter().map(|c| c.unread).sum()
     }
 
-    fn is_human(&self, id: &str) -> bool {
-        id == agentdocker_core::HUMAN
-            || self
-                .agents
-                .iter()
-                .any(|a| a.id.as_str() == id && a.spec.runtime == "human")
-    }
-
-    /// The other party of a direct conversation, from where the person sits.
+    /// The other party of a direct conversation the person is in; none for
+    /// one between two agents, which is read here and written by neither
+    /// side of this window.
     fn counterpart<'a>(&self, summary: &'a ConversationSummary) -> Option<&'a str> {
         let (a, b) = summary.conversation.dm_parties()?;
-        Some(if self.is_human(a) { b } else { a })
+        if self.is_human(a) {
+            Some(b)
+        } else if self.is_human(b) {
+            Some(a)
+        } else {
+            None
+        }
+    }
+
+    /// Both parties of a direct conversation, named, for one the person is
+    /// not in.
+    fn parties(&self, summary: &ConversationSummary) -> Option<(String, String)> {
+        let (a, b) = summary.conversation.dm_parties()?;
+        Some((self.name_of(a), self.name_of(b)))
     }
 
     fn agent_live(&self, id: &str) -> bool {
@@ -63,11 +72,19 @@ impl App {
                 None => summary.title.clone(),
             },
             ConversationKind::Collision => summary.title.clone(),
-            ConversationKind::Dm => self
-                .counterpart(summary)
-                .map(|id| self.name_of(id))
-                .unwrap_or_else(|| summary.title.clone()),
-            ConversationKind::Notices => "AgentDocker".to_owned(),
+            ConversationKind::Dm => match self.counterpart(summary) {
+                Some(id) => self.name_of(id),
+                None => match self.parties(summary) {
+                    Some((a, b)) => format!("{a} ↔ {b}"),
+                    None => summary.title.clone(),
+                },
+            },
+            // Each agent's notices are its own conversation: say whose.
+            ConversationKind::Notices => summary
+                .conversation
+                .notices_agent()
+                .map(|agent| format!("AgentDocker → {}", self.name_of(agent.as_str())))
+                .unwrap_or_else(|| "AgentDocker".to_owned()),
         }
     }
 
@@ -138,6 +155,21 @@ impl App {
         let pane = self.messages_pane(c);
         if narrow {
             if self.shell.inbox_open && self.shell.conversation.is_some() {
+                // A thread takes the whole window too, with its own way back.
+                if self.shell.thread.is_some() {
+                    let back = custom(
+                        "close-thread",
+                        "Back to the conversation",
+                        row![text("‹ Conversation").size(14)],
+                        Some(Message::CloseThread),
+                        false,
+                        Kind::Quiet,
+                        [8, 10],
+                    );
+                    return column![back, container(self.thread_pane(c)).height(height)]
+                        .spacing(12)
+                        .into();
+                }
                 let back = custom(
                     "thread-back",
                     "Conversations",
@@ -522,7 +554,7 @@ impl App {
             body = body.push(action(
                 format!("message-detail-{id}"),
                 if expanded { "Show less" } else { "Show more" },
-                Some(Message::QuestionDetails(id.clone())),
+                Some(Message::ExpandArchived(id.clone())),
                 false,
             ));
         }
@@ -530,7 +562,7 @@ impl App {
             let replies = message.replies;
             let open = self.shell.thread.as_ref() == Some(&id);
             let label = match replies {
-                0 => "Reply in thread".to_owned(),
+                0 => "Reply".to_owned(),
                 1 => "1 reply".to_owned(),
                 n => format!("{n} replies"),
             };
@@ -565,26 +597,33 @@ impl App {
 
     /// The composer under a conversation or a thread: the draft, its
     /// receipt or error, and Send. Enter sends.
+    /// The composer of a conversation, or of a thread in it when `root` is
+    /// given: each keeps its own draft, and only the thread's sets `reply_to`.
     fn composer(
         &self,
         conversation: &str,
+        root: Option<&MessageId>,
         placeholder: String,
         can_send: bool,
         c: Colors,
     ) -> Element<'_, Message> {
-        let draft = self.shell.conversation_drafts.get(conversation);
+        let key = super::draft_key(conversation, root);
+        let draft = self.shell.conversation_drafts.get(&key);
         let text_now = draft.map(|d| d.text.clone()).unwrap_or_default();
         let sending = draft.is_some_and(|d| d.sending.is_some());
         let ready = can_send && self.connected.is_ok() && !sending && !text_now.trim().is_empty();
-        let owner = conversation.to_owned();
-        let submit = ready.then(|| Message::SendConversation(conversation.to_owned()));
+        let owner = key.clone();
+        let submit = ready.then(|| Message::SendConversation(key.clone()));
         // A direct conversation's composer keeps the inbox's `reply-<agent>`
         // id, so what drove the inbox drives it.
-        let input_id = agentdocker_core::ConversationId::from(conversation.to_owned())
-            .dm_parties()
-            .map(|(a, b)| if self.is_human(a) { b } else { a })
-            .map(|agent| format!("reply-{agent}"))
-            .unwrap_or_else(|| format!("compose-{conversation}"));
+        let input_id = match root {
+            Some(root) => format!("reply-thread-{root}"),
+            None => agentdocker_core::ConversationId::from(conversation.to_owned())
+                .dm_parties()
+                .map(|(a, b)| if self.is_human(a) { b } else { a })
+                .map(|agent| format!("reply-{agent}"))
+                .unwrap_or_else(|| format!("compose-{conversation}")),
+        };
         let mut composer = column![
             row![
                 input_enabled(
@@ -595,7 +634,7 @@ impl App {
                     can_send && !sending,
                 ),
                 primary(
-                    format!("send-{conversation}"),
+                    format!("send-{key}"),
                     if sending { "Sending…" } else { "Send" },
                     submit,
                 )
@@ -641,17 +680,19 @@ impl App {
                 summary.members.len(),
                 if summary.members.len() == 1 { "" } else { "s" }
             ),
-            ConversationKind::Dm => {
-                let live = self
-                    .counterpart(&summary)
-                    .is_some_and(|id| self.agent_live(id));
-                if live {
-                    "direct message".to_owned()
-                } else {
-                    "direct message · this session has ended".to_owned()
-                }
-            }
-            ConversationKind::Notices => "what AgentDocker told this agent".to_owned(),
+            ConversationKind::Dm => match self.counterpart(&summary) {
+                Some(id) if self.agent_live(id) => "direct message".to_owned(),
+                Some(_) => "direct message · this session has ended".to_owned(),
+                None => "between two agents · read only".to_owned(),
+            },
+            ConversationKind::Notices => format!(
+                "what AgentDocker told {}",
+                summary
+                    .conversation
+                    .notices_agent()
+                    .map(|a| self.name_of(a.as_str()))
+                    .unwrap_or_else(|| "this agent".to_owned())
+            ),
         };
         header = header.push(small(subtitle, c));
         header = header.push(Space::new().width(Fill));
@@ -669,6 +710,20 @@ impl App {
 
         let history = self.history.get(&key);
         let mut list = column![].spacing(2).width(Fill);
+        if history.is_some_and(|m| !m.is_empty()) && !self.history_complete.contains(&key) {
+            list = list.push(
+                container(custom(
+                    format!("earlier-{key}"),
+                    "Show earlier messages",
+                    text("Show earlier messages").size(12).color(c.accent),
+                    Some(Message::EarlierHistory(key.clone())),
+                    false,
+                    Kind::Quiet,
+                    [4, 8],
+                ))
+                .center_x(Fill),
+            );
+        }
         match history {
             None => list = list.push(note("Loading…", c)),
             Some(messages) if messages.is_empty() => {
@@ -739,15 +794,15 @@ impl App {
             };
         let placeholder = match summary.kind {
             ConversationKind::Notices => "AgentDocker's notices; nothing to reply to".to_owned(),
+            ConversationKind::Dm if destination.is_none() => {
+                "A conversation between two agents; you are not in it".to_owned()
+            }
             ConversationKind::Dm if !can_send => "This session has ended".to_owned(),
             _ => format!("Message {label}"),
         };
-        let composer = if self.shell.thread.is_some() && !self.narrow() {
-            // The thread beside has the composer; the pane says so.
-            column![small("Replying in the thread on the right.", c)].into()
-        } else {
-            self.composer(&key, placeholder, can_send, c)
-        };
+        // The conversation's own composer, whatever thread is open beside
+        // it: the thread has one of its own.
+        let composer = self.composer(&key, None, placeholder, can_send, c);
         column![
             header,
             rule(c),
@@ -776,15 +831,23 @@ impl App {
         let Some(root_id) = self.shell.thread.as_ref() else {
             return Space::new().into();
         };
-        let header = row![
+        let mut header = row![
             text("Thread")
                 .size(15)
                 .font(weight(iced::font::Weight::Semibold))
                 .width(Fill),
-            action("close-thread", "Close", Some(Message::CloseThread), false)
         ]
         .spacing(8)
         .align_y(Center);
+        // Narrow, the way back above the pane closes it; one control, one id.
+        if !self.narrow() {
+            header = header.push(action(
+                "close-thread",
+                "Close",
+                Some(Message::CloseThread),
+                false,
+            ));
+        }
         let mut list = column![].spacing(4).width(Fill);
         match &self.thread {
             Some((root, replies)) if root.envelope.id == *root_id => {
@@ -816,14 +879,19 @@ impl App {
                 .height(Fill)
                 .padding([6, 0]),
             rule(c),
-            container(self.composer(&key, "Reply in thread".to_owned(), can_send, c)).padding(
-                iced::Padding {
-                    top: 8.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                    left: 0.0
-                }
-            ),
+            container(self.composer(
+                &key,
+                Some(root_id),
+                "Reply in thread".to_owned(),
+                can_send,
+                c
+            ))
+            .padding(iced::Padding {
+                top: 8.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 0.0
+            }),
         ]
         .spacing(6)
         .height(Fill)

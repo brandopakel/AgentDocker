@@ -802,12 +802,22 @@ impl App {
         ));
         nav = nav.push(self.nav_item(
             "inbox",
-            "Inbox",
+            if self.has_conversations() {
+                "Messages"
+            } else {
+                "Inbox"
+            },
             Icon::Inbox,
             {
+                // With conversations the badge is their unread count, the
+                // one number the screen itself shows per conversation.
                 let now = Utc::now();
-                let waiting = self.questions.iter().filter(|q| !q.expired(now)).count()
-                    + self.direct_messages().len();
+                let waiting = if self.has_conversations() {
+                    self.unread_total() as usize
+                } else {
+                    self.questions.iter().filter(|q| !q.expired(now)).count()
+                        + self.direct_messages().len()
+                };
                 (waiting > 0).then(|| waiting.to_string())
             },
             Message::Navigate(Screen::Questions),

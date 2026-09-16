@@ -35,6 +35,10 @@ const REFRESH: Duration = Duration::from_secs(2);
 /// How often the runtime inventory is re-read (it asks each CLI).
 const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
 const JOURNAL_WINDOW: usize = 200;
+/// One page of a conversation's archive, and of a thread's replies.
+const HISTORY_PAGE: usize = 200;
+/// The most replies one thread is read to, the archive's own cap.
+const THREAD_CAP: usize = 5_000;
 const CONSOLE_BYTES: usize = 256 * 1024;
 const MESSAGE_CAPACITY: usize = 64;
 const SENT_CHANNEL_LIMIT: usize = 128;
@@ -108,16 +112,20 @@ enum Cmd {
     ProjectSend(String, String, String),
     /// The person's conversations, in one project (a selector) or everywhere.
     Conversations(Option<String>),
-    /// The archived history of one conversation.
+    /// The newest page of one conversation's archive.
     History(String),
-    /// One root and its replies.
+    /// The page of a conversation's archive before an archive seq.
+    HistoryBefore(String, u64),
+    /// One root and every reply, paged through by the worker.
     Thread(MessageId),
     /// The person read a conversation through an archive seq.
     MarkRead(String, u64),
-    /// Text from the person into a conversation: `to` is the destination
-    /// the conversation stands for, `reply_to` a thread root.
+    /// Text from the person into a conversation: `draft` is the composer it
+    /// came from (the conversation, or `<conversation>#<root>` in a thread,
+    /// which is where the receipt goes), `to` the destination the
+    /// conversation stands for, `reply_to` the thread root.
     ConversationSend {
-        conversation: String,
+        draft: String,
         to: String,
         text: String,
         reply_to: Option<MessageId>,
@@ -218,10 +226,13 @@ enum Msg {
     /// `Err` when the daemon does not know conversations at all.
     Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
     History(String, Vec<agentdocker_core::ArchivedMessage>),
+    /// An earlier page, complete when it is shorter than a page.
+    HistoryEarlier(String, Vec<agentdocker_core::ArchivedMessage>),
     Thread(
         agentdocker_core::ArchivedMessage,
         Vec<agentdocker_core::ArchivedMessage>,
     ),
+    /// The draft the words came from, and the receipt or error.
     ConversationSent(String, Result<MessageId, String>),
 }
 
@@ -278,6 +289,8 @@ pub struct App {
     conversations_supported: Option<bool>,
     /// Archived history per conversation, oldest first, as last fetched.
     history: BTreeMap<String, Vec<agentdocker_core::ArchivedMessage>>,
+    /// Conversations whose earliest archived message is on view.
+    history_complete: BTreeSet<String>,
     /// The open thread: its root and replies.
     thread: Option<(
         agentdocker_core::ArchivedMessage,
@@ -389,6 +402,7 @@ impl App {
             conversations: Vec::new(),
             conversations_supported: None,
             history: BTreeMap::new(),
+            history_complete: BTreeSet::new(),
             thread: None,
             sent_channels: Default::default(),
             smoke: None,
@@ -447,6 +461,7 @@ impl App {
             conversations: Vec::new(),
             conversations_supported: None,
             history: BTreeMap::new(),
+            history_complete: BTreeSet::new(),
             thread: None,
             sent_channels: Default::default(),
             smoke: None,
@@ -809,8 +824,10 @@ impl App {
                 },
                 Msg::History(conversation, messages) => {
                     let open = self.shell.conversation.as_deref() == Some(conversation.as_str());
+                    // Reading is seeing: only the pane on view marks read, never
+                    // the list a narrow window shows instead of it.
                     if open
-                        && self.screen == Screen::Questions
+                        && self.conversation_pane_visible()
                         && let Some(last) = messages.last()
                         && self
                             .conversations
@@ -819,7 +836,19 @@ impl App {
                     {
                         self.send(Cmd::MarkRead(conversation.clone(), last.seq));
                     }
-                    self.history.insert(conversation, messages);
+                    if messages.len() < HISTORY_PAGE {
+                        self.history_complete.insert(conversation.clone());
+                    }
+                    // Earlier pages already shown stay in front of the newest.
+                    let mut merged: Vec<_> = self
+                        .history
+                        .remove(&conversation)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|m| messages.first().is_none_or(|first| m.seq < first.seq))
+                        .collect();
+                    merged.extend(messages);
+                    self.history.insert(conversation, merged);
                     while self.history.len() > 32
                         && let Some(oldest) = self
                             .history
@@ -830,21 +859,32 @@ impl App {
                         self.history.remove(&oldest);
                     }
                 }
+                Msg::HistoryEarlier(conversation, earlier) => {
+                    if earlier.len() < HISTORY_PAGE {
+                        self.history_complete.insert(conversation.clone());
+                    }
+                    let shown = self.history.entry(conversation).or_default();
+                    let first = shown.first().map(|m| m.seq);
+                    let mut merged: Vec<_> = earlier
+                        .into_iter()
+                        .filter(|m| first.is_none_or(|f| m.seq < f))
+                        .collect();
+                    merged.append(shown);
+                    *shown = merged;
+                }
                 Msg::Thread(root, replies) => {
                     if self.shell.thread.as_ref() == Some(&root.envelope.id) {
                         self.thread = Some((root, replies));
                     }
                 }
-                Msg::ConversationSent(conversation, result) => {
-                    let draft = self
-                        .shell
-                        .conversation_drafts
-                        .entry(conversation.clone())
-                        .or_default();
+                Msg::ConversationSent(key, result) => {
+                    let (conversation, _) = split_draft_key(&key);
+                    let conversation = conversation.to_owned();
+                    let draft = self.shell.conversation_drafts.entry(key).or_default();
                     match result {
                         Ok(_) => {
                             draft.complete(Ok(()));
-                            self.send(Cmd::History(conversation.clone()));
+                            self.send(Cmd::History(conversation));
                             if let Some(root) = self.shell.thread.clone() {
                                 self.send(Cmd::Thread(root));
                             }
@@ -1182,6 +1222,22 @@ impl App {
             .map(|entry| entry.project.dir().display().to_string())
     }
 
+    /// Whether the open conversation's pane is on the screen: the Messages
+    /// screen, and in a narrow window the conversation rather than the list.
+    pub(crate) fn conversation_pane_visible(&self) -> bool {
+        self.screen == Screen::Questions
+            && self.shell.conversation.is_some()
+            && (!self.narrow() || self.shell.inbox_open)
+    }
+
+    pub(crate) fn is_human(&self, id: &str) -> bool {
+        id == agentdocker_core::HUMAN
+            || self
+                .agents
+                .iter()
+                .any(|a| a.id.as_str() == id && a.spec.runtime == agentdocker_core::HUMAN_RUNTIME)
+    }
+
     /// Where a message typed into a conversation goes: the destination the
     /// conversation stands for, or none for the daemon's own notices.
     pub(crate) fn conversation_destination(&self, conversation: &str) -> Option<String> {
@@ -1195,19 +1251,17 @@ impl App {
             ConversationKind::Channel | ConversationKind::Collision => {
                 id.channel_id().map(|c| format!("channel:{c}"))
             }
+            // Only a direct conversation the person is in can be written
+            // to; one between two agents is theirs to read here.
             ConversationKind::Dm => {
-                let human = self
-                    .agents
-                    .iter()
-                    .find(|a| a.spec.runtime == "human")
-                    .map(|a| a.id.as_str().to_owned())
-                    .unwrap_or_else(|| agentdocker_core::HUMAN.to_owned());
                 let (a, b) = id.dm_parties()?;
-                Some(if a == human {
-                    b.to_owned()
+                if self.is_human(a) {
+                    Some(b.to_owned())
+                } else if self.is_human(b) {
+                    Some(a.to_owned())
                 } else {
-                    a.to_owned()
-                })
+                    None
+                }
             }
             ConversationKind::Notices => None,
         }
@@ -1305,7 +1359,22 @@ impl Drop for App {
     }
 }
 
-impl App {}
+/// A composer's draft key: the conversation, or `<conversation>#<root>`
+/// for the composer of a thread, so a thread never takes the words typed
+/// for the conversation itself.
+pub(crate) fn draft_key(conversation: &str, root: Option<&MessageId>) -> String {
+    match root {
+        Some(root) => format!("{conversation}#{root}"),
+        None => conversation.to_owned(),
+    }
+}
+
+pub(crate) fn split_draft_key(key: &str) -> (&str, Option<MessageId>) {
+    match key.split_once('#') {
+        Some((conversation, root)) => (conversation, Some(MessageId::from(root.to_owned()))),
+        None => (key, None),
+    }
+}
 
 /// Where the person running this window is working, if that can be
 /// said at all.
@@ -1767,19 +1836,42 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
         Cmd::History(conversation) => match client.call(&Request::History {
             conversation: agentdocker_core::ConversationId::from(conversation.clone()),
             before_seq: None,
-            limit: 200,
+            limit: HISTORY_PAGE,
         })? {
             Response::History { messages } => Some(Msg::History(conversation, messages)),
             _ => None,
         },
-        Cmd::Thread(message) => match client.call(&Request::Thread {
-            message,
-            after_seq: None,
-            limit: 200,
+        Cmd::HistoryBefore(conversation, before) => match client.call(&Request::History {
+            conversation: agentdocker_core::ConversationId::from(conversation.clone()),
+            before_seq: Some(before),
+            limit: HISTORY_PAGE,
         })? {
-            Response::Thread { root, replies } => Some(Msg::Thread(root, replies)),
+            Response::History { messages } => Some(Msg::HistoryEarlier(conversation, messages)),
             _ => None,
         },
+        Cmd::Thread(message) => {
+            // A thread is read whole: page after page until one is short,
+            // within the archive's own per-conversation cap.
+            let mut after_seq = None;
+            let mut replies = Vec::new();
+            let root = loop {
+                let (root, page) = match client.call(&Request::Thread {
+                    message: message.clone(),
+                    after_seq,
+                    limit: HISTORY_PAGE,
+                })? {
+                    Response::Thread { root, replies } => (root, replies),
+                    _ => return Ok(None),
+                };
+                let short = page.len() < HISTORY_PAGE;
+                after_seq = page.last().map(|m| m.seq);
+                replies.extend(page);
+                if short || replies.len() >= THREAD_CAP {
+                    break root;
+                }
+            };
+            Some(Msg::Thread(root, replies))
+        }
         Cmd::MarkRead(conversation, through) => {
             client.call(&Request::MarkRead {
                 conversation: agentdocker_core::ConversationId::from(conversation),
@@ -1789,7 +1881,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             None
         }
         Cmd::ConversationSend {
-            conversation,
+            draft,
             to,
             text,
             reply_to,
@@ -1805,7 +1897,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Response::Sent { message, .. } => Ok(message),
                 other => Err(format!("Unexpected send response: {other:?}")),
             };
-            Some(Msg::ConversationSent(conversation, result))
+            Some(Msg::ConversationSent(draft, result))
         }
         Cmd::SessionSend(agent, text) => {
             let response = client.call(&Request::Send {
@@ -3525,6 +3617,78 @@ mod tests {
         assert_eq!(app.display_name(&chosen_hex), "codex-cafe");
         assert_eq!(app.display_name(&chosen_pid_elsewhere), "codex-51242");
         assert_eq!(app.display_name(&chosen), "reviewer");
+    }
+
+    /// A thread's composer keeps its own draft and alone sets `reply_to`;
+    /// a conversation between two agents has no destination from here; the
+    /// pane on view is what marks read, never the list a narrow window
+    /// shows instead of it.
+    #[test]
+    fn a_thread_has_its_own_draft_and_a_peer_conversation_is_read_only() {
+        let (commands, requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        app.conversations_supported = Some(true);
+        let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
+        human.id = agentdocker_core::AgentId::from("human-id");
+        let mut agent = record("codex-1", "codex", Some(1));
+        agent.id = agentdocker_core::AgentId::from("agent-a");
+        let mut other = record("codex-2", "codex", Some(2));
+        other.id = agentdocker_core::AgentId::from("agent-b");
+        app.agents = vec![human, agent, other];
+        let own = agentdocker_core::ConversationId::dm("human-id", "agent-a");
+        let peers = agentdocker_core::ConversationId::dm("agent-a", "agent-b");
+        assert_eq!(
+            app.conversation_destination(own.as_str()).as_deref(),
+            Some("agent-a")
+        );
+        assert_eq!(app.conversation_destination(peers.as_str()), None);
+
+        let root = MessageId::from("root-1".to_owned());
+        let key = draft_key(own.as_str(), Some(&root));
+        assert_eq!(split_draft_key(&key), (own.as_str(), Some(root.clone())));
+        assert_eq!(split_draft_key(own.as_str()), (own.as_str(), None));
+        app.screen = Screen::Questions;
+        app.shell.conversation = Some(own.as_str().to_owned());
+        app.shell.thread = Some(root.clone());
+        let _ = app.update(Message::ConversationDraft(
+            own.as_str().to_owned(),
+            "for the conversation".into(),
+        ));
+        let _ = app.update(Message::ConversationDraft(
+            key.clone(),
+            "for the thread".into(),
+        ));
+        let _ = app.update(Message::SendConversation(key.clone()));
+        let sent = requests
+            .try_iter()
+            .find_map(|cmd| match cmd {
+                Cmd::ConversationSend {
+                    draft,
+                    to,
+                    text,
+                    reply_to,
+                } => Some((draft, to, text, reply_to)),
+                _ => None,
+            })
+            .expect("the thread's words are sent");
+        assert_eq!(sent.0, key);
+        assert_eq!(sent.1, "agent-a");
+        assert_eq!(sent.2, "for the thread");
+        assert_eq!(sent.3, Some(root));
+        assert_eq!(
+            app.shell.conversation_drafts[own.as_str()].text,
+            "for the conversation",
+            "the conversation's own draft is untouched"
+        );
+
+        // Narrow, list on view: nothing is marked read.
+        app.shell.width = 700.0;
+        app.shell.inbox_open = false;
+        assert!(!app.conversation_pane_visible());
+        app.shell.inbox_open = true;
+        assert!(app.conversation_pane_visible());
     }
 
     #[test]

@@ -134,8 +134,11 @@ system, which is drawn from the mark:
   On the Messages screen the sidebar rows are `thread-<agent>` for a direct
   conversation (the inbox's id, so the same smoke drives both) and
   `conversation-<id>` otherwise; the composer is `reply-<agent>` or
-  `compose-<conversation>`, thread links `thread-<message>`, the back control
-  `thread-back`. The screen takes an explicit height from the window (the
+  `compose-<conversation>`, a thread's `reply-thread-<message>` (its draft is
+  keyed `<conversation>#<message>`, apart from the conversation's), thread
+  links `thread-<message>`, the back controls `thread-back` (to the list) and
+  `close-thread` (the thread's one close, a header action when wide and the
+  way back when narrow, never both), earlier pages `earlier-<conversation>`. The screen takes an explicit height from the window (the
   window less the chrome, at least 320) because it sits inside the workspace's
   own scroll, where `Fill` has nothing to fill; `scripts/iced_workflow_smoke.py`
   asserts that reading a conversation acknowledges its rows and clears its
