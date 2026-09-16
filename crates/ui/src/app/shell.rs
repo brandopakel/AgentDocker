@@ -229,6 +229,8 @@ pub enum Message {
     ToggleCollisions,
     ToggleEarlier,
     TogglePeers,
+    /// A divider between the window's columns was dragged, in one grid.
+    PaneResized(super::panes::Grid, iced::widget::pane_grid::ResizeEvent),
     /// Every conversation the person owes a read is read through its head.
     MarkAllRead,
     /// Open or close the menu under a project row.
@@ -772,6 +774,12 @@ impl App {
             Message::ToggleCollisions => self.shell.collisions_open = !self.shell.collisions_open,
             Message::ToggleEarlier => self.shell.earlier_open = !self.shell.earlier_open,
             Message::TogglePeers => self.shell.peers_open = !self.shell.peers_open,
+            Message::PaneResized(grid, event) => {
+                if self.panes.resized(grid, event) {
+                    self.shell.catalog.panes = self.panes.widths;
+                    self.shell.changed();
+                }
+            }
             Message::MarkAllRead => {
                 if self.connected.is_ok() {
                     let heads: Vec<(String, u64)> = self
@@ -1511,6 +1519,11 @@ impl App {
                 move |result| Message::CatalogSaved(generation, result),
             ));
         }
+        // The thread column follows the thread, whichever message opened or
+        // closed it; the grid is checked here once rather than at each.
+        self.panes
+            .window_width(self.shell.width / self.scale_factor());
+        self.panes.sync_thread(self.shell.thread.is_some());
         tasks.push(crate::accessibility::collect());
         Task::batch(tasks)
     }

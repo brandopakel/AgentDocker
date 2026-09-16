@@ -3,8 +3,11 @@
 //! beside it. The shape people know from Slack and Discord, over the
 //! daemon's conversations: the archive is what is shown, the queues stay
 //! the agents' own.
+use super::panes::{Grid, Slot};
 use super::style::{Colors, weight};
-use super::view::{dot, empty, eyebrow, first_line, monogram, note, panel, pill, rule, small};
+use super::view::{
+    dot, empty, eyebrow, first_line, monogram, note, panel, pill, rule, small, split_style,
+};
 use super::*;
 use crate::controls::{Kind, button as action, custom, input_enabled, primary};
 use agentdocker_core::conversation::line_of;
@@ -16,10 +19,6 @@ use iced::{
     Center, Element, Fill,
     widget::{Space, column, container, row, scrollable, text},
 };
-
-/// The sidebar's width beside the pane, and the thread's.
-const SIDEBAR: f32 = 272.0;
-const THREAD: f32 = 340.0;
 
 impl App {
     /// Whether the daemon lists conversations, so this screen can be shown
@@ -200,11 +199,13 @@ impl App {
         (self.shell.height / self.scale_factor() - 250.0).max(320.0)
     }
 
+    pub(super) fn messages_compact(&self) -> bool {
+        self.narrow() || self.panes.compact_messages()
+    }
+
     pub(super) fn messages_view(&self, c: Colors) -> Element<'_, Message> {
-        let narrow = self.narrow();
+        let narrow = self.messages_compact();
         let height = self.workspace_height();
-        let sidebar = self.messages_sidebar(c);
-        let pane = self.messages_pane(c);
         if narrow {
             if self.shell.inbox_open && self.shell.conversation.is_some() {
                 // A thread takes the whole window too, with its own way back.
@@ -231,43 +232,55 @@ impl App {
                     Kind::Quiet,
                     [8, 10],
                 );
-                return column![back, container(pane).height(height)]
+                return column![back, container(self.messages_pane(c)).height(height)]
                     .spacing(12)
                     .into();
             }
-            return container(sidebar).height(height).into();
+            return container(self.messages_sidebar(c)).height(height).into();
         }
-        let mut layout = row![
-            container(sidebar).width(SIDEBAR).height(height),
-            container(Space::new().width(1).height(height)).style(move |_| c.rule()),
-            container(pane)
-                .width(Fill)
-                .height(height)
-                .padding(iced::Padding {
-                    top: 0.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                    left: 16.0,
-                }),
-        ]
-        .spacing(0)
+        // Wide: three columns with draggable dividers between them. The
+        // widths are the person's, kept in pixels and remembered across
+        // runs; the thread column comes and goes with the thread.
+        let grid = iced::widget::pane_grid(&self.panes.messages, |_, slot, _| {
+            // A hairline where a column begins, so the divider is seen at
+            // rest as well as when it is hovered.
+            let hairline =
+                || container(Space::new().width(1).height(height)).style(move |_| c.rule());
+            let body: Element<'_, Message> = match slot {
+                Slot::Sidebar => self.messages_sidebar(c),
+                Slot::Thread => row![
+                    hairline(),
+                    container(self.thread_pane(c))
+                        .width(Fill)
+                        .padding(iced::Padding {
+                            top: 0.0,
+                            right: 0.0,
+                            bottom: 0.0,
+                            left: 12.0,
+                        })
+                ]
+                .into(),
+                _ => row![
+                    hairline(),
+                    container(self.messages_pane(c))
+                        .width(Fill)
+                        .padding(iced::Padding {
+                            top: 0.0,
+                            right: 0.0,
+                            bottom: 0.0,
+                            left: 16.0,
+                        })
+                ]
+                .into(),
+            };
+            iced::widget::pane_grid::Content::new(
+                container(body).width(Fill).height(height).clip(true),
+            )
+        })
+        .on_resize(8, |event| Message::PaneResized(Grid::Messages, event))
+        .style(move |_| split_style(c))
         .height(height);
-        if self.shell.thread.is_some() {
-            layout = layout
-                .push(container(Space::new().width(1).height(height)).style(move |_| c.rule()));
-            layout = layout.push(
-                container(self.thread_pane(c))
-                    .width(THREAD)
-                    .height(height)
-                    .padding(iced::Padding {
-                        top: 0.0,
-                        right: 0.0,
-                        bottom: 0.0,
-                        left: 12.0,
-                    }),
-            );
-        }
-        layout.into()
+        grid.into()
     }
 
     /// One row of the sidebar: mark, label, the last line, the unread count.
@@ -1010,7 +1023,7 @@ impl App {
         .spacing(8)
         .align_y(Center);
         // Narrow, the way back above the pane closes it; one control, one id.
-        if !self.narrow() {
+        if !self.messages_compact() {
             header = header.push(action(
                 "close-thread",
                 "Close",
