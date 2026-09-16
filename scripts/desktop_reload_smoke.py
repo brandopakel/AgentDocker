@@ -131,9 +131,26 @@ def pin_trial(args, root, prefix, source, controller, environment, cli, result):
             report = cli("install", "--from", candidate, "--expect-release", candidate_id)
             assert report["daemon"]["reloaded"] is True, report["daemon"]
             assert report["daemon"]["serving"]["pid"] != serving_pid
+            predecessor = serving_pid
             serving_pid = report["daemon"]["serving"]["pid"]
-            # Held by the successor before its predecessor let go: never
-            # a moment with nobody holding it.
+            # Once the predecessor is gone with its pins, the successor's
+            # must be the one holding the release: never a moment with
+            # nobody holding it.
+            def gone(pid):
+                # The first daemon is this trial's child and is reaped here;
+                # its successors were reparented and are reaped by init.
+                if pid == daemon.pid:
+                    return daemon.poll() is not None
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    return True
+                return False
+
+            deadline = time.monotonic() + 15
+            while not gone(predecessor):
+                assert time.monotonic() < deadline, f"predecessor {predecessor} did not leave"
+                time.sleep(.05)
             assert pin_held(pin), f"the release pin was dropped across the handover to generation {generation}"
             return candidate_id
 
