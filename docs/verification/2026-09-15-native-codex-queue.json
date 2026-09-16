@@ -2040,7 +2040,24 @@
       "parallel_execution": "Three isolated profiles/daemons ran concurrently, overlapping the separate combined-skill Cargo gate. Correctness acceptance only; no latency comparison.",
       "raw_report_result": "passed",
       "classification": "acceptance-cleanup-failure",
-      "finding": "Functional recovery assertions passed, but process-group cleanup raised PermissionError. The old driver incorrectly retained result=passed and exited zero. This record treats the overall trial as failed, preserves the raw artifact, and requires the corrected driver to pass a repeat."
+      "finding": "Functional recovery assertions passed, but process-group cleanup raised PermissionError. The old driver incorrectly retained result=passed and exited zero. This record treats the overall trial as failed, preserves the raw artifact, and requires the corrected driver to pass a repeat.",
+      "late_cleanup_2026_09_15": {
+        "artifact": "/private/tmp/agentdocker-native-fixed-recovery29-2026-09-15/late-cleanup.json",
+        "sha256": "c30775705568c28634dbe41d0568f6da3570a0d97278f6f2836c0360f0f80703",
+        "result": {
+          "at": "2026-09-16T02:28:48.102440+00:00",
+          "fixture": "native-fixed-recovery29",
+          "pid": 63773,
+          "started_at_local": "Tue Sep 15 17:00:05 2026",
+          "cwd": "/private/tmp/ad-native-queue-12bmqpq1/project",
+          "socket_path_already_removed": true,
+          "direct_children_before": [],
+          "action": "SIGTERM to verified orphan fixture only",
+          "result": "exited",
+          "production_daemon_untouched": 75531
+        },
+        "disposition": "The orphan coordinator was still running after the historical cleanup failure, although its temporary socket and profile had been removed. Exact PID/birth/cwd were verified before SIGTERM; it had no child processes and exited. Original failed acceptance and raw false-pass artifact remain unchanged."
+      }
     },
     {
       "started_at": "2026-09-16T00:00:05.090055+00:00",
