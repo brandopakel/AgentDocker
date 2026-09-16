@@ -153,7 +153,14 @@ The next combined review found that a different-active-turn steering refusal was
 handled like a just-finished turn. Source now distinguishes them and pauses on
 changed ownership, retaining the original receipt and the unsubmitted queue
 message. A new actual-client scenario injects that refusal followed by completion
-of the reported other turn. Its validation is pending.
+of the reported other turn. Source `36ac92b` passed the full 1,077-Rust/84-Python
+gate (seven Rust tests skipped), lint, packaging and release build. The new
+actual-Codex scenario passed, retaining the queued message once; the prior binary
+failed the same scenario as expected. Busy, just-finished and lost-reply recovery
+trials also passed without duplicate submission. The existing
+[reload evidence](verification/2026-09-16-reload-controller-episode.json) retains
+the reproduction, an aborted build campaign and all passing reruns. Final CI and
+review remain pending.
 
 The next reload review also found the transfer-refusal reply still used a
 blocking write on the async startup path. Both readiness outcomes now share the
