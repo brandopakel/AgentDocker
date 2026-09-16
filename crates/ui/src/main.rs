@@ -215,6 +215,7 @@ fn main() -> iced::Result {
     let info = reader.next_frame(&mut rgba).expect("embedded PNG");
     rgba.truncate(info.buffer_size());
     let icon = iced::window::icon::from_rgba(rgba, info.width, info.height).expect("RGBA icon");
+    let beneath = smoke.is_some();
     let result = iced::application(
         move || {
             let (app, task) = app::App::boot();
@@ -237,6 +238,15 @@ fn main() -> iced::Result {
         visible: false,
         exit_on_close_request: false,
         icon: Some(icon),
+        // A smoke run is not for the person at the desk: its window, with
+        // fixture data, stays beneath their own so it is never mistaken for
+        // the installed app. Captures come from the renderer, not the
+        // screen, so they are unaffected.
+        level: if beneath {
+            iced::window::Level::AlwaysOnBottom
+        } else {
+            iced::window::Level::Normal
+        },
         ..Default::default()
     })
     .centered()
