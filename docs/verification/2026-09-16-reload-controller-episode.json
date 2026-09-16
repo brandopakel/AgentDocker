@@ -3232,7 +3232,38 @@
     },
     "binary_reuse": {
       "agentdocker_and_agentd_identical_to_trial_binaries": true,
-      "explanation": "The thread-composer guard only changed the UI executable; CLI and daemon hashes match immutable71033b7, so the recorded native reload and steering trials apply to those identical executables. The UI gate is reported separately."
+      "explanation": "The thread-composer guard only changed the UI executable; CLI and daemon hashes match immutable71033b7, so the recorded native reload and steering trials apply to those identical executables. The UI gate is reported separately.",
+      "final_combined_agentdocker_and_agentd_identical_to_trial_binaries": true
+    },
+    "final_combined_gate": {
+      "source_commit": "0993d1bfe254f21c817808aec92de97645d1f95a",
+      "result": "passed",
+      "rust_passed": 1077,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "format_and_strict_lint": "passed",
+      "packaging": "passed",
+      "release_build": "passed",
+      "log": "/private/tmp/agentdocker-reload-review7-gate4-2026-09-16.log"
+    },
+    "final_combined_build": {
+      "format": 1,
+      "source_commit": "0993d1bfe254f21c817808aec92de97645d1f95a",
+      "source_tree": "bfe941f30d13abe53101c43fac24626bcf267012",
+      "source_input_sha256": "3e170de15a83e3dc6f35903c5ec6e7fc5c9c9b17a3588d6f10eed564c0b439f8",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "006f1c9e93620d4def356a8b22724b35fbd5595719377e33a4a97fa28283c430",
+        "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce",
+        "agentdocker-ui": "c3225eb8b77158291a5ad7dc0ae438229fa04e113bc272b987d8b6e8ea1167c2"
+      }
     }
   }
 }

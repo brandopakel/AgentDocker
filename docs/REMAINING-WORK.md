@@ -160,9 +160,12 @@ Python checks and the full packaging/release gate. Its combined binaries passed
 TUI handovers preserving a draft and pending question, and owned-input
 busy/refusal/lost-reply trials without duplicate submission. Fourteen deferred
 exit warnings covered seven agents; each exit was subsequently recorded. All
-fixtures retired. The final integration also includes PR #161's ended-session
-thread-send guard and awaits its combined gate and final review. Experimental
-reload remains gated; production was not switched by these trials.
+fixtures retired. Final combined source `0993d1b`, including PR #161's
+ended-session thread-send guard and merged PR #163's unread fix, passed 1,077 Rust
+tests (seven skipped), 84 Python checks, lint, packaging and release build.
+Its CLI and daemon hashes match the native-trial binaries. Final CI and review
+remain pending. Experimental reload remains gated; production was not switched
+by these trials.
 
 PR #155 next review found discovery scans could mutate the cached projection
 while fenced, and reload could race restricted-listener registration. Source now
