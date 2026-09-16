@@ -791,13 +791,19 @@ impl App {
             }
             Message::ProjectRemove(path) => {
                 let was_selected = self.shell.catalog.selected.as_ref() == Some(&path);
-                if self.shell.catalog.remove(&path) {
-                    if was_selected {
-                        self.shell.selected = None;
-                        self.reset_session_view();
-                        self.refresh_project_context();
+                match self.shell.catalog.remove(&path) {
+                    Ok(true) => {
+                        if was_selected {
+                            self.shell.selected = None;
+                            self.reset_session_view();
+                            self.refresh_project_context();
+                        }
+                        self.shell.changed();
                     }
-                    self.shell.changed();
+                    Ok(false) => {}
+                    // At the bound the project stays on the list and the
+                    // person is told why.
+                    Err(error) => self.say(error.to_string()),
                 }
                 self.shell.project_menu = None;
                 self.shell.project_rename = None;
@@ -971,12 +977,16 @@ impl App {
                 // Off the list, and kept off: discovery brought a forgotten
                 // folder straight back before.
                 if let Some(selected) = self.shell.catalog.selected.clone() {
-                    self.shell.catalog.remove(&selected);
+                    match self.shell.catalog.remove(&selected) {
+                        Ok(_) => {
+                            self.shell.selected = None;
+                            self.reset_session_view();
+                            self.shell.changed();
+                            self.refresh_project_context();
+                        }
+                        Err(error) => self.say(error.to_string()),
+                    }
                 }
-                self.shell.selected = None;
-                self.reset_session_view();
-                self.shell.changed();
-                self.refresh_project_context();
             }
             Message::CatalogSaved(generation, result) => {
                 self.shell.saving = false;

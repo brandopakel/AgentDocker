@@ -61,8 +61,10 @@ impl Catalog {
             .projects
             .retain(|entry| entry.project.root.is_absolute());
         catalog.hidden.retain(|root| root.is_absolute());
-        let excess = catalog.hidden.len().saturating_sub(MAX_PROJECTS);
-        catalog.hidden.drain(..excess);
+        anyhow::ensure!(
+            catalog.hidden.len() <= MAX_PROJECTS,
+            "Too many removed folders"
+        );
         catalog
             .projects
             .sort_by(|a, b| a.project.root.cmp(&b.project.root));
@@ -130,24 +132,25 @@ impl Catalog {
     }
 
     /// Take a project off the list and keep it off until it is added again.
-    pub fn remove(&mut self, root: &Path) -> bool {
-        let before = self.projects.len();
-        self.projects.retain(|e| e.project.root != root);
-        if self.projects.len() == before {
-            return false;
+    /// The list of removed folders is bounded like the list itself, and a
+    /// removal at the bound is refused rather than forget an earlier one:
+    /// what was removed stays removed.
+    pub fn remove(&mut self, root: &Path) -> anyhow::Result<bool> {
+        if !self.projects.iter().any(|e| e.project.root == root) {
+            return Ok(false);
         }
         if !self.hidden.iter().any(|h| h == root) {
+            anyhow::ensure!(
+                self.hidden.len() < MAX_PROJECTS,
+                "The list of removed folders is full ({MAX_PROJECTS}); add one of them back before removing another"
+            );
             self.hidden.push(root.to_path_buf());
         }
-        // Bounded like the list itself; past that the oldest removal is
-        // forgotten, which discovery may then list again.
-        while self.hidden.len() > MAX_PROJECTS {
-            self.hidden.remove(0);
-        }
+        self.projects.retain(|e| e.project.root != root);
         if self.selected.as_deref() == Some(root) {
             self.selected = self.projects.first().map(|e| e.project.root.clone());
         }
-        true
+        Ok(true)
     }
 
     /// Name a project here; an empty name goes back to the folder's.
@@ -255,7 +258,7 @@ mod tests {
         catalog.remember(project("alpha"), false);
         catalog.remember(project("beta"), false);
         catalog.selected = Some(project("alpha").root);
-        assert!(catalog.remove(&project("alpha").root));
+        assert!(catalog.remove(&project("alpha").root).unwrap());
         assert_eq!(catalog.projects.len(), 1);
         assert_eq!(catalog.selected, Some(project("beta").root));
         // Discovery does not bring it back; adding it does.
@@ -270,24 +273,39 @@ mod tests {
         assert_eq!(catalog.projects[1].label, None);
         let home = dir.path().join("state");
         catalog.rename(&project("beta").root, "zed");
-        catalog.remove(&project("alpha").root);
+        catalog.remove(&project("alpha").root).unwrap();
         catalog.save(&home).unwrap();
         assert_eq!(Catalog::load(&home).unwrap(), catalog);
         // Two folders called the same are told apart by name.
         catalog.remember(project("nested/zed"), true);
         assert_eq!(catalog.shared_names().len(), 1);
-        // The hidden list is bounded like the list itself.
-        for i in 0..MAX_PROJECTS + 5 {
+        // The hidden list is bounded like the list itself: at the bound a
+        // removal is refused and the project stays, and nothing removed
+        // earlier comes back.
+        for i in 0..MAX_PROJECTS - 1 {
             let folder = project(&format!("gone-{i}"));
             catalog.remember(folder.clone(), false);
-            catalog.remove(&folder.root);
+            catalog.remove(&folder.root).unwrap();
         }
         assert_eq!(catalog.hidden.len(), MAX_PROJECTS);
+        let one_more = project("one-more");
+        catalog.remember(one_more.clone(), false);
+        assert!(catalog.remove(&one_more.root).is_err());
         assert!(
-            !catalog.hidden.contains(&project("alpha").root),
-            "the oldest removal went"
+            catalog
+                .projects
+                .iter()
+                .any(|e| e.project.root == one_more.root)
         );
-        assert!(catalog.hidden.contains(&project("gone-500").root));
+        assert!(catalog.hidden.contains(&project("alpha").root));
+        assert!(catalog.hidden.contains(&project("gone-0").root));
+        // Removing one already hidden (listed again by hand) needs no room.
+        catalog.projects.push(Entry {
+            project: project("gone-0"),
+            pinned: false,
+            label: None,
+        });
+        assert!(catalog.remove(&project("gone-0").root).unwrap());
     }
 
     #[test]
