@@ -128,7 +128,7 @@ enum Persisted {
 
 /// One admitted mutation in progress; dropping it, however the request
 /// ends, releases its place.
-struct InFlight(Arc<Daemon>);
+pub(crate) struct InFlight(Arc<Daemon>);
 
 impl Drop for InFlight {
     fn drop(&mut self) {
@@ -208,8 +208,6 @@ fn mutates(request: &Request) -> bool {
             | Request::PeekInput { .. }
             | Request::Subscribe { .. }
             | Request::Attach { .. }
-            | Request::AttachInput { .. }
-            | Request::AttachResize { .. }
     )
 }
 
@@ -1441,7 +1439,7 @@ impl Daemon {
 
     /// Keep background host work ahead of any transfer offer, just like an
     /// admitted request. The guard covers its asynchronous host side effects.
-    fn admit_background(self: &Arc<Self>) -> Result<InFlight, Box<Response>> {
+    pub(crate) fn admit_background(self: &Arc<Self>) -> Result<InFlight, Box<Response>> {
         let mut state = lock(&self.state);
         if let Some(error) = state.storage_failure().or_else(|| state.transferring()) {
             return Err(Box::new(error));
@@ -5562,6 +5560,21 @@ impl State {
         envelope: Envelope,
         question: Option<agentdocker_core::Question>,
     ) -> Response {
+        self.publish_with_channel(envelope, question, None)
+    }
+
+    /// Prepare channel state and ancillary effects without changing live state;
+    /// publish the complete transition only after the message transaction commits.
+    fn publish_with_channel(
+        &mut self,
+        envelope: Envelope,
+        question: Option<agentdocker_core::Question>,
+        channel: Option<(Channel, EventKind, Option<JournalEntry>)>,
+    ) -> Response {
+        let (channel, transition, mut journal) = match channel {
+            Some((channel, event, journal)) => (Some(channel), Some(event), journal),
+            None => (None, None, None),
+        };
         if let Some(error) = self.write_failure() {
             return error;
         }
@@ -5647,12 +5660,29 @@ impl State {
                 record.last_seen = Utc::now();
                 record
             });
-        let mut kinds = vec![EventKind::MessageSent {
+        if let Some(entry) = &mut journal {
+            entry.seq = match self.journal_seq.get(&entry.project) {
+                Some(seq) => *seq,
+                None => match self
+                    .store_read("journal", |store| store.max_journal_seq(&entry.project))
+                {
+                    Some(seq) => seq + 1,
+                    None => return self.write_failure().expect("failed journal read"),
+                },
+            };
+        }
+        let mut kinds: Vec<_> = transition.into_iter().collect();
+        kinds.push(EventKind::MessageSent {
             message: envelope.id.clone(),
             from: envelope.from.clone(),
             to: envelope.to.clone(),
             kind: envelope.kind.clone(),
-        }];
+        });
+        if let Some(entry) = &journal {
+            kinds.push(EventKind::JournalAppended {
+                entry: entry.clone(),
+            });
+        }
         if let Some(question) = &question {
             kinds.push(EventKind::QuestionOpened {
                 question: question.id.clone(),
@@ -5675,7 +5705,7 @@ impl State {
             })
             .collect();
         let _ = self.persist("message", |store| {
-            store.publish_message(
+            store.publish_message_with_channel(
                 &envelope,
                 &recipients,
                 INBOX_CAPACITY,
@@ -5683,10 +5713,19 @@ impl State {
                 question.as_ref(),
                 closed.as_ref(),
                 &events,
+                channel.as_ref().map(|channel| (channel, journal.as_ref())),
             )
         });
         if let Some(error) = self.write_failure() {
             return error;
+        }
+        if let Some(channel) = channel {
+            self.channels.insert(channel.id.clone(), channel);
+        }
+        if let Some(entry) = journal {
+            self.journal_seq
+                .insert(entry.project.clone(), entry.seq + 1);
+            self.cache_journal(entry);
         }
         for id in &recipients {
             let queue = self.inboxes.entry(id.clone()).or_default();

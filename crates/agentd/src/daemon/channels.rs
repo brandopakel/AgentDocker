@@ -487,48 +487,38 @@ impl Daemon {
             .filter(|r| !r.is_empty());
         channel.closed_at = Some(Utc::now());
         channel.resolution = resolution.clone();
-        let mut event = Event::new(
-            EventKind::ChannelClosed {
-                channel: id.clone(),
-                resolution: resolution.clone(),
-            },
-            Utc::now(),
-        );
-        event.seq = state.next_seq;
-        if state.persist("channel close", |store| {
-            store.put_document_with_event("channel", channel.id.as_str(), &channel, &event)
-        }) != Persisted::Committed
-        {
-            return state
-                .write_failure()
-                .expect("refused channel write has a reason");
-        }
-        state.channels.insert(id.clone(), channel.clone());
-        state.next_seq += 1;
-        let _ = state.events.send(event);
-        state.tell_channel(
-            &channel,
-            match &resolution {
-                Some(text) => format!("{name} closed this channel: {text}"),
-                None => format!("{name} closed this channel."),
-            },
-        );
-        if let Some(record) = state.registry.get(&agent).cloned() {
+        let event = EventKind::ChannelClosed {
+            channel: id.clone(),
+            resolution: resolution.clone(),
+        };
+        let text = match &resolution {
+            Some(text) => format!("{name} closed this channel: {text}"),
+            None => format!("{name} closed this channel."),
+        };
+        let journal = state.registry.get(&agent).cloned().and_then(|record| {
             let summary = match &resolution {
                 Some(text) => format!("closed the channel on {}: {text}", channel.title()),
                 None => format!("closed the channel on {}", channel.title()),
             };
-            if let Some(entry) = state.plain_entry(
+            state.plain_entry(
                 &record,
                 JournalKind::Review,
                 summary,
                 SummarySource::Explicit,
-            ) {
-                state.append_journal(entry);
-            }
-        }
-        if let Some(error) = state.write_failure() {
-            return error;
+            )
+        });
+        let envelope = Envelope::new(
+            "agentd",
+            Destination::Channel(id),
+            "channel",
+            json!({"channel": channel.id.as_str(), "title": channel.title(), "text": text}),
+            None,
+            Utc::now(),
+        );
+        let response =
+            state.publish_with_channel(envelope, None, Some((channel.clone(), event, journal)));
+        if !matches!(response, Response::Sent { .. }) {
+            return response;
         }
         Response::Channel { channel }
     }
@@ -715,52 +705,35 @@ impl Daemon {
             head,
         };
         channel.reviews.push(review.clone());
-        let mut event = Event::new(
-            EventKind::ReviewSubmitted {
-                channel: id.clone(),
-                by: reviewer,
-                of: author.clone(),
-                verdict,
-            },
-            Utc::now(),
-        );
-        event.seq = state.next_seq;
-        if state.persist("channel review", |store| {
-            store.put_document_with_event("channel", channel.id.as_str(), &channel, &event)
-        }) != Persisted::Committed
-        {
-            return state
-                .write_failure()
-                .expect("refused channel review has a reason");
-        }
-        state.channels.insert(id.clone(), channel.clone());
-        state.next_seq += 1;
-        let _ = state.events.send(event);
+        let event = EventKind::ReviewSubmitted {
+            channel: id.clone(),
+            by: reviewer,
+            of: author.clone(),
+            verdict,
+        };
         let decision = channel.decision(&author, 1);
-        state.send(
+        let envelope = Envelope::new(
             review.by.to_string(),
             Destination::Channel(id),
-            "review".to_owned(),
+            "review",
             json!({
-                "channel": channel.id.as_str(),
-                "of": author.as_str(),
-                "verdict": verdict.to_string(),
-                "note": review.note,
-                "decision": decision,
-                "text": review.line(),
+                "channel": channel.id.as_str(), "of": author.as_str(),
+                "verdict": verdict.to_string(), "note": review.note,
+                "decision": decision, "text": review.line(),
             }),
             None,
+            Utc::now(),
         );
-        if let Some(entry) = state.plain_entry(
+        let journal = state.plain_entry(
             &reviewer_record,
             JournalKind::Review,
             review.summary(),
             SummarySource::Explicit,
-        ) {
-            state.append_journal(entry);
-        }
-        if let Some(error) = state.write_failure() {
-            return error;
+        );
+        let response =
+            state.publish_with_channel(envelope, None, Some((channel.clone(), event, journal)));
+        if !matches!(response, Response::Sent { .. }) {
+            return response;
         }
         Response::Channel { channel }
     }
@@ -840,6 +813,119 @@ mod tests {
                 assert!(
                     events.try_recv().is_err(),
                     "no completion or message may be published"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_actions_roll_back_failed_ancillary_writes_and_retry_once() {
+        for operation in ["close", "review"] {
+            for failed_event in ["message_sent", "journal_appended"] {
+                let tmp = tempfile::tempdir().unwrap();
+                let (daemon, _) = fixture(&tmp).await;
+                let Response::Channel { channel } =
+                    daemon.channel_open("writer", "task".into(), vec!["reviewer".into()], None)
+                else {
+                    panic!("open failed")
+                };
+                let (before, queues, journal, seq, mut events, mut messages) = {
+                    let state = lock(&daemon.state);
+                    state.store.reject_event_for_test(failed_event);
+                    (
+                        serde_json::to_value(&channel).unwrap(),
+                        serde_json::to_value(&state.inboxes).unwrap(),
+                        state.store.max_journal_seq(&channel.project).unwrap(),
+                        state.next_seq,
+                        state.events.subscribe(),
+                        state.bus.subscribe(),
+                    )
+                };
+                let act = |daemon: &Daemon| {
+                    if operation == "close" {
+                        daemon.channel_close("writer", channel.id.as_str(), Some("done".into()))
+                    } else {
+                        daemon.review(
+                            "reviewer",
+                            channel.id.as_str(),
+                            Some("writer".into()),
+                            "approve",
+                            Some("checked".into()),
+                        )
+                    }
+                };
+                assert!(matches!(
+                    act(&daemon),
+                    Response::Error {
+                        code: ErrorCode::StorageUnavailable,
+                        ..
+                    }
+                ));
+                {
+                    let state = lock(&daemon.state);
+                    assert_eq!(
+                        serde_json::to_value(&state.channels[&channel.id]).unwrap(),
+                        before
+                    );
+                    assert_eq!(
+                        serde_json::to_value(
+                            state
+                                .store
+                                .document::<Channel>("channel", channel.id.as_str())
+                                .unwrap()
+                                .unwrap()
+                        )
+                        .unwrap(),
+                        before
+                    );
+                    assert_eq!(serde_json::to_value(&state.inboxes).unwrap(), queues);
+                    assert_eq!(
+                        serde_json::to_value(state.store.load_inboxes().unwrap()).unwrap(),
+                        queues
+                    );
+                    assert_eq!(
+                        state.store.max_journal_seq(&channel.project).unwrap(),
+                        journal
+                    );
+                    assert_eq!(state.next_seq, seq);
+                    assert!(events.try_recv().is_err());
+                    assert!(messages.try_recv().is_err());
+                }
+                drop(daemon);
+                let daemon = Arc::new(
+                    Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap(),
+                );
+                let Response::Channel { channel: applied } = act(&daemon) else {
+                    panic!("retry failed")
+                };
+                assert_eq!(applied.reviews.len(), usize::from(operation == "review"));
+                assert_eq!(applied.is_open(), operation == "review");
+                let state = lock(&daemon.state);
+                assert_eq!(
+                    state.store.max_journal_seq(&channel.project).unwrap(),
+                    journal + 1
+                );
+                let kind = if operation == "close" {
+                    "channel"
+                } else {
+                    "review"
+                };
+                let archive = state
+                    .store
+                    .history(
+                        &agentdocker_core::ConversationId::channel(&channel.id),
+                        None,
+                        100,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    archive.iter().filter(|m| m.envelope.kind == kind).count(),
+                    if operation == "close" { 2 } else { 1 }
+                );
+                let writer = state.registry.resolve("writer").unwrap();
+                assert!(
+                    state.inboxes[&writer].iter().any(|m| m.kind == kind),
+                    "the committed notification is queued even after close"
                 );
             }
         }

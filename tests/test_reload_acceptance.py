@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,31 @@ class FakeDaemon:
 
 
 class ReloadAcceptanceCleanup(unittest.TestCase):
+    def test_cleanup_joins_inflight_worker_subprocess_and_skips_unstarted_thread(self):
+        completed = []
+        def worker():
+            subprocess.run([sys.executable, "-c", "import time; time.sleep(.1)"], check=True)
+            completed.append(True)
+        thread = threading.Thread(target=worker)
+        thread.start()
+        result = {"passed": True}
+        TRIAL.join_workers(result, [thread, threading.Thread(target=lambda: None)])
+        self.assertEqual(completed, [True])
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(result["passed"])
+
+    def test_worker_survivor_fails_cleanup(self):
+        class Stuck:
+            ident = 1
+            def join(self, timeout):
+                pass
+            def is_alive(self):
+                return True
+        result = {"passed": True}
+        TRIAL.join_workers(result, [Stuck()])
+        self.assertFalse(result["passed"])
+        self.assertIn("workload worker did not stop", result["cleanup_errors"])
+
     def test_a_failed_shutdown_still_ends_the_children_and_fails_the_trial(self):
         children = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
                                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

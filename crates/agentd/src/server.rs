@@ -156,7 +156,16 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
                 tail,
             } => return stream_logs(&daemon, &agent, follow, tail, &mut reader, &mut writer).await,
             Request::Attach { agent, cols, rows } => {
-                return stream_attach(&daemon, &agent, cols, rows, &mut reader, &mut writer).await;
+                return stream_attach(
+                    &daemon,
+                    &agent,
+                    cols,
+                    rows,
+                    frame.handover_retry,
+                    &mut reader,
+                    &mut writer,
+                )
+                .await;
             }
             unary => {
                 // A wait owns its connection: a claim's, or an ask's, whose
@@ -345,6 +354,7 @@ async fn stream_attach(
     agent: &str,
     cols: Option<u16>,
     rows: Option<u16>,
+    handover_retry: bool,
     reader: &mut Reader,
     writer: &mut OwnedWriteHalf,
 ) -> io::Result<()> {
@@ -363,6 +373,16 @@ async fn stream_attach(
         .await;
     };
     if let (Some(cols), Some(rows)) = (cols, rows) {
+        let _admitted = match daemon.admit_background() {
+            Ok(guard) => guard,
+            Err(response) => {
+                return write(
+                    writer,
+                    &agentdocker_core::protocol::handover_response(*response, handover_retry),
+                )
+                .await;
+            }
+        };
         let _ = session.resize(cols, rows);
     }
     // What it printed already, and what it prints next, taken together so
@@ -394,6 +414,13 @@ async fn stream_attach(
             line = reader.next_line() => match line {
                 Ok(Some(line)) => match serde_json::from_str::<Request>(&line) {
                     Ok(Request::AttachInput { data }) => {
+                        let _admitted = match daemon.admit_background() {
+                            Ok(guard) => guard,
+                            Err(response) => {
+                                write(writer, &agentdocker_core::protocol::handover_response(*response, handover_retry)).await?;
+                                continue;
+                            }
+                        };
                         if let Some(bytes) = agentdocker_core::protocol::decode_bytes(&data)
                             && session.input.send(bytes).await.is_err()
                         {
@@ -401,6 +428,13 @@ async fn stream_attach(
                         }
                     }
                     Ok(Request::AttachResize { cols, rows }) => {
+                        let _admitted = match daemon.admit_background() {
+                            Ok(guard) => guard,
+                            Err(response) => {
+                                write(writer, &agentdocker_core::protocol::handover_response(*response, handover_retry)).await?;
+                                continue;
+                            }
+                        };
                         let _ = session.resize(cols, rows);
                     }
                     // Anything else on an attached connection is a mistake
@@ -732,6 +766,133 @@ pub(crate) fn listener_fd(listener: &Listener) -> std::io::Result<std::os::fd::O
 mod tests {
     use super::*;
     use agentdocker_core::{AgentSpec, EventKind, LeaseMode};
+
+    #[tokio::test]
+    async fn attached_terminal_fences_input_and_resize_but_keeps_output() {
+        async fn send(client: &mut BufReader<Stream>, request: Request, capable: bool) {
+            let line = if capable {
+                agentdocker_core::protocol::request_json(&request).unwrap()
+            } else {
+                serde_json::to_string(&request).unwrap()
+            } + "\n";
+            client.get_mut().write_all(line.as_bytes()).await.unwrap();
+        }
+        async fn next(client: &mut BufReader<Stream>) -> Response {
+            let mut line = String::new();
+            tokio::time::timeout(Duration::from_secs(5), client.read_line(&mut line))
+                .await
+                .unwrap()
+                .unwrap();
+            serde_json::from_str(&line).unwrap()
+        }
+        for capable in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let daemon =
+                Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+            let Response::Agent { agent } = daemon.handle(Request::Run { spec: AgentSpec {
+                name: "terminal-fence".into(), tty: true, workdir: Some(tmp.path().into()),
+                command: vec!["sh".into(), "-c".into(), "stty -echo; printf 'ready\\n'; while ! test -f go; do sleep .01; done; printf 'during-fence\\n'; read value; stty size; printf 'input:%s\\n' \"$value\"".into()],
+                ..Default::default()
+            }}).await else { panic!("terminal did not start") };
+            let target = agent.id.to_string();
+            let testing = daemon.clone();
+            let go = tmp.path().join("go");
+            let mut trial = tokio::spawn(async move {
+                let (client, server) = agentdocker_host::ipc::pair().await.unwrap();
+                let serving = tokio::spawn(handle(testing.clone(), server));
+                let mut client = BufReader::new(client);
+                send(
+                    &mut client,
+                    Request::Attach {
+                        agent: target,
+                        cols: Some(80),
+                        rows: Some(24),
+                    },
+                    capable,
+                )
+                .await;
+                assert!(matches!(next(&mut client).await, Response::EventsReady));
+                let mut text = String::new();
+                while !text.contains("ready") {
+                    if let Response::Output { data } = next(&mut client).await {
+                        text.push_str(&String::from_utf8_lossy(
+                            &agentdocker_core::protocol::decode_bytes(&data).unwrap(),
+                        ));
+                    }
+                }
+                testing.offer_transfer(1).unwrap();
+                for request in [
+                    Request::AttachInput {
+                        data: agentdocker_core::protocol::encode_bytes(b"blocked\n"),
+                    },
+                    Request::AttachResize {
+                        cols: 111,
+                        rows: 44,
+                    },
+                ] {
+                    send(&mut client, request, capable).await;
+                    assert!(
+                        matches!(next(&mut client).await, Response::Error { code, .. } if code == if capable { ErrorCode::Transferring } else { ErrorCode::Unavailable })
+                    );
+                }
+                std::fs::write(go, "").unwrap();
+                while !text.contains("during-fence") {
+                    if let Response::Output { data } = next(&mut client).await {
+                        text.push_str(&String::from_utf8_lossy(
+                            &agentdocker_core::protocol::decode_bytes(&data).unwrap(),
+                        ));
+                    }
+                }
+                assert!(testing.abort_transfer("trial continues"));
+                send(
+                    &mut client,
+                    Request::AttachInput {
+                        data: agentdocker_core::protocol::encode_bytes(b"accepted\n"),
+                    },
+                    capable,
+                )
+                .await;
+                loop {
+                    match next(&mut client).await {
+                        Response::Output { data } => text.push_str(&String::from_utf8_lossy(
+                            &agentdocker_core::protocol::decode_bytes(&data).unwrap(),
+                        )),
+                        Response::End => break,
+                        other => panic!("unexpected terminal frame: {other:?}"),
+                    }
+                }
+                assert!(text.contains("input:accepted"), "{text}");
+                assert!(!text.contains("input:blocked"), "{text}");
+                assert!(
+                    text.contains("24 80"),
+                    "refused resize changed the terminal: {text}"
+                );
+                drop(client);
+                serving.await.unwrap().unwrap();
+            });
+            let result = tokio::time::timeout(Duration::from_secs(15), &mut trial).await;
+            if result.is_err() {
+                trial.abort();
+                let _ = trial.await;
+            }
+            daemon.abort_transfer("test cleanup");
+            let _ = daemon
+                .handle(Request::Stop {
+                    agent: agent.id.to_string(),
+                    force: true,
+                })
+                .await;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while daemon.is_live(&agent.id) && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            assert!(
+                !daemon.is_live(&agent.id),
+                "owned terminal survived cleanup"
+            );
+            result.unwrap().unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn handover_refusal_is_decodable_for_legacy_clients_and_safe_to_retry() {

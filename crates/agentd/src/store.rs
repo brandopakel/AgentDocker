@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use agentdocker_core::session::{Transfer, TransferState};
 use agentdocker_core::{
-    AgentId, AgentRecord, ArchivedMessage, Change, ConversationId, Envelope, Event, EventKind,
-    JournalEntry, JournalKind, Lease, LeaseId, MessageId, ProjectId, ReadCursor,
+    AgentId, AgentRecord, ArchivedMessage, Change, Channel, ConversationId, Envelope, Event,
+    EventKind, JournalEntry, JournalKind, Lease, LeaseId, MessageId, ProjectId, ReadCursor,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -1037,6 +1037,25 @@ impl Store {
         closed: Option<&agentdocker_core::MessageId>,
         events: &[Event],
     ) -> Result<()> {
+        self.publish_message_with_channel(
+            message, recipients, capacity, sender, question, closed, events, None,
+        )
+    }
+
+    /// A channel close/review and all of its message/journal effects are one
+    /// transaction; a refused ancillary write cannot leave an applied action.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_message_with_channel(
+        &self,
+        message: &Envelope,
+        recipients: &[AgentId],
+        capacity: usize,
+        sender: Option<&AgentRecord>,
+        question: Option<&agentdocker_core::Question>,
+        closed: Option<&agentdocker_core::MessageId>,
+        events: &[Event],
+        channel: Option<(&Channel, Option<&JournalEntry>)>,
+    ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         for recipient in recipients {
             self.insert_inbox(recipient, message, capacity)?;
@@ -1055,6 +1074,12 @@ impl Store {
         }
         if let Some(closed) = closed {
             self.delete_document("question", closed.as_str())?;
+        }
+        if let Some((channel, journal)) = channel {
+            self.put_document("channel", channel.id.as_str(), channel)?;
+            if let Some(entry) = journal {
+                self.insert_journal(entry)?;
+            }
         }
         for event in events {
             self.append_event(event)?;

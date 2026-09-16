@@ -1228,5 +1228,79 @@
       "daemon_retired": true,
       "driver_sha256": "0d9159391e2d03a798cf41521381740753dfe464969045eeb5dbccb54ae38b6f"
     }
+  },
+  "schema21_integration_2026_09_16": {
+    "source_commit": "a1475a12b486b213c4ed5968e33cea4c2f439a88",
+    "source_input_sha256": "1dc5e6340186f4d039193e23b108a6d08e209cdf62b31812c703e59647a04879",
+    "standard_gate": {
+      "rust_passed": 1053,
+      "rust_skipped": 7,
+      "python_passed": 81,
+      "command": "bash scripts/verify.sh check",
+      "exit_code": 0,
+      "log": "/private/tmp/agentdocker-schema21-reload-gate2-2026-09-15.log"
+    },
+    "focused_tests": 14,
+    "retained_failure": {
+      "log": "/private/tmp/agentdocker-schema21-reload-gate1-2026-09-15.log",
+      "reason": "One old assertion required search to write an index marker. The updated contract verifies read-only fallback and atomic invalidation on the next unindexed write, followed by a correct rebuild."
+    },
+    "distinct_source_handover": {
+      "passed": true,
+      "source_commit": "a1475a12b486b213c4ed5968e33cea4c2f439a88",
+      "versions": {
+        "predecessor": {
+          "build_info": {
+            "arch": "aarch64",
+            "format": 1,
+            "installation_lock": 1,
+            "launcher_redirect": 1,
+            "os": "macos",
+            "state_schema": 20,
+            "version": "0.1.0"
+          },
+          "sha256": {
+            "agentd": "19c6a23631577327a354650ee2faa09f257892ac20755eabb3667703de2906cb",
+            "agentdocker": "155ff704bb2b09dccdac3faae3bfe8cb48b9ca297c7036768493dfc9d5967035",
+            "agentdocker-ui": "fa88a7ec111b36febff40fc8cabbeefa4fa2ed1ebb957443ee6c5be0185c9de8"
+          }
+        },
+        "successor": {
+          "build_info": {
+            "arch": "aarch64",
+            "format": 1,
+            "installation_lock": 1,
+            "launcher_redirect": 1,
+            "os": "macos",
+            "state_schema": 21,
+            "version": "0.1.0"
+          },
+          "sha256": {
+            "agentd": "887d7cea867ff32c27be03968cad71d5b5de7cf58745c1985dac4807d978b644",
+            "agentdocker": "c88c544fd64f46dbbe55922b0d2be8811ddb532ce21699c2748e0f0bdab4840f",
+            "agentdocker-ui": "c33a7ae99414702a211249be992c74ac2c4b4bee6266bcbb57cd24f608019a37"
+          }
+        }
+      },
+      "daemon_pids": [
+        39138,
+        39195
+      ],
+      "handover_seconds": 0.3072958750126418,
+      "checks": [
+        "schema 20 predecessor retired after schema 21 successor accepted",
+        "12 queued messages unchanged, archived once and immediately searchable",
+        "lease identity and expiry unchanged",
+        "batch and PTY process/birth/owner identities preserved",
+        "exact batch exit 7 and PTY exit 3 with pre/post logs"
+      ],
+      "survivors": [],
+      "cleanup_errors": [],
+      "driver_sha256": "336a780b42c0cb29ece584e82fddf68464940f8530911c39ff7d32b4b3c972b4"
+    },
+    "limitations": [
+      "Owned native batch/PTY and local queued messages; not a provider service or a production activation.",
+      "Later channel/terminal/worker-cleanup review fixes require fresh validation."
+    ]
   }
 }

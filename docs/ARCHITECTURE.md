@@ -435,6 +435,11 @@ Message archive review follow-up: project-scoped search includes archived direct
 
 **Read state.** The person has a read cursor per conversation (`read_cursors`: reader, conversation, `through` seq, at). Unread is what the archive holds past the cursor; opening a conversation moves the cursor forward, never back, to a seq that belongs to that conversation, and acknowledges only the person's own queued rows in it, so *Clear* per message becomes *read* per conversation; later arrivals have higher seqs and stay unread. Reading never closes a question (a question closes through an accepted answer, its asker's cancellation or its expiry); agents keep acknowledging their queues as today; cursors are for readers, not receivers.
 
+Channel close/review commits the channel record, notification queues/archive,
+sender heartbeat, journal and their events in one transaction. A full recipient
+queue refuses the action before commit; storage failure rolls back every effect,
+so a retry after recovery cannot duplicate a partially committed review.
+
 **Archive during handover.** Conversation lists, history, threads and search
 remain readable while writes are fenced. A read cursor changes its queue and
 publishes its event only after the cursor/acknowledgement transaction commits.
@@ -903,6 +908,12 @@ Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `
 Shipped events include `policy_updated` (effective rules or load diagnostic changed), `policy_denied` (what was asked and which rule refused it), `agent_restarted` (a managed agent started again by its policy, with the attempt number), `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`, `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended`, `journal_read`, `journal_pruned` (a project's entries below a sequence were deleted, on request or by retention) and `checkpoints_pruned`, `answer_routed` (which way an answer reached its asker: the waiting `ask` or the queue), `conversation_read` (a reader's cursor moved) and `messages_pruned` (the archive dropped rows by retention or the cap), and the input binding events `input_bound` (an external controller became, or resumed being, the sole consumer of an agent's queued input), `input_unbound`, `input_controller_ended` (the bound controller, or a process launched to replace it, is gone), `input_controller_launched` (the daemon started the binding's launch descriptor, with the attempt number), `input_controller_launch_failed`, `input_restarts_exhausted` (the episode's launches are used up), `input_restarts_reset` (a person asked for the controller to be started again) and `input_resumed` (a provider session that came back as a new process was joined to the record holding its thread's queue; the new record's id is an alias of it), and the coordinator transfer events `daemon_transfer_offered`, `daemon_transfer_readdressed` (the offer now names the successor process that was actually started), `daemon_transfer_accepted` and `daemon_transfer_aborted`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
 `lease_waiting`, `lease_wait_ended` and `lease_deadlock` are shipped with row 13. Error codes `Timeout` (`ask`), `Deadlock` (`claim --wait`) and `Transferring` (any mutating request while the daemon has offered coordination to a successor: nothing was applied, retry against the daemon that answers next) are shipped.
+
+Attached terminal input and resize, including an initial requested size, take
+transfer admission through their enqueue operation. Fenced frames are refused
+without applying them, using the client's advertised handover error capability;
+read-only terminal output keeps flowing. This does not promise automatic replay
+of typed input after a refused or uncertain write.
 
 ## Open questions
 

@@ -137,6 +137,23 @@ def cleanup(result, sock, daemon, log, provider_process, controller_process, obs
         result["error"] = (result.get("error") or "") + f"\ncleanup: survivors {survivors}, errors {cleanup_errors}"
 
 
+def join_workers(result, threads):
+    """Wait for bounded in-flight CLI calls after stopping their producers.
+
+    subprocess.run owns and reaps each command on completion or its 120-second
+    timeout. A survivor still fails the trial; results are written only after
+    every worker has had the chance to finish cleanup.
+    """
+    deadline = time.monotonic() + 125
+    for thread in threads:
+        if thread.ident is not None:
+            thread.join(timeout=max(0, deadline - time.monotonic()))
+        if thread.is_alive():
+            result["passed"] = False
+            result.setdefault("cleanup_errors", []).append("workload worker did not stop")
+            result["error"] = (result.get("error") or "") + "\ncleanup: workload worker did not stop"
+
+
 def trial(args):
     args.output.mkdir(parents=True, exist_ok=True)
     binary_dir = args.binary_dir.resolve(strict=True)
@@ -170,6 +187,8 @@ def trial(args):
         controller_process = None
         observed_launched = set()
         tracked_daemons = {}
+        stop = threading.Event()
+        threads = []
         try:
             tracked_daemons[daemon.pid] = process_identity(daemon.pid)
             deadline = time.monotonic() + 15
@@ -237,7 +256,6 @@ def trial(args):
 
             # Concurrent clients through the CLI, so a transferring answer
             # is retried the way every client retries it.
-            stop = threading.Event()
             sent = []
             send_errors = []
             launched = []
@@ -281,7 +299,7 @@ def trial(args):
                     # Stop every other one early, so stops race the reloads
                     # too. A stop that finds the agent already gone is not a
                     # failure of the stop; anything else the daemon refuses is.
-                    if p.returncode == 0 and n % 2 == 0:
+                    if p.returncode == 0 and n % 2 == 0 and not stop.is_set():
                         stopped = subprocess.run([str(cli), "stop", p.stdout.strip()], env=env, capture_output=True, text=True, timeout=120)
                         if stopped.returncode != 0 and "already finished" not in stopped.stderr:
                             stop_errors.append((n, stopped.stderr.strip()[-200:]))
@@ -455,7 +473,9 @@ def trial(args):
             result["error"] = traceback.format_exc()
             result["passed"] = False
         finally:
+            stop.set()
             cleanup(result, sock, daemon, log, provider_process, controller_process, observed_launched, tracked_daemons)
+            join_workers(result, threads)
             # Every warning or error any daemon in the chain logged, counted
             # by message with agent ids removed, so the record carries what
             # the daemons said and not only what the clients saw.

@@ -20,8 +20,12 @@ by Claude. Final PR #152 review/integration remains pending. See the
 The reload candidate now integrates messaging/schema21 and the validated UI
 changes, including Linux shared-temporary-root discovery. Archive migration,
 cursor acknowledgement and retention now obey the handover fence and atomic
-event contract; combined validation and final review remain pending before
-production activation.
+event contract. Combined `a1475a1` passed 1,053 Rust tests and 81 Python checks,
+plus an actual schema20-to-21 handover preserving queued/history messages,
+lease and native batch/PTY identity and exits. Later review fixes now make
+channel actions atomic with their ancillary effects, fence terminal mutations,
+and join stress-test workers; their full validation and final review remain
+pending before production activation.
 
 September 15 prior installed checkpoint: verified `cf64ca3` (schema20), with
 production inputs identical to merged `4074275` (PR #153). The intact copied
