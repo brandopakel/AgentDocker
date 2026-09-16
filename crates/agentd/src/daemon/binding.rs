@@ -2065,13 +2065,15 @@ mod tests {
         }
         daemon.offer_transfer(1).unwrap();
         daemon.tend_controllers();
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert!(is_running(&launched), "a fenced tick signals nobody");
         assert!(daemon.abort_transfer("cleanup"));
         daemon.tend_controllers();
+        // Yield to the runtime while waiting: it reaps the child, which
+        // on Linux stays a visible zombie until then.
         let gone = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while is_running(&launched) && std::time::Instant::now() < gone {
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
         assert!(
             !is_running(&launched),

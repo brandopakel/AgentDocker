@@ -37,6 +37,64 @@ def build_info(agentd):
     return json.loads(subprocess.check_output([str(agentd), "--build-info"], text=True))
 
 
+def cleanup(result, sock, daemon, log, provider_process, controller_process, observed_launched):
+    """End everything the trial started, each step whatever the one before
+    it did, and say what went wrong: a survivor or a cleanup failure fails
+    the trial rather than the trial passing over it."""
+    cleanup_errors = []
+
+    def attempt(name, action):
+        try:
+            action()
+        except Exception:  # noqa: BLE001 - recorded, never swallowed
+            cleanup_errors.append(f"{name}: {traceback.format_exc().strip().splitlines()[-1]}")
+
+    def shutdown():
+        try:
+            rpc(sock, {"op": "shutdown"})
+        except OSError:
+            pass
+        deadline = time.monotonic() + 15
+        while sock.exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+
+    def end_daemon():
+        if daemon.poll() is None:
+            daemon.kill()
+        daemon.wait(timeout=10)
+
+    attempt("shutdown", shutdown)
+    attempt("daemon", end_daemon)
+    attempt("log", log.close)
+    survivors = []
+
+    def end_child(name, process):
+        if process is not None and process.poll() is None:
+            process.kill()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                survivors.append(f"{name} {process.pid}")
+
+    attempt("provider", lambda: end_child("provider", provider_process))
+    attempt("controller", lambda: end_child("controller", controller_process))
+    # Every process this trial saw a daemon start, whether or not the run
+    # got as far as summarising them.
+    seen = set(result.get("daemon_pids", []))
+    seen.update(observed_launched)
+    for pid in sorted(seen):
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            continue
+        survivors.append(f"pid {pid}")
+    result["survivors"] = survivors
+    result["cleanup_errors"] = cleanup_errors
+    if survivors or cleanup_errors:
+        result["passed"] = False
+        result["error"] = (result.get("error") or "") + f"\ncleanup: survivors {survivors}, errors {cleanup_errors}"
+
+
 def trial(args):
     args.output.mkdir(parents=True, exist_ok=True)
     binary_dir = args.binary_dir.resolve(strict=True)
@@ -75,6 +133,7 @@ def trial(args):
         # trial passing over it.
         provider_process = None
         controller_process = None
+        observed_launched = set()
         try:
             def run(name, script, tty=False):
                 r = rpc(sock, {"op": "run", "spec": {"name": name, "workdir": str(work), "tty": tty,
@@ -222,6 +281,11 @@ def trial(args):
                 for name, fixture in fixtures.items():
                     current = inspect(fixture["agent"]["id"])
                     assert current["pid"] == fixture["agent"]["pid"] and current["status"]["state"] == "running", (name, current)
+                # Whatever controller the daemons have launched so far is
+                # noted as seen, so cleanup knows it even if the run stops.
+                launched_now = (inspect(provider["id"])["input_binding"] or {}).get("restart", {}).get("launched")
+                if launched_now:
+                    observed_launched.add(launched_now["pid"])
                 time.sleep(args.pause)
             stop.set()
             for t in threads:
@@ -325,6 +389,7 @@ def trial(args):
             attempts = [k["attempt"] for _, k in launches]
             assert attempts == list(range(1, len(attempts) + 1)) and len(attempts) == 5, f"attempts {attempts}"
             launched_pids = [k["controller"]["pid"] for _, k in launches]
+            observed_launched.update(launched_pids)
             assert len(set(launched_pids)) == len(launched_pids), launched_pids
             # Each launched controller was noted ended before the next launch.
             for (seq, _), pid in zip(launches[1:], launched_pids[:-1]):
@@ -342,39 +407,7 @@ def trial(args):
             result["error"] = traceback.format_exc()
             result["passed"] = False
         finally:
-            try:
-                rpc(sock, {"op": "shutdown"})
-            except OSError:
-                pass
-            deadline = time.monotonic() + 15
-            while sock.exists() and time.monotonic() < deadline:
-                time.sleep(.05)
-            if daemon.poll() is None:
-                daemon.kill()
-            daemon.wait(timeout=10)
-            log.close()
-            # The trial's own processes, and anything the daemons left:
-            # a survivor is recorded and fails the trial.
-            survivors = []
-            for name, process in (("provider", provider_process), ("controller", controller_process)):
-                if process is None:
-                    continue
-                if process.poll() is None:
-                    process.kill()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        survivors.append(f"{name} {process.pid}")
-            for pid in result.get("daemon_pids", []) + result.get("controller_episode", {}).get("launched_pids", []):
-                try:
-                    os.kill(pid, 0)
-                except (ProcessLookupError, PermissionError):
-                    continue
-                survivors.append(f"pid {pid}")
-            result["survivors"] = survivors
-            if survivors:
-                result["passed"] = False
-                result["error"] = (result.get("error") or "") + f"\nprocesses survived the trial: {survivors}"
+            cleanup(result, sock, daemon, log, provider_process, controller_process, observed_launched)
             # Every warning or error any daemon in the chain logged, counted
             # by message with agent ids removed, so the record carries what
             # the daemons said and not only what the clients saw.
