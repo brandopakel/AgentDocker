@@ -505,18 +505,31 @@ impl State {
             }
             Err(error) => return Response::error(ErrorCode::StorageUnavailable, error.to_string()),
         }
-        let current = match self.store.read_cursors(reader.as_str()) {
-            Ok(cursors) => cursors
-                .into_iter()
-                .find(|c| c.conversation == *conversation)
-                .map(|c| c.through)
-                .unwrap_or(0),
-            Err(error) => return Response::error(ErrorCode::StorageUnavailable, error.to_string()),
-        };
+        // The reader is every identity it has had, as the list counts
+        // unread: a mark below what any of them already read is a no-op.
+        let reader = self.registry.canonical_id(reader).clone();
+        let mut current = 0;
+        for me in self.registry.identity_ids(&reader) {
+            match self.store.read_cursors(me.as_str()) {
+                Ok(cursors) => {
+                    current = current.max(
+                        cursors
+                            .into_iter()
+                            .find(|c| c.conversation == *conversation)
+                            .map(|c| c.through)
+                            .unwrap_or(0),
+                    );
+                }
+                Err(error) => {
+                    return Response::error(ErrorCode::StorageUnavailable, error.to_string());
+                }
+            }
+        }
         if through <= current {
             // Read already: a cursor never moves back.
             return Response::Ok;
         }
+        let reader = &reader;
         // A cursor is the reader's; the queue may not be. A queue with an
         // owner (a bound controller, the daemon's own bridge) is drained
         // only by that owner's receipts, so reading moves the cursor and
@@ -909,6 +922,25 @@ mod tests {
         assert_eq!(
             old.unread, 0,
             "alice's first was read under the old identity and the second is the reader's own words"
+        );
+        // A mark below what the old identity already read is a no-op for
+        // the reader it became: the cursor never moves back.
+        assert!(matches!(
+            daemon
+                .handle(Request::MarkRead {
+                    conversation: old_dm.clone(),
+                    through: archived[0].seq,
+                    reader: Some(later.id.to_string()),
+                })
+                .await,
+            Response::Ok
+        ));
+        assert!(
+            !conversations(&daemon, later.id.as_str())
+                .await
+                .iter()
+                .any(|c| c.conversation == old_dm && c.unread != 0),
+            "nothing regressed"
         );
         // New words go to the record that is: its own conversation, with
         // the old one still listed and still read.

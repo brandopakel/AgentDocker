@@ -1537,9 +1537,15 @@ impl App {
         } else {
             // Opened, not merely selected: in the narrow layout the list
             // would otherwise hide the conversation the notification names.
-            if let Some(agent) = self.shell.selected.clone() {
-                self.open_thread_with(agent);
-            }
+            // An archived conversation sits under the id its party had at
+            // the time, so a retired identity opens its own, not the one of
+            // the record it became; the inbox's threads go by the current.
+            let thread_with = if archived {
+                target.agent.to_string()
+            } else {
+                self.canonical_agent(target.agent.as_str()).to_owned()
+            };
+            self.open_thread_with(thread_with);
             Screen::Questions
         };
         if let Some(channel) = channel {
@@ -2123,6 +2129,25 @@ mod tests {
             "the conversation's archive is asked for"
         );
         assert!(app.status.is_empty(), "nothing said to be unavailable");
+
+        // A sender retired into another record: its archive sits under the
+        // id it had, and that is the conversation opened.
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        app.aliases
+            .insert("sender-1".to_owned(), "sender-now".to_owned());
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action),
+        ));
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.shell.selected.as_deref(), Some("sender-now"));
+        assert_eq!(
+            app.shell.conversation.as_deref(),
+            Some(agentdocker_core::ConversationId::dm("user", "sender-1").as_str()),
+            "the archived conversation, not the current record's"
+        );
 
         // A channel message whose channel is no longer open.
         let (mut app, commands, messages, _home, mut action) = notification_app();

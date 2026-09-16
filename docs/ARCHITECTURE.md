@@ -690,7 +690,7 @@ Delivery to the human: `agentdocker watch --me` streams questions, `agentdocker 
 
 `post_question` publishes the same durable question without holding its connection;
 `cancel_question` closes it only for its asker and emits `question_cancelled`.
-Only an addressed recipient can close a question. Generic replies after closure
+A question closes through an addressed recipient's accepted answer, its asker's cancellation or its expiry, never through anyone reading it. Generic replies after closure
 remain ordinary inbox messages, but cannot change the accepted answer or satisfy
 a cancelled blocking wait. Blocking waits require the exact `question_closed`
 answer ID. Losing the answer message stream or the question event stream returns
