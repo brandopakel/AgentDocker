@@ -1429,6 +1429,48 @@
         "Existing-session reconnect and all-provider idle/busy parity remain open.",
         "A transient rendered-workflow navigation failure remains unexplained."
       ]
+    },
+    "thread_send_liveness_followup": {
+      "source_commit": "f974f3d1368123ccd75889e41d4e118acc17a85b",
+      "result": "passed local release gate; final CI and review pending",
+      "build": {
+        "format": 1,
+        "source_commit": "f974f3d1368123ccd75889e41d4e118acc17a85b",
+        "source_tree": "c8ddcf9a4f3fd3ea3ad7378ceb8d4f7ad0b48b30",
+        "source_input_sha256": "a92aa04bfda6e614904562b42064624fdde733f0a47ee0ec2e3c9d9b220fd2d2",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 21,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "ca0dc256e0f1cce1b3d57441424c39900f48a060f8bcb34978fc426f0cddfdcc",
+          "agentd": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65",
+          "agentdocker-ui": "87a8bd1108fdd1d6e6b0d6049eec2942832d51b641c047de20898edec3ce48f4"
+        }
+      },
+      "immutable_binaries": "/private/tmp/agentdocker-idle-wake-binaries4-2026-09-16",
+      "changes": [
+        "Both direct and thread composers use canonical recipient liveness; missing/ended direct recipients cannot submit.",
+        "The submit handler checks current liveness again, retaining both drafts when a previously queued submit arrives after the session ends.",
+        "Peer-only conversations remain read-only; channels remain sendable."
+      ],
+      "standard_gate": {
+        "rust_passed": 1018,
+        "rust_skipped": 7,
+        "python_passed": 77,
+        "lint_package_release": "passed",
+        "log": "/private/tmp/agentdocker-idle-wake-gate6-2026-09-16.log"
+      },
+      "regression": "app::messages::tests::ended_direct_threads_cannot_send_and_keep_their_drafts",
+      "limits": [
+        "This follow-up used the full gate and a state/command regression; the earlier 375-step native and actual hidden-notification trials remain specific to their recorded binaries.",
+        "Existing-session reconnect and broader provider acceptance remain open."
+      ],
+      "production_mutations": false
     }
   }
 }
