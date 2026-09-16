@@ -271,6 +271,12 @@ an in-process Tokio test cannot establish this boundary.
   terminal input, resize and initial attach dimensions are fenced while
   output remains available. These are bounded private trials; final integration,
   production activation and the broader acceptance matrix above remain open.
+  Review followup `981be68` passed 1,058 Rust tests, 84 Python checks,
+  20 pressured handovers (625 FIFO messages, 211 finished launches), all four
+  native Codex loopback stages and private install/rollback/pin trials. Four
+  deferred-exit/recovery warnings are retained; no owned processes survived.
+  Installer ambiguity now produces a fresh serving-daemon observation without
+  replaying Reload. The Linux pin-trial setup regression is fixed.
   *Passed* for the controller's installation pin across a handover
   (`desktop_reload_smoke.py --pin-trial`, in the same record): a live
   controller bound with a launch descriptor inside the first installed

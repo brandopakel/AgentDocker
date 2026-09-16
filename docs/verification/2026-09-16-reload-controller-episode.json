@@ -1659,5 +1659,342 @@
       "Terminal fence regression proves refusal and continued output, not preservation or replay of uncertain terminal writes across a completed switch.",
       "Trial timings are observations under concurrent host workloads, not a performance guarantee; physical accessibility/IME, sleep/reboot, broader provider and Windows acceptance remain open."
     ]
+  },
+  "review4_2026_09_16": {
+    "source_commit": "981be68f00ba49dd95d276c515f2774305f6a3c5",
+    "source_clean": true,
+    "source_input_sha256": "d0d57c1288dff30d16c65cd019d0f94f2077642a9c81a3afb62dd8cb826a19bf",
+    "binary_sha256": {
+      "agentdocker": "20740f00a379bf9f91c43fcb7143be7ae11825324ca334cbbd1909ddd58d21ac",
+      "agentd": "076cfd5b327f3e2e464d4a9ae6a54b5500330509566cffcb6407f932bb6d987e",
+      "agentdocker-ui": "f52024ad658aaece46f351d742bb8334786332d69afc791af901c16e21be1c15"
+    },
+    "source_and_binaries_unchanged_after_trials": true,
+    "standard_gate": {
+      "command": "bash scripts/verify.sh check",
+      "exit_code": 0,
+      "rust_passed": 1058,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "log": "/private/tmp/agentdocker-reload-review4-gate1-2026-09-16.log"
+    },
+    "review_fixes": [
+      "Lost/unexpected reload replies cause a fresh Ping, never a repeated Reload; reloaded remains null, and serving is the new observation or unknown. A real socket regression covers successor, predecessor and no-answer outcomes.",
+      "Binding/refusal branches explicitly require a write-failure reason; the transfer restart loop uses backoff capped at five seconds. Existing fence and abort/takeover restart regressions pass.",
+      "HumanLocationChanged accepts omitted/legacy-null optional fields and omits absent fields when serialized.",
+      "Linux retained-version trial creates generations two and three exactly once. Its new regression fails against 0ce62d7 with FileExistsError and passes against this source.",
+      "Current gate/installation docs and merged PR152 status corrected; local account paths replaced in published verification records."
+    ],
+    "old_source_regression": {
+      "result": "expected failure confirmed",
+      "log": "/private/tmp/agentdocker-pin-trial-old-source-regression-2026-09-16.log"
+    },
+    "limits": [
+      "Experimental reload remains gated; production activation and the broader provider/platform/reboot/uncertain-write matrix are not certified.",
+      "Native Codex trial uses the actual client and a loopback model fixture, not an external model service.",
+      "Pressure run logged two deferred-exit and two deferred-recovery warnings. All 211 launches reached final records and all owned processes retired; these warnings are retained.",
+      "Earlier 64d4762 UI and schema20-to21 results remain source-specific evidence; they were not rerun as part of this small review followup."
+    ],
+    "pressure": {
+      "path": "/private/tmp/agentdocker-reload-review4-pressure1-2026-09-16/result.json",
+      "sha256": "e691281d61449a241ef2f76306acb8521aa00e387dbccf45573d379fc6da62b2",
+      "result": {
+        "passed": true,
+        "reloads": 20,
+        "build_info": {
+          "arch": "aarch64",
+          "format": 1,
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "os": "macos",
+          "state_schema": 21,
+          "version": "0.1.0"
+        },
+        "scenarios": [
+          "625 messages sent through 20 reloads arrived once, in order; 0 send errors",
+          "211 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+          "both loggers' logs are contiguous across every reload",
+          "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+          "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+          "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 20 handovers accepted in between"
+        ],
+        "trial_processes": {
+          "provider": 50939,
+          "controller": 50940
+        },
+        "reload_seconds": [
+          1.351,
+          0.028,
+          0.027,
+          0.025,
+          0.026,
+          0.028,
+          0.031,
+          0.029,
+          0.027,
+          0.03,
+          0.031,
+          0.031,
+          0.549,
+          0.028,
+          0.032,
+          0.03,
+          0.547,
+          0.546,
+          0.546,
+          0.552
+        ],
+        "daemon_pids": [
+          50921,
+          51247,
+          51291,
+          51336,
+          51383,
+          51418,
+          51466,
+          51511,
+          51558,
+          51594,
+          51639,
+          52364,
+          52410,
+          52559,
+          52590,
+          52620,
+          52651,
+          52746,
+          52835,
+          52929,
+          53022
+        ],
+        "predecessor_retired_seconds": [
+          1.354,
+          0.031,
+          0.053,
+          0.029,
+          0.072,
+          0.031,
+          0.065,
+          0.033,
+          0.03,
+          5.038,
+          0.035,
+          0.034,
+          0.553,
+          0.032,
+          0.037,
+          0.034,
+          0.573,
+          0.573,
+          0.55,
+          5.591
+        ],
+        "sends": {
+          "delivered": 625,
+          "errors": []
+        },
+        "launches": {
+          "finished": 211,
+          "errors": []
+        },
+        "log_lines": {
+          "logger-a": 1078407,
+          "logger-b": 1072762
+        },
+        "controller_episode": {
+          "attempts": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "launched_pids": [
+            51231,
+            51761,
+            52748,
+            53873,
+            54196
+          ],
+          "handovers_during": 20
+        },
+        "survivors": [],
+        "cleanup_errors": [],
+        "daemon_log_warnings": {
+          "agentd::supervisor: exit not recorded durably; the owner's exit report is kept": 2,
+          "agentd::daemon::restore: recovered exit not durable; owner report kept without acknowledgement": 2
+        }
+      }
+    },
+    "native": {
+      "path": "/private/tmp/agentdocker-reload-review4-native1-2026-09-16/result.json",
+      "sha256": "a354d7285801558a831d02a2523c368d1d30e583245e9257d2d9aa3e0978c08e",
+      "result": {
+        "started_at": "2026-09-16T07:25:30.132071+00:00",
+        "scenario": "question",
+        "reload_enabled": true,
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "da75a7e59a149accee7ed731867d3d8b978ba1fd532c2ec22b3298a90a2b4407",
+        "source": {
+          "commit": "981be68f00ba49dd95d276c515f2774305f6a3c5",
+          "dirty": false,
+          "rust_and_driver_sha256": "f1af054c03a61cae51b36727054663cbc2bea7389f68bf7bc304f9da741d15b6"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "20740f00a379bf9f91c43fcb7143be7ae11825324ca334cbbd1909ddd58d21ac",
+        "daemon_sha256": "076cfd5b327f3e2e464d4a9ae6a54b5500330509566cffcb6407f932bb6d987e",
+        "pid": 55573,
+        "thread": "01a0a91b-3fe1-75d2-ab4d-747c213fb3a5",
+        "agent": "0d8b4fe718724272a7d137036d381164",
+        "automatic_hook_bootstrap": true,
+        "handovers": [
+          {
+            "stage": "idle",
+            "predecessor": 55572,
+            "successor": 55836,
+            "seconds_until_retired": 0.028287249995628372,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "unsubmitted-draft",
+            "predecessor": 55836,
+            "successor": 56030,
+            "seconds_until_retired": 0.14032587499241345,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "busy-with-human-and-peer-queued",
+            "predecessor": 56030,
+            "successor": 56572,
+            "seconds_until_retired": 0.13173695802106522,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "pending-question",
+            "predecessor": 56572,
+            "successor": 57008,
+            "seconds_until_retired": 0.13126529200235382,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          }
+        ],
+        "idle_wake_seconds": 7.580861082999036,
+        "cross_process_receipt": {
+          "thread": "01a0a91b-3fe1-75d2-ab4d-747c213fb3a5",
+          "turn": "01a0a91b-66ee-7f30-ae88-f86bff8ab11a",
+          "item": "01a0a91b-66fd-7932-870b-bf3eba4273fc"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "30365275202c4c5c"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0a91b-3fe1-75d2-ab4d-747c213fb3a5",
+            "turn": "01a0a91b-dc2e-79b1-8e80-21a7d4e2793a",
+            "item": "01a0a91b-dc3b-71c3-9601-73c42bec46f3"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "answer_receipt_after_handover": {
+          "message": "0bc6ff8f25094405",
+          "receipt": {
+            "thread": "01a0a91b-3fe1-75d2-ab4d-747c213fb3a5",
+            "turn": "01a0a91c-2a58-7cd2-81c0-b65472be21f8",
+            "item": "01a0a91c-2a68-79c2-961f-e1370c998b01"
+          }
+        },
+        "async_question_answer_once": true,
+        "question_id": "ef80532ba3664082",
+        "same_live_tui": true,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 10,
+        "agentdocker_integration": true,
+        "daemon_pids": [
+          55572,
+          55836,
+          56030,
+          56572,
+          57008
+        ],
+        "daemon_survivors": [],
+        "controller_survivors": [],
+        "cleanup_errors": [],
+        "raw_result_sha256": "cd29d44347fc2fc6b66c4ce22aab1082e69c22b0bbdb6891776342e61c9950a6"
+      }
+    },
+    "install": {
+      "path": "/private/tmp/agentdocker-reload-review4-install1-2026-09-16/result.json",
+      "sha256": "a4133d5e3ccc69eea7ed903763354f0eefdc7d4d8e26380789a66f812385bac9",
+      "result": {
+        "passed": true,
+        "scenarios": [
+          "with no daemon running, activation says so and asks nothing",
+          "installing a release reloads the running daemon to it; its agent keeps its process",
+          "rolling back reloads the daemon to the previous release; its agent keeps its process",
+          "daemon status names the serving pid and executable"
+        ],
+        "install_report_daemon": {
+          "answered": true,
+          "before": {
+            "executable": "/private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/0c779bb14e4a49b6d06b157a3d037209faa6095940f6af5b0df847e96aa90200/AgentDocker.app/Contents/MacOS/agentd",
+            "pid": 55016,
+            "version": "0.1.0"
+          },
+          "reloaded": true,
+          "serving": {
+            "executable": "/private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/216cc01ed94a5d0ad6388e10dcc97f0067265ffcff9a8662e7ca3c01dddbdbcb/AgentDocker.app/Contents/MacOS/agentd",
+            "pid": 55067,
+            "version": "0.1.0"
+          },
+          "summary": "reloaded: agentd 0.1.0 serves from /private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/216cc01ed94a5d0ad6388e10dcc97f0067265ffcff9a8662e7ca3c01dddbdbcb/AgentDocker.app/Contents/MacOS/agentd (pid 55067)"
+        },
+        "rollback_report_daemon": {
+          "answered": true,
+          "before": {
+            "executable": "/private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/216cc01ed94a5d0ad6388e10dcc97f0067265ffcff9a8662e7ca3c01dddbdbcb/AgentDocker.app/Contents/MacOS/agentd",
+            "pid": 55067,
+            "version": "0.1.0"
+          },
+          "reloaded": true,
+          "serving": {
+            "executable": "/private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/0c779bb14e4a49b6d06b157a3d037209faa6095940f6af5b0df847e96aa90200/AgentDocker.app/Contents/MacOS/agentd",
+            "pid": 55075,
+            "version": "0.1.0"
+          },
+          "summary": "reloaded: agentd 0.1.0 serves from /private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/0c779bb14e4a49b6d06b157a3d037209faa6095940f6af5b0df847e96aa90200/AgentDocker.app/Contents/MacOS/agentd (pid 55075)"
+        },
+        "daemon_status": "service   not installed (`agentdocker daemon install` adds a launchd user service)\ndaemon    agentd 0.1.0 up 0s at /private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/daemon.sock (pid 55075)\nserving   /private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/0c779bb14e4a49b6d06b157a3d037209faa6095940f6af5b0df847e96aa90200/AgentDocker.app/Contents/MacOS/agentd\ncontainer /tmp/agentdocker-62a6056f5716/container.sock\nlog       /private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/state/agentd.log\n"
+      }
+    },
+    "pin": {
+      "path": "/private/tmp/agentdocker-reload-review4-pin1-2026-09-16/result.json",
+      "sha256": "a7fe6a50a76a559bd18d9f0da4a06f9e92fb656b51c56cdf6bae77a23d8ee99c",
+      "result": {
+        "passed": true,
+        "scenarios": [
+          "a bound controller's launch descriptor in the first release pins that release, with the controller alive and nothing launched from it",
+          "with the first release neither current nor previous, a prune keeps it while a controller's binding pins it",
+          "unbinding releases the pin, and the next prune removes the release"
+        ],
+        "pin_trial": {
+          "first": "0c779bb14e4a49b6d06b157a3d037209faa6095940f6af5b0df847e96aa90200",
+          "second": "216cc01ed94a5d0ad6388e10dcc97f0067265ffcff9a8662e7ca3c01dddbdbcb",
+          "third": "9c2a92cc5bb1c3941f568457523b7e865b6d593acf8eab4b8b8b1091fa4b2267",
+          "serving_pid": 55383
+        },
+        "pin_cleanup": {
+          "errors": [],
+          "survivors": []
+        }
+      }
+    }
   }
 }

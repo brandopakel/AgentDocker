@@ -32,7 +32,14 @@ and join stress-test workers. Combined `64d4762` passed 1,056 Rust tests, 83
 Python checks, 275 native UI steps, 20 pressured handovers (334 ordered
 messages, 127 completed launches, no warnings/survivors), four native Codex
 loopback handovers and another distinct-source schema20-to21 migration. Final
-PR #155 review/CI and production activation remain pending.
+PR #155 review/CI and production activation remain pending. Review followup
+`981be68` passed 1,058 Rust tests, 84 Python checks, 20 pressured handovers
+(625 FIFO messages, 211 finished launches, four retained deferred-exit/recovery
+warnings, no survivors), four native Codex loopback handovers, private desktop
+install/rollback and retained-version pin trials. Lost reload replies now report
+an unknown outcome and probe the serving daemon without replay; a Linux pin-trial
+regression is fixed. See the existing
+[reload evidence](verification/2026-09-16-reload-controller-episode.json).
 
 September 15 prior installed checkpoint: verified `cf64ca3` (schema20), with
 production inputs identical to merged `4074275` (PR #153). The intact copied
