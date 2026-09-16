@@ -429,6 +429,56 @@ def smoke(binary_dir, output):
                     return observation
                 report["narrow_inbox_window"] = launch_routed("narrow-inbox", narrow_steps, narrow_gate)
                 checks.append("narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize")
+                # The largest saved columns must not crush the conversation.
+                # Change only this private profile while its window is closed.
+                catalog_path = state / "workspace.json"
+                saved_catalog = catalog_path.read_text()
+                pane_catalog = json.loads(saved_catalog)
+                pane_catalog["panes"] = {"rail": 440.0, "sidebar": 560.0, "thread": 640.0}
+                pane_catalog.setdefault("appearance", {})["text_size"] = 14.0
+                catalog_path.write_text(json.dumps(pane_catalog))
+                try:
+                    pane_steps = [
+                        step("resize", width=1200, height=760),
+                        step("click", id=f"project-{project}"), step("click", id="inbox"),
+                        step("click", id=f"thread-{narrow['id']}"),
+                        step("fill", id=f"reply-{narrow['id']}", text="Keep this conversation draft"),
+                        step("click", id=f"thread-{routed}"),
+                        step("wait_control", id=f"reply-{narrow['id']}", present=True),
+                        step("wait_control", id=f"reply-thread-{routed}", present=True),
+                        step("fill", id=f"reply-thread-{routed}", text="Keep this thread draft"),
+                        step("capture", name="maximum-columns-1200"),
+                        step("resize", width=1000, height=760),
+                        step("wait_control", id=f"reply-{narrow['id']}", present=False),
+                        step("wait_control", id=f"reply-thread-{routed}", present=True),
+                        step("capture", name="thread-fallback-1000"),
+                        step("click", id="close-thread"),
+                        step("wait_control", id=f"reply-{narrow['id']}", present=True),
+                        step("wait_text", text="Keep this conversation draft"),
+                        step("click", id=f"thread-{routed}"),
+                        step("wait_text", text="Keep this thread draft"),
+                        step("resize", width=1200, height=760),
+                        step("wait_control", id=f"reply-{narrow['id']}", present=True),
+                        step("click", id="settings"), step("click", id="larger-ui"),
+                        step("click", id="larger-ui"), step("click", id="larger-ui"),
+                        step("click", id="larger-ui"), step("click", id="inbox"),
+                        step("wait_control", id=f"reply-{narrow['id']}", present=False),
+                        step("wait_control", id=f"reply-thread-{routed}", present=True),
+                        step("wait_text", text="Keep this thread draft"),
+                        step("capture", name="zoom-without-resize"),
+                        step("resize", width=2000, height=900),
+                        step("wait_control", id=f"reply-{narrow['id']}", present=True),
+                        step("wait_control", id=f"reply-thread-{routed}", present=True),
+                        step("wait_text", text="Keep this conversation draft"),
+                        step("wait_text", text="Keep this thread draft"),
+                        step("capture", name="expanded-columns"),
+                    ]
+                    report["constrained_panes_window"] = launch("constrained-panes", pane_steps)
+                    kept = json.loads(catalog_path.read_text())["panes"]
+                    assert kept == pane_catalog["panes"], kept
+                    checks.append("maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences")
+                finally:
+                    catalog_path.write_text(saved_catalog)
                 rpc(endpoint, {"op": "stop", "agent": narrow["id"], "force": False})
                 until(lambda: rpc(endpoint, {"op": "inspect", "agent": narrow["id"]})["agent"]["status"]["state"] == "exited")
 
