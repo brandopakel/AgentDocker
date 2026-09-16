@@ -111,6 +111,8 @@ Updates affect the next app/CLI launch. They do not stop a live daemon or its ag
 
 `scripts/desktop_install_smoke.py --source artifacts/desktop --output artifacts/install-smoke` tests this flow under a disposable prefix, including stale-preview rejection, tampered executables, private activation metadata, retained versions and a responsive daemon across activation/rollback. CI uses two package generations of the same binaries and labels that limitation. `--previous-source` accepts a separately built older package for a trial between source revisions. Graphical acceptance and real-provider round trips are separate checks.
 
+The September 15 signed-copy repair passed the full 979-Rust/71-Python gate, 13 private installation scenarios and a 12-scenario actual `b605f8e` → `cf64ca3` → `b605f8e` upgrade/rollback with unchanged state schema. Strict signature verification and legacy hook/MCP commands pass through the copied application; rollback retains the compatible launcher while executing the selected older release. Copied-launcher notification navigation passed 26 existing/cold-window steps. See the [source and failure evidence](verification/2026-09-12-launcher-hook-repair.json). Production activation, physical notification clicks and public signing remain separate acceptance gates.
+
 ## Remove launchers and clean up retained versions
 
 **Settings → Manage installation and retained versions** offers **Preview removal** and **Preview cleanup**.

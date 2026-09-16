@@ -91,5 +91,245 @@
     "Application destination UX and persisted destination migration.",
     "Signed/notarized distribution and physical Notification Center acceptance.",
     "Earlier PRs and broader remaining-work items are not closed by this repair."
-  ]
+  ],
+  "summary": "Historical hook repair and September 15 signed-copy launcher follow-up: private installation, actual older-release rollback and copied-launcher navigation passed; production activation, native posting and physical clicks remain open.",
+  "signed_copy_followup_2026_09_15": {
+    "scope": "Intact signed macOS application copies, entrypoint forwarding, same-release legacy wrapper repair, actual pre-capability upgrade/rollback, and private existing/cold-window notification navigation.",
+    "source": {
+      "format": 1,
+      "source_commit": "cf64ca398f8117445938ede20dd60672c9e005d3",
+      "source_tree": "bd05e48d31fc474fdf5ecf91468ef0c353751318",
+      "source_input_sha256": "69c706c3aa0e9f73f5e2852cc6459791b11d8ce4472e14229d4a02d170ea1e6c",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 20,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "8c8771fc16a9f9a5bfb83bc1227f3eb206a7674f37668278321b12a4eab6b836",
+        "agentd": "81291f61955c028ee738f9c15788a6bb8638a93d6d948f812b36bbecaea6478f",
+        "agentdocker-ui": "ab61ce77e75015e01b068bc863014a842cddafcf0ed772a8ffa64b8d48d50363"
+      }
+    },
+    "older_source": {
+      "format": 1,
+      "source_commit": "b605f8e8bfd6bd92d5a88ae41e0bb038ded95d0f",
+      "source_tree": "fe9dcab6dfd69eb553f998b14c89bf21245284e5",
+      "source_input_sha256": "0d4368b517604fb74d34987d97438e07409cd67750208e6c4b04f1d73e7053e8",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 20,
+      "installation_lock": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "c7a00eb959622991d8416b798e23ae668e67bb60b414a7506aec950d66045cb7",
+        "agentd": "fa47f9294daf968fd033244b3618c514d0b23492e6f93c4c7c305ef6f98ed2b1",
+        "agentdocker-ui": "c501fa44da0953b43d8ffc6e9f87a9f37b06afef9069fde9a070c7699286ddb9"
+      }
+    },
+    "package_directory": "/private/tmp/agentdocker-launcher-integrity-package1-2026-09-15",
+    "package_binary_sha256": {
+      "agentdocker": "b74b1a27202440484ca87db55d735b0a977353243c52b4f4f363ca7e4a66808c",
+      "agentd": "9c5e2ac8ff4f9bcd69095e6fea8b3cb7e7cebb1344f7e57547d47a2fa5ee5b7d",
+      "agentdocker-ui": "46cd659691850ee7de63ba8aa4bdae50133b4757efac5a266cd83ff7d52fa1cb"
+    },
+    "standard_gate": {
+      "passed": true,
+      "rust_tests": 979,
+      "rust_skipped": 7,
+      "python_checks": 71,
+      "fmt": true,
+      "clippy": true,
+      "doctests": true,
+      "cargo_package": true,
+      "release_build": true,
+      "log": {
+        "private_path": "/private/tmp/agentdocker-launcher-integrity-gate1.log",
+        "sha256": "506e801c53cfb07cc2206cefcf5987541458ed572018f078f1a2dbcbf667256a"
+      }
+    },
+    "same_source_install": {
+      "private_path": "/private/tmp/agentdocker-launcher-install-trial1-2026-09-15/result.json",
+      "sha256": "1eddeefc4f6195547cf0fd077d4576653d9468c2c701b8dc991b6f7eae3bf5e1",
+      "result": {
+        "passed": true,
+        "scenarios": [
+          "preview without writes and pinned initial installation",
+          "same-release repair replaces the old wrapper and preserves activation",
+          "legacy bundle hooks and MCP work through generation 0a4467ee82e6ae4246dc054319c0c53a63b5256777297c5796c91188f19e68c8",
+          "activation keeps the existing fixture daemon responsive",
+          "legacy bundle hooks and MCP work through generation fcbcc5778c799917515da38f5feb7e16a75f927a03abd4089c3e3b584c7ee6ba",
+          "changed preview payload and active generation are refused",
+          "compatible rollback switches all commands and retains both releases",
+          "legacy bundle hooks and MCP work through generation 0a4467ee82e6ae4246dc054319c0c53a63b5256777297c5796c91188f19e68c8",
+          "tampered executable is refused without changing activation",
+          "cleanup retains active, rollback and running or legacy binaries",
+          "uninstall preserves the live daemon and its state",
+          "daemon exit releases its pin and invalidates stale cleanup preview",
+          "unused payloads removed; permanent pins and daemon state retained"
+        ],
+        "synthetic_second_generation": true,
+        "first": {
+          "id": "0a4467ee82e6ae4246dc054319c0c53a63b5256777297c5796c91188f19e68c8",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "cf64ca398f8117445938ede20dd60672c9e005d3",
+          "state_schema": 20,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "0a4467ee82e6ae4246dc054319c0c53a63b5256777297c5796c91188f19e68c8",
+          "version": "0.1.0"
+        },
+        "second": {
+          "id": "fcbcc5778c799917515da38f5feb7e16a75f927a03abd4089c3e3b584c7ee6ba",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "cf64ca398f8117445938ede20dd60672c9e005d3",
+          "state_schema": 20,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "fcbcc5778c799917515da38f5feb7e16a75f927a03abd4089c3e3b584c7ee6ba",
+          "version": "0.1.0"
+        }
+      }
+    },
+    "distinct_source_rollback": {
+      "private_path": "/private/tmp/agentdocker-launcher-legacy-rollback-trial2-2026-09-15/result.json",
+      "sha256": "0b6b2967b428cc92cfe3a9e91e46e6c78bfa4bd17016af6c9f46827b608b3530",
+      "result": {
+        "passed": true,
+        "scenarios": [
+          "preview without writes and pinned initial installation",
+          "legacy bundle hooks and MCP work through generation f1384405fda953bfffc03c60d7493498c76b62eefc00928ec67afa2b183d0225",
+          "activation keeps the existing fixture daemon responsive",
+          "legacy bundle hooks and MCP work through generation 0a4467ee82e6ae4246dc054319c0c53a63b5256777297c5796c91188f19e68c8",
+          "changed preview payload and active generation are refused",
+          "compatible rollback switches all commands and retains both releases",
+          "legacy bundle hooks and MCP work through generation f1384405fda953bfffc03c60d7493498c76b62eefc00928ec67afa2b183d0225",
+          "tampered executable is refused without changing activation",
+          "cleanup retains active, rollback and running or legacy binaries",
+          "uninstall preserves the live daemon and its state",
+          "daemon exit releases its pin and invalidates stale cleanup preview",
+          "unused payloads removed; permanent pins and daemon state retained"
+        ],
+        "synthetic_second_generation": false,
+        "first": {
+          "id": "f1384405fda953bfffc03c60d7493498c76b62eefc00928ec67afa2b183d0225",
+          "installation_lock": 1,
+          "launcher_redirect": 0,
+          "payload": "AgentDocker.app",
+          "source_commit": "b605f8e8bfd6bd92d5a88ae41e0bb038ded95d0f",
+          "state_schema": 20,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "f1384405fda953bfffc03c60d7493498c76b62eefc00928ec67afa2b183d0225",
+          "version": "0.1.0"
+        },
+        "second": {
+          "id": "0a4467ee82e6ae4246dc054319c0c53a63b5256777297c5796c91188f19e68c8",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "cf64ca398f8117445938ede20dd60672c9e005d3",
+          "state_schema": 20,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "0a4467ee82e6ae4246dc054319c0c53a63b5256777297c5796c91188f19e68c8",
+          "version": "0.1.0"
+        }
+      }
+    },
+    "notification_navigation": {
+      "private_path": "/private/tmp/agentdocker-launcher-notification-route-trial1-2026-09-15/result.json",
+      "sha256": "ad625abe288443b0bfebe1362937ecee2c385d2c17eb43651837ec974eec6a5d",
+      "result": {
+        "result": "passed",
+        "scope": "Exercise notification navigation through real desktop processes and private IPC.\n\nThis tests existing-window and cold-start routing with actual daemon state and\nrendered controls. It does not simulate or claim a Notification Center click.\nNative sender authorization and physical notification clicks are separate trials.\n",
+        "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+        "binary_sha256": {
+          "agentd": "9c5e2ac8ff4f9bcd69095e6fea8b3cb7e7cebb1344f7e57547d47a2fa5ee5b7d",
+          "agentdocker-ui": "46cd659691850ee7de63ba8aa4bdae50133b4757efac5a266cd83ff7d52fa1cb"
+        },
+        "checks": [
+          "existing_window_forwarding",
+          "question_navigation",
+          "older_direct_message",
+          "older_channel_message",
+          "answer_draft_preserved",
+          "channel_draft_preserved",
+          "cold_start_navigation",
+          "navigation_does_not_answer_or_drain"
+        ],
+        "accepted_activations": [
+          "4063b19912f54d9d",
+          "501848d520ad4af8",
+          "5832dd501a7b4771"
+        ],
+        "driver_sha256": "3b782511cb3b3c61291cd09d417949a581e4d49e314ddb1a4451d660a930c9f0",
+        "existing_window_steps": 24,
+        "cold_start_steps": 2,
+        "surviving_children": [],
+        "binaries_unchanged": true,
+        "elapsed_seconds": 9.626053709012922
+      }
+    },
+    "installation_assertions": [
+      "Copied application files, modes and hashes equal the inspected retained signed payload; codesign --verify --deep --strict passes.",
+      "Legacy absolute hook/MCP paths and all three executable roles work after activation and rollback.",
+      "The MCP process executes the selected immutable version, checked with ps; the older pre-capability symlink alias is canonicalized, while copied executables remain distinct paths.",
+      "The actual older build bootstraps its historical launcher using its own installer. The new installer retains a compatible signed copy when rolling back to that older payload.",
+      "Existing fixture daemon stays responsive; cleanup retains live pins and compatible launcher payload; uninstall preserves daemon state."
+    ],
+    "navigation_assertions": [
+      "Driver starts through a separately installed intact application copy under a private prefix.",
+      "24 existing-window and two cold-start steps passed in 9.626 seconds; all eight destination/draft checks passed.",
+      "Retained answer-draft and cold-route screenshots were visually inspected.",
+      "No surviving fixture children; binary hashes unchanged."
+    ],
+    "driver_source_commit": "ae1944026265514d70993c8269b69d3ec24da4c6",
+    "provenance_note": "Production binaries were built from clean cf64ca3. The older package is a separate clean build of b605f8e with the same state schema, not relabelled metadata. The only subsequent executable-trial driver change resolves historical symlink aliases in ps output; production Rust source is unchanged.",
+    "retained_failures": [
+      {
+        "kind": "Windows draft CI compile",
+        "log": {
+          "private_path": "/private/tmp/agentdocker-launcher-windows-ci1.log",
+          "sha256": "c45c3f3e308bacaae5611099b775a3d8a32620e0b7a24b63b8318d59c4b669af"
+        },
+        "cause": "The macOS launcher resolver was compiled but unused in Windows tests, failing -D warnings. cfg corrected at 68de683; subsequent Windows native-foundations check passed."
+      },
+      {
+        "kind": "Actual older-release trial 1",
+        "record": {
+          "private_path": "/private/tmp/agentdocker-launcher-legacy-rollback-trial1-2026-09-15/result.json",
+          "sha256": "144d7a35d122a8ddcedc6cbd38961e46bd163a07417aa7404541332f81d63713",
+          "result": {
+            "passed": false,
+            "scenarios": [
+              "preview without writes and pinned initial installation"
+            ],
+            "synthetic_second_generation": false
+          }
+        },
+        "log": {
+          "private_path": "/private/tmp/agentdocker-launcher-legacy-rollback-trial1.log",
+          "sha256": "7e44f991804554fce2227868cb1e16cf2e22c21e424891d452b1e9384c72ff37"
+        },
+        "cause": "Harness compared the historical symlink alias reported by ps directly with its canonical immutable executable. Failed before upgrade. ae19440 canonicalizes this check without weakening the copied-launcher exec assertion; the complete second trial passed."
+      }
+    ],
+    "review": {
+      "claude_source": "Approved b619..90be implementation design, contingent on focused tests and real older-payload trial; both have now passed. Peer message a993028fb7334417.",
+      "github_pr": 153,
+      "final_ci": "pending"
+    },
+    "remaining": [
+      "Production installation and Launch Services replacement acceptance.",
+      "Native notification authorization/posting and actual Notification Center clicks while foregrounded, hidden and closed.",
+      "Developer ID signing, notarization and Gatekeeper acceptance.",
+      "Latest combined UI/native-queue/reload integration and installed-provider acceptance remain separate."
+    ]
+  }
 }
