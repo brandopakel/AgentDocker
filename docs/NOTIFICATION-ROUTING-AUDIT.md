@@ -2,8 +2,10 @@
 
 Added September 10, 2026 from the user's live report and screenshot: clicking
 notifications repeatedly opens a blank, untitled Script Editor window instead of
-the relevant location in AgentDocker. This is an open usability defect in the
-[active delivery plan](DELIVERY-PLAN.md) and [remaining work](REMAINING-WORK.md).
+the relevant location in AgentDocker. Native posting and bounded installed click
+routing now pass on this Mac after the approved notification-permission change.
+Broader acceptance remains in the [active delivery plan](DELIVERY-PLAN.md) and
+[remaining work](REMAINING-WORK.md).
 The screenshot stays private; this document records only the reported behavior.
 
 ## Required behavior
@@ -119,7 +121,47 @@ construction to the first focused-window event. `agentdocker-ui
 macOS authorization/alert/sound/Notification Center settings without prompting or
 posting. It uses Apple's [notification settings query](https://developer.apple.com/documentation/usernotifications/unusernotificationcenter/getnotificationsettings(completionhandler:)).
 This provides evidence to distinguish a denied setting from an unsupported
-notification client. The packaged diagnostic reports `denied` authorization before and after 26 passing rendered navigation steps. No physical focus event was established, and a subsequent console-state query found the screen locked. The first-focus request and real click behavior therefore remain under acceptance; neither signing/payment nor startup timing is an established cause. The full candidate gate passed 979 Rust tests and 71 Python checks. The saved notification permission was not changed; enabling it awaits the user decision.
+notification client. In the initial trial, the packaged diagnostic reported
+`denied` authorization before and after 26 passing rendered navigation steps.
+No physical focus event was established, and a subsequent console-state query
+found the screen locked. That trial did not establish a signing/payment or
+startup-timing cause. The full candidate gate passed 979 Rust tests and 71
+Python checks. Permission was left unchanged pending the user's decision;
+the approved follow-up below establishes posting and click behavior separately
+from the first-focus request, which remains under acceptance.
+
+## Installed Notification Center acceptance (September 15)
+
+With the user's explicit approval, **Allow notifications** was enabled for
+AgentDocker in macOS System Settings. The read-only diagnostic changed from
+`denied` to `authorized`. The installed `cf64ca3` binaries and ad-hoc signature
+were unchanged: native posts then succeeded. This verifies that the saved
+permission blocked these local posts; no Developer ID identity or payment was
+needed for this bounded local trial.
+
+Actual Notification Center accessibility presses opened the exact Codex
+message with the app backgrounded and foregrounded, preserved another
+conversation's unsubmitted draft, opened a pending question and its answer
+field, and showed the unavailable-message fallback after an owned message was
+cleared. The end-to-end case sent an ordinary message through the production
+daemon, which posted the notification automatically; the click opened that
+message without a direct notification CLI call. The production GUI and daemon
+kept their PIDs, with no Script Editor or unnecessary production window observed.
+
+A separate click also opened a previously absent private daemon-origin window
+on a UI binary whose hash matched the installed app. That window and private
+daemon were retired, while the production window stayed open. This is narrower
+than a cold OS launch with no AgentDocker GUI process. Test questions/messages
+were cleaned up, the test draft returned to its original empty value, and strict
+bundle signature verification still passed. Initial incomplete and harness-failed
+attempts remain in the [existing launcher record](verification/2026-09-12-launcher-hook-repair.json).
+
+Still open: zero-process app launch, explicit Hide, old AppleScript notifications,
+expired-question variants, archived-history and broader project/account cases,
+and Developer ID/notarized release acceptance. Notification Center accessibility
+actions establish native activation; they do not establish physical mouse,
+VoiceOver or IME usability. PR #158's first-focus request is separate from this
+installed-release trial and is not credited as the permission fix.
 
 ## Work and acceptance
 
@@ -138,7 +180,7 @@ notification client. The packaged diagnostic reports `denied` authorization befo
    reaches AgentDocker. If a platform cannot provide actionable notifications,
    expose that limitation and retain the inbox entry; do not report working
    click routing from a successful notification post.
-5. (Open.) Test real Notification Center clicks with the app active, hidden and closed;
+5. (Partial: installed foreground/background message, pending-question, stale-message and private-origin clicks pass.) Complete real Notification Center clicks with the app hidden and fully closed;
    multiple projects/agents; pending and expired questions; retained history;
    stale notifications; old/new app installations; denied notification access;
    unsigned/local-preview and signed release candidates. Assert the correct
