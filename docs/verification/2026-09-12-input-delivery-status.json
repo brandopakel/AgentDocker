@@ -799,5 +799,68 @@
       "live_control_endpoint": "The existing Codex TUI has no shared app-server control socket. codex app-server daemon version could not connect to that socket; no provider restart was attempted.",
       "scope": "Source inspection identifies a scheduling limitation. It does not complete the per-recipient timing/fan-out trace or establish a safe steering route into the existing TUI."
     }
+  },
+  "idle_connection_ui_2026_09_16": {
+    "source": "e417ca51ac4feb27916401eb59d1c12ffab3ae44",
+    "result": "passed_bounded_source_acceptance",
+    "scope": "New supported launches default to idle input; human direct/thread composers expose recipient readiness and retain drafts through Connection guidance. Existing session reconnect and active-turn parity remain open.",
+    "full_gate": {
+      "result": "passed",
+      "rust_passed": 1009,
+      "rust_skipped": 7,
+      "python_checks": 77,
+      "log": "/private/tmp/agentdocker-idle-wake-gate2-2026-09-16.log",
+      "includes": [
+        "formatting",
+        "strict Clippy",
+        "doctests",
+        "documentation checks",
+        "packaging",
+        "release build"
+      ]
+    },
+    "interrupted_gate": {
+      "log": "/private/tmp/agentdocker-idle-wake-gate1-2026-09-16.log",
+      "result": "interrupted_at_user_pause",
+      "rust_passed": 222,
+      "signal_interrupted": 1,
+      "not_run": 786,
+      "skipped": 7,
+      "counts_as_pass": false
+    },
+    "native": {
+      "result": "passed",
+      "report": "/private/tmp/agentdocker-idle-wake-native1-2026-09-16/result.json",
+      "binary_sha256": {
+        "agentd": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65",
+        "agentdocker": "4257bc3b06dedfe34462a200dcde72c183468259e94de8ff18db14937b09daeb",
+        "agentdocker-ui": "15bb5cbff094da3a4bd86dd1f9fc6e279ffc4811c436199636f06b766cedd8fc"
+      },
+      "steps_by_window": {
+        "readiness-received": 17,
+        "provider-limit": 14,
+        "readiness-activity": 17,
+        "readiness-ready": 17,
+        "workflows": 178,
+        "restored": 6,
+        "readiness-paused": 17,
+        "readiness-contact": 17,
+        "narrow-inbox": 55
+      },
+      "total_steps": 338,
+      "elapsed_seconds": 109.86896808299934,
+      "method": "Actual rendered Iced callbacks in private daemon/window fixtures; not physical input or provider wake acceptance."
+    },
+    "visual_inspection": [
+      {
+        "path": "/private/tmp/agentdocker-idle-wake-native1-2026-09-16/readiness-contact/readiness-contact-composer.png",
+        "finding": "Draft, Send, Idle delivery not verified and Connection are visible."
+      },
+      {
+        "path": "/private/tmp/agentdocker-idle-wake-native1-2026-09-16/readiness-ready/readiness-ready-composer.png",
+        "finding": "Draft, Send, Receiver active awaiting first receipt and Connection are visible."
+      }
+    ],
+    "production_mutations": false
   }
 }

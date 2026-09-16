@@ -18,6 +18,8 @@ It invalidates any blanket claim that every connected runtime already wakes.
 The current UI change defaults new Claude/Codex launches to **Idle messages: On**,
 retains provider consent, and exposes recipient readiness beside direct and thread
 composers. Unsupported tools disclose the missing automatic route at launch.
+Source `e417ca5` passed the full 1,009-Rust/77-Python gate and 338 rendered
+native workflow steps, including composer readiness and retained drafts.
 It does not retrofit the live Claude process. Safe same-session reconnect with
 old queue/receipt/draft preservation, other providers' input adapters, and installed
 acceptance remain open. No live provider was restarted for this finding.

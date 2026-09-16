@@ -112,6 +112,14 @@ replacement acceptance.
 
 ## Engineering and acceptance still open
 
+September 16 idle-connection UI source `e417ca5` passed 1,009 Rust tests,
+77 Python checks and 338 rendered native workflow steps. New supported launches
+default to idle delivery, and direct/thread composers expose receiver readiness
+with draft-preserving Connection guidance. This closes the bounded UI wiring;
+existing-session reconnect, active-turn steering and provider acceptance remain
+open. The interrupted pre-sleep gate is retained beside the passing rerun in
+[input-delivery evidence](verification/2026-09-12-input-delivery-status.json).
+
 | Priority | Work remaining | Completion condition and evidence |
 | --- | --- | --- |
 | Top, reproduced September 16 | CLI broadcast input priority and pause delivery | Human `send --to all` message `5d0f2b149aa44cb6` is archived, but Codex kept working until the user repeated the pause directly. Trace fan-out, queue position, active-turn input/steering, controller offers and exact receipts. CLI input must match directly typed human input priority; peer messages share the provider route with their attribution intact. Test an idle and a busy recipient, provider waits, per-recipient pause receipt, draft preservation and duplicate prevention. Acceptance text alone is insufficient. No fix or passing acceptance claimed. |
