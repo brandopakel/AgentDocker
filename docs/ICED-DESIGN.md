@@ -275,6 +275,10 @@ python3 scripts/iced_workflow_smoke.py \
 ```
 
 The workflow driver opens actual native windows in private disposable state.
+A smoke window is kept beneath every ordinary window (`Level::AlwaysOnBottom`
+whenever `--smoke-test` is given): it holds fixture data, so it must never land
+on top of the installed app and be taken for it; captures come from the
+renderer, not the screen, so they are unaffected.
 A capture step waits one extra beat after the step before it: a screenshot
 renders the last drawn frame, and text whose widget state changed since that
 frame is skipped, so a capture taken in the same beat as a change can show a

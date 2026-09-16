@@ -80,6 +80,7 @@ pub mod handoff;
 pub use handoff::{HandoffBundle, HandoffDiff};
 
 pub mod runtime;
+pub mod usage;
 pub use runtime::{RuntimeInfo, Wiring};
 
 pub mod channel;

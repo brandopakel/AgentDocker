@@ -3265,5 +3265,357 @@
         "agentdocker-ui": "c3225eb8b77158291a5ad7dc0ae438229fa04e113bc272b987d8b6e8ea1167c2"
       }
     }
+  },
+  "review8_2026_09_16": {
+    "source_commit": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+    "change": "Distinguish no-active-turn from different-active-turn steering refusal. Changed ownership pauses immediately with the original receipt intact and the refused message still queued; it cannot consume a foreign turn completion or invent acknowledgement.",
+    "review": "https://github.com/brandopakel/AgentDocker/pull/155#issuecomment-5703871673",
+    "prior_binary_reproduction": {
+      "path": "/private/tmp/agentdocker-reload-review8-changed-turn-before-2026-09-16/result.json",
+      "sha256": "8070b3110363dca94c251097c21508ebfc31689bd79e5e2ba79e999960861055",
+      "report": {
+        "result": "failed",
+        "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+        "scenario": "changed-turn",
+        "checks": [],
+        "driver_sha256": "706d61ee0489b0c9c326771e78bfbbd33aa2fab2cb46c7fa0d7f8ddfcf4f4c85",
+        "source": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+        "binary_sha256": {
+          "agentdocker": "006f1c9e93620d4def356a8b22724b35fbd5595719377e33a4a97fa28283c430",
+          "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "agent": "749925bb88c640f490744fa76cea7115",
+        "initial_pid": 64307,
+        "error": "Codex completed an unexpected turn",
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        "elapsed_seconds": 2.7365662079828326
+      },
+      "binary_source_commit": "0993d1b",
+      "note": "The report source identifies the new driver. The executable came from the prior immutable review7 binaries3; its hashes are retained in this report."
+    },
+    "aborted_gate": {
+      "result": "aborted",
+      "exit_code": 143,
+      "log": "/private/tmp/agentdocker-reload-review8-gate1-2026-09-16.log",
+      "reason": "The Cargo claim conflicted with Claude, but the orchestration batch incorrectly started the gate anyway. Root immediately terminated its own verified process group. No completed test result is claimed; gate2 ran after a successful exclusive claim."
+    },
+    "gate": {
+      "source_commit": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+      "result": "passed",
+      "rust_passed": 1077,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "doctests": "passed",
+      "format_and_strict_lint": "passed",
+      "packaging": "passed",
+      "release_build": "passed",
+      "log": "/private/tmp/agentdocker-reload-review8-gate2-2026-09-16.log",
+      "junit": "/private/tmp/agentdocker-reload-review8-gate2-nextest-2026-09-16/junit.xml"
+    },
+    "build": {
+      "format": 1,
+      "source_commit": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+      "source_tree": "5868528e00c682007cc778f2611190ec24faabee",
+      "source_input_sha256": "d77c037b28e68c5f83433b561d690fd62018edf4448d05f7a9ae03c1510e12f7",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "eb6107816eff85c0c0f8fb5e572f726117e7cdfd55926001637ac06715a16820",
+        "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce",
+        "agentdocker-ui": "c3225eb8b77158291a5ad7dc0ae438229fa04e113bc272b987d8b6e8ea1167c2"
+      }
+    },
+    "immutable_binaries": "/private/tmp/agentdocker-reload-review8-binaries1-2026-09-16",
+    "owned_codex_trials": {
+      "changed-turn": {
+        "path": "/private/tmp/agentdocker-reload-review8-changed-turn-2026-09-16/result.json",
+        "sha256": "883c6ef5a282a430993507c9f2814b72980c67260cce5f325d4e1894ab322bbd",
+        "report": {
+          "result": "passed",
+          "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+          "scenario": "changed-turn",
+          "checks": [
+            "different-active-turn refusal pauses explicitly before processing that turn completion",
+            "original input receipt remains unchanged",
+            "unsubmitted peer message remains queued once",
+            "no receipt or second submission invented for the refused input"
+          ],
+          "driver_sha256": "706d61ee0489b0c9c326771e78bfbbd33aa2fab2cb46c7fa0d7f8ddfcf4f4c85",
+          "source": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+          "binary_sha256": {
+            "agentdocker": "eb6107816eff85c0c0f8fb5e572f726117e7cdfd55926001637ac06715a16820",
+            "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+          },
+          "provider_version": "codex-cli 0.154.0",
+          "agent": "fde67674c7734997ac3b2bb734267996",
+          "initial_pid": 97771,
+          "messages": [
+            {
+              "id": "1fdf0abb3c434bee",
+              "text": "BUSY_START_NONCE",
+              "from": "552d3a8a45cd47ca8ef81da0cca12e9d"
+            },
+            {
+              "id": "db39c2bafe054fd1",
+              "text": "PEER_BUSY_NONCE",
+              "from": "86e7c6f335bc452bb92c5beb91168883"
+            }
+          ],
+          "retained_messages": [
+            "db39c2bafe054fd1"
+          ],
+          "first_receipt": {
+            "thread": "01a0abe9-d7e5-7b52-8b91-7260e792d801",
+            "turn": "01a0abe9-da0c-7bd3-ab05-a84e1c21fa28",
+            "item": "01a0abe9-da39-74c0-9960-3fd657d33acb"
+          },
+          "pause_reason": "Codex has a different active turn; input delivery paused and the message remains queued until conversation recovery",
+          "changed_turn": {
+            "expected": "01a0abe9-da0c-7bd3-ab05-a84e1c21fa28",
+            "reported": "fixture-unexpected-turn",
+            "completion_emitted": true
+          },
+          "production_mutations": false,
+          "no_resubmission": true,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "elapsed_seconds": 2.5724129590089433
+        }
+      },
+      "refused": {
+        "path": "/private/tmp/agentdocker-reload-review8-refused-2026-09-16/result.json",
+        "sha256": "a664e72c5f2f0b6ddcea9a6da488e40a4f89acbdf03740a4513917f83e27f488",
+        "report": {
+          "result": "passed",
+          "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+          "scenario": "refused",
+          "checks": [
+            "CLI human and peer sends use owned input route",
+            "refused input starts once after completion",
+            "exact per-message receipt",
+            "no duplicated provider submission",
+            "one injected precondition refusal; no retry while the original turn remains active"
+          ],
+          "driver_sha256": "706d61ee0489b0c9c326771e78bfbbd33aa2fab2cb46c7fa0d7f8ddfcf4f4c85",
+          "source": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+          "binary_sha256": {
+            "agentdocker": "eb6107816eff85c0c0f8fb5e572f726117e7cdfd55926001637ac06715a16820",
+            "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+          },
+          "provider_version": "codex-cli 0.154.0",
+          "agent": "6371ebee02b643f2b5e4cd787cc1b6c9",
+          "initial_pid": 98319,
+          "messages": [
+            {
+              "id": "27c96ca627394a33",
+              "text": "BUSY_START_NONCE",
+              "from": "b1b10b5f97a540048d6363d15935c026"
+            },
+            {
+              "id": "f01dc494d8e04815",
+              "text": "PEER_BUSY_NONCE",
+              "from": "77c13863ecd0429a9686da005a6145ba"
+            }
+          ],
+          "receipts": {
+            "27c96ca627394a33": {
+              "thread": "01a0abea-0726-71f3-bf12-36bbbdff3d06",
+              "turn": "01a0abea-094f-7851-8a79-3f1d11d3bf18",
+              "item": "01a0abea-097e-7bc3-ae62-5840302f42e3"
+            },
+            "f01dc494d8e04815": {
+              "thread": "01a0abea-0726-71f3-bf12-36bbbdff3d06",
+              "turn": "01a0abea-150c-7573-acef-09c1efd79c79",
+              "item": "01a0abea-151d-7580-affd-d6f25257d1bb"
+            }
+          },
+          "final_pid": 98319,
+          "same_turn": false,
+          "production_mutations": false,
+          "exact_receipts": true,
+          "no_resubmission": true,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "elapsed_seconds": 4.553347292006947
+        }
+      },
+      "busy": {
+        "path": "/private/tmp/agentdocker-reload-review8-busy-2026-09-16/result.json",
+        "sha256": "3e191477f3c4c929f69a4fdbaeb6686e7f499c7047c09b5f93decf37243af8ca",
+        "report": {
+          "result": "passed",
+          "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+          "scenario": "busy",
+          "checks": [
+            "CLI human and peer sends use owned input route",
+            "same active turn",
+            "exact per-message receipt",
+            "no duplicated provider submission"
+          ],
+          "driver_sha256": "706d61ee0489b0c9c326771e78bfbbd33aa2fab2cb46c7fa0d7f8ddfcf4f4c85",
+          "source": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+          "binary_sha256": {
+            "agentdocker": "eb6107816eff85c0c0f8fb5e572f726117e7cdfd55926001637ac06715a16820",
+            "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+          },
+          "provider_version": "codex-cli 0.154.0",
+          "agent": "6d7005d28e0d4bc486c488b0131ee74f",
+          "initial_pid": 98986,
+          "messages": [
+            {
+              "id": "45fe123311394c2d",
+              "text": "BUSY_START_NONCE",
+              "from": "80d254398f1e4766a9fe685a46f576ad"
+            },
+            {
+              "id": "4f3206ea9eb34424",
+              "text": "PEER_BUSY_NONCE",
+              "from": "b6a9c59ecba74b07afb1cce5093d640a"
+            },
+            {
+              "id": "8dfd5e37952b4fe5",
+              "text": "HUMAN_BROADCAST_PAUSE_NONCE",
+              "from": "80d254398f1e4766a9fe685a46f576ad"
+            }
+          ],
+          "receipts": {
+            "4f3206ea9eb34424": {
+              "thread": "01a0abea-39ab-7cc1-a612-14b6fa92a869",
+              "turn": "01a0abea-3bd2-7293-9aa6-02af646b4c1c",
+              "item": "01a0abea-3dee-7231-b156-91d92f1475d6"
+            },
+            "8dfd5e37952b4fe5": {
+              "thread": "01a0abea-39ab-7cc1-a612-14b6fa92a869",
+              "turn": "01a0abea-3bd2-7293-9aa6-02af646b4c1c",
+              "item": "01a0abea-3feb-7953-a16c-f5133049d5c5"
+            },
+            "45fe123311394c2d": {
+              "thread": "01a0abea-39ab-7cc1-a612-14b6fa92a869",
+              "turn": "01a0abea-3bd2-7293-9aa6-02af646b4c1c",
+              "item": "01a0abea-3c03-71b0-b09e-4edbdcda343c"
+            }
+          },
+          "final_pid": 98986,
+          "same_turn": true,
+          "production_mutations": false,
+          "exact_receipts": true,
+          "no_resubmission": true,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "elapsed_seconds": 2.5613467500079423
+        }
+      },
+      "lost-reply": {
+        "path": "/private/tmp/agentdocker-reload-review8-lost-reply-2026-09-16/result.json",
+        "sha256": "1ec89cd6b42c5f6afbe62be790011cef47dbdc92e05b3d4c30410a8f5e8862c9",
+        "report": {
+          "result": "passed",
+          "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+          "scenario": "lost-reply",
+          "checks": [
+            "CLI human and peer sends use owned input route",
+            "same active turn",
+            "exact per-message receipt",
+            "no duplicated provider submission",
+            "lost steering reply reconciled after supervised controller restart"
+          ],
+          "driver_sha256": "706d61ee0489b0c9c326771e78bfbbd33aa2fab2cb46c7fa0d7f8ddfcf4f4c85",
+          "source": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+          "binary_sha256": {
+            "agentdocker": "eb6107816eff85c0c0f8fb5e572f726117e7cdfd55926001637ac06715a16820",
+            "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+          },
+          "provider_version": "codex-cli 0.154.0",
+          "agent": "ab217be28ba542dc8cbc42fe857cb5b2",
+          "initial_pid": 99633,
+          "messages": [
+            {
+              "id": "24028e8ea7b74387",
+              "text": "BUSY_START_NONCE",
+              "from": "e536bc8863594e14a9afa22f144e5320"
+            },
+            {
+              "id": "65476614669c4ddb",
+              "text": "PEER_BUSY_NONCE",
+              "from": "4ac1178f56964bb18f04a4dfd7b8094f"
+            }
+          ],
+          "receipts": {
+            "65476614669c4ddb": {
+              "thread": "01a0abea-739a-79f0-85dc-82bdaa5775b7",
+              "turn": "01a0abea-75c5-7e22-aee9-299aec17252d",
+              "item": "01a0abea-77e4-7563-8da9-f87132fd4070"
+            },
+            "24028e8ea7b74387": {
+              "thread": "01a0abea-739a-79f0-85dc-82bdaa5775b7",
+              "turn": "01a0abea-75c5-7e22-aee9-299aec17252d",
+              "item": "01a0abea-75f6-7ee2-b4ce-2c411f8c3359"
+            }
+          },
+          "final_pid": 2064,
+          "same_turn": true,
+          "production_mutations": false,
+          "exact_receipts": true,
+          "no_resubmission": true,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "elapsed_seconds": 32.1277447080065
+        }
+      }
+    },
+    "limits": [
+      "Private actual Codex0.154.0 with a deterministic local model service; no production profile, configuration, daemon or provider session changed.",
+      "Changed-turn refusal and its following foreign completion are injected by the private provider wrapper. The result proves queue retention and safe pause, not provider support for taking over a foreign active turn.",
+      "Review7 pressure and native-TUI handovers were not rerun for this owned-bridge classifier change. The daemon hash is unchanged; their original source, CLI hashes, timings and warnings remain in review7.",
+      "All four trials cleaned up without forced termination, errors or surviving fixture processes. Broader provider/model-service, installed, sleep/reboot and platform acceptance remain open."
+    ]
   }
 }
