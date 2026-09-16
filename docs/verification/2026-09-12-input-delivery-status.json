@@ -1148,6 +1148,287 @@
       "limits": [
         "Existing-session reconnect, all-provider idle/busy parity, provider consent and hands-on input acceptance remain open."
       ]
+    },
+    "alias_and_hidden_window_followup": {
+      "source_commit": "2de599406b0c01bfd5db3f2cb6ed11d7d606a28f",
+      "build": {
+        "format": 1,
+        "source_commit": "2de599406b0c01bfd5db3f2cb6ed11d7d606a28f",
+        "source_tree": "f12857b5aca5945c41aef7f6482d468339187ed0",
+        "source_input_sha256": "b08d13f8b7867f48cc0f5dbc6352f4aca728c276ae749183016835be787238cd",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 21,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "4257bc3b06dedfe34462a200dcde72c183468259e94de8ff18db14937b09daeb",
+          "agentd": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65",
+          "agentdocker-ui": "de5720ca3d28d6e82d991a54a9f446d4d6aaa8871463279df21955a9df703713"
+        }
+      },
+      "gate": {
+        "result": "passed",
+        "rust_passed": 1013,
+        "rust_skipped": 7,
+        "python_passed": 77,
+        "log": "/private/tmp/agentdocker-idle-wake-gate5-2026-09-16.log"
+      },
+      "native_failure": {
+        "path": "/private/tmp/agentdocker-idle-wake-native3-2026-09-16/result.json",
+        "report": {
+          "result": "failed",
+          "checks": [],
+          "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+          "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+          "architecture": "arm64",
+          "binary_sha256": {
+            "agentd": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65",
+            "agentdocker": "4257bc3b06dedfe34462a200dcde72c183468259e94de8ff18db14937b09daeb",
+            "agentdocker-ui": "de5720ca3d28d6e82d991a54a9f446d4d6aaa8871463279df21955a9df703713"
+          },
+          "error": "graphical acceptance failed: Timed out: scenario=Some(Fill { id: \"session-search\", text: \"31f7d89abebd45b99e434f0ca2604dcb\" }),  connected=true, runtime_rows=14, fixture_discovered=true, capture_requested=false",
+          "elapsed_seconds": 150.3111442499794
+        },
+        "scope": "Workflow left the Sessions screen for Messages before session-search after 25 steps; cause unisolated. No source or timeout was changed for the rerun. This retained failure is not explained by a passing rerun."
+      },
+      "native_rerun": {
+        "path": "/private/tmp/agentdocker-idle-wake-native4-2026-09-16/result.json",
+        "report": {
+          "result": "passed",
+          "checks": [
+            "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+            "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+            "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+            "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+            "rendered_actions",
+            "answer_and_draft_navigation",
+            "native_vt_rendering",
+            "terminal_attach_detach",
+            "channels",
+            "setup_review_apply_undo",
+            "launch_and_confirmed_stop",
+            "focused_control_reveal",
+            "compact_zoom",
+            "current_history_separation",
+            "project_attention",
+            "compact_session_navigation",
+            "folder_pin_has_no_project_files",
+            "same_project_after_launch",
+            "last_project_restore",
+            "quiet_project_retained",
+            "saved_appearance",
+            "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+            "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+            "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+            "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences"
+          ],
+          "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+          "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+          "architecture": "arm64",
+          "binary_sha256": {
+            "agentd": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65",
+            "agentdocker": "4257bc3b06dedfe34462a200dcde72c183468259e94de8ff18db14937b09daeb",
+            "agentdocker-ui": "de5720ca3d28d6e82d991a54a9f446d4d6aaa8871463279df21955a9df703713"
+          },
+          "first_window": {
+            "samples": 305,
+            "elapsed_seconds": 45.81313087500166,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "restored_window": {
+            "samples": 13,
+            "elapsed_seconds": 2.7007356669928413,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "activity_only_window": {
+            "samples": 35,
+            "elapsed_seconds": 6.702112041995861,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "contact_window": {
+            "samples": 25,
+            "elapsed_seconds": 4.995903667004313,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "ready_window": {
+            "samples": 28,
+            "elapsed_seconds": 5.38166304200422,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "received_window": {
+            "samples": 28,
+            "elapsed_seconds": 5.076214250002522,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "paused_window": {
+            "samples": 25,
+            "elapsed_seconds": 4.856579874991439,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "provider_limit_window": {
+            "samples": 22,
+            "elapsed_seconds": 4.433828624984017,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "narrow_inbox_window": {
+            "samples": 100,
+            "elapsed_seconds": 14.46757104198332,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "constrained_panes_window": {
+            "samples": 68,
+            "elapsed_seconds": 9.681164957990404,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "idle_resources": {
+            "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+            "samples": [
+              {
+                "window": {
+                  "rss_bytes": 198885376,
+                  "ps_cpu_percent": 0.9
+                },
+                "daemon": {
+                  "rss_bytes": 18825216,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 198885376,
+                  "ps_cpu_percent": 0.0
+                },
+                "daemon": {
+                  "rss_bytes": 18825216,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 198901760,
+                  "ps_cpu_percent": 1.2
+                },
+                "daemon": {
+                  "rss_bytes": 18825216,
+                  "ps_cpu_percent": 0.1
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 198754304,
+                  "ps_cpu_percent": 0.0
+                },
+                "daemon": {
+                  "rss_bytes": 18825216,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 198754304,
+                  "ps_cpu_percent": 1.0
+                },
+                "daemon": {
+                  "rss_bytes": 18825216,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 198754304,
+                  "ps_cpu_percent": 0.0
+                },
+                "daemon": {
+                  "rss_bytes": 18825216,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 198754304,
+                  "ps_cpu_percent": 0.4
+                },
+                "daemon": {
+                  "rss_bytes": 18825216,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 200179712,
+                  "ps_cpu_percent": 18.3
+                },
+                "daemon": {
+                  "rss_bytes": 18825216,
+                  "ps_cpu_percent": 0.7
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 198836224,
+                  "ps_cpu_percent": 0.9
+                },
+                "daemon": {
+                  "rss_bytes": 18825216,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 198836224,
+                  "ps_cpu_percent": 11.0
+                },
+                "daemon": {
+                  "rss_bytes": 18825216,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 198836224,
+                  "ps_cpu_percent": 0.2
+                },
+                "daemon": {
+                  "rss_bytes": 18825216,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 198836224,
+                  "ps_cpu_percent": 21.0
+                },
+                "daemon": {
+                  "rss_bytes": 18825216,
+                  "ps_cpu_percent": 0.9
+                }
+              }
+            ],
+            "summary": {
+              "window": {
+                "median_rss_bytes": 198836224.0,
+                "maximum_rss_bytes": 200179712,
+                "median_ps_cpu_percent": 0.9
+              },
+              "daemon": {
+                "median_rss_bytes": 18825216.0,
+                "maximum_rss_bytes": 18825216,
+                "median_ps_cpu_percent": 0.0
+              }
+            }
+          },
+          "elapsed_seconds": 119.78585404198384
+        },
+        "steps": 375
+      },
+      "limits": [
+        "Existing-session reconnect and all-provider idle/busy parity remain open.",
+        "A transient rendered-workflow navigation failure remains unexplained."
+      ]
     }
   }
 }
