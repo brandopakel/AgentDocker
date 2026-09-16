@@ -157,10 +157,13 @@ Successor readiness writes run on a blocking worker with a bounded timeout.
 Source `0bcde3c` passed the full 1,068-Rust/84-Python gate and 20 pressured
 handovers with 900 ordered messages and 563 finished launches. Ten deferred-exit
 warnings occurred behind transfer fences; every affected exit was eventually
-recorded and no fixture process survived. The actual Codex trial completed four
-handovers but exposed a fixture race: daemon queue acknowledgement can precede
-moving the already-persisted receipt into local completed history. The harness
-now waits explicitly for that final receipt; its rerun is pending.
+recorded and no fixture process survived. The first actual Codex trial completed four
+handovers but failed its immediate completed-history assertion. Daemon queue
+acknowledgement precedes moving the persisted receipt into local completed
+history; the corrected harness waits for that transition. Its rerun passed all
+four handovers and the exact answer receipt with no survivors. The retained
+release-pin trial also passed. Final source `54a47f8` passed the full
+1,068-Rust/84-Python gate; final GitHub CI and review remain pending.
 
 PR #155 final-head review follow-up (September 16) now rolls back an agent
 whose first write fails or is fenced, cleans an isolated pane worktree after
