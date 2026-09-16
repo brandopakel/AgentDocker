@@ -136,7 +136,7 @@ fails when it and the records disagree.
 | [2026-09-11-codex-appserver-input.json](verification/2026-09-11-codex-appserver-input.json) | passed |
 | [2026-09-11-codex-hook-discovery.json](verification/2026-09-11-codex-hook-discovery.json) | passed |
 | [2026-09-11-codex-input-bridge.json](verification/2026-09-11-codex-input-bridge.json) | Experimental managed native Codex input, queue ownership and bounded crash recovery |
-| [2026-09-11-codex-input-review.json](verification/2026-09-11-codex-input-review.json) | network_review_2026_09_15: focused checks passed; full gate and actual provider acceptance pending |
+| [2026-09-11-codex-input-review.json](verification/2026-09-11-codex-input-review.json) | network_review_2026_09_15: Full release gate passed; actual managed-network callback acceptance remains open after a private configuration denied the connection before emitting a callback. |
 | [2026-09-11-codex-queue-recovery.json](verification/2026-09-11-codex-queue-recovery.json) | passed |
 | [2026-09-11-daily-updates.json](verification/2026-09-11-daily-updates.json) | passed_for_listed_scope |
 | [2026-09-11-desktop-identity.json](verification/2026-09-11-desktop-identity.json) | Iced desktop identity round of 2026-09-11 on codex/desktop-delivery: per-project monogram tiles, the window-local unviewed-done badge, the Connections hooks copy and the per-launch Claude channel checkbox. |

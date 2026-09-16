@@ -206,8 +206,10 @@ can cover multiple pending connections to that destination, as the
 Allow selects `accept` for the pending request, never a session or policy grant.
 Private ledger version 9 retains this separate review kind and refuses it in an
 older-version record without rewriting bytes.
-The implementation and receipt/refusal regressions are under validation; actual
-provider, native UI and final integration acceptance remain open. `writeStdin`,
+The implementation passed 60 focused input tests and the full 973-Rust/70-Python
+release gate. A private-profile actual Codex trial denied the connection before
+emitting an approval callback; actual managed-network provider, native UI and
+final integration acceptance remain open. See the [retained trial](verification/2026-09-11-codex-input-review.json). `writeStdin`,
 broader permission forms and elicitation still need their own handling.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete

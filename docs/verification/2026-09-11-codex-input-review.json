@@ -161,7 +161,7 @@
     "final_head_ci_and_review": "pending"
   },
   "network_review_2026_09_15": {
-    "status": "focused checks passed; full gate and actual provider acceptance pending",
+    "status": "Full release gate passed; actual managed-network callback acceptance remains open after a private configuration denied the connection before emitting a callback.",
     "base_source": "48ea9189222c8e7c5d089c3567d9043a1d657758",
     "scope": "Managed network approval callbacks, exact destination and grouped connection scope, one-time decisions, correlated human receipts, retained ledger version 9 and refusal of incomplete or wrong-identity requests.",
     "first_focused_build": {
@@ -184,6 +184,55 @@
     "limits": [
       "No actual-provider network callback acceptance claimed yet.",
       "stdin review, remote approvals, broader permission forms, MCP elicitation and secret inputs remain open."
-    ]
+    ],
+    "production_source": "def5bfa1f921139bb5a83c7622e75ea3b01451e9",
+    "full_gate": {
+      "result": "passed",
+      "rust_tests": 973,
+      "rust_tests_skipped": 6,
+      "python_checks": 70,
+      "fmt_clippy_doctests_packaging_release": "passed",
+      "log": {
+        "path": "/private/tmp/agentdocker-network-review-gate1.log",
+        "sha256": "977a2003082b8ef84c35f290ff7926658c15c694e3787fb26e9ac6b95916517b"
+      },
+      "build": {
+        "format": 1,
+        "source_commit": "def5bfa1f921139bb5a83c7622e75ea3b01451e9",
+        "source_tree": "4c7d7a4cbb3d13931b86e992f62d9ce546b14c63",
+        "source_input_sha256": "47c7b91b92f0464068d14fd3bade885bc677ce74c5858b7f9a9bf322a5d6703a",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 20,
+        "installation_lock": 1,
+        "binary_directory": "/private/tmp/agentdocker-network-review-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "ad1c1e423be7b370106647c5846a5dade2e730ba67a2559906c27086775394ee",
+          "agentd": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+          "agentdocker-ui": "2f240593c5cf5d0e321f28116ea81da747a9838e327e35c6e87423f46d37203b"
+        }
+      }
+    },
+    "actual_network_trial": {
+      "result": "failed",
+      "artifact": {
+        "path": "/private/tmp/agentdocker-network-approval-deny1-2026-09-15/result.json",
+        "sha256": "0f0326fde3a42f58c4f94d07e0e927d1fd2a39ded024d517df6f61f63235a6d0"
+      },
+      "driver": {
+        "path": "/private/tmp/agentdocker-network-approval-trial-2026-09-15.py",
+        "sha256": "8d2cd0ed8c14017c640fb8445cc30fe15952735be85f616344f3667eb7a1566e"
+      },
+      "failure": "No network question arrived: actual Codex blocked example.com as outside the configured sandbox allowlist. Three ordinary inputs completed, but no approval callback was emitted. This is not approval acceptance.",
+      "cleanup": "Passed; no owned fixture processes remained.",
+      "diagnosis": "The isolated profile enabled the local proxy. Current provider source attaches its approval decider only when managed-network requirements enable that flow; ordinary profile networking does not establish this condition. No isolated managed-requirements route has been verified. System or user provider settings were not modified.",
+      "provider_sources": [
+        "https://github.com/openai/codex/blob/main/codex-rs/core/src/config/network_proxy_spec.rs",
+        "https://github.com/openai/codex/blob/main/codex-rs/core/src/config/mod.rs",
+        "https://learn.chatgpt.com/docs/app-server#command-execution-approvals"
+      ]
+    }
   }
 }
