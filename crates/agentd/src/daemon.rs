@@ -1627,10 +1627,11 @@ impl Daemon {
             Request::SearchMessages {
                 query,
                 project,
+                reader,
                 before_seq,
                 limit,
             } => {
-                self.search_messages(query, project, before_seq, limit)
+                self.search_messages(query, project, reader, before_seq, limit)
                     .await
             }
             Request::ChannelOpen {

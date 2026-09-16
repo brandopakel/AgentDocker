@@ -112,6 +112,7 @@ impl Daemon {
         &self,
         query: String,
         project: Option<String>,
+        reader: Option<String>,
         before_seq: Option<u64>,
         limit: usize,
     ) -> Response {
@@ -119,6 +120,10 @@ impl Daemon {
         if query.is_empty() || query.len() > 256 {
             return Response::error(ErrorCode::Invalid, "a search needs 1 to 256 characters");
         }
+        let reader = match self.reader_id(reader.as_deref()) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
         let project = match project {
             Some(selector) => match self.resolve_project(&selector).await {
                 Ok(id) => Some(id),
@@ -127,29 +132,15 @@ impl Daemon {
             None => None,
         };
         let state = lock(&self.state);
-        let scope = if let Some(project) = project.as_ref() {
-            let mut ids: BTreeSet<_> = state.conversation_ids_in(project).into_iter().collect();
-            let heads = match state.store.conversation_heads() {
-                Ok(heads) => heads,
-                Err(error) => {
-                    return Response::error(ErrorCode::StorageUnavailable, error.to_string());
-                }
-            };
-            // Live pairs supply empty conversations, but finished records
-            // still have searchable history. Add only archived conversations
-            // belonging to this project, without enumerating historical pairs.
-            ids.extend(heads.into_iter().filter_map(|head| {
-                state
-                    .archived_in_project(&head.conversation, project)
-                    .then_some(head.conversation)
-            }));
-            Some(ids.into_iter().collect::<Vec<_>>())
-        } else {
-            None
+        // What the reader could list is what the reader can search: the
+        // same visibility, in the project or everywhere.
+        let scope: Vec<ConversationId> = match state.conversations_for(&reader, project.as_ref()) {
+            Ok(summaries) => summaries.into_iter().map(|s| s.conversation).collect(),
+            Err(response) => return *response,
         };
         match state
             .store
-            .search_messages(&query, scope.as_deref(), before_seq, limit)
+            .search_messages(&query, Some(&scope), before_seq, limit)
         {
             Ok(messages) => Response::History { messages },
             Err(error) => Response::error(ErrorCode::StorageUnavailable, error.to_string()),
@@ -312,8 +303,10 @@ impl State {
         }
     }
 
+    /// The person: their record, or the bare `user` id a reader falls back
+    /// to before anyone has registered them.
     fn is_human_id(&self, id: &AgentId) -> bool {
-        self.registry.get(id).is_some_and(super::humans::is_human)
+        id.as_str() == HUMAN || self.registry.get(id).is_some_and(super::humans::is_human)
     }
 
     /// Whether an archived direct conversation or notices belong to the
@@ -378,10 +371,11 @@ impl State {
                 .into_iter()
                 .filter(|id| {
                     // Direct conversations of others are theirs; a reader
-                    // sees its own, plus every room and broadcast.
+                    // sees its own, plus every room and broadcast. The
+                    // person sees the project's, to read.
                     match id.kind() {
                         Some(ConversationKind::Dm) | Some(ConversationKind::Notices) => {
-                            is_reader(id)
+                            is_reader(id) || human
                         }
                         _ => true,
                     }
@@ -406,6 +400,7 @@ impl State {
                 },
                 None => {
                     is_reader(id)
+                        || human
                         || !matches!(
                             id.kind(),
                             Some(ConversationKind::Dm) | Some(ConversationKind::Notices)
@@ -430,7 +425,9 @@ impl State {
             for project in projects {
                 let mut ids = self.conversation_ids_in(&project);
                 ids.retain(|id| match id.kind() {
-                    Some(ConversationKind::Dm) | Some(ConversationKind::Notices) => is_reader(id),
+                    Some(ConversationKind::Dm) | Some(ConversationKind::Notices) => {
+                        is_reader(id) || human
+                    }
                     _ => true,
                 });
                 candidates.extend(ids);
@@ -446,7 +443,7 @@ impl State {
             // the project's, as the Channels screen does; nothing lets an
             // agent outside a room read it because it has an archive.
             let mine = match kind {
-                ConversationKind::Dm | ConversationKind::Notices => is_reader(&id),
+                ConversationKind::Dm | ConversationKind::Notices => is_reader(&id) || human,
                 ConversationKind::Channel | ConversationKind::Collision => {
                     members.contains(reader) || human
                 }
@@ -742,7 +739,8 @@ mod tests {
         let Response::History { messages } = reopened
             .handle(Request::SearchMessages {
                 query: "retainedneedle".into(),
-                project: Some(alice.project.unwrap().id().to_string()),
+                project: Some(alice.project.clone().unwrap().id().to_string()),
+                reader: None,
                 before_seq: None,
                 limit: 50,
             })
@@ -760,6 +758,25 @@ mod tests {
             messages
                 .iter()
                 .any(|m| m.conversation == ConversationId::notices(&alice.id))
+        );
+        // Another agent searches only what it could list: bob is in
+        // neither of those conversations, so it finds nothing of them.
+        let bob = register(&reopened, "carol", &work).await;
+        let Response::History { messages } = reopened
+            .handle(Request::SearchMessages {
+                query: "retainedneedle".into(),
+                project: Some(alice.project.unwrap().id().to_string()),
+                reader: Some(bob.id.to_string()),
+                before_seq: None,
+                limit: 50,
+            })
+            .await
+        else {
+            panic!("project search failed");
+        };
+        assert!(
+            messages.is_empty(),
+            "an agent's search does not reach conversations it is not in"
         );
     }
 
@@ -1055,6 +1072,7 @@ mod tests {
             .handle(Request::SearchMessages {
                 query: "three".into(),
                 project: Some(work.display().to_string()),
+                reader: None,
                 before_seq: None,
                 limit: 10,
             })

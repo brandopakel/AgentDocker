@@ -380,6 +380,9 @@ enum Command {
         /// Project: an id prefix or a path inside it (default: everywhere).
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
+        /// Search as this agent rather than as yourself: only what it could list.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", value_name = "AGENT")]
+        agent: Option<String>,
         /// How many matches, at most.
         #[arg(long, default_value_t = 50)]
         limit: usize,
@@ -1643,11 +1646,13 @@ async fn main() -> Result<()> {
         Command::Search {
             query,
             project,
+            agent,
             limit,
         } => {
             let request = Request::SearchMessages {
                 query,
                 project: project.as_deref().map(project_selector),
+                reader: agent,
                 before_seq: None,
                 limit,
             };

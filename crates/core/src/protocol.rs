@@ -660,6 +660,10 @@ pub enum Request {
         query: String,
         #[serde(default)]
         project: Option<String>,
+        /// Whose search: the person unless an agent is named; only what
+        /// that reader could list is searched.
+        #[serde(default)]
+        reader: Option<String>,
         #[serde(default)]
         before_seq: Option<u64>,
         #[serde(default = "default_history_limit")]

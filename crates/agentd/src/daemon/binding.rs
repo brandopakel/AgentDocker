@@ -848,6 +848,21 @@ impl State {
                 "the predecessor must be another record of the same runtime bound to the same thread, profile and checkout",
             );
         }
+        // The same checkout can be another project by now (a repository
+        // re-made under the same path has another fingerprint); the alias
+        // would then file the prior record's conversations under the
+        // caller's project. Refuse rather than move history across.
+        if prior.project.as_ref().map(agentdocker_core::ProjectRef::id)
+            != caller
+                .project
+                .as_ref()
+                .map(agentdocker_core::ProjectRef::id)
+        {
+            return Response::error(
+                ErrorCode::Conflict,
+                "the predecessor's checkout is another project now; resolve by hand",
+            );
+        }
         if let Some(other) = self.registry.all().find(|r| {
             r.id != prior.id
                 && r.id != caller.id

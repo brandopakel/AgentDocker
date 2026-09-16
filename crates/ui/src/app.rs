@@ -560,6 +560,15 @@ impl App {
                         entry.draft.complete(Err(reason.into()));
                     }
                 }
+                // A conversation draft that could not be queued is told so,
+                // or it would stay "sending" and never be retried.
+                Cmd::ConversationSend { draft, .. } => {
+                    self.shell
+                        .conversation_drafts
+                        .entry(draft)
+                        .or_default()
+                        .complete(Err(reason.into()));
+                }
                 Cmd::Adopt(_)
                 | Cmd::AdoptAll
                 | Cmd::Stop(_)
@@ -1641,6 +1650,10 @@ fn spawn_worker(
                         Cmd::SessionSend(id, _) | Cmd::ProjectSend(id, _, _) => Some(id.clone()),
                         _ => None,
                     };
+                    let conversation_draft = match &daemon {
+                        Cmd::ConversationSend { draft, .. } => Some(draft.clone()),
+                        _ => None,
+                    };
                     let outcome = run(&client, daemon);
                     let disconnected = outcome
                         .as_ref()
@@ -1656,6 +1669,13 @@ fn spawn_worker(
                                         id,
                                         Err(format!("Queue acceptance was not confirmed: {err:#}")),
                                     ))
+                                    .is_err()
+                            {
+                                break;
+                            }
+                            if let Some(draft) = conversation_draft
+                                && tx
+                                    .send(Msg::ConversationSent(draft, Err(format!("{err:#}"))))
                                     .is_err()
                             {
                                 break;
@@ -3730,6 +3750,49 @@ mod tests {
     /// a conversation between two agents has no destination from here; the
     /// pane on view is what marks read, never the list a narrow window
     /// shows instead of it.
+    /// A conversation draft whose send could not even be queued is told
+    /// so at once, so it can be sent again; a draft whose send failed at
+    /// the daemon hears the same through the worker.
+    #[test]
+    fn a_conversation_draft_is_completed_when_its_send_is_refused() {
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        app.conversations_supported = Some(true);
+        let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
+        human.id = agentdocker_core::AgentId::from("human-id");
+        let mut agent = record("codex-1", "codex", Some(1));
+        agent.id = agentdocker_core::AgentId::from("agent-a");
+        app.agents = vec![human, agent];
+        let own = agentdocker_core::ConversationId::dm("human-id", "agent-a");
+        let key = own.as_str().to_owned();
+        // The worker is gone: the queue refuses everything.
+        drop(requests);
+        let _ = app.update(Message::ConversationDraft(key.clone(), "hello".into()));
+        let _ = app.update(Message::SendConversation(key.clone()));
+        let draft = &app.shell.conversation_drafts[&key];
+        assert!(draft.sending.is_none(), "not left sending");
+        assert!(
+            draft
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("worker stopped")),
+            "{draft:?}"
+        );
+        assert_eq!(draft.text, "hello", "the words are kept");
+        // The worker's answer to a daemon that refused the send.
+        messages
+            .send(Msg::ConversationSent(key.clone(), Err("refused".into())))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.shell.conversation_drafts[&key].error.as_deref(),
+            Some("refused")
+        );
+        assert!(app.shell.conversation_drafts[&key].sending.is_none());
+    }
+
     #[test]
     fn a_thread_has_its_own_draft_and_a_peer_conversation_is_read_only() {
         let (commands, requests) = queue::channel();
