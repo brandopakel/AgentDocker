@@ -11,7 +11,13 @@ source-specific results and failed trials.
 
 ## Delivered source and current desktop
 
-Latest observed installation: Claude installed UI source `72b1eb4` (schema21)
+Latest read-only check on September 16 confirms installed UI source `1e90f83`
+(schema21, release `3add4bea`), with daemon PID 3366 and GUI PID 4519 running
+from that release. The existing Codex provider PID 51242 and receiver PID 94744
+remain alive; this observation does not establish all queued-message receipts.
+PR #160 merged as `37725fe` after final review and CI.
+
+Previous observed installation: Claude installed UI source `72b1eb4` (schema21)
 on September 15. Read-only verification confirms that release serving as daemon
 PID 67791 and GUI PID 67836, with strict bundle signature verification passing.
 This Codex provider and receiver retained their PIDs; the switch itself was done
@@ -149,9 +155,13 @@ successful pane retirement, reports failed aborts without implying writes resume
 and bounds repeated empty stream/attachment reconnects with backoff. Transfer IDs
 use Unicode-safe formatting. The first follow-up gate passed 1,060 Rust tests but failed the real reload
 stream test: shutdown during reconnect backoff became a connection error. Source
-now probes after the backoff; the corrected gate and native acceptance remain
-pending;
-the earlier source-specific reload trials remain historical evidence.
+now probes after the backoff. Corrected `09e1559` passed 1,065 Rust tests and
+84 Python checks, 20 pressured handovers (312 FIFO messages, 128 finished
+launches, no daemon warnings or survivors), four actual Codex/loopback
+handovers and the retained-release pin trial. The native client kept its thread,
+draft, provider identity, busy-message ordering and exact question-answer receipt.
+Final review/CI remain pending; the earlier failed trials are retained in the
+[reload record](verification/2026-09-16-reload-controller-episode.json).
 
 | Priority | Work remaining | Completion condition and evidence |
 | --- | --- | --- |
