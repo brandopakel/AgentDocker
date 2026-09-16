@@ -722,6 +722,7 @@ impl App {
                 let conversation = conversation.to_owned();
                 let to = self.conversation_destination(&conversation);
                 if self.connected.is_ok()
+                    && self.conversation_can_send(&conversation)
                     && let Some(to) = to
                     && let Some(draft) = self.shell.conversation_drafts.get_mut(&key)
                     && let Some(text) = draft.begin()
