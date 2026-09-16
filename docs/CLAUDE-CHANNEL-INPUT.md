@@ -40,16 +40,30 @@ for channel input. Only the launch decides.
 
 ## Resuming a session
 
-A session that comes back as a new process (`claude --resume <id>`, or the
-same through `agentdocker run ... --claude-channel -- claude --resume <id>`)
-takes up the record it ended with: the hooks adapter names the session, and
-the daemon joins the new process to the ended record of that session in the
-same checkout, once the old process is gone. The id, the direct conversation,
-the journal cursor and whatever was still queued for it carry on, and the
-registration the new process made before its hooks half named the session
-becomes an alias. This is how a session launched plainly is relaunched with
-channel input without becoming a second agent; the channel itself still needs
-the fresh launch above, since a running session cannot be given one.
+A session that comes back as a new process takes up the record it ended
+with: the hooks adapter names the session, and the daemon joins the new
+process to the ended records of that session in the same checkout, once
+their processes are gone. The record that ended last stays, with its id, its
+direct conversation and its journal cursor; whatever was still queued for it,
+for any earlier ended life of the session and for the new process's own
+registration is one queue in `sent_at` order, and every other id becomes an
+alias. A record whose process still runs, or one that holds leases, sits in a
+channel or recorded observations of its own, is left as it is.
+
+This is how a session started plainly is relaunched with channel input
+without becoming a second agent: with the user-level entry carrying
+`--claude-channel` (see above), start the same session again as
+
+```sh
+AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 claude --resume <session-id> \
+  --dangerously-load-development-channels server:agentdocker
+```
+
+from the same checkout, after the old process has exited. A managed launch
+(`agentdocker run ...`) is a new supervised agent, not a resumption: a
+supervised process is its supervisor's to bring back, and the daemon does
+not fold a managed record into an unmanaged one or the reverse. A running
+session cannot be given a channel; the relaunch is the whole of it.
 
 ## Manual local trial
 

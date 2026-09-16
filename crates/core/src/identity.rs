@@ -140,34 +140,43 @@ pub fn repair_pair<'a>(
     Ok(())
 }
 
-/// The ended record a fresh registration is the return of: the same
-/// provider session (a non-empty `session_id`, which only a hooks adapter
-/// vouches for), the same runtime, project and physical checkout, ended
-/// rather than live, neither side managed, remote, contained or in a pane
-/// — a supervised process is its supervisor's to bring back — and not the
-/// fresh record itself. Names prove nothing and are not consulted. A live
-/// namesake is not a candidate: two live records for one session are the
-/// registration rule's problem, not this one's. When several ended
-/// records carry the session (a session resumed twice, each time into a
-/// fresh record before this rule existed), the one that ended last is the
-/// one that holds the queue; `finished_at` decides and the id after it,
-/// so the answer does not depend on iteration order. Whether the prior
-/// record's process is in fact gone is the host's to check.
+/// The ended records a fresh registration is the return of, the one to
+/// stay first: the same provider session (a non-empty `session_id`, which
+/// only a hooks adapter vouches for), the same runtime, project and
+/// physical checkout, ended rather than live, neither side managed,
+/// remote, contained or in a pane — a supervised process is its
+/// supervisor's to bring back — and not the fresh record itself. Names
+/// prove nothing and are not consulted. A live namesake is not a
+/// candidate: two live records for one session are the registration
+/// rule's problem, not this one's. A session resumed before this rule
+/// existed left an ended record each time, any of which may still hold
+/// queued messages, so every one of them is returned, the one that ended
+/// last first (`finished_at`, then the id, so the order does not depend on
+/// iteration): that one stays canonical and the others are folded into
+/// it with the fresh record. Whether a record's process is in fact gone
+/// is the host's to check.
 pub fn resumed_session<'a>(
     records: impl IntoIterator<Item = &'a AgentRecord>,
     fresh: &AgentRecord,
-) -> Option<&'a AgentRecord> {
-    let session = session_id(fresh)?;
+) -> Vec<&'a AgentRecord> {
+    let Some(session) = session_id(fresh) else {
+        return Vec::new();
+    };
     if !resumable(fresh) || !matches!(fresh.spec.runtime.as_str(), "claude-code" | "codex") {
-        return None;
+        return Vec::new();
     }
-    let project = fresh.project.as_ref().map(ProjectRef::id)?;
-    let checkout = fresh
+    let Some(project) = fresh.project.as_ref().map(ProjectRef::id) else {
+        return Vec::new();
+    };
+    let Some(checkout) = fresh
         .spec
         .workdir
         .as_ref()
-        .filter(|path| path.is_absolute())?;
-    records
+        .filter(|path| path.is_absolute())
+    else {
+        return Vec::new();
+    };
+    let mut ended: Vec<&AgentRecord> = records
         .into_iter()
         .filter(|prior| prior.id != fresh.id && !prior.status.is_live())
         .filter(|prior| session_id(prior) == Some(session))
@@ -175,7 +184,13 @@ pub fn resumed_session<'a>(
         .filter(|prior| prior.project.as_ref().map(ProjectRef::id) == Some(project.clone()))
         .filter(|prior| prior.spec.workdir.as_ref() == Some(checkout))
         .filter(|prior| resumable(prior))
-        .max_by(|a, b| a.finished_at.cmp(&b.finished_at).then(a.id.cmp(&b.id)))
+        .collect();
+    ended.sort_by(|a, b| {
+        b.finished_at
+            .cmp(&a.finished_at)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    ended
 }
 
 /// A record whose process is nobody else's to run: not supervised,
@@ -323,11 +338,12 @@ mod tests {
         );
     }
 
-    /// A fresh registration of a session resumes the ended record that
-    /// last held it: same session, runtime and project, ended, nobody's
-    /// to supervise. A live namesake, another session, another project,
-    /// a managed record or a record with an input binding is not it; the
-    /// fresh record itself never is; of two ended, the later ended wins.
+    /// A fresh registration of a session resumes the ended records that
+    /// held it, the one that ended last first: same session, runtime,
+    /// project and checkout, ended, nobody's to supervise. A live
+    /// namesake, another session, another project or checkout, a managed
+    /// record or a record with an input binding is not among them; the
+    /// fresh record itself never is.
     #[test]
     fn a_fresh_registration_resumes_the_ended_record_of_its_session() {
         let ended = |id: &str, session: Option<&str>, minutes: i64| {
@@ -377,34 +393,35 @@ mod tests {
             &fresh, &earlier, &later, &other, &unnamed, &live, &managed, &bound, &elsewhere,
             &worktree, &codex,
         ];
-        assert_eq!(
-            resumed_session(all, &fresh).map(|r| r.id.as_str()),
-            Some("later")
-        );
+        fn ids(found: Vec<&AgentRecord>) -> Vec<String> {
+            found.iter().map(|r| r.id.to_string()).collect()
+        }
+        assert_eq!(ids(resumed_session(all, &fresh)), ["later", "earlier"]);
         // Order of the records does not pick the answer.
         let mut reversed = all;
         reversed.reverse();
-        assert_eq!(
-            resumed_session(reversed, &fresh).map(|r| r.id.as_str()),
-            Some("later")
-        );
+        assert_eq!(ids(resumed_session(reversed, &fresh)), ["later", "earlier"]);
         // Two that ended together are told apart by id.
         let mut twin = ended("aaa-twin", Some("session"), 2);
         twin.finished_at = later.finished_at;
         assert_eq!(
-            resumed_session([&later, &twin], &fresh).map(|r| r.id.as_str()),
-            Some("later")
+            ids(resumed_session([&later, &twin], &fresh)),
+            ["later", "aaa-twin"]
+        );
+        assert_eq!(
+            ids(resumed_session([&twin, &later], &fresh)),
+            ["later", "aaa-twin"]
         );
         // Nothing to resume for a session nobody vouched for, a managed
         // newcomer, or a runtime without session evidence.
         let mut nameless = fresh.clone();
         nameless.spec.labels.remove("session_id");
-        assert!(resumed_session(all, &nameless).is_none());
+        assert!(resumed_session(all, &nameless).is_empty());
         let mut supervised = fresh.clone();
         supervised.managed = true;
-        assert!(resumed_session(all, &supervised).is_none());
+        assert!(resumed_session(all, &supervised).is_empty());
         let mut unknown = fresh.clone();
         unknown.spec.runtime = "gemini-cli".into();
-        assert!(resumed_session(all, &unknown).is_none());
+        assert!(resumed_session(all, &unknown).is_empty());
     }
 }

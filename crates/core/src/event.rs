@@ -149,7 +149,7 @@ pub enum EventKind {
     /// its id, its conversations and its queue, and takes the new pid.
     SessionResumed {
         agent: AgentId,
-        retired: AgentId,
+        retired: Vec<AgentId>,
         session: String,
         pid: u32,
     },
