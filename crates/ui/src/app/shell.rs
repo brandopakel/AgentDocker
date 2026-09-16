@@ -1104,6 +1104,9 @@ impl App {
                 self.shell.dpi = scale
             }
             Message::Event(iced::Event::Window(window::Event::Focused)) => {
+                // Construction precedes the hidden window's first activation.
+                // Request OS permission only once an actual window has focus.
+                crate::notify::request_permission();
                 self.shell.unfocused = false;
                 if let Some(id) = self.shell.window {
                     tasks.push(crate::accessibility::focus(id, true));

@@ -11,7 +11,12 @@ ordinary input and preserves the terminal's unfinished draft and permission UI.
 
 This candidate requires the schema-20 controller binding and answer migration and Codex's experimental
 native queue API (tested with CLI 0.154.0). It is under integration and acceptance
-test and is **not yet the installed application's behavior**. An accepted hook
+test. The verified `cf64ca3` package is now installed with a schema-20 daemon;
+the existing Codex session auto-started its receiver and offered a queued peer
+message. That message automatically started the next ordinary turn without
+another human prompt, with its exact provider receipt and queue acknowledgement.
+This is one installed existing-session acceptance, recorded in the
+[native queue evidence](verification/2026-09-15-native-codex-queue.json). An accepted hook
 configuration is needed to start a receiver for an existing terminal. Setup now
 includes `SessionStart`, which verifies identity and starts the receiver without
 asserting working/idle activity or consuming hook context. Actual CLI 0.154.0
@@ -91,12 +96,12 @@ accepted. The driver now marks every exception failed and rechecks child exit
 after a process-group signal error. A deliberate late cleanup exception then
 correctly failed with exit 1. The next recovery repeat exposed the fixture
 competing with automatic receiver restart; fault injection now takes the
-receiver lock and leaves replacement solely to the daemon. PRs #148/#149 stay
-draft while the final evidence/review is collected. Corrected recovery34 at
+receiver lock and leaves replacement solely to the daemon. PRs #148/#149 are
+merged after final evidence, review and CI. Corrected recovery34 at
 `bc0ea04` passed both lost-enqueue-reply reconciliation to the original native
 queue ID and uncertain-input retention without resubmission, using the real
 daemon supervisor. The long-busy defect is fixed and has bounded acceptance;
-final CI/review and installed-session verification still gate delivery. Trial 25 was a
+installed-session verification still gates delivery. Trial 25 was a
 separate fixture input failure; trial 26 is the application defect. Both are
 retained in the [source-specific evidence](verification/2026-09-15-native-codex-queue.json).
 Use the existing driver's `--scenario long-busy` to hold a direct user turn for
@@ -197,9 +202,20 @@ offers cancellation instead of decline, the card explains that Deny cancels the
 request. Private delivery-record version 8 retains that exact negative response;
 older records cannot claim the new cancellation meaning. Recovery preserves the
 saved response without automatically sending it again.
-Network-only requests without a command/directory and `writeStdin` approvals
-still require their own review surface. The command-context correction merged
-in PR #127; those broader review forms remain separate open requirements.
+Managed-network requests with an exact host/protocol now use the existing choice
+controls whenever `networkApprovalContext` is present. Optional command and
+folder metadata remain context; absent fields are not invented. Display controls, including bidi controls and line injection, are refused in these fields before publishing a question. The question
+shows the destination and any supplied access details, and explains that approval
+can cover multiple pending connections to that destination, as the
+[provider contract specifies](https://learn.chatgpt.com/docs/app-server#command-execution-approvals).
+Allow selects `accept` for the pending request, never a session or policy grant.
+Private ledger version 9 retains this separate review kind and refuses it in an
+older-version record without rewriting bytes. Restored command records cannot carry a network choice presentation; legacy command records without a presentation remain supported.
+The implementation passed 61 focused input tests and the full 974-Rust/70-Python
+release gate. A private-profile actual Codex trial denied the connection before
+emitting an approval callback; actual managed-network provider, native UI and
+final integration acceptance remain open. See the [retained trial](verification/2026-09-11-codex-input-review.json). `writeStdin`,
+broader permission forms and elicitation still need their own handling.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
@@ -314,7 +330,7 @@ while command approval was pending. Checked replay resolved that answer once,
 kept the same controller/conversation and completed three ordered peer/human
 inputs. The daemon and other RPC connections stayed live during this trial. A restarted controller cancels its known pending human routes and
 requires recovery; it never automatically resends an approval. The private
-version-8 record preserves version-3/4/5/6/7 records and accepts version-1/2 records only without recorded question
+version-9 record preserves version-3/4/5/6/7/8 records and accepts version-1/2 records only without recorded question
 history. Version 2 could already have discarded older question IDs; those records
 are refused without rewriting the file. The current record retains eight detailed
 closed requests and up to 10,000 older question IDs, and has an 8 MiB total bound.

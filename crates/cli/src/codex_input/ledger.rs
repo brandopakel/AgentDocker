@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 8;
+const VERSION: u32 = 9;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
@@ -304,6 +304,51 @@ mod tests {
         std::fs::write(&path, &original).unwrap();
         let reopened = Ledger::open(home.path(), binding).unwrap();
         assert!(reopened.record().reviews[0].has_command_cancellation());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn network_review_requires_version_nine_and_preserves_older_ledger_bytes() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        ledger.prepare(&message()).unwrap();
+        let event = serde_json::json!({"id":15,"method":"item/commandExecution/requestApproval","params":{
+            "threadId":"thread","turnId":"turn","networkApprovalContext":{"host":"example.com","protocol":"https"},"availableDecisions":["accept","decline"]
+        }});
+        let pending = super::super::review::Pending::plan(
+            &event,
+            "thread",
+            Some("turn"),
+            "human",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        ledger
+            .update_reviews(|reviews, _| {
+                reviews.push(pending);
+                Ok(true)
+            })
+            .unwrap();
+        let path = ledger.path.clone();
+        drop(ledger);
+        let original = std::fs::read(&path).unwrap();
+        let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        legacy["version"] = serde_json::json!(8);
+        let legacy = serde_json::to_vec(&legacy).unwrap();
+        std::fs::write(&path, &legacy).unwrap();
+        assert!(
+            Ledger::open(home.path(), binding.clone())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("legacy input cannot supply network-only review receipts")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), legacy);
+        std::fs::write(&path, &original).unwrap();
+        let reopened = Ledger::open(home.path(), binding).unwrap();
+        assert!(reopened.record().reviews[0].is_network_review());
         assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 
@@ -617,6 +662,15 @@ fn valid_id(id: &str) -> bool {
 impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
+            self.version >= 9
+                || (self.reviews.iter().all(|r| !r.is_network_review())
+                    && self
+                        .closed_reviews
+                        .iter()
+                        .all(|r| !r.request.is_network_review())),
+            "legacy input cannot supply network-only review receipts"
+        );
+        ensure!(
             self.version >= 8
                 || (self.reviews.iter().all(|r| !r.has_command_cancellation())
                     && self
@@ -651,7 +705,7 @@ impl Record {
         );
         ensure!(
             self.version == VERSION
-                || matches!(self.version, 3..=7)
+                || matches!(self.version, 3..=8)
                 || (matches!(self.version, 1 | 2)
                     && self.reviews.is_empty()
                     && self.closed_reviews.is_empty()
