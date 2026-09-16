@@ -149,6 +149,13 @@ replacement acceptance.
 
 ## Engineering and acceptance still open
 
+The reconnect review found a channel ownership race if SessionStart folds a
+registration after MCP acquires its agent-ID lock. Source now holds an additional
+provider-process-generation lock, and hooks check it across an ID change. An
+already initialized receiver stays separate to preserve its offered message and
+the old backlog. A real daemon/MCP transport regression is added; verification
+is pending. Actual existing-Claude startup/idle-wake acceptance remains open.
+
 The next reload review also found the transfer-refusal reply still used a
 blocking write on the async startup path. Both readiness outcomes now share the
 blocking-worker helper; a regression holds the predecessor socket unread and

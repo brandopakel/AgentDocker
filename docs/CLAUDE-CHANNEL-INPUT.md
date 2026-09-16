@@ -47,10 +47,15 @@ process to the ended records of that session in the same checkout, once
 their processes are gone. The record that ended last stays, with its id, its
 direct conversation and its journal cursor; whatever was still queued for it,
 for any earlier ended life of the session and for the new process's own
-registration is one queue in `sent_at` order with each message once, a
+registration is one queue in durable sequence order with each message once, a
 question an earlier life asked is now its own, and every other id becomes an
-alias. A record whose process still runs, or one that holds leases, sits in a
-channel or recorded observations of its own, is left as it is.
+alias. This applies only when the register/session-resumption eligibility rule
+in [ARCHITECTURE.md](ARCHITECTURE.md#wire-protocol) is satisfied. A record whose
+process still runs, or one that holds leases, sits in a channel or recorded
+observations of its own, is left as it is. An initialized fresh input receiver
+also stays separate: it may already have offered its queue head, so folding old
+backlog in front would change delivery order. Its old queue remains retained;
+this ordering does not establish successful existing-session handover.
 
 This is how a session started plainly is relaunched with channel input
 without becoming a second agent: with the user-level entry carrying
@@ -233,3 +238,11 @@ authorization turn. An earlier unprimed trial requested further authorization;
 receipt is not permission to act. The retained report explains a controller
 replay mistake and the separate read-only audit of saved events/tool calls.
 Final CI/source review of this follow-up and broader recovery acceptance remain.
+
+Channel ownership now uses both the agent ID and provider process generation.
+If SessionStart folds an uninitialized registration before its channel starts
+input, a second MCP entry still cannot acquire another channel under the new
+canonical ID. Hooks check the process lock too. `claude_channel_smoke.py --resume`
+checks this boundary and the initialized-receiver refusal using real daemon/MCP
+processes with fixture provider processes. It does not prove model idle wake or
+actual Claude startup ordering. Verification of this follow-up is pending.

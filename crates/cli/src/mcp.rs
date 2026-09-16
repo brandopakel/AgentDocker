@@ -28,8 +28,11 @@ use crate::client::{Backend, Client};
 mod channel;
 pub(crate) const CLAUDE_CHANNEL_INPUT: &str = "AGENTDOCKER_CLAUDE_CHANNEL_INPUT";
 
-pub(crate) fn channel_input_active(home: &std::path::Path, agent: &str) -> Result<bool> {
-    channel::active(home, agent)
+pub(crate) fn channel_input_active(
+    home: &std::path::Path,
+    agent: &agentdocker_core::AgentRecord,
+) -> Result<bool> {
+    channel::active_for(home, agent)
 }
 
 const SUPPORTED_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];

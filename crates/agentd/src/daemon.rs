@@ -6000,7 +6000,7 @@ impl State {
     /// one that ended last stays canonical and takes the new process: its
     /// id, its conversations, its cursor and what was still queued for it
     /// carry on; the fresh record and any earlier ended record of the
-    /// session are retired into it, their queues joining in `sent_at`
+    /// session are retired into it, their queues joining in durable sequence
     /// order with each message once, the documents that named them
     /// rewritten, aliases that pointed at them flattened, and their ids
     /// becoming aliases. The store plans and writes it as one transaction
@@ -6011,6 +6011,13 @@ impl State {
     /// store that cannot say or refuses the rewrite — leaves the fresh
     /// record as it is.
     fn resume_session(&mut self, fresh: AgentRecord) -> AgentRecord {
+        // An initialized receiver may already have offered its queue head.
+        // Folding older backlog ahead of that offer would reorder delivery.
+        // Before initialization, channel ownership is also locked by provider
+        // process generation so changing an agent ID cannot admit a second MCP.
+        if fresh.input_delivery.is_some() {
+            return fresh;
+        }
         let Some(session) = fresh
             .spec
             .labels
@@ -7002,6 +7009,106 @@ mod tests {
         }
         new_life.kill().unwrap();
         new_life.wait().unwrap();
+    }
+
+    /// A channel can initialize before SessionStart gives its registration a
+    /// session ID. Its already-offered head must not jump ahead of old backlog
+    /// when that later hook arrives. Keep both queues and their IDs intact.
+    #[tokio::test]
+    async fn an_initialized_receiver_is_not_folded_ahead_of_old_backlog() {
+        use agentdocker_core::InputReport;
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut old_life = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut new_life = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let register = async |name: &str, session: Option<&str>, pid: u32| {
+            let mut spec = spec_here(name);
+            spec.runtime = "claude-code".into();
+            if let Some(session) = session {
+                spec.labels.insert("session_id".into(), session.into());
+            }
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(pid),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("{other:?}"),
+            }
+        };
+        let old = register("old-session", Some("session-a"), old_life.id()).await;
+        let Response::Sent {
+            message: old_message,
+            ..
+        } = send(&daemon, "peer", old.id.as_str()).await
+        else {
+            panic!("old queue")
+        };
+        old_life.kill().unwrap();
+        old_life.wait().unwrap();
+        lock(&daemon.state).mark_exited(&old.id, AgentStatus::Exited { code: Some(0) });
+        let fresh = register("fresh-channel", None, new_life.id()).await;
+        let Response::Sent {
+            message: fresh_message,
+            ..
+        } = send(&daemon, "peer", fresh.id.as_str()).await
+        else {
+            panic!("fresh queue")
+        };
+        assert!(matches!(
+            daemon
+                .handle(Request::ReportInput {
+                    agent: fresh.id.to_string(),
+                    process_started_at: fresh.process_started_at.unwrap(),
+                    observed_at: Utc::now(),
+                    report: InputReport::Ready,
+                    token: None,
+                })
+                .await,
+            Response::Ok
+        ));
+        let returned = register("session-hook", Some("session-a"), new_life.id()).await;
+        // Retire fixtures before the assertions, including on a regression.
+        new_life.kill().unwrap();
+        new_life.wait().unwrap();
+        assert_eq!(
+            returned.id, fresh.id,
+            "the initialized receiver keeps its identity"
+        );
+        assert!(returned.input_delivery.is_some());
+        let state = lock(&daemon.state);
+        assert!(state.registry.aliases().is_empty());
+        assert_eq!(
+            state.inboxes[&old.id]
+                .iter()
+                .map(|m| &m.id)
+                .collect::<Vec<_>>(),
+            [&old_message]
+        );
+        assert_eq!(
+            state.inboxes[&fresh.id]
+                .iter()
+                .map(|m| &m.id)
+                .collect::<Vec<_>>(),
+            [&fresh_message]
+        );
+        assert!(
+            !state
+                .store
+                .recent_events(10)
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::SessionResumed { .. }))
+        );
     }
 
     /// A binding that cannot be stored is not answered as if it were.
