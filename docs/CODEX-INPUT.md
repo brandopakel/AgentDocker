@@ -458,6 +458,11 @@ and no production profile or conversation changed. Source `13c3e40` passed 1,010
 bridge trials for CLI human/peer/broadcast input in one busy turn and supervised
 lost-reply recovery without resubmission. Fixture failures and passing reruns are
 retained in [input evidence](verification/2026-09-11-codex-input-review.json).
+Final integration `7fbb8c4` passed 1,015 Rust tests and 77 Python checks,
+including legacy-record migration and duplicate-item receipt rejection. Both
+actual-client scenarios passed again on its immutable release binaries; the
+lost-reply trial recovered the same agent/thread without repeating input.
+
 Run `python3 scripts/codex_steering_smoke.py --binary-dir target/release
 --output /tmp/steering-trial` (add `--scenario lost-reply` for recovery).
 Hosted-model and broader provider acceptance remain open. Native TUI
