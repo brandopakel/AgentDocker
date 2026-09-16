@@ -41,6 +41,18 @@ impl App {
             .sum()
     }
 
+    /// What a sidebar row says is unread: what the person owes, and on a
+    /// collision room what the daemon noted there, worth a look without
+    /// being owed; a room two agents share or a notice to an agent is
+    /// listed quietly with its last line.
+    fn row_unread(&self, summary: &ConversationSummary) -> u64 {
+        if self.counts_for_person(summary) || summary.kind == ConversationKind::Collision {
+            summary.unread
+        } else {
+            0
+        }
+    }
+
     pub(super) fn counts_for_person(&self, summary: &ConversationSummary) -> bool {
         match summary.kind {
             ConversationKind::Dm => self.counterpart(summary).is_some(),
@@ -312,13 +324,7 @@ impl App {
             .center(24.0)
             .into(),
         };
-        // Unread is shown where it is the person's to answer; a room two
-        // agents share or a notice is listed quietly with its last line.
-        let unread = if self.counts_for_person(summary) {
-            summary.unread
-        } else {
-            0
-        };
+        let unread = self.row_unread(summary);
         let mut name = row![
             container(
                 text(label.clone())
@@ -1121,6 +1127,14 @@ mod tests {
             ],
             "collision rooms, peers and notices are read, not owed"
         );
+        // The room's own row still says what is unread in it.
+        let contested = app
+            .conversations
+            .iter()
+            .find(|c| c.kind == ConversationKind::Collision)
+            .unwrap();
+        assert!(!app.counts_for_person(contested));
+        assert_eq!(app.row_unread(contested), 218);
     }
 
     #[test]
