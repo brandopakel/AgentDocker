@@ -382,6 +382,14 @@ negative response are refused before question publication; policy amendments are
 selected. This does not change stored presentation meaning or the schema.
 The private Codex ledger's version 8 binds `decline` or `cancel` to the review;
 when only cancellation is offered, the complete question text explains it.
+Command-approval callbacks with `networkApprovalContext` reuse `choices` with
+the exact host and protocol and Allow/Deny for the pending managed-network
+request. The prompt discloses provider grouping of pending connections to the
+same destination, preserves any supplied command/directory/access context, and
+never invents absent metadata or chooses session/policy grants. Network context
+selects this route even when command metadata is present. Private ledger version 9 records the distinct
+network review kind; versions through 8 cannot supply it. Command records cannot carry choice presentations, and optional network command/directory metadata cannot inject display controls into the review. This adds no daemon
+request, event or presentation variant; existing question/receipt ordering applies.
 
 ## Process supervision
 
