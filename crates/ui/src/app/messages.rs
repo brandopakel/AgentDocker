@@ -1089,7 +1089,7 @@ mod tests {
         let (_messages, receiver) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, receiver);
         let mut agent = AgentRecord::new(
-            AgentSpec {
+            agentdocker_core::AgentSpec {
                 runtime: "claude-code".into(),
                 ..Default::default()
             },
