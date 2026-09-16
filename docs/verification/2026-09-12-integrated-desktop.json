@@ -473,8 +473,33 @@
     "limitations": [
       "The switch itself was performed by the parallel Claude session; root observed resulting state, not its activation steps.",
       "This is unmerged PR152 source; final integration review/CI remains pending.",
-      "Retained process identity and successful MCP calls do not establish a fresh post-switch provider queue receipt."
-    ]
+      "The original installation observation proved process continuity only. Subsequent read-only native receipt metadata below confirms one post-switch Codex delivery; fresh startup/reopen and other-provider acceptance remain separate."
+    ],
+    "subsequent_native_receipt": {
+      "observed_at": "2026-09-16T06:32:44.579146Z",
+      "agent": "50fd100f4310452fae0435fd4b6a1981",
+      "pid": 51242,
+      "process_started_at": "2026-09-12T23:36:03.055103Z",
+      "input_delivery": {
+        "pause_reason": null,
+        "paused": false,
+        "process_started_at": "2026-09-12T23:36:03.055103Z",
+        "received": {
+          "messages": [
+            "b76fa0ce74ca4519"
+          ],
+          "receipt": {
+            "item": "01a0a8c3-76d9-7170-8ae4-5d73845933e4",
+            "provider": "codex",
+            "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+            "turn": "01a0a8c3-7695-7412-aff0-dcbdea34825a"
+          }
+        },
+        "received_at": "2026-09-16T05:49:38.374885Z",
+        "reported_at": "2026-09-16T06:32:44.579146Z"
+      },
+      "scope": "Read-only whoami native receipt metadata; no inbox read or acknowledgement. Confirms one model-input receipt after observed schema21 installation; does not establish every provider or restart path."
+    }
   },
   "linux_shared_temporary_discovery_2026_09_16": {
     "date": "2026-09-16",

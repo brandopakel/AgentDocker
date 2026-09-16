@@ -15,7 +15,10 @@ Latest observed installation: Claude installed UI source `72b1eb4` (schema21)
 on September 15. Read-only verification confirms that release serving as daemon
 PID 67791 and GUI PID 67836, with strict bundle signature verification passing.
 This Codex provider and receiver retained their PIDs; the switch itself was done
-by Claude. Final PR #152 review/integration remains pending. See the
+by Claude. A subsequent read-only check confirms native receipt of queued message
+`b76fa0ce74ca4519` at 05:49:38 UTC in the unchanged Codex thread, after this
+installation. No manual inbox read or acknowledgement was used. Final PR #152
+review/integration and broader startup/provider acceptance remain pending. See the
 [observed installation](verification/2026-09-12-integrated-desktop.json).
 The reload candidate now integrates messaging/schema21 and the validated UI
 changes, including Linux shared-temporary-root discovery. Archive migration,

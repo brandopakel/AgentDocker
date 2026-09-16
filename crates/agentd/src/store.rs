@@ -1026,6 +1026,7 @@ impl Store {
     /// Message routing, sender activity and question lifecycle are one durable
     /// transition. Nothing may reach memory, live subscribers or notifications
     /// before this commits, including a broadcast's partially written inboxes.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn publish_message(
         &self,
