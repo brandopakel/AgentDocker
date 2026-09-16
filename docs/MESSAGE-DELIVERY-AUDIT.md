@@ -22,6 +22,22 @@ terminal. Repeated pings must not create duplicate turns or unbounded reply loop
 
 ## Current evidence and gap
 
+### September 16: Native input across gated daemon handovers
+
+Clean driver `8ba6ac9` with the clean-built `055f45f` release binaries passed
+four private handovers using actual Codex CLI 0.154.0 and a loopback model fixture:
+idle wake, retained unsubmitted Codex draft, ordered human/peer input during a
+busy turn, and one pending-question answer with its exact thread/turn/item
+receipt. Provider/controller identities stayed unchanged at every switch and
+all trial daemons/controllers retired. Injected provider startup failure also
+cleaned its daemon. A harness-only terminal-reopen cleanup failure was retained,
+fixed at `b81a1f5` and rerun successfully. That final driver passed the full
+1,017-Rust/79-Python gate. See the [existing reload record](verification/2026-09-16-reload-controller-episode.json).
+
+This covers the native client's queue and receipts through same-binary handovers.
+Real model services, Claude, distinct-source provider upgrades and AgentDocker
+attached-terminal drafts remain open. The production reload gate stays off.
+
 ### September 15: AgentDocker native queue implementation
 
 The native Codex receiver is merged in PR #148, using
