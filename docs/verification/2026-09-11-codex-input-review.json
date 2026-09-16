@@ -159,5 +159,31 @@
     "python_checks_passed": 65,
     "fmt_clippy_doctests_packaging_release": "passed",
     "final_head_ci_and_review": "pending"
+  },
+  "network_review_2026_09_15": {
+    "status": "focused checks passed; full gate and actual provider acceptance pending",
+    "base_source": "48ea9189222c8e7c5d089c3567d9043a1d657758",
+    "scope": "Managed network approval callbacks, exact destination and grouped connection scope, one-time decisions, correlated human receipts, retained ledger version 9 and refusal of incomplete or wrong-identity requests.",
+    "first_focused_build": {
+      "result": "failed",
+      "reason": "Two new test fixtures attempted MessageId conversion from &str instead of String; corrected without changing production behavior.",
+      "log": {
+        "path": "/private/tmp/agentdocker-network-review-focused1.log",
+        "sha256": "93b0d89ef963a71fe3017b92b821baf01ef957d5790fa18c42923c6aa38252c4"
+      }
+    },
+    "corrected_focused_checks": {
+      "result": "passed",
+      "rust_tests": 60,
+      "command": "cargo test -p agentdocker codex_input:: -- --nocapture",
+      "log": {
+        "path": "/private/tmp/agentdocker-network-review-focused2.log",
+        "sha256": "090422d7fe487441042427de47ce3a451543819575ac594aa2aa068cfaa6d3a6"
+      }
+    },
+    "limits": [
+      "No actual-provider network callback acceptance claimed yet.",
+      "stdin review, remote approvals, broader permission forms, MCP elicitation and secret inputs remain open."
+    ]
   }
 }

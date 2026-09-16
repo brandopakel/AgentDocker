@@ -791,7 +791,7 @@ mod tests {
                         .unwrap()
                         .valid_for(&question.text)
                 );
-                request.questions[0].message = Some("question".into());
+                request.questions[0].message = Some(MessageId::from("question".to_owned()));
                 assert!(
                     !request
                         .capture(&[answer("peer", "Allow")], "owner", false)
@@ -807,7 +807,7 @@ mod tests {
                 request
                     .observe(
                         &EventKind::QuestionClosed {
-                            question: "question".into(),
+                            question: MessageId::from("question".to_owned()),
                             answer: Some(response.id.clone()),
                         },
                         "owner",
