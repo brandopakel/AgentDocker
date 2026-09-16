@@ -29,6 +29,28 @@ update its own usage counters. Other configured MCP entries remain available;
 an explicit competing MCP/channel configuration or print-mode command is rejected
 before launch. Provider consent and organization policy still apply.
 
+## One entry for every session
+
+The entry may carry `--claude-channel` in a user-level MCP configuration: under
+a session launched without the input-mode variable and the channel opt-in it
+serves the ordinary MCP server (no channel capability, no offers, no owner
+lock; the hooks adapter and the tools deliver the inbox as usual) and says so
+on stderr, so the same entry fits a session started plainly and one started
+for channel input. Only the launch decides.
+
+## Resuming a session
+
+A session that comes back as a new process (`claude --resume <id>`, or the
+same through `agentdocker run ... --claude-channel -- claude --resume <id>`)
+takes up the record it ended with: the hooks adapter names the session, and
+the daemon joins the new process to the ended record of that session in the
+same checkout, once the old process is gone. The id, the direct conversation,
+the journal cursor and whatever was still queued for it carry on, and the
+registration the new process made before its hooks half named the session
+becomes an alias. This is how a session launched plainly is relaunched with
+channel input without becoming a second agent; the channel itself still needs
+the fresh launch above, since a running session cannot be given one.
+
 ## Manual local trial
 
 Use the rebuilt CLI; older installed binaries do not have this option. In a

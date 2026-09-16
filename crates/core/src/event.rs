@@ -143,6 +143,16 @@ pub enum EventKind {
         retired: AgentId,
         provider: crate::ProviderGeneration,
     },
+    /// A provider session that came back as a new process, without an input
+    /// binding, was joined to the record that ended with it: the new
+    /// process's registration is retired into the old record, which keeps
+    /// its id, its conversations and its queue, and takes the new pid.
+    SessionResumed {
+        agent: AgentId,
+        retired: AgentId,
+        session: String,
+        pid: u32,
+    },
     ProviderAvailabilityReported {
         agent: AgentId,
         availability: crate::ProviderAvailability,

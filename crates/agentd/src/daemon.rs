@@ -5320,7 +5320,9 @@ impl State {
                 let _ = self.events.send(event);
             }
             let agent = self.registry.get(&id).cloned().expect("just found");
-            return Response::Agent { agent };
+            return Response::Agent {
+                agent: self.resume_session(agent),
+            };
         }
         if let Err(err) = self.registry.insert(record.clone()) {
             return registry_error(err);
@@ -5368,8 +5370,144 @@ impl State {
             self.move_cursor(record.id.as_str(), &project_id, seed);
             self.journal_event(&record, JournalKind::Join, what);
         }
-        self.storage_failure()
-            .unwrap_or(Response::Agent { agent: record })
+        if let Some(error) = self.storage_failure() {
+            return error;
+        }
+        Response::Agent {
+            agent: self.resume_session(record),
+        }
+    }
+
+    /// A session that came back as a new process takes up the record it
+    /// ended with. The hooks adapter vouches for the session (its
+    /// `session_id` label), the rule in core says which ended record that
+    /// is, and then — as `resume_input` does for a bound provider — the
+    /// old record stays canonical and takes the new process: its id, its
+    /// conversations, its cursors and what was still queued for it carry
+    /// on, the fresh record's queue joins in `sent_at` order, and the
+    /// fresh id becomes an alias of it. One transaction, then memory.
+    /// Anything that does not qualify, or a storage failure before the
+    /// commit, leaves the fresh record as it is.
+    fn resume_session(&mut self, fresh: AgentRecord) -> AgentRecord {
+        let Some(session) = fresh
+            .spec
+            .labels
+            .get("session_id")
+            .filter(|id| !id.is_empty())
+            .cloned()
+        else {
+            return fresh;
+        };
+        let Some(prior) =
+            agentdocker_core::identity::resumed_session(self.registry.all(), &fresh).cloned()
+        else {
+            return fresh;
+        };
+        let Some(pid) = fresh.pid else {
+            return fresh;
+        };
+        // Ended on the record is not enough: the process it named must be
+        // gone, or this is two lives of one session at once.
+        if prior
+            .pid
+            .is_some_and(|old| process_exists(old) && same_process(old, prior.process_started_at))
+        {
+            return fresh;
+        }
+        // Nothing the fresh record did in its short life is lost: it has
+        // taken no leases, joined no channel and observed nothing yet when
+        // its hooks half registers, but a record that has is not merged
+        // away — the resume_input rule, for the same reason.
+        if !self.leases.by_holder(&fresh.id).is_empty()
+            || self
+                .channels
+                .values()
+                .any(|c| c.is_open() && c.has(&fresh.id))
+            || matches!(
+                self.store
+                    .document::<Vec<agentdocker_core::ReadMark>>("reads", fresh.id.as_str()),
+                Ok(Some(reads)) if !reads.is_empty()
+            )
+        {
+            return fresh;
+        }
+        let now = Utc::now();
+        let mut canonical = prior.clone();
+        canonical.pid = Some(pid);
+        canonical.process_started_at = fresh.process_started_at;
+        canonical.process_group = fresh.process_group;
+        canonical.status = fresh.status.clone();
+        canonical.started_at = fresh.started_at;
+        canonical.finished_at = None;
+        canonical.last_seen = now;
+        canonical.session = fresh.session.clone();
+        canonical.vcs = fresh.vcs.clone();
+        canonical.reported_activity = fresh.reported_activity.clone();
+        canonical.adapter_contacts = fresh.adapter_contacts.clone();
+        canonical.provider_availability = None;
+        for (key, value) in &fresh.spec.labels {
+            canonical
+                .spec
+                .labels
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+        for (message, at) in &fresh.legacy_offers {
+            canonical
+                .legacy_offers
+                .entry(message.clone())
+                .or_insert(*at);
+        }
+        let mut merged: Vec<Envelope> = self
+            .inboxes
+            .get(&prior.id)
+            .into_iter()
+            .chain(self.inboxes.get(&fresh.id))
+            .flatten()
+            .cloned()
+            .collect();
+        merged.sort_by_key(|m| m.sent_at);
+        let alias = agentdocker_core::identity::AgentAlias {
+            retired: fresh.id.clone(),
+            canonical: prior.id.clone(),
+            reconciled_at: now,
+        };
+        let mut event = Event::new(
+            EventKind::SessionResumed {
+                agent: prior.id.clone(),
+                retired: fresh.id.clone(),
+                session,
+                pid,
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        self.persist("session resume", |store| {
+            store.resume_input(&canonical, &alias, &event)
+        });
+        if self.storage_error.is_some() {
+            return fresh;
+        }
+        if let Err(error) = self.registry.retire_into(&fresh.id, &prior.id) {
+            // The store has the alias; memory must follow it.
+            error!(%error, "retiring a resumed session's fresh record");
+        }
+        *self.registry.get_mut(&prior.id).expect("prior record") = canonical.clone();
+        let moved: usize = merged.iter().map(message_bytes).sum();
+        self.inboxes.remove(&fresh.id);
+        self.inbox_bytes.remove(&fresh.id);
+        self.inboxes
+            .insert(prior.id.clone(), merged.into_iter().collect());
+        self.inbox_bytes.insert(prior.id.clone(), moved);
+        if let Some(project) = prior.project.as_ref().map(ProjectRef::id) {
+            // The fresh record's freshly seeded cursor goes with it; the
+            // prior record's own continues where it left off.
+            self.journal_cursors
+                .remove(&(fresh.id.as_str().to_owned(), project));
+        }
+        self.next_seq += 1;
+        let _ = self.events.send(event);
+        canonical
     }
 }
 
@@ -5877,6 +6015,138 @@ mod tests {
                 ),
             "binding a session is a state change and says so"
         );
+    }
+
+    /// A session that comes back as a new process is the record it ended
+    /// with: same id, its queue still there with the newcomer's after it,
+    /// its cursor where it was, the new pid on it, the fresh id an alias.
+    /// Another session, a live one, or a newcomer that already did
+    /// something of its own gets nothing merged.
+    #[tokio::test]
+    async fn a_session_that_comes_back_takes_up_its_ended_record() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut first_life = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let register = async |daemon: &Arc<Daemon>, name: &str, session: Option<&str>, pid: u32| {
+            let mut spec = spec_here(name);
+            spec.runtime = "claude-code".to_owned();
+            if let Some(session) = session {
+                spec.labels
+                    .insert("session_id".to_owned(), session.to_owned());
+            }
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(pid),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("{other:?}"),
+            }
+        };
+        // The first life: the hooks half names the session, the MCP half
+        // joins it; then the process ends with a message still queued.
+        let first = register(&daemon, "claude-aaaa", Some("session-a"), first_life.id()).await;
+        assert_eq!(
+            register(&daemon, "claude-code-1", None, first_life.id())
+                .await
+                .id,
+            first.id
+        );
+        let peer = register_here(&daemon, "peer", None).await;
+        let Response::Sent { message, .. } = send(&daemon, "peer", "claude-aaaa").await else {
+            panic!("queued for the first life")
+        };
+        // Ended on the record while the process lives is not the return
+        // of anything: a newcomer naming the session gets its own record.
+        lock(&daemon.state).mark_exited(&first.id, AgentStatus::Exited { code: Some(0) });
+        assert!(
+            !lock(&daemon.state)
+                .registry
+                .get(&first.id)
+                .unwrap()
+                .status
+                .is_live()
+        );
+        let too_soon = register(&daemon, "claude-aaaa", Some("session-a"), child.id()).await;
+        assert_ne!(too_soon.id, first.id, "the old process is still there");
+        let Response::Sent { message: later, .. } =
+            send(&daemon, "peer", too_soon.id.as_str()).await
+        else {
+            panic!("queued for the fresh record")
+        };
+        first_life.kill().unwrap();
+        first_life.wait().unwrap();
+
+        // The old process gone, the next half of the new one to register
+        // — the MCP server, naming no session — joins the fresh record as
+        // ever, and that record takes up the one the session ended with.
+        let mcp = register(&daemon, "claude-code-2", None, child.id()).await;
+        let resumed = mcp.clone();
+        let mcp = too_soon;
+        assert_eq!(resumed.id, first.id, "the record it ended with");
+        assert_eq!(resumed.pid, Some(child.id()));
+        assert!(resumed.status.is_live());
+        assert_eq!(resumed.finished_at, None);
+        {
+            let state = lock(&daemon.state);
+            assert!(
+                !state.registry.all().any(|r| r.id == mcp.id),
+                "the fresh record is gone"
+            );
+            assert_eq!(
+                state.registry.get(&mcp.id).map(|r| &r.id),
+                Some(&first.id),
+                "and its id resolves to the one that stayed"
+            );
+            let queued: Vec<_> = state.inboxes[&first.id]
+                .iter()
+                .map(|m| m.id.clone())
+                .collect();
+            assert_eq!(
+                queued,
+                vec![message.clone(), later.clone()],
+                "both queues, in order"
+            );
+            assert!(!state.inboxes.contains_key(&mcp.id));
+        }
+        assert!(
+            daemon.recent_events(20).iter().any(|e| matches!(&e.kind,
+                EventKind::SessionResumed { agent, retired, session, pid }
+                if *agent == first.id && *retired == mcp.id && session == "session-a" && *pid == child.id())),
+            "announced"
+        );
+        // The join is durable: reopened, the record has the new process
+        // and the alias still resolves.
+        drop(daemon);
+        let daemon = open(&dir);
+        {
+            let state = lock(&daemon.state);
+            let record = state.registry.get(&first.id).unwrap();
+            assert_eq!(record.pid, Some(child.id()));
+            assert_eq!(state.registry.canonical_id(&mcp.id), &first.id);
+            assert_eq!(state.inboxes[&first.id].len(), 2);
+        }
+        // A third half of the same live session joins as before, and
+        // another session in another process is not this one's.
+        assert_eq!(
+            register(&daemon, "claude-code-3", None, child.id())
+                .await
+                .id,
+            first.id
+        );
+        let _ = peer;
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 
     /// A binding that cannot be stored is not answered as if it were.

@@ -240,9 +240,28 @@ def run(args):
             assert connection.process.wait(timeout=5) == 0
             report["steps"].append("an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact")
 
-            rejected = spawn(command, {**channel_env, "AGENTDOCKER_CLAUDE_CHANNEL_INPUT": "0"})
-            assert rejected.wait(timeout=5) != 0
-            report["steps"].append("missing parent-session opt-in refused channel startup instead of racing hook delivery")
+            # The same entry under a session launched without the opt-in is
+            # the ordinary MCP server: no channel capability, no offer, the
+            # queue left for the hooks adapter and the tools, and no owner
+            # lock, so a channel session can still start beside it.
+            plain = Connection(spawn(command, {**channel_env, "AGENTDOCKER_CLAUDE_CHANNEL_INPUT": "0"}))
+            left = send(peer, "for the hooks")
+            plain.send({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+                        "params": {"protocolVersion": "2025-06-18"}})
+            assert "claude/channel" not in plain.response(0)["result"]["capabilities"].get("experimental", {})
+            plain.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            assert plain.read(0.5) is None, "a plain server offered a channel message"
+            assert queued() == [left]
+            assert rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]["paused"] is False
+            connection = start_channel()
+            assert connection.offer()["meta"]["message_id"] == left, "the plain server held no channel lock"
+            connection.ack(108, [left])
+            assert queued() == []
+            connection.process.stdin.close()
+            assert connection.process.wait(timeout=5) == 0
+            plain.process.stdin.close()
+            assert plain.process.wait(timeout=5) == 0
+            report["steps"].append("without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks")
             rpc(endpoint, {"op": "shutdown"})
             assert daemon.wait(timeout=5) == 0
             assert all(digest(output / name) == value for name, value in hashes.items())
