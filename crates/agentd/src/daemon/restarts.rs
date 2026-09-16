@@ -75,6 +75,9 @@ impl Daemon {
 
     /// Start it again, under the same id.
     async fn restart_now(self: &Arc<Self>, id: &AgentId, waited: std::time::Duration) {
+        let Ok(_admitted) = self.admit_background() else {
+            return;
+        };
         // Re-read under the lock: the wait is long enough for somebody
         // to have stopped it, removed it, or started it themselves.
         let record = {

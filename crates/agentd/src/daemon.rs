@@ -838,6 +838,9 @@ impl Daemon {
     fn stop(&self, reference: &str, force: bool) -> Response {
         let record = {
             let mut state = lock(&self.state);
+            if let Some(error) = state.storage_failure().or_else(|| state.transferring()) {
+                return error;
+            }
             let id = match state.registry.resolve(reference) {
                 Ok(id) => id,
                 Err(e) => return registry_error(e),
@@ -846,16 +849,13 @@ impl Daemon {
             if !record.status.is_live() {
                 return Response::error(ErrorCode::Invalid, "agent has already finished");
             }
-            if let Some(control) = state.supervised.get(&id) {
-                // The supervisor still owns the Child. Route signals through
-                // that handle even when process start-time inspection fails.
+            if let Some(control) = state.supervised.get(&id).cloned() {
+                // Save the intent and event before the supervisor can signal the child.
+                let agent = match state.commit_stop(record, force) {
+                    Ok(agent) => agent,
+                    Err(error) => return *error,
+                };
                 control.send_modify(|pending| *pending = Some(force || pending.unwrap_or(false)));
-                let agent = state
-                    .registry
-                    .set_status(&id, AgentStatus::Stopping, Utc::now())
-                    .unwrap();
-                let _ = state.persist("agent", |store| store.upsert_agent(&agent));
-                state.emit(EventKind::AgentStopping { agent: id, force });
                 return Response::Agent { agent };
             }
             if record.pid.is_none() {
@@ -896,6 +896,30 @@ impl Daemon {
                     "process identity changed or is unavailable",
                 );
             }
+            let agent = {
+                let mut state = lock(&self.state);
+                let Some(current) = state.registry.get(&record.id) else {
+                    return Response::error(ErrorCode::NotFound, "agent vanished");
+                };
+                if current.pid != record.pid
+                    || current.process_started_at != record.process_started_at
+                {
+                    return Response::error(
+                        ErrorCode::Conflict,
+                        "agent identity changed during stop",
+                    );
+                }
+                if !current.status.is_live() {
+                    return Response::Agent {
+                        agent: current.clone(),
+                    };
+                }
+                let current = current.clone();
+                match state.commit_stop(current, force) {
+                    Ok(agent) => agent,
+                    Err(error) => return *error,
+                }
+            };
             let target = if record.managed && record.process_group == Some(pid) {
                 Pid::from_raw(-target.as_raw())
             } else {
@@ -916,6 +940,7 @@ impl Daemon {
                     );
                 }
             }
+            return Response::Agent { agent };
         }
         let mut state = lock(&self.state);
         let Some(current) = state.registry.get(&record.id) else {
@@ -929,23 +954,12 @@ impl Daemon {
                 agent: current.clone(),
             };
         }
-        if !alive {
-            return Response::Agent {
-                agent: state
-                    .mark_exited(&record.id, AgentStatus::Exited { code: None })
-                    .unwrap(),
-            };
+        match state.mark_exited(&record.id, AgentStatus::Exited { code: None }) {
+            Some(agent) => Response::Agent { agent },
+            None => state
+                .write_failure()
+                .unwrap_or_else(|| Response::error(ErrorCode::NotFound, "agent vanished")),
         }
-        let agent = state
-            .registry
-            .set_status(&record.id, AgentStatus::Stopping, Utc::now())
-            .unwrap();
-        let _ = state.persist("agent", |store| store.upsert_agent(&agent));
-        state.emit(EventKind::AgentStopping {
-            agent: record.id,
-            force,
-        });
-        Response::Agent { agent }
     }
     pub fn expire_leases(&self) {
         let mut state = lock(&self.state);
@@ -1416,6 +1430,17 @@ impl Daemon {
     /// anything it writes after this is fenced like a tick writer's.
     fn done_writing(&self) {
         let _ = ADMISSION.try_with(|place| place.borrow_mut().take());
+    }
+
+    /// Keep background host work ahead of any transfer offer, just like an
+    /// admitted request. The guard covers its asynchronous host side effects.
+    fn admit_background(self: &Arc<Self>) -> Result<InFlight, Box<Response>> {
+        let mut state = lock(&self.state);
+        if let Some(error) = state.storage_failure().or_else(|| state.transferring()) {
+            return Err(Box::new(error));
+        }
+        state.in_flight += 1;
+        Ok(InFlight(self.clone()))
     }
 
     /// The wait is over and the request will write again: take a place
@@ -3282,10 +3307,11 @@ impl Daemon {
     }
 
     pub fn prune_changes(&self) {
-        match lock(&self.state).store.prune_changes(CHANGE_HISTORY) {
-            Ok(0) => {}
-            Ok(removed) => info!(removed, "pruned the ledger"),
-            Err(err) => error!(%err, "failed to prune the ledger"),
+        if let Some(removed) = lock(&self.state).store_op("ledger retention", |store| {
+            store.prune_changes(CHANGE_HISTORY)
+        }) && removed > 0
+        {
+            info!(removed, "pruned the ledger");
         }
     }
 
@@ -3941,6 +3967,43 @@ impl Daemon {
 }
 
 impl State {
+    /// Commit the stop record and event before publishing or signaling a process.
+    fn commit_stop(
+        &mut self,
+        mut agent: AgentRecord,
+        force: bool,
+    ) -> Result<AgentRecord, Box<Response>> {
+        let now = Utc::now();
+        agent.status = AgentStatus::Stopping;
+        agent.last_seen = now;
+        let mut event = Event::new(
+            EventKind::AgentStopping {
+                agent: agent.id.clone(),
+                force,
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        if self.persist("stop intent", |store| {
+            store.agent_transition(&agent, &event)
+        }) != Persisted::Committed
+        {
+            return Err(Box::new(self.write_failure().unwrap_or_else(|| {
+                Response::error(
+                    ErrorCode::StorageUnavailable,
+                    "stop intent was not committed",
+                )
+            })));
+        }
+        *self
+            .registry
+            .get_mut(&agent.id)
+            .expect("stop identity retained") = agent.clone();
+        self.next_seq += 1;
+        let _ = self.events.send(event);
+        Ok(agent)
+    }
+
     /// Execute a store operation as part of the current ordered transition.
     /// A store write, answered `None` while fenced (and noted as skipped)
     /// or once storage has failed; callers leave memory as it was then.
@@ -5414,10 +5477,11 @@ impl State {
     }
 
     pub fn prune_events(&mut self) {
-        match self.store.prune_events(EVENT_HISTORY) {
-            Ok(0) => {}
-            Ok(removed) => info!(removed, "pruned event history"),
-            Err(err) => error!(%err, "failed to prune event history"),
+        if let Some(removed) =
+            self.store_op("event retention", |store| store.prune_events(EVENT_HISTORY))
+            && removed > 0
+        {
+            info!(removed, "pruned event history");
         }
     }
 

@@ -82,8 +82,13 @@ event continuity, not just a new socket or a readiness marker.
    writes until the successor has accepted; see
    [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence). Autostart
    exclusion during a transfer rides on the daemon lock the successor will
-   inherit in the next phase; until then nothing calls `offer_transfer`
-   outside tests.
+   inherits during handover. Background container reconciliation, restarts and
+   restores hold admission through their host work too. Event and ledger
+   retention use the same write fence; a skipped container transition returns
+   `Transferring`. Stop records and events commit together before registry
+   changes or process signals, and failed restore/restart-policy clearing
+   refuses the stop. Targeted tests cover actual retained rows, unchanged
+   durable records and absent stop signals on refused writes.
 4. **Successor readiness and recovery.** Validate the intended immutable
    executable and compatible state before transfer. Require the successor's
    serving loop, watcher and session routes to be usable before reporting
@@ -134,8 +139,8 @@ event continuity, not just a new socket or a readiness marker.
    by a fake-daemon test file (`crates/cli/tests/client_resume.rs`) and by
    the real chain test, which follows two handovers with a live `events`
    stream. The desktop app's blocking client sends a request answered
-   `transferring` again for as long as one call may take (10 s), so a
-   handover never shows as a failed action; its event stream already
+   `transferring` again for up to 35 s, longer than the successor's 30 s
+   readiness deadline; its event stream already
    resumes by cursor. A checked cursor taken from the first daemon of the
    real chain test resumes on the third with the same log identity and
    every sequence number since, both handovers among the replayed events.

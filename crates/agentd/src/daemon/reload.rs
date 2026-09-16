@@ -1186,6 +1186,186 @@ mod fence_tests {
             .collect()
     }
 
+    #[tokio::test]
+    async fn supervised_stop_commits_before_memory_events_or_signals() {
+        for mode in ["fenced", "failed", "committed"] {
+            let dir = TempDir::new().unwrap();
+            let daemon = open(&dir);
+            let mut agent = AgentRecord::new(AgentSpec::default(), true, Utc::now());
+            agent.status = AgentStatus::Running;
+            let (control, receiver) = tokio::sync::watch::channel(None);
+            {
+                let mut state = lock(&daemon.state);
+                agent = match state.insert_record(agent.clone()) {
+                    Response::Agent { agent } => agent,
+                    other => panic!("{other:?}"),
+                };
+                state.supervised.insert(agent.id.clone(), control);
+            }
+            if mode == "fenced" {
+                daemon.offer_transfer(4242).unwrap();
+            } else if mode == "failed" {
+                lock(&daemon.state)
+                    .store
+                    .reject_event_for_test("agent_stopping");
+            }
+            let mut events = daemon.subscribe_events();
+            let response = daemon.stop(agent.id.as_str(), true);
+            let state = lock(&daemon.state);
+            let durable = state.store.load_agents().unwrap().pop().unwrap();
+            let current = state.registry.get(&agent.id).unwrap();
+            if mode == "committed" {
+                assert!(matches!(response, Response::Agent { .. }));
+                assert_eq!(*receiver.borrow(), Some(true));
+                assert_eq!(durable.status, AgentStatus::Stopping);
+                assert_eq!(*current, durable);
+                assert!(matches!(
+                    events.try_recv().unwrap().kind,
+                    EventKind::AgentStopping { force: true, .. }
+                ));
+            } else {
+                let expected = if mode == "fenced" {
+                    ErrorCode::Transferring
+                } else {
+                    ErrorCode::StorageUnavailable
+                };
+                assert!(matches!(response, Response::Error { code, .. } if code == expected));
+                assert_eq!(*receiver.borrow(), None);
+                assert_eq!(*current, agent);
+                assert_eq!(durable, agent);
+                assert!(events.try_recv().is_err());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_stop_commit_does_not_signal_a_verified_external_process() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let mut agent = AgentRecord::new(
+            AgentSpec {
+                name: "external-stop-fixture".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.status = AgentStatus::Running;
+        agent.pid = Some(pid);
+        agent.process_started_at = Some(procinfo::start_time(pid).expect("owned process birth"));
+        {
+            let mut state = lock(&daemon.state);
+            agent = match state.insert_record(agent) {
+                Response::Agent { agent } => agent,
+                other => panic!("{other:?}"),
+            };
+            state.store.reject_event_for_test("agent_stopping");
+        }
+        let response = daemon.stop(agent.id.as_str(), true);
+        let still_running = child.try_wait().unwrap().is_none();
+        // Clean up our child before assertions, including the before-fix failure.
+        let _ = child.start_kill();
+        child.wait().await.unwrap();
+        assert!(matches!(
+            response,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(still_running, "a refused stop must not signal the process");
+        let state = lock(&daemon.state);
+        assert_eq!(state.registry.get(&agent.id).unwrap(), &agent);
+        assert_eq!(state.store.load_agents().unwrap(), vec![agent]);
+    }
+
+    #[tokio::test]
+    async fn failed_policy_clearing_never_requests_a_supervised_stop() {
+        for restore in [true, false] {
+            let dir = TempDir::new().unwrap();
+            let daemon = open(&dir);
+            let mut agent = AgentRecord::new(
+                AgentSpec {
+                    restore,
+                    restart: if restore {
+                        agentdocker_core::RestartPolicy::No
+                    } else {
+                        agentdocker_core::RestartPolicy::OnFailure { max: 2 }
+                    },
+                    ..Default::default()
+                },
+                true,
+                Utc::now(),
+            );
+            agent.status = AgentStatus::Running;
+            let (control, receiver) = tokio::sync::watch::channel(None);
+            {
+                let mut state = lock(&daemon.state);
+                agent = match state.insert_record(agent.clone()) {
+                    Response::Agent { agent } => agent,
+                    other => panic!("{other:?}"),
+                };
+                state.supervised.insert(agent.id.clone(), control);
+                state.store.reject_event_for_test(if restore {
+                    "agent_restore_cleared"
+                } else {
+                    "agent_restart_cleared"
+                });
+            }
+            let mut events = daemon.subscribe_events();
+            let response = daemon.stop_agent(agent.id.as_str(), false).await;
+            assert!(matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::StorageUnavailable,
+                    ..
+                }
+            ));
+            assert_eq!(*receiver.borrow(), None);
+            assert!(events.try_recv().is_err());
+            let state = lock(&daemon.state);
+            assert_eq!(state.registry.get(&agent.id).unwrap(), &agent);
+            assert_eq!(state.store.load_agents().unwrap(), vec![agent]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_transfer_preserves_retained_history_until_it_is_aborted() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        // Large enough to actually delete rows if either reaper bypasses the fence.
+        // Payloads are unused: this test observes the retained rows, not event decoding.
+        let conn = rusqlite::Connection::open(dir.path().join("state.db")).unwrap();
+        conn.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < ?1) INSERT INTO events(seq, at, json) SELECT x, '2026-09-15T00:00:00Z', '{}' FROM n", [EVENT_HISTORY as i64 + 3]).unwrap();
+        conn.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < ?1) INSERT INTO changes(project, path, at, json) SELECT 'fixture', 'fixture', '2026-09-15T00:00:00Z', '{}' FROM n", [CHANGE_HISTORY as i64 + 3]).unwrap();
+        lock(&daemon.state).next_seq = EVENT_HISTORY as u64 + 4;
+        daemon.offer_transfer(4242).unwrap();
+        let count = |table: &str| {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+        };
+        let before = (count("events"), count("changes"));
+        daemon.prune_events();
+        daemon.prune_changes();
+        assert_eq!((count("events"), count("changes")), before);
+        assert!(daemon.abort_transfer("retention trial"));
+        daemon.prune_events();
+        daemon.prune_changes();
+        assert_eq!(count("events"), EVENT_HISTORY as i64);
+        assert_eq!(count("changes"), CHANGE_HISTORY as i64);
+    }
+
     /// While an offer is open: mutations are refused with `transferring`
     /// and leave nothing behind, reads still answer from memory, tick
     /// writers skip, and aborting resumes everything.

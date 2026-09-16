@@ -367,13 +367,13 @@ impl Daemon {
 
     /// An agent stopped on purpose stays stopped. Clearing the flag says
     /// so in the record itself rather than in state nobody can see.
-    pub(super) fn clear_restore(self: &Arc<Self>, id: &AgentId) {
+    pub(super) fn clear_restore(self: &Arc<Self>, id: &AgentId) -> bool {
         let mut state = lock(&self.state);
         let Some(current) = state.registry.get(id) else {
-            return;
+            return true;
         };
         if !current.spec.restore {
-            return;
+            return true;
         }
         let mut record = current.clone();
         record.spec.restore = false;
@@ -394,10 +394,16 @@ impl Daemon {
             *state.registry.get_mut(id).expect("resolved agent") = record;
             state.next_seq += 1;
             let _ = state.events.send(event);
+            true
+        } else {
+            false
         }
     }
 
     async fn restore_one(self: &Arc<Self>, record: AgentRecord) -> anyhow::Result<()> {
+        let _admitted = self
+            .admit_background()
+            .map_err(|error| anyhow::anyhow!("restore refused: {error:?}"))?;
         let id = record.id.clone();
         // Process inspection is host I/O: do it without the coordination lock.
         if record.process_group.is_some_and(supervisor::group_exists) {
