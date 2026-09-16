@@ -896,7 +896,12 @@ are unknown, never zero. The design:
   sessions and late usage records. The same parsers serve the standalone CLI.
   Reading transcript files does not mean retaining their message text.
   Each collection pass records a durable discovery generation and a fixed
-  per-file high-water byte offset. Its completion watermark advances only after
+  per-file high-water byte offset at the end of the last complete JSONL record
+  within the captured file length. A trailing partial record remains beyond
+  that boundary: retain its start offset, reread it when completed, and expose
+  the pending tail in collection coverage. Never advance a cursor over an
+  incomplete record or claim coverage of its unparsed bytes. Its completion
+  watermark advances only after
   every discovered file in that generation is scanned to that offset and its
   samples/cursor commit. Files appearing or growing later belong to a later
   generation; scan failures and unsupported formats remain explicit gaps.
@@ -915,8 +920,14 @@ are unknown, never zero. The design:
   epoch count normally. A newly discovered complete session may use a zero
   baseline only when its adapter proves the snapshot covers that session from
   its start; otherwise the first snapshot establishes a baseline with unknown
-  prior coverage. Reset/rewrite identities must distinguish new epochs from
-  replay. Each supported format needs restart, truncation, rotation and rewrite
+  prior coverage. Persist that initial unknown interval as a source gap from
+  session start (or unknown earlier history) through the baseline timestamp.
+  A query overlapping it reports partial coverage when later contributions are
+  known, otherwise unknown; it cannot report complete coverage merely because
+  every collected delta has a counter. Ranges wholly after the baseline may be
+  complete if all other coverage conditions hold. Reset/rewrite identities must
+  distinguish new epochs from replay. Each supported format needs restart,
+  truncation, rotation, partial-tail completion and rewrite
   fixtures. Unsupported fields stay unknown, with coverage beside aggregates.
 - **Restart-safe ingestion.** The collector returns samples with stable source
   identities plus the proposed next file cursor. One daemon transaction accepts
