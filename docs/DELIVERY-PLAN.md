@@ -131,6 +131,15 @@ acceptance before closing this requirement. New supported UI launches now defaul
 to idle input, and composers expose recipient readiness; those changes do not
 retrofit this existing session. See the [recorded finding](MESSAGE-DELIVERY-AUDIT.md#september-16-live-claude-idle-wake-gap-reproduced).
 
+PR #162 merged owned Codex active-input delivery as `7c6e779`. Source
+`01531dc` passed the full 1,015-Rust/77-Python gate and actual Codex 0.154.0
+trials using a local model fixture: human, peer and human-broadcast inputs in
+one active turn, one explicit steering refusal retained until the turn ended,
+and recovery from a dropped acceptance reply without resubmission. This covers
+the owned app-server bridge; the existing standalone-terminal pause failure
+and Claude sessions without channel input remain open. See the
+[recorded Codex acceptance](CODEX-INPUT.md#active-turn-steering-acceptance-september-16).
+
 The user requires peer messages to follow the same provider input workflow and
 queue as messages they submit themselves, including waking an idle agent. Make
 the [message delivery audit](MESSAGE-DELIVERY-AUDIT.md) a top-priority part of
