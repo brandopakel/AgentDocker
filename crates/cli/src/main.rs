@@ -2067,12 +2067,20 @@ async fn main() -> Result<()> {
             }
             let request = Request::Subscribe { agent, topics };
             client
-                .stream(&request, |response| {
-                    if let Response::Message { message } = response {
-                        println!("{}", format::message_line(&message));
-                    }
-                    Ok(true)
-                })
+                .stream_resuming(
+                    &request,
+                    || {
+                        eprintln!(
+                            "agentdocker: the daemon was replaced; watching again (anything queued meanwhile is in the inbox)"
+                        );
+                    },
+                    |response| {
+                        if let Response::Message { message } = response {
+                            println!("{}", format::message_line(&message));
+                        }
+                        Ok(true)
+                    },
+                )
                 .await?;
         }
         Command::Inbox {
@@ -2206,11 +2214,19 @@ async fn main() -> Result<()> {
                     .await?;
                 return Ok(());
             }
+            // A replaced daemon ends this stream without a word; the
+            // successor's stream is joined live. `--resumable` is the form
+            // that replays exactly from a cursor.
             client
-                .stream(
+                .stream_resuming(
                     &Request::Events {
                         replay,
                         ready: false,
+                    },
+                    || {
+                        eprintln!(
+                            "agentdocker: the daemon was replaced; following its successor (use --resumable for a gapless stream)"
+                        );
                     },
                     |response| {
                         if let Response::Event { event } = response {

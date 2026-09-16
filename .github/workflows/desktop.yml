@@ -76,6 +76,8 @@ jobs:
         run: python3 scripts/daily_update_smoke.py --binary-dir artifacts/desktop/AgentDocker.app/Contents/MacOS --output artifacts/daily-update-smoke
       - name: Disposable installation, activation and rollback
         run: python3 scripts/desktop_install_smoke.py --source artifacts/desktop --output artifacts/desktop-install-smoke
+      - name: Activation reloads a gated daemon to the activated release
+        run: python3 scripts/desktop_reload_smoke.py --source artifacts/desktop --output artifacts/desktop-reload-smoke
       - name: Verified update feed, rejection paths and installation
         run: python3 scripts/desktop_update_smoke.py --source artifacts/desktop --output artifacts/desktop-update-smoke
       - name: Real terminal input, resize, detach, replay and natural exit
@@ -114,6 +116,7 @@ jobs:
             artifacts/iced-workflows
             artifacts/daily-update-smoke
             artifacts/desktop-install-smoke
+            artifacts/desktop-reload-smoke
             artifacts/desktop-update-smoke
             artifacts/terminal-smoke
             artifacts/identity-smoke

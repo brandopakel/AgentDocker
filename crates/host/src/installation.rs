@@ -23,6 +23,37 @@ fn managed(executable: &Path) -> Option<(PathBuf, PathBuf, &str)> {
     Some((versions.parent()?.to_owned(), versions.join(id), id))
 }
 
+/// The `agentd` of the release the managed installation currently
+/// activates, when `executable` belongs to a managed installation and
+/// that release differs from the executable's own. This is what a daemon
+/// reloads to after `desktop install`, `update` or `rollback`: the
+/// daemon runs from a pinned version directory, so its own path always
+/// names the release it started from, never the one activated since.
+pub fn activated_daemon(executable: &Path) -> Option<PathBuf> {
+    let (root, version, _) = managed(executable)?;
+    let payload = root.join("current").join("payload");
+    // Where this platform's payload keeps its binaries: an application
+    // bundle on macOS, a plain tree elsewhere. Never the other one, even
+    // if a payload carries both.
+    let inside = if cfg!(target_os = "macos") {
+        "Contents/MacOS/agentd"
+    } else {
+        "bin/agentd"
+    };
+    let candidate = payload.join(inside);
+    if !candidate.is_file() {
+        return None;
+    }
+    let resolved = std::fs::canonicalize(&candidate).ok()?;
+    // Under the same versions directory, and not the release already
+    // running: an activation is only a reload target when it is new.
+    // Everything is compared resolved, since a home may itself sit behind
+    // a symlink.
+    let versions = std::fs::canonicalize(root.join("versions")).ok()?;
+    let running = std::fs::canonicalize(&version).ok()?;
+    (resolved.starts_with(&versions) && !resolved.starts_with(&running)).then_some(resolved)
+}
+
 pub fn pin_path(root: &Path, id: &str) -> io::Result<PathBuf> {
     if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(io::Error::other("invalid desktop release identity"));
@@ -85,6 +116,62 @@ mod tests {
         assert!(lock::try_exclusive(&path).unwrap().is_none());
         drop(second_pin);
         assert!(lock::try_exclusive(&path).unwrap().is_some());
+    }
+
+    /// A daemon running from release A reloads to the release the
+    /// installation activates, B, and to nothing when A is still the one
+    /// activated, or when the executable is not managed at all.
+    #[cfg(unix)]
+    #[test]
+    fn the_activated_daemon_is_the_other_release_under_current() {
+        use std::os::unix::fs::symlink;
+        let (temp, root, executable) = fixture();
+        let running = executable.with_file_name("agentd");
+        std::fs::write(&running, "release a").unwrap();
+        let versions = root.join("versions");
+        let b = versions.join("b".repeat(64)).join("payload");
+        std::fs::create_dir_all(b.join("bin")).unwrap();
+        std::fs::create_dir_all(b.join("Contents/MacOS")).unwrap();
+        std::fs::write(b.join("bin/agentd"), "release b").unwrap();
+        std::fs::write(b.join("Contents/MacOS/agentd"), "release b").unwrap();
+
+        // Nothing activated yet.
+        assert_eq!(activated_daemon(&running), None);
+        // A activated: the running release, so nothing to reload to.
+        let generations = root.join("generations");
+        std::fs::create_dir_all(&generations).unwrap();
+        let gen_a = generations.join("1");
+        std::fs::create_dir_all(&gen_a).unwrap();
+        symlink(running.parent().unwrap(), gen_a.join("payload")).unwrap();
+        symlink(&gen_a, root.join("current")).unwrap();
+        // The fixture's release A keeps its binaries beside `payload`, so
+        // put the daemon where the layout would.
+        std::fs::create_dir_all(running.parent().unwrap().join("bin")).unwrap();
+        std::fs::write(running.parent().unwrap().join("bin/agentd"), "release a").unwrap();
+        assert_eq!(
+            activated_daemon(&running),
+            None,
+            "already the active release"
+        );
+        // B activated: that is the reload target, resolved to its real path.
+        let gen_b = generations.join("2");
+        std::fs::create_dir_all(&gen_b).unwrap();
+        symlink(&b, gen_b.join("payload")).unwrap();
+        std::fs::remove_file(root.join("current")).unwrap();
+        symlink(&gen_b, root.join("current")).unwrap();
+        let expected = if cfg!(target_os = "macos") {
+            b.join("Contents/MacOS/agentd")
+        } else {
+            b.join("bin/agentd")
+        };
+        assert_eq!(
+            activated_daemon(&running),
+            Some(std::fs::canonicalize(expected).unwrap())
+        );
+        // An unmanaged daemon has no activated release to speak of.
+        let elsewhere = temp.path().join("agentd");
+        std::fs::write(&elsewhere, "checkout build").unwrap();
+        assert_eq!(activated_daemon(&elsewhere), None);
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

@@ -19,6 +19,9 @@ use crate::client::Client;
 use crate::format;
 
 const LABEL: &str = "dev.agentdocker.agentd";
+/// How long `daemon reload` waits for a mutation that is still executing
+/// before giving the refusal to the user.
+const RELOAD_WAIT: Duration = Duration::from_secs(30);
 const UNIT: &str = "agentd.service";
 
 #[derive(Args)]
@@ -561,12 +564,40 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
             }
         }
         DaemonCommand::Reload => {
-            // A refused reload does not start a daemon or imply a completed upgrade.
-            client
-                .with_start_timeout(None)
-                .call(&Request::Reload)
-                .await
-                .context("reload failed")?;
+            // A refused reload does not start a daemon or imply a completed
+            // upgrade. `backpressure` means a mutation admitted before the
+            // offer is still executing; the daemon offers again once it is
+            // done, so wait for it rather than hand the user a retry.
+            // Each attempt runs for as long as the daemon takes: a handover
+            // in progress is not abandoned from this side, and the daemon
+            // bounds it itself. What is bounded is how long this keeps
+            // asking again after `backpressure`.
+            let quiet = client.with_start_timeout(None);
+            let deadline = Instant::now() + RELOAD_WAIT;
+            let mut told = false;
+            let response = loop {
+                let response = quiet.call_raw(&Request::Reload).await?;
+                let busy = matches!(
+                    &response,
+                    Response::Error {
+                        code: agentdocker_core::ErrorCode::Backpressure,
+                        ..
+                    }
+                );
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if !busy || remaining.is_zero() {
+                    break response;
+                }
+                if !told {
+                    eprintln!("waiting for a request still executing before the handover");
+                    told = true;
+                }
+                tokio::time::sleep(Duration::from_millis(500).min(remaining)).await;
+            };
+            if let Response::Error { message, code, .. } = response {
+                anyhow::bail!("reload failed: {message} ({code:?})");
+            }
+            println!("reloaded: a new agentd is serving; agents kept running");
         }
         DaemonCommand::Status => {
             let definition = if macos {
@@ -594,12 +625,18 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                     version,
                     uptime_secs,
                     restricted,
+                    pid,
+                    executable,
                 }) => {
                     println!(
-                        "daemon    agentd {version} up {} at {}",
+                        "daemon    agentd {version} up {} at {}{}",
                         format::span_secs(uptime_secs),
-                        socket.display()
+                        socket.display(),
+                        pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()
                     );
+                    if let Some(executable) = executable {
+                        println!("serving   {}", executable.display());
+                    }
                     match restricted {
                         Some(path) => println!("container {}", path.display()),
                         None => println!(

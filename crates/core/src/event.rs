@@ -548,6 +548,13 @@ pub enum EventKind {
         transfer: String,
         successor_pid: u32,
     },
+    /// The offer now names the successor process that was actually
+    /// started; the offer itself named a placeholder because a pid is
+    /// only known once the process exists.
+    DaemonTransferReaddressed {
+        transfer: String,
+        successor_pid: u32,
+    },
     /// The successor wrote once and owns the database; this daemon will
     /// exit without touching agents.
     DaemonTransferAccepted {

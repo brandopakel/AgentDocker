@@ -81,7 +81,7 @@ install: app ## Build, package, and install for this user (takes effect on next 
 	"$(PACKAGED_CLI)" desktop $(PREFIX_FLAG) install --from "$(PACKAGE_DIR)/$(PAYLOAD)" $(LOCAL_PREVIEW)
 	"$(PACKAGED_CLI)" desktop $(PREFIX_FLAG) status
 	@echo; echo "Installed. Quit and reopen AgentDocker to run this build."; \
-	  echo "A daemon that is already running keeps serving until you restart it: make restart-daemon"
+	  echo "The report's 'daemon' entry says whether a running daemon reloaded to it; if it did not, make restart-daemon switches it once agent work is done"
 
 status: ## Show the active and previous installed versions
 	agentdocker desktop $(PREFIX_FLAG) status

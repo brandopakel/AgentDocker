@@ -731,6 +731,14 @@ async fn relay_until_exit(
             if !owner_alive(&spawned.owner) {
                 return Outcome::Failed("session owner lost".into());
             }
+            // A daemon that has offered coordination away does not compete
+            // for the owner: the successor is attaching, and reconnecting
+            // would supersede it in turn. If the offer is aborted the fence
+            // lifts and this loop takes the owner back.
+            if daemon.fenced() {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
             match spawned.reconnect(&daemon.home, id).await {
                 Ok(()) => {
                     tracing::info!(agent = %id, "reconnected to the session owner");

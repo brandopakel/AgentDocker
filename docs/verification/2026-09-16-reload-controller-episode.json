@@ -1,0 +1,147 @@
+{
+  "date": "2026-09-16",
+  "result": "passed",
+  "scope": "reload acceptance trial with a bound controller's restart episode across the handovers; release binaries built from the reload integration branch (uncommitted merge, tree recorded); private daemon under a disposable home",
+  "source": {
+    "branch": "claude/reload-stack",
+    "index_tree": "4a353327e6cfacb0cba44c5f72ed487155115517",
+    "note": "the merge of fence-bindings, main and the reload stack tip, with the store's deferred data migrations and the trial's controller scenario; committed as the next commit on the branch"
+  },
+  "build_info": {
+    "arch": "aarch64",
+    "format": 1,
+    "installation_lock": 1,
+    "os": "macos",
+    "state_schema": 20,
+    "version": "0.1.0"
+  },
+  "release_binaries": {
+    "agentd": "b7a45eb34da0a0aad4049c37cad97592dd46d276f29e1e72a0c557d789a0428d",
+    "agentdocker": "36ca354fc8e76a21b0cd4212cf7efbc888c394d9003a630a269b8e5345408982"
+  },
+  "reloads": 20,
+  "reload_seconds": [
+    1.053,
+    0.542,
+    1.055,
+    0.029,
+    0.024,
+    0.546,
+    0.027,
+    0.541,
+    0.545,
+    0.029,
+    0.026,
+    0.025,
+    1.058,
+    0.547,
+    1.058,
+    0.026,
+    0.032,
+    0.032,
+    0.028,
+    0.026
+  ],
+  "predecessor_retired_seconds": [
+    1.075,
+    0.543,
+    1.076,
+    0.05,
+    0.054,
+    0.574,
+    0.058,
+    0.571,
+    0.572,
+    0.06,
+    0.056,
+    0.08,
+    1.088,
+    0.577,
+    1.08,
+    0.055,
+    0.059,
+    0.055,
+    0.053,
+    0.057
+  ],
+  "daemon_pids": [
+    54090,
+    54319,
+    54417,
+    54567,
+    54612,
+    54703,
+    54817,
+    54864,
+    54959,
+    55051,
+    55073,
+    55118,
+    55164,
+    55381,
+    55505,
+    55661,
+    55708,
+    55745,
+    55791,
+    55817,
+    55852
+  ],
+  "scenarios": [
+    "384 messages sent through 20 reloads arrived once, in order; 0 send errors",
+    "133 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+    "both loggers' logs are contiguous across every reload",
+    "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+    "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+    "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 19 handovers accepted in between"
+  ],
+  "sends": {
+    "delivered": 384,
+    "errors": []
+  },
+  "launches": {
+    "finished": 133,
+    "errors": []
+  },
+  "log_lines": {
+    "logger-a": 738628,
+    "logger-b": 732878
+  },
+  "controller_episode": {
+    "attempts": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "launched_pids": [
+      54320,
+      54960,
+      55821,
+      56327,
+      56882
+    ],
+    "handovers_during": 19
+  },
+  "daemon_log_warnings": {},
+  "artifacts": {
+    "result": {
+      "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/reload-acc20/result.json",
+      "sha256": "48bf5d66c47fe8fbb7927887b4650e81a87c895b95216604015e27f92531c133"
+    },
+    "daemon_log": {
+      "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/reload-acc20/daemon.log",
+      "sha256": "fc822d17d4fe135afbe99b4e0f3fccdedf8db3caad9d94a14f746ffee31e53e1"
+    },
+    "ten_reload_run": {
+      "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/reload-acc1/result.json",
+      "sha256": "da7e50327baaabd66cb84309549a78ea64bb7990a5ff131b9ca11c18fa6c0f79"
+    }
+  },
+  "limits": [
+    "The launch descriptor is /bin/sh, outside any managed installation, so the controller's installation pin is not exercised here; it is unit-tested (pin_controllers under the fence) and needs an installed trial.",
+    "The launched controller ends on its own after two seconds; a controller that starts and never binds (bind grace, SIGTERM, SIGKILL) is unit-tested, not trialled here.",
+    "Replay retention limits and Windows are not covered; provider-side acceptance (live Claude/Codex conversations across a switch) is codex's."
+  ]
+}

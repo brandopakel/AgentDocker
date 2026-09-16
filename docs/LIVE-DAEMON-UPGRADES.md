@@ -7,8 +7,10 @@ passed 837 Rust tests, 65 Python checks and an actual immutable CLI/daemon
 restart, question-answer replay and schema-upgrade trial. PR #109 passed final
 CI and source review and merged as `ebaba5be`. The provider event worker's
 bounded reconnect is implemented with an actual pending-approval cut trial;
-PR #110 passed final CI/source inspection and merged as `d89a85c`. Production `reload` continues to refuse without
-changing the running daemon or agents. This document records the concrete
+PR #110 passed final CI/source inspection and merged as `d89a85c`. Production `reload` refuses without
+changing the running daemon or agents unless the daemon was started with
+`AGENTDOCKER_EXPERIMENTAL_RELOAD=1`; the gate stays until the acceptance list
+below is recorded. This document records the concrete
 ownership and recovery requirements behind the open item in
 [Remaining work](REMAINING-WORK.md).
 
@@ -87,12 +89,84 @@ event continuity, not just a new socket or a readiness marker.
    serving loop, watcher and session routes to be usable before reporting
    success. A lost readiness response requires inspecting the committed transfer
    identity; timeout alone cannot authorize two coordinators to resume writing.
+   *In source, gated (`AGENTDOCKER_EXPERIMENTAL_RELOAD=1`, exactly):*
+   `reload` reads the candidate's `--build-info` within 10 s and refuses
+   another host or an older state schema before any offer; it offers the
+   transfer (the offer's own `backpressure` or `conflict` refusal is passed
+   through), spawns the candidate with `--take-over` in its own session,
+   sends a FORMAT 2 handover (listening socket, daemon lock, container
+   endpoint) over `SCM_RIGHTS`, and waits up to 30 s for *serving*. The
+   successor opens the database pending (schema forward; the recorded
+   version and the data migrations that change what rows mean, such as the
+   v19/v20 offered marks on queued input, wait), reattaches every session
+   owner while still fenced, and only then accepts the transfer as its
+   first write, which runs those migrations and records the new schema
+   version in the same transaction; it answers *serving* at once, so
+   acceptance and readiness are the same moment. A fenced predecessor does not reconnect
+   to owners, so the successor's attachment is never superseded. On any
+   other outcome the predecessor kills the successor's whole session and
+   aborts the offer, and the database is as the predecessor left it; if
+   the store says the successor accepted, it was serving, and a death
+   after that is a crashed daemon for the service manager. The watcher
+   and session routes come up with the successor's normal startup.
+   See [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence).
+   Real-binary coverage: `enabled_reload_hands_real_processes_to_a_successor_and_leaves`
+   reloads three daemons in a row with a batch and a PTY agent keeping their
+   processes and logs. The [successor-readiness record](verification/2026-09-15-successor-readiness.json)
+   repeats that chain on release binaries and adds the failing candidates:
+   an older-schema candidate refused before any offer (no coordinator row),
+   a candidate that died (offer aborted within milliseconds, same daemon
+   serving, writes resumed) and one that never answered (aborted at the
+   30 s deadline, same daemon serving, nothing of its session left behind).
 5. **Connected clients.** Preserve or resume terminal and question/event streams,
    provider input polls, pending questions and leases across the transition.
    Reconnection must retain drafts, receipts and original question expiry.
+   *In source, for the CLI:* a request answered `transferring` is retried
+   unchanged for 35 s (longer than a handover can take), so `send`, `claim`,
+   MCP tools and hooks ride out the window; `attach`, `watch` and plain
+   `events` tell a silent close with a daemon still answering (a
+   replacement) from an `end` (the agent or stream over) and subscribe or
+   attach again, saying so; `daemon reload` waits for a mutation still
+   executing instead of surfacing `backpressure`. Pending questions and
+   leases are durable and continue under the successor; an `ask` held open
+   on the predecessor returns an error when it leaves, and its answer
+   arrives in the asker's inbox as for any `ask` that ended early. Covered
+   by a fake-daemon test file (`crates/cli/tests/client_resume.rs`) and by
+   the real chain test, which follows two handovers with a live `events`
+   stream. The desktop app's blocking client sends a request answered
+   `transferring` again for as long as one call may take (10 s), so a
+   handover never shows as a failed action; its event stream already
+   resumes by cursor. A checked cursor taken from the first daemon of the
+   real chain test resumes on the third with the same log identity and
+   every sequence number since, both handovers among the replayed events.
+   Still ahead: provider input polls and an attached terminal's
+   unsubmitted draft have not been trialled across a switch.
 6. **Installation integration.** Keep the predecessor/session-owner pins until
    their work ends. Activate only a reviewed candidate, preserve rollback where
    schema compatibility permits it, and report the actual serving version.
+   *In source, gated:* a daemon started from a managed installation runs
+   from its pinned version directory, so its own path always names the
+   release it started from; a reload now hands over to the release the
+   installation has activated since (`current/payload`), resolved through
+   the kernel's path for the running executable, and only otherwise to its
+   own executable. `desktop install`, `update --apply` and `rollback` ask a
+   running daemon to reload once the release is activated and report the
+   daemon's own answer under `daemon`: `reloaded` with what serves now, or
+   the refusal and what keeps serving; nothing is started. `pong` carries
+   the serving pid and executable, and `daemon status` and `desktop
+   status` show them. Pins are unchanged: the predecessor releases its
+   own pin when it leaves, the successor pins its release at startup, and
+   session owners keep theirs until their agents end, so retention still
+   cannot remove a release anything runs from. Rollback reloads to the
+   previous release only within the same state schema, as before.
+   Covered by `scripts/desktop_reload_smoke.py` (in the desktop
+   workflow): a gated daemon started through the launcher link is
+   reloaded by an install of a second generation and again by the
+   rollback, keeping its agent's process both times, and the reports and
+   `daemon status` name the release that serves. Still ahead: the
+   installed launchd/systemd service does not set the gate, so an
+   installation today reports the refusal and keeps the previous daemon
+   serving until a restart; that changes when the gate is removed.
 
 ## Acceptance before enabling reload
 
@@ -102,17 +176,38 @@ an in-process Tokio test cannot establish this boundary.
 
 - Batch and PTY children continue through replacement with the same PID/birth,
   complete ordered output and retained logs/scrollback, then report exact exit
-  status and clean descendants before releasing leases.
+  status and clean descendants before releasing leases. *Passed* in the
+  [successor-readiness record](verification/2026-09-15-successor-readiness.json):
+  two successive reloads with a batch and a PTY agent keeping their child
+  pids, exact exits 7/3 under the third daemon, the container endpoint
+  inherited; the CI test above repeats the chain.
 - Human and peer messages queued before/during transfer retain order and exact
   provider receipts; pending approval answers follow their original route once.
+  *Passed for peers* in the [reload acceptance record](verification/2026-09-15-reload-acceptance.json):
+  900 numbered messages sent through 20 successive reloads arrived once and in
+  order, and a question posted before the first reload kept its expiry and was
+  answered after the last. Provider receipts and approval routes are not
+  covered there.
 - Active Claude and Codex conversations survive, including an idle wake, a busy
   input, a question and an attached terminal with an unsubmitted draft.
 - Wrong/incompatible candidates, unavailable state, lost/trickled readiness,
   candidate death and failed ownership transfer leave one identifiable serving
   coordinator or an explicit recoverable state with protection retained.
+  *Passed* for an older-schema candidate, a dying candidate and a silent one;
+  trickled readiness and a failed store are covered by unit tests. Wrong-host
+  candidates are refused by the same `--build-info` check but have not been
+  trialled with a real foreign binary.
 - Repeat under log pressure, replay retention limits, concurrent send/stop/launch,
   installation rollback and multiple successive replacements. Test supported
   Unix platforms independently; Windows needs its own ownership/IPC acceptance.
+  *Passed* for log pressure (two agents printing 6.7 million numbered lines,
+  every log contiguous), concurrent send, stop and launch (653 short agents
+  launched during the reloads, half stopped early, all reaching a durable end
+  with no send, launch or stop error) and 20 successive replacements with
+  every predecessor retired, in the same record; the only daemon warnings
+  were fenced skips on exits that landed during an offer, each recovered
+  after acceptance. Installation rollback passes in the desktop reload smoke
+  (boundary 6). Replay retention limits and Windows are not covered.
 - Input bindings (schema 19 and 20, the external controller, its supervision
   and the answer route): every binding transition and the legacy-offer
   bookkeeping gates on `Persisted::Committed`, not only on `storage_error`,
@@ -130,9 +225,16 @@ an in-process Tokio test cannot establish this boundary.
   predecessor exits and the successor takes its own before serving. Covered
   by `a_fenced_tick_neither_notes_an_end_nor_launches`,
   `a_fenced_delivery_read_is_refused_rather_than_unrecorded` and the fenced
-  part of `stale_notices_are_one_per_tick_and_wait_for_the_last_to_be_read`. Still
-  ahead: a launched-but-unbound controller, its pin and the restart episode
-  across an actual handover, in the reload acceptance trial.
+  part of `stale_notices_are_one_per_tick_and_wait_for_the_last_to_be_read`.
+  *Passed* in the reload acceptance trial: a bound controller ended before
+  the first reload and its launch descriptor's restart episode ran to
+  exhaustion across 20 handovers (five launches, attempts 1 to 5, distinct
+  processes, each noted ended before the next, 19 acceptances in between,
+  no daemon warnings); see
+  [the record](verification/2026-09-16-reload-controller-episode.json).
+  Still ahead: the controller's installation pin across a handover, which
+  needs a launch descriptor inside an installed release, and a launched
+  controller that never binds (unit-tested only).
 
 An old installed daemon that lacks this protocol cannot gain live transfer from
 an updated launcher. Its first switch still waits for active sessions to finish.

@@ -211,7 +211,11 @@ impl Store {
                 .is_ok_and(|n| (10..=SCHEMA_VERSION).contains(&n)),
             "identity repair requires schema 10 through {SCHEMA_VERSION}; found {schema}"
         );
-        Ok(Self { conn, fts: false })
+        Ok(Self {
+            conn,
+            fts: false,
+            pending_from: std::cell::Cell::new(None),
+        })
     }
 
     /// Must run inside the caller's snapshot/maintenance transaction.
