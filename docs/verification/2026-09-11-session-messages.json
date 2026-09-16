@@ -321,5 +321,90 @@
       "Unit/integration source evidence; final native graphical, CI and review gates remain.",
       "These fixes do not apply production identity reconciliation or establish live daemon replacement."
     ]
+  },
+  "main_integration_2026_09_15": {
+    "result": "passed_for_listed_scope",
+    "scope": "PR #150 integrated with main 032f622, preserving the native Codex queue, skill, managed-network review, copied launcher integrity and transport diagnostics.",
+    "source": {
+      "format": 1,
+      "source_commit": "7897fb4e65a7f63e1bba3a70d1267c584b344b13",
+      "source_tree": "7543775b2f6cb232abed68d5a6090d4ca406f4f1",
+      "source_input_sha256": "011ebba43aecd8642bfd6f5f7f7347f43636a3fa23278f30d644637fc57bac8c",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "6f5758abf8cb27b921c1d4c8e943f6010a62389e51db82799ea011695abab15c",
+        "agentd": "a111987a6a2220e2a63de78312fc015dcf6bba45a35421be44f107de1dbb7689",
+        "agentdocker-ui": "1ec644dbf3132f237730717c2fd98122884c076f8c9ce768d89688844a9aabe2"
+      }
+    },
+    "standard_gate": {
+      "result": "passed",
+      "rust_tests": 999,
+      "rust_skipped": 7,
+      "python_checks": 77,
+      "format": true,
+      "clippy": true,
+      "doctests": true,
+      "cargo_package": true,
+      "release_build": true,
+      "log": {
+        "artifact": "agentdocker-messaging-integration-gate1.log",
+        "sha256": "309068052b1310846ce8705eecc11ccb8f58a891122cf586a048a586db0a8a28"
+      }
+    },
+    "native_workflow": {
+      "result": "passed",
+      "steps": 233,
+      "elapsed_seconds": 84.32071487500798,
+      "checks": [
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize"
+      ],
+      "binary_sha256": {
+        "agentd": "a111987a6a2220e2a63de78312fc015dcf6bba45a35421be44f107de1dbb7689",
+        "agentdocker": "6f5758abf8cb27b921c1d4c8e943f6010a62389e51db82799ea011695abab15c",
+        "agentdocker-ui": "1ec644dbf3132f237730717c2fd98122884c076f8c9ce768d89688844a9aabe2"
+      },
+      "result_artifact": {
+        "artifact": "result.json",
+        "sha256": "f58705837e5d69588abf28704fac39299c353c8f24414575e15759b86f6de45c"
+      },
+      "driver_sha256": "c307d7e7f51e278f29877258ac7648aad3b752d5dca4952c12bd73340fc973d9",
+      "binary_hashes_unchanged_after_trial": true,
+      "source_inputs_unchanged_during_trial": true
+    },
+    "limits": [
+      "Rendered production control callbacks in private fixture state; no physical keyboard, notification permission/click, VoiceOver or IME claim.",
+      "No production state or installed binaries were changed. Final-head CI/review and installed schema21 acceptance remain.",
+      "The 84-second workflow is bounded integration acceptance, not a sustained-provider, sleep/reboot or cross-platform trial."
+    ]
   }
 }
