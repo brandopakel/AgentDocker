@@ -23,7 +23,10 @@ pub fn redirect_managed_launcher() -> io::Result<()> {
                 io::Error::other("launcher target is not an immutable installed release")
             })?;
             // exec preserves the invocation's terminal, arguments and process
-            // identity. The selected executable acquires its own lifetime pin.
+            // identity. CLOEXEC closes this pin when the new image loads; that
+            // image acquires its own pin before using release resources. If
+            // activation and pruning win this handoff, startup fails closed
+            // under pin_executable's lock and existence check.
             return Err(std::process::Command::new(target)
                 .args(std::env::args_os().skip(1))
                 .exec());
