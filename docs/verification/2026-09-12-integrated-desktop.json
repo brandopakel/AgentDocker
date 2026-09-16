@@ -680,5 +680,121 @@
       "remote_branch_deleted": true
     }
   },
-  "path_redaction": "Published account-home paths use <user-home>; recorded source and binary hashes are unchanged. Raw local records remain private."
+  "path_redaction": "Published account-home paths use <user-home>; recorded source and binary hashes are unchanged. Raw local records remain private.",
+  "resizable_pane_review_2026_09_16": {
+    "source_commit": "2003bcab85ea06d9b18c090e90a07e41c16fb98b",
+    "source_clean_during_trials": true,
+    "source_manifest": "/private/tmp/agentdocker-panes-review1-manifest-before-2026-09-16.json",
+    "source_unchanged_after_trials": true,
+    "binary_sha256": {
+      "agentd": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65",
+      "agentdocker": "4257bc3b06dedfe34462a200dcde72c183468259e94de8ff18db14937b09daeb",
+      "agentdocker-ui": "520b43032f71564e8bbdb5e44b807c808a4d03b71e315c8bbd577f270bc217f6"
+    },
+    "standard_gate": {
+      "command": "bash scripts/verify.sh check",
+      "exit_code": 0,
+      "rust_passed": 1010,
+      "rust_skipped": 7,
+      "python_passed": 77,
+      "log": "/private/tmp/agentdocker-panes-review1-gate2-2026-09-16.log"
+    },
+    "focused_regressions": {
+      "passed": 3,
+      "log": "/private/tmp/agentdocker-panes-review1-focused2-2026-09-16.log",
+      "scope": [
+        "actual pane-grid geometry preserves minimum conversation across widths and thread lifecycle without changing preferences",
+        "text zoom reflows without window resize",
+        "original drag/pixel bounds behavior"
+      ]
+    },
+    "native_workflow": {
+      "exit_code": 0,
+      "steps_completed": 312,
+      "scenario_steps": {
+        "readiness-received": 5,
+        "provider-limit": 14,
+        "readiness-activity": 5,
+        "readiness-ready": 5,
+        "workflows": 175,
+        "restored": 6,
+        "readiness-paused": 5,
+        "readiness-contact": 5,
+        "narrow-inbox": 55,
+        "constrained-panes": 37
+      },
+      "report": "/private/tmp/agentdocker-panes-review1-workflows1-2026-09-16/result.json",
+      "report_sha256": "ea70388a76b1013f7a68cad8ea265b8e46166b701b216014e8879ae9c3a7862b",
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences"
+      ],
+      "constrained_trial": [
+        "largest saved column widths, 1200-pixel window and two composers",
+        "1000-pixel window uses single-pane thread navigation",
+        "text size18 at unchanged1200 window reflows without resize",
+        "conversation/thread drafts and saved preferred widths survive shrink/zoom/expansion"
+      ],
+      "captures": {
+        "maximum-columns-1200.png": {
+          "path": "/private/tmp/agentdocker-panes-review1-workflows1-2026-09-16/constrained-panes/maximum-columns-1200.png",
+          "sha256": "4ef0d060414a9e78c878835eb76e43229cc50f049d3eeadb9bb17030ec3aee75"
+        },
+        "thread-fallback-1000.png": {
+          "path": "/private/tmp/agentdocker-panes-review1-workflows1-2026-09-16/constrained-panes/thread-fallback-1000.png",
+          "sha256": "a921e5fb0131b842266faee0e602a7f3046e3a8aa1218ac4a08c2a9b6a1827e0"
+        },
+        "zoom-without-resize.png": {
+          "path": "/private/tmp/agentdocker-panes-review1-workflows1-2026-09-16/constrained-panes/zoom-without-resize.png",
+          "sha256": "3a9405a95a785a558ab7bfd88d03f125b602f8bfd6f38d6732f68e3aa61fe2e2"
+        },
+        "expanded-columns.png": {
+          "path": "/private/tmp/agentdocker-panes-review1-workflows1-2026-09-16/constrained-panes/expanded-columns.png",
+          "sha256": "3f4b897c9e446707b3c3610d82eaad4cad47e2ffe95a54abc8ab9f503c52b078"
+        }
+      },
+      "visual_inspection": "Maximum-width and zoom captures inspected: usable composer/Send controls, single thread pane with back navigation after zoom. Long side-list labels can still clip at their minimum widths."
+    },
+    "retained_failed_validation": [
+      "/private/tmp/agentdocker-panes-review1-gate1-2026-09-16.log: new test fixture used &str for MessageId; corrected to String",
+      "/private/tmp/agentdocker-panes-review1-focused-2026-09-16.log: new headless test had default zero window width; corrected to actual1180 width"
+    ],
+    "limits": [
+      "Private macOS native trial; not production installation, hands-on accessibility/IME or independent platform acceptance.",
+      "No new assertion of idle delivery for the live Claude session: it remains without an input receiver."
+    ],
+    "integration": {
+      "pr": 160,
+      "reviewed_head": "1e90f839c51b59ded40dbfabe1bd02d8ef23f120",
+      "merge_commit": "37725fea1dfce9b21c983cdeaf4be822151e4fa4",
+      "merged_at": "2026-09-16T18:06:11Z",
+      "final_ci": "passed",
+      "review_comment": 5693260126,
+      "review": "No actionable comments, Minimal risk; exact head covered.",
+      "branch_retained": "Claude still has it checked out; remove after it moves off."
+    }
+  }
 }

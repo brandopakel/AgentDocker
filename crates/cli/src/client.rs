@@ -34,7 +34,7 @@ const TRANSFER_WINDOW: Duration = Duration::from_secs(35);
 const RESUME_WINDOW: Duration = Duration::from_secs(3);
 
 /// Limit consecutive reconnects that produced no application data. A useful
-/// stream resets the budget; even successful handovers wait before reopening.
+/// stream resets the budget and resumes promptly after a successful handover.
 #[derive(Default)]
 pub(crate) struct StreamRetries(u32);
 
@@ -42,6 +42,7 @@ impl StreamRetries {
     pub(crate) async fn wait(&mut self, progressed: bool) -> Result<()> {
         if progressed {
             self.0 = 0;
+            return Ok(());
         }
         if self.0 >= 5 {
             bail!("stream repeatedly closed without data; reconnect limit reached");

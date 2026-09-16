@@ -497,6 +497,9 @@ fn enabled_reload_hands_real_processes_to_a_successor_and_leaves() {
         assert!(count("daemon_transfer_accepted") >= 2, "{kinds:?}");
     }
 
+    // Prove this subscription reached the third daemon before ending the
+    // fixture. A fast shutdown must not race the asynchronous reconnect.
+    followed.wait_for_marker(&socket, &work, "marker-3");
     // The third daemon is nobody's child here; stop it over the socket and
     // wait for it to take the socket path down with it.
     let response = rpc(&socket, json!({"op":"shutdown"})).unwrap();

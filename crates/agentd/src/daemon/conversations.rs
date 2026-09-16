@@ -1067,8 +1067,21 @@ mod tests {
             "alice's first was read under the old identity and the second is the reader's own words"
         );
         // A mark below what the old identity already read is a no-op for
-        // the reader it became: the cursor never moves back.
-        let before_noop = lock(&daemon.state).next_seq;
+        // the reader it became: the cursor never moves back, nothing is
+        // written for the reader that is, and no read is recorded.
+        let cursors_of = |id: &AgentId| {
+            lock(&daemon.state)
+                .store
+                .read_cursors(id.as_str())
+                .unwrap()
+                .into_iter()
+                .filter(|c| c.conversation == old_dm)
+                .map(|c| c.through)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(cursors_of(&early.id), vec![archived[0].seq]);
+        assert!(cursors_of(&later.id).is_empty());
+        let seq_before = lock(&daemon.state).next_seq;
         assert!(matches!(
             daemon
                 .handle(Request::MarkRead {
@@ -1079,6 +1092,23 @@ mod tests {
                 .await,
             Response::Ok
         ));
+        assert_eq!(lock(&daemon.state).next_seq, seq_before, "no read recorded");
+        assert!(
+            !daemon
+                .recent_events(8)
+                .iter()
+                .any(|e| matches!(&e.kind, EventKind::ConversationRead { reader, .. } if *reader == later.id)),
+            "no ConversationRead for the reader that is"
+        );
+        assert_eq!(
+            cursors_of(&early.id),
+            vec![archived[0].seq],
+            "durable cursor unchanged"
+        );
+        assert!(
+            cursors_of(&later.id).is_empty(),
+            "nothing written for the new identity"
+        );
         assert!(
             !conversations(&daemon, later.id.as_str())
                 .await
@@ -1089,7 +1119,7 @@ mod tests {
         {
             let state = lock(&daemon.state);
             assert_eq!(
-                state.next_seq, before_noop,
+                state.next_seq, seq_before,
                 "a no-op must not emit ConversationRead"
             );
             assert!(
