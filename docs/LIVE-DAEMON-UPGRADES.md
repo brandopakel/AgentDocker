@@ -144,7 +144,8 @@ event continuity, not just a new socket or a readiness marker.
    resumes by cursor. A checked cursor taken from the first daemon of the
    real chain test resumes on the third with the same log identity and
    every sequence number since, both handovers among the replayed events.
-   Still ahead: provider input polls and an attached terminal's
+   Codex native input polling has bounded loopback-model acceptance below.
+   Still ahead: other provider input polls and an attached terminal's
    unsubmitted draft have not been trialled across a switch.
 6. **Installation integration.** Keep the predecessor/session-owner pins until
    their work ends. Activate only a reviewed candidate, preserve rollback where
@@ -195,6 +196,15 @@ an in-process Tokio test cannot establish this boundary.
   covered there.
 - Active Claude and Codex conversations survive, including an idle wake, a busy
   input, a question and an attached terminal with an unsubmitted draft.
+  *Passed for the Codex native client with a loopback model fixture:* clean
+  driver `e09db70` and release binaries from `055f45f` passed four handovers
+  while idle, with an unsubmitted Codex draft, with human/peer input queued
+  during a busy turn, and before answering a pending question. Provider and
+  controller identities were unchanged at each switch; the same thread kept
+  exact receipts, the answer arrived once and cleanup left no trial daemon
+  or controller. See the [existing record](verification/2026-09-16-reload-controller-episode.json).
+  Real model services, Claude, distinct-source upgrades and AgentDocker
+  attached-terminal drafts remain open.
 - Wrong/incompatible candidates, unavailable state, lost/trickled readiness,
   candidate death and failed ownership transfer leave one identifiable serving
   coordinator or an explicit recoverable state with protection retained.

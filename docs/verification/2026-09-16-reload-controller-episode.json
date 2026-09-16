@@ -575,5 +575,149 @@
       "Native provenance binds055f45f; subsequent main154 merge and evidence edits change documentation only.",
       "Experimental reload remains gated; production app and daemon were unchanged."
     ]
+  },
+  "native_codex_handover_2026_09_16": {
+    "result": "passed",
+    "driver_commit": "e09db70c813342af0241a9529f5fb92b0046108e",
+    "binary_source_commit": "055f45f04035586ecc522f25f7579d81ee2ccb6e",
+    "provenance": "Driver e09db70 on a clean tree, using the exact CLI/daemon release hashes from the clean055f45f native build. Rust/Cargo inputs are identical; driver/source and executable hashes remained unchanged during the trial.",
+    "command": "python3 scripts/native_codex_queue_smoke.py --cli target/release/agentdocker --codex <native-codex-executable> --output <private-new-directory> --scenario question --reload",
+    "trial": {
+      "started_at": "2026-09-16T04:54:18.168301+00:00",
+      "scenario": "question",
+      "reload_enabled": true,
+      "result": "passed",
+      "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+      "driver_sha256": "2631caaff4f0ebc36112d284086b2349b7235922d655d504083db7ae2b3e5d8d",
+      "source": {
+        "commit": "e09db70c813342af0241a9529f5fb92b0046108e",
+        "dirty": false,
+        "rust_and_driver_sha256": "73bdc5df2ed8779f3e0707a1d2958c2672e4ff446fc6bd24e5c8bb2bdbd79c07"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "30652616f42b570dad4e09458943312333d30929847e3ad2ccbcdf38897efc2f",
+      "daemon_sha256": "5b70f8b8810a65a7f13fa4c10eb2a44a4fd823702d7db0e2ce10e8067286428d",
+      "pid": 76160,
+      "thread": "01a0a890-d289-79d3-bdd8-918d994a152f",
+      "agent": "c6ed92a1ca3f4eeba8dacf5511344eef",
+      "automatic_hook_bootstrap": true,
+      "handovers": [
+        {
+          "stage": "idle",
+          "predecessor": 76159,
+          "successor": 76362,
+          "seconds_until_retired": 0.036383208993356675,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        },
+        {
+          "stage": "unsubmitted-draft",
+          "predecessor": 76362,
+          "successor": 76648,
+          "seconds_until_retired": 0.13207233298453502,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        },
+        {
+          "stage": "busy-with-human-and-peer-queued",
+          "predecessor": 76648,
+          "successor": 77934,
+          "seconds_until_retired": 0.13198862498393282,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        },
+        {
+          "stage": "pending-question",
+          "predecessor": 77934,
+          "successor": 78622,
+          "seconds_until_retired": 0.13316158298403025,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        }
+      ],
+      "idle_wake_seconds": 7.615285499981837,
+      "cross_process_receipt": {
+        "thread": "01a0a890-d289-79d3-bdd8-918d994a152f",
+        "turn": "01a0a890-f996-7f72-a8b0-7217a473747b",
+        "item": "01a0a890-f9a0-7640-a9e8-30369fdceb27"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "2a48139e6e0e4419"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a890-d289-79d3-bdd8-918d994a152f",
+          "turn": "01a0a891-6ed5-7b32-8ebc-c8495658108f",
+          "item": "01a0a891-6eea-7533-a44e-443000147452"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "answer_receipt_after_handover": {
+        "message": "150fcb35639c44e8",
+        "receipt": {
+          "thread": "01a0a890-d289-79d3-bdd8-918d994a152f",
+          "turn": "01a0a891-bd0a-7c11-bf63-1cd95d7a8b42",
+          "item": "01a0a891-bd14-77d1-a5bc-80154b0fc1e0"
+        }
+      },
+      "async_question_answer_once": true,
+      "question_id": "2569fcdc05904b15",
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 10,
+      "agentdocker_integration": true,
+      "daemon_pids": [
+        76159,
+        76362,
+        76648,
+        77934,
+        78622
+      ],
+      "daemon_survivors": [],
+      "controller_survivors": [],
+      "cleanup_errors": [],
+      "raw_result_sha256": "c55a1ca122dd1ef024ce9be8f6937739700f5dfe1a7c49a907497abcfbacb0bf"
+    },
+    "artifacts": {
+      "result": {
+        "private_path": "/private/tmp/agentdocker-native-reload-question2-2026-09-15/result.json",
+        "sha256": "5986bbbc277ce7490b3dc22b2bcff710c8b594e015a7874d016f06b3f88f0d52"
+      },
+      "private_result": {
+        "private_path": "/private/tmp/agentdocker-native-reload-question2-2026-09-15/result-private.json",
+        "sha256": "c55a1ca122dd1ef024ce9be8f6937739700f5dfe1a7c49a907497abcfbacb0bf"
+      },
+      "daemon_log": {
+        "private_path": "/private/tmp/agentdocker-native-reload-question2-2026-09-15/agentdocker-daemon.log",
+        "sha256": "714a19e5c12e3e31c9f42d11e52432a3fedd8ddf834c890828433be9f7991d61"
+      },
+      "terminal": {
+        "private_path": "/private/tmp/agentdocker-native-reload-question2-2026-09-15/terminal.bin",
+        "sha256": "9eebe6b8f75794aa59743b813abe90b23582e8668a7d3f762110bd02525e54d8"
+      },
+      "controller": {
+        "private_path": "/private/tmp/agentdocker-native-reload-question2-2026-09-15/bootstrap-controller.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "first_trial": {
+        "private_path": "/private/tmp/agentdocker-native-reload-question1-2026-09-15/result.json",
+        "sha256": "23473411d58d1e0ad9541bd8ea8a65cdda1327d9868d0dd443545a3283ceba54"
+      }
+    },
+    "earlier_trial": "Trial1 passed the same four handovers with a dirty driver draft; retained as preliminary evidence. Trial2 adds an exact answer receipt and explicit controller survivor accounting, and runs a clean committed driver.",
+    "warnings": [
+      "One expected empty fixture-repository fingerprint warning; grouping falls back to its private path."
+    ],
+    "limits": [
+      "Actual Codex CLI0.154.0 and native thread/queue APIs with a loopback model fixture, not a paid account or external model service.",
+      "Each successor used the same release binary; this is not a distinct-source upgrade trial.",
+      "The draft is in the original external Codex TUI; AgentDocker attached-terminal draft preservation is separate.",
+      "Claude, additional runtimes/platforms, uncertain writes, replay retention and removal of the experimental gate remain open."
+    ],
+    "ready_gate": "The production Rust inputs passed1017 Rust/79 Python at055f45f. The additional committed acceptance driver still awaits the required full ready gate."
   }
 }
