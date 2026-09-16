@@ -1069,6 +1069,7 @@ struct ClaimArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    agentdocker_host::installation::redirect_managed_launcher()?;
     let _installation_pin = agentdocker_host::installation::pin_current_executable()?;
     let cli = Cli::parse();
     let socket = cli.socket.clone();
