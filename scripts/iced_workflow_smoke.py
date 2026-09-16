@@ -410,6 +410,9 @@ def smoke(binary_dir, output):
             narrow_inbox()
             report["idle_resources"] = measure_idle(binary_dir, env, project, daemon, output)
             report["result"] = "passed"
+        except Exception as error:
+            report["error"] = str(error)
+            raise
         finally:
             stop(window)
             if daemon is not None and daemon.poll() is None:

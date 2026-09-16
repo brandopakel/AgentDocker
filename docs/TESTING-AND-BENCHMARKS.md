@@ -61,6 +61,8 @@ A managed-workspace launch failure keeps the original daemon response even when 
 
 Native graphical failures record connection state, inventory count, whether the expected fixture was discovered, screenshot-request state, update ticks and elapsed time. These fields help distinguish discovery/connection failures from rendering failures without recording discovered command lines. A passing rerun does not diagnose a prior failure.
 
+The native transport check retains its refused observation in `capture/transport-failure.json`: process index/PID/exit status, `lsof` return code and stdout/stderr capped at 2,048 characters each, including partial timeout output. The workflow result also records the exception before cleanup. Any unexpected inspector result still fails acceptance. The [September 15 Linux ARM refusal](verification/2026-09-12-integrated-desktop.json) predates these diagnostics and remains unexplained; the original helper discarded the evidence needed to distinguish an observed TCP socket from an inspection error.
+
 **Keep the graphical fixture visible and retain renderer diagnostics.**
 The current desktop uses Iced with tiny-skia. Run `scripts/desktop_smoke.py` for
 native window/discovery acceptance and `scripts/iced_workflow_smoke.py` for the

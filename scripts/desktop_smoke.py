@@ -34,16 +34,44 @@ def stop(process):
             process.wait(timeout=5)
 
 
-def check_no_tcp(processes, deadline):
+class TransportCheckFailed(RuntimeError):
+    """A refused observation, with enough evidence to diagnose the refusal."""
+
+    def __init__(self, observation):
+        self.observation = observation
+        super().__init__("native fixture transport check failed: " + json.dumps(observation))
+
+
+def bounded_output(value):
+    if isinstance(value, bytes):
+        value = value.decode(errors="replace")
+    value = value or ""
+    return value[:2048] + (" [truncated]" if len(value) > 2048 else "")
+
+
+def check_no_tcp(processes, deadline, capture=None):
     if not shutil.which("lsof"):
         raise RuntimeError("lsof is required to check the native app's transport")
-    for process in processes:
+    for index, process in enumerate(processes):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("native fixture transport observation timed out")
-        result = subprocess.run(["lsof", "-nP", "-a", "-p", str(process.pid), "-iTCP"], capture_output=True, text=True, timeout=min(5, remaining))
-        if result.returncode != 1 or result.stdout or result.stderr:
-            raise RuntimeError("native fixture has a TCP socket or its transport could not be checked")
+        observation = {"process_index": index, "pid": process.pid}
+        try:
+            result = subprocess.run(["lsof", "-nP", "-a", "-p", str(process.pid), "-iTCP"], capture_output=True, text=True, errors="replace", timeout=min(5, remaining))
+        except subprocess.TimeoutExpired as error:
+            observation.update(reason="lsof timed out", returncode=None,
+                               stdout=bounded_output(error.stdout), stderr=bounded_output(error.stderr))
+        else:
+            if result.returncode == 1 and not result.stdout and not result.stderr:
+                continue
+            observation.update(reason="TCP socket reported" if result.returncode == 0 and result.stdout else "transport could not be checked",
+                               returncode=result.returncode, stdout=bounded_output(result.stdout), stderr=bounded_output(result.stderr))
+        observation["process_status"] = process.poll()
+        if capture is not None:
+            capture.mkdir(parents=True, exist_ok=True)
+            (capture / "transport-failure.json").write_text(json.dumps(observation, indent=2) + "\n")
+        raise TransportCheckFailed(observation)
 
 
 # The window gives up at WINDOW_DEADLINE and writes down what it was
@@ -62,7 +90,7 @@ def wait_window(daemon, window, capture=None, timeout=WINDOW_DEADLINE + HARNESS_
     while True:
         if daemon.poll() is not None:
             raise RuntimeError("fixture daemon exited during graphical acceptance")
-        check_no_tcp([daemon, window], deadline)
+        check_no_tcp([daemon, window], deadline, capture)
         samples += 1
         status = window.poll()
         if status is not None:
@@ -111,7 +139,7 @@ def smoke(binary_dir, output):
                 while True:
                     if daemon.poll() is not None:
                         raise RuntimeError("fixture daemon exited before readiness")
-                    check_no_tcp([daemon], deadline)
+                    check_no_tcp([daemon], deadline, output / "capture")
                     try:
                         if rpc(endpoint, {"op": "ping"}).get("type") == "pong":
                             break
