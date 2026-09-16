@@ -152,11 +152,17 @@ replacement acceptance.
 The next reload review also found the transfer-refusal reply still used a
 blocking write on the async startup path. Both readiness outcomes now share the
 blocking-worker helper; a regression holds the predecessor socket unread and
-checks that async work progresses. Combined validation with merged active-input
-steering is pending. The first regression fixture filled the socket before
-sending its descriptor header, causing an immediate macOS refusal instead of
-exercising the intended blocked write. The corrected fixture sends a large
-failure body into an unread socket; its verification is pending.
+checks that async work progresses. The initial fixture failed because macOS
+rejected the filled socket's descriptor header immediately; that failure is
+retained. Corrected source `71033b7` passed 1,075 Rust tests (seven skipped), 84
+Python checks and the full packaging/release gate. Its combined binaries passed
+20 handovers with 900 FIFO messages and 461 finished launches, four actual Codex
+TUI handovers preserving a draft and pending question, and owned-input
+busy/refusal/lost-reply trials without duplicate submission. Fourteen deferred
+exit warnings covered seven agents; each exit was subsequently recorded. All
+fixtures retired. The final integration also includes PR #161's ended-session
+thread-send guard and awaits its combined gate and final review. Experimental
+reload remains gated; production was not switched by these trials.
 
 PR #155 next review found discovery scans could mutate the cached projection
 while fenced, and reload could race restricted-listener registration. Source now
