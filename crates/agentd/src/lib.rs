@@ -214,12 +214,13 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             // already serving, and a service manager restarts it.
             daemon.reattach_owners().await;
             if let Err(reason) = daemon.accept_transfer(&handover.handover.transfer) {
-                let _ = daemon::reload::answer(
-                    &handover.socket,
-                    &daemon::reload::Ready::Failed {
+                let _ = daemon::reload::answer_async(
+                    handover.socket,
+                    daemon::reload::Ready::Failed {
                         reason: reason.clone(),
                     },
-                );
+                )
+                .await;
                 anyhow::bail!("take-over refused: {reason}");
             }
             // The bindings' releases are held before the predecessor is told
@@ -291,11 +292,9 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     // bound with its queue drained by the accept loop polled alongside.
     let announcer = async {
         if let Some(socket) = predecessor {
-            let answered = tokio::task::spawn_blocking(move || {
-                daemon::reload::answer(&socket, &daemon::reload::Ready::Serving)
-            })
-            .await;
-            if !matches!(answered, Ok(Ok(()))) {
+            let answered =
+                daemon::reload::answer_async(socket, daemon::reload::Ready::Serving).await;
+            if answered.is_err() {
                 warn!(
                     ?answered,
                     "could not tell the predecessor we are serving; it will time out and check the store"

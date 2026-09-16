@@ -242,6 +242,14 @@ pub fn answer(socket: &UnixStream, ready: &Ready) -> io::Result<()> {
     handoff::send(socket, &payload, &[])
 }
 
+/// Both startup outcomes may wait for a predecessor that has stopped reading.
+/// Keep the bounded socket write off the async executor in either case.
+pub async fn answer_async(socket: UnixStream, ready: Ready) -> io::Result<()> {
+    tokio::task::spawn_blocking(move || answer(&socket, &ready))
+        .await
+        .map_err(io::Error::other)?
+}
+
 /// Wait for the successor to say it is serving.
 ///
 /// This is the only thing that can authorise giving up the socket, and
@@ -691,6 +699,46 @@ mod tests {
     use super::*;
     use std::io::{Read, Seek, Write};
     use std::os::fd::{AsFd, AsRawFd, FromRawFd};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unread_readiness_reply_does_not_block_async_progress() {
+        for ready in [
+            Ready::Serving,
+            Ready::Failed {
+                reason: "refused".into(),
+            },
+        ] {
+            let (mut successor, predecessor) = UnixStream::pair().unwrap();
+            successor.set_nonblocking(true).unwrap();
+            // Exhaust the send capacity before handing the stream to the real
+            // readiness writer. The predecessor deliberately retains its socket
+            // without reading anything until the async timer has made progress.
+            for size in [8192, 1] {
+                let bytes = vec![0_u8; size];
+                loop {
+                    match successor.write(&bytes) {
+                        Ok(0) => panic!("socket unexpectedly stopped accepting bytes"),
+                        Ok(_) => {}
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(error) => panic!("filling socket: {error}"),
+                    }
+                }
+            }
+            successor.set_nonblocking(false).unwrap();
+            let writer = tokio::spawn(answer_async(successor, ready));
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            assert!(
+                !writer.is_finished(),
+                "the predecessor has not read the reply"
+            );
+            drop(predecessor);
+            let result = tokio::time::timeout(Duration::from_secs(2), writer)
+                .await
+                .expect("readiness worker did not finish after peer closed")
+                .expect("readiness task panicked");
+            assert!(result.is_err());
+        }
+    }
 
     /// A stand-in for the daemon lock, which every handover names at
     /// index 1.

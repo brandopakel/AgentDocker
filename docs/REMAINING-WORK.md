@@ -149,6 +149,12 @@ replacement acceptance.
 
 ## Engineering and acceptance still open
 
+The next reload review also found the transfer-refusal reply still used a
+blocking write on the async startup path. Both readiness outcomes now share the
+blocking-worker helper; a regression holds the predecessor socket unread and
+checks that async work progresses. Combined validation with merged active-input
+steering is pending.
+
 PR #155 next review found discovery scans could mutate the cached projection
 while fenced, and reload could race restricted-listener registration. Source now
 refuses mutating discovery requests during transfer, retains the pre-transfer
