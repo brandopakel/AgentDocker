@@ -1164,18 +1164,27 @@ impl Store {
 
     /// How many archived messages of a conversation lie past a seq, not
     /// counting the reader's own words.
+    /// Messages past the cursor that none of the reader's identities
+    /// sent: what a former identity of the reader said is the reader's own
+    /// words too, not something waiting to be read.
     pub fn unread_after(
         &self,
         conversation: &ConversationId,
         after_seq: u64,
-        reader: &str,
+        readers: &[AgentId],
     ) -> Result<u64> {
+        let senders = readers
+            .iter()
+            .map(|id| format!("'{}'", id.as_str().replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(",");
         let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM messages WHERE conversation = ?1 AND seq > ?2 AND sender != ?3",
+            &format!(
+                "SELECT COUNT(*) FROM messages WHERE conversation = ?1 AND seq > ?2 AND sender NOT IN ({senders})"
+            ),
             params![
                 conversation.as_str(),
                 i64::try_from(after_seq).unwrap_or(i64::MAX),
-                reader
             ],
             |row| row.get(0),
         )?;

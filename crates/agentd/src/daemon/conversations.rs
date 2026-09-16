@@ -458,7 +458,7 @@ impl State {
             let after = cursors.get(&id).copied().unwrap_or(0);
             let unread = self
                 .store
-                .unread_after(&id, after, reader.as_str())
+                .unread_after(&id, after, &identities)
                 .map_err(storage)?;
             let head = heads.get(&id);
             summaries.push(ConversationSummary {
@@ -851,6 +851,79 @@ mod tests {
     /// cursor; reading through a seq moves the cursor forward, never back,
     /// takes only that reader's queued rows in that conversation, and a
     /// seq of another conversation is refused.
+    /// A record retired into the reader is the reader: what it said and
+    /// read counts as the reader's own, and its conversations are the
+    /// reader's to see, under their old ids.
+    #[tokio::test]
+    async fn a_retired_identity_is_read_as_the_reader_it_became() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let alice = register(&daemon, "alice", &work).await;
+        let early = register(&daemon, "early", &work).await;
+        let later = register(&daemon, "later", &work).await;
+        // Alice and early talk; early is retired into later.
+        send(&daemon, "alice", "early", "hello early", None).await;
+        send(&daemon, "early", "alice", "hello alice", None).await;
+        let old_dm = ConversationId::dm(alice.id.as_str(), early.id.as_str());
+        let archived = history(&daemon, &old_dm).await;
+        assert_eq!(archived.len(), 2);
+        assert!(matches!(
+            daemon
+                .handle(Request::MarkRead {
+                    conversation: old_dm.clone(),
+                    through: archived[0].seq,
+                    reader: Some(early.id.to_string()),
+                })
+                .await,
+            Response::Ok
+        ));
+        {
+            let mut state = lock(&daemon.state);
+            state.registry.retire_into(&early.id, &later.id).unwrap();
+        }
+        let list = conversations(&daemon, later.id.as_str()).await;
+        let old = list
+            .iter()
+            .find(|c| c.conversation == old_dm)
+            .expect("the retired identity's conversation is the reader's");
+        assert_eq!(old.title, "alice", "the other party, not the reader");
+        assert_eq!(
+            old.unread, 0,
+            "alice's first was read under the old identity and the second is the reader's own words"
+        );
+        // New words go to the record that is: its own conversation, with
+        // the old one still listed and still read.
+        send(&daemon, "alice", "later", "still there?", None).await;
+        let list = conversations(&daemon, later.id.as_str()).await;
+        assert_eq!(
+            list.iter()
+                .find(|c| c.conversation == old_dm)
+                .unwrap()
+                .unread,
+            0
+        );
+        let new_dm = ConversationId::dm(alice.id.as_str(), later.id.as_str());
+        assert_eq!(
+            list.iter()
+                .find(|c| c.conversation == new_dm)
+                .unwrap()
+                .unread,
+            1
+        );
+        let alices = conversations(&daemon, alice.id.as_str()).await;
+        assert_eq!(
+            alices
+                .iter()
+                .find(|c| c.conversation == old_dm)
+                .unwrap()
+                .title,
+            "later",
+            "alice sees the old conversation under the name the record has now"
+        );
+    }
+
     #[tokio::test]
     async fn read_cursors_count_unread_per_conversation_and_never_regress() {
         let dir = TempDir::new().unwrap();
