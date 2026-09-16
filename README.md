@@ -85,11 +85,16 @@ Then wire in the agents you already have:
 
 ```sh
 agentdocker runtimes          # what is installed: Claude Code, Codex, Gemini CLI, Cursor, ... — CLI, version, app, and whether AgentDocker is wired in
-agentdocker setup --dry-run   # preview supported MCP registrations and Claude Code hooks
+agentdocker setup --dry-run   # preview supported MCP, hooks and coordination skills
 agentdocker setup codex       # apply only the selected integration when ready for the trial
 agentdocker discover          # agent processes running right now that nobody registered; `adopt --all` brings them in
 agentdocker ui                # the desktop app: the same, live, in a window
 ```
+
+Supported provider setup also installs a portable coordination skill, shared with
+MCP onboarding, so agents can discover the workflow without a repeated reminder.
+`agentdocker skill` exports it for other skill-capable tools. See
+[skill setup and discovery limits](docs/GUIDED-SETUP.md#shared-coordination-skill).
 
 The daemon and the CLI build on Rust 1.87; the desktop app needs 1.95, which is what its graphics stack requires. Released macOS archives carry all three binaries; elsewhere, build the app with `cargo install --path crates/ui --locked`.
 
