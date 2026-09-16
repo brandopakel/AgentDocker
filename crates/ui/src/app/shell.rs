@@ -515,6 +515,7 @@ impl App {
             }
             Message::Notification(activation) => {
                 if let Some(id) = self.shell.window {
+                    crate::notification_route::unhide_application();
                     tasks.push(window::minimize(id, false).chain(window::gain_focus(id)));
                 }
                 match activation {

@@ -118,6 +118,12 @@ replacement acceptance.
 
 ## Engineering and acceptance still open
 
+September 16 notification Hide trial on installed `1e90f83` routed the exact
+message but left the private window hidden. Source now explicitly unhides the
+macOS application before window focus; fresh native acceptance is pending.
+The same follow-up applies canonical-agent liveness consistently to the
+Messages sidebar, header and composer. Existing failed trials remain recorded.
+
 September 16 idle-connection UI source `e417ca5` passed 1,009 Rust tests,
 77 Python checks and 338 rendered native workflow steps. New supported launches
 default to idle delivery, and direct/thread composers expose receiver readiness

@@ -67,6 +67,7 @@ impl App {
     }
 
     fn agent_live(&self, id: &str) -> bool {
+        let id = self.canonical_agent(id);
         self.agents
             .iter()
             .any(|a| a.id.as_str() == id && a.status.is_live())
@@ -972,7 +973,7 @@ impl App {
             && match summary.kind {
                 ConversationKind::Dm => self
                     .counterpart(&summary)
-                    .is_some_and(|id| self.agent_live(self.canonical_agent(id))),
+                    .is_some_and(|id| self.agent_live(id)),
                 _ => true,
             };
         let placeholder = match summary.kind {
@@ -1115,6 +1116,8 @@ mod tests {
         agent.id = "worker".into();
         app.agents.push(agent);
         app.aliases.insert("retired".into(), "worker".into());
+        assert!(app.agent_live("retired"));
+        assert!(!app.agent_live("missing"));
         for conversation in ["dm:user:worker", "dm:worker:user", "dm:retired:user"] {
             assert_eq!(
                 app.direct_input_recipient(conversation)
@@ -1130,6 +1133,8 @@ mod tests {
                 "{conversation}"
             );
         }
+        app.agents[0].status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        assert!(!app.agent_live("retired"));
     }
 
     #[test]

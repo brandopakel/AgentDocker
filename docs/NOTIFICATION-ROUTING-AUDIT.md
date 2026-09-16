@@ -163,6 +163,15 @@ actions establish native activation; they do not establish physical mouse,
 VoiceOver or IME usability. PR #158's first-focus request is separate from this
 installed-release trial and is not credited as the permission fix.
 
+## September 16 hidden-window follow-up
+
+An actual Notification Center click on installed `1e90f83` reached its exact
+private-origin message, but the explicitly hidden application remained hidden.
+Window de-minimization and focus alone did not establish app visibility in that
+trial. Source now requests macOS application unhide before Iced window focus.
+Fresh candidate validation remains pending; the production window and provider
+sessions were retained.
+
 ## Work and acceptance
 
 1. (Partial: installed app/daemon identity verified; original notification poster not captured.) Identify the actual daemon, app bundle, notification sender and source version
