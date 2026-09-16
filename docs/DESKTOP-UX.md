@@ -119,7 +119,8 @@ reply. It sends to the channel, to the project (`#everyone`), to every agent
 conversation whose agent is gone, says so for one between two agents, and has
 nothing to send for notices. Drafts survive navigation, a failed request and
 disconnection. A notification opens the message's conversation even after it
-has been read.
+has been read, and even when the sender's record or the channel is gone: the
+archive outlives both.
 The selected project also scopes archived direct conversations. Project message search retains finished sessions' direct messages and AgentDocker notices after restart.
 
 Inbox reads like a messenger. The left column lists one conversation per agent

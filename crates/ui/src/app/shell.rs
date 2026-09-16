@@ -1461,14 +1461,10 @@ impl App {
         });
         // A message the person has already read is no longer in the inbox
         // but is archived in its conversation; with conversations, the
-        // notification's own agent and channel name where it sits.
-        let archived = question.is_none()
-            && envelope.is_none()
-            && self.has_conversations()
-            && self
-                .agents
-                .iter()
-                .any(|a| a.id.as_str() == self.canonical_agent(target.agent.as_str()));
+        // notification's own agent and channel name where it sits, and it
+        // is there even when that agent's record or the channel is gone:
+        // the archive outlives both.
+        let archived = question.is_none() && envelope.is_none() && self.has_conversations();
         let channel = channel.or_else(|| archived.then(|| target.channel.clone()).flatten());
         let found = question.is_some() || envelope.is_some() || archived;
         if !found {
@@ -1515,7 +1511,10 @@ impl App {
                 return Task::none();
             }
         }
+        // The Channels screen needs the channel open; an archived
+        // conversation needs only its id.
         if let Some(channel) = &channel
+            && !archived
             && !self.channels.iter().any(|c| &c.id == channel)
         {
             if started.elapsed() < Duration::from_secs(10) {
@@ -2094,6 +2093,59 @@ mod tests {
             cmd,
             Cmd::Answer(..) | Cmd::ChannelSend(..) | Cmd::Launch(..) | Cmd::Stop(..)
         )));
+    }
+
+    /// An archived message's notification opens its conversation even when
+    /// its sender's record is gone and its channel is closed: the archive
+    /// outlives both, and no ten-second wait ends in "no longer available".
+    #[test]
+    fn an_archived_notification_opens_its_conversation_without_a_live_sender_or_channel() {
+        // A direct message from a sender nobody has a record of.
+        let (mut app, commands, messages, _home, action) = notification_app();
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action),
+        ));
+        let _ = app.update(Message::Tick);
+        assert!(app.shell.pending_notification.is_none(), "routed at once");
+        assert_eq!(app.screen, Screen::Questions);
+        assert!(app.shell.inbox_open);
+        assert_eq!(
+            app.shell.conversation.as_deref(),
+            Some(agentdocker_core::ConversationId::dm("user", "sender-1").as_str())
+        );
+        assert!(
+            commands
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::History(ref c, _) if c.starts_with("dm:"))),
+            "the conversation's archive is asked for"
+        );
+        assert!(app.status.is_empty(), "nothing said to be unavailable");
+
+        // A channel message whose channel is no longer open.
+        let (mut app, commands, messages, _home, mut action) = notification_app();
+        action.target.channel = Some(agentdocker_core::ChannelId::from("closed-room".to_owned()));
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action),
+        ));
+        let _ = app.update(Message::Tick);
+        assert!(app.shell.pending_notification.is_none(), "routed at once");
+        assert_eq!(app.screen, Screen::Questions);
+        assert_eq!(
+            app.shell.conversation.as_deref(),
+            Some("channel:closed-room")
+        );
+        assert!(
+            commands
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::History(ref c, _) if c == "channel:closed-room"))
+        );
+        assert!(app.status.is_empty());
     }
 
     #[test]

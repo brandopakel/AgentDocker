@@ -365,6 +365,10 @@ enum Command {
         /// Mark the conversation read through the last message shown.
         #[arg(long)]
         read: bool,
+        /// Read as this agent rather than as yourself: `--read` then moves
+        /// that agent's cursor, never the person's.
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", value_name = "AGENT")]
+        agent: Option<String>,
     },
     /// A thread: one message and the replies under it.
     Thread {
@@ -1613,6 +1617,7 @@ async fn main() -> Result<()> {
             before,
             limit,
             read,
+            agent,
         } => {
             let conversation = agentdocker_core::ConversationId::from(conversation);
             let request = Request::History {
@@ -1625,11 +1630,15 @@ async fn main() -> Result<()> {
                     println!("{}", format::archived_line(m));
                 }
                 if read && let Some(last) = messages.last() {
+                    // The reader is whoever runs this: an agent's shell has
+                    // AGENTDOCKER_AGENT_ID, so its --read moves its own
+                    // cursor and acknowledges its own rows, never the
+                    // person's.
                     client
                         .call(&Request::MarkRead {
                             conversation,
                             through: last.seq,
-                            reader: None,
+                            reader: agent,
                         })
                         .await?;
                 }
@@ -3333,6 +3342,34 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `history --read` moves the cursor of whoever runs it: an agent's
+    /// shell names itself through AGENTDOCKER_AGENT_ID, so its read never
+    /// acknowledges the person's rows.
+    #[test]
+    fn history_read_is_scoped_to_the_agent_running_it() {
+        let parsed = Cli::try_parse_from([
+            "agentdocker",
+            "history",
+            "dm:a:b",
+            "--read",
+            "--as",
+            "agent-a",
+        ])
+        .unwrap();
+        let Command::History { read, agent, .. } = parsed.command else {
+            panic!("expected history")
+        };
+        assert!(read);
+        assert_eq!(agent.as_deref(), Some("agent-a"));
+        // Without --as or the environment, the person reads.
+        let parsed = Cli::try_parse_from(["agentdocker", "history", "dm:a:b", "--read"]).unwrap();
+        let Command::History { agent, .. } = parsed.command else {
+            panic!("expected history")
+        };
+        // The test process may itself run inside an agent's shell.
+        assert_eq!(agent, std::env::var("AGENTDOCKER_AGENT_ID").ok());
+    }
 
     #[test]
     fn claude_channel_is_a_native_launch_option_and_preserves_provider_arguments() {

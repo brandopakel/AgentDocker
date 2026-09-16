@@ -200,7 +200,7 @@ the flags.
 | `answer` | Answer a question somebody is waiting on |
 | `questions` | Questions waiting for an answer |
 | `conversations` | What you can read: every conversation with its unread count, newest first |
-| `history <conversation>` | What was said in one conversation, oldest first; `--read` marks it read through the last line shown |
+| `history <conversation>` | What was said in one conversation, oldest first; `--read` marks it read through the last line shown, for you or for `--as <agent>` (the agent's own shell, through `AGENTDOCKER_AGENT_ID`), never the other |
 | `thread <message>` | One message and the replies under it |
 | `search <query>` | Find archived messages by text (`--project` narrows; `--as <agent>` searches only what that agent could list) |
 | `me` | Register yourself as an agent named `user` |
