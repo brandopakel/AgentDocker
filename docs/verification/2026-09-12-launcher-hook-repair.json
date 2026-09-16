@@ -92,7 +92,7 @@
     "Signed/notarized distribution and physical Notification Center acceptance.",
     "Earlier PRs and broader remaining-work items are not closed by this repair."
   ],
-  "summary": "Historical hook repair and September15 intact launcher: private install/legacy rollback/routes and production activation passed; an existing Codex session auto-bound, then a peer message started its next ordinary turn with an exact receipt. Physical notification clicks and posting authorization remain open.",
+  "summary": "Historical hook repair and September 15 intact launcher: private install/rollback/routes, production activation and native Codex peer wake passed. User-authorized notification permission and actual installed message/question/expired-target clicks now pass, including daemon posting; broader closed-app and signed-release acceptance remain.",
   "signed_copy_followup_2026_09_15": {
     "scope": "Intact signed macOS application copies, entrypoint forwarding, same-release legacy wrapper repair, actual pre-capability upgrade/rollback, and private existing/cold-window notification navigation.",
     "source": {
@@ -323,7 +323,7 @@
     "review": {
       "claude_source": "Approved b619..90be implementation design, contingent on focused tests and real older-payload trial; both have now passed. Peer message a993028fb7334417.",
       "github_pr": 153,
-      "final_ci": "passed at00973a1 on all CI platforms; CodeRabbit final-head review had no actionable findings; PR153 merged as4074275"
+      "final_ci": "passed at 00973a1 on all CI platforms; CodeRabbit final-head review had no actionable findings; PR153 merged as 4074275"
     },
     "remaining": [
       "Native notification authorization/posting and actual Notification Center clicks while foregrounded, hidden and closed.",
@@ -416,12 +416,238 @@
           "release_build",
           "git_diff_check"
         ],
-        "scope": "Existing documentation and installed-state evidence only; production files unchanged from merged main4074275. This is not another physical notification or provider acceptance trial.",
+        "scope": "Existing documentation and installed-state evidence only; production files unchanged from merged main 4074275. This is not another physical notification or provider acceptance trial.",
         "log": {
           "private_path": "/private/tmp/agentdocker-current-build-gate1.log",
           "sha256": "1097bbb8d9d39b8fa69ab58c24e15155a4ad28c40f1b02e5dfda2f7b3ea228c4"
         }
+      },
+      "native_posting_followup": {
+        "result": "refused",
+        "source_commit": "cf64ca398f8117445938ede20dd60672c9e005d3",
+        "strict_signature_verification": "passed",
+        "existing_gui_open": true,
+        "also_refused_after_launch_services_activation": true,
+        "trials": [
+          {
+            "private_path": "/private/tmp/agentdocker-installed-notification-post-2026-09-15d.json",
+            "sha256": "7252f7c936f971cff2f5109ab786004320efde9a4d78db14735eac22b6bed901",
+            "exit_code": 2,
+            "stderr": "invalid notification\n",
+            "classification": "malformed destination refused before native posting"
+          },
+          {
+            "private_path": "/private/tmp/agentdocker-installed-notification-post-2026-09-15e.json",
+            "sha256": "a78974f0c393b1e8148ef1c90528e3b55991f8a9ffa920b6ebf175badd80c884",
+            "exit_code": 1,
+            "stderr": "notifications are not permitted: Notifications are not allowed for this application (1)\n",
+            "classification": "valid native post refused by macOS"
+          },
+          {
+            "private_path": "/private/tmp/agentdocker-installed-notification-post-2026-09-15f.json",
+            "sha256": "27df92796a2d2d27aa1c19a9b2b90ba444b0ea13ce0e3b9e0b5137be31b29052",
+            "exit_code": 1,
+            "stderr": "notifications are not permitted: Notifications are not allowed for this application (1)\n",
+            "classification": "valid native post refused by macOS"
+          }
+        ],
+        "limits": [
+          "Refusal persists after launcher repair; signing integrity alone did not resolve native posting.",
+          "No physical notification click was possible in these trials; notification settings were not changed.",
+          "The first malformed-destination probe is retained and is not counted as a native posting trial."
+        ]
       }
+    },
+    "authorization_diagnostic_followup": {
+      "result": "read_only_settings_and_rendered_routes_passed_physical_focus_pending",
+      "source_commit": "e48a1053c3f174295d923aa38a45c4a8c084d3f3",
+      "source_input_sha256": "5aac8e900725857c1f8f6d1e78e1705873788b7215bfce0052d82aef4d037db4",
+      "source_dirty": false,
+      "package_binary_sha256": {
+        "agentd": "9c5e2ac8ff4f9bcd69095e6fea8b3cb7e7cebb1344f7e57547d47a2fa5ee5b7d",
+        "agentdocker-ui": "6d3d4f8bae4e474e48949c914206eedee72f89bb812edc4e312ed6ceeff3e89c"
+      },
+      "standard_gate": {
+        "rust_passed": 979,
+        "rust_skipped": 7,
+        "python_passed": 71,
+        "fmt_clippy_doctests_package_release": "passed",
+        "log": {
+          "private_path": "/private/tmp/agentdocker-notification-authorization-gate1.log",
+          "sha256": "1cac46c004d6535273a5a1b3ab7689427d9e02c32dab0a9ec2e414988b59343e"
+        }
+      },
+      "settings_before": {
+        "alerts": "enabled",
+        "authorization": "denied",
+        "authorization_raw": 1,
+        "bundle_id": "dev.agentdocker.desktop",
+        "notification_center": "enabled",
+        "sounds": "enabled"
+      },
+      "settings_after": {
+        "alerts": "enabled",
+        "authorization": "denied",
+        "authorization_raw": 1,
+        "bundle_id": "dev.agentdocker.desktop",
+        "notification_center": "enabled",
+        "sounds": "enabled"
+      },
+      "rendered_navigation": {
+        "existing_window_steps": 24,
+        "cold_start_steps": 2,
+        "surviving_children": [],
+        "binaries_unchanged": true
+      },
+      "command_guards": [
+        {
+          "scenario": "loose_executable",
+          "exit_code": 1,
+          "stderr": "not running inside an application bundle\n"
+        },
+        {
+          "scenario": "unexpected_argument",
+          "exit_code": 2,
+          "stderr": "unexpected notification status argument\n"
+        }
+      ],
+      "artifacts": {
+        "trial": {
+          "private_path": "/private/tmp/agentdocker-notification-authorization-trial1-2026-09-15/summary.json",
+          "sha256": "7662df3ffac9b7d78b52b14307af9f527a76e95f646df74079b1e90c71efdd29"
+        },
+        "routing": {
+          "private_path": "/private/tmp/agentdocker-notification-authorization-trial1-2026-09-15/routing/result.json",
+          "sha256": "8f0d359bb20ee3c1e65a14cc48cc1b9affa7a32ba7c4198b355282ff2078ea3a"
+        },
+        "console_state": {
+          "private_path": "/private/tmp/agentdocker-notification-authorization-trial1-2026-09-15/console-state.json",
+          "sha256": "5dbb63d42e39ba14e2aa56a48eb36f093845665c61681f1d734553a3cbbbaa45"
+        }
+      },
+      "interpretation": "macOS reports denied authorization for the candidate bundle identity while individual alert/sound/Notification Center settings are enabled. Rendering/routing and read-only queries passed. No physical focus event was established; a subsequent read-only console check found the screen locked.",
+      "limits": [
+        "The retained trial summary described activation too broadly: window rendering and routing do not establish physical focus while the screen is locked. The first-focus permission request remains unverified.",
+        "Settings and production providers were unchanged; the candidate is not installed.",
+        "Enabling the saved notification permission awaits the user decision; real click testing requires an unlocked session.",
+        "No Developer ID or signing/payment cause is established by these results."
+      ]
+    },
+    "physical_click_acceptance_2026_09_15": {
+      "result": "passed_for_listed_scope",
+      "installed_source_commit": "cf64ca398f8117445938ede20dd60672c9e005d3",
+      "binary_sha256": {
+        "agentdocker": "b74b1a27202440484ca87db55d735b0a977353243c52b4f4f363ca7e4a66808c",
+        "agentd": "9c5e2ac8ff4f9bcd69095e6fea8b3cb7e7cebb1344f7e57547d47a2fa5ee5b7d",
+        "agentdocker-ui": "46cd659691850ee7de63ba8aa4bdae50133b4757efac5a266cd83ff7d52fa1cb"
+      },
+      "authorization": {
+        "user_approved_change": true,
+        "before": "denied",
+        "after": "authorized",
+        "action": "Enabled Allow notifications for AgentDocker in macOS System Settings through its accessibility control. No other notification preference was changed.",
+        "diagnostic_source_commit": "e48a1053c3f174295d923aa38a45c4a8c084d3f3",
+        "bundle_id": "dev.agentdocker.desktop",
+        "before_artifact": {
+          "artifact": "authorization-before.json",
+          "sha256": "e99c9c682a9b982223cbbcc9cfb45d517a8ea3fe8ba95318c5f0b773a2ba7ef7"
+        },
+        "after_artifact": {
+          "artifact": "authorization-after.json",
+          "sha256": "cc95ebfb40f787e836dc10a638490835b159578f7f0fd9b9c84e751a7ba7e67c"
+        }
+      },
+      "checks": [
+        "Production daemon posted an ordinary human-directed message; Notification Center AXPress opened that exact message in the installed app. No direct notification CLI call in this end-to-end case.",
+        "Explicit installed native posts and real Notification Center clicks reached the exact project/agent/message with the app backgrounded and foregrounded.",
+        "Another conversation retained an unsubmitted test draft; it was restored to its original empty value afterward.",
+        "A pending question opened its question card and Your answer field; the owned question was canceled and its exact human inbox row removed.",
+        "After the owned message was cleared, clicking its stale notification showed the no-longer-available fallback.",
+        "A click opened a previously absent private daemon-origin window on the matching installed UI binary, with the production window retained. Private GUI and daemon cleanup passed.",
+        "Production GUI94732 and daemon94726 were retained; no Script Editor or unnecessary production GUI replacement was observed. Strict bundle signature verification still passed."
+      ],
+      "artifacts": {
+        "background_message": {
+          "artifact": "installed-post-and-click-b.json",
+          "sha256": "2a2d496cee0676aec4f8d53714969006ac004d635b5be87373cf386a6bfd4e12"
+        },
+        "foreground_message": {
+          "artifact": "installed-click-c.json",
+          "sha256": "d278cce757ed480d1ef322b800012d7862e66a98ec911d69897e29a3ad8271eb"
+        },
+        "expired_click": {
+          "artifact": "installed-click-e.json",
+          "sha256": "113dade76cbd9bf7ae00db8b21302d33d5cfec3331e068ab0d99481f81912af0"
+        },
+        "expired_fallback": {
+          "artifact": "expired-fallback-e.json",
+          "sha256": "3eab33686bc4e6ec2591299da1b12a7141d0c4a0af758ab7aacc6cb0c7ffd12a"
+        },
+        "question": {
+          "artifact": "pending-question-g.json",
+          "sha256": "33af308d5c821402b46120362558db0e56d1d85c2eb0dc855d4ff5f63d15df5a"
+        },
+        "question_click": {
+          "artifact": "installed-click-g.json",
+          "sha256": "35df7e67d975fc7dcb19a4445f29a6b815344a5193a35c6b16da640448091093"
+        },
+        "cold_origin": {
+          "artifact": "cold-origin-j.json",
+          "sha256": "6d25be6b38ee0f6b62583384aa16c92bd69c2688f8cdd2ad5f49dbde1c43f562"
+        },
+        "daemon_end_to_end": {
+          "artifact": "daemon-post-click-k.json",
+          "sha256": "d4c695cacdcfde26dba3ecfbe46370a0001b1dfd506d4a00ff7df4a9cb4e5cfc"
+        },
+        "cleanup_and_integrity": {
+          "artifact": "cleanup-and-integrity.json",
+          "sha256": "ff85bc9073b04384ec83c15fb1a614b5eb25f9e1dfca2e1c649d5ae01c46af32"
+        }
+      },
+      "retained_incomplete_trials": [
+        {
+          "artifact": {
+            "artifact": "installed-post-a.json",
+            "sha256": "a822f7c1e594b65ff209c3109555f3d7ef1f7bb625c1fc0ec4d267573092e695"
+          },
+          "limit": "Posting succeeded and the card was observed, but it disappeared before the automation pressed it; not counted as click evidence."
+        },
+        {
+          "artifact": {
+            "artifact": "installed-click-d.json",
+            "sha256": "67f8d3f74650f31dbfd9ccf9adbdc30bbc12d36b8584e90b5a511f9f769f1544"
+          },
+          "limit": "The driver sampled immediately, before the delayed missing-target status; no fallback assertion. E subsequently waits for and records the actual fallback."
+        },
+        {
+          "artifact": {
+            "artifact": "pending-question-f.json",
+            "sha256": "81ef5fe67ca9cd051c0e9faa6d00c3e654f06501594ecae675292dab11cd33b8"
+          },
+          "limit": "Driver expected message_sent rather than sent; failed before a click. Its created question and exact human queue row were then cleaned up."
+        },
+        {
+          "artifact": {
+            "artifact": "cold-origin-h.json",
+            "sha256": "f5e7888ac2ce3e6b1acc20df7ba662a0a84f7ab66b924a2b35e6248acae25791"
+          },
+          "limit": "Driver assumed a Git fingerprint for a directory project; failed before posting. Private daemon cleanup passed. Corrected to the documented path-derived project ID."
+        },
+        {
+          "artifact": {
+            "artifact": "cold-origin-i.json",
+            "sha256": "2f76081cfd113834e0f3c79748f65d3f778195ff0e516931a0da1d21b68942e9"
+          },
+          "limit": "Private-origin click passed, but the spawned UI executable hash was not captured. J repeats the case with exact installed UI hash matching."
+        }
+      ],
+      "limits": [
+        "macOS26.5.1 ARM64 and this installed ad-hoc-signed cf64ca3 release only; not Developer ID, notarization, Gatekeeper or another platform.",
+        "The production app stayed open to preserve existing drafts. Native activation with zero AgentDocker GUI processes remains unverified; private-origin cold routing is a narrower case.",
+        "Backgrounded and foregrounded clicks were tested; explicit Hide, old AppleScript notifications, expired-question variants, archived history and a broader multi-project/account matrix remain.",
+        "Native clicks were performed through Notification Center accessibility actions. This is not a physical mouse, VoiceOver or IME usability trial.",
+        "The first-focus permission request in PR158 is distinct from this existing installed release; these passes follow the explicitly approved OS setting change."
+      ]
     }
   }
 }

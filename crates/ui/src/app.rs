@@ -368,8 +368,6 @@ impl App {
         // AGENTDOCKER_HOME gets its own appearance too rather than
         // rewriting the one the real window uses.
         let home = agentdocker_host::dirs::home();
-        // Permission requests belong to the foreground app and its run loop.
-        crate::notify::request_permission();
         let (cmd_tx, cmd_rx) = queue::channel();
         let (msg_tx, msg_rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let worker_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));

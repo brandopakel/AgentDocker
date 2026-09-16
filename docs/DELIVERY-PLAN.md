@@ -267,8 +267,12 @@ AppleScript fallback, handles native responses, and forwards activation into an
 existing window or starts the destination origin. Navigation preserves drafts
 and includes an older target in the visible transcript window. The
 [audit](NOTIFICATION-ROUTING-AUDIT.md#implementation-in-the-current-change) records
-implementation and trial limits; the installed-app defect remains open until
-actual native clicks and candidate acceptance pass.
+implementation and trial limits. On September 15, the user approved enabling
+macOS notifications; unchanged installed `cf64ca3` binaries then passed automatic
+daemon posting and actual foreground/background message, pending-question and
+stale-target clicks with draft preservation. A cold private-origin window also
+passed. Fully closed-app launch, broader variants and signed-release acceptance
+remain; this does not complete the broader notification gate.
 
 ### Active-session defects and coordination trial (September 7, evening)
 
@@ -419,7 +423,7 @@ Execute [LOCAL-TRIAL.md](LOCAL-TRIAL.md) in order. Every Stage 2 row below requi
 | L06 / 2 | Working state | Read/observe/edit/stale/reread, watcher outage and gaps, journal cursor/reconnect; stale data cannot be accepted as fresh. | Partial: observation/journal tests and [100-repeat watcher regressions](verification/2026-09-11-macos-watcher-recovery.json) pass. Verify installed daemon after switching; longer outage/retention workloads remain. |
 | L07 / 2 | Handoff and validation | Source/image changes, timeout/survivors, checkpoint, addressed acceptance and lease transfer, wrong recipient and cross-host import; evidence and identity must match. | Partial: source/image validation, owned-fixture timeout/cleanup and addressed handoff regressions pass. Broad final-candidate/platform and provider-conversation restoration remain separate acceptance. |
 | L08 / 2 | Channels and contests | Membership, review/approval, wrong owner/checkout validation, reported metrics, ties/noise floor; no implied automatic merge. | Partial: channel/contest protocol and native workflow tests pass, and current peers exchange actual project/direct messages. That does not prove all actual review/verdict/closure and noise-floor scenarios on every platform. |
-| L09 / 2 | Human interaction | Questions/answers, timeout/disconnect, missing/denied notifications, GUI answer failures; delivery failure cannot imply the user saw a notification. | Partial: durable questions, exact provider-answer receipts and native existing/cold-window routes pass. Physical Notification Center clicks, signed posting and accessibility/IME remain. |
+| L09 / 2 | Human interaction | Questions/answers, timeout/disconnect, missing/denied notifications, GUI answer failures; delivery failure cannot imply the user saw a notification. | Partial: durable questions, exact provider-answer receipts, native routes and bounded installed Notification Center message/question/stale-target clicks pass. Fully closed-app launch, signed-release posting and accessibility/IME remain. |
 | L10 / 2 | Multiplexers | Owned existing tmux session and new pane, invalid combinations, name collision and immediate exit; exact session and clear ownership/log limits. | Partial: environment/ancestry and owned tmux launch fixtures exist. Broad installed/platform acceptance remains; herdr focus/input bridge is an optional deferred design. |
 | L11 / 2 | Storage and restart | Graceful stop, forced death, write failure, missing executable/cwd, reboot/sleep/wake; no duplicate/unprotected launch, explicit stop retained. Exercise unresolved spawn/commit gap. | Partial: crash/restart/schema/restore failure fixtures pass; automatic journal/checkpoint retention is implemented with injected-failure and clock-skew tests. Sleep/wake, login/reboot and live replacement remain. |
 | L12 / 2 | Installation and update | Move/rename bundle, distinct-source update, rollback/uninstall, service preview, collision/tamper/stale input, schema and interrupted activation; stable references and explicit live-session behavior. | Passed local installation scope: PR #119 package activation/rollback/uninstall, legacy hooks/MCP and actual /Applications launch. Hosted signed updates, second-machine/service and live daemon replacement remain partial. |

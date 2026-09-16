@@ -2,8 +2,10 @@
 
 Added September 10, 2026 from the user's live report and screenshot: clicking
 notifications repeatedly opens a blank, untitled Script Editor window instead of
-the relevant location in AgentDocker. This is an open usability defect in the
-[active delivery plan](DELIVERY-PLAN.md) and [remaining work](REMAINING-WORK.md).
+the relevant location in AgentDocker. Native posting and bounded installed click
+routing now pass on this Mac after the approved notification-permission change.
+Broader acceptance remains in the [active delivery plan](DELIVERY-PLAN.md) and
+[remaining work](REMAINING-WORK.md).
 The screenshot stays private; this document records only the reported behavior.
 
 ## Required behavior
@@ -106,6 +108,61 @@ that approach is not a validated fix. No installed files or settings changed.
 
 The September 15 repair replaces the neutral wrapper with an intact payload copy and keeps ownership outside its signature. All three entry points redirect to the selected immutable release, retaining hook/MCP and GUI roles. Private linked-executable alternatives failed strict verification and were rejected. The full gate at clean `cf64ca3` passed 979 Rust tests (seven skipped) and 71 Python checks. Private installation passed 13 scenarios; an actual separately built pre-capability `b605f8e` → `cf64ca3` → `b605f8e` upgrade/rollback passed 12 scenarios with strict signature verification, hook/MCP compatibility, selected-release execution and live-daemon retention. Routing through the copied launcher passed 24 existing-window and two cold-start steps, preserving drafts and targets with no surviving fixture processes. The first older-release trial failed an alias-path assertion in the harness; its corrected rerun and the original failure are retained in the [launcher evidence](verification/2026-09-12-launcher-hook-repair.json). PR #153 is merged. The verified `cf64ca3` package, with production inputs identical to merged `4074275`, is now installed at `/Applications/AgentDocker.app`; strict signature verification and legacy CLI paths pass, the new app is open, and all four external provider identities survived the backed-up coordinator switch. These checks do not establish native posting authorization or physical Notification Center clicks.
 
+The installed intact app still refused two valid native posts, including after
+Launch Services activated its existing window: `Notifications are not allowed
+for this application (1)`. Strict signature verification passed. An initial
+malformed-destination probe was rejected before native posting and is retained
+separately. These results are in the existing launcher evidence; no notification
+settings or provider state changed.
+
+The authorization follow-up moves the one-time permission request from app
+construction to the first focused-window event. `agentdocker-ui
+--notification-status`, run from the app bundle, reads its bundle identity and
+macOS authorization/alert/sound/Notification Center settings without prompting or
+posting. It uses Apple's [notification settings query](https://developer.apple.com/documentation/usernotifications/unusernotificationcenter/getnotificationsettings(completionhandler:)).
+This provides evidence to distinguish a denied setting from an unsupported
+notification client. In the initial trial, the packaged diagnostic reported
+`denied` authorization before and after 26 passing rendered navigation steps.
+No physical focus event was established, and a subsequent console-state query
+found the screen locked. That trial did not establish a signing/payment or
+startup-timing cause. The full candidate gate passed 979 Rust tests and 71
+Python checks. Permission was left unchanged pending the user's decision;
+the approved follow-up below establishes posting and click behavior separately
+from the first-focus request, which remains under acceptance.
+
+## Installed Notification Center acceptance (September 15)
+
+With the user's explicit approval, **Allow notifications** was enabled for
+AgentDocker in macOS System Settings. The read-only diagnostic changed from
+`denied` to `authorized`. The installed `cf64ca3` binaries and ad-hoc signature
+were unchanged: native posts then succeeded. This verifies that the saved
+permission blocked these local posts; no Developer ID identity or payment was
+needed for this bounded local trial.
+
+Actual Notification Center accessibility presses opened the exact Codex
+message with the app backgrounded and foregrounded, preserved another
+conversation's unsubmitted draft, opened a pending question and its answer
+field, and showed the unavailable-message fallback after an owned message was
+cleared. The end-to-end case sent an ordinary message through the production
+daemon, which posted the notification automatically; the click opened that
+message without a direct notification CLI call. The production GUI and daemon
+kept their PIDs, with no Script Editor or unnecessary production window observed.
+
+A separate click also opened a previously absent private daemon-origin window
+on a UI binary whose hash matched the installed app. That window and private
+daemon were retired, while the production window stayed open. This is narrower
+than a cold OS launch with no AgentDocker GUI process. Test questions/messages
+were cleaned up, the test draft returned to its original empty value, and strict
+bundle signature verification still passed. Initial incomplete and harness-failed
+attempts remain in the [existing launcher record](verification/2026-09-12-launcher-hook-repair.json).
+
+Still open: zero-process app launch, explicit Hide, old AppleScript notifications,
+expired-question variants, archived-history and broader project/account cases,
+and Developer ID/notarized release acceptance. Notification Center accessibility
+actions establish native activation; they do not establish physical mouse,
+VoiceOver or IME usability. PR #158's first-focus request is separate from this
+installed-release trial and is not credited as the permission fix.
+
 ## Work and acceptance
 
 1. (Partial: installed app/daemon identity verified; original notification poster not captured.) Identify the actual daemon, app bundle, notification sender and source version
@@ -123,7 +180,7 @@ The September 15 repair replaces the neutral wrapper with an intact payload copy
    reaches AgentDocker. If a platform cannot provide actionable notifications,
    expose that limitation and retain the inbox entry; do not report working
    click routing from a successful notification post.
-5. (Open.) Test real Notification Center clicks with the app active, hidden and closed;
+5. (Partial: installed foreground/background message, pending-question, stale-message and private-origin clicks pass.) Complete real Notification Center clicks with the app hidden and fully closed;
    multiple projects/agents; pending and expired questions; retained history;
    stale notifications; old/new app installations; denied notification access;
    unsigned/local-preview and signed release candidates. Assert the correct
