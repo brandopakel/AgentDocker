@@ -51,6 +51,15 @@ The original message remains subject to its normal receiver; inspecting its
 archive did not acknowledge or drain it. Codex paused after the direct request,
 and interrupted its verification campaign. This bug is open.
 
+PR #162 merged owned Codex active-input delivery as `7c6e779`. Source
+`01531dc` passed the full 1,015-Rust/77-Python gate and actual Codex 0.154.0
+trials using a local model fixture: human, peer and human-broadcast inputs in
+one active turn, one explicit steering refusal retained until the turn ended,
+and recovery from a dropped acceptance reply without resubmission. This covers
+the owned app-server bridge; the existing standalone-terminal pause failure
+and Claude sessions without channel input remain open. See the
+[recorded Codex acceptance](CODEX-INPUT.md#active-turn-steering-acceptance-september-16).
+
 ## Required behavior
 
 An agent-to-agent message must enter the same provider input workflow and queue
