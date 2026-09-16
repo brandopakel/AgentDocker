@@ -871,7 +871,11 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
         before[3],
         "no document was written by a refused plan"
     );
-    assert!(store.plan_resume(&canonical, std::slice::from_ref(&last.id)).is_err());
+    assert!(
+        store
+            .plan_resume(&canonical, std::slice::from_ref(&last.id))
+            .is_err()
+    );
     // Queues that together exceed what one record may hold refuse too.
     store.conn.execute("DELETE FROM leases", []).unwrap();
     for n in 0..RESUME_QUEUE_MESSAGES {
