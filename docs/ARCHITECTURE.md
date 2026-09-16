@@ -895,6 +895,13 @@ are unknown, never zero. The design:
   sessions get priority; a bounded rotating scan also catches new files, finished
   sessions and late usage records. The same parsers serve the standalone CLI.
   Reading transcript files does not mean retaining their message text.
+  Each collection pass records a durable discovery generation and a fixed
+  per-file high-water byte offset. Its completion watermark advances only after
+  every discovered file in that generation is scanned to that offset and its
+  samples/cursor commit. Files appearing or growing later belong to a later
+  generation; scan failures and unsupported formats remain explicit gaps.
+  A bounded or unfinished directory enumeration cannot claim that no more files
+  exist. Empty aggregates during discovery do not prove zero usage.
 - **Explicit token semantics.** A normalized sample keeps `runtime`,
   `provider?`, `model?`, `session_id`, timestamp and separate optional counters
   for total input, cache-read input, cache-write input, total output and reasoning
@@ -973,7 +980,17 @@ are unknown, never zero. The design:
   `retained_since` (UTC hour), `history_truncated`, `future_until_clamped` and
   `includes_current_hour` (booleans), plus `source_gaps` (a nonnegative integer
   count of known unreadable/unsupported/reset intervals in the requested scope).
-  It does not claim discovery of every provider log. Every row has `key`
+  `coverage.collection` contains `state` (`unknown`, `scanning`, `caught_up`),
+  `discovery_generation` (u64 or null), `snapshot_at` and `completed_at` (UTC
+  timestamps or null), `discovery_complete` (boolean), `pending_files` (u64 or
+  null while enumeration is incomplete), and `scope` (configured runtime roots
+  and supported format versions). `caught_up` requires completed discovery and
+  committed scans through every fixed high-water offset in that generation;
+  it is coverage of that declared snapshot/scope, not of logs that appeared
+  later or of all provider accounts. Missing/incomplete discovery is `unknown`;
+  complete discovery with outstanding known files is `scanning`. A query outside
+  that covered scope/range cannot borrow a global completion watermark. A known
+  source gap remains visible even after the scan finishes. Every row has `key`
   (string, or null for unknown/unattributed; UTC hour string when `by=hour`),
   `samples` (nonnegative integer contribution count), and `counters` (object with
   exactly `input_tokens`, `cache_read_input_tokens`, `cache_write_input_tokens`,
@@ -981,10 +998,15 @@ are unknown, never zero. The design:
   `{sum: u64|null, known_samples: u64, coverage: "complete"|"partial"|"unknown"}`.
   `sum` is tokens from known contributions only; null means none are known,
   whereas a reported zero remains zero. `known_samples` cannot exceed `samples`;
-  counter coverage is complete when all contributions report it, partial when
-  some do, and unknown when none do. An empty query returns `rows: []`, not a
-  fabricated zero row. Complete counter coverage does not override top-level
-  source gaps, retention truncation or the current hour's partial duration.
+  counter coverage is unknown when none report it, partial when some report it
+  or relevant collection is unfinished, and complete only when all contributions
+  report it and collection for that row's scope/range is caught up without source
+  gaps. Unknown discovery prevents a complete counter even if every currently
+  known sample has that field. An empty query returns `rows: []`, not a fabricated
+  zero row, with collection status still present. Complete snapshot coverage does
+  not override retention truncation, new data after the snapshot, or the current
+  hour's partial duration. CLI and desktop display that collection watermark
+  beside totals so an ongoing scan cannot appear finished.
   The separate top-level `overhead` object uses the same project/agent filters
   and effective time range, independently of `by`: `injected_bytes` (u64 or null,
   UTF-8 bytes recorded as emitted by AgentDocker), `known_events` (u64),
@@ -1002,7 +1024,8 @@ are unknown, never zero. The design:
 
 Completion requires parser fixtures for supported versions and missing fields;
 crash/replay/rotation/truncation and partial-line trials; cache/reasoning overlap
-checks; unregistered and retired-session attribution; hour-boundary/retention
+checks; unfinished/failed discovery and bounded scans with growing files;
+unregistered and retired-session attribution; hour-boundary/retention
 checks; and actual CLI/desktop acceptance showing coverage and effective ranges.
 This proposal does not mark the collector, protocol, CLI or Usage screen built.
 
