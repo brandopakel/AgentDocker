@@ -1044,7 +1044,8 @@ are unknown, never zero. The design:
   measure of billed overhead; never add them to the provider total.
 
 Initial source work adds pure optional counters, reset-aware deltas and strict
-hourly query bounds, plus local format normalization for Codex 0.153.4/0.154.0 and
+hourly query bounds and checked aggregates that move sums and coverage together,
+plus local format normalization for Codex 0.153.4/0.154.0 and
 Claude Code 2.1.268/2.1.270. These parsers emit metadata and counters only; they do
 not yet scan, persist or display usage. Claude content-record UUIDs do not count
 as distinct responses: dedupe uses the provider message ID with runtime/session.

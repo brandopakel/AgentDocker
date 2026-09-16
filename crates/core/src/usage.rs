@@ -55,6 +55,90 @@ impl Counters {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct Total {
+    sum: u64,
+    known_samples: u64,
+}
+
+/// A bucket retains known/sample counts with the sums, so moving historical
+/// attribution never turns unknown fields into zero or loses coverage.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Aggregate {
+    samples: u64,
+    totals: [Total; 5],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Coverage {
+    Complete,
+    Partial,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CounterReport {
+    pub sum: Option<u64>,
+    pub known_samples: u64,
+    pub coverage: Coverage,
+}
+
+impl Aggregate {
+    pub fn samples(&self) -> u64 {
+        self.samples
+    }
+
+    /// Return a proposed replacement; an overflow/invalid removal cannot
+    /// partially modify an existing bucket. Persistence commits it separately.
+    pub fn add(&self, counters: &Counters) -> Result<Self, &'static str> {
+        self.change(counters, false)
+    }
+
+    pub fn remove(&self, counters: &Counters) -> Result<Self, &'static str> {
+        self.change(counters, true)
+    }
+
+    fn change(&self, counters: &Counters, remove: bool) -> Result<Self, &'static str> {
+        let change = |a: u64, b: u64| {
+            if remove {
+                a.checked_sub(b)
+            } else {
+                a.checked_add(b)
+            }
+            .ok_or("usage bucket arithmetic is out of range")
+        };
+        let mut next = self.clone();
+        next.samples = change(next.samples, 1)?;
+        for (total, value) in next.totals.iter_mut().zip(counters.values()) {
+            if let Some(value) = value {
+                total.sum = change(total.sum, value)?;
+                total.known_samples = change(total.known_samples, 1)?;
+            }
+            if total.known_samples > next.samples || (total.known_samples == 0 && total.sum != 0) {
+                return Err("usage bucket coverage is inconsistent");
+            }
+        }
+        Ok(next)
+    }
+
+    /// `source_complete` means the caller proved completed collection and no
+    /// relevant gaps for this row's scope/range, not just all known samples.
+    pub fn counters(&self, source_complete: bool) -> [CounterReport; 5] {
+        self.totals.map(|total| CounterReport {
+            sum: (total.known_samples > 0).then_some(total.sum),
+            known_samples: total.known_samples,
+            coverage: if total.known_samples == 0 {
+                Coverage::Unknown
+            } else if source_complete && total.known_samples == self.samples {
+                Coverage::Complete
+            } else {
+                Coverage::Partial
+            },
+        })
+    }
+}
+
 /// Effective hourly bounds and the reasons they differ from a requested range.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Range {
@@ -178,6 +262,47 @@ mod tests {
             ..new
         };
         assert!(reset.delta(&old).is_none());
+    }
+
+    #[test]
+    fn aggregate_moves_unknowns_and_known_zero_with_their_contributions() {
+        let zero = Counters::from_values([Some(0), None, None, Some(0), None]);
+        let known = Counters::from_values([Some(10), Some(2), None, Some(3), Some(1)]);
+        let original = Aggregate::default()
+            .add(&zero)
+            .unwrap()
+            .add(&known)
+            .unwrap();
+        assert_eq!(original.samples(), 2);
+        let complete = original.counters(true);
+        assert_eq!(complete[0].sum, Some(10));
+        assert_eq!(complete[0].coverage, Coverage::Complete);
+        assert_eq!(complete[1].coverage, Coverage::Partial);
+        assert_eq!(complete[2].coverage, Coverage::Unknown);
+        assert_eq!(complete[2].sum, None);
+        assert_eq!(original.counters(false)[0].coverage, Coverage::Partial);
+        let source = original.remove(&known).unwrap();
+        let destination = Aggregate::default().add(&known).unwrap();
+        assert_eq!(source.counters(true)[0].sum, Some(0));
+        assert_eq!(source.counters(true)[1].sum, None);
+        assert_eq!(source.samples() + destination.samples(), original.samples());
+        assert_eq!(source.add(&known).unwrap(), original);
+        assert_eq!(source.remove(&zero).unwrap(), Aggregate::default());
+    }
+
+    #[test]
+    fn rejected_bucket_arithmetic_preserves_original_sums_and_coverage() {
+        let huge = Counters {
+            input_tokens: Some(u64::MAX),
+            ..Counters::default()
+        };
+        let original = Aggregate::default().add(&huge).unwrap();
+        let saved = original.clone();
+        assert!(original.add(&huge).is_err());
+        assert!(original.remove(&Counters::default()).is_err());
+        assert_eq!(original, saved);
+        assert_eq!(original.remove(&huge).unwrap(), Aggregate::default());
+        assert!(Aggregate::default().remove(&huge).is_err());
     }
 
     #[test]
