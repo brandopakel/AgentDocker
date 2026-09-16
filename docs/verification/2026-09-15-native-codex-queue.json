@@ -2095,5 +2095,87 @@
       "artifact_sha256": "76ec08875c0cc889bfbb8ef7c69f873619e4d2235d0c1197fa4e3b3e6a98ac1d",
       "parallel_execution": "Three isolated profiles/daemons ran concurrently, overlapping the separate combined-skill Cargo gate. Correctness acceptance only; no latency comparison."
     }
-  ]
+  ],
+  "recovery_harness_follow_up_a718d2a": [
+    {
+      "started_at": "2026-09-16T00:05:29.147540+00:00",
+      "scenario": "recovery",
+      "result": "failed",
+      "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+      "driver_sha256": "4f6f3625ab64ffcc26a1786443b63c26c4baec4f09169178654c57c81ac4fe51",
+      "source": {
+        "commit": "a718d2af7cf8cd7d90de9b8869cecce3a7eb6fc9",
+        "dirty": false,
+        "rust_and_driver_sha256": "764e22eca54e688240db40333d7832d573cbc43607f924ef53274dbaec723b00"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "880355fa5b878874270cef00ea0eb93f1578d846a5fbb1de5c4792098651e574",
+      "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+      "pid": 88285,
+      "thread": "01a0a788-6703-7d52-8b8e-4594e26106da",
+      "agent": "7f93c22041744bbd8930b1770134f312",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.635735500021838,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "94a4a59bb5d690a036e2b5516a66d392017cc06320dce1fce940fc26678d36c0",
+      "artifact_path": "/private/tmp/agentdocker-native-fixed-recovery31-2026-09-15/result.json",
+      "artifact_sha256": "bbd363b02050042015c736a88f2ae3377c77aec4e71a8869a5792c7aedf1db2e",
+      "classification": "fixture-restart-race",
+      "finding": "The manual fixture receiver lost owner.lock to the real supervisor replacement. The fixture incorrectly waited for its own losing PID. Controller log and daemon launch record confirm the competing restart; application queue ownership remained exclusive.",
+      "process_exit_code": 1
+    },
+    {
+      "started_at": "2026-09-16T00:06:53.333202+00:00",
+      "scenario": "baseline",
+      "result": "failed",
+      "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+      "driver_sha256": "f05c88916f0edcfbc6902a642e97cb9d840c5b9737593ad13d99181405aff504",
+      "source": {
+        "commit": "a718d2af7cf8cd7d90de9b8869cecce3a7eb6fc9",
+        "dirty": false,
+        "rust_and_driver_sha256": "00251d846fedcc50cb36b819680244ebcb4744601930dd5e6379aed7a78432ee"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "880355fa5b878874270cef00ea0eb93f1578d846a5fbb1de5c4792098651e574",
+      "daemon_sha256": "7bc48b59dcbb61d113f678ddbf0f461bb5d35ac3ddfdbf95d66fde0412d1a9f9",
+      "pid": 92857,
+      "thread": "01a0a789-afdf-7703-9b2b-b7052dc349c5",
+      "agent": "b0adb6b11a5f48e8994243632758f673",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.637175374984508,
+      "cross_process_receipt": {
+        "thread": "01a0a789-afdf-7703-9b2b-b7052dc349c5",
+        "turn": "01a0a789-d6ea-7143-872e-a3bac664d7ad",
+        "item": "01a0a789-d6f5-7c83-b74e-1e1b4022e032"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "184ad17bff1444e1"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a789-afdf-7703-9b2b-b7052dc349c5",
+          "turn": "01a0a78a-4c23-7231-991d-ab802c17019d",
+          "item": "01a0a78a-4c32-7dc3-a96e-79b84ceeb36d"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "idle_wake_after_receiver_crash": true,
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 8,
+      "agentdocker_integration": true,
+      "failure": "See the private result and terminal capture; raw exception text may include local state.",
+      "raw_result_sha256": "446aa301ddab4b139829a3f49df7b8f44ad86d403c53751ead4d145b30925909",
+      "artifact_path": "/private/tmp/agentdocker-native-negative-cleanup32-2026-09-15/result.json",
+      "artifact_sha256": "266af95803d95c18574bcde9dda1b82953ab0155e0c5d6096fd1ffc990f679cf",
+      "classification": "expected-negative-acceptance",
+      "finding": "Eight ordinary model requests passed all assertions, then the private driver deliberately raised fixture-injected late cleanup error. The corrected exception handler produced result=failed and process exit1, proving that late errors no longer become false passes.",
+      "process_exit_code": 1
+    }
+  ],
+  "recovery_harness_correction": "Fault injection now suspends the private daemon, acquires the stopped receiver owner.lock before changing its private ledger, then resumes the daemon as the sole restart owner. The lost enqueue reply must recover the original native queue ID. No manual replacement competes with supervision."
 }
