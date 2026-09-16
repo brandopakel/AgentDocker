@@ -963,3 +963,18 @@ signals remain unverified; discovery alone is not provider-limit detection.
 The desktop shows the reason and queue count, suppresses Done for known blocked
 turns and preserves drafts. See the existing [message audit](MESSAGE-DELIVERY-AUDIT.md#provider-limit-and-session-exhaustion-acceptance-september-14)
 for adapter coverage and remaining actual-provider acceptance.
+
+### Owned Codex active-turn input
+
+The managed Codex bridge uses the same `Send` queue for terminal, desktop, CLI
+and peer input. After the starting input is received, another queued message may
+enter its owned turn through `turn/steer(expectedTurnId)`. A separate durable
+steering attempt holds the exact input and receipt; the starting attempt remains
+the turn and MCP-answer ownership anchor. Acknowledged steering receipts rotate
+through the existing bounded completed history. The bridge ledger is version 10;
+this does not change the daemon wire protocol or SQLite schema. Uncertain
+submissions require exact history reconciliation, not retry. A definite provider
+active-turn precondition refusal alone permits a later ordinary submission.
+Provider questions hold ordinary messages until resolved. This contract does
+not give the external native-queue sidecar control of a standalone TUI turn.
+Source and integration acceptance are still pending.

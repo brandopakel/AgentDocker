@@ -112,6 +112,14 @@ replacement acceptance.
 
 ## Engineering and acceptance still open
 
+September 16 active-input correction is in progress: the owned Codex bridge
+uses supported active-turn steering with a separate durable attempt and exact
+receipts. A private Codex 0.154.0 API trial passed, but source/integration gates
+and crash recovery acceptance remain pending. Existing standalone TUI delivery
+still uses an idle-only native queue, and existing Claude sessions without a
+channel receiver still need safe reconnect. No universal-provider completion is
+claimed. See [Codex input](CODEX-INPUT.md#active-turn-steering-acceptance-september-16).
+
 | Priority | Work remaining | Completion condition and evidence |
 | --- | --- | --- |
 | User request, September 15 | Portable coordination instructions | One bundled SKILL.md supplies MCP onboarding and preview/apply/undo setup; `agentdocker skill` exports it without a daemon. Combined source `4eb92a7` passed 969 Rust tests (six skipped), 70 Python checks and the full release gate. Actual Codex and Claude skill discovery passed on the recorded earlier release; actual Claude setup/undo also passed; the unchanged skill plus the native queue fix passed a 65-second direct-user busy trial at `528e4e0`, including idle wake, drafts, FIFO and receiver recovery. PR #149 merged after final CI and review; installation, implicit model activation and additional runtime loader acceptance remain. See [guided setup](GUIDED-SETUP.md#shared-coordination-skill). |

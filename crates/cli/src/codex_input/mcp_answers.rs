@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::HashSet, time::Duration};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Origin {
     pub human: String,

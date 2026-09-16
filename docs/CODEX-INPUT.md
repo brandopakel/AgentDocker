@@ -125,8 +125,11 @@ app-server interface remains experimental.
 
 Send through the selected session's message composer, `send_message`, or the
 terminal input. All three use the daemon's ordinary `Send` queue. The bridge polls
-while idle, starts one ordinary input turn, and leaves busy arrivals queued in
-order. Peer content carries its original sender and message ID in an
+while idle and starts one ordinary input turn. Once that input has an exact
+receipt, busy arrivals use `turn/steer` with the owned active turn's ID. Terminal,
+CLI, UI and peer input all follow the same daemon queue; a pending provider
+question retains ordinary input until its answer is resolved. This route applies
+to the owned bridge, not an independently running native TUI. Peer content carries its original sender and message ID in an
 `agentdocker_message` envelope. Model text is shown in the session terminal;
 AgentDocker MCP `send_message` supplies a correlated peer reply.
 
@@ -438,3 +441,20 @@ checks and the same full gate. The final release-TUI legacy-reply trial at
 `b2c3938` then passed idle wake, preserved drafts, mixed-origin FIFO, automatic
 receiver restart and exact legacy human-answer consumption without another turn
 (nine model requests). Source and executable hashes stayed fixed.
+
+## Active-turn steering acceptance (September 16)
+
+The owned bridge now retains one additional steering attempt independently of
+the message that started the turn. Its complete input is persisted before the
+provider call; only an exact item receipt permits queue acknowledgement. Lost
+replies retain the attempt for history reconciliation. A definite active-turn
+precondition refusal leaves the message eligible for a later ordinary turn.
+Other errors do not permit resubmission. The local bridge ledger is version 10;
+existing version 1–9 records retain their inputs when upgraded.
+
+The installed Codex 0.154.0 API passed an isolated local-model trial: the second
+input reached the same active turn, wrong-turn and idle steering were refused,
+and no production profile or conversation changed. AgentDocker integration,
+crash/lost-reply acceptance and the full source gate remain pending. Native TUI
+queue delivery still waits for idle; this change does not establish active-input
+parity for that existing-session route.

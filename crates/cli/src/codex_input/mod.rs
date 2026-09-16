@@ -170,35 +170,48 @@ async fn queue(
 }
 
 async fn acknowledge(client: &Client, ledger: &mut Ledger, agent: &AgentRecord) -> Result<()> {
-    let attempt = ledger
+    let receipts: Vec<_> = ledger
         .record()
         .attempt
-        .as_ref()
-        .context("no Codex input to acknowledge")?;
-    ensure!(
-        attempt.receipt.is_some(),
-        "Codex has not confirmed the complete input"
-    );
-    let message = attempt.message.clone();
-    let receipt = attempt.receipt.as_ref().expect("checked receipt");
-    crate::input_status::report(
-        client,
-        agent.id.as_str(),
-        agent.process_started_at,
-        agentdocker_core::InputReport::Received {
-            input: agentdocker_core::ReceivedInput {
-                messages: vec![message.clone().into()],
-                receipt: agentdocker_core::InputReceipt::Codex {
-                    thread: receipt.thread.clone(),
-                    turn: receipt.turn.clone(),
-                    item: receipt.item.clone(),
+        .iter()
+        .chain(ledger.record().steering.iter())
+        .filter(|attempt| !attempt.acknowledged)
+        .filter_map(|attempt| {
+            attempt
+                .receipt
+                .clone()
+                .map(|receipt| (attempt.message.clone(), receipt))
+        })
+        .collect();
+    for (message, receipt) in receipts {
+        crate::input_status::report(
+            client,
+            agent.id.as_str(),
+            agent.process_started_at,
+            agentdocker_core::InputReport::Received {
+                input: agentdocker_core::ReceivedInput {
+                    messages: vec![message.clone().into()],
+                    receipt: agentdocker_core::InputReceipt::Codex {
+                        thread: receipt.thread,
+                        turn: receipt.turn,
+                        item: receipt.item,
+                    },
                 },
             },
-        },
-    )
-    .await?;
-    queue(client, ledger, vec![message.clone().into()]).await?;
-    ledger.acknowledge(&message)
+        )
+        .await?;
+        queue(client, ledger, vec![message.clone().into()]).await?;
+        ledger.acknowledge(&message)?;
+    }
+    if ledger
+        .record()
+        .steering
+        .as_ref()
+        .is_some_and(|attempt| attempt.acknowledged)
+    {
+        ledger.finish_steering()?;
+    }
+    Ok(())
 }
 
 async fn activity(client: &Client, agent: &str, activity: ReportedActivity) -> Result<()> {
@@ -365,13 +378,25 @@ async fn session(
                     }
                     Some("serverRequest/resolved") => requests::resolved(client, ledger, params).await?,
                     Some("item/started" | "item/completed") if params["item"]["type"] == "userMessage" => {
+                        // Duplicate item/completed notifications can arrive after an
+                        // acknowledged steering input has moved into receipt history.
+                        if ledger.record().completed.iter().any(|done|
+                            params["turnId"].as_str() == Some(&done.receipt.turn)
+                                && params["item"]["id"].as_str() == Some(&done.receipt.item)) {
+                            continue;
+                        }
                         let expected = turn.as_deref().context("Codex supplied an unexpected input receipt")?;
-                        let attempt = ledger.record().attempt.as_ref().context("Codex input receipt has no pending message")?;
-                        if let Some(receipt) = recovery::receipt(&thread, params["turnId"].as_str().unwrap_or_default(), &params["item"], &attempt.input)? {
-                            ensure!(receipt.turn == expected, "Codex input receipt has another turn");
-                            let input = attempt.input.clone(); ledger.accept(&input, receipt)?;
-                            acknowledge(client, ledger, agent).await?;
-                        } else { bail!("Codex supplied a different input while this controller owned the turn"); }
+                        let mut matched = None;
+                        for attempt in ledger.record().attempt.iter().chain(ledger.record().steering.iter()) {
+                            if let Some(receipt) = recovery::receipt(&thread, params["turnId"].as_str().unwrap_or_default(), &params["item"], &attempt.input)? {
+                                ensure!(receipt.turn == expected, "Codex input receipt has another turn");
+                                matched = Some((attempt.input.clone(), receipt));
+                                break;
+                            }
+                        }
+                        let (input, receipt) = matched.context("Codex supplied different input while this controller owned the turn")?;
+                        ledger.accept(&input, receipt)?;
+                        acknowledge(client, ledger, agent).await?;
                     }
                     Some("item/agentMessage/delta") => {
                         if let Some(delta) = params["delta"].as_str() { print!("{delta}"); std::io::stdout().flush()?; }
@@ -386,7 +411,7 @@ async fn session(
                                 issue: crate::provider_status::codex(&params["turn"]["error"]),
                             }).await?;
                         }
-                        if ledger.record().attempt.as_ref().is_some_and(|a| a.receipt.is_none()) {
+                        if ledger.record().attempt.iter().chain(ledger.record().steering.iter()).any(|a| a.receipt.is_none()) {
                             recovery::find_receipt(provider, ledger).await?;
                         }
                         acknowledge(client, ledger, agent).await?;
@@ -425,8 +450,29 @@ async fn session(
             }
             _ = poll.tick() => {
                 let messages = requests::poll(client, provider, ledger).await?;
-                if turn.is_none() && ledger.record().reviews.is_empty() {
+                if ledger.record().reviews.is_empty() {
                 if let Some(message) = messages.first() {
+                    if let Some(active) = turn.as_deref() {
+                        if ledger.record().steering.is_some()
+                            || !ledger.record().attempt.as_ref().is_some_and(|a| a.acknowledged) {
+                            continue;
+                        }
+                        let input = ledger.prepare_steering(message, active)?;
+                        let result = provider.request("turn/steer", json!({"threadId":thread,
+                            "expectedTurnId":active, "clientUserMessageId":message.id,
+                            "input":[{"type":"text","text":input,"text_elements":[]}]})).await;
+                        match result {
+                            Ok(result) => ensure!(result["turnId"].as_str() == Some(active),
+                                "Codex steering response named another turn; input retained"),
+                            Err(error) if transport::steering_refused(&error, active) => {
+                                // The turn ended before submission. Only this explicit
+                                // precondition failure permits a later ordinary offer.
+                                ledger.reject_steering()?;
+                            }
+                            Err(error) => return Err(error.context("Codex steering is unconfirmed; input retained for receipt recovery")),
+                        }
+                        continue;
+                    }
                     if ledger.record().attempt.is_some() {
                         if let Err(error) = recovery::recover(provider, client, ledger, agent).await {
                             eprintln!("Retained input still needs inspection: {error:#}");
@@ -441,7 +487,7 @@ async fn session(
                     preflight(provider, &ledger.record().binding.cwd).await?;
                     let input = ledger.prepare_bound(message, Some(mcp_origin.clone()))?;
                     activity(client, agent.id.as_str(), ReportedActivity::Working).await?;
-                    let result = match provider.request("turn/start", json!({"threadId":thread,
+                    let result = match provider.request("turn/start", json!({"threadId":thread,"clientUserMessageId":message.id,
                         "input":[{"type":"text","text":input,"text_elements":[]}]})).await {
                         Ok(result) => result,
                         Err(error) => {
