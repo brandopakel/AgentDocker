@@ -406,5 +406,100 @@
       "No production state or installed binaries were changed. Final-head CI/review and installed schema21 acceptance remain.",
       "The 84-second workflow is bounded integration acceptance, not a sustained-provider, sleep/reboot or cross-platform trial."
     ]
+  },
+  "sessions_search_followup_2026_09_15": {
+    "result": "passed_for_listed_scope",
+    "scope": "PR152 on messaging base3af588e: Earlier grouping, project row actions and the fix for a false empty-state card when search matches only an ended session.",
+    "source": {
+      "format": 1,
+      "source_commit": "fbb3cbe63c48af9bba5b177e678a0ed26d63dad3",
+      "source_tree": "6b17fba496b006d88a662c26a65cd42056dd8027",
+      "source_input_sha256": "65116111553008c44a30125748ea6f41f92fe40421cfe026724061c6168a834f",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_sha256": {
+        "agentdocker": "6f5758abf8cb27b921c1d4c8e943f6010a62389e51db82799ea011695abab15c",
+        "agentd": "a111987a6a2220e2a63de78312fc015dcf6bba45a35421be44f107de1dbb7689",
+        "agentdocker-ui": "ff52ffb0d465cfe213bb7c60e926c9985e85cce2d8e9ecd44dce3d8d4e2aec67"
+      }
+    },
+    "standard_gate": {
+      "result": "passed",
+      "rust_tests": 1001,
+      "rust_skipped": 7,
+      "python_checks": 77,
+      "format": true,
+      "clippy": true,
+      "doctests": true,
+      "cargo_package": true,
+      "release_build": true,
+      "log": {
+        "artifact": "agentdocker-sessions-search-gate1-2026-09-15.log",
+        "sha256": "ec06c8cab1e0edb5ff89ad070542a90ff7660f54d1a5d2b1df460e211e0b0cf3"
+      }
+    },
+    "native_workflow": {
+      "result": "passed",
+      "steps": 263,
+      "steps_by_window": {
+        "readiness-received": 5,
+        "provider-limit": 14,
+        "readiness-activity": 5,
+        "readiness-ready": 5,
+        "workflows": 163,
+        "restored": 6,
+        "readiness-paused": 5,
+        "readiness-contact": 5,
+        "narrow-inbox": 55
+      },
+      "elapsed_seconds": 92.31237804199918,
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize"
+      ],
+      "result_artifact": {
+        "artifact": "result.json",
+        "sha256": "959e18527461c3f242d8379cbf5a738f0d655b32da2ab069d485e5d59e777a14"
+      },
+      "search_capture": {
+        "artifact": "earlier-search-match.png",
+        "sha256": "7875e158dc1dbba1b14873e851d69b25e2b6f4c3c939cd2ff9e07c701b3960d9"
+      },
+      "driver_sha256": "9a577198386456cdd46c78f2cfc2b7cb9dabb427e64b75f07c9ab0dcd40580fb",
+      "binary_hashes_unchanged_after_trial": true,
+      "source_inputs_unchanged_during_trial": true
+    },
+    "limits": [
+      "Actual rendered control callbacks in private fixture state on macOS ARM64; no physical pointer/keyboard, VoiceOver or IME claim.",
+      "No production binary or state upgrade. Final-head CI/review, the remaining PR150 fixes and installed schema21 acceptance remain.",
+      "This bounded workflow does not establish sustained real-provider, sleep/reboot or cross-platform acceptance."
+    ]
   }
 }

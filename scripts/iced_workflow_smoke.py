@@ -212,8 +212,24 @@ def smoke(binary_dir, output):
                                 step("click", id=f"answer-choice-{choice}-0"), step("wait_control", id=f"answer-choice-{choice}-0", present=False)]
                 steps = [step("click", id=f"project-{project}"), step("wait_text", text="terminal-fixture"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("wait_control", id=f"session-{previous['id']}", present=False), step("capture", name="projects-live"),
-                         step("click", id="sessions-history"), step("wait_control", id=f"session-{previous['id']}", present=True),
-                         step("wait_control", id=f"session-{agent['id']}", present=False), step("capture", name="session-history"),
+                         # Ended sessions are one collapsed group under the current ones,
+                         # not a tab: opening it shows the previous run beside the live one.
+                         step("wait_control", id=f"session-{previous['id']}", present=False),
+                         step("click", id="sessions-earlier"), step("wait_control", id=f"session-{previous['id']}", present=True),
+                         step("wait_control", id=f"session-{agent['id']}", present=True), step("capture", name="session-earlier"),
+                         step("click", id="sessions-earlier"), step("wait_control", id=f"session-{previous['id']}", present=False),
+                         # A search matching only an ended session opens Earlier without
+                         # also claiming that no sessions match. A missing term still does.
+                         step("fill", id="session-search", text=previous["id"]),
+                         step("wait_control", id=f"session-{previous['id']}", present=True),
+                         step("wait_control", id=f"session-{agent['id']}", present=False),
+                         step("wait_text_absent", text="No matching sessions"),
+                         step("capture", name="earlier-search-match"),
+                         step("fill", id="session-search", text="fixture-no-session-matches"),
+                         step("wait_control", id=f"session-{previous['id']}", present=False),
+                         step("wait_text", text="No matching sessions"),
+                         step("fill", id="session-search", text=""),
+                         step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("click", id="sessions-attention"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("click", id="sessions-current"),
                          # Messages: the direct conversation with the fixture holds its
@@ -252,6 +268,17 @@ def smoke(binary_dir, output):
                          step("click", id="undo-setup"), step("wait_text", text="Codex setup undone"), step("click", id="close-setup"),
                          step("click", id="add-project"), step("fill", id="project-path", text=str(pinned)),
                          step("click", id="pin-folder"), step("wait_text", text="pinned-api"), step("capture", name="pinned-empty-project"),
+                         # The row's own menu renames the entry here (nothing on disk) and
+                         # an empty name goes back to the folder's.
+                         step("click", id=f"project-menu-{pinned}"), step("wait_control", id=f"project-remove-{pinned}", present=True),
+                         step("click", id=f"project-rename-start-{pinned}"), step("wait_control", id=f"project-rename-{pinned}", present=True),
+                         step("fill", id=f"project-rename-{pinned}", text="Pinned API"),
+                         step("click", id=f"project-rename-save-{pinned}"), step("wait_text", text="Pinned API"),
+                         step("wait_control", id=f"project-remove-{pinned}", present=False), step("capture", name="project-renamed"),
+                         step("click", id=f"project-menu-{pinned}"), step("wait_control", id=f"project-rename-start-{pinned}", present=True),
+                         step("click", id=f"project-rename-start-{pinned}"), step("wait_control", id=f"project-rename-{pinned}", present=True),
+                         step("fill", id=f"project-rename-{pinned}", text=""), step("click", id=f"project-rename-save-{pinned}"),
+                         step("wait_control", id=f"project-rename-save-{pinned}", present=False), step("wait_text", text="pinned-api"),
                          step("click", id="launch-agent"), step("click", id="launch-tool-codex"),
                          step("fill", id="launch-name", text="launched-from-iced"), step("click", id="confirm-launch"),
                          step("wait_text", text="Agent launched"), step("click", id="attach-session"),
@@ -282,6 +309,7 @@ def smoke(binary_dir, output):
                     steps.insert(2, step("native_accessibility"))
                 try:
                     report["first_window"] = launch("workflows", steps)
+                    checks.append("ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state")
                     assert answer.result(timeout=5).get("text") == "Use API v2", "answer did not reach asking agent"
                     agent_inbox = rpc(endpoint, {"op": "inbox", "agent": agent["id"], "drain": False})["messages"]
                     for question_id, decision in reviews:
@@ -406,7 +434,7 @@ def smoke(binary_dir, output):
             assert any(m.get("payload") == "Fixture channel message" for m in messages), messages
             launched = [a for a in rpc(endpoint, {"op": "list", "all": True})["agents"] if a["spec"]["name"] == "launched-from-iced"]
             assert len(launched) == 1 and launched[0]["status"]["state"] == "exited", launched
-            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_text", text="No agents in this project"), step("capture", name="restored-last-project"), step("click", id="sessions-history"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-history")])
+            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_text", text="No agents in this project"), step("capture", name="restored-last-project"), step("click", id="sessions-earlier"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-earlier")])
             checks.extend(["folder_pin_has_no_project_files", "same_project_after_launch", "last_project_restore", "quiet_project_retained", "saved_appearance"])
             # Private metadata fixture, not a model or idle-wake assertion.
             receiver = rpc(endpoint, {"op": "register", "spec": {

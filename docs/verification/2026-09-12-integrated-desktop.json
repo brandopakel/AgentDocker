@@ -475,5 +475,73 @@
       "This is unmerged PR152 source; final integration review/CI remains pending.",
       "Retained process identity and successful MCP calls do not establish a fresh post-switch provider queue receipt."
     ]
+  },
+  "linux_shared_temporary_discovery_2026_09_16": {
+    "date": "2026-09-16",
+    "source_commit": "e0d6f8a9db0cfd8a7a1432598fe0d2fd9a0828f5",
+    "source_input_sha256": "cab5f7e9a620537c0fa723f9f00bf340a844d1b3920ad2e1fc3301487aa9f9bd",
+    "source_and_binary_hashes_unchanged_after_trial": true,
+    "binary_sha256": {
+      "agentd": "7bd6e71f782baca169a83401dc9e1dde66d53f76d954ca473f21bfbec19c95b9",
+      "agentdocker": "8802d453d321f2b5e26f26b9658baaf7ffab0ada1371dec0daffe12641cda408",
+      "agentdocker-ui": "7a9570690e83d5ba9e882fcf37b6a2915502486a1d934e11965e8fe85175bbb4"
+    },
+    "failure": {
+      "source_commit": "72b1eb40663cf51786bc817b1c51fb2fc23f5435",
+      "ci_run": 35059816153,
+      "jobs": [
+        104677554691,
+        104677554558
+      ],
+      "observation": "Both Linux graphical jobs connected with 14 runtime rows and discovered the fixture but never rendered its project control. is_temporary treated the shared Linux default /tmp as a per-user fixture root."
+    },
+    "fix": "Retain discovery under shared /tmp and /var/tmp roots and macOS private aliases; continue filtering actual per-user temporary roots with component-aware path boundaries.",
+    "standard_gate": {
+      "command": "bash scripts/verify.sh check",
+      "exit_code": 0,
+      "rust_passed": 1006,
+      "rust_skipped": 7,
+      "python_passed": 77,
+      "log": "/private/tmp/agentdocker-ui-shared-temp-gate1-2026-09-15.log"
+    },
+    "native_acceptance": {
+      "command": "TMPDIR=/tmp AGENTDOCKER_NO_NOTIFICATIONS=1 python3 scripts/iced_workflow_smoke.py --binary-dir target/release --output /private/tmp/agentdocker-ui-shared-temp-workflows1-2026-09-15",
+      "result": "passed",
+      "scenario_steps": 263,
+      "elapsed_seconds": 90.95623958299984,
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize"
+      ],
+      "result_path": "/private/tmp/agentdocker-ui-shared-temp-workflows1-2026-09-15/result.json",
+      "result_sha256": "4be5acfa792c856e219e6c7fea6746bda510a6d686cc578fec9993ebdf98018e"
+    },
+    "limits": [
+      "This is actual macOS native rendering with Linux-style shared TMPDIR semantics; final Linux CI still has to pass.",
+      "Callbacks from rendered controls do not establish physical keyboard, screen-reader or IME acceptance.",
+      "Production installation was not changed by this trial."
+    ]
   }
 }

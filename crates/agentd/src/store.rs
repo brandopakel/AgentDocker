@@ -1158,6 +1158,38 @@ impl Store {
             }
         }
         conn.execute("DELETE FROM meta WHERE key='messages_fts_complete'", [])?;
+        // What was queued before there were conversations is not new to
+        // the person: their cursor starts at the head of every
+        // conversation, so the first unread count is what arrives next,
+        // not the whole past. Agents keep their queues as they were.
+        let mut agents = conn.prepare("SELECT id, json FROM agents")?;
+        let humans: Vec<String> = agents
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(Result::ok)
+            .filter(|(_, json)| {
+                serde_json::from_str::<AgentRecord>(json)
+                    .is_ok_and(|r| r.spec.runtime == agentdocker_core::HUMAN_RUNTIME)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        if !humans.is_empty() {
+            let mut heads =
+                conn.prepare("SELECT conversation, MAX(seq) FROM messages GROUP BY conversation")?;
+            let heads: Vec<(String, i64)> = heads
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<std::result::Result<_, _>>()?;
+            let now = Utc::now().to_rfc3339();
+            for human in &humans {
+                for (conversation, seq) in &heads {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO read_cursors (reader, conversation, seq, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                        params![human, conversation, seq, now],
+                    )?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -3217,6 +3249,89 @@ mod tests {
             store.archived(&root.id).unwrap().unwrap().replies,
             7,
             "the root counts only its own conversation's replies"
+        );
+    }
+
+    /// A database from before the archive: what was queued is archived in
+    /// its conversation, and the person's cursor starts at every head, so
+    /// the past is not the first unread count; an agent's queue is as it
+    /// was.
+    #[test]
+    fn the_backfilled_archive_starts_read_for_the_person() {
+        use agentdocker_core::{AgentSpec, Destination};
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO meta(key,value) VALUES('schema_version', '20')",
+            [],
+        )
+        .unwrap();
+        let now = Utc::now();
+        let mut human = AgentRecord::new(AgentSpec::default(), false, now);
+        human.spec.name = "user".into();
+        human.spec.runtime = agentdocker_core::HUMAN_RUNTIME.into();
+        let agent = AgentRecord::new(AgentSpec::default(), false, now);
+        for (name, record) in [("user", &human), ("agent", &agent)] {
+            conn.execute(
+                "INSERT INTO agents (id, name, live, created_at, json) VALUES (?1, ?2, 1, ?3, ?4)",
+                params![
+                    record.id.as_str(),
+                    name,
+                    now.to_rfc3339(),
+                    serde_json::to_string(record).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let queued = [
+            Envelope::new(
+                agent.id.as_str(),
+                Destination::Agent(human.id.clone()),
+                "chat",
+                serde_json::json!({ "text": "to the person" }),
+                None,
+                now,
+            ),
+            Envelope::new(
+                human.id.as_str(),
+                Destination::Agent(agent.id.clone()),
+                "chat",
+                serde_json::json!({ "text": "to the agent" }),
+                None,
+                now,
+            ),
+        ];
+        for (to, envelope) in [(&human, &queued[0]), (&agent, &queued[1])] {
+            conn.execute(
+                "INSERT INTO inbox (agent, message_id, json) VALUES (?1, ?2, ?3)",
+                params![
+                    to.id.as_str(),
+                    envelope.id.as_str(),
+                    serde_json::to_string(envelope).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let store = Store::init(conn).unwrap();
+        let dm = ConversationId::dm(human.id.as_str(), agent.id.as_str());
+        let archived = store.history(&dm, None, 10).unwrap();
+        assert_eq!(archived.len(), 2, "both queued rows are in the archive");
+        let cursor = store
+            .read_cursors(human.id.as_str())
+            .unwrap()
+            .into_iter()
+            .find(|c| c.conversation == dm)
+            .expect("the person's cursor is at the head");
+        assert_eq!(cursor.through, archived[1].seq);
+        assert_eq!(
+            store
+                .unread_after(&dm, cursor.through, std::slice::from_ref(&human.id))
+                .unwrap(),
+            0
+        );
+        assert!(
+            store.read_cursors(agent.id.as_str()).unwrap().is_empty(),
+            "an agent's queue is as it was"
         );
     }
 
