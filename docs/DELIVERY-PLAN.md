@@ -99,6 +99,13 @@ test worktrees must never become end-user installation instructions.
 
 ### Submitted-input parity and idle wake (September 10)
 
+**September 16 live regression:** Claude confirmed twelve peer messages waited at
+its idle prompt until a human supplied input. The process had hooks/MCP but no
+channel receiver. Finish safe existing-session input connection and per-provider
+acceptance before closing this requirement. New supported UI launches now default
+to idle input, and composers expose recipient readiness; those changes do not
+retrofit this existing session. See the [recorded finding](MESSAGE-DELIVERY-AUDIT.md#september-16-live-claude-idle-wake-gap-reproduced).
+
 The user requires peer messages to follow the same provider input workflow and
 queue as messages they submit themselves, including waking an idle agent. Make
 the [message delivery audit](MESSAGE-DELIVERY-AUDIT.md) a top-priority part of

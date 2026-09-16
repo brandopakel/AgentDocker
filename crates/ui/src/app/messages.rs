@@ -770,19 +770,22 @@ impl App {
         // thread replies. A working MCP/hook transport alone cannot wake it.
         if let Some(agent) = self.direct_input_recipient(conversation) {
             let status = self.input_readiness(agent);
-            composer = composer.push(
-                row![
-                    small(status, c).width(Fill),
-                    action(
-                        format!("input-connection-{key}"),
-                        "Connection",
-                        Some(Message::OpenConnection(agent.spec.runtime.clone())),
-                        false,
-                    )
-                ]
+            let mut readiness = row![small(status, c).width(Fill)]
                 .spacing(6)
-                .align_y(Center),
-            );
+                .align_y(Center);
+            if self
+                .runtimes
+                .iter()
+                .any(|runtime| runtime.name == agent.spec.runtime)
+            {
+                readiness = readiness.push(action(
+                    format!("input-connection-{key}"),
+                    "Connection",
+                    Some(Message::OpenConnection(agent.spec.runtime.clone())),
+                    false,
+                ));
+            }
+            composer = composer.push(readiness);
         }
         composer.into()
     }
