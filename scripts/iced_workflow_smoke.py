@@ -460,6 +460,7 @@ def smoke(binary_dir, output):
                         step("resize", width=1200, height=760),
                         step("wait_control", id=f"reply-{narrow['id']}", present=True),
                         step("click", id="settings"), step("click", id="larger-ui"),
+                        step("click", id="larger-ui"), step("click", id="larger-ui"),
                         step("click", id="larger-ui"), step("click", id="inbox"),
                         step("wait_control", id=f"reply-{narrow['id']}", present=False),
                         step("wait_control", id=f"reply-thread-{routed}", present=True),
