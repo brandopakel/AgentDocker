@@ -3118,13 +3118,14 @@ mod tests {
         store
             .publish_message(&said("first lantern"), &[], 1000, None, None, None, &[])
             .unwrap();
-        // A query fails while the table is out of reach; it is back before
-        // the next start, so only what the failure itself recorded tells
-        // that start to rebuild.
+        // A query fails while the table is out of reach. Search disables
+        // the index in memory without writing during a coordinator fence;
+        // the next unindexed archive mutation must persist that fact.
         store
             .conn
             .execute("ALTER TABLE messages_fts RENAME TO messages_fts_away", [])
             .unwrap();
+        let changes_before_search = store.conn.total_changes();
         assert_eq!(
             store
                 .search_messages("lantern", None, None, 50)
@@ -3132,6 +3133,11 @@ mod tests {
                 .len(),
             1,
             "answered by LIKE when the query fails"
+        );
+        assert_eq!(
+            store.conn.total_changes(),
+            changes_before_search,
+            "search is read-only"
         );
         assert!(!store.messages_fts.get(), "the index is off for this run");
         store
@@ -3147,10 +3153,24 @@ mod tests {
             )
             .optional()
             .unwrap();
-        assert_eq!(marker, None, "the failure clears the completeness marker");
+        assert_eq!(
+            marker.as_deref(),
+            Some("1"),
+            "a read changes no durable state"
+        );
         store
             .publish_message(&said("second lantern"), &[], 1000, None, None, None, &[])
             .unwrap();
+        let marker: Option<String> = store
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='messages_fts_complete'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(marker, None, "unindexed writes clear the marker atomically");
         assert_eq!(
             store
                 .search_messages("lantern", None, None, 50)
