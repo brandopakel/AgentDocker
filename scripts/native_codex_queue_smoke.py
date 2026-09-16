@@ -344,6 +344,8 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 daemon = None
 provider = None
 master = None
+slave = None
+thread = None
 output = bytearray()
 done = threading.Event()
 
@@ -428,19 +430,11 @@ try:
         }
         if args.reload:
             daemon_env["AGENTDOCKER_EXPERIMENTAL_RELOAD"] = "1"
-        daemon = subprocess.Popen(
-            [str(cli.with_name("agentd"))],
-            cwd=repo,
-            env=daemon_env,
-            stdin=subprocess.DEVNULL,
-            stdout=daemon_log,
-            stderr=daemon_log,
-            start_new_session=True,
-        )
-        daemon_pids = {daemon.pid}
+        daemon_pids = set()
+        controller_pids = set()
 
         def retired(pid):
-            if pid == daemon.pid:
+            if daemon is not None and pid == daemon.pid:
                 return daemon.poll() is not None
             try:
                 os.kill(pid, 0)
@@ -457,111 +451,123 @@ try:
                 assert result.get("type") != "error", result
                 return result
 
-        wait(lambda: sock.exists())
-        mcp_cli = (
-            args.legacy_cli if args.scenario in ("legacy-question", "legacy-reply", "migration") else cli
-        )
-        if args.scenario in ("startup", "lifecycle"):
-            mcp_wrapper = root / "agentdocker"
-            mcp_wrapper.write_text(
-                "#!"
-                + sys.executable
-                + "\nimport json,os,sys\n"
-                + "with open("
-                + repr(str(out / "mcp-startup.jsonl"))
-                + ",'a') as log:\n"
-                + " log.write(json.dumps({'pid':os.getpid(),'parent':os.getppid(),'cwd':os.getcwd(),"
-                + "'session':os.environ.get('CODEX_THREAD_ID'),'profile':os.environ.get('CODEX_HOME')})+'\\n')\n"
-                + "os.execv("
-                + repr(str(mcp_cli))
-                + ",["
-                + repr(str(mcp_cli))
-                + "]+sys.argv[1:])\n"
-            )
-            mcp_wrapper.chmod(0o700)
-            mcp_cli = mcp_wrapper
-        with (profile / "config.toml").open("a") as configfile:
-            configfile.write(
-                "\n[mcp_servers.agentdocker]\ncommand = "
-                + json.dumps(str(mcp_cli))
-                + '\nargs = ["mcp", "--runtime", "codex"]\n[mcp_servers.agentdocker.env]\nAGENTDOCKER_HOME = '
-                + json.dumps(str(adhome))
-                + "\nAGENTDOCKER_SOCKET = "
-                + json.dumps(str(sock))
-                + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n'
-            )
-        provider_prefix = [codex, "--no-alt-screen"]
-        if args.scenario in ("startup", "lifecycle"):
-            # The only hook in this private profile is this reviewed fixture
-            # command. One-off trust does not change any user's saved policy.
-            hook_runner = root / "hook_capture.py"
-            hook_runner.write_text(
-                "import json,os,subprocess,sys\n"
-                "from pathlib import Path\n"
-                "raw=sys.stdin.read()\n"
-                + "Path("
-                + repr(str(out / "hook-input.json"))
-                + ").write_text(raw)\n"
-                + "p=subprocess.run("
-                + repr([str(cli), "--socket", str(sock), "hook", "codex"])
-                + ",input=raw,text=True,capture_output=True)\n"
-                + "Path("
-                + repr(str(out / "hook-stderr.log"))
-                + ").write_text(p.stderr)\n"
-                + "print(p.stdout,end='')\nsys.exit(p.returncode)\n"
-            )
-            (profile / "hooks.json").write_text(
-                json.dumps(
-                    {
-                        "hooks": {
-                            "SessionStart": [
-                                {
-                                    "hooks": [
-                                        {
-                                            "type": "command",
-                                            "command": shlex.join([sys.executable, str(hook_runner)]),
-                                        }
-                                    ]
-                                }
-                            ]
-                        }
-                    }
-                )
-            )
-            with (profile / "config.toml").open("a") as configfile:
-                configfile.write("\n[features]\nhooks = true\n")
-            provider_prefix += ["--dangerously-bypass-hook-trust"]
-            report["fixture_hook_trust"] = (
-                "one-off vetted private SessionStart command; no saved user policy changed"
-            )
-        master, slave = pty.openpty()
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
-        provider = subprocess.Popen(
-            provider_prefix + ([] if args.scenario == "startup" else ["fixture warmup"]),
-            cwd=repo,
-            env=env,
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            start_new_session=True,
-        )
-        os.close(slave)
-        report["pid"] = provider.pid
-
-        def reader():
-            while not done.is_set():
-                try:
-                    if select.select([master], [], [], 0.1)[0]:
-                        data = os.read(master, 65536)
-                        output.extend(data)
-                        if b"\x1b[6n" in data:
-                            os.write(master, b"\x1b[1;1R")
-                except OSError:
-                    return
-
-        thread = threading.Thread(target=reader, daemon=True)
-        thread.start()
         try:
+            daemon = subprocess.Popen(
+                [str(cli.with_name("agentd"))],
+                cwd=repo,
+                env=daemon_env,
+                stdin=subprocess.DEVNULL,
+                stdout=daemon_log,
+                stderr=daemon_log,
+                start_new_session=True,
+            )
+            daemon_pids.add(daemon.pid)
+
+            wait(lambda: sock.exists())
+            mcp_cli = (
+                args.legacy_cli if args.scenario in ("legacy-question", "legacy-reply", "migration") else cli
+            )
+            if args.scenario in ("startup", "lifecycle"):
+                mcp_wrapper = root / "agentdocker"
+                mcp_wrapper.write_text(
+                    "#!"
+                    + sys.executable
+                    + "\nimport json,os,sys\n"
+                    + "with open("
+                    + repr(str(out / "mcp-startup.jsonl"))
+                    + ",'a') as log:\n"
+                    + " log.write(json.dumps({'pid':os.getpid(),'parent':os.getppid(),'cwd':os.getcwd(),"
+                    + "'session':os.environ.get('CODEX_THREAD_ID'),'profile':os.environ.get('CODEX_HOME')})+'\\n')\n"
+                    + "os.execv("
+                    + repr(str(mcp_cli))
+                    + ",["
+                    + repr(str(mcp_cli))
+                    + "]+sys.argv[1:])\n"
+                )
+                mcp_wrapper.chmod(0o700)
+                mcp_cli = mcp_wrapper
+            with (profile / "config.toml").open("a") as configfile:
+                configfile.write(
+                    "\n[mcp_servers.agentdocker]\ncommand = "
+                    + json.dumps(str(mcp_cli))
+                    + '\nargs = ["mcp", "--runtime", "codex"]\n[mcp_servers.agentdocker.env]\nAGENTDOCKER_HOME = '
+                    + json.dumps(str(adhome))
+                    + "\nAGENTDOCKER_SOCKET = "
+                    + json.dumps(str(sock))
+                    + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n'
+                )
+            provider_prefix = [codex, "--no-alt-screen"]
+            if args.scenario in ("startup", "lifecycle"):
+                # The only hook in this private profile is this reviewed fixture
+                # command. One-off trust does not change any user's saved policy.
+                hook_runner = root / "hook_capture.py"
+                hook_runner.write_text(
+                    "import json,os,subprocess,sys\n"
+                    "from pathlib import Path\n"
+                    "raw=sys.stdin.read()\n"
+                    + "Path("
+                    + repr(str(out / "hook-input.json"))
+                    + ").write_text(raw)\n"
+                    + "p=subprocess.run("
+                    + repr([str(cli), "--socket", str(sock), "hook", "codex"])
+                    + ",input=raw,text=True,capture_output=True)\n"
+                    + "Path("
+                    + repr(str(out / "hook-stderr.log"))
+                    + ").write_text(p.stderr)\n"
+                    + "print(p.stdout,end='')\nsys.exit(p.returncode)\n"
+                )
+                (profile / "hooks.json").write_text(
+                    json.dumps(
+                        {
+                            "hooks": {
+                                "SessionStart": [
+                                    {
+                                        "hooks": [
+                                            {
+                                                "type": "command",
+                                                "command": shlex.join([sys.executable, str(hook_runner)]),
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        }
+                    )
+                )
+                with (profile / "config.toml").open("a") as configfile:
+                    configfile.write("\n[features]\nhooks = true\n")
+                provider_prefix += ["--dangerously-bypass-hook-trust"]
+                report["fixture_hook_trust"] = (
+                    "one-off vetted private SessionStart command; no saved user policy changed"
+                )
+            master, slave = pty.openpty()
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
+            provider = subprocess.Popen(
+                provider_prefix + ([] if args.scenario == "startup" else ["fixture warmup"]),
+                cwd=repo,
+                env=env,
+                stdin=slave,
+                stdout=slave,
+                stderr=slave,
+                start_new_session=True,
+            )
+            os.close(slave)
+            slave = None
+            report["pid"] = provider.pid
+
+            def reader():
+                while not done.is_set():
+                    try:
+                        if select.select([master], [], [], 0.1)[0]:
+                            data = os.read(master, 65536)
+                            output.extend(data)
+                            if b"\x1b[6n" in data:
+                                os.write(master, b"\x1b[1;1R")
+                    except OSError:
+                        return
+
+            thread = threading.Thread(target=reader, daemon=True)
+            thread.start()
             if args.scenario == "startup":
                 started = wait(
                     lambda: next(
@@ -616,7 +622,7 @@ try:
             report["agent"] = aid
             report["automatic_hook_bootstrap"] = True
             controller_pid = registered["input_binding"]["controller"]["pid"]
-            controller_pids = {controller_pid}
+            controller_pids.add(controller_pid)
             assert registered["input_binding"].get("launch"), (
                 "receiver must register an automatic restart descriptor"
             )
@@ -1398,10 +1404,14 @@ try:
             if cleanup_errors or report.get("daemon_survivors") or report.get("controller_survivors"):
                 report["result"] = "failed"
             done.set()
-            thread.join(timeout=2)
+            if thread is not None:
+                thread.join(timeout=2)
             (out / "terminal.bin").write_bytes(output)
             if master is not None:
                 os.close(master)
+            if slave is not None:
+                os.close(slave)
+            daemon_log.close()
             for p in (adhome / "codex-queue").glob("*/controller.log"):
                 (out / "bootstrap-controller.log").write_bytes(p.read_bytes())
             for p in profile.glob("sessions/**/*.jsonl"):

@@ -75,6 +75,8 @@ pending question. It checks unchanged provider/controller identities, exact
 answer receipt and retirement of all trial daemons and controllers. This uses
 the actual native client with a loopback model fixture; real account/provider
 service acceptance and other runtimes remain separate.
+Trial cleanup also covers provider startup failure after the private daemon
+has started, before the terminal reader or input binding exists.
 
 The daemon holds a synchronous question's answer until its route is settled.
 An answer handed to that tool stays queued as uncertain until the receiver finds
