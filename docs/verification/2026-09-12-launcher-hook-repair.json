@@ -92,7 +92,7 @@
     "Signed/notarized distribution and physical Notification Center acceptance.",
     "Earlier PRs and broader remaining-work items are not closed by this repair."
   ],
-  "summary": "Historical hook repair and September 15 intact launcher: private install/legacy rollback/routes and production activation passed; existing native Codex receiver auto-bound. Physical notification clicks, posting authorization and provider input receipt remain open.",
+  "summary": "Historical hook repair and September15 intact launcher: private install/legacy rollback/routes and production activation passed; an existing Codex session auto-bound, then a peer message started its next ordinary turn with an exact receipt. Physical notification clicks and posting authorization remain open.",
   "signed_copy_followup_2026_09_15": {
     "scope": "Intact signed macOS application copies, entrypoint forwarding, same-release legacy wrapper repair, actual pre-capability upgrade/rollback, and private existing/cold-window notification navigation.",
     "source": {
@@ -360,7 +360,19 @@
         "paused_after_reconciliation": false,
         "pending_peer_message": "7acad71d0fa54750",
         "native_queue_id": "01a0a810-ce1c-7ed2-a1ed-dfcb2d912f1d",
-        "provider_receipt": "pending while current Codex turn is active"
+        "provider_receipt": {
+          "messages": [
+            "7acad71d0fa54750"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+            "turn": "01a0a817-4fd1-76e0-8e0d-8c652a5fe440",
+            "item": "01a0a817-5011-7e10-85ab-c051430322b8"
+          }
+        },
+        "idle_wake": "passed: queued peer message started the next ordinary turn without another human prompt",
+        "original_queue_row_removed": true
       },
       "artifacts": {
         "preview": {
@@ -382,7 +394,6 @@
       },
       "limits": [
         "Coordinator stop/start with external providers preserved; not an in-place daemon reload trial.",
-        "Native bootstrap and queue offer observed; idle wake and exact installed-provider receipt require the next turn.",
         "Physical Notification Center clicks and native posting authorization remain open."
       ]
     }

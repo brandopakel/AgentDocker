@@ -2245,5 +2245,37 @@
     "artifact_sha256": "f0e995d7ec1b80c0dd52f3abbc9d66cc75872e483ede8e1c7d4d520c32b29627",
     "binary_source_commit": "5aeb651b4eabee88703da9c839e33e30ebf9e476",
     "source_note": "bc0ea04 adds only acceptance-driver/docs corrections after the5aeb651 production fix; CLI/daemon hashes match the fully gated release."
+  },
+  "installed_session_acceptance_2026_09_15": {
+    "result": "passed_for_listed_scope",
+    "source_commit": "cf64ca398f8117445938ede20dd60672c9e005d3",
+    "same_production_inputs_as_merged_main": "4074275a4e9cd58ad052f78390be4254e30e79cd",
+    "state_schema": 20,
+    "provider": "Codex CLI 0.154.0",
+    "scope": "Existing actual Codex terminal, automatic verified-hook bootstrap after app/coordinator upgrade, retained peer input during an active turn, automatic next ordinary turn at the turn boundary, exact provider receipt and daemon acknowledgement.",
+    "human_prompt_required": false,
+    "manual_native_queue_acknowledgement": false,
+    "same_provider_pid": 51242,
+    "controller_pid": 94744,
+    "message": "7acad71d0fa54750",
+    "native_queue_id": "01a0a810-ce1c-7ed2-a1ed-dfcb2d912f1d",
+    "receipt": {
+      "provider": "codex",
+      "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+      "turn": "01a0a817-4fd1-76e0-8e0d-8c652a5fe440",
+      "item": "01a0a817-5011-7e10-85ab-c051430322b8"
+    },
+    "received_at": "2026-09-16T02:41:35.933657Z",
+    "original_agentdocker_queue_row_removed": true,
+    "correlated_reply": "f1346fdcb22443c6",
+    "artifact": {
+      "private_path": "/private/tmp/agentdocker-installed-native-receipt-watch-2026-09-15.json",
+      "sha256": "403f2d1d416d80ad3da471c23d7dc13430479da69fa225e085d7d822c8b5447a"
+    },
+    "limits": [
+      "One installed existing-session peer delivery; no provider restart or fresh zero-prompt startup was required or verified.",
+      "Two old legacy offers were read and explicitly acknowledged before this trial; the new native-owned message was not manually read through legacy tools or acknowledged.",
+      "Physical draft/input-method, sleep/reboot, multi-provider and sustained/burst acceptance remain separate."
+    ]
   }
 }

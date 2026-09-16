@@ -24,7 +24,10 @@ whose production inputs match merged `4074275`. The intact launcher passes
 strict signature verification; all four external provider identities, PIDs and
 birth times survived the coordinator switch. The existing Codex receiver
 auto-bound and queued a peer message after two legacy offers were reconciled.
-Its exact receipt and idle-wake acceptance are still pending at this checkpoint.
+That message then started the next ordinary Codex turn without a human prompt;
+the controller recorded its exact thread/turn/item receipt and acknowledged the
+original queue row. This closes one installed existing-session wake/receipt
+trial; zero-prompt startup/reopen and broader provider acceptance remain.
 Use `agentdocker desktop status` and `agentdocker daemon status` for actual
 versions. Installing an app does not replace the active daemon.
 
