@@ -37,9 +37,11 @@ const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
 const JOURNAL_WINDOW: usize = 200;
 /// One page of a conversation's archive, and of a thread's replies.
 const HISTORY_PAGE: usize = 200;
-/// The most of one conversation's archive the window keeps: ten pages.
-/// Beyond that the earliest go, and earlier pages can be asked for again.
-const HISTORY_KEEP: usize = 10 * HISTORY_PAGE;
+/// The most of one conversation's archive the window keeps: the daemon's
+/// own per-conversation cap, so paging back never runs past what the window
+/// can hold. Beyond it (a daemon with a larger cap) the earliest go and
+/// earlier pages can be asked for again.
+const HISTORY_KEEP: usize = 5_000;
 /// How many conversations' archives the window keeps.
 const HISTORY_CONVERSATIONS: usize = 32;
 /// The most replies one thread is read to, the archive's own cap.
@@ -117,12 +119,13 @@ enum Cmd {
     ProjectSend(String, String, String),
     /// The person's conversations, in one project (a selector) or everywhere.
     Conversations(Option<String>),
-    /// The newest page of one conversation's archive.
-    History(String),
+    /// The newest page of one conversation's archive, in an archive epoch:
+    /// a reply from before a prune is not applied after it.
+    History(String, u64),
     /// The page of a conversation's archive before an archive seq.
-    HistoryBefore(String, u64),
+    HistoryBefore(String, u64, u64),
     /// One root and every reply, paged through by the worker.
-    Thread(MessageId),
+    Thread(MessageId, u64),
     /// The person read a conversation through an archive seq.
     MarkRead(String, u64),
     /// Text from the person into a conversation: `draft` is the composer it
@@ -230,13 +233,16 @@ enum Msg {
     SessionSent(String, Result<MessageId, String>),
     /// `Err` when the daemon does not know conversations at all.
     Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
-    History(String, Vec<agentdocker_core::ArchivedMessage>),
+    History(String, u64, Vec<agentdocker_core::ArchivedMessage>),
     /// An earlier page, complete when it is shorter than a page.
-    HistoryEarlier(String, Vec<agentdocker_core::ArchivedMessage>),
+    HistoryEarlier(String, u64, Vec<agentdocker_core::ArchivedMessage>),
     Thread(
+        u64,
         agentdocker_core::ArchivedMessage,
         Vec<agentdocker_core::ArchivedMessage>,
     ),
+    /// The daemon no longer has this thread's root: it was pruned.
+    ThreadGone(MessageId, u64),
     /// The draft the words came from, and the receipt or error.
     ConversationSent(String, Result<MessageId, String>),
 }
@@ -296,6 +302,9 @@ pub struct App {
     history: BTreeMap<String, Vec<agentdocker_core::ArchivedMessage>>,
     /// Conversations whose earliest archived message is on view.
     history_complete: BTreeSet<String>,
+    /// Advanced when the daemon prunes; archive replies from an earlier
+    /// epoch are dropped rather than bring pruned rows back.
+    history_epoch: u64,
     /// The open thread: its root and replies.
     thread: Option<(
         agentdocker_core::ArchivedMessage,
@@ -408,6 +417,7 @@ impl App {
             conversations_supported: None,
             history: BTreeMap::new(),
             history_complete: BTreeSet::new(),
+            history_epoch: 0,
             thread: None,
             sent_channels: Default::default(),
             smoke: None,
@@ -467,6 +477,7 @@ impl App {
             conversations_supported: None,
             history: BTreeMap::new(),
             history_complete: BTreeSet::new(),
+            history_epoch: 0,
             thread: None,
             sent_channels: Default::default(),
             smoke: None,
@@ -817,7 +828,7 @@ impl App {
                             // Reading the open conversation as its history
                             // arrives marks it read; a conversation that
                             // gained unread words while open is fetched again.
-                            self.send(Cmd::History(open));
+                            self.send(Cmd::History(open, self.history_epoch));
                         }
                     }
                     Err(error) => {
@@ -827,7 +838,10 @@ impl App {
                         self.conversations_supported = Some(false);
                     }
                 },
-                Msg::History(conversation, messages) => {
+                Msg::History(conversation, epoch, messages) => {
+                    if epoch != self.history_epoch {
+                        continue;
+                    }
                     let open = self.shell.conversation.as_deref() == Some(conversation.as_str());
                     // Reading is seeing: only the pane on view marks read, never
                     // the list a narrow window shows instead of it.
@@ -854,18 +868,11 @@ impl App {
                         .collect();
                     merged.extend(messages);
                     self.keep_history(conversation, merged);
-                    while self.history.len() > HISTORY_CONVERSATIONS
-                        && let Some(oldest) = self
-                            .history
-                            .keys()
-                            .find(|k| Some(k.as_str()) != self.shell.conversation.as_deref())
-                            .cloned()
-                    {
-                        self.history.remove(&oldest);
-                        self.history_complete.remove(&oldest);
-                    }
                 }
-                Msg::HistoryEarlier(conversation, earlier) => {
+                Msg::HistoryEarlier(conversation, epoch, earlier) => {
+                    if epoch != self.history_epoch {
+                        continue;
+                    }
                     if earlier.len() < HISTORY_PAGE {
                         self.history_complete.insert(conversation.clone());
                     }
@@ -878,9 +885,19 @@ impl App {
                     merged.append(&mut shown);
                     self.keep_history(conversation, merged);
                 }
-                Msg::Thread(root, replies) => {
-                    if self.shell.thread.as_ref() == Some(&root.envelope.id) {
+                Msg::Thread(epoch, root, replies) => {
+                    if epoch == self.history_epoch
+                        && self.shell.thread.as_ref() == Some(&root.envelope.id)
+                    {
                         self.thread = Some((root, replies));
+                    }
+                }
+                Msg::ThreadGone(root, epoch) => {
+                    // Pruned under the person: the thread closes rather than
+                    // stay on view as if it were still there.
+                    if epoch == self.history_epoch && self.shell.thread.as_ref() == Some(&root) {
+                        self.shell.thread = None;
+                        self.thread = None;
                     }
                 }
                 Msg::ConversationSent(key, result) => {
@@ -890,9 +907,9 @@ impl App {
                     match result {
                         Ok(_) => {
                             draft.complete(Ok(()));
-                            self.send(Cmd::History(conversation));
+                            self.send(Cmd::History(conversation, self.history_epoch));
                             if let Some(root) = self.shell.thread.clone() {
-                                self.send(Cmd::Thread(root));
+                                self.send(Cmd::Thread(root, self.history_epoch));
                             }
                             self.send(Cmd::Conversations(self.conversation_scope()));
                         }
@@ -1048,8 +1065,10 @@ impl App {
             // What the daemon pruned must not live on here: the archives
             // are dropped and the open one read again.
             EventKind::MessagesPruned { .. } => {
+                self.history_epoch += 1;
                 self.history.clear();
                 self.history_complete.clear();
+                self.thread = None;
                 self.on_conversation_activity();
             }
             EventKind::QuestionClosed { .. } | EventKind::QuestionCancelled { .. } => {
@@ -1297,6 +1316,16 @@ impl App {
             self.history_complete.remove(&conversation);
         }
         self.history.insert(conversation, messages);
+        while self.history.len() > HISTORY_CONVERSATIONS
+            && let Some(oldest) = self
+                .history
+                .keys()
+                .find(|k| Some(k.as_str()) != self.shell.conversation.as_deref())
+                .cloned()
+        {
+            self.history.remove(&oldest);
+            self.history_complete.remove(&oldest);
+        }
     }
 
     fn on_conversation_activity(&mut self) {
@@ -1305,10 +1334,10 @@ impl App {
         }
         self.send(Cmd::Conversations(self.conversation_scope()));
         if let Some(open) = self.shell.conversation.clone() {
-            self.send(Cmd::History(open));
+            self.send(Cmd::History(open, self.history_epoch));
         }
         if let Some(root) = self.shell.thread.clone() {
-            self.send(Cmd::Thread(root));
+            self.send(Cmd::Thread(root, self.history_epoch));
         }
     }
 
@@ -1863,35 +1892,47 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             // heard of; that is "no conversations here", not a failure.
             Err(error) => Some(Msg::Conversations(Err(error.to_string()))),
         },
-        Cmd::History(conversation) => match client.call(&Request::History {
+        Cmd::History(conversation, epoch) => match client.call(&Request::History {
             conversation: agentdocker_core::ConversationId::from(conversation.clone()),
             before_seq: None,
             limit: HISTORY_PAGE,
         })? {
-            Response::History { messages } => Some(Msg::History(conversation, messages)),
+            Response::History { messages } => Some(Msg::History(conversation, epoch, messages)),
             _ => None,
         },
-        Cmd::HistoryBefore(conversation, before) => match client.call(&Request::History {
+        Cmd::HistoryBefore(conversation, before, epoch) => match client.call(&Request::History {
             conversation: agentdocker_core::ConversationId::from(conversation.clone()),
             before_seq: Some(before),
             limit: HISTORY_PAGE,
         })? {
-            Response::History { messages } => Some(Msg::HistoryEarlier(conversation, messages)),
+            Response::History { messages } => {
+                Some(Msg::HistoryEarlier(conversation, epoch, messages))
+            }
             _ => None,
         },
-        Cmd::Thread(message) => {
+        Cmd::Thread(message, epoch) => {
             // A thread is read whole: page after page until one is short,
-            // within the archive's own per-conversation cap.
+            // within the archive's own per-conversation cap. A root the
+            // daemon no longer has was pruned.
             let mut after_seq = None;
             let mut replies = Vec::new();
             let root = loop {
-                let (root, page) = match client.call(&Request::Thread {
+                let page = client.call(&Request::Thread {
                     message: message.clone(),
                     after_seq,
                     limit: HISTORY_PAGE,
-                })? {
-                    Response::Thread { root, replies } => (root, replies),
-                    _ => return Ok(None),
+                });
+                let (root, page) = match page {
+                    Ok(Response::Thread { root, replies }) => (root, replies),
+                    Ok(_) => return Ok(None),
+                    Err(error)
+                        if error
+                            .downcast_ref::<RemoteError>()
+                            .is_some_and(|e| e.code == agentdocker_core::ErrorCode::NotFound) =>
+                    {
+                        return Ok(Some(Msg::ThreadGone(message, epoch)));
+                    }
+                    Err(error) => return Err(error),
                 };
                 let short = page.len() < HISTORY_PAGE;
                 after_seq = page.last().map(|m| m.seq);
@@ -1900,7 +1941,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                     break root;
                 }
             };
-            Some(Msg::Thread(root, replies))
+            Some(Msg::Thread(epoch, root, replies))
         }
         Cmd::MarkRead(conversation, through) => {
             client.call(&Request::MarkRead {
@@ -3726,9 +3767,10 @@ mod tests {
         assert!(app.conversation_pane_visible());
     }
 
-    /// Narrow with a thread open nothing marks read, the window keeps ten
-    /// pages of one archive and forgets that it had the earliest, and a
-    /// pruned archive is dropped.
+    /// Narrow with a thread open nothing marks read; paging back keeps every
+    /// page up to the daemon's own cap, with the oldest on view moving each
+    /// time; a prune drops the archives and the thread, and replies from
+    /// before it are not applied after it.
     #[test]
     fn a_hidden_thread_marks_nothing_read_and_the_archive_cache_is_bounded() {
         let (commands, requests) = queue::channel();
@@ -3741,7 +3783,8 @@ mod tests {
         app.shell.conversation = Some(room.clone());
         app.shell.inbox_open = true;
         app.shell.width = 700.0;
-        app.shell.thread = Some(MessageId::from("root".to_owned()));
+        let root = MessageId::from("root".to_owned());
+        app.shell.thread = Some(root.clone());
         assert!(
             !app.conversation_pane_visible(),
             "a thread stands in for the pane"
@@ -3771,8 +3814,13 @@ mod tests {
             last_from: None,
             last_line: None,
         }];
+        let epoch = app.history_epoch;
         messages
-            .send(Msg::History(room.clone(), (1..=3).map(archived).collect()))
+            .send(Msg::History(
+                room.clone(),
+                epoch,
+                (1..=3).map(archived).collect(),
+            ))
             .unwrap();
         app.drain();
         assert!(
@@ -3785,33 +3833,80 @@ mod tests {
             app.history_complete.contains(&room),
             "a short page is the whole archive"
         );
-        // Earlier pages arrive until the bound; then the earliest go and
-        // the archive is no longer known to be complete.
+
+        // Paging back: each earlier page stays and the oldest on view moves,
+        // all the way to the daemon's cap, where nothing earlier remains.
         let big = "channel:big".to_owned();
-        let base = 20 * HISTORY_PAGE as u64;
+        let pages = HISTORY_KEEP as u64 / HISTORY_PAGE as u64;
+        let base = pages * HISTORY_PAGE as u64;
         let full: Vec<_> = (base..base + HISTORY_PAGE as u64).map(archived).collect();
-        messages.send(Msg::History(big.clone(), full)).unwrap();
+        messages
+            .send(Msg::History(big.clone(), epoch, full))
+            .unwrap();
         app.drain();
-        for page in 0..12u64 {
+        for page in 0..pages - 1 {
+            let before = app.history[&big].first().unwrap().seq;
             let start = base - (page + 1) * HISTORY_PAGE as u64;
             let earlier: Vec<_> = (start..start + HISTORY_PAGE as u64).map(archived).collect();
             messages
-                .send(Msg::HistoryEarlier(big.clone(), earlier))
+                .send(Msg::HistoryEarlier(big.clone(), epoch, earlier))
                 .unwrap();
             app.drain();
+            assert_eq!(app.history[&big].first().unwrap().seq, start);
+            assert!(app.history[&big].first().unwrap().seq < before);
+            assert!(!app.history_complete.contains(&big));
         }
         assert_eq!(app.history[&big].len(), HISTORY_KEEP);
         assert_eq!(
             app.history[&big].last().unwrap().seq,
             base + HISTORY_PAGE as u64 - 1
         );
-        assert!(!app.history_complete.contains(&big));
+        // The daemon's cap is reached: the page before is empty, and the
+        // archive is complete.
+        messages
+            .send(Msg::HistoryEarlier(big.clone(), epoch, Vec::new()))
+            .unwrap();
+        app.drain();
+        assert!(app.history_complete.contains(&big));
+        assert_eq!(app.history[&big].len(), HISTORY_KEEP);
+
+        // A prune: archives and the thread go, the open ones are asked for
+        // again, and replies from before the prune are dropped.
+        app.thread = Some((archived(3), Vec::new()));
         app.on_event(agentdocker_core::Event {
             seq: 1,
             at: Utc::now(),
             kind: EventKind::MessagesPruned { removed: 5 },
         });
         assert!(app.history.is_empty() && app.history_complete.is_empty());
+        assert!(app.thread.is_none());
+        assert!(
+            requests
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::Thread(_, e) if e == epoch + 1))
+        );
+        messages
+            .send(Msg::History(
+                room.clone(),
+                epoch,
+                (1..=3).map(archived).collect(),
+            ))
+            .unwrap();
+        messages
+            .send(Msg::HistoryEarlier(big.clone(), epoch, vec![archived(9)]))
+            .unwrap();
+        messages
+            .send(Msg::Thread(epoch, archived(3), Vec::new()))
+            .unwrap();
+        app.drain();
+        assert!(app.history.is_empty(), "a reply from before the prune");
+        assert!(app.thread.is_none());
+        // The root itself was pruned: the thread closes.
+        messages
+            .send(Msg::ThreadGone(root.clone(), epoch + 1))
+            .unwrap();
+        app.drain();
+        assert!(app.shell.thread.is_none());
     }
 
     #[test]

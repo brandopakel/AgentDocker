@@ -333,7 +333,7 @@ impl App {
         }
         self.shell.conversation = Some(conversation.clone());
         if self.connected.is_ok() {
-            self.send(Cmd::History(conversation));
+            self.send(Cmd::History(conversation, self.history_epoch));
         }
     }
 
@@ -659,7 +659,7 @@ impl App {
                 self.shell.conversation = Some(id.clone());
                 self.shell.inbox_open = true;
                 if self.connected.is_ok() {
-                    self.send(Cmd::History(id));
+                    self.send(Cmd::History(id, self.history_epoch));
                 }
             }
             Message::ConversationDraft(id, text) => {
@@ -702,7 +702,11 @@ impl App {
                         .get(&conversation)
                         .and_then(|messages| messages.first())
                 {
-                    self.send(Cmd::HistoryBefore(conversation.clone(), first.seq));
+                    self.send(Cmd::HistoryBefore(
+                        conversation.clone(),
+                        first.seq,
+                        self.history_epoch,
+                    ));
                 }
             }
             Message::ExpandArchived(id) => {
@@ -719,7 +723,7 @@ impl App {
                 self.shell.thread = Some(root.clone());
                 self.thread = None;
                 if self.connected.is_ok() {
-                    self.send(Cmd::Thread(root));
+                    self.send(Cmd::Thread(root, self.history_epoch));
                 }
             }
             Message::CloseThread => {
@@ -1546,7 +1550,7 @@ impl App {
                 let conversation = format!("channel:{channel}");
                 self.shell.conversation = Some(conversation.clone());
                 self.shell.inbox_open = true;
-                self.send(Cmd::History(conversation));
+                self.send(Cmd::History(conversation, self.history_epoch));
             }
         }
         // Revealing the card expands its retained text and scrolls to it. Existing answer/channel

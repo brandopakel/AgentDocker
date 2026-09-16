@@ -102,9 +102,11 @@ badge is the sum. The pane shows the newest 200 archived messages, newest
 last, with **Show earlier messages** at the top until the first is on view,
 day dividers and a **New** divider before the unread part; a question keeps
 its card (Answer, Allow, Deny) in place; other kinds of message carry a small
-kind pill; long ones fold behind **Show more**. The window keeps ten pages of
-one conversation and drops the earliest beyond that (they can be paged in
-again), and drops every archive when the daemon prunes. Opening a conversation
+kind pill; long ones fold behind **Show more**. The window keeps as much of
+one conversation as the daemon does (5,000 messages), so paging back reaches
+the earliest it has; when the daemon prunes, the window drops every archive
+and the open thread, reads the open conversation again, and ignores replies
+from before the prune; a thread whose root was pruned closes. Opening a conversation
 marks it read, which acknowledges those rows for you and nothing an agent
 still owns; in a narrow window only the conversation on view is read, never
 the list or a thread shown instead of it. **Reply** (or *n replies*) under a message opens
