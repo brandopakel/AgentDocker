@@ -22,7 +22,7 @@ from sustained_use import FixtureProcesses, stop_daemon
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--binary-dir', type=Path, required=True)
 parser.add_argument('--output', type=Path, required=True)
-parser.add_argument('--scenario', choices=['busy', 'lost-reply'], default='busy')
+parser.add_argument('--scenario', choices=['busy', 'lost-reply', 'refused'], default='busy')
 args = parser.parse_args()
 os.umask(0o077)
 out = args.output.resolve()
@@ -96,10 +96,11 @@ with tempfile.TemporaryDirectory(prefix='ad-steer-bridge-',dir='/tmp') as tempor
         wrapper.write_text('#!/usr/bin/env python3\n'+
             'import json,os,subprocess,sys,threading\n'+
             'program='+repr(codex)+'\nlog='+repr(str(tap))+'\nmarker='+repr(str(dropped))+'\ndrop='+repr(args.scenario=='lost-reply')+'\n'+
+            'refuse='+repr(args.scenario=='refused')+'\n' +
             'child=subprocess.Popen([program]+sys.argv[1:],stdin=subprocess.PIPE,stdout=subprocess.PIPE)\nsteers=set()\n'+
             'def read():\n for line in child.stdout:\n  value=json.loads(line)\n  if drop and value.get("id") in steers and "method" not in value and "result" in value and not os.path.exists(marker):\n   open(marker,"w").write(json.dumps(value));continue\n  sys.stdout.buffer.write(line);sys.stdout.buffer.flush()\n'+
             'thread=threading.Thread(target=read,daemon=True);thread.start()\n'+
-            'try:\n for line in sys.stdin.buffer:\n  value=json.loads(line)\n  if value.get("method")=="turn/steer":steers.add(value["id"])\n  with open(log,"a") as writer:writer.write(json.dumps(value)+"\\n")\n  child.stdin.write(line);child.stdin.flush()\nfinally:\n child.stdin.close()\n try:child.wait(timeout=5)\n except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)\n thread.join(timeout=2)\n')
+            'try:\n for line in sys.stdin.buffer:\n  value=json.loads(line)\n  if value.get("method")=="turn/steer":steers.add(value["id"])\n  with open(log,"a") as writer:writer.write(json.dumps(value)+"\\n")\n  if refuse and value.get("method")=="turn/steer":\n   reply={"id":value["id"],"error":{"code":-32600,"message":"no active turn to steer"}}\n   sys.stdout.write(json.dumps(reply)+"\\n");sys.stdout.flush();continue\n  child.stdin.write(line);child.stdin.flush()\nfinally:\n child.stdin.close()\n try:child.wait(timeout=5)\n except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)\n thread.join(timeout=2)\n')
         wrapper.chmod(0o700)
         with (out/'daemon.log').open('w') as log:
             daemon=subprocess.Popen([str(binary_dir/'agentd')],cwd=repo,env=env,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
@@ -138,7 +139,15 @@ with tempfile.TemporaryDirectory(prefix='ad-steer-bridge-',dir='/tmp') as tempor
         wait(lambda:ledger().get('attempt',{}).get('acknowledged'))
         second=send(peer,'PEER_BUSY_NONCE')
         wait(lambda:tap.exists() and any(json.loads(line).get('method')=='turn/steer' for line in tap.read_text().splitlines()))
-        assert ledger()['steering']['message']==second
+        if args.scenario=='refused':
+            wait(lambda:ledger().get('steering') is None)
+            # Keep the real provider busy across several 500-ms queue polls.
+            time.sleep(2)
+            attempts=[json.loads(line) for line in tap.read_text().splitlines()]
+            assert sum(r.get('method')=='turn/steer' for r in attempts)==1,attempts
+            assert ledger()['attempt']['message']==first
+        else:
+            assert ledger()['steering']['message']==second
         releases[0].set()
         wait(lambda:len(report['requests'])==2)
         if args.scenario=='busy':
@@ -149,28 +158,31 @@ with tempfile.TemporaryDirectory(prefix='ad-steer-bridge-',dir='/tmp') as tempor
             wait(lambda:len(report['requests'])==3)
             releases[2].set()
         else:
-            assert dropped.is_file(),'steering response was not cut'
+            if args.scenario=='lost-reply':assert dropped.is_file(),'steering response was not cut'
             releases[1].set()
         finished=wait(lambda:current if (current:=ledger()).get('attempt') is None and len(current.get('completed',[]))==len(messages) else None,70)
         receipts={entry['message']:entry['receipt'] for entry in finished['completed']}
         report.update(messages=messages,receipts=receipts)
         assert set(receipts)=={m['id'] for m in messages},receipts
-        assert len({r['turn'] for r in receipts.values()})==1,receipts
+        assert len({r['turn'] for r in receipts.values()})==(2 if args.scenario=='refused' else 1),receipts
         assert len({r['item'] for r in receipts.values()})==len(messages),receipts
         assert len(report['requests'])==len(messages),report['requests']
         for index,message in enumerate(messages):
             users=[item for item in report['requests'][index]['body']['input'] if item.get('role')=='user']
             assert message['text'] in json.dumps(users[-1]),(index,users)
         requests=[json.loads(line) for line in tap.read_text().splitlines()]
-        assert sum(r.get('method')=='turn/start' for r in requests)==1,requests
+        assert sum(r.get('method')=='turn/start' for r in requests)==(2 if args.scenario=='refused' else 1),requests
         assert sum(r.get('method')=='turn/steer' for r in requests)==len(messages)-1,requests
         final=inspect()
         assert final['input_delivery']['received']['messages']==[messages[-1]['id']],final
         if args.scenario=='lost-reply':assert final['pid']!=initial['pid'],'controller did not recover'
         else:assert final['pid']==initial['pid'],'unexpected controller replacement'
         report.update(result='passed',messages=messages,receipts=receipts,final_pid=final['pid'],
-                      same_turn=True,production_mutations=False,exact_receipts=True,no_resubmission=True)
-        report['checks']=['CLI human and peer sends use owned input route','same active turn','exact per-message receipt','no duplicated provider submission']
+                      same_turn=args.scenario!='refused',production_mutations=False,exact_receipts=True,no_resubmission=True)
+        report['checks']=['CLI human and peer sends use owned input route',
+                          'refused input starts once after completion' if args.scenario=='refused' else 'same active turn',
+                          'exact per-message receipt','no duplicated provider submission']
+        if args.scenario=='refused':report['checks'].append('one injected precondition refusal; no retry while the original turn remains active')
         if args.scenario=='lost-reply':report['checks'].append('lost steering reply reconciled after supervised controller restart')
     except BaseException as error:
         report['error']=str(error);traceback.print_exc()

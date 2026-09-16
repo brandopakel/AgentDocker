@@ -121,13 +121,12 @@ resubmission. These checks exercise the owned bridge; the existing standalone
 TUI pause-delivery defect, other providers and real model-service acceptance
 remain open. See [input evidence](verification/2026-09-11-codex-input-review.json).
 
-September 16 active-input correction is in progress: the owned Codex bridge
-uses supported active-turn steering with a separate durable attempt and exact
-receipts. Source `13c3e40` passed the full 1,010-Rust/77-Python gate and private actual-Codex
-busy-input and lost-reply recovery trials with a local model fixture. Hosted-model
-and broader provider acceptance remain open. Existing standalone TUI delivery
-still uses an idle-only native queue, and existing Claude sessions without a
-channel receiver still need safe reconnect. No universal-provider completion is
+The September 16 review follow-up suppresses further steering after an explicit
+precondition refusal for the current turn, retaining its queue head until the
+ordinary turn completes. Fresh refusal/recovery acceptance is pending. Existing
+standalone TUI delivery still uses an idle-only native queue, and existing Claude
+sessions without a channel receiver still need safe reconnect. Hosted-model and
+broader provider acceptance remain open; no universal-provider completion is
 claimed. See [Codex input](CODEX-INPUT.md#active-turn-steering-acceptance-september-16).
 
 | Priority | Work remaining | Completion condition and evidence |

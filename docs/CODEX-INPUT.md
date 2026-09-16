@@ -468,3 +468,8 @@ Run `python3 scripts/codex_steering_smoke.py --binary-dir target/release
 Hosted-model and broader provider acceptance remain open. Native TUI
 queue delivery still waits for idle; this change does not establish active-input
 parity for that existing-session route.
+
+An explicit active-turn precondition refusal suppresses further steering for that
+turn. Its completion clears the suppression and the still-queued input can enter
+through the ordinary turn-start path. Ambiguous failures retain the durable
+attempt for receipt reconciliation; they do not authorize another submission.

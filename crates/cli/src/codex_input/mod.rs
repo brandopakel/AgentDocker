@@ -347,6 +347,7 @@ async fn session(
     let mut input = terminal::Input::default();
     let mut input_open = agent.spec.tty || agent.spec.in_pane;
     let mut turn: Option<String> = None;
+    let mut refused_steering: Option<String> = None;
     let mut request_ids = std::collections::HashSet::new();
     let mut file_reviews = file_changes::Reviews::default();
     loop {
@@ -419,6 +420,7 @@ async fn session(
                         requests::turn_ended(client, ledger).await?;
                         mcp_answers::reconcile(provider, client, ledger).await?;
                         ledger.finish(id)?; turn = None;
+                        refused_steering = None;
                         file_reviews = file_changes::Reviews::default();
                         if status == "completed" {
                             if let Response::Agent { agent: current } = call(client, Request::Inspect { agent: agent.id.to_string() }).await? {
@@ -453,7 +455,8 @@ async fn session(
                 if ledger.record().reviews.is_empty() {
                 if let Some(message) = messages.first() {
                     if let Some(active) = turn.as_deref() {
-                        if ledger.record().steering.is_some()
+                        if refused_steering.as_deref() == Some(active)
+                            || ledger.record().steering.is_some()
                             || !ledger.record().attempt.as_ref().is_some_and(|a| a.acknowledged) {
                             continue;
                         }
@@ -468,6 +471,7 @@ async fn session(
                                 // The turn ended before submission. Only this explicit
                                 // precondition failure permits a later ordinary offer.
                                 ledger.reject_steering()?;
+                                refused_steering = Some(active.to_owned());
                             }
                             Err(error) => return Err(error.context("Codex steering is unconfirmed; input retained for receipt recovery")),
                         }
