@@ -616,12 +616,11 @@ impl App {
                     }
                 }
                 Msg::Inbox(inbox) => {
-                    if self
-                        .shell
-                        .message_detail
-                        .as_ref()
-                        .is_some_and(|id| !inbox.iter().any(|message| &message.id == id))
-                    {
+                    // An unfolded message folds when it is gone from
+                    // wherever it was shown: the inbox, an archive, a thread.
+                    if self.shell.message_detail.as_ref().is_some_and(|id| {
+                        !inbox.iter().any(|message| &message.id == id) && !self.archived_on_view(id)
+                    }) {
                         self.shell.message_detail = None;
                     }
                     self.inbox = inbox;
@@ -865,8 +864,12 @@ impl App {
                     {
                         self.send(Cmd::MarkRead(conversation.clone(), last.seq));
                     }
+                    // A short newest page is the whole archive; a full one
+                    // says nothing about what came before it.
                     if messages.len() < HISTORY_PAGE {
                         self.history_complete.insert(conversation.clone());
+                    } else {
+                        self.history_complete.remove(&conversation);
                     }
                     // Earlier pages already shown stay in front of the newest.
                     let mut merged: Vec<_> = self
@@ -1262,6 +1265,17 @@ impl App {
             .catalog
             .selected()
             .map(|entry| entry.project.dir().display().to_string())
+    }
+
+    /// Whether an archived message is in a history or the thread on view.
+    pub(crate) fn archived_on_view(&self, id: &MessageId) -> bool {
+        self.history
+            .values()
+            .flatten()
+            .any(|m| &m.envelope.id == id)
+            || self.thread.as_ref().is_some_and(|(root, replies)| {
+                &root.envelope.id == id || replies.iter().any(|m| &m.envelope.id == id)
+            })
     }
 
     /// Whether the open conversation's pane is on the screen: the Messages
@@ -1900,7 +1914,16 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Ok(_) => None,
             // An older daemon answers `invalid` for a request it has never
             // heard of; that is "no conversations here", not a failure.
-            Err(error) => Some(Msg::Conversations(Err(error.to_string()))),
+            // Anything else (storage, transport) is a failure like any
+            // other and leaves the screen as it is.
+            Err(error)
+                if error
+                    .downcast_ref::<RemoteError>()
+                    .is_some_and(|e| e.code == agentdocker_core::ErrorCode::Invalid) =>
+            {
+                Some(Msg::Conversations(Err(error.to_string())))
+            }
+            Err(error) => return Err(error),
         },
         Cmd::History(conversation, epoch) => match client.call(&Request::History {
             conversation: agentdocker_core::ConversationId::from(conversation.clone()),

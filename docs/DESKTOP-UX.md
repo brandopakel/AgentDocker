@@ -150,7 +150,8 @@ the inventory. Delivery distinguishes an active receiver awaiting its first
 receipt, verified delivery, paused delivery and stale evidence; with words
 queued behind a current receiver that no receipt names it reads **Queued ·
 awaiting provider receipt**, since an earlier receipt says nothing about them
-(a receipted message still in the queue counts as delivered). The session
+(a message still in the queue with a receipt from the current process counts
+as delivered). The session
 inspector shows the same readiness alongside the queue and latest receipt.
 Applying a plan says **Setup saved**, with **Undo** available afterwards. Fresh
 sessions load saved setup; only the provider can request its required approval.

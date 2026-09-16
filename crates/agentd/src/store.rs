@@ -562,6 +562,15 @@ impl Store {
         self
     }
 
+    /// One search by the literal path, whatever the index says.
+    #[cfg(test)]
+    fn without_fts_search(&self, query: &str) -> Result<Vec<ArchivedMessage>> {
+        let indexed = self.messages_fts.replace(false);
+        let found = self.search_messages(query, None, None, 50);
+        self.messages_fts.set(indexed);
+        found
+    }
+
     fn init(conn: Connection) -> Result<Self> {
         // Check compatibility before DDL or journal pragmas mutate the file.
         let has_meta: bool = conn.query_row(
@@ -700,7 +709,19 @@ impl Store {
                     |row| row.get(0),
                 )
                 .optional()?;
-            if !had_messages_fts || complete.as_deref() != Some("1") {
+            // The marker is written inside the archive's own transactions,
+            // so a rollback can restore it after the index was already
+            // skipped; the counts say whether it is to be believed.
+            let counts_agree = || -> bool {
+                let archived: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+                    .unwrap_or(-1);
+                let indexed: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM messages_fts", [], |row| row.get(0))
+                    .unwrap_or(-2);
+                archived == indexed
+            };
+            if !had_messages_fts || complete.as_deref() != Some("1") || !counts_agree() {
                 let tx = conn.unchecked_transaction()?;
                 conn.execute(
                     "INSERT INTO messages_fts(messages_fts) VALUES('delete-all')",
@@ -1269,7 +1290,12 @@ impl Store {
             ),
             None => String::new(),
         };
-        let indexed = self.messages_fts.get();
+        // A term the index cannot take literally (quotes, the LIKE
+        // wildcards, a backslash, no word at all) is looked for by LIKE
+        // with those characters escaped, so both paths find the same rows.
+        let indexed = self.messages_fts.get()
+            && query.chars().any(char::is_alphanumeric)
+            && !query.chars().any(|c| matches!(c, '"' | '%' | '_' | '\\'));
         let sql = if indexed {
             format!(
                 "SELECT {} FROM messages m WHERE m.seq < ?1{scope_clause} AND m.seq IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?2) ORDER BY m.seq DESC LIMIT ?3",
@@ -1277,14 +1303,17 @@ impl Store {
             )
         } else {
             format!(
-                "SELECT {} FROM messages m WHERE m.seq < ?1{scope_clause} AND m.line LIKE '%' || ?2 || '%' ORDER BY m.seq DESC LIMIT ?3",
+                "SELECT {} FROM messages m WHERE m.seq < ?1{scope_clause} AND m.line LIKE '%' || ?2 || '%' ESCAPE '\\' ORDER BY m.seq DESC LIMIT ?3",
                 Self::ARCHIVED_COLUMNS
             )
         };
         let term = if indexed {
-            format!("\"{}\"", query.replace('"', ""))
+            format!("\"{query}\"")
         } else {
-            query.to_owned()
+            query
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
         };
         let rows = self.conn.prepare(&sql).and_then(|mut stmt| {
             stmt.query_map(params![before, term, limit], Self::archived_row)?
@@ -1294,7 +1323,7 @@ impl Store {
             Ok(rows) => Ok(rows),
             // An index that fails to answer is unusable: say so once, and
             // answer this and every later search by LIKE.
-            Err(err) if indexed => {
+            Err(err) if indexed && self.messages_fts.get() => {
                 tracing::warn!(%err, "messages_fts query failed; search falls back to LIKE until restart");
                 self.messages_fts.set(false);
                 // Writes from here on skip the index, so the next start
@@ -2389,6 +2418,55 @@ mod tests {
                 13
             );
         }
+    }
+
+    /// A term the index cannot take literally is found by LIKE with the
+    /// wildcards escaped, so `%`, `_`, a backslash or a quote match only
+    /// themselves, indexed or not.
+    #[test]
+    fn punctuation_terms_search_literally_on_both_paths() {
+        use agentdocker_core::Destination;
+        let store = Store::in_memory().unwrap();
+        let said = |text: &str| {
+            Envelope::new(
+                "x",
+                Destination::Broadcast,
+                "chat",
+                serde_json::json!({ "text": text }),
+                None,
+                Utc::now(),
+            )
+        };
+        for text in [
+            "100% done",
+            "snake_case",
+            r"back\slash",
+            "a \"quoted\" word",
+            "plain words",
+        ] {
+            store
+                .publish_message(&said(text), &[], 1000, None, None, None, &[])
+                .unwrap();
+        }
+        for (term, expected) in [
+            ("%", 1),
+            ("_", 1),
+            ("\\", 1),
+            ("\"quoted\"", 1),
+            ("%_", 0),
+            ("words", 1),
+        ] {
+            let found = store.search_messages(term, None, None, 50).unwrap();
+            assert_eq!(found.len(), expected, "term {term:?} found {}", found.len());
+        }
+        assert_eq!(
+            store
+                .search_messages("words", None, None, 50)
+                .unwrap()
+                .len(),
+            store.without_fts_search("words").unwrap().len(),
+            "the indexed and the literal path agree on a word"
+        );
     }
 
     /// Once the index has failed, every later write skips it and the

@@ -1548,6 +1548,11 @@ impl App {
             if self.has_conversations() {
                 self.screen = Screen::Questions;
                 let conversation = format!("channel:{channel}");
+                // Another conversation's thread does not follow.
+                if self.shell.conversation.as_deref() != Some(conversation.as_str()) {
+                    self.shell.thread = None;
+                    self.thread = None;
+                }
                 self.shell.conversation = Some(conversation.clone());
                 self.shell.inbox_open = true;
                 self.send(Cmd::History(conversation, self.history_epoch));

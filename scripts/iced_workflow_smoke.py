@@ -316,6 +316,10 @@ def smoke(binary_dir, output):
                                  step("capture", name="narrow-thread"),
                                  step("click", id="close-thread"), step("wait_control", id=f"reply-{narrow['id']}", present=True),
                                  step("wait_control", id=f"reply-thread-{routed}", present=False),
+                                 # The thread's draft is its own and survives closing and reopening it.
+                                 step("click", id=f"thread-{routed}"), step("wait_control", id=f"reply-thread-{routed}", present=True),
+                                 step("wait_text", text="Only in the thread"), step("click", id="close-thread"),
+                                 step("wait_control", id=f"reply-thread-{routed}", present=False),
                                  step("click", id="thread-back"), step("click", id=f"thread-{agent['id']}"),
                                  step("wait_text", text="Keep this narrow draft"), step("capture", name="narrow-draft-kept")]
                 def forward_route(name, gate):

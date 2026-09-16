@@ -3,7 +3,7 @@
 //! writes (`publish_question`); this module answers what a reader sees of
 //! a conversation, hands out history and threads, moves read cursors, and
 //! keeps the archive bounded on the minute tick.
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use agentdocker_core::channel::ChannelSubject;
 use agentdocker_core::config::{DaemonConfig, FILE_NAME, RETENTION_BATCH};
@@ -179,9 +179,12 @@ impl State {
                 ids.push(ConversationId::channel(&channel.id));
             }
         }
+        // Live records only: a finished agent's conversations are in the
+        // archive, whose heads are added below, and pairing every record
+        // ever registered is quadratic in a long-lived project.
         let in_project: Vec<&AgentRecord> = self
             .registry
-            .all()
+            .live()
             .filter(|a| a.project.as_ref().is_some_and(|p| p.id() == *project))
             .collect();
         for a in &in_project {
@@ -211,12 +214,15 @@ impl State {
         conversation: &ConversationId,
         reader: &AgentId,
     ) -> Option<(ConversationKind, Option<String>, String, Vec<AgentId>)> {
+        // A former identity reads as the record it was retired into.
         let name_of = |id: &AgentId| {
+            let id = self.registry.canonical_id(id);
             self.registry
                 .get(id)
                 .map(|r| r.spec.name.clone())
                 .unwrap_or_else(|| id.short().to_owned())
         };
+        let reader = self.registry.canonical_id(reader);
         match conversation.kind()? {
             ConversationKind::Everyone => {
                 let project = conversation.everyone_project()?;
@@ -265,7 +271,11 @@ impl State {
             ConversationKind::Dm => {
                 let (a, b) = conversation.dm_parties()?;
                 let (a, b) = (AgentId::from(a.to_owned()), AgentId::from(b.to_owned()));
-                let other = if a == *reader { &b } else { &a };
+                let other = if self.registry.canonical_id(&a) == reader {
+                    &b
+                } else {
+                    &a
+                };
                 Some((
                     ConversationKind::Dm,
                     None,
@@ -285,6 +295,29 @@ impl State {
         }
     }
 
+    fn is_human_id(&self, id: &AgentId) -> bool {
+        self.registry.get(id).is_some_and(super::humans::is_human)
+    }
+
+    /// Whether an archived direct conversation or notices belong to the
+    /// project: a party of it has, or had, a record there.
+    fn archived_in_project(&self, id: &ConversationId, project: &ProjectId) -> bool {
+        let in_project = |agent: &str| {
+            self.registry
+                .get(self.registry.canonical_id(&AgentId::from(agent.to_owned())))
+                .is_some_and(|r| r.project.as_ref().is_some_and(|p| p.id() == *project))
+        };
+        match id.kind() {
+            Some(ConversationKind::Dm) => id
+                .dm_parties()
+                .is_some_and(|(a, b)| in_project(a) || in_project(b)),
+            Some(ConversationKind::Notices) => {
+                id.notices_agent().is_some_and(|a| in_project(a.as_str()))
+            }
+            _ => false,
+        }
+    }
+
     /// The conversations a reader sees, newest activity first; those with
     /// nothing said yet after the rest, so the broadcast and the live
     /// direct conversations are always there to start.
@@ -299,6 +332,12 @@ impl State {
                 e.to_string(),
             ))
         };
+        // The reader is every identity it has had: a record retired into
+        // it by an identity repair or a resumed provider session keeps its
+        // archived conversations, and they are the reader's to see.
+        let reader = self.registry.canonical_id(reader);
+        let identities = self.registry.identity_ids(reader);
+        let is_reader = |id: &ConversationId| identities.iter().any(|me| id.is_party(me.as_str()));
         let heads: HashMap<ConversationId, ArchivedMessage> = self
             .store
             .conversation_heads()
@@ -306,15 +345,17 @@ impl State {
             .into_iter()
             .map(|m| (m.conversation.clone(), m))
             .collect();
-        let cursors: BTreeMap<ConversationId, u64> = self
-            .store
-            .read_cursors(reader.as_str())
-            .map_err(storage)?
-            .into_iter()
-            .map(|c| (c.conversation, c.through))
-            .collect();
+        // Read through the furthest cursor any of those identities left.
+        let mut cursors: BTreeMap<ConversationId, u64> = BTreeMap::new();
+        for me in &identities {
+            for cursor in self.store.read_cursors(me.as_str()).map_err(storage)? {
+                let through = cursors.entry(cursor.conversation).or_insert(0);
+                *through = (*through).max(cursor.through);
+            }
+        }
+        let human = self.is_human_id(reader);
         // Which conversations to list at all.
-        let mut candidates: Vec<ConversationId> = match project {
+        let mut candidates: BTreeSet<ConversationId> = match project {
             Some(project) => self
                 .conversation_ids_in(project)
                 .into_iter()
@@ -323,13 +364,13 @@ impl State {
                     // sees its own, plus every room and broadcast.
                     match id.kind() {
                         Some(ConversationKind::Dm) | Some(ConversationKind::Notices) => {
-                            id.is_party(reader.as_str()) || heads.contains_key(id)
+                            is_reader(id)
                         }
                         _ => true,
                     }
                 })
                 .collect(),
-            None => Vec::new(),
+            None => BTreeSet::new(),
         };
         for id in heads.keys() {
             let in_scope = match project {
@@ -342,18 +383,26 @@ impl State {
                         .channel_id()
                         .and_then(|c| self.channels.get(&c))
                         .is_some_and(|c| c.project == *project),
-                    _ => candidates.contains(id),
+                    // An archived direct conversation or notices: the
+                    // reader's own, or, for the person, any in the project.
+                    _ => is_reader(id) || (human && self.archived_in_project(id, project)),
                 },
-                None => true,
+                None => {
+                    is_reader(id)
+                        || !matches!(
+                            id.kind(),
+                            Some(ConversationKind::Dm) | Some(ConversationKind::Notices)
+                        )
+                }
             };
-            if in_scope && !candidates.contains(id) {
-                candidates.push(id.clone());
+            if in_scope {
+                candidates.insert(id.clone());
             }
         }
         // Without a project: the reader's own direct conversations and the
         // broadcasts of every project, plus every room.
         if project.is_none() {
-            candidates.push(ConversationId::all());
+            candidates.insert(ConversationId::all());
             let mut projects: Vec<ProjectId> = self
                 .registry
                 .live()
@@ -364,15 +413,11 @@ impl State {
             for project in projects {
                 let mut ids = self.conversation_ids_in(&project);
                 ids.retain(|id| match id.kind() {
-                    Some(ConversationKind::Dm) | Some(ConversationKind::Notices) => {
-                        id.is_party(reader.as_str()) || heads.contains_key(id)
-                    }
+                    Some(ConversationKind::Dm) | Some(ConversationKind::Notices) => is_reader(id),
                     _ => true,
                 });
                 candidates.extend(ids);
             }
-            candidates.sort();
-            candidates.dedup();
         }
         let mut summaries = Vec::new();
         for id in candidates {
@@ -381,10 +426,14 @@ impl State {
             };
             // Only what the reader is in: rooms and broadcasts by
             // membership or project, direct ones by party.
+            // Only what the reader is in: direct ones by party, rooms by
+            // membership. The person is in no room and sees every one of
+            // the project's, as the Channels screen does; nothing lets an
+            // agent outside a room read it because it has an archive.
             let mine = match kind {
-                ConversationKind::Dm | ConversationKind::Notices => id.is_party(reader.as_str()),
+                ConversationKind::Dm | ConversationKind::Notices => is_reader(&id),
                 ConversationKind::Channel | ConversationKind::Collision => {
-                    members.contains(reader) || heads.contains_key(&id)
+                    members.contains(reader) || human
                 }
                 ConversationKind::Everyone | ConversationKind::All => true,
             };

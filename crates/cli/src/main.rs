@@ -346,7 +346,7 @@ enum Command {
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
         /// Read as this agent rather than as yourself.
-        #[arg(long = "as", value_name = "AGENT")]
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID", value_name = "AGENT")]
         agent: Option<String>,
     },
     /// The archived messages of one conversation, oldest first.
@@ -370,6 +370,7 @@ enum Command {
         /// Only replies after this archive sequence, for paging.
         #[arg(long)]
         after: Option<u64>,
+        /// How many replies, at most.
         #[arg(long, default_value_t = 100)]
         limit: usize,
     },
@@ -379,6 +380,7 @@ enum Command {
         /// Project: an id prefix or a path inside it (default: everywhere).
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
+        /// How many matches, at most.
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
@@ -1669,9 +1671,11 @@ async fn main() -> Result<()> {
                     name,
                 };
                 if let Response::Channel { channel } = client.call(&request).await? {
-                    match &channel.name {
-                        Some(name) => println!("#{name} ({})", channel.id),
-                        None => println!("{}", channel.id),
+                    // The id alone on stdout, as every creating command;
+                    // the name is for the person, on stderr.
+                    println!("{}", channel.id);
+                    if let Some(name) = &channel.name {
+                        eprintln!("#{name}");
                     }
                 }
             }
