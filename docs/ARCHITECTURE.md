@@ -1053,8 +1053,11 @@ Persistable cumulative baselines keep initial unknown history and reset interval
 as explicit gaps; replay and out-of-order snapshots cannot add a second delta.
 Missing fields stay unknown. Unsupported versions or malformed counters report
 a gap rather than zero. Restored aggregate state rejects impossible known/sample
-counts or nonzero sums without known contributions. Initial local verification
-is pending.
+counts or nonzero sums without known contributions. Ten focused core/host tests
+pass, covering replay/restart, counter resets, initial unknown history, aggregate
+moves and overflow, stored coverage, range bounds, supported local formats,
+cache/reasoning overlap and missing fields. The full release gate is pending;
+file scanning and ingestion acceptance remain separate.
 
 Counter normalization follows [OpenAI usage breakdowns](https://developers.openai.com/api/reference/cli/resources/responses/methods/retrieve)
 and [Claude cache input semantics](https://platform.claude.com/docs/en/build-with-claude/prompt-caching):
