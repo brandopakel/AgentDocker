@@ -959,7 +959,7 @@ impl App {
             && match summary.kind {
                 ConversationKind::Dm => self
                     .counterpart(&summary)
-                    .is_some_and(|id| self.agent_live(id)),
+                    .is_some_and(|id| self.agent_live(self.canonical_agent(id))),
                 _ => true,
             };
         let placeholder = match summary.kind {

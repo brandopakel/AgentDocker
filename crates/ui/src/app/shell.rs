@@ -949,6 +949,7 @@ impl App {
                 self.screen = Screen::Runtimes;
                 self.shell.connection_details = Some(name);
                 self.shell.other_tools = true;
+                self.send(Cmd::Runtimes);
             }
             Message::OtherTools => self.shell.other_tools = !self.shell.other_tools,
             Message::Search(text) => {
@@ -2417,7 +2418,7 @@ mod tests {
 
     #[test]
     fn connection_guidance_preserves_conversation_and_thread_drafts() {
-        let (mut app, _commands, _) = app();
+        let (mut app, commands, _) = app();
         let conversation = "dm:user:worker";
         let root = MessageId::from("root".to_owned());
         let thread_key = super::draft_key(conversation, Some(&root));
@@ -2436,6 +2437,7 @@ mod tests {
             );
         }
         let _ = app.update(Message::OpenConnection("claude-code".into()));
+        assert!(matches!(commands.try_recv(), Ok(Cmd::Runtimes)));
         assert_eq!(app.screen, Screen::Runtimes);
         assert_eq!(app.shell.connection_details.as_deref(), Some("claude-code"));
         assert_eq!(app.shell.conversation.as_deref(), Some(conversation));
