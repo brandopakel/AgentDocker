@@ -1,5 +1,6 @@
 """A TCP socket opened after GUI startup must still fail graphical acceptance."""
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
@@ -9,15 +10,28 @@ import tempfile
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("desktop_smoke", ROOT / "scripts/desktop_smoke.py")
 SMOKE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SMOKE)
+WORKFLOW_SPEC = importlib.util.spec_from_file_location("iced_workflow_smoke", ROOT / "scripts/iced_workflow_smoke.py")
+WORKFLOW = importlib.util.module_from_spec(WORKFLOW_SPEC)
+with patch.dict(sys.modules, {"desktop_smoke": SMOKE}):
+    WORKFLOW_SPEC.loader.exec_module(WORKFLOW)
 
 
 class TransportFailureEvidence(unittest.TestCase):
+    def test_capture_write_failure_preserves_the_transport_refusal(self):
+        process = SimpleNamespace(pid=42, poll=lambda: None)
+        failed = subprocess.CompletedProcess([], 2, "", "inspection refused")
+        with tempfile.TemporaryDirectory() as directory, patch.object(SMOKE.shutil, "which", return_value="lsof"), patch.object(SMOKE.subprocess, "run", return_value=failed), patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            with self.assertRaises(SMOKE.TransportCheckFailed) as caught:
+                SMOKE.check_no_tcp([process], time.monotonic() + 5, Path(directory))
+        self.assertEqual(caught.exception.observation["stderr"], "inspection refused")
+        self.assertEqual(caught.exception.observation["capture_error"], "disk full")
+
     def test_failed_inspector_records_bounded_output_and_process_exit(self):
         process = SimpleNamespace(pid=42, poll=lambda: 0)
         failed = subprocess.CompletedProcess([], 2, "", "permission denied\n" + "x" * 4096)
@@ -45,6 +59,33 @@ class TransportFailureEvidence(unittest.TestCase):
         self.assertIn("partial", caught.exception.observation["stdout"])
         self.assertEqual(caught.exception.observation["stderr"], "inspection stalled")
         self.assertIsNone(caught.exception.observation["process_status"])
+
+
+class WorkflowFailureEvidence(unittest.TestCase):
+    def test_secondary_cleanup_and_report_failures_keep_the_original_exception(self):
+        primary = RuntimeError("original workflow refusal")
+        window, daemon = Mock(), Mock()
+        daemon.poll.return_value = None
+        report = {"result": "failed", "error": str(primary)}
+        with tempfile.TemporaryDirectory() as directory, patch.object(WORKFLOW, "stop", side_effect=OSError("stop failed")) as stop, patch.object(WORKFLOW, "rpc", side_effect=OSError("shutdown refused")), patch.object(Path, "write_text", side_effect=OSError("disk full")), patch.object(sys, "stderr", new=io.StringIO()):
+            with self.assertRaises(RuntimeError) as caught:
+                try:
+                    raise primary
+                finally:
+                    WORKFLOW.finish_smoke(window, daemon, "socket", report, Path(directory), time.monotonic(), sys.exc_info()[1])
+        self.assertIs(caught.exception, primary)
+        self.assertEqual([call.args[0] for call in stop.call_args_list], [window, daemon])
+        self.assertEqual([error["stage"] for error in report["cleanup_errors"]], ["window cleanup", "daemon shutdown", "daemon cleanup", "result report"])
+        self.assertEqual(report["error"], str(primary))
+
+    def test_cleanup_failure_invalidates_an_otherwise_passing_result(self):
+        report = {"result": "passed"}
+        with tempfile.TemporaryDirectory() as directory, patch.object(WORKFLOW, "stop", side_effect=OSError("stop failed")):
+            with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+                WORKFLOW.finish_smoke(Mock(), None, "socket", report, Path(directory), time.monotonic(), None)
+            recorded = json.loads((Path(directory) / "result.json").read_text())
+        self.assertEqual(recorded["result"], "failed")
+        self.assertEqual(recorded["cleanup_errors"][0]["stage"], "window cleanup")
 
 
 @unittest.skipUnless(shutil.which("lsof"), "native transport acceptance requires lsof")

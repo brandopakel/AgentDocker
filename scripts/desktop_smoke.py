@@ -69,8 +69,11 @@ def check_no_tcp(processes, deadline, capture=None):
                                returncode=result.returncode, stdout=bounded_output(result.stdout), stderr=bounded_output(result.stderr))
         observation["process_status"] = process.poll()
         if capture is not None:
-            capture.mkdir(parents=True, exist_ok=True)
-            (capture / "transport-failure.json").write_text(json.dumps(observation, indent=2) + "\n")
+            try:
+                capture.mkdir(parents=True, exist_ok=True)
+                (capture / "transport-failure.json").write_text(json.dumps(observation, indent=2) + "\n")
+            except OSError as error:
+                observation["capture_error"] = bounded_output(str(error))
         raise TransportCheckFailed(observation)
 
 

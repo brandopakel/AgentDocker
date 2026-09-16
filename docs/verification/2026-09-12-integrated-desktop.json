@@ -349,11 +349,14 @@
       }
     },
     "finding": "The native transport check failed while the narrow Inbox window had completed 37 actions and was waiting on thread-back. The prior helper discarded lsof exit code, output and process status. The retained artifacts cannot establish whether a TCP socket or inspection error caused the refusal. No passing rerun is claimed to explain it.",
-    "followup": "Keep rejecting every unexpected lsof outcome. Record process index/PID/exit status, inspector return code and bounded stdout/stderr in the exception and capture/transport-failure.json. Preserve partial timeout output. Workflow result records the exception before fixture cleanup.",
+    "followup": "Keep rejecting every unexpected lsof outcome. Record process index/PID/exit status, inspector return code and bounded stdout/stderr in the exception and capture/transport-failure.json. Preserve partial timeout output. Workflow result records the exception before fixture cleanup. A capture write failure stays in the transport exception; guarded finalization preserves the original workflow exception, records secondary cleanup/report errors, and invalidates an otherwise passing result on cleanup failure.",
     "focused_validation": [
       "Actual delayed TCP listener is still rejected, recorded with its owning PID and lsof output, and both owned children are stopped.",
       "Failed inspection records bounded stderr and the exited-process status.",
-      "Timed-out inspection preserves partial byte output and remains failed."
+      "Timed-out inspection preserves partial byte output and remains failed.",
+      "A failed diagnostic write preserves TransportCheckFailed and its inspector observation.",
+      "Concurrent window cleanup, daemon shutdown, daemon cleanup and result-write errors retain the original workflow exception object and attempt both child cleanups.",
+      "A cleanup failure invalidates an otherwise passing result and is recorded in result.json."
     ],
     "remaining": [
       "Rerun native acceptance with diagnostic capture on supported CI platforms.",
