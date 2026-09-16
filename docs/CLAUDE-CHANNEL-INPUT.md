@@ -46,7 +46,8 @@ process to the ended records of that session in the same checkout, once
 their processes are gone. The record that ended last stays, with its id, its
 direct conversation and its journal cursor; whatever was still queued for it,
 for any earlier ended life of the session and for the new process's own
-registration is one queue in `sent_at` order, and every other id becomes an
+registration is one queue in `sent_at` order with each message once, a
+question an earlier life asked is now its own, and every other id becomes an
 alias. A record whose process still runs, or one that holds leases, sits in a
 channel or recorded observations of its own, is left as it is.
 

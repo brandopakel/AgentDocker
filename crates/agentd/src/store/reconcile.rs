@@ -10,6 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 const ROW_LIMIT: usize = 50_000;
 const INPUT_BYTES: usize = 64 * 1024 * 1024;
 const ARCHIVE_BYTES: usize = 16 * 1024 * 1024;
+/// What one record's queue may hold after a session's lives are folded:
+/// the offline repair's admission capacity.
+const RESUME_QUEUE_MESSAGES: usize = 1000;
+const RESUME_QUEUE_BYTES: usize = 4 * 1024 * 1024;
 
 #[cfg(test)]
 #[path = "reconcile_tests.rs"]
@@ -29,6 +33,23 @@ struct Document {
     kind: String,
     id: String,
     value: Value,
+}
+
+/// A session come back, planned: see [`Store::plan_resume`].
+#[derive(Debug)]
+pub(crate) struct ResumePlan {
+    pub canonical: AgentRecord,
+    pub retired: Vec<AgentId>,
+    /// Every alias the store holds, with those that pointed at a retired
+    /// record pointed at the canonical one.
+    pub aliases: Vec<AgentAlias>,
+    /// The documents that named a retired id, rewritten.
+    documents: Vec<Document>,
+    duplicate_inbox_rows: Vec<i64>,
+    /// The one queue, as the store will hold it: durable `seq` order,
+    /// each message once. Memory takes this, not an order of its own,
+    /// so a reopen delivers the same way.
+    pub queue: Vec<Envelope>,
 }
 
 pub(crate) struct RepairPlan {
@@ -429,6 +450,175 @@ impl Store {
             cursors,
             before,
         })
+    }
+
+    /// The plan for a session come back: every life it left — the fresh
+    /// record and any earlier ended one — retired into the record that
+    /// ended last. What the offline repair does for one pair, on the live
+    /// connection for several: the queued rows of all of them become one
+    /// queue in durable `seq` order with each message once (the same
+    /// broadcast reached more than one life; a duplicate that differs in
+    /// content refuses the fold),
+    /// every document that names a retired id is rewritten to the
+    /// canonical one under the same refusals (an access grant, a restore
+    /// point, a review or question that would become its own), an alias
+    /// that pointed at a retired record is pointed at the canonical one,
+    /// and the retired records' cursors go. A retired record that holds a
+    /// lease or recorded observations of its own is refused here too, so
+    /// a caller that checked memory and a store that disagrees cannot
+    /// merge it away. Nothing is written.
+    pub(crate) fn plan_resume(
+        &self,
+        canonical: &AgentRecord,
+        retired: &[AgentId],
+    ) -> Result<ResumePlan> {
+        let kept = &canonical.id;
+        anyhow::ensure!(!retired.is_empty(), "nothing to fold");
+        anyhow::ensure!(
+            !retired.contains(kept),
+            "the canonical record cannot be retired into itself"
+        );
+        // Bounded like the offline repair: this runs under the state
+        // lock at registration, so a store too large to scan, or queues
+        // that together exceed what one record may hold, refuse rather
+        // than stall the daemon or overfill the queue.
+        self.check_repair_size()?;
+        for lease in self.load_leases()? {
+            anyhow::ensure!(
+                !retired.contains(&lease.holder),
+                "a retired record holds a lease; release it before the session is resumed"
+            );
+        }
+        let placeholders = std::iter::once(kept)
+            .chain(retired)
+            .map(|id| format!("'{}'", id.as_str().replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT seq, agent, message_id, json FROM inbox WHERE agent IN ({placeholders}) ORDER BY seq"
+        ))?;
+        let inbox: Vec<(i64, String, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut seen = BTreeMap::new();
+        let mut duplicate_inbox_rows = Vec::new();
+        let mut queue = Vec::new();
+        let mut bytes = 0usize;
+        for (seq, _, id, raw) in &inbox {
+            let envelope: Envelope = serde_json::from_str(raw)?;
+            anyhow::ensure!(
+                envelope.id.as_str() == id,
+                "stored inbox message ID disagrees with its envelope"
+            );
+            match seen.get(id) {
+                Some(previous) => {
+                    anyhow::ensure!(
+                        previous == &envelope,
+                        "duplicate message ID carries different content"
+                    );
+                    duplicate_inbox_rows.push(*seq);
+                }
+                None => {
+                    bytes = bytes.saturating_add(raw.len());
+                    seen.insert(id.clone(), envelope.clone());
+                    queue.push(envelope);
+                }
+            }
+        }
+        anyhow::ensure!(
+            queue.len() <= RESUME_QUEUE_MESSAGES && bytes <= RESUME_QUEUE_BYTES,
+            "the combined queue exceeds what one record may hold; acknowledge messages before the session is resumed"
+        );
+        let mut stmt = self
+            .conn
+            .prepare("SELECT kind,id,json FROM documents ORDER BY kind,id")?;
+        let raw_docs: Vec<(String, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut documents = Vec::new();
+        for (kind, id, raw) in &raw_docs {
+            let doc = Document {
+                kind: kind.clone(),
+                id: id.clone(),
+                value: serde_json::from_str(raw)?,
+            };
+            if doc.kind == "reads" && retired.iter().any(|r| r.as_str() == doc.id) {
+                let reads: Vec<ReadMark> = serde_json::from_value(doc.value.clone())?;
+                anyhow::ensure!(
+                    reads.is_empty(),
+                    "a retired record recorded observations of its own; resolve by hand"
+                );
+                continue;
+            }
+            let mut value = doc.value.clone();
+            for old in retired {
+                let current = Document {
+                    value: value.clone(),
+                    ..doc.clone()
+                };
+                value = rewrite_document(&current, kept, old)?;
+            }
+            if value != doc.value {
+                documents.push(Document { value, ..doc });
+            }
+        }
+        let mut aliases = self.identity_aliases()?;
+        for alias in &mut aliases {
+            anyhow::ensure!(
+                !retired.contains(&alias.retired) && &alias.retired != kept,
+                "a record to fold is already an alias"
+            );
+            if retired.contains(&alias.canonical) {
+                alias.canonical = kept.clone();
+            }
+        }
+        Ok(ResumePlan {
+            canonical: canonical.clone(),
+            retired: retired.to_vec(),
+            aliases,
+            documents,
+            duplicate_inbox_rows,
+            queue,
+        })
+    }
+
+    /// The plan, written whole: one transaction with the event, so a
+    /// failure anywhere leaves the session as it was.
+    pub(crate) fn write_resume(&self, plan: &ResumePlan, event: &Event) -> Result<()> {
+        let kept = &plan.canonical.id;
+        let now = event.at;
+        let tx = self.conn.unchecked_transaction()?;
+        for seq in &plan.duplicate_inbox_rows {
+            self.conn.execute("DELETE FROM inbox WHERE seq=?1", [seq])?;
+        }
+        for old in &plan.retired {
+            self.conn.execute(
+                "UPDATE inbox SET agent=?1 WHERE agent=?2",
+                params![kept.as_str(), old.as_str()],
+            )?;
+            self.conn
+                .execute("DELETE FROM journal_cursors WHERE agent=?1", [old.as_str()])?;
+            self.conn
+                .execute("DELETE FROM agents WHERE id=?1", [old.as_str()])?;
+        }
+        for doc in &plan.documents {
+            self.put_document(&doc.kind, &doc.id, &doc.value)?;
+        }
+        self.upsert_agent(&plan.canonical)?;
+        for alias in &plan.aliases {
+            self.put_document("identity_alias", alias.retired.as_str(), alias)?;
+        }
+        for old in &plan.retired {
+            let alias = AgentAlias {
+                retired: old.clone(),
+                canonical: kept.clone(),
+                reconciled_at: now,
+            };
+            self.put_document("identity_alias", old.as_str(), &alias)?;
+        }
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Caller owns the exclusive database connection and a single transaction.

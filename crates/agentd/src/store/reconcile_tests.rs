@@ -691,3 +691,196 @@ fn missing_cursor_is_unread_and_incompatible_read_sets_are_refused() {
         .unwrap();
     assert_eq!(store.journal_cursor(a.as_str(), &project).unwrap(), Some(0));
 }
+
+/// A session come back folds every life it left into the one that ended
+/// last: one queue with each message once, a question an earlier life
+/// asked now the canonical record's, an alias that pointed at an earlier
+/// life pointed at the canonical record, every retired id an alias — in
+/// one transaction. A duplicate message that differs, a retired record
+/// with observations or a lease of its own, or an id that is already an
+/// alias refuses the plan and writes nothing.
+#[test]
+fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    let last = record("last");
+    let earlier = record("earlier");
+    let fresh = record("fresh");
+    let oldest = record("oldest");
+    for r in [&last, &earlier, &fresh] {
+        store.upsert_agent(r).unwrap();
+    }
+    // A life before any of these was retired into `earlier`.
+    store
+        .put_document(
+            "identity_alias",
+            oldest.id.as_str(),
+            &AgentAlias {
+                retired: oldest.id.clone(),
+                canonical: earlier.id.clone(),
+                reconciled_at: now(),
+            },
+        )
+        .unwrap();
+    // The same broadcast reached both ended lives; each life has words of
+    // its own too.
+    // Clocks disagree: the fresh life's message says it was sent before
+    // the earlier life's. The store's own order, not the senders' clocks,
+    // is the order.
+    let broadcast = envelope("b-1", &earlier.id);
+    store.enqueue(&earlier.id, &broadcast, 64).unwrap();
+    store.enqueue(&last.id, &broadcast, 64).unwrap();
+    let mut e1 = envelope("e-1", &earlier.id);
+    e1.sent_at = now() + Duration::minutes(5);
+    store.enqueue(&earlier.id, &e1, 64).unwrap();
+    let mut f1 = envelope("f-1", &fresh.id);
+    f1.sent_at = now() - Duration::minutes(5);
+    store.enqueue(&fresh.id, &f1, 64).unwrap();
+    // A question the earlier life asked, still open.
+    let question = agentdocker_core::Question {
+        id: "q-1".to_owned().into(),
+        from: earlier.id.to_string(),
+        to: Destination::Agent("user".into()),
+        text: "still?".into(),
+        presentation: None,
+        asked_at: now(),
+        expires_at: now() + Duration::hours(1),
+    };
+    store.put_document("question", "q-1", &question).unwrap();
+    let mut canonical = last.clone();
+    canonical.pid = Some(456);
+    canonical.status = AgentStatus::Running;
+    canonical.finished_at = None;
+    let retired = vec![fresh.id.clone(), earlier.id.clone()];
+    let before = snapshot(&store);
+    let plan = store.plan_resume(&canonical, &retired).unwrap();
+    assert_eq!(snapshot(&store), before, "planning writes nothing");
+    assert_eq!(
+        plan.queue
+            .iter()
+            .map(|m| m.id.to_string())
+            .collect::<Vec<_>>(),
+        ["b-1", "e-1", "f-1"],
+        "the plan's queue is the store's order, each message once"
+    );
+    let mut event = Event::new(
+        EventKind::SessionResumed {
+            agent: last.id.clone(),
+            retired: retired.clone(),
+            session: "same-session".into(),
+            pid: 456,
+        },
+        now(),
+    );
+    event.seq = 1;
+    store.write_resume(&plan, &event).unwrap();
+    let remaining = store.load_agents().unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, last.id);
+    assert_eq!(remaining[0].pid, Some(456));
+    let queue: Vec<String> = store.load_inboxes().unwrap()[&last.id]
+        .iter()
+        .map(|m| m.id.to_string())
+        .collect();
+    assert_eq!(
+        queue,
+        ["b-1", "e-1", "f-1"],
+        "each message once, in the plan's order"
+    );
+    let reopened = Store::open(&tmp.path().join("state.db")).unwrap();
+    let queue: Vec<String> = reopened.load_inboxes().unwrap()[&last.id]
+        .iter()
+        .map(|m| m.id.to_string())
+        .collect();
+    assert_eq!(queue, ["b-1", "e-1", "f-1"], "and the same after a reopen");
+    drop(reopened);
+    let rewritten: agentdocker_core::Question = store.document("question", "q-1").unwrap().unwrap();
+    assert_eq!(
+        rewritten.from,
+        last.id.to_string(),
+        "the canonical record's to cancel"
+    );
+    let aliases = store.identity_aliases().unwrap();
+    for id in [&oldest.id, &earlier.id, &fresh.id] {
+        assert_eq!(
+            aliases
+                .iter()
+                .find(|a| &a.retired == id)
+                .map(|a| &a.canonical),
+            Some(&last.id),
+            "{id} resolves to the record that stayed, flat"
+        );
+    }
+    let mut registry = agentdocker_core::Registry::new();
+    for r in &remaining {
+        registry.insert(r.clone()).unwrap();
+    }
+    registry.restore_aliases(&aliases).unwrap();
+    assert!(store.recent_events(5).unwrap().iter().any(
+        |e| matches!(&e.kind, EventKind::SessionResumed { retired, .. } if retired.len() == 2)
+    ));
+
+    // Refusals write nothing.
+    let store = Store::open(&tmp.path().join("again.db")).unwrap();
+    for r in [&last, &earlier, &fresh] {
+        store.upsert_agent(r).unwrap();
+    }
+    let before = snapshot(&store);
+    let mut other = envelope("b-1", &fresh.id);
+    other.payload = json!({"text": "not the same words"});
+    store.enqueue(&last.id, &broadcast, 64).unwrap();
+    store.enqueue(&fresh.id, &other, 64).unwrap();
+    let error = store.plan_resume(&canonical, &retired).unwrap_err();
+    assert!(error.to_string().contains("different content"), "{error}");
+    store
+        .conn
+        .execute("DELETE FROM inbox WHERE agent=?1", [fresh.id.as_str()])
+        .unwrap();
+    store
+        .put_document(
+            "reads",
+            earlier.id.as_str(),
+            &vec![agentdocker_core::ReadMark {
+                path: "/fixture/checkout/src/lib.rs".into(),
+                version: "v".into(),
+                head: None,
+                at: now(),
+            }],
+        )
+        .unwrap();
+    let error = store.plan_resume(&canonical, &retired).unwrap_err();
+    assert!(error.to_string().contains("observations"), "{error}");
+    store.delete_document("reads", earlier.id.as_str()).unwrap();
+    store
+        .upsert_lease(&agentdocker_core::Lease {
+            id: agentdocker_core::LeaseId::generate(),
+            resource: ResourceKey::new("task:x"),
+            holder: fresh.id.clone(),
+            mode: LeaseMode::Exclusive,
+            acquired_at: now(),
+            change_seq: None,
+            expires_at: now() + Duration::hours(1),
+            note: None,
+            amount: 0,
+        })
+        .unwrap();
+    let error = store.plan_resume(&canonical, &retired).unwrap_err();
+    assert!(error.to_string().contains("lease"), "{error}");
+    assert_eq!(
+        snapshot(&store)[3],
+        before[3],
+        "no document was written by a refused plan"
+    );
+    assert!(store.plan_resume(&canonical, std::slice::from_ref(&last.id)).is_err());
+    // Queues that together exceed what one record may hold refuse too.
+    store.conn.execute("DELETE FROM leases", []).unwrap();
+    for n in 0..RESUME_QUEUE_MESSAGES {
+        let to = if n % 2 == 0 { &earlier.id } else { &fresh.id };
+        store
+            .enqueue(to, &envelope(&format!("many-{n}"), to), 2000)
+            .unwrap();
+    }
+    let error = store.plan_resume(&canonical, &retired).unwrap_err();
+    assert!(error.to_string().contains("one record may hold"), "{error}");
+    assert_eq!(snapshot(&store)[0], before[0], "nothing moved");
+}

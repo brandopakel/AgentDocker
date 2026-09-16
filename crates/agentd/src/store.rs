@@ -775,37 +775,6 @@ impl Store {
         Ok(())
     }
 
-    /// A session come back: the canonical record (the one that ended last)
-    /// takes the new process, and every other record of the session — the
-    /// fresh one and any earlier ended ones — is retired into it: their
-    /// queued rows move across, their cursors go, their rows leave and
-    /// each id becomes an alias. One transaction with the event.
-    pub fn resume_session(
-        &self,
-        canonical: &AgentRecord,
-        aliases: &[agentdocker_core::identity::AgentAlias],
-        event: &Event,
-    ) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
-        for alias in aliases {
-            self.conn.execute(
-                "UPDATE inbox SET agent=?1 WHERE agent=?2",
-                params![alias.canonical.as_str(), alias.retired.as_str()],
-            )?;
-            self.conn.execute(
-                "DELETE FROM journal_cursors WHERE agent=?1",
-                [alias.retired.as_str()],
-            )?;
-            self.conn
-                .execute("DELETE FROM agents WHERE id=?1", [alias.retired.as_str()])?;
-            self.put_document("identity_alias", alias.retired.as_str(), alias)?;
-        }
-        self.upsert_agent(canonical)?;
-        self.append_event(event)?;
-        tx.commit()?;
-        Ok(())
-    }
-
     /// Mark queued messages as offered at the upgrade, so a controller
     /// that binds afterwards gets them as uncertain to reconcile rather
     /// than as new input to submit, and a binding that stands has them
