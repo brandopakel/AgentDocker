@@ -212,6 +212,14 @@ def smoke(binary_dir, output):
                                 step("click", id=f"answer-choice-{choice}-0"), step("wait_control", id=f"answer-choice-{choice}-0", present=False)]
                 steps = [step("click", id=f"project-{project}"), step("wait_text", text="terminal-fixture"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("wait_control", id=f"session-{previous['id']}", present=False), step("capture", name="projects-live"),
+                         # The uppercase eyebrow is a separate rendered heading:
+                         # seeing the mixed-case sidebar label alone cannot pass.
+                         step("click", id=f"project-menu-{project}"), step("click", id=f"project-rename-start-{project}"),
+                         step("fill", id=f"project-rename-{project}", text="Renamed Project"), step("click", id=f"project-rename-save-{project}"),
+                         step("click", id="projects"), step("wait_text", text="RENAMED PROJECT"), step("capture", name="renamed-all-projects"),
+                         step("click", id=f"project-{project}"),
+                         step("click", id=f"project-menu-{project}"), step("click", id=f"project-rename-start-{project}"),
+                         step("fill", id=f"project-rename-{project}", text=""), step("click", id=f"project-rename-save-{project}"),
                          # Ended sessions are one collapsed group under the current ones,
                          # not a tab: opening it shows the previous run beside the live one.
                          step("wait_control", id=f"session-{previous['id']}", present=False),

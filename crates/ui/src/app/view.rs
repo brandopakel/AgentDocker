@@ -1450,7 +1450,15 @@ impl App {
                         agent
                             .project
                             .as_ref()
-                            .map(|p| p.name())
+                            .map(|p| {
+                                self.shell
+                                    .catalog
+                                    .projects
+                                    .iter()
+                                    .find(|entry| entry.project.root == p.root)
+                                    .map(|entry| entry.name())
+                                    .unwrap_or_else(|| p.name())
+                            })
                             .unwrap_or_else(|| "Other sessions".into()),
                         c,
                     ))

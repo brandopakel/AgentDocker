@@ -208,12 +208,10 @@ pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
             ]
             .into_iter()
             .find(|(marker, _)| script.contains(marker))
-            .and_then(|(_, runtime)| {
-                if runtime == "claude-code" {
-                    claude_runtime(&argv[2..])
-                } else {
-                    Some(runtime)
-                }
+            .and_then(|(_, runtime)| match runtime {
+                "claude-code" => claude_runtime(&argv[2..]),
+                "codex" => codex_runtime(&argv[2..]),
+                _ => Some(runtime),
             })
         }
         _ => None,
@@ -553,6 +551,19 @@ mod tests {
             .map(str::to_owned)
             .collect();
         assert_eq!(runtime_of(&session), Some("codex"));
+        for interpreter in ["node", "bun", "deno", "python", "python3"] {
+            let args = |mode: &str| {
+                [
+                    interpreter,
+                    "/x/@openai/codex/bin/codex.js",
+                    mode,
+                    "--stdio",
+                ]
+                .map(str::to_owned)
+            };
+            assert_eq!(runtime_of(&args("app-server")), None);
+            assert_eq!(runtime_of(&args("resume")), Some("codex"));
+        }
     }
 
     #[test]
