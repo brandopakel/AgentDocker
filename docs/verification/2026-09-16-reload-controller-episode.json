@@ -1190,6 +1190,18 @@
       {
         "path": "/private/tmp/agentdocker-reload-review-manifest-after-native1-2026-09-15.json",
         "sha256": "f07f2ef81a1c9e0b1e4806c4849da21f4f9e87e2bc67db9bb04979b9e6ebd1d2"
+      },
+      {
+        "path": "/private/tmp/agentdocker-tmux-fault-trial-2026-09-15.py",
+        "sha256": "0d9159391e2d03a798cf41521381740753dfe464969045eeb5dbccb54ae38b6f"
+      },
+      {
+        "path": "/private/tmp/agentdocker-tmux-fault-trial1-2026-09-15/result.json",
+        "sha256": "9249224c17c54ee599de3b8322191c458a1963e4c4f077993a85b3327779da8f"
+      },
+      {
+        "path": "/private/tmp/agentdocker-tmux-fault-trial1-2026-09-15/daemon.log",
+        "sha256": "d2303b5053e52b40ad94b6dab517410bb0d9f4d7bc578727a0759bdae0f2ee29"
       }
     ],
     "limits": [
@@ -1198,6 +1210,23 @@
       "Legacy clients decode the established unavailable refusal and may be retried manually; automatic retry requires an updated client.",
       "No production activation used this schema20 reload candidate; installed UI source72b1eb4 is schema21 and must be integrated before a future install.",
       "Broader provider, cross-version, attached-terminal, uncertain-write, retention and Windows acceptance remains open."
-    ]
+    ],
+    "real_tmux_event_failure": {
+      "result": "passed",
+      "daemon_sha256": "19c6a23631577327a354650ee2faa09f257892ac20755eabb3667703de2906cb",
+      "response": {
+        "type": "error",
+        "code": "storage_unavailable",
+        "message": "storage failed (pane start: injected pane event failure); coordination disabled until daemon restart"
+      },
+      "durable_status": {
+        "state": "created"
+      },
+      "durable_pid": null,
+      "remaining_private_panes": "",
+      "tmux_list_exit": 1,
+      "daemon_retired": true,
+      "driver_sha256": "0d9159391e2d03a798cf41521381740753dfe464969045eeb5dbccb54ae38b6f"
+    }
   }
 }
