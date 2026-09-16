@@ -120,9 +120,12 @@ def pin_trial(args, root, prefix, source, controller, environment, cli, result):
         while not pin_held(pin):
             assert time.monotonic() < deadline, "the first daemon did not pin the descriptor's release"
             time.sleep(.1)
-        result["scenarios"].append("a bound controller's launch descriptor in the first release pins that release")
-        controller_process.kill()
-        controller_process.wait()
+        # The bound controller (a sleep) stays alive throughout, so the
+        # daemon never launches the descriptor: no first-release binary
+        # runs, and the only thing that can hold the release is a daemon's
+        # pin for the binding. That is the dormant release the trial is
+        # about.
+        result["scenarios"].append("a bound controller's launch descriptor in the first release pins that release, with the controller alive and nothing launched from it")
 
         def handover(generation):
             nonlocal serving_pid
@@ -152,6 +155,8 @@ def pin_trial(args, root, prefix, source, controller, environment, cli, result):
                 assert time.monotonic() < deadline, f"predecessor {predecessor} did not leave"
                 time.sleep(.05)
             assert pin_held(pin), f"the release pin was dropped across the handover to generation {generation}"
+            binding = rpc(sock, {"op": "inspect", "agent": provider["id"]})["agent"]["input_binding"]
+            assert binding and not binding.get("restart", {}).get("launched"), f"a controller was launched from the release: {binding}"
             return candidate_id
 
         second_id = handover(2)
@@ -172,8 +177,10 @@ def pin_trial(args, root, prefix, source, controller, environment, cli, result):
         warnings = [line for line in (args.output / "pin-daemon.log").read_text(errors="replace").splitlines()
                     if " WARN " in line and "pin" in line]
         assert not warnings, warnings
+        assert controller_process.poll() is None, "the bound controller ended during the trial"
         # Unbound, the pin goes with the binding, and so does the release.
-        unbound = rpc(sock, {"op": "unbind_input", "agent": provider["id"], "force": True})
+        # The controller is alive, so the unbind carries its token.
+        unbound = rpc(sock, {"op": "unbind_input", "agent": provider["id"], "token": "desktop-reload-pin-trial-token-0123456789"})
         assert unbound["type"] != "error", unbound
         deadline = time.monotonic() + 10
         while pin_held(pin):

@@ -233,12 +233,12 @@ an in-process Tokio test cannot establish this boundary.
   no daemon warnings); see
   [the record](verification/2026-09-16-reload-controller-episode.json).
   *Passed* for the controller's installation pin across a handover
-  (`desktop_reload_smoke.py --pin-trial`, in the same record): a
+  (`desktop_reload_smoke.py --pin-trial`, in the same record): a live
   controller bound with a launch descriptor inside the first installed
-  release pins it; through two handovers to later generations the pin is
-  found held once each predecessor is gone, a prune with that release
-  neither current nor previous keeps it, and unbinding lets the next
-  prune remove it. Still ahead: a launched controller that never binds
+  release, from which nothing is ever launched, pins it; through two
+  handovers to later generations the pin is found held once each
+  predecessor is gone, a prune with that release neither current nor
+  previous keeps it, and unbinding lets the next prune remove it. Still ahead: a launched controller that never binds
   across a handover (unit-tested only).
 
 An old installed daemon that lacks this protocol cannot gain live transfer from

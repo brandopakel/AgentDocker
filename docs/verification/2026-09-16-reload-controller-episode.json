@@ -196,7 +196,7 @@
     "date": "2026-09-16",
     "result": "passed",
     "driver": "scripts/desktop_reload_smoke.py --pin-trial",
-    "scope": "a disposable managed prefix and private daemon; a controller bound with a launch descriptor inside the first installed release; two later generations installed with the gated daemon handing over each time; a prune with the first release neither current nor previous; unbind and prune",
+    "scope": "a disposable managed prefix and private daemon; a controller (a sleep, alive throughout) bound with a launch descriptor inside the first installed release, so nothing is ever launched from that release and only a daemon's pin for the binding can hold it; two later generations installed with the gated daemon handing over each time; a prune with the first release neither current nor previous; unbind with the token, and prune",
     "package": {
       "source_commit": "2ee09365518dfba58780e0c4cf39ca370335faf5",
       "version": "0.1.0",
@@ -206,40 +206,57 @@
       "first": "f015d3da215eb1c3d4a68c92e86c10adea5d0cd9e7e1f5bc6eb97d44e3a6acd0",
       "second": "326ad48a6db03ae1ec3b0b23e1761bb07e8b903dc8b842a188b4de803d663fba",
       "third": "76d6226f5dfc47f545c58aaa5bf96f64a555f56a75624c1ed55fc3ab9118b21e",
-      "serving_pid": 98973
+      "serving_pid": 37133
     },
     "scenarios": [
-      "a bound controller's launch descriptor in the first release pins that release",
+      "a bound controller's launch descriptor in the first release pins that release, with the controller alive and nothing launched from it",
       "with the first release neither current nor previous, a prune keeps it while a controller's binding pins it",
       "unbinding releases the pin, and the next prune removes the release"
     ],
     "checks": [
-      "the pin file for the first release is held once the daemon launched the controller from it",
-      "after each handover, once the predecessor process is gone, the pin is still held (the successor took it before answering serving)",
+      "the pin file for the first release is held by the first daemon while the bound controller is alive and nothing has been launched",
+      "after each handover, once the predecessor process is gone, the pin is still held, and the binding records no launched process",
       "desktop prune --keep 0 --preview does not list the first release; after the prune its versions directory is still there",
-      "no pin warning in any daemon's log",
-      "unbind_input --force releases the pin within ten seconds; the next prune removes the release"
+      "no warning in any daemon's log; the bound controller is still running at the end",
+      "unbind_input with the token releases the pin within ten seconds; the next prune removes the release"
     ],
     "artifacts": {
       "result": {
-        "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/pin-trial2/result.json",
-        "sha256": "766f739ef32a8088aca8f97d75c226df7b39f269335fefe144c96ed3cbe0322b"
+        "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/pin-trial3/result.json",
+        "sha256": "64cf33ee02ab11064457554746163bd3f4f9ca49d426908fbfe86f9e2006086d"
       },
       "daemon_log": {
-        "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/pin-trial2/pin-daemon.log",
-        "sha256": "7f0e9f0d98b701cd8d5a5bdd2e841c773784c17b070510202af9594615b006cc"
+        "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/pin-trial3/pin-daemon.log",
+        "sha256": "cfa0d5bb9299b32a637653076f56cc5ff0b62bd40309b7a059d01472fab51662"
       },
       "operations": {
-        "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/pin-trial2/operations.jsonl",
-        "sha256": "8b9ccd59e234a648aea6829720583cc3b31ce90f7eb4d48b267084d14263d4de"
-      },
-      "first_run_without_the_predecessor_wait": {
-        "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/pin-trial1/result.json",
-        "sha256": "4e79d08f7770db4e8ffc909f5da40617fab86e4616b74c589425dfe1065ca6ba"
+        "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/pin-trial3/operations.jsonl",
+        "sha256": "89960b2804e78fe3d08845af3fbbf70685aef851e1d57fc442a963f61cdffc5a"
       }
     },
     "limits": [
-      "The three generations are the same binaries with distinct package metadata, as the reload smoke's second generation is; the launched controller (agentdocker events from the first release) never binds, so its bind grace and restart episode run alongside and are not what this trial asserts."
-    ]
+      "The three generations are the same binaries with distinct package metadata, as the reload smoke's second generation is."
+    ],
+    "earlier_runs": {
+      "note": "The first two runs let the daemon launch `agentdocker events` from the first release after the bound controller was killed; a binary from that release then held its own executable pin, so those runs could not tell the successor's pin from the launched process's. Retained, not counted.",
+      "pin_trial1": {
+        "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/pin-trial1/result.json",
+        "sha256": "4e79d08f7770db4e8ffc909f5da40617fab86e4616b74c589425dfe1065ca6ba"
+      },
+      "pin_trial2": {
+        "result": {
+          "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/pin-trial2/result.json",
+          "sha256": "766f739ef32a8088aca8f97d75c226df7b39f269335fefe144c96ed3cbe0322b"
+        },
+        "daemon_log": {
+          "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/pin-trial2/pin-daemon.log",
+          "sha256": "7f0e9f0d98b701cd8d5a5bdd2e841c773784c17b070510202af9594615b006cc"
+        },
+        "operations": {
+          "private_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/pin-trial2/operations.jsonl",
+          "sha256": "8b9ccd59e234a648aea6829720583cc3b31ce90f7eb4d48b267084d14263d4de"
+        }
+      }
+    }
   }
 }
