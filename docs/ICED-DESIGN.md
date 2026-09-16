@@ -29,7 +29,8 @@ Unpin keeps a recent project; Forget removes the catalog entry without touching
 files or sessions. Active discovery may subsequently restore a forgotten project.
 
 `workspace.json` lives in the AgentDocker state directory. Its project catalog
-is bounded to 512 entries and 2 MiB. Atomic private-file replacement, one save in
+is bounded to 512 entries and 2 MiB; it also keeps the column widths a person
+dragged (`panes`). Atomic private-file replacement, one save in
 flight and generation tracking prevent late writes from reverting newer choices.
 Closing the window waits for the current preference changes. Corrupt or unsafe
 preferences are preserved and reported instead of overwritten. Existing `ui.json`
@@ -143,10 +144,21 @@ system, which is drawn from the mark:
   own scroll, where `Fill` has nothing to fill; `scripts/iced_workflow_smoke.py`
   asserts that reading a conversation acknowledges its rows and clears its
   unread count.
-- **Layout.** A 236-point rail (204 when narrow) with the selected entry marked
-  by an accent bar, then a workspace that leads with the project name, its
-  path and the project's one primary action, then the section tabs over a
-  hairline. Lists are rows inside a panel; prose sits in cards; the terminal
+- **Layout.** A rail (236 points to begin with, 204 when narrow) with the
+  selected entry marked by an accent bar, then a workspace that leads with
+  the project name, its path and the project's one primary action, then the
+  section tabs over a hairline. The rail and the workspace, and on the
+  Messages screen the sidebar, the conversation and the thread, are
+  `pane_grid` panes with a draggable divider between each (`app/panes.rs`):
+  the widths are kept in logical pixels, not shares, so a window resize
+  leaves the columns where they were, each is clamped to its bounds (rail
+  180–440, sidebar 200–560, thread 240–640) and rounded to whole pixels, and
+  a drag that changed one saves it in `workspace.json` (`panes`). The two
+  grids number their splits separately, so a resize event carries which grid
+  it came from. The thread column is split off and closed with the thread.
+  The dividers are 8 points wide, drawn as a 2-point accent line while
+  hovered or dragged. A narrow window keeps the fixed rail and the one
+  column on view. Lists are rows inside a panel; prose sits in cards; the terminal
   and command output sit in a bezel of the chosen terminal palette's ground.
   Filters sit left and search right on one row. A footer bar says the daemon
   connection and the version once, so no page repeats them.

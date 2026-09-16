@@ -9,6 +9,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 mod icons;
 mod messages;
+pub(crate) mod panes;
 mod queue;
 mod sessions;
 mod shell;
@@ -249,6 +250,8 @@ enum Msg {
 
 pub struct App {
     shell: shell::State,
+    /// The window's draggable columns.
+    panes: panes::Panes,
     wake: Wake,
     worker_stop: Arc<std::sync::atomic::AtomicBool>,
     desktop: crate::desktop::Panel,
@@ -392,6 +395,7 @@ impl App {
             let _ = cmd_tx.send(cmd);
         }
         let shell = shell::State::load(&home);
+        let panes = panes::Panes::new(shell.catalog.panes, shell.width.max(1180.0));
         let settings = shell
             .catalog
             .appearance
@@ -400,6 +404,7 @@ impl App {
             .clamped();
         Self {
             shell,
+            panes,
             wake,
             worker_stop,
             desktop: Default::default(),
@@ -461,6 +466,7 @@ impl App {
     fn bare(tx: CommandSender, rx: Receiver<Msg>) -> Self {
         Self {
             shell: Default::default(),
+            panes: panes::Panes::new(panes::Widths::default(), 1180.0),
             wake: Wake::default(),
             worker_stop: Default::default(),
             desktop: Default::default(),

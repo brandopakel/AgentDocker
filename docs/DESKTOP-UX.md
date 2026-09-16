@@ -122,9 +122,16 @@ name. Ended sessions' conversations sit behind **Earlier (n)**. Every row is
 one line each for the name and the latest line. Unread counts and the rail
 badge cover what is yours to answer: rooms, broadcasts and your own direct
 messages, never what two agents said to each other or what AgentDocker told
-them; **Mark all read** beside the count reads all of it at once. The pane's
-header is the name on one line and, under it, what the room is about (the
-task or contested paths, a pair's branches, a broadcast's members). The pane shows the newest 200 archived messages, newest
+them; **Mark all read** beside the count reads all of it at once. The
+sidebar, the conversation and the thread are columns with a divider between
+each that drags, like the rail's beside the workspace: a name the sidebar
+clips gets its room by dragging, and the widths are kept in pixels and
+remembered with the workspace preferences, so a wider window gives the
+conversation the room and the columns stay as set (the rail 180–440 points,
+the sidebar 200–560, the thread 240–640; a narrow window has no dividers).
+The pane's header is the name on one line and, under it, what the room is
+about (the task or contested paths, a pair's branches, a broadcast's
+members). The pane shows the newest 200 archived messages, newest
 last, with **Show earlier messages** at the top until the first is on view,
 day dividers and a **New** divider before the unread part; a question keeps
 its card (Answer, Allow, Deny) in place; other kinds of message carry a small
