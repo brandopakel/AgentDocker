@@ -58,7 +58,7 @@ Inbox, and advanced actions under More.
 
 Agents don't need an SDK. Anything that can write a line of JSON to a Unix socket — a shell hook, a Python script, an MCP tool call — is a first-class participant. That is what makes it model- and vendor-agnostic: Claude Code, Codex, Gemini CLI, Cursor, and hand-rolled agents all coordinate through the same daemon.
 
-Idle message delivery needs a provider input adapter as well. Managed Claude channels and the Codex bridge provide it; the existing-terminal Codex native queue is under acceptance and is not yet installed. Other runtimes' coordination support does not establish idle wake. Current capabilities and remaining acceptance are in the [message audit](docs/MESSAGE-DELIVERY-AUDIT.md).
+Idle message delivery needs a provider input adapter as well. Managed Claude channels and the Codex bridge provide it. The existing-terminal Codex native queue is installed on the current Mac; one peer message automatically started the next ordinary turn with an exact provider receipt. Fresh startup, reopen and broader provider acceptance remain open. Other runtimes' coordination support does not establish idle wake. Current capabilities and remaining acceptance are in the [message audit](docs/MESSAGE-DELIVERY-AUDIT.md).
 
 ## Install
 

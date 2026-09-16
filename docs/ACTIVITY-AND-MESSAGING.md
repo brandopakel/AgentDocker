@@ -7,7 +7,11 @@ not provide idle wake. The opt-in [managed Codex bridge](CODEX-INPUT.md)
 (`--codex-input`) polls the queue while idle and starts a turn in its owned
 app-server conversation; it does not attach to an existing Codex TUI. The enabled
 [Claude channel adapter](CLAUDE-CHANNEL-INPUT.md) (`--claude-channel`) can also
-deliver input while idle. Each guide records its source-specific acceptance limits.
+deliver input while idle. Existing Codex CLI terminals can also use the
+[verified-hook native receiver](CODEX-INPUT.md#existing-codex-terminals-native-queue-candidate-september-15),
+which submits through Codex's own input queue; installed auto-bootstrap, peer
+wake and exact receipt passed for one existing 0.154.0 session. Each guide
+records its source-specific acceptance limits.
 
 Discovery proves that a runtime process is present. Configuration does not prove
 that a running session has connected, read a message or begun a model turn.
