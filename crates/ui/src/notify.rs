@@ -52,13 +52,19 @@ pub(crate) fn in_a_bundle() -> bool {
 /// and the answer is remembered for the bundle.
 #[cfg(target_os = "macos")]
 pub fn request_permission() {
+    if !in_a_bundle() {
+        return; // nothing to register a notification client against
+    }
+    static REQUESTED: std::sync::Once = std::sync::Once::new();
+    REQUESTED.call_once(request_permission_once);
+}
+
+#[cfg(target_os = "macos")]
+fn request_permission_once() {
     use block2::RcBlock;
     use objc2_foundation::NSError;
     use objc2_user_notifications::{UNAuthorizationOptions, UNUserNotificationCenter};
 
-    if !in_a_bundle() {
-        return; // nothing to register a notification client against
-    }
     let centre = UNUserNotificationCenter::currentNotificationCenter();
     let handler = RcBlock::new(|granted: objc2::runtime::Bool, error: *mut NSError| {
         if let Some(reason) = describe(error) {
@@ -75,6 +81,71 @@ pub fn request_permission() {
 
 #[cfg(not(target_os = "macos"))]
 pub fn request_permission() {}
+
+/// Inspect the current bundle's OS settings without requesting permission or
+/// posting a notice. Keep refusal distinct from an unsupported bundle/client.
+#[cfg(target_os = "macos")]
+pub fn status() -> Result<String, String> {
+    use block2::RcBlock;
+    use objc2_foundation::NSBundle;
+    use objc2_user_notifications::{
+        UNAuthorizationStatus, UNNotificationSetting, UNNotificationSettings,
+        UNUserNotificationCenter,
+    };
+    use std::sync::{Arc, Mutex};
+
+    if !in_a_bundle() {
+        return Err("not running inside an application bundle".into());
+    }
+    fn setting(value: UNNotificationSetting) -> &'static str {
+        match value {
+            UNNotificationSetting::NotSupported => "not_supported",
+            UNNotificationSetting::Disabled => "disabled",
+            UNNotificationSetting::Enabled => "enabled",
+            _ => "unknown",
+        }
+    }
+    let bundle = NSBundle::mainBundle();
+    let bundle_id = bundle.bundleIdentifier().map(|id| id.to_string());
+    let bundle_path = bundle.bundlePath().to_string();
+    let outcome: Outcome = Arc::new((Mutex::new(None), std::sync::Condvar::new()));
+    let done = outcome.clone();
+    let handler = RcBlock::new(move |settings: std::ptr::NonNull<UNNotificationSettings>| {
+        // SAFETY: the framework lends a non-null settings object for this
+        // callback; only owned strings/numbers leave the callback.
+        let settings = unsafe { settings.as_ref() };
+        let authorization = settings.authorizationStatus();
+        let authorization_name = match authorization {
+            UNAuthorizationStatus::NotDetermined => "not_determined",
+            UNAuthorizationStatus::Denied => "denied",
+            UNAuthorizationStatus::Authorized => "authorized",
+            UNAuthorizationStatus::Provisional => "provisional",
+            UNAuthorizationStatus::Ephemeral => "ephemeral",
+            _ => "unknown",
+        };
+        *done.0.lock().unwrap() = Some(
+            serde_json::json!({
+                "bundle_id": bundle_id,
+                "bundle_path": bundle_path,
+                "authorization": authorization_name,
+                "authorization_raw": authorization.0,
+                "alerts": setting(settings.alertSetting()),
+                "sounds": setting(settings.soundSetting()),
+                "notification_center": setting(settings.notificationCenterSetting()),
+            })
+            .to_string(),
+        );
+        done.1.notify_all();
+    });
+    UNUserNotificationCenter::currentNotificationCenter()
+        .getNotificationSettingsWithCompletionHandler(&handler);
+    wait_for(&outcome, ACCEPT_WITHIN).ok_or_else(|| "notification settings did not answer".into())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn status() -> Result<String, String> {
+    Err("notification settings inspection is only available on macOS".into())
+}
 
 pub fn post(title: &str, body: &str) -> Result<(), String> {
     post_notification(&agentdocker_host::notify::Notification {
@@ -248,6 +319,7 @@ mod tests {
     #[test]
     fn asking_outside_a_bundle_is_refused_rather_than_fatal() {
         super::request_permission();
+        assert!(!super::status().unwrap_err().is_empty());
         let refused = super::post_notification(&agentdocker_host::notify::Notification {
             title: "AgentDocker".into(),
             body: "test".into(),

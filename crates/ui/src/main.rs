@@ -115,6 +115,19 @@ fn main() -> iced::Result {
                     }
                 };
             }
+            Some("--notification-status") => {
+                if args.next().is_some() {
+                    usage_error("unexpected notification status argument");
+                }
+                match notify::status() {
+                    Ok(status) => println!("{status}"),
+                    Err(reason) => {
+                        eprintln!("{reason}");
+                        std::process::exit(1);
+                    }
+                }
+                return Ok(());
+            }
             // One notification, then exit. The daemon runs this from
             // inside the app bundle so the notification carries our
             // icon; nothing else on macOS can.
@@ -145,7 +158,7 @@ fn main() -> iced::Result {
             }
             Some("--help" | "-h") => {
                 println!(
-                    "agentdocker-ui [--version] [--notify TITLE BODY] [--notify-json JSON] [--open-notification JSON] \
+                    "agentdocker-ui [--version] [--notify TITLE BODY] [--notify-json JSON] [--notification-status] [--open-notification JSON] \
                      [--smoke-test OUTPUT --expect-pid PID --smoke-deadline SECONDS --smoke-scenario JSON]"
                 );
                 return Ok(());

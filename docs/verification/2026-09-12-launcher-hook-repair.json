@@ -92,7 +92,7 @@
     "Signed/notarized distribution and physical Notification Center acceptance.",
     "Earlier PRs and broader remaining-work items are not closed by this repair."
   ],
-  "summary": "Historical hook repair and September15 intact launcher: private install/legacy rollback/routes and production activation passed; an existing Codex session auto-bound, then a peer message started its next ordinary turn with an exact receipt. Physical notification clicks and posting authorization remain open.",
+  "summary": "Historical hook repair and September 15 intact launcher: private install/legacy rollback/routes and production activation passed; an existing Codex session auto-bound, then a peer message started its next ordinary turn with an exact receipt. Physical notification clicks and posting authorization remain open.",
   "signed_copy_followup_2026_09_15": {
     "scope": "Intact signed macOS application copies, entrypoint forwarding, same-release legacy wrapper repair, actual pre-capability upgrade/rollback, and private existing/cold-window notification navigation.",
     "source": {
@@ -323,7 +323,7 @@
     "review": {
       "claude_source": "Approved b619..90be implementation design, contingent on focused tests and real older-payload trial; both have now passed. Peer message a993028fb7334417.",
       "github_pr": 153,
-      "final_ci": "passed at00973a1 on all CI platforms; CodeRabbit final-head review had no actionable findings; PR153 merged as4074275"
+      "final_ci": "passed at 00973a1 on all CI platforms; CodeRabbit final-head review had no actionable findings; PR153 merged as 4074275"
     },
     "remaining": [
       "Native notification authorization/posting and actual Notification Center clicks while foregrounded, hidden and closed.",
@@ -416,12 +416,122 @@
           "release_build",
           "git_diff_check"
         ],
-        "scope": "Existing documentation and installed-state evidence only; production files unchanged from merged main4074275. This is not another physical notification or provider acceptance trial.",
+        "scope": "Existing documentation and installed-state evidence only; production files unchanged from merged main 4074275. This is not another physical notification or provider acceptance trial.",
         "log": {
           "private_path": "/private/tmp/agentdocker-current-build-gate1.log",
           "sha256": "1097bbb8d9d39b8fa69ab58c24e15155a4ad28c40f1b02e5dfda2f7b3ea228c4"
         }
+      },
+      "native_posting_followup": {
+        "result": "refused",
+        "source_commit": "cf64ca398f8117445938ede20dd60672c9e005d3",
+        "strict_signature_verification": "passed",
+        "existing_gui_open": true,
+        "also_refused_after_launch_services_activation": true,
+        "trials": [
+          {
+            "private_path": "/private/tmp/agentdocker-installed-notification-post-2026-09-15d.json",
+            "sha256": "7252f7c936f971cff2f5109ab786004320efde9a4d78db14735eac22b6bed901",
+            "exit_code": 2,
+            "stderr": "invalid notification\n",
+            "classification": "malformed destination refused before native posting"
+          },
+          {
+            "private_path": "/private/tmp/agentdocker-installed-notification-post-2026-09-15e.json",
+            "sha256": "a78974f0c393b1e8148ef1c90528e3b55991f8a9ffa920b6ebf175badd80c884",
+            "exit_code": 1,
+            "stderr": "notifications are not permitted: Notifications are not allowed for this application (1)\n",
+            "classification": "valid native post refused by macOS"
+          },
+          {
+            "private_path": "/private/tmp/agentdocker-installed-notification-post-2026-09-15f.json",
+            "sha256": "27df92796a2d2d27aa1c19a9b2b90ba444b0ea13ce0e3b9e0b5137be31b29052",
+            "exit_code": 1,
+            "stderr": "notifications are not permitted: Notifications are not allowed for this application (1)\n",
+            "classification": "valid native post refused by macOS"
+          }
+        ],
+        "limits": [
+          "Refusal persists after launcher repair; signing integrity alone did not resolve native posting.",
+          "No physical notification click was possible in these trials; notification settings were not changed.",
+          "The first malformed-destination probe is retained and is not counted as a native posting trial."
+        ]
       }
+    },
+    "authorization_diagnostic_followup": {
+      "result": "read_only_settings_and_rendered_routes_passed_physical_focus_pending",
+      "source_commit": "e48a1053c3f174295d923aa38a45c4a8c084d3f3",
+      "source_input_sha256": "5aac8e900725857c1f8f6d1e78e1705873788b7215bfce0052d82aef4d037db4",
+      "source_dirty": false,
+      "package_binary_sha256": {
+        "agentd": "9c5e2ac8ff4f9bcd69095e6fea8b3cb7e7cebb1344f7e57547d47a2fa5ee5b7d",
+        "agentdocker-ui": "6d3d4f8bae4e474e48949c914206eedee72f89bb812edc4e312ed6ceeff3e89c"
+      },
+      "standard_gate": {
+        "rust_passed": 979,
+        "rust_skipped": 7,
+        "python_passed": 71,
+        "fmt_clippy_doctests_package_release": "passed",
+        "log": {
+          "private_path": "/private/tmp/agentdocker-notification-authorization-gate1.log",
+          "sha256": "1cac46c004d6535273a5a1b3ab7689427d9e02c32dab0a9ec2e414988b59343e"
+        }
+      },
+      "settings_before": {
+        "alerts": "enabled",
+        "authorization": "denied",
+        "authorization_raw": 1,
+        "bundle_id": "dev.agentdocker.desktop",
+        "notification_center": "enabled",
+        "sounds": "enabled"
+      },
+      "settings_after": {
+        "alerts": "enabled",
+        "authorization": "denied",
+        "authorization_raw": 1,
+        "bundle_id": "dev.agentdocker.desktop",
+        "notification_center": "enabled",
+        "sounds": "enabled"
+      },
+      "rendered_navigation": {
+        "existing_window_steps": 24,
+        "cold_start_steps": 2,
+        "surviving_children": [],
+        "binaries_unchanged": true
+      },
+      "command_guards": [
+        {
+          "scenario": "loose_executable",
+          "exit_code": 1,
+          "stderr": "not running inside an application bundle\n"
+        },
+        {
+          "scenario": "unexpected_argument",
+          "exit_code": 2,
+          "stderr": "unexpected notification status argument\n"
+        }
+      ],
+      "artifacts": {
+        "trial": {
+          "private_path": "/private/tmp/agentdocker-notification-authorization-trial1-2026-09-15/summary.json",
+          "sha256": "7662df3ffac9b7d78b52b14307af9f527a76e95f646df74079b1e90c71efdd29"
+        },
+        "routing": {
+          "private_path": "/private/tmp/agentdocker-notification-authorization-trial1-2026-09-15/routing/result.json",
+          "sha256": "8f0d359bb20ee3c1e65a14cc48cc1b9affa7a32ba7c4198b355282ff2078ea3a"
+        },
+        "console_state": {
+          "private_path": "/private/tmp/agentdocker-notification-authorization-trial1-2026-09-15/console-state.json",
+          "sha256": "5dbb63d42e39ba14e2aa56a48eb36f093845665c61681f1d734553a3cbbbaa45"
+        }
+      },
+      "interpretation": "macOS reports denied authorization for the candidate bundle identity while individual alert/sound/Notification Center settings are enabled. Rendering/routing and read-only queries passed. No physical focus event was established; a subsequent read-only console check found the screen locked.",
+      "limits": [
+        "The retained trial summary described activation too broadly: window rendering and routing do not establish physical focus while the screen is locked. The first-focus permission request remains unverified.",
+        "Settings and production providers were unchanged; the candidate is not installed.",
+        "Enabling the saved notification permission awaits the user decision; real click testing requires an unlocked session.",
+        "No Developer ID or signing/payment cause is established by these results."
+      ]
     }
   }
 }
