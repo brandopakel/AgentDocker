@@ -60,6 +60,9 @@ impl Catalog {
         catalog
             .projects
             .retain(|entry| entry.project.root.is_absolute());
+        catalog.hidden.retain(|root| root.is_absolute());
+        let excess = catalog.hidden.len().saturating_sub(MAX_PROJECTS);
+        catalog.hidden.drain(..excess);
         catalog
             .projects
             .sort_by(|a, b| a.project.root.cmp(&b.project.root));
@@ -135,6 +138,11 @@ impl Catalog {
         }
         if !self.hidden.iter().any(|h| h == root) {
             self.hidden.push(root.to_path_buf());
+        }
+        // Bounded like the list itself; past that the oldest removal is
+        // forgotten, which discovery may then list again.
+        while self.hidden.len() > MAX_PROJECTS {
+            self.hidden.remove(0);
         }
         if self.selected.as_deref() == Some(root) {
             self.selected = self.projects.first().map(|e| e.project.root.clone());
@@ -268,6 +276,18 @@ mod tests {
         // Two folders called the same are told apart by name.
         catalog.remember(project("nested/zed"), true);
         assert_eq!(catalog.shared_names().len(), 1);
+        // The hidden list is bounded like the list itself.
+        for i in 0..MAX_PROJECTS + 5 {
+            let folder = project(&format!("gone-{i}"));
+            catalog.remember(folder.clone(), false);
+            catalog.remove(&folder.root);
+        }
+        assert_eq!(catalog.hidden.len(), MAX_PROJECTS);
+        assert!(
+            !catalog.hidden.contains(&project("alpha").root),
+            "the oldest removal went"
+        );
+        assert!(catalog.hidden.contains(&project("gone-500").root));
     }
 
     #[test]

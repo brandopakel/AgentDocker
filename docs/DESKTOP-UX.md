@@ -31,7 +31,8 @@ Quiet projects remain available. An unavailable folder stays selected and offers
 gives the entry a name of your own here (an empty name goes back to the
 folder's), **Pin**/**Unpin**, and **Remove from list**, which keeps the folder
 off the list even when its sessions are discovered again, until you add it
-again. **More → Forget project** does the same for the selected project. None
+again (the list of removed folders is bounded like the project list, at 512;
+past that the oldest removal is forgotten). **More → Forget project** does the same for the selected project. None
 of these deletes files or stops sessions. Two projects with one name show
 their parent folder under it. Sessions whose project is unknown appear under
 **Other sessions**.
