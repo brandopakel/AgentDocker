@@ -19,7 +19,46 @@ import subprocess
 import sys
 import tempfile
 import time
-from desktop_smoke import stop, wait_window
+from desktop_smoke import bounded_output, stop, wait_window
+
+
+def finish_smoke(window, daemon, endpoint, report, output, started, primary_error):
+    """Attempt all cleanup and reporting without hiding a workflow failure."""
+    errors = []
+
+    def retain(stage, error):
+        errors.append({"stage": stage, "error": bounded_output(str(error))})
+        report["cleanup_errors"] = errors
+        report["result"] = "failed"
+
+    try:
+        stop(window)
+    except Exception as error:
+        retain("window cleanup", error)
+    try:
+        if daemon is not None and daemon.poll() is None:
+            try:
+                rpc(endpoint, {"op": "shutdown"})
+                daemon.wait(timeout=10)
+            except Exception as error:
+                retain("daemon shutdown", error)
+                stop(daemon)
+    except Exception as error:
+        retain("daemon cleanup", error)
+    report["elapsed_seconds"] = time.monotonic() - started
+    try:
+        (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+    except Exception as error:
+        retain("result report", error)
+    if errors:
+        detail = "native workflow cleanup failed: " + json.dumps(errors)
+        if primary_error is None:
+            raise RuntimeError(detail)
+        try:
+            print(detail, file=sys.stderr)
+        except Exception:
+            # A broken diagnostic stream must not replace the workflow error.
+            pass
 
 
 def rpc(endpoint, request, timeout=5):
@@ -410,16 +449,11 @@ def smoke(binary_dir, output):
             narrow_inbox()
             report["idle_resources"] = measure_idle(binary_dir, env, project, daemon, output)
             report["result"] = "passed"
+        except Exception as error:
+            report["error"] = str(error)
+            raise
         finally:
-            stop(window)
-            if daemon is not None and daemon.poll() is None:
-                try:
-                    rpc(endpoint, {"op": "shutdown"})
-                    daemon.wait(timeout=10)
-                except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
-                    stop(daemon)
-            report["elapsed_seconds"] = time.monotonic() - started
-            (output / "result.json").write_text(json.dumps(report, indent=2) + "\n")
+            finish_smoke(window, daemon, endpoint, report, output, started, sys.exc_info()[1])
     return report
 
 
