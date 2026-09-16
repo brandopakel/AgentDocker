@@ -802,7 +802,7 @@ mod tests {
                 send(
                     &mut client,
                     Request::Attach {
-                        agent: target,
+                        agent: target.clone(),
                         cols: Some(80),
                         rows: Some(24),
                     },
@@ -819,6 +819,26 @@ mod tests {
                     }
                 }
                 testing.offer_transfer(1).unwrap();
+                // A new viewer's initial resize is also a mutation, even
+                // before its output stream has been established.
+                let (new_client, new_server) = agentdocker_host::ipc::pair().await.unwrap();
+                let new_serving = tokio::spawn(handle(testing.clone(), new_server));
+                let mut new_client = BufReader::new(new_client);
+                send(
+                    &mut new_client,
+                    Request::Attach {
+                        agent: target,
+                        cols: Some(132),
+                        rows: Some(55),
+                    },
+                    capable,
+                )
+                .await;
+                assert!(
+                    matches!(next(&mut new_client).await, Response::Error { code, .. } if code == if capable { ErrorCode::Transferring } else { ErrorCode::Unavailable })
+                );
+                drop(new_client);
+                new_serving.await.unwrap().unwrap();
                 for request in [
                     Request::AttachInput {
                         data: agentdocker_core::protocol::encode_bytes(b"blocked\n"),
