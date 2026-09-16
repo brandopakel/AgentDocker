@@ -92,7 +92,7 @@
     "Signed/notarized distribution and physical Notification Center acceptance.",
     "Earlier PRs and broader remaining-work items are not closed by this repair."
   ],
-  "summary": "Historical hook repair and September15 intact launcher: private install/legacy rollback/routes and production activation passed; an existing Codex session auto-bound, then a peer message started its next ordinary turn with an exact receipt. Physical notification clicks and posting authorization remain open.",
+  "summary": "Historical hook repair and September 15 intact launcher: private install/legacy rollback/routes and production activation passed; an existing Codex session auto-bound, then a peer message started its next ordinary turn with an exact receipt. Physical notification clicks and posting authorization remain open.",
   "signed_copy_followup_2026_09_15": {
     "scope": "Intact signed macOS application copies, entrypoint forwarding, same-release legacy wrapper repair, actual pre-capability upgrade/rollback, and private existing/cold-window notification navigation.",
     "source": {
@@ -323,7 +323,7 @@
     "review": {
       "claude_source": "Approved b619..90be implementation design, contingent on focused tests and real older-payload trial; both have now passed. Peer message a993028fb7334417.",
       "github_pr": 153,
-      "final_ci": "passed at00973a1 on all CI platforms; CodeRabbit final-head review had no actionable findings; PR153 merged as4074275"
+      "final_ci": "passed at 00973a1 on all CI platforms; CodeRabbit final-head review had no actionable findings; PR153 merged as 4074275"
     },
     "remaining": [
       "Native notification authorization/posting and actual Notification Center clicks while foregrounded, hidden and closed.",
@@ -416,7 +416,7 @@
           "release_build",
           "git_diff_check"
         ],
-        "scope": "Existing documentation and installed-state evidence only; production files unchanged from merged main4074275. This is not another physical notification or provider acceptance trial.",
+        "scope": "Existing documentation and installed-state evidence only; production files unchanged from merged main 4074275. This is not another physical notification or provider acceptance trial.",
         "log": {
           "private_path": "/private/tmp/agentdocker-current-build-gate1.log",
           "sha256": "1097bbb8d9d39b8fa69ab58c24e15155a4ad28c40f1b02e5dfda2f7b3ea228c4"
