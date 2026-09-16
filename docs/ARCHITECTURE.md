@@ -904,6 +904,175 @@ Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `
 | Request | Response | Phase |
 |---|---|---|
 | Additional execution adapters (Apple `container`, others) | capability-specific | 4 |
+| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage, overhead}` | 5 |
+
+**Token usage by agent, model and provider** (requested September 15;
+proposal, not implemented). The initial adapters will read local Codex rollouts
+and Claude Code transcripts. These are versioned runtime formats: an adapter
+must identify a supported usage record and model context, rather than assume
+every turn or runtime reports every counter. Missing or unsupported counters
+are unknown, never zero. The design:
+
+- **Collection outside the state lock.** A bounded host collector reads complete
+  JSONL records from the configured runtime directories, including unregistered
+  sessions, with per-file byte/time budgets and persistent scan progress. Live
+  sessions get priority; a bounded rotating scan also catches new files, finished
+  sessions and late usage records. The same parsers serve the standalone CLI.
+  Reading transcript files does not mean retaining their message text.
+  Each collection pass records a durable discovery generation and a fixed
+  per-file generation identity, captured-prefix validation data and a high-water
+  byte offset at the end of the last complete JSONL record
+  within the captured file length. A trailing partial record remains beyond
+  that boundary: retain its start offset, reread it when completed, and expose
+  the pending tail in collection coverage. Never advance a cursor over an
+  incomplete record or claim coverage of its unparsed bytes. Its completion
+  watermark advances only after
+  every discovered file in that generation is scanned to that offset and its
+  samples/cursor commit. Files appearing or growing later belong to a later
+  generation; scan failures and unsupported formats remain explicit gaps.
+  A bounded or unfinished directory enumeration cannot claim that no more files
+  exist. Empty aggregates during discovery do not prove zero usage.
+  A path alone is not a generation identity. Each adapter must validate the same
+  opened file generation and captured prefix before committing snapshot coverage;
+  truncation, replacement, rotation or an in-place rewrite invalidates that
+  file's coverage even if its path and length are unchanged. Validation reads
+  share the scan budget. Changed content becomes an explicit source gap or a new
+  generation; it cannot complete the earlier snapshot.
+- **Explicit token semantics.** A normalized sample keeps `runtime`,
+  `provider?`, `model?`, `session_id`, timestamp and separate optional counters
+  for total input, cache-read input, cache-write input, total output and reasoning
+  output. Each adapter documents whether its raw counters overlap: a reported
+  cache hit is not added again to an inclusive input total, and reasoning is not
+  added again to an inclusive output total. Cache reads and cache writes remain
+  separate. Cumulative snapshots become deltas against a durable baseline;
+  per-response usage and cumulative usage are never both counted. A decrease
+  starts a new counter epoch: store the reset value as the baseline, emit no
+  negative delta and mark that interval as a gap. Subsequent increases in that
+  epoch count normally. A newly discovered complete session may use a zero
+  baseline only when its adapter proves the snapshot covers that session from
+  its start; otherwise the first snapshot establishes a baseline with unknown
+  prior coverage. Persist that initial unknown interval as a source gap from
+  session start (or unknown earlier history) through the baseline timestamp.
+  A query overlapping it reports partial coverage when later contributions are
+  known, otherwise unknown; it cannot report complete coverage merely because
+  every collected delta has a counter. Ranges wholly after the baseline may be
+  complete if all other coverage conditions hold. Reset/rewrite identities must
+  distinguish new epochs from replay. Each supported format needs restart,
+  truncation, rotation, partial-tail completion and rewrite
+  fixtures. Unsupported fields stay unknown, with coverage beside aggregates.
+- **Restart-safe ingestion.** The collector returns samples with stable source
+  identities plus the proposed next file cursor. One daemon transaction accepts
+  previously unseen samples, updates aggregates and durable cursor/baseline
+  state, and appends `usage_recorded`; only then may in-memory progress move.
+  Retries, rotation, truncation, copied logs and partial final lines must not
+  duplicate counts or skip complete records. Provider event/message identifiers
+  are used when available; each fallback identity and rewrite rule needs a
+  format-specific regression fixture before that format is supported. A replay
+  cursor survives aggregate retention so rereading old files cannot resurrect
+  expired usage. Standalone scans deduplicate within their selected input set
+  and do not alter daemon cursors.
+- **Historical attribution.** Match by runtime plus provider session, following
+  registered identity aliases. Store the resulting `agent_id?` and `project_id?`
+  on the usage bucket at ingestion; deleting, moving or retiring a current agent
+  cannot move its historical usage into another project. Unmatched or ambiguous
+  sessions remain unattributed, with unknown project, until an explicit
+  idempotent reconciliation has enough evidence. Reconciliation uses the
+  retained sample identities and their bucket contributions, not a second
+  ingestion: in one transaction it subtracts each still-unattributed contribution
+  from its original hourly bucket, merges it into the resolved agent/project
+  bucket, updates its attribution and emits the reconciliation event. Counter
+  sums and known/sample counts move together; no separate agent/project totals
+  may lag this transaction. Repeating the operation is a no-op, and re-ingestion
+  uses the same dedupe identity. Preserve unresolved contributions through the
+  usage retention window; expired contributions cannot recreate totals. Runtime
+  names are not billing companies: provider comes from reliable runtime metadata or explicit user
+  configuration, otherwise it is unknown. Model names are retained as reported.
+- **Bounded aggregation.** Rows are keyed by agent/project attribution, runtime,
+  provider, model and UTC hour, with separate sums and coverage counts for every
+  counter. Dedupe/cursor state and bucket changes commit together. Hour buckets
+  follow the configured retention window; the UI says *Available history*, not
+  an unqualified all-time total. No prompt, response or tool-result text is
+  stored in the usage tables.
+- **Reading it.** `usage` groups by agent (the default), model, provider, project
+  or hour. The proposed CLI is `agentdocker usage [--project <id>]
+  [--agent <id>] [--since <RFC3339|duration>] [--until <RFC3339>]
+  [--by agent|model|provider|project|hour]`. A duration is a positive decimal
+  integer followed by one lowercase unit (`s`, `m`, `h`, `d`), such as `24h`;
+  fractions, signs, whitespace, compound units, zero and overflow are rejected.
+  Resolve it backward from the query's captured UTC `as_of`, before validating
+  or rounding the bounds. Omitted `since` means 24 hours before `as_of`;
+  omitted `until` means `as_of`. Reversed or
+  empty requested ranges and a `since` later than `as_of` are rejected before
+  rounding. Future `until` is clamped to `as_of`. Since only hourly aggregates
+  are retained, `since` rounds down and `until` rounds up to UTC hours; aligned
+  bounds stay unchanged. Clamp the lower bound to the configured oldest retained
+  hour. If the requested history is wholly expired, return no rows and equal
+  effective bounds at that retention boundary. Otherwise buckets use the
+  half-open interval `[effective_since, effective_until)`. An upper bound rounded
+  past `as_of` includes only observed data, never predicted future usage.
+  Responses and the UI show the effective bounds, requested-history truncation
+  and whether the current hour is included. Retention loss and an incomplete
+  current hour are separate from missing parser fields or ingestion gaps.
+  The Usage screen shows day/week/available-history totals, per-agent model and
+  provider totals, project filters and explicit unknown/partial coverage. It
+  shows tokens; monetary cost is outside this initial proposal.
+- **Proposed response schema.** `usage` returns `rows` (array), `by` (one of the
+  grouping values above), `as_of`, `effective_since`, `effective_until` (UTC
+  RFC3339 strings), and `coverage` (object). `coverage` contains
+  `retained_since` (UTC hour), `history_truncated`, `future_until_clamped` and
+  `includes_current_hour` (booleans), plus `source_gaps` (a nonnegative integer
+  count of known unreadable/unsupported/reset intervals in the requested scope).
+  `coverage.collection` contains `state` (`unknown`, `scanning`, `caught_up`),
+  `discovery_generation` (u64 or null), `snapshot_at` and `completed_at` (UTC
+  timestamps or null), `discovery_complete` (boolean), `pending_files` (u64 or
+  null while enumeration is incomplete), `pending_tail_files` (nonnegative
+  integer, null while discovery is incomplete), and `scope` (configured runtime
+  roots and supported format versions). `caught_up` requires completed discovery,
+  committed scans through every fixed high-water offset in that generation and
+  `pending_tail_files: 0`. A captured partial tail keeps collection `scanning`
+  until it completes or becomes an explicit source gap;
+  it is coverage of that declared snapshot/scope, not of logs that appeared
+  later or of all provider accounts. Missing/incomplete discovery is `unknown`;
+  complete discovery with outstanding known files is `scanning`. A query outside
+  that covered scope/range cannot borrow a global completion watermark. A known
+  source gap remains visible even after the scan finishes. Every row has `key`
+  (string, or null for unknown/unattributed; UTC hour string when `by=hour`),
+  `samples` (nonnegative integer contribution count), and `counters` (object with
+  exactly `input_tokens`, `cache_read_input_tokens`, `cache_write_input_tokens`,
+  `output_tokens`, `reasoning_output_tokens`). Each counter is
+  `{sum: u64|null, known_samples: u64, coverage: "complete"|"partial"|"unknown"}`.
+  `sum` is tokens from known contributions only; null means none are known,
+  whereas a reported zero remains zero. `known_samples` cannot exceed `samples`;
+  counter coverage is unknown when none report it, partial when some report it
+  or relevant collection is unfinished, and complete only when all contributions
+  report it and collection for that row's scope/range is caught up without source
+  gaps. Unknown discovery prevents a complete counter even if every currently
+  known sample has that field. An empty query returns `rows: []`, not a fabricated
+  zero row, with collection status still present. Complete snapshot coverage does
+  not override retention truncation, new data after the snapshot, or the current
+  hour's partial duration. CLI and desktop display that collection watermark
+  beside totals so an ongoing scan cannot appear finished.
+  The separate top-level `overhead` object uses the same project/agent filters
+  and effective time range, independently of `by`: `injected_bytes` (u64 or null,
+  UTF-8 bytes recorded as emitted by AgentDocker), `known_events` (u64),
+  `coverage` (`complete`, `partial`, `unknown` for instrumentation of the selected
+  scope), and `estimated_tokens` (null when unestimated; otherwise
+  `{value: u64, algorithm: string, version: string, parameters: object}`).
+  Null bytes mean unavailable instrumentation, not zero. Each estimate identifies
+  its conversion method and parameters; it does not measure billed tokens or
+  prove the provider consumed emitted bytes. The Usage screen labels these as
+  separate emitted-byte counts and estimated tokens, never a provider-row sum.
+- **AgentDocker overhead.** Record injected hook/MCP/message byte counts apart
+  from provider-reported usage, with any token conversion labelled as an
+  estimate. These estimates are neither additional provider tokens nor a precise
+  measure of billed overhead; never add them to the provider total.
+
+Completion requires parser fixtures for supported versions and missing fields;
+crash/replay/rotation/truncation and partial-line trials; cache/reasoning overlap
+checks; unfinished/failed discovery and bounded scans with growing files;
+unregistered and retired-session attribution; hour-boundary/retention
+checks; and actual CLI/desktop acceptance showing coverage and effective ranges.
+This proposal does not mark the collector, protocol, CLI or Usage screen built.
 
 Shipped events include `policy_updated` (effective rules or load diagnostic changed), `policy_denied` (what was asked and which rule refused it), `agent_restarted` (a managed agent started again by its policy, with the attempt number), `contest_opened`, `contest_entered`, `contest_submitted`, `contest_closed`, `lease_waiting`, `lease_wait_ended`, `lease_deadlock`, `agent_restored` (a managed agent brought back after a daemon restart, with how many of its reads went stale), `container_updated` (durable container transitions), `image_built`, `file_changed` (ledger observations), `agent_stale` (stale-reader events), `journal_appended`, `journal_read`, `journal_pruned` (a project's entries below a sequence were deleted, on request or by retention) and `checkpoints_pruned`, `answer_routed` (which way an answer reached its asker: the waiting `ask` or the queue), `conversation_read` (a reader's cursor moved) and `messages_pruned` (the archive dropped rows by retention or the cap), and the input binding events `input_bound` (an external controller became, or resumed being, the sole consumer of an agent's queued input), `input_unbound`, `input_controller_ended` (the bound controller, or a process launched to replace it, is gone), `input_controller_launched` (the daemon started the binding's launch descriptor, with the attempt number), `input_controller_launch_failed`, `input_restarts_exhausted` (the episode's launches are used up), `input_restarts_reset` (a person asked for the controller to be started again) and `input_resumed` (a provider session that came back as a new process was joined to the record holding its thread's queue; the new record's id is an alias of it), and the coordinator transfer events `daemon_transfer_offered`, `daemon_transfer_readdressed` (the offer now names the successor process that was actually started), `daemon_transfer_accepted` and `daemon_transfer_aborted`. The `file_changed` and `agent_stale` notifications are live-only (`seq:0`) and cannot be recovered through event replay. The inbox notification uses the separate message kind `stale`.
 
@@ -993,3 +1162,19 @@ signals remain unverified; discovery alone is not provider-limit detection.
 The desktop shows the reason and queue count, suppresses Done for known blocked
 turns and preserves drafts. See the existing [message audit](MESSAGE-DELIVERY-AUDIT.md#provider-limit-and-session-exhaustion-acceptance-september-14)
 for adapter coverage and remaining actual-provider acceptance.
+
+### Owned Codex active-turn input
+
+The managed Codex bridge uses the same `Send` queue for terminal, desktop, CLI
+and peer input. After the starting input is received, another queued message may
+enter its owned turn through `turn/steer(expectedTurnId)`. A separate durable
+steering attempt holds the exact input and receipt; the starting attempt remains
+the turn and MCP-answer ownership anchor. Acknowledged steering receipts rotate
+through the existing bounded completed history. The bridge ledger is version 10;
+this does not change the daemon wire protocol or SQLite schema. Uncertain
+submissions require exact history reconciliation, not retry. A definite provider
+active-turn precondition refusal alone permits a later ordinary submission.
+Provider questions hold ordinary messages until resolved. This contract does
+not give the external native-queue sidecar control of a standalone TUI turn.
+Bounded source and actual-Codex/local-model busy and lost-reply trials passed at
+`13c3e40`; hosted-model and existing-session acceptance remain open.

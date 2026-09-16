@@ -179,6 +179,25 @@ draft, provider identity, busy-message ordering and exact question-answer receip
 Final review/CI remain pending; the earlier failed trials are retained in the
 [reload record](verification/2026-09-16-reload-controller-episode.json).
 
+September 16 owned Codex active-input source `7fbb8c4` passed the full
+1,015-Rust/77-Python gate. Actual Codex 0.154.0 with a local model fixture
+consumed CLI human, peer and human-broadcast inputs in the same active turn,
+with distinct exact receipts. A separate dropped steering response recovered
+automatically under the same agent/thread after controller restart, without
+resubmission. These checks exercise the owned bridge; the existing standalone
+TUI pause-delivery defect, other providers and real model-service acceptance
+remain open. See [input evidence](verification/2026-09-11-codex-input-review.json).
+
+The September 16 review follow-up suppresses further steering after an explicit
+precondition refusal for the current turn, retaining its queue head until the
+ordinary turn completes. Corrected `01531dc` passed the full 1,015-Rust/77-Python
+gate and actual-Codex busy/broadcast, injected-refusal, and dropped-reply recovery
+trials against the local model fixture. Existing
+standalone TUI delivery still uses an idle-only native queue, and existing Claude
+sessions without a channel receiver still need safe reconnect. Hosted-model and
+broader provider acceptance remain open; no universal-provider completion is
+claimed. See [Codex input](CODEX-INPUT.md#active-turn-steering-acceptance-september-16).
+
 | Priority | Work remaining | Completion condition and evidence |
 | --- | --- | --- |
 | User request, September 15 | Portable coordination instructions | One bundled SKILL.md supplies MCP onboarding and preview/apply/undo setup; `agentdocker skill` exports it without a daemon. Combined source `4eb92a7` passed 969 Rust tests (six skipped), 70 Python checks and the full release gate. Actual Codex and Claude skill discovery passed on the recorded earlier release; actual Claude setup/undo also passed; the unchanged skill plus the native queue fix passed a 65-second direct-user busy trial at `528e4e0`, including idle wake, drafts, FIFO and receiver recovery. PR #149 merged after final CI and review; installation, implicit model activation and additional runtime loader acceptance remain. See [guided setup](GUIDED-SETUP.md#shared-coordination-skill). |
@@ -203,7 +222,7 @@ Final review/CI remain pending; the earlier failed trials are retained in the
 
 | Priority | Work remaining | Completion condition and evidence |
 | --- | --- | --- |
-| Partial | Messaging as a workspace (Slack/Discord shape) | PR #150 merged as `93b76b8` after final review and CI: schema21 archives, destination-scoped conversations, named channels, read cursors, unread counts, search, threads and the Messages workspace are implemented. Reading acknowledges only the person's displayed rows; agent input queues remain separate. The reviewed integration passed 999 Rust tests, 77 Python checks and 233 native workflow steps, with retained archive/index regression evidence in [session messages](verification/2026-09-11-session-messages.json). PR #152 adds the Earlier group, persistent project menus, saved names and corrected discovery; final source `2a51d13` passed 1007 Rust tests, 77 Python checks and 275 native steps. It merged as `ece76fd` after final CI/review. Installed schema21 source `72b1eb4` is observed serving and has one subsequent Codex native receipt; that does not close all installed acceptance. PR #160 pane resizing and hidden-conversation read-state protection merged as `37725fe` after final review and CI; widths remain saved, compact layouts preserve usable conversation space, and hidden panes do not acknowledge messages. Installed acceptance remains. Still unbuilt: mentions/counts and an explicit project-wide pause request/control. See [desktop behavior](DESKTOP-UX.md#messages-inbox-and-tools) and [integrated evidence](verification/2026-09-12-integrated-desktop.json). |
+| Partial | Messaging as a workspace (Slack/Discord shape) | PR #150 merged as `93b76b8` after final review and CI: schema21 archives, destination-scoped conversations, named channels, read cursors, unread counts, search, threads and the Messages workspace are implemented. Reading acknowledges only the person's displayed rows; agent input queues remain separate. The reviewed integration passed 999 Rust tests, 77 Python checks and 233 native workflow steps, with retained archive/index regression evidence in [session messages](verification/2026-09-11-session-messages.json). PR #152 adds the Earlier group, persistent project menus, saved names and corrected discovery; final source `2a51d13` passed 1007 Rust tests, 77 Python checks and 275 native steps. It merged as `ece76fd` after final CI/review. PR #160 pane resizing and hidden-conversation read-state protection merged as `37725fe` after final review and CI; widths remain saved, compact layouts preserve usable conversation space, and hidden panes do not acknowledge messages. Read-only September 16 verification observes source `1e90f83` installed as release `3add4bea`, with the daemon and GUI running from that release. Broader installed acceptance remains. Still unbuilt: mentions/counts and an explicit project-wide pause request/control. See [desktop behavior](DESKTOP-UX.md#messages-inbox-and-tools) and [integrated evidence](verification/2026-09-12-integrated-desktop.json). |
 | Acceptance | Portable coordination skill | Source implementation and review are complete in merged PR #149; the bundled `SKILL.md` supplies MCP instructions and preview/apply/undo setup without duplicated instruction text. Bounded Codex/Claude loader and Claude setup/undo trials passed. Fresh-session implicit activation, installed-candidate checks and other runtime loaders remain open, as detailed in the portable coordination instructions row above and [guided setup](GUIDED-SETUP.md#shared-coordination-skill). |
 | Next | Token usage by agent, model and provider | A host collector reads each runtime's own local log (Codex rollouts under `~/.codex/sessions`, Claude Code transcripts under `~/.claude/projects`), attributes turns to registered agents by session id, and the daemon aggregates input, cached, output and reasoning tokens by agent, model and provider over a time range; a Usage screen and `agentdocker usage` show tokens (never money unless the user configures prices), with AgentDocker's own overhead (bytes it injected as hook context, MCP results and queued messages, with an estimated token count labelled as such) kept apart from provider tokens, and coverage explicit: a runtime whose log is not read shows unknown, not zero. |
 

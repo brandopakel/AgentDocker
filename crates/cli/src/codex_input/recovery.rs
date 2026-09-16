@@ -76,8 +76,9 @@ pub(super) fn page<'a>(
 
 pub(super) async fn find_receipt(provider: &mut Provider, ledger: &mut Ledger) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(60), async {
-        let attempt = ledger.record().attempt.as_ref().context("no retained Codex input")?;
-        let input = attempt.input.clone();
+        let inputs: Vec<_> = ledger.record().attempt.iter().chain(ledger.record().steering.iter())
+            .filter(|attempt| attempt.receipt.is_none()).map(|attempt| attempt.input.clone()).collect();
+        for input in inputs {
         let thread = ledger.record().thread.clone().context("no retained Codex conversation")?;
         let mut cursor: Option<String> = None;
         let mut cursors = HashSet::new();
@@ -95,10 +96,13 @@ pub(super) async fn find_receipt(provider: &mut Provider, ledger: &mut Ledger) -
             cursor = next;
             if cursor.is_none() {
                 let receipt = found.context("no exact provider receipt exists for the prepared input; automatic resubmission is refused")?;
-                return ledger.accept(&input, receipt);
+                ledger.accept(&input, receipt)?;
+                break;
             }
         }
-        bail!("Codex history exceeds the recovery page limit; retained input requires inspection")
+        ensure!(cursor.is_none(), "Codex history exceeds the recovery page limit; retained input requires inspection");
+        }
+        Ok(())
     }).await.context("Codex receipt recovery exceeded one minute")?
 }
 
