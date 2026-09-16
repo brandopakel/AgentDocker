@@ -454,7 +454,12 @@ existing version 1–9 records retain their inputs when upgraded.
 
 The installed Codex 0.154.0 API passed an isolated local-model trial: the second
 input reached the same active turn, wrong-turn and idle steering were refused,
-and no production profile or conversation changed. AgentDocker integration,
-crash/lost-reply acceptance and the full source gate remain pending. Native TUI
+and no production profile or conversation changed. Source `13c3e40` passed 1,010 Rust tests, 77 Python checks and private actual-Codex
+bridge trials for CLI human/peer/broadcast input in one busy turn and supervised
+lost-reply recovery without resubmission. Fixture failures and passing reruns are
+retained in [input evidence](verification/2026-09-11-codex-input-review.json).
+Run `python3 scripts/codex_steering_smoke.py --binary-dir target/release
+--output /tmp/steering-trial` (add `--scenario lost-reply` for recovery).
+Hosted-model and broader provider acceptance remain open. Native TUI
 queue delivery still waits for idle; this change does not establish active-input
 parity for that existing-session route.

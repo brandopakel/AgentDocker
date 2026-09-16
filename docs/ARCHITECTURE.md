@@ -977,4 +977,5 @@ submissions require exact history reconciliation, not retry. A definite provider
 active-turn precondition refusal alone permits a later ordinary submission.
 Provider questions hold ordinary messages until resolved. This contract does
 not give the external native-queue sidecar control of a standalone TUI turn.
-Source and integration acceptance are still pending.
+Bounded source and actual-Codex/local-model busy and lost-reply trials passed at
+`13c3e40`; hosted-model and existing-session acceptance remain open.

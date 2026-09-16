@@ -256,5 +256,169 @@
       },
       "limitation": "Actual managed-network approval acceptance remains open; no callback reached the earlier isolated provider fixture."
     }
+  },
+  "owned_active_steering_2026_09_16": {
+    "source": "13c3e40e34e4b1ba022f25a14a821a59ab9683e4",
+    "scope": "Owned Codex app-server bridge with actual Codex 0.154.0 and local fixture model; no production profile or conversation changed. Does not establish standalone TUI steering or hosted-model latency.",
+    "full_gate": {
+      "result": "passed",
+      "rust_passed": 1010,
+      "rust_skipped": 7,
+      "python_checks": 77,
+      "log": "/private/tmp/agentdocker-steering-gate1-2026-09-16.log"
+    },
+    "focused": {
+      "result": "passed",
+      "tests": 65,
+      "log": "/private/tmp/agentdocker-steering-focused1-2026-09-16.log"
+    },
+    "binary_sha256": {
+      "agentdocker": "be90b396e794558f8d2421a90746d53a1a32169f8bc2bcc1a8738a2cff33e177",
+      "agentd": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65"
+    },
+    "trials": [
+      {
+        "scenario": "busy1",
+        "result": "failed",
+        "error": "'last_received'",
+        "report": "/private/tmp/agentdocker-steering-busy1-2026-09-16/result.json",
+        "driver_sha256": "e8b96f756a5a308757103d2cdfc32fa758a470f8564e6cac4db131be2c75a520",
+        "elapsed_seconds": 3.1555432500026654,
+        "checks": [],
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        }
+      },
+      {
+        "scenario": "busy2",
+        "result": "passed",
+        "error": null,
+        "report": "/private/tmp/agentdocker-steering-busy2-2026-09-16/result.json",
+        "driver_sha256": "fa33415498467f440f60b086f0e515192f2afe93425543dc8f86ba5837f6988a",
+        "elapsed_seconds": 2.5115423330280464,
+        "checks": [
+          "CLI human and peer sends use owned input route",
+          "same active turn",
+          "exact per-message receipt",
+          "no duplicated provider submission"
+        ],
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        }
+      },
+      {
+        "scenario": "busy3",
+        "result": "passed",
+        "error": null,
+        "report": "/private/tmp/agentdocker-steering-busy3-2026-09-16/result.json",
+        "driver_sha256": "19b902770b27fbc2c5a7a2fdde66de943cfd86d6ca143be2327e4495c548adb7",
+        "elapsed_seconds": 2.5710792079917155,
+        "checks": [
+          "CLI human and peer sends use owned input route",
+          "same active turn",
+          "exact per-message receipt",
+          "no duplicated provider submission"
+        ],
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        }
+      },
+      {
+        "scenario": "lost-reply1",
+        "result": "failed",
+        "error": "fixture agent disappeared before its identity was retained",
+        "report": "/private/tmp/agentdocker-steering-lost-reply1-2026-09-16/result.json",
+        "driver_sha256": "e8b96f756a5a308757103d2cdfc32fa758a470f8564e6cac4db131be2c75a520",
+        "elapsed_seconds": 32.01541074999841,
+        "checks": [],
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        }
+      },
+      {
+        "scenario": "lost-reply2",
+        "result": "failed",
+        "error": "fixture agent disappeared before its identity was retained",
+        "report": "/private/tmp/agentdocker-steering-lost-reply2-2026-09-16/result.json",
+        "driver_sha256": "fa33415498467f440f60b086f0e515192f2afe93425543dc8f86ba5837f6988a",
+        "elapsed_seconds": 31.623205125011737,
+        "checks": [],
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        }
+      },
+      {
+        "scenario": "lost-reply3",
+        "result": "passed",
+        "error": null,
+        "report": "/private/tmp/agentdocker-steering-lost-reply3-2026-09-16/result.json",
+        "driver_sha256": "19b902770b27fbc2c5a7a2fdde66de943cfd86d6ca143be2327e4495c548adb7",
+        "elapsed_seconds": 32.135315459017875,
+        "checks": [
+          "CLI human and peer sends use owned input route",
+          "same active turn",
+          "exact per-message receipt",
+          "no duplicated provider submission",
+          "lost steering reply reconciled after supervised controller restart"
+        ],
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        }
+      }
+    ],
+    "failure_disposition": "busy1 used the wrong input-delivery field in its final assertion. lost-reply1 and lost-reply2 tried to pin the already retained old PID again during its expected exit. These fixture failures are retained and do not count as passes. The corrected driver only pins new generations and reads received.",
+    "acceptance": [
+      "CLI human, peer and human broadcast input consumed in the same owned active turn",
+      "distinct exact message receipts",
+      "supervised recovery of a lost steering response without resubmission",
+      "normal fixture cleanup with no remaining processes"
+    ],
+    "still_open": [
+      "existing standalone TUI active control endpoint",
+      "real hosted-model busy/tool/question acceptance",
+      "all-provider equivalent adapters and existing-session reconnect"
+    ]
   }
 }

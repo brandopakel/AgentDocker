@@ -123,6 +123,38 @@ mod tests {
     }
 
     #[test]
+    fn version_nine_upgrades_without_rewriting_pending_input_or_accepting_new_receipt_semantics() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        let first = message();
+        let input = ledger.prepare(&first).unwrap();
+        let path = ledger.path.clone();
+        drop(ledger);
+        let mut old: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        old["version"] = serde_json::json!(9);
+        old.as_object_mut().unwrap().remove("steering");
+        let bytes = serde_json::to_vec(&old).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert!(ledger.prepare(&first).is_err());
+        ledger.accept(&input, receipt()).unwrap();
+        ledger.acknowledge(first.id.as_str()).unwrap();
+        ledger.prepare_steering(&message(), "turn").unwrap();
+        drop(ledger);
+        let mut incompatible: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        incompatible["version"] = serde_json::json!(9);
+        let bytes = serde_json::to_vec(&incompatible).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(Ledger::open(home.path(), binding).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
     fn prepared_input_survives_restart_and_cannot_be_repeated_or_acknowledged_without_proof() {
         let home = tempfile::tempdir().unwrap();
         let binding = binding(home.path());
