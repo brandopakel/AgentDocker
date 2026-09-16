@@ -81,7 +81,7 @@ event continuity, not just a new socket or a readiness marker.
    place up and takes one back before writing), and a fenced startup that defers recovery
    writes until the successor has accepted; see
    [ARCHITECTURE.md](ARCHITECTURE.md#sessions-and-persistence). Autostart
-   exclusion during a transfer rides on the daemon lock the successor will
+   exclusion during a transfer rides on the daemon lock the successor
    inherits during handover. Background container reconciliation, restarts and
    restores hold admission through their host work too. Event and ledger
    retention use the same write fence; a skipped container transition returns
@@ -237,6 +237,11 @@ an in-process Tokio test cannot establish this boundary.
   processes, each noted ended before the next, 19 acceptances in between,
   no daemon warnings); see
   [the record](verification/2026-09-16-reload-controller-episode.json).
+  The clean-source `055f45f` review rerun passed 20 handovers, 900 ordered
+  messages and 424 completed launches, with no surviving owned process.
+  Ten deferred-exit warnings recovered durably; source and all three binary
+  hashes stayed unchanged. The same source passed the full 1,017-Rust/79-Python
+  gate and six focused failure/transfer regressions.
   *Passed* for the controller's installation pin across a handover
   (`desktop_reload_smoke.py --pin-trial`, in the same record): a live
   controller bound with a launch descriptor inside the first installed

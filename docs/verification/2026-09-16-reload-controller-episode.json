@@ -322,5 +322,258 @@
         "sha256": "fdf3d1452b599d45d7037ed2121e7cc42caa1731e80537d92e22d71565e7b003"
       }
     }
+  },
+  "integration_review_2026_09_16": {
+    "result": "passed",
+    "scope": "Private daemon with experimental reload enabled; notifications suppressed. Source055f45f integrates main50c1f9c and fixes stop durability, container transition refusal, background admission and retention fencing. No production process or provider was replaced.",
+    "build": {
+      "format": 1,
+      "source_commit": "055f45f04035586ecc522f25f7579d81ee2ccb6e",
+      "source_tree": "9966a807cbfb41f9f450e4c0f525a6b1df41befe",
+      "source_input_sha256": "7c8c1c1acefad4b2b78f5c721ddc8cb6fa0f461ba39a94c88945eacbda488200",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 20,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "30652616f42b570dad4e09458943312333d30929847e3ad2ccbcdf38897efc2f",
+        "agentd": "5b70f8b8810a65a7f13fa4c10eb2a44a4fd823702d7db0e2ce10e8067286428d",
+        "agentdocker-ui": "2d7d1ea95c9b78dd3d236e9d775528b7f326a5a647c8f626ed7885f722fc1404"
+      }
+    },
+    "provenance_after": {
+      "source": {
+        "source_commit": "055f45f04035586ecc522f25f7579d81ee2ccb6e",
+        "source_tree": "9966a807cbfb41f9f450e4c0f525a6b1df41befe",
+        "source_input_sha256": "7c8c1c1acefad4b2b78f5c721ddc8cb6fa0f461ba39a94c88945eacbda488200",
+        "source_dirty": false
+      },
+      "binary_sha256": {
+        "agentdocker": "30652616f42b570dad4e09458943312333d30929847e3ad2ccbcdf38897efc2f",
+        "agentd": "5b70f8b8810a65a7f13fa4c10eb2a44a4fd823702d7db0e2ce10e8067286428d",
+        "agentdocker-ui": "2d7d1ea95c9b78dd3d236e9d775528b7f326a5a647c8f626ed7885f722fc1404"
+      },
+      "source_unchanged": true,
+      "binaries_unchanged": true
+    },
+    "ready_gate": {
+      "command": "bash scripts/verify.sh check",
+      "rust_passed": 1017,
+      "rust_skipped": 7,
+      "python_passed": 79,
+      "other": [
+        "documentation",
+        "formatting",
+        "strict Clippy",
+        "doctests",
+        "workspace packaging",
+        "release build"
+      ]
+    },
+    "focused_regressions": {
+      "passed": 6,
+      "cases": [
+        "supervised stop refusal leaves durable/in-memory records, events and control channel unchanged",
+        "failed restore/restart-policy clearing never requests a supervised stop",
+        "offered transfer retains actual event and change rows until abort",
+        "fenced container updates refuse without state or engine effects",
+        "queued background container reconciliation holds admission and blocks an offer",
+        "failed stop commit does not signal an actual verified external process"
+      ]
+    },
+    "trial": {
+      "passed": true,
+      "reloads": 20,
+      "build_info": {
+        "arch": "aarch64",
+        "format": 1,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "os": "macos",
+        "state_schema": 20,
+        "version": "0.1.0"
+      },
+      "scenarios": [
+        "900 messages sent through 20 reloads arrived once, in order; 0 send errors",
+        "424 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+        "both loggers' logs are contiguous across every reload",
+        "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+        "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+        "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 19 handovers accepted in between"
+      ],
+      "trial_processes": {
+        "provider": 50516,
+        "controller": 50517
+      },
+      "reload_seconds": [
+        0.822,
+        0.025,
+        0.025,
+        0.027,
+        0.029,
+        0.029,
+        0.028,
+        0.03,
+        1.576,
+        0.028,
+        0.031,
+        0.04,
+        0.035,
+        0.551,
+        0.04,
+        2.093,
+        0.043,
+        0.042,
+        0.043,
+        0.043
+      ],
+      "daemon_pids": [
+        50499,
+        50805,
+        50854,
+        50900,
+        50947,
+        51755,
+        51801,
+        51846,
+        51883,
+        52185,
+        52231,
+        52277,
+        53178,
+        54382,
+        54515,
+        54579,
+        55681,
+        55717,
+        56298,
+        56332,
+        56366
+      ],
+      "predecessor_retired_seconds": [
+        0.845,
+        0.049,
+        0.05,
+        5.049,
+        0.049,
+        0.049,
+        0.05,
+        0.055,
+        1.602,
+        0.051,
+        5.042,
+        5.041,
+        0.055,
+        0.574,
+        5.048,
+        2.113,
+        5.071,
+        0.043,
+        0.044,
+        0.067
+      ],
+      "sends": {
+        "delivered": 900,
+        "errors": []
+      },
+      "launches": {
+        "finished": 424,
+        "errors": []
+      },
+      "log_lines": {
+        "logger-a": 1883743,
+        "logger-b": 1890177
+      },
+      "controller_episode": {
+        "attempts": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "launched_pids": [
+          50808,
+          51404,
+          52402,
+          54756,
+          56619
+        ],
+        "handovers_during": 19
+      },
+      "survivors": [],
+      "cleanup_errors": [],
+      "daemon_log_warnings": {
+        "agentd::supervisor: exit not recorded durably; the owner's exit report is kept": 5,
+        "agentd::daemon::restore: recovered exit not durable; owner report kept without acknowledgement": 5
+      }
+    },
+    "warnings_note": "Ten warnings retain short-agent exit reports when a transfer refuses a write; every launched agent subsequently reached a durable end. This trial was not warning-free.",
+    "artifacts": {
+      "gate": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-gate1-2026-09-15.log",
+        "sha256": "295d97f2fafbbbf16936917a9b1ec921c62f92265e9a37b806bbe2e0749e8847"
+      },
+      "targeted": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-targeted4-2026-09-15.log",
+        "sha256": "0752a8d7181e5cedd4290fcc75be7460e971ea9a91bf232dbb5077727f253d33"
+      },
+      "external_stop": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-external-stop1-2026-09-15.log",
+        "sha256": "cae6a43d66c224baf5ecbc0e88252b0a1759c38137d69c23a4af2d18cff53281"
+      },
+      "native_manifest": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-native-build1-2026-09-15.json",
+        "sha256": "5f618de0fe1e278f307d6dde1f4e984802661cd746d583987fe4d245b0bba7f4"
+      },
+      "provenance_after": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-provenance-after1-2026-09-15.json",
+        "sha256": "6c410758be1e4d95641eca03aa947f15e55a2b0ae39ee7dff7d9e7172ebd2850"
+      },
+      "result": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-trial1-2026-09-15/result.json",
+        "sha256": "1f470791a6a56ae8d4c74aaf26c4be564a3d73a2e28cf5996d2338376d1d513f"
+      },
+      "daemon_log": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-trial1-2026-09-15/daemon.log",
+        "sha256": "f2884dda6ac966b141c526bac131bf00f80dff12a2cad21b88cf4ff96277a890"
+      }
+    },
+    "earlier_targeted_attempts": [
+      {
+        "attempt": 1,
+        "result": "fixture compile failure: SQLite u64 conversion",
+        "artifact": {
+          "private_path": "/private/tmp/agentdocker-reload-integration-targeted1-2026-09-15.log",
+          "sha256": "9e891e46902ea235a7fa38b7b45b84f7c2cf60e8d5ad7053441335671f340320"
+        }
+      },
+      {
+        "attempt": 2,
+        "result": "fixture compile failure: boxed response matching",
+        "artifact": {
+          "private_path": "/private/tmp/agentdocker-reload-integration-targeted2-2026-09-15.log",
+          "sha256": "9b34552ae0bf09d25346bfa6ada7156fcd06ad40fccef67cf2fa2968e2425596"
+        }
+      },
+      {
+        "attempt": 3,
+        "result": "3 passed, 2 fixture assertions failed: expected records omitted registration defaults",
+        "artifact": {
+          "private_path": "/private/tmp/agentdocker-reload-integration-targeted3-2026-09-15.log",
+          "sha256": "83fd32841a940f5a09b62c0e04d8d9c7f48ddd411fde0c3225053732396d0227"
+        }
+      }
+    ],
+    "limits": [
+      "Provider/controller processes are owned sleep fixtures, not actual Claude/Codex conversations.",
+      "Real provider polls, attached terminal drafts, uncertain-write reconciliation, replay retention and Windows acceptance remain open.",
+      "Native provenance binds055f45f; subsequent main154 merge and evidence edits change documentation only.",
+      "Experimental reload remains gated; production app and daemon were unchanged."
+    ]
   }
 }
