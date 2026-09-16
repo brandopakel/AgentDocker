@@ -60,7 +60,11 @@ window, the session replaces the list; **Back to sessions** returns to it. On a
 wide window, it opens beside the list. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
 **Launch agent…** chooses an installed CLI and starts it at the project root shown
-in the header. **Connect** under **Running here, not connected** adopts a discovered process for
+in the header. Claude and Codex launches default to **Idle messages: On**;
+turning it off visibly warns that messages may wait. Claude still requires its
+channel consent. Other tools disclose that automatic idle delivery is unavailable.
+This launch choice does not connect or restart an existing session.
+**Connect** under **Running here, not connected** adopts a discovered process for
 coordination; the row names the tool and the folder it runs in, not a
 process number. Known Codex Node launchers with a native Codex child are
 omitted from discovery, as is Codex's `app-server` sidecar (an API helper a
@@ -79,7 +83,10 @@ view while the process continues. Finished sessions remain available under Earli
 **Message** opens a small composer for the selected agent. **Send message** uses
 the same inbox queue as messages from other agents. Its queued receipt confirms
 local acceptance; it does not mean the agent has read or completed the request.
-The enabled Claude channel can wake an idle session. Codex and other connections
+Direct-message and thread composers show the recipient's current input readiness
+with a **Connection** shortcut to Tools. The shortcut preserves both drafts.
+MCP/hook contact alone cannot verify idle wake; disconnected views show unavailable
+readiness. The enabled Claude channel can wake an idle session. Codex and other connections
 still require their supported input integration. Drafts survive navigation and
 failed sends while this window remains open. A late receipt keeps any new text
 you have typed, and uncertain requests are never retried automatically.

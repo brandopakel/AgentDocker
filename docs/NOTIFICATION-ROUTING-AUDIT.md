@@ -156,12 +156,27 @@ were cleaned up, the test draft returned to its original empty value, and strict
 bundle signature verification still passed. Initial incomplete and harness-failed
 attempts remain in the [existing launcher record](verification/2026-09-12-launcher-hook-repair.json).
 
-Still open: zero-process app launch, explicit Hide, old AppleScript notifications,
+Still open: zero-process app launch, old AppleScript notifications,
 expired-question variants, archived-history and broader project/account cases,
 and Developer ID/notarized release acceptance. Notification Center accessibility
 actions establish native activation; they do not establish physical mouse,
 VoiceOver or IME usability. PR #158's first-focus request is separate from this
 installed-release trial and is not credited as the permission fix.
+
+## September 16 hidden-window follow-up
+
+An actual Notification Center click on installed `1e90f83` reached its exact
+private-origin message, but the explicitly hidden application remained hidden.
+Window de-minimization and focus alone did not establish app visibility in that
+trial. Source now requests macOS application unhide before Iced window focus.
+Candidate `2de5994` passed a real Notification Center click with the target
+application explicitly hidden: the exact message was selected and app visibility
+became true. The installed poster forwarded to the private candidate window;
+the production window and provider sessions were retained. The full gate passed
+1,013 Rust tests (seven skipped), 77 Python checks, lint, packaging and release
+build. Both failed visibility trials and the initial fixture-expression failure
+remain in the [launcher evidence](verification/2026-09-12-launcher-hook-repair.json).
+Zero-process OS launch and broader release acceptance remain open.
 
 ## Work and acceptance
 
@@ -180,7 +195,7 @@ installed-release trial and is not credited as the permission fix.
    reaches AgentDocker. If a platform cannot provide actionable notifications,
    expose that limitation and retain the inbox entry; do not report working
    click routing from a successful notification post.
-5. (Partial: installed foreground/background message, pending-question, stale-message and private-origin clicks pass.) Complete real Notification Center clicks with the app hidden and fully closed;
+5. (Partial: installed foreground/background message, pending-question, stale-message and private-origin clicks pass; candidate explicit-Hide restoration also passes.) Complete real Notification Center clicks with the app hidden and fully closed;
    multiple projects/agents; pending and expired questions; retained history;
    stale notifications; old/new app installations; denied notification access;
    unsigned/local-preview and signed release candidates. Assert the correct

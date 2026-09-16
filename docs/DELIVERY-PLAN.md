@@ -111,6 +111,26 @@ test worktrees must never become end-user installation instructions.
 
 ### Submitted-input parity and idle wake (September 10)
 
+**Separate top-priority bug, September 16 — CLI broadcast missed an active
+session:** the user's `agentdocker send --to all` pause request
+`5d0f2b149aa44cb6` was accepted at 07:55:46 UTC, but Codex continued working
+until the user repeated it directly. The read-only `all` archive confirms the
+original human broadcast. Queue acceptance is not delivery. Audit fan-out,
+per-recipient queue position, controller offers, active-turn input/steering and
+receipts. CLI human input must have the same scheduling priority and supported
+active-turn behavior as directly typed human input; peer input uses the same
+provider route while retaining its untrusted attribution. Verify both idle wake
+and busy-session interruption/queue behavior, including a broadcast pause, with
+per-recipient evidence, retained drafts and no duplicate execution. Preserve
+unavailable recipients' input and show why delivery is waiting. This remains open.
+
+**September 16 live regression:** Claude confirmed twelve peer messages waited at
+its idle prompt until a human supplied input. The process had hooks/MCP but no
+channel receiver. Finish safe existing-session input connection and per-provider
+acceptance before closing this requirement. New supported UI launches now default
+to idle input, and composers expose recipient readiness; those changes do not
+retrofit this existing session. See the [recorded finding](MESSAGE-DELIVERY-AUDIT.md#september-16-live-claude-idle-wake-gap-reproduced).
+
 The user requires peer messages to follow the same provider input workflow and
 queue as messages they submit themselves, including waking an idle agent. Make
 the [message delivery audit](MESSAGE-DELIVERY-AUDIT.md) a top-priority part of

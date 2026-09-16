@@ -649,5 +649,355 @@
         "The first-focus permission request in PR158 is distinct from this existing installed release; these passes follow the explicitly approved OS setting change."
       ]
     }
+  },
+  "hidden_notification_followup_2026_09_16": {
+    "scope": "Actual Notification Center default click for a private daemon origin with the target application explicitly hidden. The installed poster forwards to the candidate target window. Production GUI and provider sessions are retained. This is not zero-process OS launch.",
+    "build": {
+      "format": 1,
+      "source_commit": "2de599406b0c01bfd5db3f2cb6ed11d7d606a28f",
+      "source_tree": "f12857b5aca5945c41aef7f6482d468339187ed0",
+      "source_input_sha256": "b08d13f8b7867f48cc0f5dbc6352f4aca728c276ae749183016835be787238cd",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "4257bc3b06dedfe34462a200dcde72c183468259e94de8ff18db14937b09daeb",
+        "agentd": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65",
+        "agentdocker-ui": "de5720ca3d28d6e82d991a54a9f446d4d6aaa8871463279df21955a9df703713"
+      }
+    },
+    "standard_gate": {
+      "result": "passed",
+      "source_commit": "2de599406b0c01bfd5db3f2cb6ed11d7d606a28f",
+      "rust_passed": 1013,
+      "rust_skipped": 7,
+      "python_passed": 77,
+      "log": "/private/tmp/agentdocker-idle-wake-gate5-2026-09-16.log"
+    },
+    "retained_trials": [
+      {
+        "directory": "/private/tmp/agentdocker-notification-hidden-2026-09-16",
+        "report": {
+          "at": "2026-09-16T18:33:17.114255+00:00",
+          "result": "failed",
+          "scope": "Actual Notification Center click restores an explicitly hidden private daemon-origin window and selects the target message, while production windows remain running. This is not zero-process OS cold launch.",
+          "gui_pids_before": [
+            4519
+          ],
+          "target": {
+            "message": "83d81ed81c934951",
+            "agent": "42dea4559b024b80a0bcd87d1d52d8e4",
+            "project": "eaae76bc6f535a569f5e248dba993c99"
+          },
+          "cleanup_errors": [],
+          "gui_pids_after_cleanup": [
+            4519
+          ],
+          "surviving_owned_gui": false,
+          "driver_sha256": "b0516a68c3bead296ac807de5d288075da12ebee6155efd3970bcbbd4d4af677"
+        }
+      },
+      {
+        "directory": "/private/tmp/agentdocker-notification-hidden2-2026-09-16",
+        "report": {
+          "at": "2026-09-16T18:34:58.496810+00:00",
+          "result": "failed",
+          "scope": "Actual Notification Center click restores an explicitly hidden private daemon-origin window and selects the target message, while production windows remain running. This is not zero-process OS cold launch.",
+          "gui_pids_before": [
+            4519
+          ],
+          "target": {
+            "message": "fa4823b1c3fb4fcc",
+            "agent": "b1a2174d53e440fca88e7a06bb15d153",
+            "project": "12f74cf296bd5b078aea394d6a5e598c"
+          },
+          "explicit_hide": {
+            "returncode": 0,
+            "stdout": "false",
+            "stderr": ""
+          },
+          "post": {
+            "returncode": 0,
+            "stderr": ""
+          },
+          "click": {
+            "returncode": 0,
+            "stdout": "pressed_owned_notification_J",
+            "stderr": ""
+          },
+          "private_gui_pid": 6325,
+          "private_gui_birth": "Wed Sep 16 11:34:58 2026",
+          "private_gui_executable": "/Users/brandopakel/.local/share/agentdocker/desktop/versions/3add4bea8eef217ec29af14bf0bb951e41e85cf9c724c946d2e2a660ffd61fb5/AgentDocker.app/Contents/MacOS/agentdocker-ui",
+          "private_gui_sha256": "7f93d9781285decaf224afa6d8fcff7e13845f2a77decc69ab08076961e86694",
+          "installed_ui_sha256": "7f93d9781285decaf224afa6d8fcff7e13845f2a77decc69ab08076961e86694",
+          "installed_daemon_sha256": "2b85903f23b8888e5217b05b95f8d8d6acd27fd9aca7539acd33f55f1160e316",
+          "observations": [
+            {
+              "returncode": 0,
+              "stdout": "true",
+              "stderr": ""
+            }
+          ],
+          "restored_visible": {
+            "returncode": 0,
+            "stdout": "false",
+            "stderr": ""
+          },
+          "cleanup_errors": [],
+          "gui_pids_after_cleanup": [
+            4519
+          ],
+          "surviving_owned_gui": false,
+          "driver_sha256": "feb634415a1ffa920b6652fde77a1468a7cba2070efe9433fa23fe72df4687c1"
+        }
+      },
+      {
+        "directory": "/private/tmp/agentdocker-notification-hidden3-2026-09-16",
+        "report": {
+          "at": "2026-09-16T18:37:55.322020+00:00",
+          "result": "failed",
+          "scope": "Actual Notification Center click restores an explicitly hidden private daemon-origin window and selects the target message, while production windows remain running. This is not zero-process OS cold launch.",
+          "gui_pids_before": [
+            4519
+          ],
+          "target": {
+            "message": "85a4880d882741c7",
+            "agent": "95dd265a88ac4c56b6f82dfb9fcd9956",
+            "project": "b21af33e004656759d92c333fbc2e247"
+          },
+          "explicit_hide": {
+            "returncode": 0,
+            "stdout": "false",
+            "stderr": ""
+          },
+          "post": {
+            "returncode": 0,
+            "stderr": ""
+          },
+          "click": {
+            "returncode": 0,
+            "stdout": "pressed_owned_notification_J",
+            "stderr": ""
+          },
+          "private_gui_pid": 12523,
+          "private_gui_birth": "Wed Sep 16 11:37:55 2026",
+          "private_gui_executable": "/Users/brandopakel/.local/share/agentdocker/desktop/versions/3add4bea8eef217ec29af14bf0bb951e41e85cf9c724c946d2e2a660ffd61fb5/AgentDocker.app/Contents/MacOS/agentdocker-ui",
+          "private_gui_sha256": "7f93d9781285decaf224afa6d8fcff7e13845f2a77decc69ab08076961e86694",
+          "installed_ui_sha256": "7f93d9781285decaf224afa6d8fcff7e13845f2a77decc69ab08076961e86694",
+          "installed_daemon_sha256": "2b85903f23b8888e5217b05b95f8d8d6acd27fd9aca7539acd33f55f1160e316",
+          "observations": [
+            {
+              "returncode": 0,
+              "stdout": "true",
+              "stderr": ""
+            }
+          ],
+          "visibility_observations": [
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            },
+            {
+              "returncode": 0,
+              "stdout": "false",
+              "stderr": ""
+            }
+          ],
+          "restored_visible": {
+            "returncode": 0,
+            "stdout": "false",
+            "stderr": ""
+          },
+          "cleanup_errors": [],
+          "gui_pids_after_cleanup": [
+            4519
+          ],
+          "surviving_owned_gui": false,
+          "driver_sha256": "076d859241d6a32dfe3402cb0a6687f14bd36d16f47cbbbf4cab37f141ea3844"
+        }
+      },
+      {
+        "directory": "/private/tmp/agentdocker-notification-hidden4-2026-09-16",
+        "report": {
+          "at": "2026-09-16T18:45:55.433170+00:00",
+          "result": "passed",
+          "scope": "Actual Notification Center click restores an explicitly hidden private daemon-origin window and selects the target message, while production windows remain running. This is not zero-process OS cold launch.",
+          "gui_pids_before": [
+            4519
+          ],
+          "source_commit": "2de599406b0c01bfd5db3f2cb6ed11d7d606a28f",
+          "poster_ui_sha256": "7f93d9781285decaf224afa6d8fcff7e13845f2a77decc69ab08076961e86694",
+          "target": {
+            "message": "32903249be9547af",
+            "agent": "e96206816404482d863e773d83c522bc",
+            "project": "4ddd50b8739256019e231fd4084f7fc6"
+          },
+          "explicit_hide": {
+            "returncode": 0,
+            "stdout": "false",
+            "stderr": ""
+          },
+          "post": {
+            "returncode": 0,
+            "stderr": ""
+          },
+          "click": {
+            "returncode": 0,
+            "stdout": "pressed_owned_notification_J",
+            "stderr": ""
+          },
+          "private_gui_pid": 43622,
+          "private_gui_birth": "Wed Sep 16 11:45:56 2026",
+          "private_gui_executable": "/private/tmp/agentdocker-idle-wake-binaries3-2026-09-16/agentdocker-ui",
+          "private_gui_sha256": "de5720ca3d28d6e82d991a54a9f446d4d6aaa8871463279df21955a9df703713",
+          "candidate_ui_sha256": "de5720ca3d28d6e82d991a54a9f446d4d6aaa8871463279df21955a9df703713",
+          "candidate_daemon_sha256": "28f05686aedfd639ca4edf7066c900a80f1881610c493ea452d1a401a20dfa65",
+          "observations": [
+            {
+              "returncode": 0,
+              "stdout": "true",
+              "stderr": ""
+            }
+          ],
+          "visibility_observations": [
+            {
+              "returncode": 0,
+              "stdout": "true",
+              "stderr": ""
+            }
+          ],
+          "restored_visible": {
+            "returncode": 0,
+            "stdout": "true",
+            "stderr": ""
+          },
+          "production_gui_retained": true,
+          "cleanup_errors": [],
+          "gui_pids_after_cleanup": [
+            4519
+          ],
+          "surviving_owned_gui": false,
+          "driver_sha256": "cc7c12cfcb7ac7e9565ca78e3d593c2bba128350cc096e9bb315e0c352fc6cf9"
+        }
+      }
+    ],
+    "finding": "Installed source 1e90f83 routed the exact message but remained hidden, including a five-second visibility poll. Candidate 2de5994 explicitly unhides the application before window focus; exact message and visible=true passed. Initial hidden trial failed an AppleScript fixture expression before posting and was corrected.",
+    "remaining": [
+      "Zero-process OS launch",
+      "Old notifications and broader question/history/project cases",
+      "Developer ID/notarized release acceptance",
+      "Hands-on accessibility and input methods"
+    ]
   }
 }
