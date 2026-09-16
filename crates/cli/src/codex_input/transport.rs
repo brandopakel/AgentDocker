@@ -1,6 +1,39 @@
 //! Bounded JSONL transport to an owned Codex app-server child.
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
+
+#[derive(Debug)]
+struct RpcRejection {
+    method: String,
+    error: Value,
+}
+
+impl std::fmt::Display for RpcRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Codex rejected {}", self.method)
+    }
+}
+
+impl std::error::Error for RpcRejection {}
+
+/// Only documented active-turn precondition failures prove that steering did
+/// not submit input. Unknown errors and lost replies must retain the attempt.
+pub(super) fn steering_refused(error: &anyhow::Error, expected: &str) -> bool {
+    let Some(rejection) = error.downcast_ref::<RpcRejection>() else {
+        return false;
+    };
+    if rejection.method != "turn/steer" || rejection.error["code"].as_i64() != Some(-32600) {
+        return false;
+    }
+    let Some(message) = rejection.error["message"].as_str() else {
+        return false;
+    };
+    message == "no active turn to steer"
+        || message
+            .strip_prefix(&format!("expected active turn id `{expected}` but found `"))
+            .and_then(|rest| rest.strip_suffix('`'))
+            .is_some_and(|actual| !actual.is_empty() && actual != expected && !actual.contains('`'))
+}
 use std::{collections::VecDeque, path::Path, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -101,10 +134,13 @@ impl Provider {
             if value.get("id").and_then(Value::as_u64) == Some(id) && value.get("method").is_none()
             {
                 if let Some(error) = value.get("error") {
-                    return Err(
-                        crate::provider_status::Failure(crate::provider_status::codex(error))
-                            .into(),
-                    );
+                    return Err(anyhow::Error::new(crate::provider_status::Failure(
+                        crate::provider_status::codex(error),
+                    ))
+                    .context(RpcRejection {
+                        method: method.into(),
+                        error: error.clone(),
+                    }));
                 }
                 return value
                     .get("result")
@@ -188,6 +224,52 @@ pub(super) async fn read_frame<R: AsyncBufRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_exact_steering_precondition_rejections_permit_a_new_offer() {
+        for (method, code, message, refused) in [
+            ("turn/steer", -32600, "no active turn to steer", true),
+            (
+                "turn/steer",
+                -32600,
+                "expected active turn id `active` but found `later`",
+                true,
+            ),
+            ("turn/start", -32600, "no active turn to steer", false),
+            ("turn/steer", -32000, "no active turn to steer", false),
+            (
+                "turn/steer",
+                -32600,
+                "expected active turn id `different` but found `later`",
+                false,
+            ),
+            (
+                "turn/steer",
+                -32600,
+                "expected active turn id `active` but found `active`",
+                false,
+            ),
+            ("turn/steer", -32600, "input may have been accepted", false),
+        ] {
+            let failure = crate::provider_status::Failure(crate::provider_status::codex(
+                &json!({"message":message}),
+            ));
+            let error = anyhow::Error::new(failure).context(RpcRejection {
+                method: method.into(),
+                error: json!({"code":code,"message":message}),
+            });
+            assert!(
+                error
+                    .downcast_ref::<crate::provider_status::Failure>()
+                    .is_some()
+            );
+            assert_eq!(
+                steering_refused(&error, "active"),
+                refused,
+                "{method}: {code} {message}"
+            );
+        }
+        assert!(!steering_refused(&anyhow::anyhow!("reply lost"), "active"));
+    }
     #[tokio::test]
     async fn cancelled_partial_frame_is_retained_and_next_frame_stays_separate() {
         let (mut writer, reader) = tokio::io::duplex(128);
