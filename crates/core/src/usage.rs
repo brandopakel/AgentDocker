@@ -149,9 +149,30 @@ struct Total {
 /// A bucket retains known/sample counts with the sums, so moving historical
 /// attribution never turns unknown fields into zero or loses coverage.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "StoredAggregate")]
 pub struct Aggregate {
     samples: u64,
     totals: [Total; 5],
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredAggregate {
+    samples: u64,
+    totals: [Total; 5],
+}
+
+impl TryFrom<StoredAggregate> for Aggregate {
+    type Error = &'static str;
+
+    fn try_from(stored: StoredAggregate) -> Result<Self, Self::Error> {
+        let aggregate = Self {
+            samples: stored.samples,
+            totals: stored.totals,
+        };
+        aggregate.validate()?;
+        Ok(aggregate)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +191,15 @@ pub struct CounterReport {
 }
 
 impl Aggregate {
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.totals.iter().any(|total| {
+            total.known_samples > self.samples || (total.known_samples == 0 && total.sum != 0)
+        }) {
+            return Err("usage bucket coverage is inconsistent");
+        }
+        Ok(())
+    }
+
     pub fn samples(&self) -> u64 {
         self.samples
     }
@@ -200,10 +230,8 @@ impl Aggregate {
                 total.sum = change(total.sum, value)?;
                 total.known_samples = change(total.known_samples, 1)?;
             }
-            if total.known_samples > next.samples || (total.known_samples == 0 && total.sum != 0) {
-                return Err("usage bucket coverage is inconsistent");
-            }
         }
+        next.validate()?;
         Ok(next)
     }
 
@@ -431,6 +459,37 @@ mod tests {
         };
         assert_eq!(contribution, Some(counters(100)));
         assert_eq!(gap, None);
+    }
+
+    #[test]
+    fn restored_aggregates_cannot_invent_counter_coverage() {
+        let bucket = Aggregate::default()
+            .add(&Counters {
+                input_tokens: Some(8),
+                output_tokens: Some(0),
+                ..Counters::default()
+            })
+            .unwrap();
+        let stored = serde_json::to_value(&bucket).unwrap();
+        assert_eq!(
+            serde_json::from_value::<Aggregate>(stored.clone()).unwrap(),
+            bucket
+        );
+        let mut corrupt = stored.clone();
+        corrupt["totals"][0]["known_samples"] = serde_json::json!(2);
+        assert!(serde_json::from_value::<Aggregate>(corrupt).is_err());
+        let mut corrupt = stored;
+        corrupt["totals"][0]["known_samples"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<Aggregate>(corrupt).is_err());
+        let unknown = Aggregate::default().add(&Counters::default()).unwrap();
+        let restored: Aggregate =
+            serde_json::from_value(serde_json::to_value(&unknown).unwrap()).unwrap();
+        assert!(
+            restored
+                .counters(true)
+                .iter()
+                .all(|counter| counter.sum.is_none() && counter.coverage == Coverage::Unknown)
+        );
     }
 
     #[test]

@@ -1052,7 +1052,9 @@ as distinct responses: dedupe uses the provider message ID with runtime/session.
 Persistable cumulative baselines keep initial unknown history and reset intervals
 as explicit gaps; replay and out-of-order snapshots cannot add a second delta.
 Missing fields stay unknown. Unsupported versions or malformed counters report
-a gap rather than zero. Initial local verification is pending.
+a gap rather than zero. Restored aggregate state rejects impossible known/sample
+counts or nonzero sums without known contributions. Initial local verification
+is pending.
 
 Counter normalization follows [OpenAI usage breakdowns](https://developers.openai.com/api/reference/cli/resources/responses/methods/retrieve)
 and [Claude cache input semantics](https://platform.claude.com/docs/en/build-with-claude/prompt-caching):
