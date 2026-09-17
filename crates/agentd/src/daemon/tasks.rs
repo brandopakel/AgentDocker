@@ -89,13 +89,15 @@ impl State {
         }
     }
 
-    /// The live `task:<id>` lease on a card, by its holder: the holding.
+    /// The live exclusive `task:<id>` lease on a card, by its holder:
+    /// the holding. A shared claim on the card, made by hand, is not a
+    /// hold — it excludes nobody, so it entitles nobody to the card.
     fn task_hold(&self, task: &Task, holder: &AgentId) -> Option<Lease> {
         let resource = task_resource(task);
         self.leases
             .holders_of(&resource)
             .into_iter()
-            .find(|l| &l.holder == holder)
+            .find(|l| &l.holder == holder && l.mode == LeaseMode::Exclusive)
             .cloned()
     }
 
@@ -1241,23 +1243,228 @@ mod tests {
             (Some(&carol.id), Column::Done)
         );
         assert!(holds(&daemon).await.is_empty(), "done ends the hold");
-        // A failed store writes none of a pull: no card change, no lease.
+        // A shared claim on the card by hand is no hold: carol, whose
+        // exclusive hold ended with Done, cannot move the card on the
+        // strength of it, and is told the hold lapsed.
         assert!(matches!(
             daemon
                 .handle(Request::TaskMove {
                     agent: HUMAN.to_owned(),
                     task: task.id.to_string(),
-                    column: Column::Ready,
+                    column: Column::Review,
                 })
                 .await,
             Response::Task { .. }
         ));
+        let Response::Lease { lease: shared } = daemon
+            .handle(Request::Claim {
+                agent: "carol".to_owned(),
+                resource: format!("task:{}", task.id),
+                mode: LeaseMode::Shared,
+                amount: None,
+                ttl_secs: 60,
+                note: None,
+                wait_secs: 0,
+            })
+            .await
+        else {
+            panic!("carol claims shared by hand")
+        };
+        match daemon
+            .handle(Request::TaskMove {
+                agent: "carol".to_owned(),
+                task: task.id.to_string(),
+                column: Column::Done,
+            })
+            .await
+        {
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                details,
+                ..
+            } => assert_eq!(details.unwrap()["hold"], "lapsed"),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            daemon
+                .handle(Request::Release {
+                    agent: "carol".to_owned(),
+                    lease: shared.id,
+                    summary: None,
+                    summary_source: Default::default(),
+                })
+                .await,
+            Response::Lease { .. } | Response::Ok | Response::Leases { .. }
+        ));
+    }
+
+    /// A transition is one commit: when the store fails in the middle of
+    /// a pull — the card and the lease written, the pull's event refused
+    /// — nothing of it survives a reopen: the card is as it was, no lease
+    /// is held, no event was announced, and the daemon said so. The
+    /// same pull behind a coordinator fence is refused as transferring
+    /// and writes nothing.
+    #[tokio::test]
+    async fn a_pull_the_store_fails_midway_or_a_fence_refuses_leaves_nothing_behind() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let bob = register(&daemon, "bob", &work).await;
+        let Response::Task { task } = daemon
+            .handle(Request::TaskCreate {
+                from: HUMAN.to_owned(),
+                project: Some(work.display().to_string()),
+                title: "Port the parser".to_owned(),
+                acceptance: "tests pass".to_owned(),
+                column: Some(Column::Ready),
+            })
+            .await
+        else {
+            panic!("filed")
+        };
+        let resource = task_resource(&task);
+        // Behind a fence nothing is written and the caller is told so
+        // (the offer itself is announced; the pull must add nothing).
+        let seq_before = {
+            let mut state = lock(&daemon.state);
+            state.offer_transfer(1).unwrap();
+            state.next_seq
+        };
+        assert!(matches!(
+            daemon
+                .handle(Request::TaskPull {
+                    agent: "bob".to_owned(),
+                    task: task.id.to_string(),
+                    take_over_from: None,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Transferring,
+                ..
+            }
+        ));
+        {
+            let mut state = lock(&daemon.state);
+            assert!(state.leases.holders_of(&resource).is_empty());
+            assert_eq!(state.next_seq, seq_before);
+            assert!(state.abort_transfer("test"));
+        }
+        // The pull's second event is refused inside the transaction.
+        let (seq_before, mut events) = {
+            let state = lock(&daemon.state);
+            state.store.reject_event_for_test("task_pulled");
+            (state.next_seq, state.events.subscribe())
+        };
+        assert!(matches!(
+            daemon
+                .handle(Request::TaskPull {
+                    agent: "bob".to_owned(),
+                    task: task.id.to_string(),
+                    take_over_from: None,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        {
+            let state = lock(&daemon.state);
+            assert!(
+                state.leases.holders_of(&resource).is_empty(),
+                "no lease in memory"
+            );
+            assert_eq!(state.next_seq, seq_before, "no sequence spent");
+            assert!(state.storage_error.is_some(), "storage failure latched");
+        }
+        assert!(
+            events.try_recv().is_err(),
+            "nothing announced for a pull that did not land"
+        );
+        // Reopened: the card is as filed, nobody holds it, and no
+        // lease_claimed or task_pulled was ever stored.
+        drop(daemon);
+        let daemon = open(&dir);
+        let Response::Tasks { tasks: reread, .. } = daemon
+            .handle(Request::Tasks {
+                project: Some(work.display().to_string()),
+                column: None,
+                archived: false,
+                offset: 0,
+                limit: 0,
+            })
+            .await
+        else {
+            panic!("reread")
+        };
+        assert_eq!(
+            reread
+                .iter()
+                .map(|t| (t.id.clone(), t.assignee.clone(), t.column))
+                .collect::<Vec<_>>(),
+            vec![(task.id.clone(), None, Column::Ready)]
+        );
+        let Response::Leases { leases } = daemon
+            .handle(Request::Leases {
+                agent: None,
+                resource: Some(resource.to_string()),
+            })
+            .await
+        else {
+            panic!("leases")
+        };
+        assert!(leases.is_empty());
+        assert!(!daemon.recent_events(50).iter().any(|e| matches!(
+            &e.kind,
+            EventKind::TaskPulled { .. } | EventKind::LeaseClaimed { .. }
+        )));
+        // And the pull lands once the store is back.
+        assert!(matches!(
+            daemon
+                .handle(Request::TaskPull {
+                    agent: bob.id.to_string(),
+                    task: task.id.to_string(),
+                    take_over_from: None,
+                })
+                .await,
+            Response::Task { .. }
+        ));
+    }
+
+    /// The preflight: once storage has failed, a pull is refused before
+    /// anything is attempted and no lease appears in memory.
+    #[tokio::test]
+    async fn a_pull_after_a_storage_failure_is_refused_before_it_starts() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        register(&daemon, "bob", &work).await;
+        let Response::Task { task } = daemon
+            .handle(Request::TaskCreate {
+                from: HUMAN.to_owned(),
+                project: Some(work.display().to_string()),
+                title: "Port the parser".to_owned(),
+                acceptance: "tests pass".to_owned(),
+                column: Some(Column::Ready),
+            })
+            .await
+        else {
+            panic!("filed")
+        };
         {
             let mut state = lock(&daemon.state);
             state.storage_error = Some("disk gone".to_owned());
         }
         assert!(matches!(
-            pull(&daemon, "bob", None).await,
+            daemon
+                .handle(Request::TaskPull {
+                    agent: "bob".to_owned(),
+                    task: task.id.to_string(),
+                    take_over_from: None,
+                })
+                .await,
             Response::Error {
                 code: ErrorCode::StorageUnavailable,
                 ..
