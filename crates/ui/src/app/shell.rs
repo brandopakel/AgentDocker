@@ -478,6 +478,10 @@ impl App {
         ) {
             self.shell.pending_notification = None;
             self.shell.notification_message = None;
+            // The search for a notification's archived message, and the
+            // scroll to it, are its conversation's: the person moving on
+            // ends them, so a late page moves nothing.
+            self.cancel_reveal();
         }
         if matches!(
             &message,
@@ -502,7 +506,12 @@ impl App {
                         "notification-question-{id}"
                     )));
                 }
-                if let Some(id) = self.shell.reveal_archived_next.take() {
+                // The scroll is for the Messages screen the page arrived
+                // on; anywhere else the row is not on view.
+                if let Some(id) = self.shell.reveal_archived_next.take()
+                    && self.screen == Screen::Questions
+                    && self.shell.conversation.is_some()
+                {
                     tasks.push(crate::controls::reveal(format!(
                         "notification-message-{id}"
                     )));
@@ -581,7 +590,6 @@ impl App {
             Message::Navigate(screen) => {
                 self.shell.pending_notification = None;
                 self.shell.notification_message = None;
-                self.cancel_reveal();
                 self.screen = screen;
                 self.shell.more = false;
                 if screen == Screen::Runtimes {

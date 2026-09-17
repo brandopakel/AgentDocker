@@ -812,7 +812,12 @@ impl App {
                         }
                     }
                 }
-                Msg::Disconnected(reason) => self.connected = Err(reason),
+                Msg::Disconnected(reason) => {
+                    self.connected = Err(reason);
+                    // A page asked for will not come: a notification's
+                    // search ends rather than wait on it.
+                    self.cancel_reveal();
+                }
                 Msg::Status(text) => self.say(text),
                 Msg::Desktop(result) => self.desktop.receive(result),
                 Msg::UpdateChecked(result) => {
@@ -1187,6 +1192,12 @@ impl App {
                 self.history.clear();
                 self.history_complete.clear();
                 self.thread = None;
+                // A notification's search starts over from the newest
+                // page: the page it was waiting for is of the old archive.
+                if let Some(seek) = &mut self.reveal_archived {
+                    seek.pages = 0;
+                    seek.before = None;
+                }
                 self.on_conversation_activity();
             }
             EventKind::QuestionClosed { .. } | EventKind::QuestionCancelled { .. } => {
@@ -1482,6 +1493,27 @@ impl App {
             return;
         }
         let first = messages.first().map(|m| m.seq);
+        let loaded = messages.len();
+        // The archive's start is here and the message is not: it was
+        // pruned, and no page can bring it. An empty page before the one
+        // asked for says the same, so this comes before the cursor is
+        // looked at. Nor can a page come while disconnected.
+        let ended = if self.history_complete.contains(conversation) || first.is_none() {
+            Some(format!(
+                "This notification's message is no longer in this conversation's archive ({loaded} messages here)."
+            ))
+        } else if self.connected.is_err() {
+            Some(format!(
+                "This notification's message is not in the {loaded} messages loaded, and the daemon is not connected."
+            ))
+        } else {
+            None
+        };
+        if let Some(text) = ended {
+            self.reveal_archived = None;
+            self.say(text);
+            return;
+        }
         // The page before the one asked for has not arrived: this is a
         // refresh of what is already here, not an answer.
         if let (Some(asked), Some(first)) = (seek.before, first)
@@ -1489,19 +1521,20 @@ impl App {
         {
             return;
         }
-        // What the window keeps is bounded; a conversation already at
-        // that bound would drop the page it is given before it is read.
-        let room = messages.len() + HISTORY_PAGE <= HISTORY_KEEP;
-        if self.history_complete.contains(conversation)
-            || seek.pages >= Self::REVEAL_PAGES
-            || first.is_none()
-            || !room
-            || self.connected.is_err()
-        {
+        // What the window keeps is bounded, and a conversation at that
+        // bound drops the page it is given before it is read — so Show
+        // earlier messages cannot help there either, and is not offered.
+        if loaded + HISTORY_PAGE > HISTORY_KEEP {
             self.reveal_archived = None;
             self.say(format!(
-                "This notification's message is not in the {} messages loaded; Show earlier messages reads further back.",
-                messages.len()
+                "This notification's message is not among the {loaded} messages this window keeps of a conversation."
+            ));
+            return;
+        }
+        if seek.pages >= Self::REVEAL_PAGES {
+            self.reveal_archived = None;
+            self.say(format!(
+                "This notification's message is not in the {loaded} messages loaded; Show earlier messages reads further back."
             ));
             return;
         }
@@ -4009,7 +4042,11 @@ pub(crate) mod tests {
             .send(Msg::History(room.clone(), app.history_epoch, page(801)))
             .unwrap();
         app.drain();
-        assert_eq!(requests.try_iter().count(), 0, "no second ask for the same page");
+        assert_eq!(
+            requests.try_iter().count(),
+            0,
+            "no second ask for the same page"
+        );
         assert_eq!(app.reveal_archived.as_ref().map(|r| r.pages), Some(1));
         messages
             .send(Msg::HistoryEarlier(
@@ -4061,13 +4098,178 @@ pub(crate) mod tests {
             "given up at the archive's start"
         );
         assert!(app.shell.reveal_archived_next.is_none());
-        assert!(app.status.contains("not in the conversation kept here"));
+        assert!(
+            app.status
+                .contains("no longer in this conversation's archive"),
+            "{}",
+            app.status
+        );
         assert!(
             !requests
                 .try_iter()
                 .any(|c| matches!(c, Cmd::HistoryBefore(..)))
         );
         assert!(asked <= App::REVEAL_PAGES);
+    }
+
+    /// A notification's search ends with a word when the archive has no
+    /// page before (an empty page, not a full one, is the terminal case),
+    /// when the window holds all it keeps, when the daemon goes, or when
+    /// the person moves on — and a page that then arrives late, even one
+    /// with the message, reveals nothing.
+    #[test]
+    fn a_notification_search_ends_at_the_archive_the_window_the_daemon_or_navigation() {
+        let (tx, requests) = queue::channel();
+        let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        app.conversations_supported = Some(true);
+        app.screen = Screen::Questions;
+        let room = "channel:abc".to_owned();
+        app.shell.conversation = Some(room.clone());
+        let archived = |seq: u64| agentdocker_core::ArchivedMessage {
+            seq,
+            conversation: agentdocker_core::ConversationId::from(room.clone()),
+            envelope: {
+                let mut envelope = agentdocker_core::Envelope::new(
+                    "a",
+                    agentdocker_core::Destination::Broadcast,
+                    "chat",
+                    serde_json::json!({ "text": format!("{seq}") }),
+                    None,
+                    Utc::now(),
+                );
+                envelope.id = MessageId::from(format!("m{seq}"));
+                envelope
+            },
+            replies: 0,
+        };
+        let page = |from: u64| {
+            (from..from + HISTORY_PAGE as u64)
+                .map(archived)
+                .collect::<Vec<_>>()
+        };
+        let seek = |message: &str| Seek {
+            conversation: room.clone(),
+            message: MessageId::from(message.to_owned()),
+            pages: 0,
+            before: None,
+        };
+        let asked = |requests: &CommandReceiver| {
+            requests
+                .try_iter()
+                .filter(|c| matches!(c, Cmd::HistoryBefore(..)))
+                .count()
+        };
+        messages
+            .send(Msg::History(room.clone(), app.history_epoch, page(801)))
+            .unwrap();
+        app.drain();
+
+        // The page before is empty: the archive starts with what is here,
+        // so the search ends with a word instead of waiting for a page
+        // that begins earlier.
+        app.reveal_archived = Some(seek("m700"));
+        app.seek_archived(&room);
+        assert_eq!(asked(&requests), 1);
+        messages
+            .send(Msg::HistoryEarlier(
+                room.clone(),
+                app.history_epoch,
+                Vec::new(),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.reveal_archived.is_none(), "ended at an empty page");
+        assert!(
+            app.status
+                .contains("no longer in this conversation's archive"),
+            "{}",
+            app.status
+        );
+        assert_eq!(asked(&requests), 0);
+
+        // Navigation ends a search: the page that then comes with the
+        // message reveals nothing and asks for nothing.
+        app.history_complete.remove(&room);
+        app.status.clear();
+        app.reveal_archived = Some(seek("m700"));
+        app.seek_archived(&room);
+        assert_eq!(asked(&requests), 1);
+        let _ = app.update(Message::Navigate(Screen::Agents));
+        assert!(app.reveal_archived.is_none());
+        messages
+            .send(Msg::HistoryEarlier(
+                room.clone(),
+                app.history_epoch,
+                page(601),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(
+            app.shell.reveal_archived_next.is_none(),
+            "a late page moves nothing"
+        );
+        assert!(app.status.is_empty(), "{}", app.status);
+        assert_eq!(asked(&requests), 0);
+
+        // Another conversation opened before the tick drops the deferred
+        // scroll along with the search; a late page for the old one is
+        // kept as history but reveals nothing.
+        app.screen = Screen::Questions;
+        app.shell.conversation = Some(room.clone());
+        app.shell.reveal_archived_next = Some(MessageId::from("m700".to_owned()));
+        app.reveal_archived = Some(seek("m500"));
+        let _ = app.update(Message::SelectConversation("channel:other".to_owned()));
+        assert!(app.shell.reveal_archived_next.is_none());
+        assert!(app.reveal_archived.is_none());
+        messages
+            .send(Msg::HistoryEarlier(
+                room.clone(),
+                app.history_epoch,
+                page(401),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.shell.reveal_archived_next.is_none());
+        assert_eq!(app.history[&room].first().unwrap().seq, 401);
+        let _ = requests.try_iter().count();
+
+        // Project navigation hides the conversation: the search and the
+        // deferred scroll go with it.
+        app.shell.conversation = Some(room.clone());
+        app.shell.reveal_archived_next = Some(MessageId::from("m500".to_owned()));
+        app.reveal_archived = Some(seek("m300"));
+        let _ = app.update(Message::Unassigned);
+        assert!(app.shell.reveal_archived_next.is_none());
+        assert!(app.reveal_archived.is_none());
+        let _ = requests.try_iter().count();
+
+        // The daemon goes while a page is on its way: the search ends.
+        app.screen = Screen::Questions;
+        app.shell.conversation = Some(room.clone());
+        app.reveal_archived = Some(seek("m300"));
+        app.seek_archived(&room);
+        assert_eq!(asked(&requests), 1);
+        messages.send(Msg::Disconnected("gone".into())).unwrap();
+        app.drain();
+        assert!(app.reveal_archived.is_none(), "ended on disconnect");
+
+        // A window holding all it keeps is not paged further, and is not
+        // told that Show earlier messages would help.
+        app.connected = Ok(());
+        let full: Vec<_> = (1..=HISTORY_KEEP as u64).map(archived).collect();
+        app.keep_history(room.clone(), full);
+        app.reveal_archived = Some(seek("m0"));
+        app.seek_archived(&room);
+        assert!(app.reveal_archived.is_none());
+        assert!(
+            app.status.contains("messages this window keeps"),
+            "{}",
+            app.status
+        );
+        assert!(!app.status.contains("Show earlier"), "{}", app.status);
+        assert_eq!(asked(&requests), 0);
     }
 
     #[test]
