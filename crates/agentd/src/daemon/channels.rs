@@ -1040,6 +1040,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explicit_channel_project_sets_members_and_name_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _) = fixture(&tmp).await;
+        let other = tmp.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let Response::Agent { agent } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "other-worker".into(),
+                    workdir: Some(other.clone()),
+                    ..Default::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("register failed")
+        };
+        let Response::Channel { channel: first } = daemon
+            .channel_open(
+                "writer",
+                "first".into(),
+                vec![],
+                Some("shared-name".into()),
+                None,
+            )
+            .await
+        else {
+            panic!("first open failed")
+        };
+        let Response::Channel { channel: second } = daemon
+            .channel_open(
+                "writer",
+                "second".into(),
+                vec![],
+                Some("shared-name".into()),
+                Some(other.display().to_string()),
+            )
+            .await
+        else {
+            panic!("project override failed")
+        };
+        assert_ne!(first.project, second.project);
+        assert_eq!(second.project, agent.project.as_ref().unwrap().id());
+        assert!(second.has(&agent.id));
+        assert!(second.has(&daemon.resolve("writer").unwrap()));
+        assert!(!second.has(&daemon.resolve("reviewer").unwrap()));
+        assert_eq!(second.members.len(), 2);
+        assert!(matches!(
+            daemon
+                .channel_open(
+                    "writer",
+                    "duplicate".into(),
+                    vec![],
+                    Some("shared-name".into()),
+                    Some(other.display().to_string())
+                )
+                .await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
     async fn invitations_require_membership_and_publish_members_once() {
         let tmp = tempfile::tempdir().unwrap();
         let (daemon, _) = fixture(&tmp).await;
