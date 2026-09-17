@@ -6028,6 +6028,18 @@ impl State {
                 agentdocker_core::agent::GENERATED_NAME.to_owned(),
             );
         }
+        // `role:<name>` is how a role is addressed; a name spelled that
+        // way would be reached as the role or shadow it, never plainly.
+        if record
+            .spec
+            .name
+            .starts_with(agentdocker_core::agent::ROLE_PREFIX)
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "an agent's name cannot start with `role:`; that is how a role is addressed",
+            );
+        }
         // One process, one agent.
         //
         // `adopt` has always held to that and refuses a pid it already

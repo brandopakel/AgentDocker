@@ -519,6 +519,23 @@ mod tests {
                 "{bad:?}"
             );
         }
+        // A name spelled like a role would be reached as one, or shadow it.
+        assert!(matches!(
+            daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: "role:reviewer".into(),
+                        ..AgentSpec::default()
+                    },
+                    pid: None,
+                    session: None,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
         let Response::Agent { agent } = role(&daemon, "recipient", Some("reviewer")).await else {
             panic!("a role answers with the record");
         };
