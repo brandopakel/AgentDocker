@@ -198,7 +198,7 @@ churn does not require an idle process. Every sampled inode must be classified
 on at least one side; TCP evidence from either side fails. Unknown sockets,
 changed network namespaces, unreadable or malformed
 tables and budget exhaustion refuse the observation. The helper is bounded to
-4,096 descriptors, 1 MiB per table, three snapshots and an outer five-second
+4,096 descriptors, 1 MiB per table, eight bracketed samples and an outer five-second
 subprocess deadline. A process generation is anchored by its open proc directory.
 The [kernel proc contract](https://docs.kernel.org/filesystems/proc.html#process-specific-subdirectories)
 describes those process-specific descriptors.
