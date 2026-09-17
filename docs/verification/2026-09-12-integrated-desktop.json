@@ -3348,6 +3348,42 @@
       "Native scenarios invoke rendered callbacks; physical input, IME and screen-reader acceptance remain open.",
       "The MCP fixture does not prove actual Claude startup/consent or idle model delivery.",
       "Final PR CI/review and production activation remain pending."
-    ]
+    ],
+    "source_relationship": {
+      "candidate_history": "Retained as a parent of the final PR180 merge so the candidate, gate and post-gate commits remain fetchable after branch cleanup.",
+      "gate_is_ancestor_of_candidate": true,
+      "post_gate_is_ancestor_of_candidate": true,
+      "gate_to_candidate_runtime_changes": [
+        "crates/host/src/procinfo.rs"
+      ],
+      "post_gate_to_candidate_runtime_changes": [],
+      "equivalent_reviewed_source": "bf522a5ec9739de92417abe4e7e6dd3ab7fd1bd7",
+      "candidate_to_equivalent_reviewed_source_runtime_changes": [],
+      "comparison_paths": [
+        "crates",
+        "Cargo.toml",
+        "Cargo.lock",
+        "packaging",
+        "scripts",
+        ".cargo",
+        ".config",
+        "Makefile",
+        "install.sh"
+      ],
+      "candidate_and_reviewed_input_objects": {
+        "crates": "f76c48d48729807b987976393ed8706b2ca66f65",
+        "Cargo.toml": "ebcee094fedd34db602a44e3c323f3225a9c4634",
+        "Cargo.lock": "d8a20006edf5b6a792b0c591233e404237f0e6e0",
+        "packaging": "8a17353de29638851dc7aa9d1db0c7f528834e02",
+        "scripts": "d195252a204cb2903ed95c7c239120c6d7edfa51",
+        ".cargo": null,
+        ".config": "c167eb5136e6433b91978472b9172b0df0784bf1",
+        "Makefile": "6f30c817f45f6712c080263b31afa5aedf51a7d5",
+        "install.sh": "f04ad745eaffcea34d196caada2df8a67ad36612"
+      },
+      "null_objects": "These paths are absent from both commits.",
+      "candidate_and_reviewed_input_objects_match": true,
+      "full_gate_scope": "The local 1167-test gate preceded only the procinfo option-separator patch. That patch passed the 1149-test standalone full gate plus targeted integrated regression, strict Clippy and release build. The candidate native/MCP trials used the post-patch binaries; final PR180 CI tests the equivalent merged runtime. This is not a claim that the pre-patch gate ran on the candidate commit."
+    }
   }
 }
