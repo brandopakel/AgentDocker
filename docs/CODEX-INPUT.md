@@ -120,7 +120,8 @@ pause, then verify their ordered consumption and receiver crash recovery.
 
 The native queue starts new turns only at idle. Its binding used to suppress
 all hook context, so an app pause could wait behind hours-old messages throughout
-an active turn. A verified PreToolUse/PostToolUse hook now asks that same receiver
+an active turn. A PreToolUse/PostToolUse hook whose process matches the bound
+provider generation now asks that same receiver
 for the next FIFO input over a private local socket. The receiver remains the
 only daemon queue consumer; the hook never acknowledges messages itself.
 
@@ -163,6 +164,19 @@ Review follow-up `e896111` authenticates the claimed hook PID with kernel Unix
 peer credentials before queue access. Its full 1,094-Rust/84-Python gate passed
 (seven skipped), and both actual-client scenarios passed again with an explicit
 provider-visible order/exactly-once assertion.
+
+This endpoint follows the host socket's owning-user trust boundary. Kernel peer
+credentials establish the connecting process; PID birth and ancestry associate
+it with the provider. They do not prove that the provider invoked a genuine hook:
+an unsandboxed same-user descendant can call the endpoint itself. The nonce
+correlates the response; it is not an authorization credential. Such a caller can
+reserve an offer and stall delivery if no provider receipt follows. It cannot
+make the receiver acknowledge that offer merely by receiving its context, but a
+malicious same-user process can also access the host socket and state directly.
+Do not expose this endpoint as a boundary between mutually untrusted local
+processes. Restricted agents need OS isolation and the scoped container endpoint;
+an invocation secret readable by the same user would not supply that isolation.
+
 The installed receiver still runs an older pinned release: installing the app
 alone does not change its immutable launch descriptor. A safe receiver upgrade
 and installed acceptance are required before closing this bug. Broader provider
