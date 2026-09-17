@@ -459,6 +459,8 @@ Newest first. Only what changes how the product is used.
   acceptance text and moves sit beneath them where there is room to read
   them (under the card when the window is narrow). A clicked control no
   longer keeps a focus ring: the ring is the keyboard's.
+- `agentdocker runtimes` heads its last column UNREGISTERED: it counts a
+  tool's processes nobody registered, which `ps` never showed as sessions.
 - A project pause: `agentdocker pause "reason"` tells every agent in the
   project to hold — the reason reaches each live one as a `pause` message
   and their new leases are refused with it until `pause --lift`; `pause
