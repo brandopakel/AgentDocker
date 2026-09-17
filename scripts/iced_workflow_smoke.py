@@ -533,6 +533,10 @@ def smoke(binary_dir, output):
                         step("wait_text", text="Keep this thread draft"),
                         step("capture", name="expanded-columns"),
                         step("click", id="projects"), step("click", id=f"project-{project}"),
+                        step("click", id="project-more"), step("click", id="project-tab-Channels"),
+                        step("click", id=f"reply-channel-{room['id']}"),
+                        step("fill", id="channel-message", text="Keep this channel across reopen"),
+                        step("click", id="projects"), step("click", id=f"project-{project}"),
                         step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
                         step("fill", id="session-message-text", text="Keep this session across reopen"),
                     ]
@@ -550,6 +554,7 @@ def smoke(binary_dir, output):
                 assert saved_drafts["sessions"][narrow["id"]] == "Keep this session across reopen", saved_drafts
                 assert "Keep this conversation draft" in saved_drafts["conversations"].values(), saved_drafts
                 assert "Keep this thread draft" in saved_drafts["conversations"].values(), saved_drafts
+                assert saved_drafts["channels"][room["id"]] == "Keep this channel across reopen", saved_drafts
                 restored_steps = [
                     step("resize", width=1800, height=900),
                     step("click", id=f"project-{project}"), step("click", id="inbox"),
@@ -562,12 +567,21 @@ def smoke(binary_dir, output):
                     step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
                     step("wait_text", text="Keep this session across reopen"),
                     step("capture", name="restored-session"),
+                    step("click", id="projects"), step("click", id=f"project-{project}"),
+                    step("click", id="project-more"), step("click", id="project-tab-Channels"),
+                    step("click", id=f"reply-channel-{room['id']}"),
+                    step("wait_text", text="Keep this channel across reopen"),
+                    step("capture", name="restored-channel"),
                 ]
                 report["restored_drafts_window"] = launch("restored-drafts", restored_steps)
                 retained_input = rpc(endpoint, {"op": "peek_input", "agent": narrow["id"]})["messages"]
                 for marker in ("Keep this conversation draft", "Keep this thread draft", "Keep this session across reopen"):
                     assert not any(marker in json.dumps(m.get("payload")) for m in retained_input), marker
-                checks.append("normal_close_flushes_hidden_conversation_thread_and_session_drafts_and_reopen_never_sends_them")
+                channel_inputs = rpc(endpoint, {"op": "peek_input", "agent": agent["id"]})["messages"]
+                assert not any("Keep this channel across reopen" in json.dumps(m.get("payload")) for m in channel_inputs)
+                channel_history = rpc(endpoint, {"op": "history", "conversation": f"channel:{room['id']}", "limit": 100})["messages"]
+                assert not any("Keep this channel across reopen" in json.dumps(m) for m in channel_history)
+                checks.append("normal_close_flushes_hidden_conversation_thread_session_and_channel_drafts_and_reopen_never_sends_them")
                 rpc(endpoint, {"op": "stop", "agent": narrow["id"], "force": False})
                 until(lambda: rpc(endpoint, {"op": "inspect", "agent": narrow["id"]})["agent"]["status"]["state"] == "exited")
 
