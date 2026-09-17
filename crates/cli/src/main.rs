@@ -1027,7 +1027,7 @@ struct PauseArgs {
     #[arg(long, conflicts_with_all = ["reason", "list"])]
     lift: bool,
     /// The projects that are paused, and why.
-    #[arg(long, conflicts_with_all = ["reason", "lift"])]
+    #[arg(long, conflicts_with_all = ["reason", "lift", "project"])]
     list: bool,
     /// Project id, root or unique prefix (default: the one this
     /// directory is in).
@@ -3490,6 +3490,19 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn pause_list_rejects_an_ignored_project_selector() {
+        use super::*;
+        for selector in [".", "another-project"] {
+            let error =
+                Cli::try_parse_from(["agentdocker", "pause", "--list", "--project", selector])
+                    .err()
+                    .expect("conflicting selector must fail before connecting");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+        assert!(Cli::try_parse_from(["agentdocker", "pause", "--list"]).is_ok());
+    }
 
     /// `history --read` moves the cursor of whoever runs it: an agent's
     /// shell names itself through AGENTDOCKER_AGENT_ID, so its read never

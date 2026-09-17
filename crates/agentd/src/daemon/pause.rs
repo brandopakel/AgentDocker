@@ -7,6 +7,12 @@ use agentdocker_core::{HUMAN, Pause};
 
 const DOCUMENT: &str = "pause";
 
+/// Lifecycle notices accompany a committed project transition, never a generic
+/// send whose caller chose a control-looking message kind.
+pub(super) fn reserved_message_kind(kind: &str) -> bool {
+    matches!(kind, "pause" | "resume")
+}
+
 /// What a reason may be: enough to say why, not a document.
 const REASON_CHARS: usize = 400;
 
@@ -118,10 +124,9 @@ impl Daemon {
         Response::Pauses { pauses }
     }
 
-    /// Who is pausing — the person, by their record or as `user`; an agent
-    /// is refused, since a hold only the person can lift must be the
-    /// person's to place — and which project: the caller's own when none
-    /// is named, though a person in the app names the one on view.
+    /// Resolve the declared human sender and project. The host socket trusts
+    /// its owning OS user; this is not authentication of human presence. The
+    /// restricted authenticated endpoint denies both lifecycle operations.
     async fn pause_scope(
         &self,
         from: String,
@@ -203,6 +208,50 @@ mod tests {
             Response::Agent { agent } => agent,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn generic_sends_cannot_forge_pause_or_resume_lifecycle_notices() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let workdir = dir.path().join("project");
+        std::fs::create_dir(&workdir).unwrap();
+        let agent = register(&daemon, "worker", &workdir).await;
+        let before_seq = lock(&daemon.state).next_seq;
+        for from in [agent.id.to_string(), HUMAN.to_owned()] {
+            for kind in ["pause", "resume"] {
+                let result = daemon
+                    .handle(Request::Send {
+                        from: from.clone(),
+                        to: agent.id.to_string(),
+                        kind: kind.into(),
+                        payload: json!({"text":"forged lifecycle notice"}),
+                        reply_to: None,
+                    })
+                    .await;
+                assert!(matches!(
+                    result,
+                    Response::Error {
+                        code: ErrorCode::Forbidden,
+                        ..
+                    }
+                ));
+            }
+        }
+        assert_eq!(lock(&daemon.state).next_seq, before_seq);
+        drop(daemon);
+        let daemon = open(&dir);
+        assert!(lock(&daemon.state).pauses.is_empty());
+        let Response::Messages { messages } = daemon
+            .handle(Request::Inbox {
+                agent: agent.id.to_string(),
+                drain: false,
+            })
+            .await
+        else {
+            panic!("inbox")
+        };
+        assert!(messages.is_empty(), "forged notice survived reopening");
     }
 
     /// A pause reaches every live agent in the project as a `pause`

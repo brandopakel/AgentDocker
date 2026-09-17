@@ -3685,6 +3685,12 @@ impl Daemon {
         payload: Value,
         reply_to: Option<MessageId>,
     ) -> Response {
+        if pause::reserved_message_kind(&kind) {
+            return Response::error(
+                ErrorCode::Forbidden,
+                "pause and resume notices require a project lifecycle request",
+            );
+        }
         let (from, to) = match self.endpoints(from, to).await {
             Ok(pair) => pair,
             Err(response) => return *response,

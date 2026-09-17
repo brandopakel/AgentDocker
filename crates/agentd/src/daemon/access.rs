@@ -333,7 +333,12 @@ impl Daemon {
                 *ttl_secs =
                     (*ttl_secs).min((grant.expires_at - Utc::now()).num_seconds().max(1) as u64);
             }
-            Request::Send { from, to, .. } => {
+            Request::Send { from, to, kind, .. } => {
+                if super::pause::reserved_message_kind(kind) {
+                    return Err(reject(
+                        "pause and resume notices require a project lifecycle request",
+                    ));
+                }
                 check_agent(from)?;
                 *from = identity;
                 let state = lock(&self.state);
@@ -616,6 +621,19 @@ mod tests {
             payload: json!({"text":"hello"}),
             reply_to: None,
         };
+        for kind in ["pause", "resume"] {
+            let mut request = send("peer");
+            if let Request::Send { kind: selected, .. } = &mut request {
+                *selected = kind.into();
+            }
+            assert!(matches!(
+                *daemon.restricted_request(&token, request).unwrap_err(),
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ));
+        }
         // The restricted endpoint cannot impersonate the host's human sender.
         for request in [
             Request::Pause {
