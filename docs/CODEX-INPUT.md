@@ -116,6 +116,73 @@ Use the existing driver's `--scenario long-busy` to hold a direct user turn for
 65 seconds, require both human/peer inputs to remain queued without a receipt or
 pause, then verify their ordered consumption and receiver crash recovery.
 
+## Active input in an existing terminal (candidate, September 17 UTC)
+
+The native queue starts new turns only at idle. Its binding used to suppress
+all hook context, so an app pause could wait behind hours-old messages throughout
+an active turn. A PreToolUse/PostToolUse hook whose process matches the bound
+provider generation now asks that same receiver
+for the next FIFO input over a private local socket. The receiver remains the
+only daemon queue consumer; the hook never acknowledges messages itself.
+
+A private version-3 ledger reserves the exact hook context before removing its
+own native queue entry and returning output. A false or lost removal response,
+a lost hook response, or missing exact history keeps the original input for
+reconciliation without automatic resubmission. The receiver accepts the matching complete provider context receipt. Actual
+Codex 0.154 records Pre/PostToolUse context as a developer message tagged
+`hooks.additional_context`, with a provider item ID and turn ID, but omits it
+from `thread/items/list`. A bounded reader therefore verifies the provider's
+reported transcript path, profile/session/checkout, opened file identity and
+complete records after the pre-offer byte boundary. It reads at most 4 MiB and
+never accepts plain text, untagged messages or an incomplete last record.
+The older `hookPrompt` representation remains supported when the API exposes it. Native `userMessage` receipts remain valid if the original queue entry
+won the race. Older version-2 ledgers migrate without changing the token, queue
+ID, original input or receipts. An older receiver refuses the new ledger version.
+
+The hook waits at most four seconds including coordination and output. Human and
+peer text exceeding the 6,000-byte hook context budget stays on the native route;
+generated stale notices may omit repeated metadata while retaining the original
+ID and complete paths, with an explicit summary label. Permission answers keep
+their existing route. Hooks do not type into the terminal, resume another thread,
+or choose permission decisions. This is delivery at tool boundaries; a provider
+that performs no tool call still controls when the next input is consumed.
+
+Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
+Codex executable and immutable candidate binaries. The trial adds peer, human
+project and human global input during one busy TUI turn and requires exact
+receipts, FIFO order and no later replay after baseline idle/draft/crash tests.
+`--scenario active-hook-lost` discards one offered hook output and requires the
+original queued IDs to remain paused without receipt or automatic resubmission.
+Source `5545697` passed 14 focused tests, the full 1,093-Rust/84-Python gate
+(seven skipped), and both actual Codex 0.154.0 scenarios. Three peer/project/global
+inputs reached the same active turn in 8.7 seconds with separate exact receipts;
+the dropped-output trial retained all three IDs, paused, and did not invent a
+receipt or replay. Baseline idle wake, draft/FIFO preservation and receiver crash
+recovery passed. The old-binary failure and initial receipt-reader failure remain
+in the [existing evidence](verification/2026-09-15-native-codex-queue.json).
+Review follow-up `e896111` authenticates the claimed hook PID with kernel Unix
+peer credentials before queue access. Its full 1,094-Rust/84-Python gate passed
+(seven skipped), and both actual-client scenarios passed again with an explicit
+provider-visible order/exactly-once assertion.
+
+This endpoint follows the host socket's owning-user trust boundary. Kernel peer
+credentials establish the connecting process; PID birth and ancestry associate
+it with the provider. They do not prove that the provider invoked a genuine hook:
+an unsandboxed same-user descendant can call the endpoint itself. The nonce
+correlates the response; it is not an authorization credential. Such a caller can
+reserve an offer and stall delivery if no provider receipt follows. It cannot
+make the receiver acknowledge that offer merely by receiving its context, but a
+malicious same-user process can also access the host socket and state directly.
+Do not expose this endpoint as a boundary between mutually untrusted local
+processes. Restricted agents need OS isolation and the scoped container endpoint;
+an invocation secret readable by the same user would not supply that isolation.
+
+The installed receiver still runs an older pinned release: installing the app
+alone does not change its immutable launch descriptor. A safe receiver upgrade
+and installed acceptance are required before closing this bug. Broader provider
+parity remains open. The provider's [hook contract](https://learn.chatgpt.com/docs/hooks)
+supports additional context without replacing the tool result.
+
 ## New managed conversations
 
 New Codex sessions can receive human and peer messages while idle. In New session,
