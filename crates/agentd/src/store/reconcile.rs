@@ -214,6 +214,7 @@ impl Store {
         Ok(Self {
             conn,
             fts: false,
+            pending_from: std::cell::Cell::new(None),
             messages_fts: std::cell::Cell::new(false),
         })
     }

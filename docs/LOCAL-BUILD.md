@@ -39,11 +39,19 @@ CLI path on case-insensitive filesystems and send hooks or MCP into the GUI.
    CLI installs its own package for the next launch. Versions are retained;
    `make rollback` activates the previous one; `make status` shows both.
 
-Nothing here touches a running daemon or its agents. A daemon that is already
-running keeps serving the old build until you end agent work and run
-`make restart-daemon` (or `agentdocker daemon restart`), after which the next
-client or app launch starts the installed one. Safe live replacement is still
-open engineering; see [Remaining work](REMAINING-WORK.md).
+Installation preserves agent processes. Once the release is activated, the
+installer asks a running daemon to reload to it and prints the
+daemon's answer under `daemon` in its report. With the reload gate on
+(`AGENTDOCKER_EXPERIMENTAL_RELOAD=1` in the daemon's environment) the daemon
+hands over to a successor and retires the predecessor while agents keep
+running; without it, the daemon
+refuses, keeps serving the old build, and the report says so until you end
+agent work and run `make restart-daemon` (or `agentdocker daemon restart`).
+If the reload reply is lost or unexpected, the installer probes the serving
+daemon again without replaying the reload. Its report sets `reloaded` to `null`
+(unknown), preserves `before`, and shows the newly observed `serving` daemon
+or `null` if none answers. What the gate still waits for is in
+[Live daemon upgrades](LIVE-DAEMON-UPGRADES.md).
 
 ## First install over a hand-copied app
 

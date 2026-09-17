@@ -26,8 +26,8 @@ pub(super) struct State {
     pub launch_runtime: Option<String>,
     pub launch_name: String,
     pub launch_arguments: String,
-    /// Explicit, per-launch opt-in to provider input while idle. Off every time
-    /// the form opens; never persisted; supported by Claude and Codex adapters.
+    /// Provider input is on for supported new sessions by default. The launch
+    /// control can turn it off; provider consent and policy still apply.
     pub launch_channel: bool,
     pub launching: bool,
     pub error: Option<String>,
@@ -214,6 +214,8 @@ pub enum Message {
     SessionDraft(String, String),
     SendSession(String),
     ConnectionDetails(String),
+    /// Open this runtime's connection guidance without changing any draft.
+    OpenConnection(String),
     ReviewFiles(MessageId),
     QuestionDetails(MessageId),
     /// Open one agent's conversation in Inbox, or all of them.
@@ -513,6 +515,7 @@ impl App {
             }
             Message::Notification(activation) => {
                 if let Some(id) = self.shell.window {
+                    crate::notification_route::unhide_application();
                     tasks.push(window::minimize(id, false).chain(window::gain_focus(id)));
                 }
                 match activation {
@@ -719,6 +722,7 @@ impl App {
                 let conversation = conversation.to_owned();
                 let to = self.conversation_destination(&conversation);
                 if self.connected.is_ok()
+                    && self.conversation_can_send(&conversation)
                     && let Some(to) = to
                     && let Some(draft) = self.shell.conversation_drafts.get_mut(&key)
                     && let Some(text) = draft.begin()
@@ -951,6 +955,12 @@ impl App {
                 self.shell.connection_details =
                     (self.shell.connection_details.as_ref() != Some(&name)).then_some(name);
             }
+            Message::OpenConnection(name) => {
+                self.screen = Screen::Runtimes;
+                self.shell.connection_details = Some(name);
+                self.shell.other_tools = true;
+                self.send(Cmd::Runtimes);
+            }
             Message::OtherTools => self.shell.other_tools = !self.shell.other_tools,
             Message::Search(text) => {
                 self.shell.search = text.chars().take(1024).collect();
@@ -1144,16 +1154,19 @@ impl App {
             }
             Message::ShowLaunch => {
                 self.shell.launch = !self.shell.launch;
-                self.shell.launch_channel = false;
+                self.shell.launch_channel = matches!(
+                    self.shell.launch_runtime.as_deref(),
+                    Some("claude-code" | "codex")
+                );
                 if self.shell.launch {
                     self.shell.selected = None;
                     self.shell.session_filter = super::sessions::Filter::Current;
                 }
             }
             Message::LaunchRuntime(runtime) => {
-                // Consent is for one tool at a time: switching away and back
-                // asks again rather than carrying a tick across tools.
-                self.shell.launch_channel = false;
+                // A normal launch connects the supported input adapter. The
+                // provider still asks for its own channel/tool consent.
+                self.shell.launch_channel = matches!(runtime.as_str(), "claude-code" | "codex");
                 self.shell.launch_runtime = Some(runtime);
             }
             Message::LaunchName(name) => self.shell.launch_name = name.chars().take(120).collect(),
@@ -2419,7 +2432,44 @@ mod tests {
     }
 
     #[test]
-    fn input_opt_in_selects_the_provider_adapter_and_needs_the_sibling_cli() {
+    fn connection_guidance_preserves_conversation_and_thread_drafts() {
+        let (mut app, commands, _) = app();
+        let conversation = "dm:user:worker";
+        let root = MessageId::from("root".to_owned());
+        let thread_key = super::draft_key(conversation, Some(&root));
+        app.shell.conversation = Some(conversation.into());
+        app.shell.thread = Some(root);
+        for (key, text) in [
+            (conversation, "Conversation draft"),
+            (thread_key.as_str(), "Thread draft"),
+        ] {
+            app.shell.conversation_drafts.insert(
+                key.into(),
+                ChannelDraft {
+                    text: text.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let _ = app.update(Message::OpenConnection("claude-code".into()));
+        assert!(matches!(commands.try_iter().next(), Some(Cmd::Runtimes)));
+        assert_eq!(app.screen, Screen::Runtimes);
+        assert_eq!(app.shell.connection_details.as_deref(), Some("claude-code"));
+        assert_eq!(app.shell.conversation.as_deref(), Some(conversation));
+        assert_eq!(app.shell.thread.as_ref().unwrap().as_str(), "root");
+        assert_eq!(
+            app.shell.conversation_drafts[conversation].text,
+            "Conversation draft"
+        );
+        assert_eq!(
+            app.shell.conversation_drafts[&thread_key].text,
+            "Thread draft"
+        );
+        assert!(!app.shell.launching);
+    }
+
+    #[test]
+    fn input_launch_selects_the_provider_adapter_and_needs_the_sibling_cli() {
         use agentdocker_core::AgentSpec;
         let (mut app, _, _) = app();
         let directory = tempfile::tempdir().unwrap();
@@ -2481,15 +2531,24 @@ mod tests {
             .prepare_launch(spec("claude-code"), Err("missing".into()))
             .unwrap_err();
         assert_eq!(error, "missing");
-        // Changing the tool, and reopening the form, both reset the opt-in.
-        let _ = app.update(Message::LaunchRuntime("codex".into()));
-        assert!(!app.shell.launch_channel);
-        let _ = app.update(Message::LaunchChannel(true));
-        let _ = app.update(Message::LaunchRuntime("claude-code".into()));
-        assert!(!app.shell.launch_channel);
-        let _ = app.update(Message::LaunchChannel(true));
-        let _ = app.update(Message::ShowLaunch);
-        assert!(!app.shell.launch_channel);
+        // Every catalog runtime and an unknown one must get an explicit,
+        // accurate default; switching providers never inherits another route.
+        for runtime in agentdocker_core::runtime::RUNTIMES
+            .iter()
+            .map(|runtime| runtime.name)
+            .chain(["custom"])
+        {
+            let supported = matches!(runtime, "claude-code" | "codex");
+            let _ = app.update(Message::LaunchRuntime(runtime.into()));
+            assert_eq!(app.shell.launch_channel, supported, "{runtime}");
+            let _ = app.update(Message::LaunchChannel(false));
+            assert_eq!(
+                app.prepare_launch(spec(runtime), Err("no cli".into())),
+                Ok(spec(runtime))
+            );
+            let _ = app.update(Message::ShowLaunch);
+            assert_eq!(app.shell.launch_channel, supported, "reopen {runtime}");
+        }
     }
 
     #[test]

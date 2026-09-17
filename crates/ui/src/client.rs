@@ -36,6 +36,13 @@ impl std::error::Error for RemoteError {}
 
 const START_TIMEOUT: Duration = Duration::from_secs(3);
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a request keeps being sent again while the daemon answers
+/// `transferring`: it has offered coordination to a successor and applied
+/// nothing, and the same socket answers again once the transfer settles.
+/// Longer than a successor may take to say it serves (the daemon waits
+/// 30 s for that), as the CLI's window is, so a slow handover costs the
+/// window patience, not a visible failure.
+const TRANSFER_WINDOW: Duration = Duration::from_secs(35);
 /// The window has two threads that reconnect on their own schedules; one
 /// daemon start attempt per this long is enough for both.
 const START_COOLDOWN: Duration = Duration::from_secs(15);
@@ -98,29 +105,53 @@ impl Client {
         // keystroke goes down this socket from a thread of its own, and a
         // daemon that stopped draining would block it there forever.
         stream.set_write_timeout(Some(CALL_TIMEOUT))?;
-        let mut line = serde_json::to_string(request)?;
+        let mut line = agentdocker_core::protocol::request_json(request)?;
         line.push('\n');
         stream.write_all(line.as_bytes())?;
         Ok(stream)
     }
 
-    /// One request, one reply; an error reply is an `Err`.
+    /// One request, one reply; an error reply is an `Err`. A
+    /// `transferring` reply is the daemon handing over to a successor with
+    /// nothing applied, so the same request is sent again, unchanged, for
+    /// [`TRANSFER_WINDOW`] before that reply is the answer.
     pub fn call(&self, request: &Request) -> Result<Response> {
+        let deadline = Instant::now() + TRANSFER_WINDOW;
+        loop {
+            let reply = self.call_once(request)?;
+            let transferring = matches!(
+                &reply,
+                Response::Error {
+                    code: agentdocker_core::ErrorCode::Transferring,
+                    ..
+                }
+            );
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if !transferring || remaining.is_zero() {
+                return match reply {
+                    Response::Error { code, message, .. } => {
+                        Err(RemoteError { code, message }.into())
+                    }
+                    response => Ok(response),
+                };
+            }
+            std::thread::sleep(Duration::from_millis(250).min(remaining));
+        }
+    }
+
+    fn call_once(&self, request: &Request) -> Result<Response> {
         let stream = self.connect()?;
         stream.set_read_timeout(Some(CALL_TIMEOUT))?;
         stream.set_write_timeout(Some(CALL_TIMEOUT))?;
         let mut reader = BufReader::new(stream);
-        let mut line = serde_json::to_string(request)?;
+        let mut line = agentdocker_core::protocol::request_json(request)?;
         line.push('\n');
         reader.get_mut().write_all(line.as_bytes())?;
         let mut reply = String::new();
         if reader.read_line(&mut reply)? == 0 {
             bail!("agentd closed the connection without answering");
         }
-        match serde_json::from_str::<Response>(&reply)? {
-            Response::Error { code, message, .. } => Err(RemoteError { code, message }.into()),
-            response => Ok(response),
-        }
+        Ok(serde_json::from_str::<Response>(&reply)?)
     }
 
     /// Follow the event stream until the daemon ends it, the connection
@@ -351,6 +382,64 @@ mod tests {
         let remote = error.downcast_ref::<RemoteError>().unwrap();
         assert_eq!(remote.code, agentdocker_core::ErrorCode::Unavailable);
         assert_eq!(remote.message, "desktop inventory unavailable");
+    }
+
+    /// A daemon handing over answers `transferring` with nothing applied;
+    /// the request is sent again until a daemon answers it, so the window
+    /// never shows the handover as a failure.
+    #[test]
+    fn a_transferring_reply_is_sent_again_until_answered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut seen = 0;
+            for answer in [
+                Response::Error {
+                    code: agentdocker_core::ErrorCode::Transferring,
+                    message: "coordination is being transferred".into(),
+                    details: None,
+                },
+                Response::Error {
+                    code: agentdocker_core::ErrorCode::Transferring,
+                    message: "coordination is being transferred".into(),
+                    details: None,
+                },
+                Response::Pong {
+                    version: "0.0.0-fake".into(),
+                    uptime_secs: 1,
+                    restricted: None,
+                    pid: None,
+                    executable: None,
+                },
+            ] {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream);
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                assert!(matches!(
+                    serde_json::from_str::<Request>(&request).unwrap(),
+                    Request::Ping
+                ));
+                seen += 1;
+                serde_json::to_writer(reader.get_mut(), &answer).unwrap();
+                reader.get_mut().write_all(b"\n").unwrap();
+            }
+            seen
+        });
+        let client = Client {
+            socket,
+            home: tmp.path().to_owned(),
+            autostart: false,
+        };
+        let started = Instant::now();
+        let reply = client.call(&Request::Ping).unwrap();
+        assert!(matches!(reply, Response::Pong { ref version, .. } if version == "0.0.0-fake"));
+        assert_eq!(server.join().unwrap(), 3, "sent again until answered");
+        assert!(started.elapsed() >= Duration::from_millis(450));
     }
 
     #[test]

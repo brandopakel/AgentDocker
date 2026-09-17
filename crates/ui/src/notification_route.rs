@@ -71,6 +71,15 @@ pub fn take() -> Vec<Activation> {
         .collect()
 }
 
+/// macOS Hide affects the application, independently of window minimization.
+/// Call from explicit activation handling before asking Iced to focus a window.
+pub fn unhide_application() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = objc2_app_kit::NSRunningApplication::currentApplication().unhide();
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod native {
     use objc2::rc::Retained;

@@ -16,23 +16,28 @@ impl std::fmt::Display for RpcRejection {
 
 impl std::error::Error for RpcRejection {}
 
-/// Only documented active-turn precondition failures prove that steering did
-/// not submit input. Unknown errors and lost replies must retain the attempt.
-pub(super) fn steering_refused(error: &anyhow::Error, expected: &str) -> bool {
-    let Some(rejection) = error.downcast_ref::<RpcRejection>() else {
-        return false;
-    };
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SteeringRefusal {
+    NoActiveTurn,
+    ChangedTurn,
+}
+
+/// Only documented active-turn preconditions prove non-submission. A different
+/// active turn additionally means ownership changed and delivery must pause.
+pub(super) fn steering_refusal(error: &anyhow::Error, expected: &str) -> Option<SteeringRefusal> {
+    let rejection = error.downcast_ref::<RpcRejection>()?;
     if rejection.method != "turn/steer" || rejection.error["code"].as_i64() != Some(-32600) {
-        return false;
+        return None;
     }
-    let Some(message) = rejection.error["message"].as_str() else {
-        return false;
-    };
-    message == "no active turn to steer"
-        || message
-            .strip_prefix(&format!("expected active turn id `{expected}` but found `"))
-            .and_then(|rest| rest.strip_suffix('`'))
-            .is_some_and(|actual| !actual.is_empty() && actual != expected && !actual.contains('`'))
+    let message = rejection.error["message"].as_str()?;
+    if message == "no active turn to steer" {
+        return Some(SteeringRefusal::NoActiveTurn);
+    }
+    message
+        .strip_prefix(&format!("expected active turn id `{expected}` but found `"))
+        .and_then(|rest| rest.strip_suffix('`'))
+        .filter(|actual| !actual.is_empty() && *actual != expected && !actual.contains('`'))
+        .map(|_| SteeringRefusal::ChangedTurn)
 }
 use std::{collections::VecDeque, path::Path, process::Stdio, time::Duration};
 use tokio::{
@@ -225,30 +230,35 @@ pub(super) async fn read_frame<R: AsyncBufRead + Unpin>(
 mod tests {
     use super::*;
     #[test]
-    fn only_exact_steering_precondition_rejections_permit_a_new_offer() {
+    fn steering_preconditions_distinguish_completion_from_changed_ownership() {
         for (method, code, message, refused) in [
-            ("turn/steer", -32600, "no active turn to steer", true),
+            (
+                "turn/steer",
+                -32600,
+                "no active turn to steer",
+                Some(SteeringRefusal::NoActiveTurn),
+            ),
             (
                 "turn/steer",
                 -32600,
                 "expected active turn id `active` but found `later`",
-                true,
+                Some(SteeringRefusal::ChangedTurn),
             ),
-            ("turn/start", -32600, "no active turn to steer", false),
-            ("turn/steer", -32000, "no active turn to steer", false),
+            ("turn/start", -32600, "no active turn to steer", None),
+            ("turn/steer", -32000, "no active turn to steer", None),
             (
                 "turn/steer",
                 -32600,
                 "expected active turn id `different` but found `later`",
-                false,
+                None,
             ),
             (
                 "turn/steer",
                 -32600,
                 "expected active turn id `active` but found `active`",
-                false,
+                None,
             ),
-            ("turn/steer", -32600, "input may have been accepted", false),
+            ("turn/steer", -32600, "input may have been accepted", None),
         ] {
             let failure = crate::provider_status::Failure(crate::provider_status::codex(
                 &json!({"message":message}),
@@ -263,12 +273,15 @@ mod tests {
                     .is_some()
             );
             assert_eq!(
-                steering_refused(&error, "active"),
+                steering_refusal(&error, "active"),
                 refused,
                 "{method}: {code} {message}"
             );
         }
-        assert!(!steering_refused(&anyhow::anyhow!("reply lost"), "active"));
+        assert_eq!(
+            steering_refusal(&anyhow::anyhow!("reply lost"), "active"),
+            None
+        );
     }
     #[tokio::test]
     async fn cancelled_partial_frame_is_retained_and_next_frame_stays_separate() {

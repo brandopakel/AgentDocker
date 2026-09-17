@@ -1,0 +1,127 @@
+{
+  "date": "2026-09-15",
+  "status": "Passed at bffc599 on release binaries built from the committed source (state schema 18): 20 successive gated reloads of one private daemon, each predecessor retired within 14.0 s of the reload being asked for, while two agents printed numbered lines as fast as sh allows (6684278 lines, every log contiguous), a batch and a PTY fixture ran, CLI clients sent 900 numbered messages (all arrived once, in order, no errors) and launched 653 short agents, half stopped early (all reached a durable end, no send, launch or stop errors). A lease and a pending question kept their identity and expiry across every switch and the question was answered after the last. Covers the acceptance items: peer messages before and during transfer in order; log pressure; concurrent send, stop and launch; multiple successive replacements. Not covered here: provider receipts and active Claude or Codex conversations, replay retention limits, Windows.",
+  "scope": "Acceptance before enabling reload in LIVE-DAEMON-UPGRADES.md, the parts a private daemon and CLI clients can establish without a provider account.",
+  "build": {
+    "format": 1,
+    "source_commit": "bffc5993c84706eb684b8c54f4506931a6e7630b",
+    "source_tree": "14df2c0518cd2db6442885f53e353725105743ca",
+    "source_input_sha256": "f51be1227e0b9d7a12070157568e01d1fcdf23267ce8b10cc2d1faa38d025304",
+    "source_dirty": false,
+    "target": "aarch64-apple-darwin",
+    "version": "0.1.0",
+    "state_schema": 18,
+    "installation_lock": 1,
+    "binary_directory": "<user-home>/AgentDocker/target/release",
+    "binary_sha256": {
+      "agentdocker": "4c599ef7744b1a9649225ab18f0ab5a43611cfa47578a4f4f26fee3893055080",
+      "agentd": "eb1f4607e6e9055f47b3d778ee163b5df8a0f74024777361ce043c640b5da85e",
+      "agentdocker-ui": "e0d83a28b89a8c0fd7e71d1de2234ebddea7bc047f422a2734bdebd47f207f0b"
+    }
+  },
+  "method": "scripts/reload_acceptance.py --binary-dir target/release --reloads 20 (pause 0.3 s between reloads). The daemon is started with AGENTDOCKER_EXPERIMENTAL_RELOAD=1 and reloaded through `agentdocker daemon reload`, which waits through backpressure; every client goes through the CLI, so a transferring answer is retried the way every client retries it. The harness scans the chained daemon log for warnings and errors and records them under results.daemon_log_warnings.",
+  "results": {
+    "passed": true,
+    "reloads": 20,
+    "build_info": {
+      "arch": "aarch64",
+      "format": 1,
+      "installation_lock": 1,
+      "os": "macos",
+      "state_schema": 18,
+      "version": "0.1.0"
+    },
+    "scenarios": [
+      "900 messages sent through 20 reloads arrived once, in order; 0 send errors",
+      "653 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+      "both loggers' logs are contiguous across every reload",
+      "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+      "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last"
+    ],
+    "reload_seconds": [
+      1.754,
+      1.576,
+      0.544,
+      13.945,
+      3.122,
+      0.036,
+      0.035,
+      0.041,
+      1.579,
+      0.045,
+      0.042,
+      2.106,
+      1.585,
+      1.588,
+      2.636,
+      2.622,
+      0.047,
+      0.05,
+      0.05,
+      0.049
+    ],
+    "daemon_pids": [
+      27907,
+      28143,
+      28452,
+      28549,
+      30598,
+      31014,
+      31100,
+      31127,
+      31163,
+      32002,
+      32027,
+      32629,
+      32889,
+      33061,
+      33284,
+      33660,
+      33993,
+      34032,
+      34072,
+      34700,
+      34735
+    ],
+    "predecessor_retired_seconds": [
+      1.779,
+      1.599,
+      0.568,
+      13.973,
+      3.142,
+      0.066,
+      0.058,
+      5.066,
+      1.608,
+      5.05,
+      0.065,
+      2.134,
+      1.606,
+      1.588,
+      2.657,
+      2.644,
+      0.078,
+      5.052,
+      0.072,
+      5.081
+    ],
+    "sends": {
+      "delivered": 900,
+      "errors": []
+    },
+    "launches": {
+      "finished": 653,
+      "errors": []
+    },
+    "log_lines": {
+      "logger-a": 3344654,
+      "logger-b": 3339624
+    },
+    "daemon_log_warnings": {
+      "agentd::supervisor: exit not recorded durably; the owner's exit report is kept": 4,
+      "agentd::daemon::restore: recovered exit not durable; owner report kept without acknowledgement": 4
+    }
+  },
+  "daemon_log_note": "Every warning recorded is a fenced skip on an exit that landed during an offer: the predecessor keeps the owner's exit report rather than record it, the successor recovers it while still fenced and records it after acceptance; every launched agent reached a durable end, which the trial asserts. The longer reloads are `daemon reload` waiting through backpressure while launches or stops admitted before the offer finished.",
+  "path_redaction": "Published account-home paths use <user-home>; recorded source and binary hashes are unchanged. Raw local records remain private."
+}

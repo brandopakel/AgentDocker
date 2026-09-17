@@ -406,7 +406,7 @@ impl App {
             })
     }
 
-    fn input_readiness(&self, agent: &AgentRecord) -> &'static str {
+    pub(super) fn input_readiness(&self, agent: &AgentRecord) -> &'static str {
         if !agent.status.is_live() {
             return "Session ended";
         }
@@ -1863,25 +1863,38 @@ impl App {
             self.shell.launch_runtime.as_deref(),
             Some("claude-code" | "codex")
         ) {
-            // Explicit and per launch: nothing on disk changes, and an
-            // existing session is never taken over.
+            // The normal launch has a receiver. Turning it off is explicit;
+            // provider consent remains a separate provider-owned step.
             tools = tools.push(
                 column![
-                    iced::widget::checkbox(self.shell.launch_channel)
-                        .label("Receive messages while idle (experimental)")
-                        .on_toggle(Message::LaunchChannel)
-                        .size(16)
-                        .text_size(13),
+                    action(
+                        "launch-idle-input",
+                        if self.shell.launch_channel { "Idle messages: On" } else { "Idle messages: Off" },
+                        (!self.shell.launching).then_some(Message::LaunchChannel(!self.shell.launch_channel)),
+                        self.shell.launch_channel,
+                    ),
                     small(
-                        if self.shell.launch_runtime.as_deref() == Some("codex") {
+                        if !self.shell.launch_channel {
+                            "Messages may wait until you interact with this session."
+                        } else if self.shell.launch_runtime.as_deref() == Some("codex") {
                             "Opens a Codex conversation here. Messages wait until the current turn finishes."
-                        } else { "Replies reach this session between turns. Requires Claude consent \
-                         in the terminal. Applies to this new session only." },
+                        } else { "Connects Claude's experimental channel. Complete Claude's consent in the terminal." },
                         c
                     )
                 ]
                 .spacing(4),
             );
+        }
+        if self.shell.launch_runtime.is_some()
+            && !matches!(
+                self.shell.launch_runtime.as_deref(),
+                Some("claude-code" | "codex")
+            )
+        {
+            tools = tools.push(small(
+                "Automatic idle delivery is not available for this tool.",
+                c,
+            ));
         }
         if let Some(runtime) = self
             .runtimes
@@ -3209,7 +3222,14 @@ impl App {
                         })
                     })
                 {
-                    facts = facts.push(note("Hooks deliver at prompt and tool boundaries. For idle delivery, launch a new session with Receive messages while idle enabled.", c));
+                    facts = facts.push(note(
+                        if runtime.name == "claude-code" {
+                            "Hooks cannot start an idle turn. New Claude launches use Idle messages: On and require channel consent. Existing sessions need a safe reconnect; queued messages stay with their current record."
+                        } else {
+                            "Hooks cannot start an idle turn. Native Codex sessions need a connected queue receiver. New launches here use Idle messages: On."
+                        },
+                        c,
+                    ));
                 }
                 facts = facts.push(
                     row![

@@ -467,13 +467,20 @@ async fn session(
                         match result {
                             Ok(result) => ensure!(result["turnId"].as_str() == Some(active),
                                 "Codex steering response named another turn; input retained"),
-                            Err(error) if transport::steering_refused(&error, active) => {
-                                // The turn ended before submission. Only this explicit
-                                // precondition failure permits a later ordinary offer.
-                                ledger.reject_steering()?;
-                                refused_steering = Some(active.to_owned());
-                            }
-                            Err(error) => return Err(error.context("Codex steering is unconfirmed; input retained for receipt recovery")),
+                            Err(error) => match transport::steering_refusal(&error, active) {
+                                Some(refusal) => {
+                                    // Both preconditions prove non-submission, so the
+                                    // message stays queued without an uncertain receipt.
+                                    ledger.reject_steering()?;
+                                    if refusal == transport::SteeringRefusal::ChangedTurn {
+                                        bail!("Codex has a different active turn; input delivery paused and the message remains queued until conversation recovery");
+                                    }
+                                    // A just-finished turn may still have its completion
+                                    // buffered. Do not offer again until it is observed.
+                                    refused_steering = Some(active.to_owned());
+                                }
+                                None => return Err(error.context("Codex steering is unconfirmed; input retained for receipt recovery")),
+                            },
                         }
                         continue;
                     }

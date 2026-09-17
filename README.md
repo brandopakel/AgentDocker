@@ -156,7 +156,9 @@ agentdocker run --name keeper --restore -- claude
 # purpose clears the policy, so it stays stopped.
 agentdocker run --name indexer --restart on-failure:3 -- ./index.sh
 agentdocker top      # the fleet, live: who is working, blocked, waiting
-agentdocker daemon reload   # currently unavailable; leaves the daemon and agents running
+agentdocker daemon reload   # hands over to a new agentd without stopping agents;
+                            # gated behind AGENTDOCKER_EXPERIMENTAL_RELOAD=1 on the
+                            # daemon until its acceptance is recorded, refused otherwise
 
 # And set the rules. `~/.agentdocker/policy.toml` is yours; a project's
 # `.agentdocker/policy.toml` may narrow it and never widen it.
@@ -361,7 +363,7 @@ An agent can optionally run in an image with no networking or host mounts by def
 
 **Lost context.** The registry makes participating agents visible; leases carry notes about their work. The daemon records best-effort file-change attribution through unexpired exclusive physical leases, otherwise marks a change external. Durable read sets let supported hooks and explicit MCP calls detect changed content, including uncommitted edits, and require rereading before an edit. The journal hands a newcomer what happened while it was away. Generic adopted processes are not automatically observed.
 
-**No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), channel (`--to channel:<id>`, the room the daemon opens when two agents turn out to be on the same work), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Addressed messages remain in each recipient's inbox until acknowledged, including messages shown by `watch`. MCP reads retain messages by default; the agent calls `acknowledge_messages` with IDs it received. CLI users can run `inbox --as <agent> --ack <id>...`; the desktop has Dismiss and Dismiss shown actions for received messages, preserving unseen messages and unanswered questions. A full inbox rejects the whole send without discarding earlier messages. Polling and streaming consumers can recover unacknowledged messages after reconnecting; topic traffic is live-only. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
+**No common channel.** Messaging is direct (`--to writer`), project-wide (`--to project` reaches everyone working in the same repository), channel (`--to channel:<id>`, the room the daemon opens when two agents turn out to be on the same work), topic-based (`--to topic:repo/reviews`, subscribed with MQTT-style patterns like `repo/#`), or broadcast (`--to all`). Addressed messages remain in each recipient's inbox until acknowledged, including messages shown by `watch`. MCP reads retain messages by default; the agent calls `acknowledge_messages` with IDs it received. CLI users can run `inbox --as <agent> --ack <id>...`. In the desktop Messages workspace, opening a conversation marks the displayed rows read for the person; it never takes an agent's queued input. Archived history, threads and separate drafts remain available after reading. With an older daemon, Inbox provides Clear and Clear shown for received messages. A full inbox rejects the whole send without discarding earlier messages. Polling and streaming consumers can recover unacknowledged messages after reconnecting; topic traffic is live-only. Payloads are JSON with a free-form `kind` (`chat`, `task`, `handoff`, `question`, `answer`, `notice`), so agents on different models can agree on a vocabulary without the daemon caring.
 
 ## Architecture
 
@@ -387,7 +389,7 @@ Five crates:
 - `crates/host` — host filesystem, process, Git, runtime-inventory and container-engine inspection shared by the binaries.
 - `crates/agentd` — the daemon: Unix-socket server, process supervisor with log capture, broadcast bus, inbox queues, lease reaper, project watcher, agent discovery, event stream, SQLite write-through store so state survives restarts.
 - `crates/cli` — `agentdocker`: a thin client over the same protocol, plus the adapters: `agentdocker mcp` (stdio MCP server) and `agentdocker hook` (Claude Code hooks).
-- `crates/ui` — `agentdocker-ui`: the native Iced desktop over the same socket. Projects combine discovered sessions with pinned folders and restore the last selection. Inbox handles conversations, questions and drafts; Tools reviews integration setup; Settings holds appearance and installation. Each project includes sessions, channels, activity, coordination, a working VT terminal, and bundled CLI commands. `agentdocker ui` opens it.
+- `crates/ui` — `agentdocker-ui`: the native Iced desktop over the same socket. Projects combine discovered sessions with pinned folders and restore the last selection. Messages keeps archived conversations, questions, threads and separate drafts; older daemons use Inbox. Tools reviews integration setup; Settings holds appearance and installation. Each project includes sessions, channels, activity, coordination, a working VT terminal, and bundled CLI commands. `agentdocker ui` opens it.
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers the protocol, lease semantics, delivery guarantees, and the engineering design; [`docs/IMPLEMENTATION-NOTES.md`](docs/IMPLEMENTATION-NOTES.md) records the contracts and hardening decisions behind what exists.
 

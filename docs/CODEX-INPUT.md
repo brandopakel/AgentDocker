@@ -69,6 +69,14 @@ see the
 [delivery audit](MESSAGE-DELIVERY-AUDIT.md). Repeat the trials with
 `python3 scripts/native_codex_queue_smoke.py --help` for the required binary paths
 and scenario choices. Each run saves a sanitized result beside private traces.
+`--reload --scenario question` additionally hands the private daemon over while
+idle, with an unsubmitted draft, during mixed-origin busy input and with a
+pending question. It checks unchanged provider/controller identities, exact
+answer receipt and retirement of all trial daemons and controllers. This uses
+the actual native client with a loopback model fixture; real account/provider
+service acceptance and other runtimes remain separate.
+Trial cleanup also covers provider startup failure after the private daemon
+has started, before the terminal reader or input binding exists.
 
 The daemon holds a synchronous question's answer until its route is settled.
 An answer handed to that tool stays queued as uncertain until the receiver finds
@@ -111,7 +119,7 @@ pause, then verify their ordered consumption and receiver crash recovery.
 ## New managed conversations
 
 New Codex sessions can receive human and peer messages while idle. In New session,
-choose Codex and tick **Receive messages while idle (experimental)**, or run:
+choose Codex and keep the default **Idle messages: On**, or run:
 
 ```sh
 agentdocker run --runtime codex --codex-input --tty -- codex
@@ -120,7 +128,8 @@ agentdocker run --runtime codex --codex-input --tty -- codex
 This starts an owned Codex app-server conversation under the native supervisor.
 It needs a matching schema-16 daemon and CLI, and a Codex version supporting
 `hooks/list` and paginated thread history. It does not attach to an existing Codex
-TUI. The option is off by default and applies only to the new session. Codex's
+TUI. The desktop defaults the option on for a new Codex session; it applies only
+to that launch. The CLI requires the explicit `--codex-input` flag. Codex's
 app-server interface remains experimental.
 
 Send through the selected session's message composer, `send_message`, or the
@@ -465,17 +474,31 @@ lost-reply trial recovered the same agent/thread without repeating input.
 
 Run `python3 scripts/codex_steering_smoke.py --binary-dir target/release
 --output /tmp/steering-trial` (add `--scenario lost-reply` for recovery or
-`--scenario refused` for an injected precondition failure).
+`--scenario refused` for an injected no-active-turn failure, or
+`--scenario changed-turn` for a refusal followed by that other turn's completion).
 Hosted-model and broader provider acceptance remain open. Native TUI
 queue delivery still waits for idle; this change does not establish active-input
 parity for that existing-session route.
 
-An explicit active-turn precondition refusal suppresses further steering for that
-turn. Its completion clears the suppression and the still-queued input can enter
-through the ordinary turn-start path. Ambiguous failures retain the durable
+A no-active-turn precondition refusal suppresses further steering for the
+retained turn. Its completion clears the suppression and the still-queued input
+can enter through the ordinary turn-start path. A different-active-turn refusal
+instead pauses delivery immediately with a clear reason, keeps the original
+receipt and leaves the unsubmitted message queued. It cannot treat that other
+turn's completion as the retained turn or acknowledge its refused input. A later
+controller restart must recover the retained conversation before becoming ready. Ambiguous failures retain the durable
 attempt for receipt reconciliation; they do not authorize another submission.
 
 The refusal follow-up `01531dc` passed the full 1,015-Rust/77-Python gate and all
 three actual-client scenarios. The injected-refusal trial held the original turn
 busy over several queue polls, observed one rejected steering request, then one
 ordinary turn start with an exact receipt after completion.
+
+The September 16 changed-turn regression passed on source `36ac92b` with actual
+Codex 0.154.0 and a private local model service. An injected different-turn
+refusal followed by that turn's completion left the original receipt intact and
+the refused message queued once, with an explicit pause and no resubmission.
+Busy, no-active-turn and lost-reply scenarios also passed. The prior binary
+failed the changed-turn trial as expected; both results and the full
+1,077-Rust/84-Python gate are retained in the existing
+[reload evidence](verification/2026-09-16-reload-controller-episode.json).

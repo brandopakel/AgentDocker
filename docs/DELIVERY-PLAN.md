@@ -16,10 +16,15 @@ Merged source now includes PRs #148/#149 (existing-terminal native Codex input
 and the shared coordination skill), #151 (managed-network review) and #153
 (intact copied launcher and compatible legacy rollback). Their final local gates,
 CI and source reviews passed; bounded acceptance is linked from
-[Remaining work](REMAINING-WORK.md). Messaging, Sessions simplification, reload
-and diagnostic followups are still being integrated.
+[Remaining work](REMAINING-WORK.md). PRs #154/#156/#158 also merged: installed
+notification/watcher acceptance and transport/authorization diagnostics. Messaging,
+Sessions simplification and gated reload followups are still being integrated.
+The reload candidate passed 20 private handovers and bounded actual Codex-client
+idle/draft/busy/question handovers with a loopback model fixture, exact answer
+receipt and clean retirement. These results leave real model services, Claude,
+attached-terminal drafts and broader replacement acceptance open.
 
-The installed app and serving daemon now use verified `cf64ca3` (schema20),
+The prior installed app and serving daemon used verified `cf64ca3` (schema20),
 whose production inputs match merged `4074275`. The intact launcher passes
 strict signature verification; all four external provider identities, PIDs and
 birth times survived the coordinator switch. The existing Codex receiver
@@ -28,8 +33,15 @@ That message then started the next ordinary Codex turn without a human prompt;
 the controller recorded its exact thread/turn/item receipt and acknowledged the
 original queue row. This closes one installed existing-session wake/receipt
 trial; zero-prompt startup/reopen and broader provider acceptance remain.
+Claude subsequently installed `72b1eb4` (schema21); read-only verification
+confirms that release's daemon and GUI are running with a valid intact bundle.
+The Codex provider and receiver PIDs are retained. PR #152 subsequently merged
+as `ece76fd` on September 16 after final review and CI; this read-only observation
+does not certify its activation procedure.
+See [the observed checkpoint](verification/2026-09-12-integrated-desktop.json).
 Use `agentdocker desktop status` and `agentdocker daemon status` for actual
-versions. Installing an app does not replace the active daemon.
+versions. Ordinary gate-off installation leaves the active daemon serving.
+The experimental reload gate permits a handover to the activated release.
 
 ### Historical integration and installation checkpoints
 
@@ -98,6 +110,35 @@ rollback and uninstall and preserve existing absolute integration paths. Private
 test worktrees must never become end-user installation instructions.
 
 ### Submitted-input parity and idle wake (September 10)
+
+**Separate top-priority bug, September 16 — CLI broadcast missed an active
+session:** the user's `agentdocker send --to all` pause request
+`5d0f2b149aa44cb6` was accepted at 07:55:46 UTC, but Codex continued working
+until the user repeated it directly. The read-only `all` archive confirms the
+original human broadcast. Queue acceptance is not delivery. Audit fan-out,
+per-recipient queue position, controller offers, active-turn input/steering and
+receipts. CLI human input must have the same scheduling priority and supported
+active-turn behavior as directly typed human input; peer input uses the same
+provider route while retaining its untrusted attribution. Verify both idle wake
+and busy-session interruption/queue behavior, including a broadcast pause, with
+per-recipient evidence, retained drafts and no duplicate execution. Preserve
+unavailable recipients' input and show why delivery is waiting. This remains open.
+
+**September 16 live regression:** Claude confirmed twelve peer messages waited at
+its idle prompt until a human supplied input. The process had hooks/MCP but no
+channel receiver. Finish safe existing-session input connection and per-provider
+acceptance before closing this requirement. New supported UI launches now default
+to idle input, and composers expose recipient readiness; those changes do not
+retrofit this existing session. See the [recorded finding](MESSAGE-DELIVERY-AUDIT.md#september-16-live-claude-idle-wake-gap-reproduced).
+
+PR #162 merged owned Codex active-input delivery as `7c6e779`. Source
+`01531dc` passed the full 1,015-Rust/77-Python gate and actual Codex 0.154.0
+trials using a local model fixture: human, peer and human-broadcast inputs in
+one active turn, one explicit steering refusal retained until the turn ended,
+and recovery from a dropped acceptance reply without resubmission. This covers
+the owned app-server bridge; the existing standalone-terminal pause failure
+and Claude sessions without channel input remain open. See the
+[recorded Codex acceptance](CODEX-INPUT.md#active-turn-steering-acceptance-september-16).
 
 The user requires peer messages to follow the same provider input workflow and
 queue as messages they submit themselves, including waking an idle agent. Make
@@ -373,7 +414,7 @@ integrations, GUI, full platform parity and live-upgrade work continue afterward
 | 3. Complete native install and onboarding | Verify app/archive packaging, final signatures, preview/apply/undo, connection diagnostics, stable provider paths, pinned installation/update/rollback, uninstall and retention. Exercise interrupted activation and schema compatibility with live sessions. | Local app/CLI installation and legacy hook/MCP compatibility passed at PR #119; UI is installed in /Applications. Update consumer, scheduler, preview/apply/undo and rollback exist. Per-session configuration/contact/receiver/receipt states and required-provider guidance are implemented; PR #125 passed 165 native steps and a 90-second actual Codex queue/idle-heartbeat trial. Final review and installed-candidate readiness acceptance remain pending. Signed hosted distribution and broader acceptance remain. |
 | 4. Verify real integrations and discovery | Run fresh Claude Code hooks and Codex MCP sessions on the integrated candidate; prove actual inbox consumption, observation/staleness, conflicts and journal continuity. Expand desktop identities, installation locations and accurate capability reporting. | Managed Codex and Claude channels have actual shared human/peer queue, idle/busy/question and bounded recovery evidence. Broader review/elicitation forms, installed-version trials and longer sessions remain. Production duplicate repair awaits a safe daemon stop. |
 | 5. Deliver platform parity | Finish native Windows host/IPC/process/terminal/service/path/installer adapters and runtime CI. Complete Linux desktop inventory/packages and target-distribution GUI/service tests. Repeat the same semantic tests on each OS. | Four Mac/Linux desktop CI targets and Windows core/host/named-pipe foundations pass on main. Target-distribution/service, second-Mac/physical-Intel and full native Windows daemon/GUI/ConPTY/service/installer acceptance remain. |
-| 6. Integrate sustained-use features | Review #45/#47/#50 restart/backoff/dependency/policy/retention/reload work, including the reproduced agent termination and log-loss defects. Preserve batch and PTY I/O, process ownership, logs, schema and socket compatibility through replacement. Validate the actual replacement binary and successor readiness before the old daemon exits. | Policy/quotas, restart/backoff/dependencies, bounded logs and output ownership are merged. Automatic journal/checkpoint maintenance and independent session-owner processes are implemented and merged. `daemon reload` still refuses: coordinator fencing, successor readiness and transfer acceptance remain open. |
+| 6. Integrate sustained-use features | Review #45/#47/#50 restart/backoff/dependency/policy/retention/reload work, including the reproduced agent termination and log-loss defects. Preserve batch and PTY I/O, process ownership, logs, schema and socket compatibility through replacement. Validate the actual replacement binary and successor readiness before the old daemon exits. | Policy/quotas, restart/backoff/dependencies, bounded logs and output ownership are merged. Automatic journal/checkpoint maintenance and independent session-owner processes are implemented and merged. Coordinator fencing, successor readiness and client/install handover are in source behind `AGENTDOCKER_EXPERIMENTAL_RELOAD`; without that gate reload refuses. Twenty private handovers and bounded Codex native-client idle/draft/busy/question trials passed. Real model-service/Claude and attached-terminal handovers, uncertain writes, replay retention and platform acceptance remain open; see [live upgrades](LIVE-DAEMON-UPGRADES.md). |
 | 7. Complete the extensive test program | Execute the testing-standard and local-trial crosswalk below, repair failures, retain original failure evidence, and rerun affected integrated scenarios. | Partial. Current T01–T12 and L01–L15 dispositions follow below. Short and hour-long trials exist; overnight, sleep/reboot, some failure diagnosis and independent-platform cases remain. |
 | 8. Install, trial elsewhere and release | After the preceding blockers pass, install the reviewed candidate on this Mac; then independent second-Mac and platform trials. Publish signed artifacts, checksums and accurate installation instructions for supported channels. | Local installation completed on this Mac. Running-daemon switch, independent machines, Developer ID/notarization, protected-tag publication and hosted update/cask acceptance remain. Public v0.1.0 is still the older release. |
 
