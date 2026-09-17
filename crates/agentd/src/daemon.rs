@@ -6103,8 +6103,8 @@ impl State {
     /// rewritten, aliases that pointed at them flattened, and their ids
     /// becoming aliases. The store plans and writes it as one transaction
     /// with the event; memory follows. Anything that does not qualify — a
-    /// record whose process is still there, one that holds leases, sits
-    /// in a channel, is waiting on something, has stale changes owed to
+    /// record whose process is still there, one that holds leases,
+    /// is waiting on something, has stale changes owed to
     /// it, has a live subscriber, has ambiguous observations, or a
     /// store that cannot say or refuses the rewrite — leaves the fresh
     /// record as it is.
@@ -6146,9 +6146,10 @@ impl State {
             }
         }
         // Nothing any folded record did is lost: one that holds leases,
-        // sits in an open channel, waits on a lease, has stale changes
+        // waits on a lease, has stale changes
         // owed to it or has somebody subscribed to it keeps its own record.
-        // Read observations instead join transactionally in plan_resume.
+        // Observations and eligible channel memberships join transactionally
+        // in plan_resume; a rewrite that would create a self-review refuses.
         // Fail closed on unreadable observations, including the canonical
         // record: malformed storage must still disable coordination.
         let mut folded: Vec<&AgentRecord> = vec![&fresh];
@@ -6165,10 +6166,6 @@ impl State {
         }
         for record in &folded {
             if !self.leases.by_holder(&record.id).is_empty()
-                || self
-                    .channels
-                    .values()
-                    .any(|c| c.is_open() && c.has(&record.id))
                 || self.waiting.waiting_for(&record.id).is_some()
                 || self.pending_stale.contains_key(&record.id)
                 || self.stale_outstanding.contains_key(&record.id)
@@ -6263,7 +6260,7 @@ impl State {
         }
         // What the store rewrote, memory rewrites the same way: a question
         // an earlier life asked is the canonical record's to cancel now,
-        // and a closed channel's history names the record that is.
+        // and channel membership names the record that is.
         for question in self.questions.values_mut() {
             if retired.iter().any(|id| id.as_str() == question.from) {
                 question.from = prior.id.to_string();
@@ -6861,7 +6858,7 @@ mod tests {
             record.finished_at = Some(Utc::now() - chrono::Duration::minutes(minutes_ago));
         };
         let human = me(&daemon).await;
-        let _peer = register_here(&daemon, "peer", None).await;
+        let peer = register_here(&daemon, "peer", None).await;
 
         // The oldest life ends for good; the next life takes up its
         // record, so the newcomer's own id becomes an alias of it.
@@ -6940,6 +6937,28 @@ mod tests {
                 .store
                 .put_document("reads", first.id.as_str(), &vec![later_read.clone()])
                 .unwrap();
+        }
+        let room = agentdocker_core::Channel {
+            id: "resume-room".into(),
+            project: earlier.project.as_ref().unwrap().id(),
+            name: Some("resume-room".into()),
+            subject: agentdocker_core::channel::ChannelSubject::Task {
+                task: "retained room".into(),
+            },
+            members: vec![earlier.id.clone(), first.id.clone(), peer.id.clone()],
+            opened_by: Some(earlier.id.clone()),
+            opened_at: Utc::now(),
+            reviews: vec![],
+            closed_at: None,
+            resolution: None,
+        };
+        {
+            let mut state = lock(&daemon.state);
+            state
+                .store
+                .put_document("channel", room.id.as_str(), &room)
+                .unwrap();
+            state.channels.insert(room.id.clone(), room.clone());
         }
         // Both lives end, the earlier one first, and their processes go.
         ended(&daemon, &earlier.id, 60);
@@ -7062,6 +7081,34 @@ mod tests {
             Response::Ok
         ));
         assert!(!lock(&daemon.state).questions.contains_key(&question));
+        {
+            let state = lock(&daemon.state);
+            let channel = &state.channels[&room.id];
+            assert!(channel.is_open());
+            assert_eq!(channel.members, vec![first.id.clone(), peer.id.clone()]);
+            assert_eq!(channel.opened_by, Some(first.id.clone()));
+        }
+        let channel_message = queue(&daemon, "channel:resume-room").await;
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(
+                state.inboxes[&first.id]
+                    .iter()
+                    .filter(|m| m.id == channel_message)
+                    .count(),
+                1
+            );
+            assert!(!state.inboxes.contains_key(&earlier.id));
+            assert!(!state.inboxes.contains_key(&fresh_id));
+            assert_eq!(
+                state.store.load_inboxes().unwrap()[&first.id]
+                    .iter()
+                    .filter(|m| m.id == channel_message)
+                    .count(),
+                1
+            );
+        }
+
         // The MCP half of the live session joins it as before.
         assert_eq!(
             register(&daemon, "claude-code-2", None, p3.id()).await.id,

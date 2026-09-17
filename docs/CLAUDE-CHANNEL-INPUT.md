@@ -58,8 +58,10 @@ registration is one queue in durable sequence order with each message once, a
 question an earlier life asked is now its own, and every other id becomes an
 alias. This applies only when the register/session-resumption eligibility rule
 in [ARCHITECTURE.md](ARCHITECTURE.md#wire-protocol) is satisfied. A record whose
-process still runs, or one that holds leases or sits in a channel, is left
-as it is. File observations join by path, keeping the latest capture; conflicting
+process still runs, or one that holds leases or has pending stale notices, is
+left as it is. Eligible open channel memberships, opener and reviewer references
+move in the same transaction; duplicate memberships collapse to one. A rewrite
+that would create a self-review refuses the entire fold. File observations join by path, keeping the latest capture; conflicting
 captures at the same time refuse the fold. The joined working set is bounded to
 1,000 paths and 4 MiB of stored input. Its rewrite commits with the queue, aliases
 and event, so a failed write leaves them all unchanged. Unreadable observations

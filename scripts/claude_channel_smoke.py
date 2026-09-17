@@ -309,6 +309,12 @@ def run(args):
                 fresh_reads = rpc(endpoint, {"op": "observe", "agent": fresh, "paths": ["fresh.txt"]})
                 assert fresh_reads["type"] == "reads", fresh_reads
                 expected_reads = sorted(old_reads["reads"] + fresh_reads["reads"], key=lambda read: read["path"])
+                room = rpc(endpoint, {"op": "channel_open", "agent": fresh,
+                    "task": "resume membership", "members": [human], "name": "resume-membership"})["channel"]
+                # The fixture has consumed its own channel-created notice; it
+                # is not part of the older backlog or a model receipt claim.
+                assert rpc(endpoint, {"op": "ack_inbox", "agent": fresh,
+                    "messages": inbox(fresh)})["type"] == "ok"
                 early = channel_for(fresh, initialize=False)
                 assert register_life("resume-hook", new_parent, "fixture-resumed-session") == canonical
                 assert rpc(endpoint, {"op": "reads", "agent": canonical})["reads"] == expected_reads
@@ -324,9 +330,18 @@ def run(args):
                 assert early.offer()["meta"]["message_id"] == old_message
                 early.ack(400, [old_message])
                 assert inbox(canonical) == []
+                restored_rooms = rpc(endpoint, {"op": "channels", "project": str(project)})["channels"]
+                restored_room = next(channel for channel in restored_rooms if channel["id"] == room["id"])
+                assert set(restored_room["members"]) == {canonical, human}, restored_room
+                assert restored_room["opened_by"] == canonical and not restored_room.get("closed_at")
+                channel_message = send_to("channel:" + room["id"], "resumed channel message")
+                assert early.offer()["meta"]["message_id"] == channel_message
+                assert inbox(canonical) == [channel_message] and inbox(fresh) == [channel_message]
+                early.ack(402, [channel_message])
+                assert inbox(canonical) == []
                 early.process.stdin.close()
                 assert early.process.wait(timeout=5) == 0
-                report["steps"].append("pre-initialization session fold preserved both observation sets and one channel owner across different agent IDs and delivered the older queue through its alias")
+                report["steps"].append("pre-initialization session fold preserved observations and open memberships, retained one channel owner across different agent IDs, and delivered the older queue plus a new room message through the canonical alias")
 
                 retained = send_to(canonical, "retained older backlog")
                 new_parent.kill(); new_parent.wait(timeout=5)
