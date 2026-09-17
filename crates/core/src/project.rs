@@ -115,9 +115,49 @@ impl fmt::Display for ProjectId {
     }
 }
 
+/// A project told to hold: every agent in it was asked to finish the step
+/// in hand and start nothing, and the daemon refuses their new leases
+/// until the person lifts it. One record per project; a second pause
+/// replaces the reason.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pause {
+    pub project: ProjectId,
+    /// Who asked, as an agent id (the person's record, usually).
+    pub by: String,
+    /// Why, in the person's words: what the agents are told.
+    pub reason: String,
+    pub at: chrono::DateTime<chrono::Utc>,
+}
+
+impl Pause {
+    /// Whether a paused project holds this caller back from taking a new
+    /// lease: agents in the project are held; the person is not, since it
+    /// is theirs to lift; an agent in no project or another is not in it.
+    pub fn holds(&self, caller_project: Option<&ProjectId>, caller_is_human: bool) -> bool {
+        !caller_is_human && caller_project == Some(&self.project)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pause holds the project's agents and nobody else.
+    #[test]
+    fn a_pause_holds_the_projects_agents_and_not_the_person() {
+        let pause = Pause {
+            project: ProjectRef::directory("/repo").id(),
+            by: "user".into(),
+            reason: "sleeping the laptop".into(),
+            at: chrono::Utc::now(),
+        };
+        let here = ProjectRef::directory("/repo").id();
+        let elsewhere = ProjectRef::directory("/other").id();
+        assert!(pause.holds(Some(&here), false));
+        assert!(!pause.holds(Some(&here), true), "the person lifts it");
+        assert!(!pause.holds(Some(&elsewhere), false));
+        assert!(!pause.holds(None, false));
+    }
 
     #[test]
     fn fingerprint_is_the_id_when_present() {

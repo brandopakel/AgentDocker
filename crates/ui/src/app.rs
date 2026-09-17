@@ -94,6 +94,15 @@ enum Cmd {
     Channels(String, String),
     Inbox,
     Activity,
+    /// The projects that are paused, and why.
+    Pauses,
+    /// The person tells a project's agents to hold, with the reason.
+    Pause {
+        request: PauseRequest,
+        reason: String,
+    },
+    /// The person lifts a project's pause.
+    ResumeProject(PauseRequest),
     SessionLog(String),
     /// Register the person at the keyboard, so agents can address them.
     Me,
@@ -229,6 +238,10 @@ enum Msg {
     Channels(String, Vec<agentdocker_core::Channel>),
     Inbox(Vec<agentdocker_core::Envelope>),
     Activity(Vec<AgentActivity>),
+    Pauses(Vec<agentdocker_core::Pause>),
+    /// The pause or resume the person asked for a project, done or
+    /// refused; the project says which form or control it answers.
+    Paused(PauseRequest, Result<(), String>),
     SessionLog(String, Result<String, String>),
     Questions(Vec<Question>),
     /// An answer came back: `Ok` means it was delivered, `Err` carries
@@ -368,6 +381,12 @@ pub struct App {
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
+    /// The projects told to hold, and why.
+    pauses: Vec<agentdocker_core::Pause>,
+    /// The pause being written, while its form is open: bound to the
+    /// project it was opened for, whichever is selected by the time it
+    /// is sent.
+    pause_states: BTreeMap<String, PauseControl>,
     queued_inputs: BTreeMap<String, usize>,
     /// Per agent, the queued inputs no current receipt covers.
     awaiting_receipt: BTreeMap<String, usize>,
@@ -481,6 +500,8 @@ impl App {
             sending: std::collections::BTreeSet::new(),
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            pauses: Vec::new(),
+            pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
             awaiting_receipt: BTreeMap::new(),
             session_log: None,
@@ -544,6 +565,8 @@ impl App {
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            pauses: Vec::new(),
+            pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
             awaiting_receipt: BTreeMap::new(),
             session_log: None,
@@ -582,6 +605,9 @@ impl App {
                         form.creating = false;
                         form.error = Some(reason.into());
                     }
+                }
+                Cmd::Pause { request, .. } | Cmd::ResumeProject(request) => {
+                    self.complete_pause(request, Err(reason.into()));
                 }
                 Cmd::Setup(_) => self.setup_busy = false,
                 Cmd::Desktop(_) => self.desktop.receive(Err(reason.into())),
@@ -622,6 +648,66 @@ impl App {
             }
             self.say(reason);
         }
+    }
+
+    /// Responses identify the exact operation, not just the selected project.
+    /// A delayed pause/resume completion must not consume a later draft or request.
+    fn complete_pause(&mut self, request: PauseRequest, result: Result<(), String>) {
+        let Some(control) = self.pause_states.get_mut(&request.project) else {
+            return;
+        };
+        if control.pending.as_ref() != Some(&request) {
+            return;
+        }
+        control.pending = None;
+        match result {
+            Ok(()) => {
+                control.error = None;
+                if request.action == PauseAction::Pause {
+                    control.draft = None;
+                }
+                if control.draft.is_none() {
+                    self.pause_states.remove(&request.project);
+                }
+                self.send(Cmd::Pauses);
+            }
+            Err(error) => control.error = Some(error),
+        }
+    }
+
+    fn submit_pause(&mut self, project: String, action: PauseAction) {
+        if self.connected.is_err() {
+            return;
+        }
+        if !self.pause_states.contains_key(&project) && self.pause_states.len() >= PAUSE_CONTROLS {
+            self.say("Finish or cancel an existing pause draft first.");
+            return;
+        }
+        let control = self.pause_states.entry(project.clone()).or_default();
+        if control.pending.is_some() {
+            return;
+        }
+        let reason = if action == PauseAction::Pause {
+            let Some(reason) = &control.draft else { return };
+            if reason.trim().is_empty() || reason.chars().count() > 400 {
+                control.error = Some("Enter a reason of 1–400 characters.".into());
+                return;
+            }
+            Some(reason.trim().to_owned())
+        } else {
+            None
+        };
+        let request = PauseRequest {
+            id: MessageId::generate(),
+            project,
+            action,
+        };
+        control.pending = Some(request.clone());
+        control.error = None;
+        self.send(match reason {
+            Some(reason) => Cmd::Pause { request, reason },
+            None => Cmd::ResumeProject(request),
+        });
     }
 
     /// Say the last thing that happened, and remember when.
@@ -729,6 +815,8 @@ impl App {
                         self.session_log = Some((agent, result));
                     }
                 }
+                Msg::Pauses(pauses) => self.pauses = pauses,
+                Msg::Paused(request, result) => self.complete_pause(request, result),
                 Msg::Activity(activity) => {
                     self.queued_inputs = activity
                         .iter()
@@ -804,6 +892,7 @@ impl App {
                             Cmd::Questions,
                             Cmd::Activity,
                             Cmd::Inbox,
+                            Cmd::Pauses,
                         ] {
                             self.send(cmd);
                         }
@@ -1141,6 +1230,9 @@ impl App {
             | EventKind::SessionResumed { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
+            }
+            EventKind::ProjectPaused { .. } | EventKind::ProjectResumed { .. } => {
+                self.send(Cmd::Pauses);
             }
             EventKind::ProviderAvailabilityReported {
                 agent,
@@ -1875,6 +1967,12 @@ fn spawn_worker(
                         Cmd::ConversationSend { draft, .. } => Some(draft.clone()),
                         _ => None,
                     };
+                    let pause = match &daemon {
+                        Cmd::Pause { request, .. } | Cmd::ResumeProject(request) => {
+                            Some(request.clone())
+                        }
+                        _ => None,
+                    };
                     let outcome = run(&client, daemon);
                     let disconnected = outcome
                         .as_ref()
@@ -1884,6 +1982,13 @@ fn spawn_worker(
                         Ok(Some(msg)) => msg,
                         Ok(None) => continue,
                         Err(err) => {
+                            if let Some(request) = pause
+                                && tx.send(Msg::Paused(request, Err(format!(
+                                    "The result was not confirmed. Check the project status before retrying: {err:#}"
+                                )))).is_err()
+                            {
+                                break;
+                            }
                             if let Some(id) = session
                                 && tx
                                     .send(Msg::SessionSent(
@@ -2022,6 +2127,39 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
         Cmd::SessionLog(agent) => {
             let result = read_session_log(client, &agent).map_err(|error| format!("{error:#}"));
             Some(Msg::SessionLog(agent, result))
+        }
+        Cmd::Pauses => match client.call(&Request::Pauses)? {
+            Response::Pauses { pauses } => Some(Msg::Pauses(pauses)),
+            _ => None,
+        },
+        Cmd::Pause { request, reason } => {
+            let result = match client.call(&Request::Pause {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(request.project.clone()),
+                reason,
+            }) {
+                Ok(Response::Pause { .. }) => Ok(()),
+                Ok(other) => anyhow::bail!("Unexpected pause reply: {other:?}"),
+                Err(error) if error.downcast_ref::<RemoteError>().is_some() => {
+                    Err(format!("{error:#}"))
+                }
+                Err(error) => return Err(error),
+            };
+            Some(Msg::Paused(request, result))
+        }
+        Cmd::ResumeProject(request) => {
+            let result = match client.call(&Request::ResumeProject {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(request.project.clone()),
+            }) {
+                Ok(Response::Ok) => Ok(()),
+                Ok(other) => anyhow::bail!("Unexpected resume reply: {other:?}"),
+                Err(error) if error.downcast_ref::<RemoteError>().is_some() => {
+                    Err(format!("{error:#}"))
+                }
+                Err(error) => return Err(error),
+            };
+            Some(Msg::Paused(request, result))
         }
         Cmd::Activity => match client.call(&Request::Activity {
             agent: None,
@@ -2509,6 +2647,29 @@ pub(crate) fn runtime_label(runtime: &str) -> String {
     agentdocker_core::runtime::spec(runtime)
         .map(|spec| spec.label.to_owned())
         .unwrap_or_else(|| runtime.to_owned())
+}
+
+const PAUSE_CONTROLS: usize = 64;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PauseAction {
+    Pause,
+    Resume,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PauseRequest {
+    id: MessageId,
+    project: String,
+    action: PauseAction,
+}
+
+/// Drafts and in-flight operations remain with their project across navigation.
+#[derive(Clone, Debug, Default)]
+struct PauseControl {
+    draft: Option<String>,
+    pending: Option<PauseRequest>,
+    error: Option<String>,
 }
 
 /// What "needs setup" is missing, for the Tools row: the MCP entry, the
@@ -3787,6 +3948,45 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn pause_transport_failure_keeps_the_reason_and_reports_disconnection() {
+        for action in [PauseAction::Pause, PauseAction::Resume] {
+            let request = PauseRequest {
+                id: MessageId::generate(),
+                project: "/fixture/a".into(),
+                action,
+            };
+            let command = match action {
+                PauseAction::Pause => Cmd::Pause {
+                    request: request.clone(),
+                    reason: "saved reason".into(),
+                },
+                PauseAction::Resume => Cmd::ResumeProject(request.clone()),
+            };
+            let result = disconnected_command(command);
+            let (commands, _requests) = queue::channel();
+            let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+            let mut app = App::bare(commands, results);
+            app.pause_states.insert(
+                request.project.clone(),
+                PauseControl {
+                    draft: Some("saved reason".into()),
+                    pending: Some(request.clone()),
+                    error: None,
+                },
+            );
+            for message in result {
+                messages.send(message).unwrap();
+            }
+            app.drain();
+            let control = &app.pause_states[&request.project];
+            assert_eq!(control.draft.as_deref(), Some("saved reason"));
+            assert!(control.pending.is_none());
+            assert!(control.error.as_ref().unwrap().contains("not confirmed"));
+            assert!(app.connected.is_err());
+        }
+    }
+
+    #[test]
     fn failed_answer_reports_transport_failure_and_keeps_the_draft() {
         let id = MessageId::from("owned-question".to_owned());
         let result = disconnected_command(Cmd::Answer(id.clone(), "draft answer".into()));
@@ -4273,6 +4473,127 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn pause_drafts_and_completions_stay_with_their_project_and_request() {
+        let (tx, requests) = queue::channel();
+        let (_messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        let a = "/fixture/a".to_owned();
+        let b = "/fixture/b".to_owned();
+        for project in [&a, &b] {
+            let _ = app.update(Message::PauseStart(project.clone()));
+            let _ = app.update(Message::PauseDraft(
+                project.clone(),
+                format!("hold {project}"),
+            ));
+        }
+        // Starting B and reopening A retain both unsent reasons.
+        let _ = app.update(Message::PauseStart(a.clone()));
+        assert_eq!(
+            app.pause_states[&a].draft.as_deref(),
+            Some("hold /fixture/a")
+        );
+        assert_eq!(
+            app.pause_states[&b].draft.as_deref(),
+            Some("hold /fixture/b")
+        );
+        let _ = app.update(Message::PauseSubmit(a.clone()));
+        let first = match requests.try_iter().next().unwrap() {
+            Cmd::Pause { request, reason } => {
+                assert_eq!(reason, "hold /fixture/a");
+                request
+            }
+            other => panic!("{other:?}"),
+        };
+        let _ = app.update(Message::PauseSubmit(a.clone()));
+        let _ = app.update(Message::PauseCancel(a.clone()));
+        let _ = app.update(Message::ResumeProject(a.clone()));
+        assert_eq!(requests.try_iter().count(), 0, "one operation per project");
+        app.complete_pause(first.clone(), Err("refused".into()));
+        assert!(app.pause_states[&a].pending.is_none());
+        assert_eq!(
+            app.pause_states[&a].draft.as_deref(),
+            Some("hold /fixture/a")
+        );
+        assert_eq!(app.pause_states[&a].error.as_deref(), Some("refused"));
+        let _ = app.update(Message::PauseSubmit(a.clone()));
+        let second = app.pause_states[&a].pending.clone().unwrap();
+        assert_ne!(first.id, second.id);
+        requests.try_iter().for_each(drop);
+        for result in [Ok(()), Err("late refusal".into())] {
+            app.complete_pause(first.clone(), result);
+            assert_eq!(app.pause_states[&a].pending.as_ref(), Some(&second));
+            assert!(app.pause_states[&a].error.is_none());
+        }
+        let mut wrong_action = second.clone();
+        wrong_action.action = PauseAction::Resume;
+        app.complete_pause(wrong_action, Ok(()));
+        assert_eq!(app.pause_states[&a].pending.as_ref(), Some(&second));
+        app.complete_pause(second, Ok(()));
+        assert!(!app.pause_states.contains_key(&a));
+        assert_eq!(
+            app.pause_states[&b].draft.as_deref(),
+            Some("hold /fixture/b")
+        );
+        assert!(matches!(requests.try_iter().next(), Some(Cmd::Pauses)));
+        let _ = app.update(Message::ResumeProject(a.clone()));
+        let resume = app.pause_states[&a].pending.clone().unwrap();
+        requests.try_iter().for_each(drop);
+        app.complete_pause(resume.clone(), Ok(()));
+        requests.try_iter().for_each(drop);
+        let _ = app.update(Message::PauseStart(a.clone()));
+        let _ = app.update(Message::PauseDraft(a.clone(), "new hold".into()));
+        let _ = app.update(Message::PauseSubmit(a.clone()));
+        let current = app.pause_states[&a].pending.clone();
+        app.complete_pause(resume, Ok(()));
+        assert_eq!(app.pause_states[&a].pending, current);
+        assert_eq!(app.pause_states[&a].draft.as_deref(), Some("new hold"));
+    }
+
+    #[test]
+    fn rejected_pause_admission_keeps_a_bounded_retryable_draft() {
+        let (tx, requests) = queue::channel();
+        let (_messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        let project = "/fixture/a".to_owned();
+        let _ = app.update(Message::PauseStart(project.clone()));
+        let _ = app.update(Message::PauseDraft(project.clone(), "keep this".into()));
+        let _ = app.update(Message::PauseDraft(project.clone(), "界".repeat(401)));
+        assert_eq!(
+            app.pause_states[&project].draft.as_deref(),
+            Some("keep this")
+        );
+        assert!(
+            app.pause_states[&project]
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("400")
+        );
+        for _ in 0..queue::CAPACITY {
+            app.send(Cmd::Stop("fixture".into()));
+        }
+        let _ = app.update(Message::PauseSubmit(project.clone()));
+        assert!(app.pause_states[&project].pending.is_none());
+        assert!(app.pause_states[&project].error.is_some());
+        assert_eq!(
+            app.pause_states[&project].draft.as_deref(),
+            Some("keep this")
+        );
+        requests.try_iter().for_each(drop);
+        let _ = app.update(Message::PauseSubmit(project.clone()));
+        assert!(matches!(
+            requests.try_iter().next(),
+            Some(Cmd::Pause { .. })
+        ));
+        for n in 0..PAUSE_CONTROLS + 1 {
+            let _ = app.update(Message::PauseStart(format!("/fixture/{n}")));
+        }
+        assert_eq!(app.pause_states.len(), PAUSE_CONTROLS);
+    }
+
+    #[test]
     fn reconnect_refreshes_all_snapshots_including_the_selected_journal() {
         let (tx, requests) = queue::channel();
         let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
@@ -4283,8 +4604,9 @@ pub(crate) mod tests {
         app.drain();
         let received: Vec<_> = requests.try_iter().collect();
         assert!(app.connected.is_ok());
-        assert_eq!(received.len(), 9);
+        assert_eq!(received.len(), 10);
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Me)));
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Pauses)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Activity)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Agents)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Leases)));

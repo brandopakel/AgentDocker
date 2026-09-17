@@ -10,6 +10,15 @@ pub(super) const COMMAND_BYTES: usize = 64 * 1024;
 fn bytes(command: &Cmd) -> usize {
     match command {
         Cmd::Stop(text) => text.capacity(),
+        Cmd::Pause { request, reason } => request
+            .project
+            .capacity()
+            .saturating_add(request.id.as_str().len())
+            .saturating_add(reason.capacity()),
+        Cmd::ResumeProject(request) => request
+            .project
+            .capacity()
+            .saturating_add(request.id.as_str().len()),
         Cmd::Journal(id, selector) | Cmd::Channels(id, selector) => {
             id.capacity().saturating_add(selector.capacity())
         }
@@ -71,6 +80,7 @@ enum Key {
     Channels(String, String),
     Inbox,
     Activity,
+    Pauses,
     Me,
     Questions,
 }
@@ -85,6 +95,7 @@ fn key(command: &Cmd) -> Option<Key> {
         Cmd::Channels(project, selector) => Key::Channels(project.clone(), selector.clone()),
         Cmd::Inbox => Key::Inbox,
         Cmd::Activity => Key::Activity,
+        Cmd::Pauses => Key::Pauses,
         Cmd::Me => Key::Me,
         Cmd::Questions => Key::Questions,
         _ => return None,
@@ -201,5 +212,27 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(receiver.try_iter().count(), 4);
+    }
+    #[test]
+    fn pause_refreshes_coalesce_and_pause_commands_obey_the_byte_budget() {
+        let (sender, receiver) = channel();
+        sender.send(Cmd::Pauses).unwrap();
+        sender.send(Cmd::Pauses).unwrap();
+        assert_eq!(receiver.try_iter().count(), 1);
+        let request = super::super::PauseRequest {
+            id: agentdocker_core::MessageId::generate(),
+            project: "x".repeat(COMMAND_BYTES),
+            action: super::super::PauseAction::Pause,
+        };
+        assert!(
+            sender
+                .send(Cmd::Pause {
+                    request: request.clone(),
+                    reason: "hold".into()
+                })
+                .is_err()
+        );
+        assert!(sender.send(Cmd::ResumeProject(request)).is_err());
+        assert_eq!(receiver.try_iter().count(), 0);
     }
 }

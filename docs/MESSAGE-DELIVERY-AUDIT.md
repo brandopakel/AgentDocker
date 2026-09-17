@@ -237,16 +237,18 @@ driver/result are `agentdocker-native-codex-queue-api-trial-2026-09-15.py` and
 **At this earlier capability checkpoint:** AgentDocker integration was still
 required. The September 15 implementation above now supplies the native queue
 receiver, exact binding, exclusive consumption and durable receipt recovery;
-final acceptance and installation remain open. Native enqueue success alone cannot mark a
+the current Mac has passed bounded existing-session idle and active receipt trials.
+Broader lifecycle/provider acceptance remains open. Native enqueue success alone cannot mark a
 message received. Keep permission waits, provider limits, interruption, process
 exit, reconnect and draft preservation in the acceptance gate.
 
 | Connected mode | Idle delivery evidence |
 | --- | --- |
-| Current external Codex and Claude sessions, hooks only | No automatic wake; messages can wait for another user/tool event. |
+| Current bound external Codex session | Installed native receiver has exact existing-session idle-wake and active-hook receipts. Active hooks run at tool boundaries with bounded context; startup/reopen and broader lifecycle cases remain. |
+| Current plain external Claude session, hooks/MCP only | No channel input binding; messages can wait at the prompt until another user/tool event. Merged #164 supplies safe reconnect support, but enabling channel input still requires a provider relaunch and a live idle trial. |
 | Managed Codex input bridge | Existing opt-in adapter trials below; does not attach an existing terminal. |
 | Enabled Claude channel | Existing opt-in idle/busy/draft trials below; must be enabled for the actual session. |
-| Native Codex 0.154.0 queue | AgentDocker receiver implemented and bounded TUI integration passed; final acceptance and installation remain open. |
+| Native Codex 0.154.0 queue | Implemented and installed on the current Mac; bounded TUI, exact idle/active receipt and receiver-upgrade trials pass. Zero-prompt startup/reopen, oversized input and sustained acceptance remain. |
 | Other providers, models and hosts | Require a supported input route and their own idle/busy/limit tests. Generic MCP or hook contact supplies no wake guarantee. |
 
 The CLI/MCP feedback correction labels successful sends as accepted by
