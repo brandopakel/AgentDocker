@@ -88,7 +88,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [September 6 audit](AUDIT-2026-09-06.md) | Historical: restore/privacy fixes and pure-core environment cleanup are complete; broader acceptance stays in the current tracker. |
 | [September 7 review](REVIEW-2026-09-07.md) | Historical: merged review stacks closed; retained timeout/acceptance findings remain in the current tracker. |
 | [September 8 review](REVIEW-2026-09-08.md) | Historical: implementation follow-ups merged; original failures remain source-specific evidence. |
-| [September 11 landscape](LANDSCAPE-2026-09-11.md) | Historical research: adopted UI ideas implemented; remaining suggestions are optional, not a new release checklist. |
+| [September 11 landscape](LANDSCAPE-2026-09-11.md) | Historical research on Dax and herdr with an adoption status, plus a September 17 section on Paprika (hosted agent Kanban): how it differs, six features worth taking (a card with acceptance text over the `task:` lease, roles, typed links, webhooks, comment-only rules, a CLI exit-code contract) and an optional card-to-lease bridge; none started. |
 | [herdr bridge](HERDR-BRIDGE.md) | Deferred beyond implemented pane identity: focus/prompt bridge and reported-blocked mirror are proposals, not delivered features. |
 
 Verification reports preserve the original trials, rather than representing
