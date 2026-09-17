@@ -929,6 +929,7 @@ mod tests {
                     kind: "chat".into(),
                     payload: json!({"text":"a peer comment"}),
                     reply_to: Some(message.clone()),
+                    links: Vec::new(),
                 })
                 .await,
             Response::Sent { .. }
@@ -1228,6 +1229,7 @@ mod tests {
                 kind: "chat".into(),
                 payload: serde_json::json!({ "text": "Mono" }),
                 reply_to: Some(font.id.clone()),
+                links: Vec::new(),
             })
             .await
         else {
@@ -1302,6 +1304,7 @@ mod tests {
                 kind: "chat".into(),
                 payload: serde_json::json!({ "text": "by the way" }),
                 reply_to: None,
+                links: Vec::new(),
             })
             .await
         else {

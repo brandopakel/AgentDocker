@@ -32,12 +32,14 @@ impl Daemon {
     /// checkpoint underneath is made through the checkpoint path, so it
     /// has the same barrier, idempotency and release semantics; the bundle
     /// document, the `handoff` message, and the journal entry follow.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn handoff(
         &self,
         reference: &str,
         to: Option<&str>,
         task: Option<String>,
         note: Option<String>,
+        links: Vec<agentdocker_core::Link>,
         transfer_leases: bool,
         key: Option<String>,
     ) -> Response {
@@ -137,6 +139,7 @@ impl Daemon {
                 task,
                 Vec::new(),
                 Vec::new(),
+                links,
                 !transfer_leases,
             )
             .await
@@ -196,6 +199,7 @@ impl Daemon {
             note,
             assumptions: checkpoint.assumptions.clone(),
             next_steps: checkpoint.next_steps.clone(),
+            links: checkpoint.links.clone(),
             checkout: checkpoint.checkout.clone(),
             version: checkpoint.version.clone(),
             environment: checkpoint.environment.clone(),
@@ -362,6 +366,7 @@ impl Daemon {
             task: bundle.task.clone(),
             assumptions: bundle.assumptions.clone(),
             next_steps: bundle.next_steps.clone(),
+            links: bundle.links.clone(),
             reads: bundle.read_set.clone(),
             version: bundle.version.clone(),
             environment: bundle.environment.clone(),
@@ -489,6 +494,7 @@ mod tests {
                 note: None,
                 transfer_leases: false,
                 key: None,
+                links: Vec::new(),
             })
             .await
         else {
@@ -582,6 +588,35 @@ mod tests {
             panic!("digest failed");
         };
 
+        // A link that is not the shape of its kind refuses the hand-off
+        // before anything is written.
+        assert!(matches!(
+            daemon
+                .handle(Request::Handoff {
+                    agent: "sender".into(),
+                    to: Some("recipient".into()),
+                    task: None,
+                    note: None,
+                    transfer_leases: false,
+                    key: None,
+                    links: vec![agentdocker_core::Link::new(
+                        agentdocker_core::LinkKind::Commit,
+                        "not-a-hash"
+                    )],
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        let links = vec![
+            agentdocker_core::Link::parse("path:src/parser.rs").unwrap(),
+            agentdocker_core::Link::parse(
+                "memory:the grammar file is generated; edit the .peg, not the .rs",
+            )
+            .unwrap(),
+        ];
         let request = Request::Handoff {
             agent: "sender".into(),
             to: Some("recipient".into()),
@@ -589,6 +624,7 @@ mod tests {
             note: Some("tests are in src/parser.rs".into()),
             transfer_leases: true,
             key: Some("parser".into()),
+            links: links.clone(),
         };
         let Response::Handoff { bundle } = daemon.handle(request.clone()).await else {
             panic!("handoff failed");
@@ -596,6 +632,7 @@ mod tests {
         assert_eq!(bundle.from_name, "sender");
         assert_eq!(bundle.task, "finish the parser");
         assert_eq!(bundle.note.as_deref(), Some("tests are in src/parser.rs"));
+        assert_eq!(bundle.links, links, "the links travel with the bundle");
         assert_eq!(bundle.leases.len(), 1);
         assert_eq!(bundle.read_set.len(), 1);
         assert!(
@@ -749,6 +786,7 @@ mod tests {
                 note: None,
                 transfer_leases: false,
                 key: None,
+                links: Vec::new(),
             })
             .await
         else {
@@ -766,6 +804,7 @@ mod tests {
                     note: None,
                     transfer_leases: true,
                     key: None,
+                    links: Vec::new(),
                 })
                 .await,
             Response::Error {
@@ -792,6 +831,7 @@ mod tests {
                     note: None,
                     transfer_leases: false,
                     key: None,
+                    links: Vec::new(),
                 })
                 .await,
             Response::Error {
@@ -904,6 +944,7 @@ mod tests {
                 note: None,
                 transfer_leases: false,
                 key: None,
+                links: Vec::new(),
             })
             .await
         else {
@@ -933,6 +974,7 @@ mod tests {
                 note: None,
                 transfer_leases: true,
                 key: Some("rollback".into()),
+                links: Vec::new(),
             })
             .await
         else {

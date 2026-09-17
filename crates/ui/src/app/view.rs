@@ -29,6 +29,31 @@ fn title<'a>(value: impl Into<String>, size: u32) -> iced::widget::Text<'a> {
 pub(super) fn note<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
     text(value.into()).size(13).color(c.muted)
 }
+/// The typed references beside a card, a message or a hand-off, one per
+/// row: the kind as a quiet pill, the target as text a person can read
+/// and select, and the note after it. Nothing is opened from here — a
+/// path or a pull request is the reader's to open with their own tools;
+/// what the row does is say what kind of thing it is without prose.
+pub(super) fn links<'a>(links: &[agentdocker_core::Link], c: Colors) -> Element<'a, Message> {
+    let mut rows = column![].spacing(3).width(Fill);
+    for link in links {
+        let mut line = row![
+            pill(link.kind.as_str().to_owned(), c.raised, c.muted, c),
+            text(link.target.clone())
+                .size(12)
+                .color(c.accent)
+                .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+        ]
+        .spacing(6)
+        .align_y(Center);
+        if let Some(note) = &link.note {
+            line = line.push(small(note.clone(), c));
+        }
+        rows = rows.push(line);
+    }
+    rows.into()
+}
+
 pub(super) fn small<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
     text(value.into()).size(12).color(c.muted)
 }
