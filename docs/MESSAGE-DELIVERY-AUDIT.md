@@ -62,9 +62,12 @@ and Claude sessions without channel input remain open. See the
 
 ## September 17: installed Codex active-turn delivery verified
 
-PRs #169 and #171 are merged after review and CI. The backed-up installed
-schema22 upgrade retained the existing provider sessions and 58 prior receipts,
-replacing only the Codex receiver. A fresh self-canary, a clearly labeled test
+PRs #169 and #171 are merged after review and CI. The earlier backed-up
+schema22 installation of `9bc0f0fc` retained the existing provider sessions and
+58 prior receipts, replacing receiver 94744 with 20912. The later current
+`79981beb` messaging installation retained 97 receipts and replaced receiver
+20912 with 29976; see the [installed messaging record](verification/2026-09-12-integrated-desktop.json).
+A fresh self-canary, a clearly labeled test
 sent through CLI `--from user`, and a fresh ping from the actual Claude session
 entered the same active Codex model turn through its hook route. No new human
 prompt, turn restart or manual queue acknowledgement was needed. The single CLI
