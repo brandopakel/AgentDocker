@@ -876,6 +876,7 @@ enum ChannelAction {
     },
     /// Add a live agent to a channel you belong to.
     Invite {
+        /// Agent id, name or unique prefix (defaults to this session).
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
         channel: String,

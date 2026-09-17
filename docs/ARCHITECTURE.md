@@ -1096,6 +1096,23 @@ and check a cooperative time deadline between bounded reads. A trailing partial
 record does not advance the offset. Both the open object and current path are
 checked after reading, and the caller must validate again before committing.
 
+The cursor format is now version 2. An oversized record whose newline cannot
+fit in the bounded batch returns `Stop::Quarantined`, retaining only verified
+complete records before it and recording the attempted byte budget in the
+cursor. Commit those samples, gaps and the quarantined cursor together; the
+unfinished record is not covered. Reopening that cursor at the same or a smaller
+budget returns `Error::Oversized` instead of repeatedly reading the same prefix.
+A larger bounded budget may recover from the quarantined offset without replaying
+the accepted prefix; a changed file generation requires the existing new-scan
+path. Collector policy should make at most one escalation to the 16 MiB maximum
+and then keep the source quarantined until it changes or the person intervenes.
+I/O, generation and validation errors still return no proposed progress.
+This explicit partial-result contract is distinct from ordinary budget stopping;
+the future ingestion transaction must preserve its quarantine, rather than retry
+it as ordinary `Stop::Budget`. Local and CI validation of this follow-up remains
+pending. The parser budget also reserves the restored boundary byte, ensuring
+the smallest accepted resumed budget can identify an oversized record.
+
 September 17 Windows CI exposed a same-length, restored-mtime rewrite that
 matched the captured change metadata (PR #167, job `105082608981`). Metadata
 alone therefore cannot establish unchanged content. The follow-up rehashes the

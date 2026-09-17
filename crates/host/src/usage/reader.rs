@@ -107,6 +107,10 @@ pub struct Cursor {
     offset: u64,
     prefix_digest: [u8; 32],
     codex: Codex,
+    /// The parser byte budget that could not finish an oversized record at
+    /// offset. Persist this with the complete prefix so an unchanged retry
+    /// cannot loop; only a larger bounded budget may retry this generation.
+    quarantined_at_budget: Option<u64>,
 }
 
 impl Cursor {
@@ -140,7 +144,7 @@ impl Cursor {
     }
 
     fn validate_file(&self, file: &mut File, elapsed: Duration) -> Result<u64, Error> {
-        if self.version != 1 || self.offset > self.generation.length {
+        if self.version != 2 || self.offset > self.generation.length {
             return Err(Error::Cursor);
         }
         if self.generation != Generation::capture(file)? {
@@ -196,6 +200,10 @@ pub enum Stop {
     Complete,
     Budget,
     PendingTail,
+    /// The complete prefix is valid, but an oversized record could not finish
+    /// within this batch's byte budget. Persist the quarantine with the cursor
+    /// and samples; this does not establish coverage of the remaining file.
+    Quarantined,
 }
 
 /// A complete record that could not establish supported accounting. Reasons
@@ -233,13 +241,17 @@ pub enum Error {
     ValidationIncomplete,
     #[error("usage cursor is invalid or belongs to another runtime")]
     Cursor,
-    #[error("usage record at byte {offset} exceeds the configured size limit")]
+    #[error(
+        "usage record at byte {offset} is quarantined; retry only with a larger bounded budget or a changed generation"
+    )]
     Oversized { offset: u64 },
 }
 
-/// Read complete records within byte/memory/time bounds. A failed read returns
-/// no proposed progress. Retrying the same cursor returns the same source IDs;
-/// the ingestion transaction, not this reader, deduplicates those IDs.
+/// Read complete records within byte/memory/time bounds. An I/O, content or
+/// validation failure returns no proposed progress. An oversized unfinished
+/// record instead returns an explicit Quarantined batch containing only the
+/// verified complete prefix; commit its samples and quarantined cursor together.
+/// Retrying an ordinary cursor returns the same source IDs; ingestion dedupes.
 pub fn scan(
     path: &Path,
     runtime: Runtime,
@@ -248,7 +260,7 @@ pub fn scan(
 ) -> Result<Batch, Error> {
     if budget.record_bytes == 0
         || budget.record_bytes > MAX_RECORD
-        || budget.bytes <= budget.record_bytes as u64
+        || budget.bytes <= budget.record_bytes as u64 + 1
         || budget.bytes > MAX_BATCH
         || budget.elapsed.is_zero()
     {
@@ -259,7 +271,7 @@ pub fn scan(
     let mut validation_bytes_read = 0;
     let mut cursor = match previous {
         Some(prior) => {
-            if prior.version != 1
+            if prior.version != 2
                 || prior.runtime != runtime
                 || prior.offset > prior.generation.length
             {
@@ -268,16 +280,27 @@ pub fn scan(
             if prior.generation != generation {
                 return Err(Error::Changed);
             }
+            if prior
+                .quarantined_at_budget
+                .is_some_and(|bytes| budget.bytes <= bytes)
+            {
+                return Err(Error::Oversized {
+                    offset: prior.offset,
+                });
+            }
             validation_bytes_read += prior.validate_file(&mut file, PREFIX_DEADLINE)?;
-            prior.clone()
+            let mut next = prior.clone();
+            next.quarantined_at_budget = None;
+            next
         }
         None => Cursor {
-            version: 1,
+            version: 2,
             runtime,
             generation: generation.clone(),
             offset: 0,
             prefix_digest: [0; 32],
             codex: Codex::default(),
+            quarantined_at_budget: None,
         },
     };
     let started = Instant::now();
@@ -318,9 +341,8 @@ pub fn scan(
                 reader.read_until(b'\n', &mut line)?;
             }
             if line.last() != Some(&b'\n') {
-                return Err(Error::Oversized {
-                    offset: cursor.offset,
-                });
+                cursor.quarantined_at_budget = Some(budget.bytes);
+                break Stop::Quarantined;
             }
         }
         if line.last() != Some(&b'\n') {
@@ -582,8 +604,13 @@ mod tests {
                 .contains("PRIVATE_TRANSCRIPT")
         );
         std::fs::write(&path, vec![b'x'; 800]).unwrap();
+        let quarantined = scan(&path, Runtime::Claude, None, budget()).unwrap();
+        assert_eq!(quarantined.stop, Stop::Quarantined);
+        assert_eq!(quarantined.cursor.offset(), 0);
+        assert!(quarantined.samples.is_empty());
+        assert!(quarantined.gaps.is_empty());
         assert!(matches!(
-            scan(&path, Runtime::Claude, None, budget()),
+            scan(&path, Runtime::Claude, Some(&quarantined.cursor), budget()),
             Err(Error::Oversized { offset: 0 })
         ));
         assert!(matches!(
@@ -604,7 +631,7 @@ mod tests {
     fn complete_oversized_records_are_bounded_gaps_with_resumable_following_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("log");
-        let mut content = vec![b'x'; MAX_RECORD + 1];
+        let mut content = vec![b'x'; MAX_RECORD + 3];
         content.push(b'\n');
         let gap_len = content.len();
         content.extend_from_slice(row(1).as_bytes());
@@ -643,18 +670,111 @@ mod tests {
         assert_eq!(second.samples, all.samples);
         assert!(second.gaps.is_empty());
         assert_eq!(second.cursor.prefix_digest, all.cursor.prefix_digest);
+        let incomplete = scan(
+            &path,
+            Runtime::Claude,
+            None,
+            Budget {
+                bytes: (gap_len - 1) as u64,
+                ..Budget::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(incomplete.stop, Stop::Quarantined);
+        assert_eq!(incomplete.cursor.offset(), 0);
+        assert!(incomplete.samples.is_empty());
+        let recovered = scan(
+            &path,
+            Runtime::Claude,
+            Some(&incomplete.cursor),
+            Budget::default(),
+        )
+        .unwrap();
+        assert_eq!(recovered.stop, Stop::Complete);
+        assert_eq!(recovered.cursor.prefix_digest, all.cursor.prefix_digest);
+        assert_eq!(recovered.samples, all.samples);
+    }
+
+    #[test]
+    fn resumed_minimum_budget_can_detect_and_finish_an_oversized_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        let first = row(0);
+        std::fs::write(&path, format!("{first}{}\n", "x".repeat(500))).unwrap();
+        let prior = scan(
+            &path,
+            Runtime::Claude,
+            None,
+            Budget {
+                bytes: first.len() as u64 + 2,
+                record_bytes: first.len(),
+                elapsed: Duration::from_secs(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(prior.cursor.offset(), first.len() as u64);
         assert!(matches!(
             scan(
                 &path,
                 Runtime::Claude,
-                None,
+                Some(&prior.cursor),
                 Budget {
-                    bytes: (gap_len - 1) as u64,
-                    ..Budget::default()
+                    bytes: 501,
+                    record_bytes: 500,
+                    elapsed: Duration::from_secs(1),
                 }
             ),
-            Err(Error::Oversized { offset: 0 })
+            Err(Error::Budget)
         ));
+        let next = scan(
+            &path,
+            Runtime::Claude,
+            Some(&prior.cursor),
+            Budget {
+                bytes: 502,
+                record_bytes: 500,
+                elapsed: Duration::from_secs(1),
+            },
+        )
+        .unwrap();
+        assert_eq!(next.stop, Stop::Complete);
+        assert_eq!(next.gaps.len(), 1);
+        assert_eq!(next.gaps[0].offset, first.len() as u64);
+        assert_eq!(next.gaps[0].bytes, 501);
+    }
+
+    #[test]
+    fn oversized_tail_quarantines_with_complete_prefix_and_recovers_without_replaying_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        let first = row(0);
+        std::fs::write(&path, format!("{first}{}\n{}", "x".repeat(1000), row(1))).unwrap();
+        let blocked = scan(&path, Runtime::Claude, None, budget()).unwrap();
+        assert_eq!(blocked.stop, Stop::Quarantined);
+        assert_eq!(blocked.samples.len(), 1);
+        assert_eq!(blocked.cursor.offset(), first.len() as u64);
+        blocked.cursor.validate(&path).unwrap();
+        let saved = serde_json::to_string(&blocked.cursor).unwrap();
+        assert!(!saved.contains("PRIVATE_TRANSCRIPT"));
+        let restored: Cursor = serde_json::from_str(&saved).unwrap();
+        assert!(
+            matches!(scan(&path, Runtime::Claude, Some(&restored), budget()),
+            Err(Error::Oversized { offset }) if offset == first.len() as u64)
+        );
+        let larger = Budget {
+            bytes: 4000,
+            ..budget()
+        };
+        let recovered = scan(&path, Runtime::Claude, Some(&restored), larger).unwrap();
+        assert_eq!(recovered.stop, Stop::Complete);
+        assert_eq!(recovered.samples.len(), 1);
+        assert_eq!(recovered.gaps.len(), 1);
+        assert_eq!(recovered.gaps[0].offset, first.len() as u64);
+        assert_eq!(recovered.gaps[0].bytes, 1001);
+        assert_ne!(blocked.samples[0].source_id, recovered.samples[0].source_id);
+        let whole = scan(&path, Runtime::Claude, None, larger).unwrap();
+        assert_eq!(whole.samples, [blocked.samples, recovered.samples].concat());
+        assert_eq!(whole.cursor.prefix_digest, recovered.cursor.prefix_digest);
     }
 
     #[test]
