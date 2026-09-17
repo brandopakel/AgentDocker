@@ -2122,5 +2122,76 @@
     },
     "diagnosis": "This run captured an lsof mount-stat warning in the transport observer; it does not establish absence or presence of TCP. A previous Linux ARM failure did not retain this detail and is not explained by this later result.",
     "log": "/private/tmp/agentdocker-pr172-linux-failure-20260917.log"
+  },
+  "combined_pause_reveal_usage_2026_09_17": {
+    "source_commit": "be3086d03977c03a1809b2105b0ec5e3959c6b6c",
+    "source_tree": "d9935be67626d9042937b91719e670dc7d65b3e9",
+    "source_input_sha256": "852040e63258cc016892e82e07edb01366590866273353f9749967e86a819cf9",
+    "source_dirty": false,
+    "state_schema": 23,
+    "target": "aarch64-apple-darwin",
+    "included_heads": {
+      "usage_167": "344516e6bd6fe77caf13f3d3e401fcf3bbdb9e68",
+      "pause_173": "cb9baef0b7c86d689b3a50815fc9bcd964f88b7a",
+      "linux_observer_174": "5c3eccc8c09a356c5f54e2013d1d16ce7d8686a3",
+      "notification_reveal_175": "ae93e5597f86b04963d1cf32b9dbec07989c1715"
+    },
+    "standard_gate": {
+      "passed": true,
+      "rust_passed": 1142,
+      "rust_skipped": 7,
+      "python_run": 92,
+      "python_passed": 91,
+      "python_skipped": 1,
+      "python_skip_scope": "Linux-only /proc check; actual Linux VM evidence remains separate",
+      "reader_regressions_passed": 13,
+      "fmt": true,
+      "strict_clippy": true,
+      "doctests": true,
+      "cargo_package": true,
+      "release_build": true
+    },
+    "binary_sha256_before_packaging": {
+      "agentdocker": "289b19366372053a1e6555b34a04645200dcc618f8e5996e68f8f73968440126",
+      "agentd": "e272d5c4ddcc0f622453a77b40d4dc825514b6bfa7761919ea1fdfd68b2de3ff",
+      "agentdocker-ui": "392c5ae837f04fc6e26174f27ecceaea9a8b31a0b624c31fabf0ec1b9afc4fed"
+    },
+    "private_artifacts": {
+      "gate": {
+        "path": "/private/tmp/agentdocker-combined-gate2-20260917.log",
+        "sha256": "9b80339fb67d2936f2647f2c1e8d422f1830d909a4066377745366fe15ee9e2a"
+      },
+      "junit": {
+        "path": "/private/tmp/agentdocker-combined-nextest2-20260917/junit.xml",
+        "sha256": "0341c6d482eb204c35d84d0ba4abe2026610065691ea29d4fdde616cf486fe26"
+      },
+      "reader_regressions": {
+        "path": "/private/tmp/agentdocker-prefix-quarantine-targeted2-20260917.log",
+        "sha256": "17c526a251c7b3f113b094f9d43802c64757e0b222ffd2bd3596b4873a480994"
+      },
+      "quarantine_windows_failure": {
+        "path": "/private/tmp/agentdocker-167-quarantine-windows-failure-20260917.log",
+        "sha256": "c77b4b0c0d7083646f28e9781ccb0e34b438ab9b82f71f68cc9839427143f33a"
+      },
+      "quarantine_linux_failure": {
+        "path": "/private/tmp/agentdocker-167-quarantine-linux-failure-20260917.log",
+        "sha256": "12437d359a3cfef9f0a95904d4b181c99520bb260e503fbf65f47834d0d5143b"
+      }
+    },
+    "quarantine_fixture_failure": {
+      "source_commit": "c2ee0d00a0f8940612f121ff8c5fa556499327fa",
+      "windows_job": 105089554773,
+      "linux_job": 105089554651,
+      "observed": "Expected Quarantined but received Budget; the fixture budget did not include the preceding complete record.",
+      "correction": "344516e adds the prefix length to the fixture budget. It also validates a quarantined prefix before refusing a retry, with a same-metadata rewrite regression.",
+      "final_platform_ci": "pending"
+    },
+    "limits": [
+      "No new graphical workflow was run in this campaign: the display was locked and peer graphical attempts timed out. Earlier native proof retains its own source pin.",
+      "These immutable binaries were not installed by this campaign.",
+      "Claude current plain-session idle input and channel consent remain unproven.",
+      "Usage discovery, ingestion, large/growing-file prefix validation, attribution, protocol and Usage UI remain open.",
+      "Draft maps are window memory; workspace preferences do not serialize conversation, thread or session drafts. Preserve the current GUI during activation unless unfinished text is accounted for."
+    ]
   }
 }

@@ -1101,7 +1101,8 @@ fit in the bounded batch returns `Stop::Quarantined`, retaining only verified
 complete records before it and recording the attempted byte budget in the
 cursor. Commit those samples, gaps and the quarantined cursor together; the
 unfinished record is not covered. Reopening that cursor at the same or a smaller
-budget returns `Error::Oversized` instead of repeatedly reading the same prefix.
+budget validates the prefix and then returns `Error::Oversized`, without
+reparsing accepted records or retrying the oversized record.
 A larger bounded budget may recover from the quarantined offset without replaying
 the accepted prefix; a changed file generation requires the existing new-scan
 path. Collector policy should make at most one escalation to the 16 MiB maximum
@@ -1109,8 +1110,13 @@ and then keep the source quarantined until it changes or the person intervenes.
 I/O, generation and validation errors still return no proposed progress.
 This explicit partial-result contract is distinct from ordinary budget stopping;
 the future ingestion transaction must preserve its quarantine, rather than retry
-it as ordinary `Stop::Budget`. Local and CI validation of this follow-up remains
-pending. The parser budget also reserves the restored boundary byte, ensuring
+it as ordinary `Stop::Budget`. Runtime `344516e` passed all 13 reader
+regressions and the combined `be3086d` full gate (1,142 Rust tests, seven
+skipped; 92 Python checks, one Linux-only skip). The earlier quarantine
+fixture failed on Linux and Windows because its budget omitted the valid
+prefix length; that failure and the correction remain in the
+[integrated evidence](verification/2026-09-12-integrated-desktop.json). Final
+platform CI remains pending. The parser budget also reserves the restored boundary byte, ensuring
 the smallest accepted resumed budget can identify an oversized record.
 
 September 17 Windows CI exposed a same-length, restored-mtime rewrite that
