@@ -280,3 +280,9 @@ fixture failed against the preceding runtime and passed with that fix.
 This is source/transport evidence, not installed Claude model acceptance.
 The startup ordering guard above remains. Results are in the
 [existing channel record](verification/2026-09-11-claude-channel-input.json).
+
+The board integration also migrates a card's typed assignee and creator when
+an eligible identity folds. Card text, column, timestamps and archive state stay
+unchanged; resumption never grants or renews a task lease. A still-held lease
+continues to refuse the fold, and a lapsed hold requires explicit recovery.
+This integration's validation is pending.
