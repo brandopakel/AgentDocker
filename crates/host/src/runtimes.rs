@@ -446,6 +446,10 @@ fn hook_configuration_shape_valid(value: &serde_json::Value) -> bool {
                                 && entry
                                     .get("matcher")
                                     .is_none_or(|matcher| matcher.is_string())
+                                && entry
+                                    .get("hooks")
+                                    .and_then(|hooks| hooks.as_array())
+                                    .is_some_and(|hooks| hooks.iter().all(|hook| hook.is_object()))
                         })
                     })
                 })
@@ -601,6 +605,20 @@ mod tests {
                 missing_hook_events(&invalid, "agentdocker", "claude-code"),
                 vec!["StopFailure"]
             );
+        }
+        for malformed in [
+            serde_json::json!("bad"),
+            serde_json::Value::Null,
+            serde_json::json!([42]),
+        ] {
+            let mut invalid = settings.clone();
+            invalid["hooks"]["StopFailure"][0]["hooks"] = malformed;
+            std::fs::write(&file, invalid.to_string()).unwrap();
+            assert_eq!(
+                hooks_wiring_file(spec, &file, "agentdocker"),
+                Wiring::Unverified
+            );
+            assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
         }
         settings["disableAllHooks"] = serde_json::Value::Bool(true);
         std::fs::write(&file, settings.to_string()).unwrap();

@@ -353,3 +353,7 @@ The connected Claude and Codex sessions exchanged this audit's ownership and
 findings through AgentDocker on September 14. The peer acknowledged the message
 and returned its findings. This verifies active-session routing and model
 consumption; it does not replace an idle-wake or sustained-load trial.
+
+Hook-status review also rejects malformed nested hook lists (a non-array or
+non-object list entry) as Unverified with no misleading missing-event list.
+This final shape-validation extension is awaiting its source gate.
