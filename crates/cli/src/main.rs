@@ -494,17 +494,7 @@ enum Command {
         agent: String,
     },
     /// Give an agent a role, so `role:<name>` names it as a recipient.
-    Role {
-        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
-        /// Agent id, name or unique prefix (defaults to this session).
-        agent: String,
-        /// The role: one word of lowercase letters, digits and hyphens (`reviewer`).
-        #[arg(required_unless_present = "clear")]
-        role: Option<String>,
-        /// Take the role away.
-        #[arg(long, conflicts_with = "role")]
-        clear: bool,
-    },
+    Role(RoleArgs),
     /// Signal an agent to stop.
     Stop {
         agent: String,
@@ -1160,6 +1150,22 @@ struct SendArgs {
     /// Raw JSON payload instead of text.
     #[arg(long, conflicts_with = "text")]
     json: Option<String>,
+}
+
+/// Its own struct, as `RunArgs` is: every field added
+/// straight to `Command` costs the parser's stack, and a test thread has
+/// little of it.
+#[derive(Args)]
+struct RoleArgs {
+    #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+    /// Agent id, name or unique prefix (defaults to this session).
+    agent: String,
+    /// The role: one word of lowercase letters, digits and hyphens (`reviewer`).
+    #[arg(required_unless_present = "clear")]
+    role: Option<String>,
+    /// Take the role away.
+    #[arg(long, conflicts_with = "role")]
+    clear: bool,
 }
 
 #[derive(Args)]
@@ -2263,7 +2269,7 @@ async fn main() -> Result<()> {
         Command::Rm { agent } => {
             client.call(&Request::Remove { agent }).await?;
         }
-        Command::Role { agent, role, clear } => {
+        Command::Role(RoleArgs { agent, role, clear }) => {
             let role = if clear { None } else { role };
             if let Response::Agent { agent } = client.call(&Request::Role { agent, role }).await? {
                 match agent.role() {
