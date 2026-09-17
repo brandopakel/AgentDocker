@@ -1244,7 +1244,7 @@ impl App {
             && self
                 .channels
                 .iter()
-                .any(|item| &item.id == channel && item.is_open())
+                .any(|item| item.id == channel && item.is_open())
         {
             title_row = title_row.push(action(
                 "invite-channel",
