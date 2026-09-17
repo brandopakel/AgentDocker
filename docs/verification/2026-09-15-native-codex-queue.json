@@ -3013,7 +3013,22 @@
           }
         }
       ],
-      "scope": "Actual installed bounded-message delivery at tool boundaries, using existing live model sessions. No end of Codex turn, new human prompt, manual acknowledgment or queue mutation. Self-canary followed retained backlog. Single CLI latency sample is not a general bound. Does not establish idle wake for the plain Claude receiver or arbitrary interruption/oversized input."
+      "scope": "Actual installed bounded-message delivery at tool boundaries, using existing live model sessions. No end of Codex turn, new human prompt, manual acknowledgment or manual queue mutation; the receiver automatically acknowledges queue entries after provider receipts. Self-canary followed retained backlog. Single CLI latency sample is not a general bound. Does not establish idle wake for the plain Claude receiver or arbitrary interruption/oversized input."
+    },
+    "project_fanout_acceptance": {
+      "project_message": "2cbd0272cad64ceb",
+      "codex_reply": "ee96ccb69eaa4089",
+      "claude_reply": "1abeb4349b634673",
+      "claude_scope": "74231 confirmed hook context during a running tool turn; explicitly not idle-wake evidence",
+      "result": "passed",
+      "sent_at": "2026-09-17T03:14:17.034805Z",
+      "codex_provider_context_at": "2026-09-17T03:14:17.351Z",
+      "codex_receipt": {
+        "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+        "turn": "01a0acc0-bb93-7a82-9c6f-b7e89f1595d9",
+        "item": "msg_01a0ad5b-9c87-7802-b266-0da20763ce67"
+      },
+      "scope": "Clearly labeled Codex-authored CLI test through --from user to project. Both existing model sessions consumed and replied during active tool turns, without a new human prompt. No idle-wake inference."
     }
   }
 }

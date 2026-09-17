@@ -2464,6 +2464,64 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn channel_invitation_replies_belong_to_the_submitted_form() {
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let first = NewConversation::new();
+        let mut second = NewConversation::new();
+        second.invite = Some("second-room".into());
+        second.creating = true;
+        second.name = "second".into();
+        second.members.insert("existing-member".into());
+        let expected = second.request.clone();
+        app.new_conversation = Some(second);
+        let channel = agentdocker_core::Channel {
+            id: "first-room".into(),
+            project: "project".into(),
+            name: Some("first".into()),
+            subject: agentdocker_core::ChannelSubject::Task {
+                task: "first".into(),
+            },
+            members: vec!["new-member".into()],
+            opened_by: None,
+            opened_at: chrono::Utc::now(),
+            reviews: vec![],
+            closed_at: None,
+            resolution: None,
+        };
+        for result in [Ok(channel), Err("first failure".into())] {
+            messages
+                .send(Msg::ChannelInvited(
+                    first.request.clone(),
+                    "new-member".into(),
+                    result,
+                ))
+                .unwrap();
+            app.drain();
+            let current = app.new_conversation.as_ref().unwrap();
+            assert_eq!(current.request, expected);
+            assert_eq!(current.name, "second");
+            assert_eq!(current.invite.as_deref(), Some("second-room"));
+            assert_eq!(current.members, BTreeSet::from(["existing-member".into()]));
+            assert!(current.creating);
+            assert!(current.error.is_none());
+            assert!(app.channels.is_empty());
+        }
+        messages
+            .send(Msg::ChannelInvited(
+                expected,
+                "new-member".into(),
+                Err("second failure".into()),
+            ))
+            .unwrap();
+        app.drain();
+        let current = app.new_conversation.as_ref().unwrap();
+        assert!(!current.creating);
+        assert_eq!(current.error.as_deref(), Some("second failure"));
+    }
+
+    #[test]
     fn text_zoom_reflows_messages_without_a_window_resize() {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);

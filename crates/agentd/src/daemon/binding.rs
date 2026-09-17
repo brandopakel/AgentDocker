@@ -1177,6 +1177,7 @@ impl State {
         let alias = agentdocker_core::identity::AgentAlias {
             retired: caller.id.clone(),
             canonical: prior.id.clone(),
+            retired_name: Some(caller.spec.name.clone()),
             reconciled_at: now,
         };
         let mut event = Event::new(

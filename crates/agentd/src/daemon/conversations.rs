@@ -370,12 +370,9 @@ impl State {
             }
         }
         let human = self.is_human_id(reader);
-        // What `@name` reaches this reader: every name its identities have
-        // had, and for the person the words people use for them.
-        let mut mention_names: Vec<String> = identities
-            .iter()
-            .filter_map(|id| self.registry.get(id).map(|a| a.spec.name.clone()))
-            .collect();
+        // Current and retained retirement names reach this reader; legacy
+        // aliases without a saved name cannot reconstruct historical mentions.
+        let mut mention_names = self.registry.identity_names(reader);
         if human {
             mention_names.push(agentdocker_core::HUMAN.to_owned());
             mention_names.push("you".to_owned());
@@ -1178,6 +1175,48 @@ mod tests {
             "later",
             "alice sees the old conversation under the name the record has now"
         );
+    }
+
+    #[tokio::test]
+    async fn unread_mentions_keep_retired_names_after_reopen() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let alice = register(&daemon, "alice", &work).await;
+        let early = register(&daemon, "early", &work).await;
+        let later = register(&daemon, "later", &work).await;
+        send(&daemon, "alice", "early", "@early please review", None).await;
+        let room = ConversationId::dm(alice.id.as_str(), early.id.as_str());
+        {
+            let mut state = lock(&daemon.state);
+            let alias = agentdocker_core::identity::AgentAlias {
+                retired: early.id.clone(),
+                canonical: later.id.clone(),
+                retired_name: Some(early.spec.name.clone()),
+                reconciled_at: Utc::now(),
+            };
+            let mut event = Event::new(
+                EventKind::AgentReconciled {
+                    canonical: later.id.clone(),
+                    retired: early.id.clone(),
+                    plan_sha256: "fixture".into(),
+                },
+                Utc::now(),
+            );
+            event.seq = state.next_seq;
+            state.store.resume_input(&later, &alias, &event).unwrap();
+            state.next_seq += 1;
+            state.registry.retire_into(&early.id, &later.id).unwrap();
+        }
+        let list = conversations(&daemon, later.id.as_str()).await;
+        let summary = list.iter().find(|c| c.conversation == room).unwrap();
+        assert_eq!((summary.unread, summary.mentions), (1, 1));
+        drop(daemon);
+        let daemon = open(&dir);
+        let list = conversations(&daemon, later.id.as_str()).await;
+        let summary = list.iter().find(|c| c.conversation == room).unwrap();
+        assert_eq!((summary.unread, summary.mentions), (1, 1));
     }
 
     /// `@name` in a room counts as a mention of that reader: by the name
