@@ -581,6 +581,7 @@ impl App {
             Message::Navigate(screen) => {
                 self.shell.pending_notification = None;
                 self.shell.notification_message = None;
+                self.cancel_reveal();
                 self.screen = screen;
                 self.shell.more = false;
                 if screen == Screen::Runtimes {
@@ -715,6 +716,7 @@ impl App {
                 if self.shell.conversation.as_deref() != Some(id.as_str()) {
                     self.shell.thread = None;
                     self.thread = None;
+                    self.cancel_reveal();
                 }
                 self.shell.conversation = Some(id.clone());
                 self.shell.inbox_open = true;
@@ -1780,7 +1782,7 @@ impl App {
         self.shell.pending_notification = None;
         self.shell.notification_message = Some(target.message.clone());
         self.shell.message_detail = Some(target.message.clone());
-        self.reveal_archived = None;
+        self.cancel_reveal();
         self.shell.selected = Some(self.canonical_agent(target.agent.as_str()).to_owned());
         self.shell.more = false;
         self.confirm_stop = None;
@@ -1823,7 +1825,12 @@ impl App {
             && self.screen == Screen::Questions
             && let Some(conversation) = self.shell.conversation.clone()
         {
-            self.reveal_archived = Some((conversation.clone(), target.message.clone(), 0));
+            self.reveal_archived = Some(super::Seek {
+                conversation: conversation.clone(),
+                message: target.message.clone(),
+                pages: 0,
+                before: None,
+            });
             self.seek_archived(&conversation);
         }
         // Revealing the card expands its retained text and scrolls to it. Existing answer/channel

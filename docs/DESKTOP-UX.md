@@ -196,9 +196,12 @@ counts open questions and waiting messages together. Notification navigation
 opens the requested message, including an older one outside the recent window.
 On the Messages screen the message is a row of the archive: the row is marked
 and scrolled to once its page is here, and if the conversation was already open
-at its newest the pages before are read back for it, up to five, before the
-person is told it is not in what is kept — so a click on a notification
-always shows its message, even in the conversation already on view.
+at its newest the pages before are read back for it, one at a time, up to five
+(one in flight at a time, so refreshes of the newest page do not spend the
+bound), before the person is told how many messages were searched and that
+**Show earlier messages** reads further back. Navigating away, or another
+notification, ends the search. A conversation already holding all the window
+keeps (5,000 messages) is not paged further.
 
 Tools shows **Input receiver active** only with a fresh report from a receiver
 bound to a live session. **Connected · messages wait for its next prompt**
