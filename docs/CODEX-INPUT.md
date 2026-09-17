@@ -217,6 +217,7 @@ A second actual trial used two installed packages in a disposable prefix: pins
 were held while the receivers ran, released at cleanup, and the retired release
 was pruned after activating a third package. The provider and six old receipts
 survived; the three new messages arrived in order in 14.86 seconds.
+Final review follow-up `8d42db5` defaults the upgrade identity from the environment and documents the request table. The full 1,097-Rust/84-Python gate passed again (seven skipped), as did a repeat with the actual older receiver: the same provider, token and six prior receipts survived, and three messages entered the same active turn in order in 14.84 seconds with clean cleanup.
 Final review, CI and installed-session acceptance remain open. This command has
 not been run against the user's session.
 

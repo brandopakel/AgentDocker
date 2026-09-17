@@ -2790,6 +2790,151 @@
       "artifacts": "/private/tmp/agentdocker-managed-controller-upgrade-trial2-2026-09-17",
       "initial_refusal": "Trial1 used the schema22 installer to install the old schema21 package; it refused before runtime startup. Trial2 installs the old release with its matching old CLI before installing the new release. Both logs retained.",
       "scope_limit": "Pin observations span actual receiver replacement and all process cleanup. Prune was checked after old processes ended; prior independent pin trials cover pruning while pins remain held."
+    },
+    "review_followup": {
+      "source_commit": "8d42db5f3599ec8105286bdea78afa112ae5ddf8",
+      "changes": [
+        "Default the upgrade identity from AGENTDOCKER_AGENT_ID, matching other agent commands.",
+        "Document upgrade_controller and its refusal/response contract in the architecture request table."
+      ],
+      "build": {
+        "format": 1,
+        "source_commit": "8d42db5f3599ec8105286bdea78afa112ae5ddf8",
+        "source_tree": "ddcc97e4b128c9d50ff7d5dfde1359b270d69d77",
+        "source_input_sha256": "9fde750326e8871ff8f4c9d3ea3102cb81e9c014b1bb0c5f2fd7cd21746c6008",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 22,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "e7a0c85c30eed171fe6273da50cdcc7a19f18eae26ef8452bd98c0cc6aeb313f",
+          "agentd": "ea8e089e4b4a44f226c87d4eacb4866996dfda7a12bb40552dee2c51885da67a",
+          "agentdocker-ui": "e559090fdf57542e55b0d3e750567733e93192ec7b401e10e17678d99e67fd17"
+        }
+      },
+      "trial": {
+        "started_at": "2026-09-17T02:09:19.715646+00:00",
+        "scenario": "controller-upgrade",
+        "reload_enabled": false,
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "21536515518ad8520810c1b5dab1476273dfa4b8b0b4f5ac2bc7cec406216510",
+        "source": {
+          "commit": "8d42db5f3599ec8105286bdea78afa112ae5ddf8",
+          "dirty": false,
+          "rust_and_driver_sha256": "969045922d03732981e5aaf9ea6eb2a5aac467fd7453bccacef41695423c9b95"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "e7a0c85c30eed171fe6273da50cdcc7a19f18eae26ef8452bd98c0cc6aeb313f",
+        "daemon_sha256": "ea8e089e4b4a44f226c87d4eacb4866996dfda7a12bb40552dee2c51885da67a",
+        "fixture_hook_trust": "one-off vetted private fixture hooks; no saved user policy changed",
+        "pid": 76230,
+        "thread": "01a0ad20-253c-7c02-87ed-feab9b679aa1",
+        "agent": "ed5931230613433984899dd830bb5f5d",
+        "automatic_hook_bootstrap": true,
+        "idle_wake_seconds": 7.205741749989102,
+        "cross_process_receipt": {
+          "thread": "01a0ad20-253c-7c02-87ed-feab9b679aa1",
+          "turn": "01a0ad20-4c49-7760-bb7c-951c2692084e",
+          "item": "01a0ad20-4c58-7e31-8a80-c9fc610210fd"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "9e4b527604ee454b"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0ad20-253c-7c02-87ed-feab9b679aa1",
+            "turn": "01a0ad20-c187-7cf3-8f5d-80b8230a8d2c",
+            "item": "01a0ad20-c19a-7ac3-ac74-4801cd01c60d"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "idle_wake_after_receiver_crash": true,
+        "receiver_upgrade": {
+          "before": {
+            "pid": 78331,
+            "started_at": "2026-09-17T02:10:03.031855Z"
+          },
+          "after": {
+            "pid": 79022,
+            "started_at": "2026-09-17T02:10:16.031670Z"
+          },
+          "provider_preserved": true,
+          "token_and_binding_preserved": true,
+          "prior_completed_receipts": 6,
+          "pending_native_queue_id": "01a0ad20-f41c-7e30-9d4a-6df4496d4e0b",
+          "initial_cli_sha256": "caa1816b787b772497074fd4a61ff004368d477873435da7e496191ad9bd6d71"
+        },
+        "active_hook": {
+          "messages": [
+            "7d73f4a9f1754e32",
+            "ced02d283e154926",
+            "1d7cc42419074af6"
+          ],
+          "receipts": [
+            {
+              "message": "7d73f4a9f1754e32",
+              "receipt": {
+                "thread": "01a0ad20-253c-7c02-87ed-feab9b679aa1",
+                "turn": "01a0ad20-eda8-7240-b8fa-d78b52cf9ece",
+                "item": "msg_01a0ad21-06af-73f3-8d4f-c9d91d849e86"
+              }
+            },
+            {
+              "message": "ced02d283e154926",
+              "receipt": {
+                "thread": "01a0ad20-253c-7c02-87ed-feab9b679aa1",
+                "turn": "01a0ad20-eda8-7240-b8fa-d78b52cf9ece",
+                "item": "msg_01a0ad21-1378-72f3-b30e-12751bcb14ea"
+              }
+            },
+            {
+              "message": "1d7cc42419074af6",
+              "receipt": {
+                "thread": "01a0ad20-253c-7c02-87ed-feab9b679aa1",
+                "turn": "01a0ad20-eda8-7240-b8fa-d78b52cf9ece",
+                "item": "msg_01a0ad21-2032-7ea0-84cc-b77a36c0fa44"
+              }
+            }
+          ],
+          "seconds": 14.84172241698252,
+          "same_turn": true,
+          "model_requests": 5,
+          "original_provider_pid": 76230
+        },
+        "same_live_tui": true,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 13,
+        "agentdocker_integration": true,
+        "controller_survivors": [],
+        "cleanup_errors": [],
+        "raw_result_sha256": "43dc7c433801148cd388652bfd72d021d97180bc12dbe769ac018d2f3ee955ac"
+      },
+      "validation": {
+        "rust_passed": 1097,
+        "rust_skipped": 7,
+        "python_passed": 84,
+        "checks": [
+          "formatting",
+          "strict Clippy",
+          "doctests",
+          "packaging",
+          "release build"
+        ],
+        "gate_log": "/private/tmp/agentdocker-controller-upgrade-gate2-2026-09-17.log",
+        "junit": "/private/tmp/agentdocker-controller-upgrade-gate2-nextest-2026-09-17/junit.xml",
+        "identity_cli_test": "/private/tmp/agentdocker-controller-upgrade-identity-2026-09-17.json"
+      },
+      "artifacts": "/private/tmp/agentdocker-controller-upgrade-native2-2026-09-17",
+      "status": "passed; final review, CI and production acceptance pending"
     }
   }
 }

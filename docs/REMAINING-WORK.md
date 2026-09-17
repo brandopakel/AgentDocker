@@ -25,6 +25,7 @@ receipts survived; three messages arrived exactly once in order during the same
 active turn (14.85 seconds including handover), with clean retirement and cleanup.
 The disposable installed-package repeat also passed, observing lifetime pins
 and successful pruning of the retired release after cleanup.
+Final review follow-up `8d42db5` defaults the upgrade identity from the environment and documents the request table. The full 1,097-Rust/84-Python gate passed again (seven skipped), as did a repeat with the actual older receiver: the same provider, token and six prior receipts survived, and three messages entered the same active turn in order in 14.84 seconds with clean cleanup.
 Final review, CI and installed-session acceptance remain open. Evidence is in the
 existing [native queue record](verification/2026-09-15-native-codex-queue.json).
 
