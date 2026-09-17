@@ -824,6 +824,18 @@ fn rewrite_document(doc: &Document, kept: &AgentId, old: &AgentId) -> Result<Val
             }
             serde_json::to_value(c)?
         }
+        "task" => {
+            // A card remains the same work after its provider session resumes.
+            // Migrate only typed identity fields; the title, acceptance text,
+            // column and timestamps are not identity references. This does not
+            // grant or renew a lease: the normal resume and pull guards apply.
+            let mut task: agentdocker_core::Task = serde_json::from_value(doc.value.clone())?;
+            optional(&mut task.assignee, kept, old);
+            if task.created_by == old.as_str() {
+                task.created_by = kept.to_string();
+            }
+            serde_json::to_value(task)?
+        }
         "question" => {
             let mut q: agentdocker_core::Question = serde_json::from_value(doc.value.clone())?;
             let was_self =
