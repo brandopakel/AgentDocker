@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentStatus, Change, Destination, JournalEntry, Lease, MessageId, ProjectId,
-    ProjectRef, ResourceKey, VcsState,
+    AgentId, AgentStatus, Change, ChannelId, Destination, JournalEntry, Lease, MessageId,
+    ProjectId, ProjectRef, ResourceKey, VcsState,
 };
 
 /// An opaque position in one durable event log. Retain the complete cursor:
@@ -134,6 +134,14 @@ pub enum EventKind {
     /// starts over, the next launch is due at once.
     InputRestartsReset {
         agent: AgentId,
+    },
+    /// A person's explicit receiver upgrade committed before stopping the old
+    /// controller. The provider, binding token and queue stay unchanged.
+    InputControllerUpgraded {
+        agent: AgentId,
+        controller: crate::ProcessIdentity,
+        previous_executable: std::path::PathBuf,
+        executable: std::path::PathBuf,
     },
     /// A provider session that came back as a new process was joined to
     /// the record that holds its thread's queue and binding; the new
@@ -489,6 +497,11 @@ pub enum EventKind {
         removed: usize,
     },
     /// Somebody was added to an open channel.
+    ChannelInvited {
+        channel: ChannelId,
+        by: AgentId,
+        agent: AgentId,
+    },
     ChannelJoined {
         channel: crate::ChannelId,
         agent: AgentId,

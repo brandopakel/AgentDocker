@@ -150,6 +150,30 @@ impl Daemon {
             let now = Utc::now();
             match binding.controller_step(now, is_running) {
                 ControllerStep::Keep => {}
+                ControllerStep::Upgrade { kill } => {
+                    let state = lock(&self.state);
+                    if state.fenced()
+                        || state
+                            .registry
+                            .get(&id)
+                            .and_then(|r| r.input_binding.as_ref())
+                            != Some(&binding)
+                    {
+                        continue;
+                    }
+                    // Retained intent makes a crash after commit recoverable.
+                    // Never let malformed restored state target the provider.
+                    if binding.controller != binding.provider.process {
+                        signal(
+                            &binding.controller,
+                            if kill {
+                                Signal::SIGKILL
+                            } else {
+                                Signal::SIGTERM
+                            },
+                        );
+                    }
+                }
                 ControllerStep::Ended => {
                     let controller = binding
                         .restart
@@ -698,6 +722,149 @@ impl State {
         }
     }
 
+    pub(super) fn upgrade_controller(
+        &mut self,
+        reference: &str,
+        expected: (ProviderGeneration, ProcessIdentity, ControllerLaunch),
+        launch: ControllerLaunch,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> Response {
+        let (provider, controller, previous) = expected;
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(error) => return *error,
+        };
+        if self.fenced() {
+            return self.transferring().expect("fenced coordinator");
+        }
+        if let Some(error) = self.write_failure() {
+            return error;
+        }
+        let record = self.registry.get(&id).expect("resolved agent");
+        let Some(existing) = &record.input_binding else {
+            return Response::error(ErrorCode::Conflict, "input is no longer bound");
+        };
+        if !token_valid(token) || !existing.accepts_digest(&token_digest(token)) {
+            return Response::error(ErrorCode::Forbidden, "the binding token does not match");
+        }
+        if existing.provider != provider
+            || record.pid != Some(provider.process.pid)
+            || record.process_started_at != Some(provider.process.started_at)
+            || !record.status.is_live()
+            || !is_running(&provider.process)
+        {
+            return Response::error(ErrorCode::Conflict, "the provider generation changed");
+        }
+        if !launch.valid()
+            || !previous.valid()
+            || launch.args != previous.args
+            || launch.cwd != previous.cwd
+            || launch.env != previous.env
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "a receiver upgrade may change only its executable",
+            );
+        }
+        if existing.launch.as_ref() == Some(&launch) {
+            // The successful reply may have been lost. Never signal the successor
+            // or change the restart episode when answering the same request again.
+            return Response::InputBound {
+                agent: id,
+                binding: existing.clone(),
+                resumed: false,
+            };
+        }
+        if existing.controller != controller || existing.launch.as_ref() != Some(&previous) {
+            return Response::error(
+                ErrorCode::Conflict,
+                "the controller or its launch descriptor changed",
+            );
+        }
+        if controller == provider.process {
+            return Response::error(
+                ErrorCode::Invalid,
+                "a receiver upgrade cannot stop its provider",
+            );
+        }
+        if existing.restart.launched.as_ref().is_some_and(is_running) {
+            return Response::error(
+                ErrorCode::Conflict,
+                "a controller restart is already in progress",
+            );
+        }
+        if is_running(&controller) {
+            let actual = agentdocker_host::procinfo::executable_path_of(controller.pid)
+                .and_then(|path| path.canonicalize());
+            if actual.ok().as_ref() != previous.executable.canonicalize().ok().as_ref()
+                || !previous.executable.is_file()
+            {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "the live controller executable differs from its descriptor",
+                );
+            }
+        }
+        match launch.executable.canonicalize() {
+            Ok(path) if path == launch.executable && path.is_file() => (),
+            _ => {
+                return Response::error(
+                    ErrorCode::Invalid,
+                    "the new receiver executable must be an existing canonical file",
+                );
+            }
+        }
+        // Hold both generations until the transition commits. A refused write
+        // drops this temporary pin and leaves the old pin and process intact.
+        let next_pin = match agentdocker_host::installation::pin_executable(&launch.executable) {
+            Ok(pin) => pin,
+            Err(error) => return Self::pin_refused(&launch, &error),
+        };
+        let mut record = record.clone();
+        let binding = record.input_binding.as_mut().expect("bound input");
+        binding.launch = Some(launch.clone());
+        binding.restart = agentdocker_core::ControllerRestart {
+            upgrade_requested_at: Some(now),
+            ..Default::default()
+        };
+        let binding = binding.clone();
+        pause_delivery(&mut record, "the input receiver is being upgraded", now);
+        let mut event = Event::new(
+            EventKind::InputControllerUpgraded {
+                agent: id.clone(),
+                controller: controller.clone(),
+                previous_executable: previous.executable,
+                executable: launch.executable,
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        if self.persist("controller upgrade", |store| {
+            store.agent_transition(&record, &event)
+        }) != Persisted::Committed
+        {
+            return self.write_failure().expect("refused upgrade has a reason");
+        }
+        *self.registry.get_mut(&id).expect("resolved agent") = record;
+        self.next_seq += 1;
+        if let Some(pin) = next_pin {
+            self.controller_pins.insert(id.clone(), pin);
+        } else {
+            self.controller_pins.remove(&id);
+        }
+        let _ = self.events.send(event);
+        // The durable descriptor now names the successor. Normal supervision
+        // waits for the old process to end and for its ledger lock to be free.
+        // The next supervision tick executes the persisted stop intent. Keeping
+        // execution out of this request also exercises crash-before-signal recovery.
+        Response::InputBound {
+            agent: id,
+            binding,
+            resumed: false,
+        }
+    }
+
     pub(super) fn unbind_input(
         &mut self,
         reference: &str,
@@ -1010,6 +1177,7 @@ impl State {
         let alias = agentdocker_core::identity::AgentAlias {
             retired: caller.id.clone(),
             canonical: prior.id.clone(),
+            retired_name: Some(caller.spec.name.clone()),
             reconciled_at: now,
         };
         let mut event = Event::new(
@@ -2774,5 +2942,245 @@ mod tests {
                 ..
             }
         ));
+    }
+    #[tokio::test]
+    async fn receiver_upgrade_commits_before_stop_and_retains_queue_across_reopen() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = provider(&daemon, "receiver", "upgrade-session").await;
+        let sender = peer(&daemon, "sender").await;
+        let message = send(&daemon, &sender, &receiver, "retained through upgrade").await;
+        let mut old = Other::spawn();
+        let old_process = old.identity();
+        let previous = ControllerLaunch {
+            executable: agentdocker_host::procinfo::executable_path_of(old_process.pid)
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            args: vec!["30".into()],
+            cwd: dir.path().canonicalize().unwrap(),
+            env: Default::default(),
+        };
+        let new_executable = dir.path().join("successor");
+        std::fs::copy(&previous.executable, &new_executable).unwrap();
+        let launch = ControllerLaunch {
+            executable: new_executable.canonicalize().unwrap(),
+            ..previous.clone()
+        };
+        let provider = generation(&receiver, "upgrade-session");
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: provider.clone(),
+                    controller: old_process.clone(),
+                    token: TOKEN.into(),
+                    launch: Some(previous.clone()),
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        let before = binding_of(&daemon, &receiver.id);
+        let request = Request::UpgradeController {
+            agent: receiver.id.to_string(),
+            provider: provider.clone(),
+            controller: old_process.clone(),
+            previous: previous.clone(),
+            launch: launch.clone(),
+            token: TOKEN.into(),
+        };
+        let seq = lock(&daemon.state).next_seq;
+        for invalid in [
+            "token",
+            "controller",
+            "provider",
+            "arguments",
+            "missing",
+            "wrong_executable",
+        ] {
+            let mut bad = request.clone();
+            let Request::UpgradeController {
+                token,
+                controller,
+                provider,
+                launch,
+                previous,
+                ..
+            } = &mut bad
+            else {
+                unreachable!()
+            };
+            match invalid {
+                "token" => *token = OTHER_TOKEN.into(),
+                "controller" => *controller = me(),
+                "provider" => provider.session = "another-thread".into(),
+                "arguments" => launch.args.push("unexpected".into()),
+                "missing" => launch.executable = dir.path().join("missing"),
+                "wrong_executable" => previous.executable = launch.executable.clone(),
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(daemon.handle(bad).await, Response::Error { .. }),
+                "{invalid}"
+            );
+            assert_eq!(binding_of(&daemon, &receiver.id), before);
+            assert_eq!(lock(&daemon.state).next_seq, seq);
+            assert!(
+                is_running(&old_process),
+                "refused upgrade stopped the old controller"
+            );
+        }
+        daemon.offer_transfer(1).unwrap();
+        assert!(matches!(
+            daemon.handle(request.clone()).await,
+            Response::Error {
+                code: ErrorCode::Transferring,
+                ..
+            }
+        ));
+        assert_eq!(binding_of(&daemon, &receiver.id), before);
+        assert!(is_running(&old_process));
+        assert!(daemon.abort_transfer("upgrade test"));
+        // Offer and abort intentionally emitted their two coordinator events.
+        // The rejected upgrade itself must add none after that boundary.
+        let seq = lock(&daemon.state).next_seq;
+        lock(&daemon.state)
+            .store
+            .reject_event_for_test("input_controller_upgraded");
+        assert!(matches!(
+            daemon.handle(request.clone()).await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(
+            is_running(&old_process),
+            "a failed write must not signal the controller"
+        );
+        assert_eq!(binding_of(&daemon, &receiver.id), before);
+        assert_eq!(lock(&daemon.state).next_seq, seq);
+        drop(daemon);
+        let daemon = open(&dir);
+        assert_eq!(binding_of(&daemon, &receiver.id), before);
+        assert!(matches!(
+            daemon.handle(request.clone()).await,
+            Response::InputBound { .. }
+        ));
+        let committed = binding_of(&daemon, &receiver.id);
+        assert_eq!(committed.launch, Some(launch.clone()));
+        assert_eq!(committed.provider, before.provider);
+        assert_eq!(committed.token_sha256, before.token_sha256);
+        assert_eq!(committed.bound_at, before.bound_at);
+        assert_eq!(committed.uncertain, before.uncertain);
+        assert_eq!(committed.controller, old_process);
+        assert!(
+            is_running(&old_process),
+            "stop is driven by the retained intent"
+        );
+        drop(daemon);
+        let daemon = open(&dir);
+        assert_eq!(binding_of(&daemon, &receiver.id), committed);
+        daemon.offer_transfer(2).unwrap();
+        daemon.tend_controllers();
+        assert!(
+            is_running(&old_process),
+            "a fenced tick cannot execute the retained stop"
+        );
+        assert!(daemon.abort_transfer("resume retained upgrade"));
+        daemon.tend_controllers();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while old.0.try_wait().unwrap().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "old receiver did not stop"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        drop(daemon);
+        let daemon = open(&dir);
+        assert_eq!(binding_of(&daemon, &receiver.id), committed);
+        let current = Other::spawn();
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider,
+                    controller: current.identity(),
+                    token: TOKEN.into(),
+                    launch: Some(launch),
+                })
+                .await,
+            Response::InputBound { resumed: true, .. }
+        ));
+        let current_binding = binding_of(&daemon, &receiver.id);
+        let seq = lock(&daemon.state).next_seq;
+        assert!(matches!(
+            daemon.handle(request).await,
+            Response::InputBound { .. }
+        ));
+        assert!(
+            is_running(&current.identity()),
+            "a lost upgrade reply must not stop the successor"
+        );
+        assert_eq!(binding_of(&daemon, &receiver.id), current_binding);
+        assert_eq!(lock(&daemon.state).next_seq, seq);
+        assert!(
+            matches!(daemon.handle(Request::PeekInput { agent: receiver.id.to_string() }).await,
+            Response::Messages { messages } if messages.iter().map(|m| &m.id).collect::<Vec<_>>() == vec![&message])
+        );
+        assert!(is_running(&me()), "provider retained");
+    }
+    #[tokio::test]
+    async fn receiver_upgrade_never_targets_the_provider_process() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = provider(&daemon, "receiver", "same-process").await;
+        let previous = ControllerLaunch {
+            executable: agentdocker_host::procinfo::executable_path()
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            args: vec![],
+            cwd: dir.path().canonicalize().unwrap(),
+            env: Default::default(),
+        };
+        let provider = generation(&receiver, "same-process");
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: provider.clone(),
+                    controller: me(),
+                    token: TOKEN.into(),
+                    launch: Some(previous.clone()),
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        let mut launch = previous.clone();
+        launch.executable = dir.path().join("unused-new-receiver");
+        let seq = lock(&daemon.state).next_seq;
+        let binding = binding_of(&daemon, &receiver.id);
+        assert!(matches!(
+            daemon
+                .handle(Request::UpgradeController {
+                    agent: receiver.id.to_string(),
+                    provider,
+                    controller: me(),
+                    previous,
+                    launch,
+                    token: TOKEN.into(),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        assert_eq!(lock(&daemon.state).next_seq, seq);
+        assert_eq!(binding_of(&daemon, &receiver.id), binding);
+        daemon.tend_controllers();
+        assert!(is_running(&me()));
     }
 }

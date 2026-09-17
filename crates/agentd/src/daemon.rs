@@ -1636,6 +1636,20 @@ impl Daemon {
                 launch,
                 Utc::now(),
             ),
+            Request::UpgradeController {
+                agent,
+                provider,
+                controller,
+                previous,
+                launch,
+                token,
+            } => lock(&self.state).upgrade_controller(
+                &agent,
+                (provider, controller, previous),
+                launch,
+                &token,
+                Utc::now(),
+            ),
             Request::UnbindInput {
                 agent,
                 token,
@@ -1924,7 +1938,16 @@ impl Daemon {
                 task,
                 members,
                 name,
-            } => self.channel_open(&agent, task, members, name),
+                project,
+            } => {
+                self.channel_open(&agent, task, members, name, project)
+                    .await
+            }
+            Request::ChannelInvite {
+                agent,
+                channel,
+                member,
+            } => self.channel_invite(&agent, &channel, &member),
             Request::ChannelClose {
                 agent,
                 channel,
@@ -5606,8 +5629,11 @@ impl State {
                 .filter(|a| a.project.as_ref().is_some_and(|p| p.id() == *project))
                 .map(|a| a.id.clone())
                 .collect(),
-            Destination::Channel(channel) => self
-                .channel_members(channel)
+            Destination::Channel(id) => channel
+                .as_ref()
+                .filter(|staged| staged.id == *id)
+                .map(|staged| staged.members.clone())
+                .unwrap_or_else(|| self.channel_members(id))
                 .into_iter()
                 .filter(|id| id.as_str() != envelope.from)
                 .collect(),
@@ -10698,6 +10724,7 @@ deny = ["send:all"]
                 task: "legacy membership".into(),
                 members: vec!["receiver".into()],
                 name: None,
+                project: None,
             })
             .await
         else {

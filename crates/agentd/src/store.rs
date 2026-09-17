@@ -34,7 +34,9 @@ pub(crate) use event_replay::EventReplay;
 // v17 retains independent session-owner identity; v18 retains provider blocks.
 // v19 retains input bindings and legacy offers on the agent record: an older
 // daemon would not know a queue is a bound controller's and would drain it.
-pub(crate) const SCHEMA_VERSION: i64 = 21;
+// Schema 22 adds a durable receiver-upgrade intent to bound-controller state.
+// Older readers reject that field, so a downgrade must not open this database.
+pub(crate) const SCHEMA_VERSION: i64 = 22;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -1340,6 +1342,49 @@ impl Store {
             |row| row.get(0),
         )?;
         Ok(u64::try_from(count).unwrap_or_default())
+    }
+
+    /// How many unread rows mention the reader: rows past the cursor by
+    /// somebody else whose text carries `@` and one of these names, as
+    /// `mentions_any` reads them. A LIKE narrows the rows to those with
+    /// an `@` at all; the names are matched in Rust so `@user` does not
+    /// count for `@users`.
+    pub fn mentions_after(
+        &self,
+        conversation: &ConversationId,
+        after_seq: u64,
+        readers: &[AgentId],
+        names: &[String],
+    ) -> Result<u64> {
+        if names.is_empty() {
+            return Ok(0);
+        }
+        let senders = readers
+            .iter()
+            .map(|id| format!("'{}'", id.as_str().replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT json FROM messages WHERE conversation = ?1 AND seq > ?2 AND sender NOT IN ({senders}) AND json LIKE '%@%'"
+        ))?;
+        let rows = statement.query_map(
+            params![
+                conversation.as_str(),
+                i64::try_from(after_seq).unwrap_or(i64::MAX),
+            ],
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut count = 0;
+        for raw in rows {
+            let envelope: Envelope = serde_json::from_str(&raw?)?;
+            if agentdocker_core::conversation::mentions_any(
+                &agentdocker_core::conversation::line_of(&envelope),
+                names,
+            ) {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     /// Whether an archived row with this seq belongs to the conversation.

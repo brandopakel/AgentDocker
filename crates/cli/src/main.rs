@@ -723,6 +723,9 @@ enum Command {
     /// Feed an existing Codex conversation through its native input queue.
     #[command(hide = true)]
     CodexQueue(codex_input::external::Args),
+    /// Upgrade only an existing Codex session's receiver to this CLI release.
+    #[command(hide = true)]
+    CodexQueueUpgrade(codex_input::external::upgrade::Args),
     /// Start the agents in an Agentfile.toml that are not already running.
     Up {
         /// Agentfile to read (default: ./Agentfile.toml).
@@ -866,6 +869,17 @@ enum ChannelAction {
         /// from the task when absent.
         #[arg(long)]
         name: Option<String>,
+        /// The project the channel belongs to (id or path), when the
+        /// opener is in none or in another; your own project otherwise.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Add a live agent to a channel you belong to.
+    Invite {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        channel: String,
+        member: String,
     },
     /// The work is final: close it and tell the members.
     Close {
@@ -1688,12 +1702,14 @@ async fn main() -> Result<()> {
                 task,
                 members,
                 name,
+                project,
             } => {
                 let request = Request::ChannelOpen {
                     agent,
                     task,
                     members,
                     name,
+                    project: project.as_deref().map(project_selector),
                 };
                 if let Response::Channel { channel } = client.call(&request).await? {
                     // The id alone on stdout, as every creating command;
@@ -1702,6 +1718,24 @@ async fn main() -> Result<()> {
                     if let Some(name) = &channel.name {
                         eprintln!("#{name}");
                     }
+                }
+            }
+            ChannelAction::Invite {
+                agent,
+                channel,
+                member,
+            } => {
+                match client
+                    .call(&Request::ChannelInvite {
+                        agent,
+                        channel,
+                        member,
+                    })
+                    .await?
+                {
+                    Response::Channel { channel } => println!("{}", channel.id),
+                    Response::Error { message, .. } => anyhow::bail!("{message}"),
+                    other => anyhow::bail!("unexpected invitation reply: {other:?}"),
                 }
             }
             ChannelAction::Close {
@@ -2336,6 +2370,9 @@ async fn main() -> Result<()> {
         Command::Mcp(args) => mcp::serve(client, args).await?,
         Command::CodexInput(args) => codex_input::run(client, socket, args).await?,
         Command::CodexQueue(args) => codex_input::external::run(client, socket, args).await?,
+        Command::CodexQueueUpgrade(args) => {
+            codex_input::external::upgrade::run(client, args).await?
+        }
         Command::Up { file, names } => teams::up(&client, file.as_deref(), &names).await?,
         Command::Down { file, names, force } => {
             teams::down(&client, file.as_deref(), &names, force).await?;

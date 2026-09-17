@@ -322,6 +322,18 @@ pub enum Request {
         #[serde(default)]
         launch: Option<crate::ControllerLaunch>,
     },
+    /// Explicitly replace a receiver executable without unbinding its provider.
+    /// The expected process and launch fence stale requests. Only the executable
+    /// changes; the same token, provider, queue and controller ledger remain.
+    /// The new descriptor is committed and pinned before the old receiver stops.
+    UpgradeController {
+        agent: String,
+        provider: crate::ProviderGeneration,
+        controller: crate::ProcessIdentity,
+        previous: crate::ControllerLaunch,
+        launch: crate::ControllerLaunch,
+        token: String,
+    },
     /// Release an input binding. The token is required unless `force`,
     /// which is accepted only while the bound controller process is gone.
     UnbindInput {
@@ -734,6 +746,19 @@ pub enum Request {
         /// The `#name` people will use; made from the task when absent.
         #[serde(default)]
         name: Option<String>,
+        /// The project the channel belongs to, for an opener that is in
+        /// none or in another: a person opening a room from the app names
+        /// the project they are looking at. An agent's own project when
+        /// absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
+    /// A current member adds one live agent to an open named channel.
+    /// Repeating an invitation for a member is a no-op.
+    ChannelInvite {
+        agent: String,
+        channel: String,
+        member: String,
     },
     /// The work is final: close the channel and tell its members. Closed
     /// channels are pruned by `channel_prune`.

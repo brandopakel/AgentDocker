@@ -796,5 +796,924 @@
       "review": "No actionable comments, Minimal risk; exact head covered.",
       "branch_retained": "Claude still has it checked out; remove after it moves off."
     }
+  },
+  "messaging_controls_review_2026_09_17": {
+    "status": "final combined source and native controls passed; final review, CI and install pending",
+    "build": {
+      "format": 1,
+      "source_commit": "c3bceb34e9a96910f000699333c389f52951345d",
+      "source_tree": "ffb95e0de9249c0d67a9dfdf16cda6fbe299b568",
+      "source_input_sha256": "f2d5193fe80bc2087ff863bbb953244e98c33bb3decd53d1407557f077d96734",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "e22a20507cd1dde6262883e1d850f066ef5e86f7467959d4438d08239db69e48",
+        "agentd": "9df58400d5d6de3d46c1707781997d24fdf73652ffc492f8259306ad14cd5619",
+        "agentdocker-ui": "f370c41894bc1530acae2ed6900fbeec830f73c69a15ba6674e1dd408e80e4a9"
+      }
+    },
+    "driver_commit": "34a6c80",
+    "driver_note": "The driver correction adds the third member to the expected set and asserts exactly one notice in that agent queue; binaries remain sourcec3bceb3.",
+    "native": {
+      "result": "passed",
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences"
+      ],
+      "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+      "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+      "architecture": "arm64",
+      "binary_sha256": {
+        "agentd": "9df58400d5d6de3d46c1707781997d24fdf73652ffc492f8259306ad14cd5619",
+        "agentdocker": "e22a20507cd1dde6262883e1d850f066ef5e86f7467959d4438d08239db69e48",
+        "agentdocker-ui": "f370c41894bc1530acae2ed6900fbeec830f73c69a15ba6674e1dd408e80e4a9"
+      },
+      "first_window": {
+        "samples": 330,
+        "elapsed_seconds": 48.36080679198494,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "restored_window": {
+        "samples": 19,
+        "elapsed_seconds": 2.6714400420023594,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "activity_only_window": {
+        "samples": 31,
+        "elapsed_seconds": 4.741963209002279,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "contact_window": {
+        "samples": 29,
+        "elapsed_seconds": 4.822656874981476,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "ready_window": {
+        "samples": 28,
+        "elapsed_seconds": 5.029696249985136,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "received_window": {
+        "samples": 29,
+        "elapsed_seconds": 4.863990250014467,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "paused_window": {
+        "samples": 24,
+        "elapsed_seconds": 4.858766624995042,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "provider_limit_window": {
+        "samples": 21,
+        "elapsed_seconds": 4.361201333987992,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "narrow_inbox_window": {
+        "samples": 119,
+        "elapsed_seconds": 23.451426209008787,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "constrained_panes_window": {
+        "samples": 55,
+        "elapsed_seconds": 9.870819582982222,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "idle_resources": {
+        "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+        "samples": [
+          {
+            "window": {
+              "rss_bytes": 172982272,
+              "ps_cpu_percent": 1.2
+            },
+            "daemon": {
+              "rss_bytes": 20398080,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 172982272,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 20398080,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 172982272,
+              "ps_cpu_percent": 0.3
+            },
+            "daemon": {
+              "rss_bytes": 20398080,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 172916736,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 20398080,
+              "ps_cpu_percent": 0.1
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 172916736,
+              "ps_cpu_percent": 0.9
+            },
+            "daemon": {
+              "rss_bytes": 20398080,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 172916736,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 20398080,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 172916736,
+              "ps_cpu_percent": 0.9
+            },
+            "daemon": {
+              "rss_bytes": 20398080,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 172933120,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 20398080,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 172933120,
+              "ps_cpu_percent": 1.0
+            },
+            "daemon": {
+              "rss_bytes": 20414464,
+              "ps_cpu_percent": 0.1
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 172933120,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 20414464,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 172933120,
+              "ps_cpu_percent": 0.3
+            },
+            "daemon": {
+              "rss_bytes": 20414464,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 172949504,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 20414464,
+              "ps_cpu_percent": 0.4
+            }
+          }
+        ],
+        "summary": {
+          "window": {
+            "median_rss_bytes": 172933120.0,
+            "maximum_rss_bytes": 172982272,
+            "median_ps_cpu_percent": 0.15
+          },
+          "daemon": {
+            "median_rss_bytes": 20398080.0,
+            "maximum_rss_bytes": 20414464,
+            "median_ps_cpu_percent": 0.0
+          }
+        }
+      },
+      "elapsed_seconds": 128.93793350001215
+    },
+    "native_steps": 415,
+    "gate": {
+      "source": "c3bceb34e9a96910f000699333c389f52951345d",
+      "rust_passed": 1102,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "log": "/private/tmp/agentdocker-compose-gate3-2026-09-17.log",
+      "junit": "/private/tmp/agentdocker-compose-gate3-nextest-2026-09-17/junit.xml",
+      "checks": [
+        "formatting",
+        "strict Clippy",
+        "doctests",
+        "packaging",
+        "release"
+      ]
+    },
+    "earlier_failures": {
+      "native1": {
+        "result": "failed",
+        "checks": [
+          "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+          "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+          "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+          "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+          "rendered_actions",
+          "answer_and_draft_navigation",
+          "native_vt_rendering",
+          "terminal_attach_detach",
+          "channels",
+          "setup_review_apply_undo",
+          "launch_and_confirmed_stop",
+          "focused_control_reveal",
+          "compact_zoom",
+          "current_history_separation",
+          "project_attention",
+          "compact_session_navigation",
+          "folder_pin_has_no_project_files",
+          "same_project_after_launch",
+          "last_project_restore",
+          "quiet_project_retained",
+          "saved_appearance",
+          "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+          "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+          "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize"
+        ],
+        "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+        "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+        "architecture": "arm64",
+        "binary_sha256": {
+          "agentd": "9df58400d5d6de3d46c1707781997d24fdf73652ffc492f8259306ad14cd5619",
+          "agentdocker": "e22a20507cd1dde6262883e1d850f066ef5e86f7467959d4438d08239db69e48",
+          "agentdocker-ui": "f370c41894bc1530acae2ed6900fbeec830f73c69a15ba6674e1dd408e80e4a9"
+        },
+        "first_window": {
+          "samples": 334,
+          "elapsed_seconds": 49.16004899999825,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "restored_window": {
+          "samples": 17,
+          "elapsed_seconds": 2.6409516670100857,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "activity_only_window": {
+          "samples": 40,
+          "elapsed_seconds": 6.380646125006024,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "contact_window": {
+          "samples": 31,
+          "elapsed_seconds": 4.7767240420216694,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "ready_window": {
+          "samples": 34,
+          "elapsed_seconds": 4.9041782499989495,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "received_window": {
+          "samples": 34,
+          "elapsed_seconds": 4.877881708991481,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "paused_window": {
+          "samples": 35,
+          "elapsed_seconds": 5.025464999984251,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "provider_limit_window": {
+          "samples": 30,
+          "elapsed_seconds": 4.320362958009355,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "narrow_inbox_window": {
+          "samples": 162,
+          "elapsed_seconds": 23.61210083399783,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "error": "[{'id': 'f489fa9b1943', 'project': '3905350b0ee953b5857287fcc3e2d170', 'name': 'planning-room', 'subject': {'kind': 'task', 'task': 'Plan the fixture'}, 'members': ['d7e5e5bf80e64f01a06a6ffbc9b27635', 'e38b564542314c79b5b1302f23f034fc', '819ae3240bf44c708a27684342fe0c22'], 'opened_by': 'd7e5e5bf80e64f01a06a6ffbc9b27635', 'opened_at': '2026-09-17T02:28:50.831346Z', 'reviews': []}]",
+        "elapsed_seconds": 106.25885166600347
+      },
+      "logs": "/private/tmp/agentdocker-compose-targeted[2-5]-2026-09-17.log retains compilation corrections and the missing invitation regression; targeted6 passed. gate1 caught unstaged formatting and gate2 caught an oversized queue-rejection result; gate3 passed after corrections."
+    },
+    "private_artifacts": "/private/tmp/agentdocker-compose-native2-2026-09-17",
+    "scope": "Private daemon and fixture agents. Rendered actual Iced controls and queue/archive checks; no production messages, provider wake claim or installed UI acceptance.",
+    "atomic_creation_followup": {
+      "build": {
+        "format": 1,
+        "source_commit": "3646efbb8f3defd8ebe582eaeba579a7b1062cf8",
+        "source_tree": "43c8fe31843c99e6aade88177a46a689d4388f5f",
+        "source_input_sha256": "9f2383f548f38a9763daabde4d6b6933fb1337da32be3c02993671cfff3a8bb5",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 21,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "627eef3934323507c4e6ae4c50db674435a289264031218453d166f4a3bef1e2",
+          "agentd": "f7d31bf8cfdf098d4c88d61b82201dac2fd6d376941efb38e89f3ce3a41d972b",
+          "agentdocker-ui": "66b38284c57dd9ba77e8ae86ffb32719c76e39b4dfdad8f23a07558c68794fe3"
+        }
+      },
+      "gate": {
+        "result": "passed",
+        "rust_passed": 1103,
+        "rust_skipped": 7,
+        "python_checks": 84,
+        "log": "/private/tmp/agentdocker-compose-gate4-2026-09-17.log",
+        "junit": "/private/tmp/agentdocker-compose-gate4-nextest-2026-09-17/junit.xml"
+      },
+      "native": {
+        "result": "passed",
+        "checks": [
+          "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+          "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+          "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+          "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+          "rendered_actions",
+          "answer_and_draft_navigation",
+          "native_vt_rendering",
+          "terminal_attach_detach",
+          "channels",
+          "setup_review_apply_undo",
+          "launch_and_confirmed_stop",
+          "focused_control_reveal",
+          "compact_zoom",
+          "current_history_separation",
+          "project_attention",
+          "compact_session_navigation",
+          "folder_pin_has_no_project_files",
+          "same_project_after_launch",
+          "last_project_restore",
+          "quiet_project_retained",
+          "saved_appearance",
+          "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+          "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+          "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+          "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+          "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences"
+        ],
+        "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+        "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+        "architecture": "arm64",
+        "binary_sha256": {
+          "agentd": "f7d31bf8cfdf098d4c88d61b82201dac2fd6d376941efb38e89f3ce3a41d972b",
+          "agentdocker": "627eef3934323507c4e6ae4c50db674435a289264031218453d166f4a3bef1e2",
+          "agentdocker-ui": "66b38284c57dd9ba77e8ae86ffb32719c76e39b4dfdad8f23a07558c68794fe3"
+        },
+        "first_window": {
+          "samples": 333,
+          "elapsed_seconds": 48.90154229197651,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "restored_window": {
+          "samples": 19,
+          "elapsed_seconds": 2.6555616249970626,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "activity_only_window": {
+          "samples": 46,
+          "elapsed_seconds": 6.525344249996124,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "contact_window": {
+          "samples": 36,
+          "elapsed_seconds": 5.076074541022535,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "ready_window": {
+          "samples": 34,
+          "elapsed_seconds": 4.792680749989813,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "received_window": {
+          "samples": 36,
+          "elapsed_seconds": 5.061239999980899,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "paused_window": {
+          "samples": 36,
+          "elapsed_seconds": 5.063220707990695,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "provider_limit_window": {
+          "samples": 31,
+          "elapsed_seconds": 4.345875875005731,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "narrow_inbox_window": {
+          "samples": 164,
+          "elapsed_seconds": 23.429266457998892,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "constrained_panes_window": {
+          "samples": 69,
+          "elapsed_seconds": 9.843428959022276,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "idle_resources": {
+          "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+          "samples": [
+            {
+              "window": {
+                "rss_bytes": 178601984,
+                "ps_cpu_percent": 1.5
+              },
+              "daemon": {
+                "rss_bytes": 18956288,
+                "ps_cpu_percent": 0.8
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 178601984,
+                "ps_cpu_percent": 0.0
+              },
+              "daemon": {
+                "rss_bytes": 18956288,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 178601984,
+                "ps_cpu_percent": 0.3
+              },
+              "daemon": {
+                "rss_bytes": 18956288,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 178520064,
+                "ps_cpu_percent": 0.0
+              },
+              "daemon": {
+                "rss_bytes": 18956288,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 178470912,
+                "ps_cpu_percent": 1.2
+              },
+              "daemon": {
+                "rss_bytes": 18956288,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 178470912,
+                "ps_cpu_percent": 0.0
+              },
+              "daemon": {
+                "rss_bytes": 18956288,
+                "ps_cpu_percent": 0.6
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 178470912,
+                "ps_cpu_percent": 0.6
+              },
+              "daemon": {
+                "rss_bytes": 18956288,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 178470912,
+                "ps_cpu_percent": 18.0
+              },
+              "daemon": {
+                "rss_bytes": 18956288,
+                "ps_cpu_percent": 0.1
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 178372608,
+                "ps_cpu_percent": 0.7
+              },
+              "daemon": {
+                "rss_bytes": 18956288,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 178372608,
+                "ps_cpu_percent": 10.9
+              },
+              "daemon": {
+                "rss_bytes": 18956288,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 178372608,
+                "ps_cpu_percent": 0.2
+              },
+              "daemon": {
+                "rss_bytes": 18956288,
+                "ps_cpu_percent": 0.4
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 178372608,
+                "ps_cpu_percent": 19.3
+              },
+              "daemon": {
+                "rss_bytes": 18956288,
+                "ps_cpu_percent": 0.1
+              }
+            }
+          ],
+          "summary": {
+            "window": {
+              "median_rss_bytes": 178470912.0,
+              "maximum_rss_bytes": 178601984,
+              "median_ps_cpu_percent": 0.6499999999999999
+            },
+            "daemon": {
+              "median_rss_bytes": 18956288.0,
+              "maximum_rss_bytes": 18956288,
+              "median_ps_cpu_percent": 0.0
+            }
+          }
+        },
+        "elapsed_seconds": 131.61248491698643
+      },
+      "scope": "Source3646efb includes atomic creation. Later compact create button and schema22 integration await the final combined gate."
+    },
+    "final_combined": {
+      "build": {
+        "format": 1,
+        "source_commit": "e6981a7ca9f866a3d601e7aca13b9364cdd8f8b1",
+        "source_tree": "57ad29b685b03d859fce1770907b984fd71aed96",
+        "source_input_sha256": "0c668d6eba8af9d0a789944dc9324306e6ff63fb2a46536eafe32ac7b8d78d1a",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 22,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "ba0bf99afa6fe2e61639d3180eb69e1572c27b3987814962eb76308a2dacf1c7",
+          "agentd": "48688463e29aeb4d637761150bb798c8df6541e9e2119eca1babdef327b89843",
+          "agentdocker-ui": "91f928f039093347dc18bbaf9076febacc50a6571ea0671231d36da9e9d5c647"
+        }
+      },
+      "gate": {
+        "result": "passed",
+        "rust_passed": 1106,
+        "rust_skipped": 7,
+        "python_checks": 84,
+        "log": "/private/tmp/agentdocker-compose-gate5-2026-09-17.log",
+        "junit": "/private/tmp/agentdocker-compose-gate5-nextest-2026-09-17/junit.xml"
+      },
+      "native": {
+        "result": "passed",
+        "checks": [
+          "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+          "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+          "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+          "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+          "rendered_actions",
+          "answer_and_draft_navigation",
+          "native_vt_rendering",
+          "terminal_attach_detach",
+          "channels",
+          "setup_review_apply_undo",
+          "launch_and_confirmed_stop",
+          "focused_control_reveal",
+          "compact_zoom",
+          "current_history_separation",
+          "project_attention",
+          "compact_session_navigation",
+          "folder_pin_has_no_project_files",
+          "same_project_after_launch",
+          "last_project_restore",
+          "quiet_project_retained",
+          "saved_appearance",
+          "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+          "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+          "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+          "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+          "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences"
+        ],
+        "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+        "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+        "architecture": "arm64",
+        "binary_sha256": {
+          "agentd": "48688463e29aeb4d637761150bb798c8df6541e9e2119eca1babdef327b89843",
+          "agentdocker": "ba0bf99afa6fe2e61639d3180eb69e1572c27b3987814962eb76308a2dacf1c7",
+          "agentdocker-ui": "91f928f039093347dc18bbaf9076febacc50a6571ea0671231d36da9e9d5c647"
+        },
+        "first_window": {
+          "samples": 322,
+          "elapsed_seconds": 46.17004970900598,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "restored_window": {
+          "samples": 20,
+          "elapsed_seconds": 2.7539468749891967,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "activity_only_window": {
+          "samples": 47,
+          "elapsed_seconds": 6.6842180420062505,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "contact_window": {
+          "samples": 36,
+          "elapsed_seconds": 5.059852625010535,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "ready_window": {
+          "samples": 35,
+          "elapsed_seconds": 4.904562709009042,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "received_window": {
+          "samples": 35,
+          "elapsed_seconds": 4.949908208014676,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "paused_window": {
+          "samples": 34,
+          "elapsed_seconds": 4.862074875010876,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "provider_limit_window": {
+          "samples": 30,
+          "elapsed_seconds": 4.365420042013284,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "narrow_inbox_window": {
+          "samples": 164,
+          "elapsed_seconds": 23.609869583015097,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "constrained_panes_window": {
+          "samples": 68,
+          "elapsed_seconds": 9.908138500002678,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "idle_resources": {
+          "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+          "samples": [
+            {
+              "window": {
+                "rss_bytes": 177979392,
+                "ps_cpu_percent": 2.4
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 177897472,
+                "ps_cpu_percent": 0.0
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 177897472,
+                "ps_cpu_percent": 0.3
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 177897472,
+                "ps_cpu_percent": 0.0
+              },
+              "daemon": {
+                "rss_bytes": 20889600,
+                "ps_cpu_percent": 0.2
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 177897472,
+                "ps_cpu_percent": 0.6
+              },
+              "daemon": {
+                "rss_bytes": 20889600,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 177717248,
+                "ps_cpu_percent": 0.0
+              },
+              "daemon": {
+                "rss_bytes": 20889600,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 177717248,
+                "ps_cpu_percent": 0.1
+              },
+              "daemon": {
+                "rss_bytes": 20889600,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 177750016,
+                "ps_cpu_percent": 22.8
+              },
+              "daemon": {
+                "rss_bytes": 20889600,
+                "ps_cpu_percent": 0.9
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 177750016,
+                "ps_cpu_percent": 0.4
+              },
+              "daemon": {
+                "rss_bytes": 20889600,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 177750016,
+                "ps_cpu_percent": 24.7
+              },
+              "daemon": {
+                "rss_bytes": 20889600,
+                "ps_cpu_percent": 0.4
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 177766400,
+                "ps_cpu_percent": 0.5
+              },
+              "daemon": {
+                "rss_bytes": 20889600,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 177766400,
+                "ps_cpu_percent": 9.0
+              },
+              "daemon": {
+                "rss_bytes": 20889600,
+                "ps_cpu_percent": 0.0
+              }
+            }
+          ],
+          "summary": {
+            "window": {
+              "median_rss_bytes": 177766400.0,
+              "maximum_rss_bytes": 177979392,
+              "median_ps_cpu_percent": 0.45
+            },
+            "daemon": {
+              "median_rss_bytes": 20889600.0,
+              "maximum_rss_bytes": 20889600,
+              "median_ps_cpu_percent": 0.0
+            }
+          }
+        },
+        "elapsed_seconds": 129.1255107089819
+      },
+      "rendered_steps": 415,
+      "scope": "Merged171/schema22 plus compact create button, Enter callbacks, scoped mentions, creation and invitation; real Iced windows use owned fixtures beneath other windows. Not physical keyboard or assistive-technology trials."
+    },
+    "historical_names_followup": {
+      "build": {
+        "format": 1,
+        "source_commit": "5c461e0df33be607ffd98b4b78b0f26f54f2dfda",
+        "source_tree": "6238a3b6f5d312f2f89d7a919d298b874bc8e960",
+        "source_input_sha256": "58cca8f82ede1e0c2e162d172075e175791c2f012c50045393c789b11d0820c7",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 22,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "cef78ac6943f7a6a9228231d698307871985dadb5342228db540b94128a57311",
+          "agentd": "c36f01757fb224872d0074e7f1acca31d52390ca002554ac0f337350d5843739",
+          "agentdocker-ui": "d4c82d2c3b38f9ace617e709c706dcf94f04ade4025f87896fe71d0f04797044"
+        }
+      },
+      "gate": {
+        "result": "passed",
+        "rust_passed": 1108,
+        "rust_skipped": 7,
+        "python_checks": 84,
+        "checks": [
+          "formatting",
+          "strict Clippy",
+          "doctests",
+          "packaging",
+          "release build"
+        ],
+        "log": "/private/tmp/agentdocker-compose-gate6-2026-09-17.log",
+        "junit": "/private/tmp/agentdocker-compose-gate6-nextest-2026-09-17/junit.xml"
+      },
+      "focused": {
+        "passed": 4,
+        "log": "/private/tmp/agentdocker-compose-focused6-2026-09-17.log",
+        "cases": [
+          "retired mention count before and after reopen",
+          "offline repair persists retired name through reopen",
+          "alias name restoration and legacy missing metadata",
+          "stale successful and failed invitation replies preserve replacement form"
+        ]
+      },
+      "native_scope": "Prior e6981a7 rendered workflow covers the unchanged composer controls. This follow-up changes retired-name accounting and adds an invitation reply regression; final-head graphical CI remains required. No physical Enter-key trial is claimed.",
+      "status": "source passed; final review, CI and install pending"
+    }
   }
 }

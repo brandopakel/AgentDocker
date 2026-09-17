@@ -243,6 +243,15 @@ pub fn event_line(event: &Event) -> String {
             "controller restarts exhausted {} after {attempts}",
             agent.short()
         ),
+        EventKind::InputControllerUpgraded {
+            agent, executable, ..
+        } => {
+            format!(
+                "controller upgraded {} → {}",
+                agent.short(),
+                executable.display()
+            )
+        }
         EventKind::InputRestartsReset { agent } => {
             format!("controller restart requested {}", agent.short())
         }
@@ -472,6 +481,14 @@ pub fn event_line(event: &Event) -> String {
             "channel opened   {channel} on {title} ({} members)",
             members.len()
         ),
+        EventKind::ChannelInvited { channel, by, agent } => {
+            format!(
+                "{} invited {} to channel {}",
+                by.short(),
+                agent.short(),
+                channel.as_str()
+            )
+        }
         EventKind::ChannelJoined { channel, agent } => {
             format!("channel joined   {channel} by {}", agent.short())
         }
