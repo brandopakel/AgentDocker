@@ -2123,11 +2123,82 @@
     "diagnosis": "This run captured an lsof mount-stat warning in the transport observer; it does not establish absence or presence of TCP. A previous Linux ARM failure did not retain this detail and is not explained by this later result.",
     "log": "/private/tmp/agentdocker-pr172-linux-failure-20260917.log"
   },
+  "combined_pause_reveal_usage_2026_09_17": {
+    "source_commit": "be3086d03977c03a1809b2105b0ec5e3959c6b6c",
+    "source_tree": "d9935be67626d9042937b91719e670dc7d65b3e9",
+    "source_input_sha256": "852040e63258cc016892e82e07edb01366590866273353f9749967e86a819cf9",
+    "source_dirty": false,
+    "state_schema": 23,
+    "target": "aarch64-apple-darwin",
+    "included_heads": {
+      "usage_167": "344516e6bd6fe77caf13f3d3e401fcf3bbdb9e68",
+      "pause_173": "cb9baef0b7c86d689b3a50815fc9bcd964f88b7a",
+      "linux_observer_174": "5c3eccc8c09a356c5f54e2013d1d16ce7d8686a3",
+      "notification_reveal_175": "ae93e5597f86b04963d1cf32b9dbec07989c1715"
+    },
+    "standard_gate": {
+      "passed": true,
+      "rust_passed": 1142,
+      "rust_skipped": 7,
+      "python_run": 92,
+      "python_passed": 91,
+      "python_skipped": 1,
+      "python_skip_scope": "Linux-only /proc check; actual Linux VM evidence remains separate",
+      "reader_regressions_passed": 13,
+      "fmt": true,
+      "strict_clippy": true,
+      "doctests": true,
+      "cargo_package": true,
+      "release_build": true
+    },
+    "binary_sha256_before_packaging": {
+      "agentdocker": "289b19366372053a1e6555b34a04645200dcc618f8e5996e68f8f73968440126",
+      "agentd": "e272d5c4ddcc0f622453a77b40d4dc825514b6bfa7761919ea1fdfd68b2de3ff",
+      "agentdocker-ui": "392c5ae837f04fc6e26174f27ecceaea9a8b31a0b624c31fabf0ec1b9afc4fed"
+    },
+    "private_artifacts": {
+      "gate": {
+        "path": "/private/tmp/agentdocker-combined-gate2-20260917.log",
+        "sha256": "9b80339fb67d2936f2647f2c1e8d422f1830d909a4066377745366fe15ee9e2a"
+      },
+      "junit": {
+        "path": "/private/tmp/agentdocker-combined-nextest2-20260917/junit.xml",
+        "sha256": "0341c6d482eb204c35d84d0ba4abe2026610065691ea29d4fdde616cf486fe26"
+      },
+      "reader_regressions": {
+        "path": "/private/tmp/agentdocker-prefix-quarantine-targeted2-20260917.log",
+        "sha256": "17c526a251c7b3f113b094f9d43802c64757e0b222ffd2bd3596b4873a480994"
+      },
+      "quarantine_windows_failure": {
+        "path": "/private/tmp/agentdocker-167-quarantine-windows-failure-20260917.log",
+        "sha256": "c77b4b0c0d7083646f28e9781ccb0e34b438ab9b82f71f68cc9839427143f33a"
+      },
+      "quarantine_linux_failure": {
+        "path": "/private/tmp/agentdocker-167-quarantine-linux-failure-20260917.log",
+        "sha256": "12437d359a3cfef9f0a95904d4b181c99520bb260e503fbf65f47834d0d5143b"
+      }
+    },
+    "quarantine_fixture_failure": {
+      "source_commit": "c2ee0d00a0f8940612f121ff8c5fa556499327fa",
+      "windows_job": 105089554773,
+      "linux_job": 105089554651,
+      "observed": "Expected Quarantined but received Budget; the fixture budget did not include the preceding complete record.",
+      "correction": "344516e adds the prefix length to the fixture budget. It also validates a quarantined prefix before refusing a retry, with a same-metadata rewrite regression.",
+      "final_platform_ci": "pending"
+    },
+    "limits": [
+      "No new graphical workflow was run in this campaign: the display was locked and peer graphical attempts timed out. Earlier native proof retains its own source pin.",
+      "These immutable binaries were not installed by this campaign.",
+      "Claude current plain-session idle input and channel consent remain unproven.",
+      "Usage discovery, ingestion, large/growing-file prefix validation, attribution, protocol and Usage UI remain open.",
+      "Draft maps are window memory; workspace preferences do not serialize conversation, thread or session drafts. Preserve the current GUI during activation unless unfinished text is accounted for."
+    ]
+  },
   "pause_rollback_refusal_2026_09_17": {
     "result": "passed",
     "scope": "A pause survives a rollback attempt: the schema-23 daemon records a hold,\nan installed schema-22 daemon refuses to open that state, and the hold is\nstill there for the 23 daemon. Private home; never the production state.",
     "steps": [
-      "schema-23 daemon paused the project: paused aef60cbc5ffb \u2014 rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
+      "schema-23 daemon paused the project: paused aef60cbc5ffb — rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
       "pause --list shows the hold",
       "state.db at schema 23 with one pause document",
       "schema-22 daemon refused to start (exit 1); state.db unchanged (sha256 e352e94e548a), pause document retained",
@@ -2232,5 +2303,90 @@
       "The current plain Claude idle-channel bug remains open; real peer-only idle reply and safe same-session activation remain required.",
       "Schema23 remains23 after lifting a pause; older daemons need a compatible pre-upgrade backup or retain the newer daemon."
     ]
+  },
+  "linux_transport_observer_2026_09_17": {
+    "source_commit": "bf81ffe56d3f51bb42332e7eea282bbb8129e431",
+    "result": "bounded tests passed; final graphical CI/review pending",
+    "actual_linux": {
+      "source_commit": "bf81ffe56d3f51bb42332e7eea282bbb8129e431",
+      "sha256": {
+        "scripts/proc_tcp.py": "2312cf1867577d00a9a19606d3e4b9aa0495743751c3aab1d928d0a01b392c54",
+        "scripts/desktop_smoke.py": "65edd181605463d27627c492e0e4fbd8474c7b57c50fdd4f07a368802314543a",
+        "scripts/iced_workflow_smoke.py": "ae85c6bc72ef3cea831d52666a9a20550c08c95e4e49733304b8cc31bf8584be",
+        "tests/test_desktop_smoke.py": "48697b8cc9e80af314cfc7e835451f4373a014ce7293b685c54e91a14cb7ce6d"
+      },
+      "result": "passed",
+      "tests_passed": 15,
+      "vm_restored_stopped": true,
+      "scope": "Owned Linux subprocesses: UNIX acceptance and delayed TCP rejection plus capped/malformed/unknown/change/timeout/helper-protocol regressions. No graphical fixture in this VM trial.",
+      "log": "/private/tmp/agentdocker-linux-transport-vm2-20260917.log",
+      "kernel": "{\"kernel\": \"7.1.8-200.fc44.aarch64\", \"machine\": \"aarch64\", \"python\": \"3.14.7\"}"
+    },
+    "local_python": {
+      "tests_run": 92,
+      "skipped": 1,
+      "result": "passed",
+      "log": "/private/tmp/agentdocker-linux-transport-python2-20260917.log"
+    },
+    "limits": [
+      "Polling can miss sockets opened and closed between samples",
+      "Unclassified socket inodes or unavailable/malformed/oversized evidence fail the observer",
+      "The previous Linux ARM failure lacked this diagnostic and is not explained by the later mount-stat warning"
+    ],
+    "descriptor_churn_followup": {
+      "runtime_source": "3a768b4ee7d01b08f3fbd8876e807eced4011410",
+      "initial_ci_head": "97baf8618962fc45fddb4e156e22fdaf8a252de3",
+      "failed_job": 105077197449,
+      "retained_artifact": 10481200959,
+      "initial_failure": "The first graphical workflow refused a descriptor set that changed or could not be classified; no TCP or clean observation was claimed.",
+      "reproduction": {
+        "platform": "Linux ARM64 VM",
+        "immutable_daemon_artifact": 10481131188,
+        "concurrent_rpc_threads": 4,
+        "samples_per_trial": 100,
+        "original_refusals": 23,
+        "three_bracketed_samples_refusals": 1,
+        "eight_bracketed_samples_refusals": 0,
+        "baseline_and_managed_samples_each_trial": 6,
+        "owned_provider_process_stopped": true,
+        "vm_restored_stopped": true
+      },
+      "change": "Kernel tables bracket each observed descriptor sample. Any observed TCP fails; every observed non-TCP inode must be classified on at least one side. Up to eight bounded samples yield 1 ms on unknowns; unknowns after the budget still refuse. The helper response requires a valid socket_count.",
+      "validation": {
+        "local_python": {
+          "run": 92,
+          "passed": 91,
+          "skipped": 1,
+          "result": "passed"
+        },
+        "actual_linux_focused": {
+          "run": 15,
+          "passed": 15,
+          "skipped": 0,
+          "result": "passed"
+        }
+      },
+      "scope_limit": "Sampled detection can miss transient sockets between observations. A passing private trial is not final graphical CI, and does not explain the historical Linux ARM lsof failure.",
+      "source_sha256": {
+        "scripts/proc_tcp.py": "af47d273b005aeefd1dc974b849e7079944de47da997154114b4687d9a993b7a",
+        "scripts/desktop_smoke.py": "ef9ea0284dd36b31870bc25d5629b379d8cb4101a4ae37c068d6509c5a9c7289",
+        "tests/test_desktop_smoke.py": "1db27c6b315ee274c54d170ee23be234507ebaaa1ac68d8491c18132a294ef16"
+      }
+    },
+    "review_followup_2026_09_17": {
+      "changes": [
+        "Reject socket_count above4096, matching the descriptor budget.",
+        "Require a readable TCP6 table; absence refuses the observation."
+      ],
+      "validation": {
+        "command": "python3 -m unittest discover -s tests",
+        "run": 94,
+        "passed": 93,
+        "skipped": 1,
+        "skip_reason": "actual Linux proc observation on macOS",
+        "log": "/private/tmp/agentdocker-linux-observer-review-tests-20260917.log"
+      },
+      "acceptance": "Final Linux graphical CI remains required; prior attempts and failures are retained."
+    }
   }
 }
