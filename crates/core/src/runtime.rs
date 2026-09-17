@@ -49,6 +49,18 @@ pub enum McpWiring {
     None,
 }
 
+/// A vendor's browser extension: an agent that works inside the browser.
+/// Its sessions run there and on the vendor's side, so nothing on this
+/// machine speaks for them. AgentDocker can find the extension and say
+/// so; it cannot list, message or lease for what the extension is doing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BrowserExtension {
+    /// The Web Store item id: the directory the extension is unpacked
+    /// into under a Chromium-family profile's `Extensions`.
+    pub id: &'static str,
+    pub label: &'static str,
+}
+
 /// One runtime AgentDocker can recognise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RuntimeSpec {
@@ -62,6 +74,9 @@ pub struct RuntimeSpec {
     pub apps: &'static [(&'static str, &'static str)],
     /// Known Linux desktop-entry IDs and their labels. Presence is inventory only.
     pub linux_apps: &'static [(&'static str, &'static str)],
+    /// Browser extensions of the same vendor. Presence is inventory only:
+    /// their sessions are not observable from this machine.
+    pub extensions: &'static [BrowserExtension],
     /// The configuration directory, relative to the home directory.
     pub config_dir: Option<&'static str>,
     pub mcp: McpWiring,
@@ -78,6 +93,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         clis: &["claude"],
         apps: &[],
         linux_apps: &[],
+        extensions: &[],
         config_dir: Some(".claude"),
         mcp: McpWiring::JsonServers {
             file: ".claude.json",
@@ -91,6 +107,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         clis: &[],
         apps: &[("Claude.app", "Claude Desktop")],
         linux_apps: &[],
+        extensions: &[],
         config_dir: Some("Library/Application Support/Claude"),
         mcp: if cfg!(target_os = "macos") {
             McpWiring::JsonServers {
@@ -102,12 +119,28 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         hooks: false,
     },
     RuntimeSpec {
+        name: "claude-browser",
+        vendor: "Anthropic",
+        label: "Claude (browser extension)",
+        clis: &[],
+        apps: &[],
+        linux_apps: &[],
+        extensions: &[BrowserExtension {
+            id: "fcoeoabgfenejglbffodgkkbkcdhcgfn",
+            label: "Claude",
+        }],
+        config_dir: None,
+        mcp: McpWiring::None,
+        hooks: false,
+    },
+    RuntimeSpec {
         name: "codex",
         vendor: "OpenAI",
         label: "Codex",
         clis: &["codex"],
         apps: &[],
         linux_apps: &[],
+        extensions: &[],
         config_dir: Some(".codex"),
         mcp: McpWiring::TomlServers {
             file: ".codex/config.toml",
@@ -121,6 +154,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         clis: &[],
         apps: &[("Codex.app", "Codex")],
         linux_apps: &[],
+        extensions: &[],
         config_dir: None,
         mcp: McpWiring::None,
         hooks: false,
@@ -132,6 +166,22 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         clis: &[],
         apps: &[("ChatGPT.app", "ChatGPT")],
         linux_apps: &[],
+        extensions: &[],
+        config_dir: None,
+        mcp: McpWiring::None,
+        hooks: false,
+    },
+    RuntimeSpec {
+        name: "chatgpt-browser",
+        vendor: "OpenAI",
+        label: "ChatGPT (browser extension)",
+        clis: &[],
+        apps: &[],
+        linux_apps: &[],
+        extensions: &[BrowserExtension {
+            id: "hehggadaopoacecdllhhajmbjkdcmajg",
+            label: "ChatGPT",
+        }],
         config_dir: None,
         mcp: McpWiring::None,
         hooks: false,
@@ -143,6 +193,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         clis: &["gemini"],
         apps: &[],
         linux_apps: &[],
+        extensions: &[],
         config_dir: Some(".gemini"),
         mcp: McpWiring::JsonServers {
             file: ".gemini/settings.json",
@@ -156,6 +207,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         clis: &["cursor-agent"],
         apps: &[("Cursor.app", "Cursor")],
         linux_apps: &[("cursor.desktop", "Cursor")],
+        extensions: &[],
         config_dir: Some(".cursor"),
         mcp: McpWiring::JsonServers {
             file: ".cursor/mcp.json",
@@ -169,6 +221,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         clis: &[],
         apps: &[("Windsurf.app", "Windsurf")],
         linux_apps: &[("windsurf.desktop", "Windsurf")],
+        extensions: &[],
         config_dir: Some(".codeium/windsurf"),
         mcp: McpWiring::JsonServers {
             file: ".codeium/windsurf/mcp_config.json",
@@ -182,6 +235,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         clis: &["copilot"],
         apps: &[],
         linux_apps: &[],
+        extensions: &[],
         config_dir: Some(".copilot"),
         mcp: McpWiring::None,
         hooks: false,
@@ -197,6 +251,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
             ("code-insiders.desktop", "VS Code Insiders"),
             ("com.visualstudio.code.desktop", "VS Code"),
         ],
+        extensions: &[],
         config_dir: Some(".vscode"),
         // An editor bundle does not prove an agent extension is installed.
         mcp: McpWiring::None,
@@ -209,6 +264,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         clis: &["aider"],
         apps: &[],
         linux_apps: &[],
+        extensions: &[],
         config_dir: None,
         mcp: McpWiring::None,
         hooks: false,
@@ -220,6 +276,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         clis: &["goose"],
         apps: &[],
         linux_apps: &[],
+        extensions: &[],
         config_dir: Some(".config/goose"),
         mcp: McpWiring::None,
         hooks: false,
@@ -231,6 +288,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         clis: &["amp"],
         apps: &[],
         linux_apps: &[],
+        extensions: &[],
         config_dir: Some(".config/amp"),
         mcp: McpWiring::None,
         hooks: false,
@@ -242,11 +300,16 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         clis: &["opencode"],
         apps: &[],
         linux_apps: &[],
+        extensions: &[],
         config_dir: Some(".config/opencode"),
         mcp: McpWiring::None,
         hooks: false,
     },
 ];
+
+/// What every listing says under a runtime that works inside the browser,
+/// so that nobody waits for a session that cannot appear.
+pub const IN_BROWSER: &str = "Sessions in the browser run there and on the vendor's side; nothing on this machine speaks for them, so AgentDocker cannot list, message or lease for them. A bridge the browser launches for a command-line tool is that tool's helper, not a session, and adopting it is refused.";
 
 /// The table row for a runtime name.
 pub fn spec(name: &str) -> Option<&'static RuntimeSpec> {
@@ -291,6 +354,24 @@ pub struct InstalledApp {
     pub version: Option<String>,
 }
 
+/// A vendor's browser extension found in a browser profile.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledExtension {
+    pub label: String,
+    /// The browser it is installed in: `Chrome`, `Brave`, ...
+    pub browser: String,
+    /// The profile within that browser, when it is not the only one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// The native messaging host the browser launches for it: a vendor's
+    /// bridge from the extension to a program on this machine. The bridge
+    /// is that program's helper, not a session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridge: Option<PathBuf>,
+}
+
 /// What `agentdocker runtimes` reports for one runtime.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInfo {
@@ -304,6 +385,10 @@ pub struct RuntimeInfo {
     pub version: Option<String>,
     #[serde(default)]
     pub apps: Vec<InstalledApp>,
+    /// The vendor's browser extension, once per browser profile it is
+    /// installed in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<InstalledExtension>,
     /// The configuration directory, when it exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<PathBuf>,
@@ -324,7 +409,21 @@ pub struct RuntimeInfo {
 impl RuntimeInfo {
     /// Something of this runtime is on the machine.
     pub fn installed(&self) -> bool {
-        self.cli.is_some() || !self.apps.is_empty()
+        self.cli.is_some() || !self.apps.is_empty() || !self.extensions.is_empty()
+    }
+
+    /// The runtime works inside a browser: it has no command and no
+    /// application of its own, only an extension, so its sessions are not
+    /// observable from this machine.
+    pub fn in_browser(&self) -> bool {
+        spec(&self.name).is_some_and(RuntimeSpec::in_browser)
+    }
+}
+
+impl RuntimeSpec {
+    /// See [`RuntimeInfo::in_browser`].
+    pub fn in_browser(&self) -> bool {
+        !self.extensions.is_empty() && self.clis.is_empty() && self.apps.is_empty()
     }
 }
 
@@ -340,10 +439,25 @@ mod tests {
         assert_eq!(names.len(), RUNTIMES.len(), "runtime names are unique");
         for r in RUNTIMES {
             assert!(
-                !r.clis.is_empty() || !r.apps.is_empty(),
+                !r.clis.is_empty() || !r.apps.is_empty() || !r.extensions.is_empty(),
                 "{} is findable",
                 r.name
             );
+            for extension in r.extensions {
+                assert!(
+                    extension.id.len() == 32
+                        && extension.id.bytes().all(|b| b.is_ascii_lowercase()),
+                    "{} has a Web Store id",
+                    r.name
+                );
+            }
+            if r.in_browser() {
+                assert!(
+                    !r.hooks && r.mcp == McpWiring::None,
+                    "{} runs in the browser and takes no adapter",
+                    r.name
+                );
+            }
             assert!(!r.vendor.is_empty() && !r.label.is_empty());
             if r.hooks {
                 assert!(matches!(r.name, "claude-code" | "codex"));
@@ -351,5 +465,16 @@ mod tests {
         }
         assert_eq!(spec("codex").map(|r| r.vendor), Some("OpenAI"));
         assert!(spec("nope").is_none());
+        let ids: Vec<&str> = RUNTIMES
+            .iter()
+            .flat_map(|r| r.extensions.iter().map(|e| e.id))
+            .collect();
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "extension ids are unique");
+        assert!(spec("claude-browser").unwrap().in_browser());
+        assert!(spec("chatgpt-browser").unwrap().in_browser());
+        assert!(!spec("claude-code").unwrap().in_browser());
     }
 }

@@ -3350,6 +3350,7 @@ mod tests {
                 cli: Some("/fixture/provider".into()),
                 version: None,
                 apps: vec![],
+                extensions: vec![],
                 config_dir: None,
                 mcp: agentdocker_core::runtime::Wiring::Missing,
                 hooks: agentdocker_core::runtime::Wiring::Missing,

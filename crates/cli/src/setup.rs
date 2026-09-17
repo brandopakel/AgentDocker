@@ -72,6 +72,13 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
         let Some(spec) = spec(&runtime.name) else {
             continue;
         };
+        if runtime.in_browser() {
+            eprintln!(
+                "{}: works inside the browser; there is nothing on this machine to set up for it",
+                runtime.name
+            );
+            continue;
+        }
         match (
             spec.mcp,
             agentdocker_host::runtimes::mcp_wiring(spec, &roots, "agentdocker"),
