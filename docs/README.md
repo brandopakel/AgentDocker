@@ -184,5 +184,6 @@ fails when it and the records disagree.
 | [2026-09-15-successor-readiness.json](verification/2026-09-15-successor-readiness.json) | Passed at fb92879 on release binaries built from the committed source (state schema 18): two successive gated reloads kept a batch and a PTY agent's processes, logs and exact exits 7/3 under the third daemon with the... |
 | [2026-09-16-reload-controller-episode.json](verification/2026-09-16-reload-controller-episode.json) | passed |
 | [2026-09-17-browser-extension-inventory.json](verification/2026-09-17-browser-extension-inventory.json) | Passed at b300bea on release binaries built from the committed source (state schema 23), against this Mac's real Chrome profile and the real `claude --chrome-native-host` bridge (pid 1072): `runtimes` lists `claude-br... |
+| [2026-09-17-remote-connector.json](verification/2026-09-17-remote-connector.json) | Passed at 3b4fbf6 on release binaries built from the committed source (state schema 23), on loopback without a tunnel: the vendor's side of the remote connector, scripted, ran 29 steps end to end — metadata discovery,... |
 
 <!-- verification-index:end -->

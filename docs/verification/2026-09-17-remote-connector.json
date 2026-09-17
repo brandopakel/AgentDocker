@@ -1,0 +1,261 @@
+{
+  "date": "2026-09-17",
+  "status": "Passed at 3b4fbf6 on release binaries built from the committed source (state schema 23), on loopback without a tunnel: the vendor's side of the remote connector, scripted, ran 29 steps end to end \u2014 metadata discovery, a foreign callback refused at registration and Claude's accepted, the consent page, a wrong pairing code refused, the right one redirecting to Claude's callback with the code and state while registering nothing, a wrong PKCE verifier burning the code without leaving an agent, a fresh consent under the same name, the exchange registering `claude-browser-trial` in the project as `claude-browser`, a further consent under that live name refused on the page, `initialize` naming the agent and the browser, the messaging-only tool list, a `send_message` landing in the terminal agent's inbox attributed to the browser agent, `claim` refused by name, refresh rotation with the old token dead, `connector grants` active, `connector revoke` ending the tokens and marking the agent finished. The state file is mode 0600 and holds a refresh hash, no token. What this does not establish: the public-tunnel leg and a real vendor's client (no tunnel tool on this Mac; adding the connector to a Claude or ChatGPT account is the person's step).",
+  "scope": "agentdocker connector serve/grants/revoke on release binaries in a private AGENTDOCKER_HOME with a release agentd, a registered external agent standing in for a terminal session, and a Python client (urllib, no OAuth library) performing discovery, RFC 7591 registration, the authorization code flow with PKCE S256, the token exchange, refresh, Streamable HTTP JSON-RPC and revocation. The public URL was the loopback bind address, which `serve` accepts only for loopback hosts.",
+  "build": {
+    "source_commit": "3b4fbf6bda6bbd65e9648bbba567d3b9b60e0e2f",
+    "source_tree": "55e806ac28bf6bc899bd6fb8cd212b2173c82485",
+    "source_dirty": false,
+    "binary_directory": "<worktree>/target/release",
+    "binary_sha256": {
+      "agentdocker": "48610c8035b1a00580e4e84e91668d1057c2cf429f22507866dea62515364118",
+      "agentd": "3f41c9fcfba0107a9c02d7fd855f9e74544339d7ded4fe8ea813a20a7d9faed1"
+    },
+    "build_info": {
+      "arch": "aarch64",
+      "format": 1,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "os": "macos",
+      "state_schema": 23,
+      "version": "0.1.0"
+    }
+  },
+  "method": "scripts: connector_run.sh starts agentd and registers `terminal-trial` (runtime claude-code, a sleep pid) in a project directory, picks a free port, runs `agentdocker connector serve --public-url http://127.0.0.1:<port> --bind 127.0.0.1:<port> --project <dir>`, reads the pairing code from its stderr banner, runs connector_trial.py against it and stops everything. Each step's assertion and detail is retained below; the scripts are in the session scratchpad and reproduce the trial against any build.",
+  "banner": [
+    "AgentDocker connector for project keel (/private/tmp/claude-501/-Users-brandopakel-AgentDocker/b928f782-c8be-4458-99de-bb7baccb57f1/scratchpad/connector-out/keel)",
+    "  listening on http://127.0.0.1:62120, published as http://127.0.0.1:62120",
+    "  MCP URL to add as a custom connector: http://127.0.0.1:62120/mcp",
+    "  pairing code: WJGS-MGHS   (typed on the consent page; new each time this runs)"
+  ],
+  "steps": [
+    {
+      "step": "protected resource metadata",
+      "ok": true,
+      "detail": {
+        "authorization_servers": [
+          "http://127.0.0.1:62120"
+        ],
+        "bearer_methods_supported": [
+          "header"
+        ],
+        "resource": "http://127.0.0.1:62120/mcp",
+        "resource_name": "AgentDocker connector for keel",
+        "scopes_supported": [
+          "agentdocker"
+        ]
+      }
+    },
+    {
+      "step": "authorization server metadata",
+      "ok": true,
+      "detail": {
+        "authorization_endpoint": "http://127.0.0.1:62120/authorize",
+        "code_challenge_methods_supported": [
+          "S256"
+        ],
+        "grant_types_supported": [
+          "authorization_code",
+          "refresh_token"
+        ],
+        "issuer": "http://127.0.0.1:62120",
+        "registration_endpoint": "http://127.0.0.1:62120/register",
+        "response_types_supported": [
+          "code"
+        ],
+        "scopes_supported": [
+          "agentdocker"
+        ],
+        "token_endpoint": "http://127.0.0.1:62120/token",
+        "token_endpoint_auth_methods_supported": [
+          "none"
+        ]
+      }
+    },
+    {
+      "step": "unauthenticated /mcp answers 401 with resource_metadata",
+      "ok": true,
+      "detail": "Bearer resource_metadata=\"http://127.0.0.1:62120/.well-known/oauth-protected-resource\", scope=\"agentdocker\", error=\"invalid_token\""
+    },
+    {
+      "step": "foreign callback refused",
+      "ok": true,
+      "detail": "{\"error\":\"invalid_redirect_uri\",\"error_description\":\"https://attacker.example/cb is not a callback this connector admits; only the vendors' hosted surfaces can connect\"}"
+    },
+    {
+      "step": "Claude's client registered",
+      "ok": true,
+      "detail": {
+        "client_id": "FIOrgpfv\u2026"
+      }
+    },
+    {
+      "step": "consent page shows the vendor, the project and the pairing field",
+      "ok": true,
+      "detail": [
+        "agent_name",
+        "client_id",
+        "code_challenge",
+        "code_challenge_method",
+        "redirect_uri",
+        "response_type",
+        "state"
+      ]
+    },
+    {
+      "step": "wrong pairing code refused, nothing registered",
+      "ok": true,
+      "detail": 403
+    },
+    {
+      "step": "right pairing code redirects to Claude's callback with a code and the state",
+      "ok": true,
+      "detail": "https://claude.ai/api/mcp/auth_callback?code=lco4m2QrTDuM0PD\u2026"
+    },
+    {
+      "step": "consent alone registers no agent",
+      "ok": true,
+      "detail": "ps has no claude-browser-trial"
+    },
+    {
+      "step": "wrong verifier is invalid_grant and burns the code",
+      "ok": true,
+      "detail": "{\"error\":\"invalid_grant\",\"error_description\":\"code_verifier does not match\"}"
+    },
+    {
+      "step": "a fresh consent under the same name is accepted",
+      "ok": true,
+      "detail": 302
+    },
+    {
+      "step": "code exchanged for tokens",
+      "ok": true,
+      "detail": {
+        "expires_in": 3600
+      }
+    },
+    {
+      "step": "the browser agent now exists in the project as claude-browser",
+      "ok": true,
+      "detail": [
+        "5cb47faa4ead   claude-browser-trial   keel          -        -      claude-browser   -       running     unknown   -       0s ago"
+      ]
+    },
+    {
+      "step": "a further consent under a live agent's name is refused on the page",
+      "ok": true,
+      "detail": 409
+    },
+    {
+      "step": "initialize names the agent and the browser",
+      "ok": true,
+      "detail": {
+        "name": "agentdocker",
+        "version": "0.1.0"
+      }
+    },
+    {
+      "step": "tools are the messaging ones only",
+      "ok": true,
+      "detail": [
+        "acknowledge_messages",
+        "ask_human",
+        "inspect_agent",
+        "journal_note",
+        "list_agents",
+        "open_questions",
+        "read_inbox",
+        "read_journal",
+        "report_activity",
+        "send_message",
+        "whoami"
+      ]
+    },
+    {
+      "step": "send_message to the terminal agent succeeds",
+      "ok": true,
+      "detail": "{\"delivery\":\"accepted_by_agentdocker\",\"idle_wake\":\"unconfirmed\",\"message_id\":\"486dbe63aa134fac\",\"provider_receipt\":\"unco"
+    },
+    {
+      "step": "the terminal agent's inbox holds it, attributed to the browser agent",
+      "ok": true,
+      "detail": [
+        "16:41:49  486dbe63aa134fac  5cb47faa4ead \u2192 6ce8a909d588  [chat]  From the browser: the docs page says the flag was renamed to --soak-bound; update the gate."
+      ]
+    },
+    {
+      "step": "claim is refused by name",
+      "ok": true,
+      "detail": "`claim` is not offered to an agent working inside a browser: it has no checkout here. The tools are "
+    },
+    {
+      "step": "whoami answers as the browser agent",
+      "ok": true,
+      "detail": "{\"id\":5,\"jsonrpc\":\"2.0\",\"result\":{\"content\":[{\"text\":\"{\\\"id\\\":\\\"5cb47faa4ead41729a9bcb1bf75cc374\\\",\\\"input_readiness\\\":\\"
+    },
+    {
+      "step": "refresh issues new tokens",
+      "ok": true,
+      "detail": {
+        "rotated": true
+      }
+    },
+    {
+      "step": "the rotated refresh token is invalid_grant",
+      "ok": true,
+      "detail": "{\"error\":\"invalid_grant\",\"error_description\":\"unknown, rotated or revoked refresh token\"}"
+    },
+    {
+      "step": "the new access token works",
+      "ok": true,
+      "detail": 200
+    },
+    {
+      "step": "connector grants lists the agent as active",
+      "ok": true,
+      "detail": [
+        "claude-browser-trial   claude-browser   Claude   /private/tmp/claude-501/-Users-brandopakel-AgentDocker/b928f782-c8be-4458-99de-bb7baccb57f1/scratchpad/connector-out/keel   0s ago      0s ago      active   BMfyJeK2"
+      ]
+    },
+    {
+      "step": "revoke succeeds",
+      "ok": true,
+      "detail": "claude-browser-trial: access revoked and the agent marked finished"
+    },
+    {
+      "step": "after revoke the access token is refused",
+      "ok": true,
+      "detail": "{\"error\":\"invalid_token\",\"error_description\":\"this browser agent was ended; connect again\"}"
+    },
+    {
+      "step": "after revoke the refresh token is invalid_grant",
+      "ok": true,
+      "detail": "{\"error\":\"invalid_grant\",\"error_description\":\"unknown, rotated or revoked refresh token\"}"
+    },
+    {
+      "step": "the agent is finished in the daemon",
+      "ok": true,
+      "detail": [
+        "5cb47faa4ead   claude-browser-trial   keel          -        -      claude-browser   -       exited (0)   finished   -       0s ago"
+      ]
+    },
+    {
+      "step": "connector grants shows it revoked",
+      "ok": true,
+      "detail": [
+        "claude-browser-trial   claude-browser   Claude   /private/tmp/claude-501/-Users-brandopakel-AgentDocker/b928f782-c8be-4458-99de-bb7baccb57f1/scratchpad/connector-out/keel   0s ago      0s ago      revoked   BMfyJeK2"
+      ]
+    }
+  ],
+  "state_file": {
+    "mode": "0600",
+    "refresh_hash_present": true,
+    "tokens_present": false
+  },
+  "limits": [
+    "No tunnel: the HTTPS leg, the vendor's own OAuth client and its callback are exercised only as far as the callback allowlist and the redirect URL; the person adds the connector in a real account for acceptance.",
+    "A browser agent is not woken; its inbox waits for the hosted model's next read_inbox.",
+    "Revocation by a separate `connector revoke` process reaches a serving connector on the agent's next request, through the daemon's liveness answer.",
+    "Egress allowlisting, CIMD, the tunnel helper and desktop status are the second increment."
+  ]
+}
