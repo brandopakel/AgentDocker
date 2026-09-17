@@ -10,6 +10,11 @@ is also merged. PR #169 source `5545697` passed the 1,093-Rust/84-Python gate
 Review follow-up `e896111` passed 1,094 Rust tests (seven skipped), 84 Python
 checks and both actual-client repeats, adding kernel hook-peer authentication
 and explicit provider-visible order/exactly-once assertions.
+The hook endpoint follows the existing trusted owning-user host boundary; it does
+not authenticate mutually untrusted same-user subprocesses. This limit and the
+possibility of a fabricated call stalling an offer are explicit in
+[Codex input](CODEX-INPUT.md).
+
 The installed receiver upgrade remains open; see the priority row below.
 A separate candidate now implements an explicit same-provider receiver upgrade,
 with schema-22 durable replacement intent and retained ledger reconciliation.
