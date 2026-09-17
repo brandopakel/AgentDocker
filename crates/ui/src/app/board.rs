@@ -27,7 +27,10 @@ impl App {
         let board = self.tasks.as_ref().filter(|b| b.project == root);
         let tasks: &[Task] = board.map_or(&[], |b| &b.cards);
         let more = board.is_some_and(|b| b.more);
-        let loading = board.is_some_and(Board::loading_more);
+        // A page or a refresh on its way: the control says so and takes
+        // no click, since a click now would be refused anyway.
+        let loading = board.is_some_and(Board::loading_more)
+            || self.board_asks.values().any(|(p, _)| *p == root);
         let mut page = column![self.file_card(&root, c)].spacing(14).width(Fill);
         if tasks.is_empty() && self.tasks.is_some() {
             page = page.push(note(
