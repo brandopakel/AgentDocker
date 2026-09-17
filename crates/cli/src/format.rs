@@ -356,7 +356,9 @@ pub fn event_line(event: &Event) -> String {
             action,
             rule,
         } => format!("policy denied    {} {action} ({rule})", agent.short()),
-        EventKind::TaskCreated { task, by, title, .. } => {
+        EventKind::TaskCreated {
+            task, by, title, ..
+        } => {
             format!("card filed       {task} by {by}: {title}")
         }
         EventKind::TaskPulled { task, agent, .. } => {

@@ -3109,22 +3109,52 @@ impl App {
             let missing = installed
                 && (runtime.mcp == agentdocker_core::runtime::Wiring::Missing
                     || runtime.hooks == agentdocker_core::runtime::Wiring::Missing);
+            // A session with a receiver that is paused, or whose report has
+            // gone stale, is not one whose input waits for a prompt: it is
+            // one whose route needs attention, and it says which.
+            let paused = sessions.iter().any(|agent| {
+                agent
+                    .input_delivery
+                    .as_ref()
+                    .is_some_and(|delivery| delivery.paused_for(agent.process_started_at))
+            });
+            let stale = !paused
+                && sessions.iter().any(|agent| {
+                    agent.input_delivery.as_ref().is_some_and(|delivery| {
+                        agent.process_started_at == Some(delivery.process_started_at)
+                            && !delivery.current_for(agent.process_started_at, Utc::now())
+                    })
+                });
             // Keep the overview compact; individual sessions and receipts
             // remain in Details. Saved configuration is not contact evidence.
+            // "Needs setup" says what: a release can require a hook event
+            // a wired machine never had, and the person has to be told
+            // which, not sent to look. "Connected" says what is not
+            // there either: with no input route at all, nothing reaches
+            // the session while it is idle, so messages wait for its next
+            // prompt; with a route that is paused or silent, they wait for
+            // that to be put right.
             let (mark, word) = if ready {
-                (c.green, "Input receiver active")
+                (c.green, "Input receiver active".to_owned())
+            } else if reporting && paused {
+                (c.amber, "Connected · input receiver paused".to_owned())
+            } else if reporting && stale {
+                (c.amber, "Connected · input receiver silent".to_owned())
             } else if reporting {
-                (c.cyan, "Connected · idle delivery not verified")
+                (
+                    c.cyan,
+                    "Connected · messages wait for its next prompt".to_owned(),
+                )
             } else if !installed {
-                (c.faint, "Not installed")
+                (c.faint, "Not installed".to_owned())
             } else if !supported {
-                (c.faint, "Installed · integration unavailable")
+                (c.faint, "Installed · integration unavailable".to_owned())
             } else if unverified {
-                (c.amber, "Setup needs review")
+                (c.amber, "Setup needs review".to_owned())
             } else if missing {
-                (c.amber, "Needs setup")
+                (c.amber, super::missing_setup(runtime))
             } else {
-                (c.cyan, "Configured · waiting for contact")
+                (c.cyan, "Configured · waiting for contact".to_owned())
             };
             let mut actions = row![
                 dot(mark, 9.0, c),

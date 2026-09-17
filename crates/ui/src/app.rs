@@ -7,10 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
+mod board;
 mod icons;
 mod messages;
 pub(crate) mod panes;
-mod board;
 pub(crate) mod queue;
 mod sessions;
 mod shell;
@@ -2536,6 +2536,33 @@ pub(crate) struct TaskDraft {
     pub error: Option<String>,
 }
 
+/// What "needs setup" is missing, for the Tools row: the MCP entry, the
+/// hooks, or the one or two hook events a release began to require.
+pub(crate) fn missing_setup(runtime: &agentdocker_core::runtime::RuntimeInfo) -> String {
+    use agentdocker_core::runtime::Wiring;
+    let mut parts = Vec::new();
+    if runtime.mcp == Wiring::Missing {
+        parts.push("MCP entry".to_owned());
+    }
+    if runtime.hooks == Wiring::Missing {
+        let missing = &runtime.hooks_missing;
+        let required = agentdocker_host::runtimes::hook_events(&runtime.name).len();
+        parts.push(match missing.len() {
+            0 => "hooks".to_owned(),
+            n if n == required => "hooks".to_owned(),
+            1 => format!("{} hook", missing[0]),
+            2 => format!("{} and {} hooks", missing[0], missing[1]),
+            n => format!("{} and {} more hooks", missing[0], n - 1),
+        });
+    }
+    match parts.as_slice() {
+        [] => "Needs setup".to_owned(),
+        [one] => format!("Needs setup · missing {one}"),
+        [a, b] => format!("Needs setup · missing {a} and {b}"),
+        _ => "Needs setup".to_owned(),
+    }
+}
+
 /// Which kind of conversation the person is starting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NewKind {
@@ -2575,6 +2602,53 @@ impl NewConversation {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// The Tools row says what setup is missing: the one hook event a
+    /// release began to require, the MCP entry, or both — and only
+    /// "hooks" when none of them is wired.
+    #[test]
+    fn the_tools_row_says_which_hook_is_missing() {
+        use agentdocker_core::runtime::{RuntimeInfo, Wiring};
+        let mut runtime = RuntimeInfo {
+            name: "claude-code".into(),
+            vendor: "Anthropic".into(),
+            label: "Claude Code".into(),
+            cli: Some("/opt/claude".into()),
+            version: None,
+            apps: vec![],
+            config_dir: None,
+            mcp: Wiring::Wired,
+            hooks: Wiring::Missing,
+            hooks_missing: vec!["StopFailure".into()],
+            running: 0,
+        };
+        assert_eq!(
+            missing_setup(&runtime),
+            "Needs setup · missing StopFailure hook"
+        );
+        runtime.hooks_missing = vec!["Stop".into(), "StopFailure".into()];
+        assert_eq!(
+            missing_setup(&runtime),
+            "Needs setup · missing Stop and StopFailure hooks"
+        );
+        runtime.hooks_missing = vec!["Stop".into(), "StopFailure".into(), "SessionEnd".into()];
+        assert_eq!(
+            missing_setup(&runtime),
+            "Needs setup · missing Stop and 2 more hooks"
+        );
+        runtime.hooks_missing = agentdocker_host::runtimes::hook_events("claude-code")
+            .iter()
+            .map(|(e, _)| e.to_string())
+            .collect();
+        runtime.mcp = Wiring::Missing;
+        assert_eq!(
+            missing_setup(&runtime),
+            "Needs setup · missing MCP entry and hooks"
+        );
+        runtime.hooks = Wiring::Wired;
+        runtime.hooks_missing.clear();
+        assert_eq!(missing_setup(&runtime), "Needs setup · missing MCP entry");
+    }
 
     #[test]
     fn channel_creation_replies_belong_to_the_submitted_form() {

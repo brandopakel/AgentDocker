@@ -540,7 +540,10 @@ pub enum Request {
     /// An agent takes a Ready card nobody holds: it becomes theirs, in
     /// progress. Answers `task`, or `conflict` when it is held or not
     /// ready, `paused` while its project is paused.
-    TaskPull { agent: String, task: String },
+    TaskPull {
+        agent: String,
+        task: String,
+    },
     /// Move a card: its assignee may, the person always may. Answers
     /// `task`, or `forbidden`.
     TaskMove {
@@ -561,7 +564,10 @@ pub enum Request {
         assignee: Option<String>,
     },
     /// Off the board, kept for the record. Answers `ok`.
-    TaskArchive { agent: String, task: String },
+    TaskArchive {
+        agent: String,
+        task: String,
+    },
     /// A project's cards, Backlog to Done, newest last within a column;
     /// archived ones only when asked. Answers `tasks`.
     Tasks {

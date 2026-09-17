@@ -129,7 +129,10 @@ pub enum TaskError {
     /// A title that is empty or too long, or acceptance text too long.
     Invalid(&'static str),
     /// A pull of a card somebody already holds, or that is not Ready.
-    Taken { assignee: Option<AgentId>, column: Column },
+    Taken {
+        assignee: Option<AgentId>,
+        column: Column,
+    },
     /// A move by somebody who is neither its assignee nor the person.
     NotYours,
     /// A card that is archived.
@@ -159,7 +162,9 @@ fn valid_texts(title: &str, acceptance: &str) -> Result<(), TaskError> {
         return Err(TaskError::Invalid("a card needs a title"));
     }
     if title.chars().count() > TITLE_CHARS {
-        return Err(TaskError::Invalid("a card's title is at most 200 characters"));
+        return Err(TaskError::Invalid(
+            "a card's title is at most 200 characters",
+        ));
     }
     if acceptance.chars().count() > ACCEPTANCE_CHARS {
         return Err(TaskError::Invalid(
@@ -280,7 +285,12 @@ impl Task {
 
     /// Off the board. The person's to do, or the assignee's for a card in
     /// Done.
-    pub fn archive(&mut self, by: &str, by_is_human: bool, now: DateTime<Utc>) -> Result<(), TaskError> {
+    pub fn archive(
+        &mut self,
+        by: &str,
+        by_is_human: bool,
+        now: DateTime<Utc>,
+    ) -> Result<(), TaskError> {
         if self.archived_at.is_some() {
             return Ok(());
         }
@@ -299,7 +309,7 @@ impl Task {
 mod tests {
     use super::*;
 
-    fn card() -> Task {
+    fn ready_card() -> Task {
         Task::new(
             ProjectId::from("p"),
             "Fix login",
@@ -318,10 +328,41 @@ mod tests {
             Task::new(ProjectId::from("p"), "  ", "", None, "user", Utc::now()).unwrap_err(),
             TaskError::Invalid("a card needs a title")
         );
-        assert!(Task::new(ProjectId::from("p"), &"x".repeat(201), "", None, "user", Utc::now()).is_err());
-        assert!(Task::new(ProjectId::from("p"), "t", &"x".repeat(4001), None, "user", Utc::now()).is_err());
-        let card = Task::new(ProjectId::from("p"), " Fix login ", " when ", None, "user", Utc::now()).unwrap();
-        assert_eq!((card.title.as_str(), card.acceptance.as_str(), card.column), ("Fix login", "when", Column::Backlog));
+        assert!(
+            Task::new(
+                ProjectId::from("p"),
+                &"x".repeat(201),
+                "",
+                None,
+                "user",
+                Utc::now()
+            )
+            .is_err()
+        );
+        assert!(
+            Task::new(
+                ProjectId::from("p"),
+                "t",
+                &"x".repeat(4001),
+                None,
+                "user",
+                Utc::now()
+            )
+            .is_err()
+        );
+        let card = Task::new(
+            ProjectId::from("p"),
+            " Fix login ",
+            " when ",
+            None,
+            "user",
+            Utc::now(),
+        )
+        .unwrap();
+        assert_eq!(
+            (card.title.as_str(), card.acceptance.as_str(), card.column),
+            ("Fix login", "when", Column::Backlog)
+        );
         assert_eq!(Column::parse("In-Progress"), Some(Column::InProgress));
         assert_eq!(Column::parse("todo"), Some(Column::Ready));
         assert_eq!(Column::parse("elsewhere"), None);
@@ -331,20 +372,29 @@ mod tests {
     /// holds it. A Backlog card is not ready to pull.
     #[test]
     fn a_pull_takes_a_ready_card_once() {
-        let mut card = card();
+        let mut card = ready_card();
         let a = AgentId::from("a".to_owned());
         let b = AgentId::from("b".to_owned());
         card.pull(&a, Utc::now()).unwrap();
-        assert_eq!((card.assignee.as_ref(), card.column), (Some(&a), Column::InProgress));
+        assert_eq!(
+            (card.assignee.as_ref(), card.column),
+            (Some(&a), Column::InProgress)
+        );
         assert_eq!(
             card.pull(&b, Utc::now()).unwrap_err(),
-            TaskError::Taken { assignee: Some(a.clone()), column: Column::InProgress }
+            TaskError::Taken {
+                assignee: Some(a.clone()),
+                column: Column::InProgress
+            }
         );
-        let mut backlog = card();
+        let mut backlog = ready_card();
         backlog.column = Column::Backlog;
         assert_eq!(
             backlog.pull(&b, Utc::now()).unwrap_err(),
-            TaskError::Taken { assignee: None, column: Column::Backlog }
+            TaskError::Taken {
+                assignee: None,
+                column: Column::Backlog
+            }
         );
     }
 
@@ -352,30 +402,78 @@ mod tests {
     /// moves any, and moving one back to Ready or Backlog releases it.
     #[test]
     fn moves_are_the_assignees_or_the_persons() {
-        let mut card = card();
+        let mut card = ready_card();
         let a = AgentId::from("a".to_owned());
         card.pull(&a, Utc::now()).unwrap();
-        assert_eq!(card.move_to("b", false, Column::Review, Utc::now()).unwrap_err(), TaskError::NotYours);
-        card.move_to("a", false, Column::Review, Utc::now()).unwrap();
+        assert_eq!(
+            card.move_to("b", false, Column::Review, Utc::now())
+                .unwrap_err(),
+            TaskError::NotYours
+        );
+        card.move_to("a", false, Column::Review, Utc::now())
+            .unwrap();
         assert_eq!(card.column, Column::Review);
         card.move_to("a", false, Column::Done, Utc::now()).unwrap();
-        assert_eq!(card.assignee.as_ref(), Some(&a), "done stays theirs, for the record");
-        card.move_to("user", true, Column::Ready, Utc::now()).unwrap();
-        assert_eq!((card.assignee.as_ref(), card.column), (None, Column::Ready), "released for the next taker");
+        assert_eq!(
+            card.assignee.as_ref(),
+            Some(&a),
+            "done stays theirs, for the record"
+        );
+        card.move_to("user", true, Column::Ready, Utc::now())
+            .unwrap();
+        assert_eq!(
+            (card.assignee.as_ref(), card.column),
+            (None, Column::Ready),
+            "released for the next taker"
+        );
         let b = AgentId::from("b".to_owned());
         card.pull(&b, Utc::now()).unwrap();
         // Edits: the holder edits words, the person reassigns; an archived
         // card is done with.
-        assert_eq!(card.update("a", false, Some("x"), None, None, Utc::now()).unwrap_err(), TaskError::NotYours);
-        card.update("b", false, Some("Fix login properly"), None, None, Utc::now()).unwrap();
-        assert_eq!(card.update("b", false, None, None, Some(None), Utc::now()).unwrap_err(), TaskError::NotYours);
-        card.update("user", true, None, Some("SSO and password"), Some(Some(a.clone())), Utc::now()).unwrap();
-        assert_eq!((card.title.as_str(), card.assignee.as_ref()), ("Fix login properly", Some(&a)));
-        assert_eq!(card.archive("b", false, Utc::now()).unwrap_err(), TaskError::NotYours);
+        assert_eq!(
+            card.update("a", false, Some("x"), None, None, Utc::now())
+                .unwrap_err(),
+            TaskError::NotYours
+        );
+        card.update(
+            "b",
+            false,
+            Some("Fix login properly"),
+            None,
+            None,
+            Utc::now(),
+        )
+        .unwrap();
+        assert_eq!(
+            card.update("b", false, None, None, Some(None), Utc::now())
+                .unwrap_err(),
+            TaskError::NotYours
+        );
+        card.update(
+            "user",
+            true,
+            None,
+            Some("SSO and password"),
+            Some(Some(a.clone())),
+            Utc::now(),
+        )
+        .unwrap();
+        assert_eq!(
+            (card.title.as_str(), card.assignee.as_ref()),
+            ("Fix login properly", Some(&a))
+        );
+        assert_eq!(
+            card.archive("b", false, Utc::now()).unwrap_err(),
+            TaskError::NotYours
+        );
         card.move_to("a", false, Column::Done, Utc::now()).unwrap();
         card.archive("a", false, Utc::now()).unwrap();
         assert!(card.archived_at.is_some());
-        assert_eq!(card.move_to("user", true, Column::Ready, Utc::now()).unwrap_err(), TaskError::Archived);
+        assert_eq!(
+            card.move_to("user", true, Column::Ready, Utc::now())
+                .unwrap_err(),
+            TaskError::Archived
+        );
         assert_eq!(card.pull(&b, Utc::now()).unwrap_err(), TaskError::Archived);
     }
 }

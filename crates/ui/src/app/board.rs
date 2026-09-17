@@ -7,7 +7,7 @@ use super::style::{Colors, weight};
 use super::view::{dot, empty, eyebrow, first_line, note, panel, pill, small};
 use super::*;
 use crate::controls::{Kind, button as action, custom, input_enabled, primary};
-use agentdocker_core::{Column, Task, TaskId};
+use agentdocker_core::{Column, Task};
 use iced::{
     Center, Element, Fill, Top,
     widget::{Space, column, container, row, scrollable, text},
@@ -89,7 +89,11 @@ impl App {
             row![
                 primary(
                     "task-file-ready",
-                    if draft.sending { "Filing…" } else { "File as Ready" },
+                    if draft.sending {
+                        "Filing…"
+                    } else {
+                        "File as Ready"
+                    },
                     ready.then_some(Message::TaskFile(Column::Ready)),
                 ),
                 action(
@@ -111,12 +115,9 @@ impl App {
 
     fn lane(&self, kind: Column, cards: &[&Task], c: Colors) -> Element<'_, Message> {
         let mut lane = column![
-            row![
-                eyebrow(kind.label(), c),
-                small(cards.len().to_string(), c),
-            ]
-            .spacing(6)
-            .align_y(Center)
+            row![eyebrow(kind.label(), c), small(cards.len().to_string(), c),]
+                .spacing(6)
+                .align_y(Center)
         ]
         .spacing(8)
         .width(Fill);
@@ -247,7 +248,9 @@ impl App {
             hand = hand.push(custom(
                 format!("task-hand-{id}-{}", agent.id),
                 self.name_of(agent.id.as_str()),
-                text(self.name_of(agent.id.as_str())).size(12).color(c.accent),
+                text(self.name_of(agent.id.as_str()))
+                    .size(12)
+                    .color(c.accent),
                 connected.then_some(Message::TaskAssign(id.clone(), Some(agent.id.clone()))),
                 false,
                 Kind::Quiet,

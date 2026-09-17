@@ -1774,8 +1774,9 @@ async fn main() -> Result<()> {
         Command::Task(args) => {
             let column_of = |text: Option<String>| -> Result<Option<agentdocker_core::Column>> {
                 text.map(|t| {
-                    agentdocker_core::Column::parse(&t)
-                        .with_context(|| format!("no column called {t}; backlog, ready, in-progress, review or done"))
+                    agentdocker_core::Column::parse(&t).with_context(|| {
+                        format!("no column called {t}; backlog, ready, in-progress, review or done")
+                    })
                 })
                 .transpose()
             };
@@ -1818,7 +1819,9 @@ async fn main() -> Result<()> {
                     let agent = sender::resolve(&client, agent)
                         .await?
                         .context("pull as an agent: give --as")?;
-                    if let Response::Task { task } = client.call(&Request::TaskPull { agent, task }).await? {
+                    if let Response::Task { task } =
+                        client.call(&Request::TaskPull { agent, task }).await?
+                    {
                         println!("{}", card_line(&task));
                     }
                 }
@@ -1894,9 +1897,18 @@ async fn main() -> Result<()> {
                                         t.title.clone(),
                                         t.assignee
                                             .as_ref()
-                                            .map(|a| names.get(a.as_str()).cloned().unwrap_or_else(|| a.short().to_owned()))
+                                            .map(|a| {
+                                                names
+                                                    .get(a.as_str())
+                                                    .cloned()
+                                                    .unwrap_or_else(|| a.short().to_owned())
+                                            })
                                             .unwrap_or_else(|| "-".to_owned()),
-                                        if t.archived_at.is_some() { "archived".to_owned() } else { String::new() },
+                                        if t.archived_at.is_some() {
+                                            "archived".to_owned()
+                                        } else {
+                                            String::new()
+                                        },
                                     ]
                                 })
                                 .collect();
@@ -3406,7 +3418,17 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
                     apps
                 },
                 r.mcp.symbol().to_owned(),
-                r.hooks.symbol().to_owned(),
+                // Missing hooks say which, so a release that began to
+                // require an event reads as that event, not as never
+                // having been set up.
+                if r.hooks_missing.is_empty()
+                    || r.hooks_missing.len()
+                        == agentdocker_host::runtimes::hook_events(&r.name).len()
+                {
+                    r.hooks.symbol().to_owned()
+                } else {
+                    format!("{} ({})", r.hooks.symbol(), r.hooks_missing.join(", "))
+                },
                 r.running.to_string(),
             ]
         })

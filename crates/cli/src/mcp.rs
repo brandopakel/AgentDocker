@@ -656,8 +656,14 @@ impl<B: Backend> McpServer<B> {
                     .ok_or((INVALID_PARAMS, "arguments must be an object".to_owned()))?;
                 object.insert("op".into(), json!("tasks"));
                 if !object.contains_key("project") {
-                    let project = match self.backend.call(Request::Inspect { agent: me.clone() }).await {
-                        Ok(Response::Agent { agent }) => agent.project.as_ref().map(|p| p.id().as_str().to_owned()),
+                    let project = match self
+                        .backend
+                        .call(Request::Inspect { agent: me.clone() })
+                        .await
+                    {
+                        Ok(Response::Agent { agent }) => {
+                            agent.project.as_ref().map(|p| p.id().as_str().to_owned())
+                        }
                         _ => None,
                     };
                     if let Some(project) = project {
@@ -669,7 +675,11 @@ impl<B: Backend> McpServer<B> {
                 self.forward(request).await
             }
             "pull_task" | "move_task" => {
-                let op = if name == "pull_task" { "task_pull" } else { "task_move" };
+                let op = if name == "pull_task" {
+                    "task_pull"
+                } else {
+                    "task_move"
+                };
                 self.forward(tagged_request(arguments, op, &me)?).await
             }
             "create_task" => {

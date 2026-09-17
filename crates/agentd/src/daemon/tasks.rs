@@ -3,7 +3,7 @@
 //! to hold every card under its one mutex — which is what makes a pull
 //! atomic — to keep them as documents, and to say what changed.
 use super::*;
-use agentdocker_core::task::{Task, TaskError, TaskId};
+use agentdocker_core::task::{Task, TaskError};
 use agentdocker_core::{Column, HUMAN};
 
 const DOCUMENT: &str = "task";
@@ -17,11 +17,6 @@ struct Actor {
 }
 
 impl State {
-    fn task(&mut self, id: &TaskId) -> Option<Task> {
-        self.store_read("task", |store| store.document(DOCUMENT, id.as_str()))
-            .flatten()
-    }
-
     /// A card by its id or a unique prefix of it, on the board.
     fn resolve_task(&mut self, reference: &str) -> Result<Task, Box<Response>> {
         let reference = reference.trim();
@@ -131,10 +126,7 @@ impl Daemon {
             Err(response) => return *response,
         };
         let Some(project) = named.or(actor.project) else {
-            return Response::error(
-                ErrorCode::Invalid,
-                "the caller is in no project; name one",
-            );
+            return Response::error(ErrorCode::Invalid, "the caller is in no project; name one");
         };
         let task = match Task::new(project, &title, &acceptance, column, &actor.id, Utc::now()) {
             Ok(task) => task,
@@ -186,7 +178,12 @@ impl Daemon {
         Response::Task { task }
     }
 
-    pub(super) fn task_move(self: &Arc<Self>, reference: &str, task: &str, column: Column) -> Response {
+    pub(super) fn task_move(
+        self: &Arc<Self>,
+        reference: &str,
+        task: &str,
+        column: Column,
+    ) -> Response {
         let mut state = lock(&self.state);
         let actor = match state.actor(reference) {
             Ok(actor) => actor,
@@ -362,6 +359,14 @@ mod tests {
         std::fs::create_dir_all(&work).unwrap();
         let alice = register(&daemon, "alice", &work).await;
         let bob = register(&daemon, "bob", &work).await;
+        let Response::Agent { agent: person } = daemon
+            .handle(Request::Me {
+                workdir: Some(work.clone()),
+            })
+            .await
+        else {
+            panic!("the person")
+        };
         let project = alice.project.clone().unwrap().id();
         let create = |daemon: &Arc<Daemon>, title: &str, column: Option<Column>| {
             let daemon = daemon.clone();
@@ -400,7 +405,11 @@ mod tests {
         ));
         let first = create(&daemon, "Fix login", Some(Column::Ready)).await;
         let second = create(&daemon, "Write the release notes", None).await;
-        assert_eq!((first.column, first.created_by.as_str()), (Column::Ready, "user"));
+        assert_eq!(
+            (first.column, first.created_by.as_str()),
+            (Column::Ready, person.id.as_str()),
+            "filed by the person's record"
+        );
         assert_eq!(second.column, Column::Backlog);
         // A prefix resolves; two agents race for the card.
         let prefix = &first.id.as_str()[..6];
@@ -413,7 +422,10 @@ mod tests {
         else {
             panic!("alice pulls")
         };
-        assert_eq!((pulled.assignee.as_ref(), pulled.column), (Some(&alice.id), Column::InProgress));
+        assert_eq!(
+            (pulled.assignee.as_ref(), pulled.column),
+            (Some(&alice.id), Column::InProgress)
+        );
         match daemon
             .handle(Request::TaskPull {
                 agent: "bob".to_owned(),
@@ -503,7 +515,10 @@ mod tests {
         else {
             panic!("the person assigns")
         };
-        assert_eq!((handed.assignee.as_ref(), handed.acceptance.as_str()), (Some(&bob.id), "Notes for 0.1.1"));
+        assert_eq!(
+            (handed.assignee.as_ref(), handed.acceptance.as_str()),
+            (Some(&bob.id), "Notes for 0.1.1")
+        );
         // Listed by column, archived left out; a reopen keeps it all.
         let list = |daemon: &Arc<Daemon>, archived: bool| {
             let daemon = daemon.clone();
@@ -524,21 +539,30 @@ mod tests {
         };
         let board = list(&daemon, false).await;
         assert_eq!(
-            board.iter().map(|t| (t.column, t.title.as_str())).collect::<Vec<_>>(),
-            vec![(Column::Backlog, "Write the release notes"), (Column::Ready, "Fix login")]
+            board
+                .iter()
+                .map(|t| (t.column, t.title.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (Column::Backlog, "Write the release notes"),
+                (Column::Ready, "Fix login")
+            ]
         );
-        assert!(matches!(
-            daemon
-                .handle(Request::TaskArchive {
-                    agent: "bob".to_owned(),
-                    task: second.id.to_string(),
-                })
-                .await,
-            Response::Error {
-                code: ErrorCode::Forbidden,
-                ..
-            }
-        ), "bob holds it but it is not done");
+        assert!(
+            matches!(
+                daemon
+                    .handle(Request::TaskArchive {
+                        agent: "bob".to_owned(),
+                        task: second.id.to_string(),
+                    })
+                    .await,
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ),
+            "bob holds it but it is not done"
+        );
         assert!(matches!(
             daemon
                 .handle(Request::TaskArchive {
@@ -554,8 +578,16 @@ mod tests {
         let daemon = open(&dir);
         let board = list(&daemon, true).await;
         assert_eq!(board.len(), 2);
-        assert!(board.iter().any(|t| t.id == first.id && t.column == Column::Ready && t.assignee.is_none()));
-        assert!(board.iter().any(|t| t.id == second.id && t.archived_at.is_some()));
+        assert!(
+            board
+                .iter()
+                .any(|t| t.id == first.id && t.column == Column::Ready && t.assignee.is_none())
+        );
+        assert!(
+            board
+                .iter()
+                .any(|t| t.id == second.id && t.archived_at.is_some())
+        );
         let kinds: Vec<String> = daemon
             .recent_events(30)
             .iter()
@@ -569,7 +601,12 @@ mod tests {
             })
             .map(str::to_owned)
             .collect();
-        assert_eq!(kinds, ["created", "created", "pulled", "moved", "moved", "updated", "archived"]);
+        assert_eq!(
+            kinds,
+            [
+                "created", "created", "pulled", "moved", "moved", "updated", "archived"
+            ]
+        );
         let _ = project;
     }
 }
