@@ -322,6 +322,18 @@ pub enum Request {
         #[serde(default)]
         launch: Option<crate::ControllerLaunch>,
     },
+    /// Explicitly replace a receiver executable without unbinding its provider.
+    /// The expected process and launch fence stale requests. Only the executable
+    /// changes; the same token, provider, queue and controller ledger remain.
+    /// The new descriptor is committed and pinned before the old receiver stops.
+    UpgradeController {
+        agent: String,
+        provider: crate::ProviderGeneration,
+        controller: crate::ProcessIdentity,
+        previous: crate::ControllerLaunch,
+        launch: crate::ControllerLaunch,
+        token: String,
+    },
     /// Release an input binding. The token is required unless `force`,
     /// which is accepted only while the bound controller process is gone.
     UnbindInput {

@@ -5,7 +5,7 @@ gate (seven skipped), formatting, strict lint, doctests, packaging and release.
 Earlier actual reload/controller trials retain their original source pins;
 this gate does not claim a new runtime trial or production installation.
 PR #155 merged as `fec093c` after final-head review and CI; its included #161
-is also merged. PR #169 source `5545697` passed the 1,093-Rust/84-Python gate
+is also merged. PR #169 merged as `82ff4da` after final review and all CI checks. Its source `5545697` passed the 1,093-Rust/84-Python gate
 (seven skipped), 14 focused tests and actual-client active-hook/lost-output trials.
 Review follow-up `e896111` passed 1,094 Rust tests (seven skipped), 84 Python
 checks and both actual-client repeats, adding kernel hook-peer authentication
@@ -13,7 +13,21 @@ and explicit provider-visible order/exactly-once assertions.
 The hook endpoint follows the existing trusted owning-user host boundary; it does
 not authenticate mutually untrusted same-user subprocesses. This limit and the
 possibility of a fabricated call stalling an offer are explicit in
-[Codex input](CODEX-INPUT.md). The installed receiver upgrade remains open; see the priority row below.
+[Codex input](CODEX-INPUT.md).
+
+The installed receiver upgrade remains open; see the priority row below.
+A separate candidate now implements an explicit same-provider receiver upgrade,
+with schema-22 durable replacement intent and retained ledger reconciliation.
+Source `5b3d688` passed three focused regressions, the full 1,097-Rust/84-Python
+gate (seven skipped), and actual Codex 0.154.0/local-model replacement of an older
+receiver with a pending offer. The provider, token, binding time and six prior
+receipts survived; three messages arrived exactly once in order during the same
+active turn (14.85 seconds including handover), with clean retirement and cleanup.
+The disposable installed-package repeat also passed, observing lifetime pins
+and successful pruning of the retired release after cleanup.
+Final review follow-up `8d42db5` defaults the upgrade identity from the environment and documents the request table. The full 1,097-Rust/84-Python gate passed again (seven skipped), as did a repeat with the actual older receiver: the same provider, token and six prior receipts survived, and three messages entered the same active turn in order in 14.84 seconds with clean cleanup.
+Final review, CI and installed-session acceptance remain open. Evidence is in the
+existing [native queue record](verification/2026-09-15-native-codex-queue.json).
 
 
 Audited September 14 against `aaa1b61`, with merged PRs #150/#152/#154, the September 15
@@ -377,3 +391,8 @@ invites are no-ops. Source tests and rendered workflow acceptance are pending.
 Messaging controls review validation: source `c3bceb3` passed 1,102 Rust tests (seven skipped), 84 Python checks, formatting, strict lint, doctests, packaging and release. The first native trial passed 378 rendered steps including creation and invitation, then the driver incorrectly expected the original two-member set after inviting a third member. The corrected assertion includes the invited member and requires exactly one invitation in that agent's actual queue; its full native repeat passed 415 rendered steps and 26 outer checks using the same c3bceb3 release binaries. The failed trial is retained. The later atomic creation correction still awaits validation.
 
 Named channel creation now publishes the room, opening event, journal entry and first notice in one transaction, using the new membership for routing. A failure must leave no room or notice after reopen, and the journal belongs to the explicitly selected project. The channel-form queue budget includes retained member-list allocations. Validation of this follow-up is pending.
+
+Receiver-upgrade review follow-up: the hidden CLI accepts the standard
+`AGENTDOCKER_AGENT_ID` default, and the architecture request table now spells out
+`upgrade_controller`, its binding response and commit-before-stop semantics.
+The full source gate passed for these two review corrections at `8d42db5`; final review, CI and installed-session acceptance remain open.
