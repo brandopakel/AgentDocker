@@ -17,7 +17,7 @@
 //! feed itself.
 use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use agentdocker_core::config::{DaemonConfig, WebhookConfig, WebhookFormat};
@@ -396,16 +396,19 @@ fn lock_queue(queue: &std::sync::Mutex<Queue>) -> std::sync::MutexGuard<'_, Queu
 }
 
 /// The delivery half of a sink: one request at a time, retries, and a
-/// notice — at most once a minute — for whatever was lost, whether a
-/// receiver refused it or the queue had no room, even after deliveries
-/// succeed again.
+/// notice — at most once every `notice_every` — for whatever was lost,
+/// whether a receiver refused it or the queue had no room, even after
+/// deliveries succeed again, and even when nothing else arrives. It
+/// holds the daemon weakly: the daemon owns its sinks, and a worker
+/// must not keep it alive.
 async fn deliver(
-    daemon: Arc<Daemon>,
+    daemon: Weak<Daemon>,
     generation: u64,
     sink: WebhookConfig,
     secret: Vec<u8>,
     queue: Arc<std::sync::Mutex<Queue>>,
     wake: Arc<tokio::sync::Notify>,
+    notice_every: Duration,
 ) {
     let name = sink.name.clone();
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -420,18 +423,33 @@ async fn deliver(
     loop {
         let next = lock_queue(&queue).pop();
         let Some((projection, bytes)) = next else {
-            // Nothing queued: say what was lost meanwhile, then wait.
+            // Nothing queued: say what was lost meanwhile, then wait —
+            // until the next event, or until a loss the throttle held
+            // back may be said, whichever comes first.
+            let Some(daemon) = daemon.upgrade() else {
+                return;
+            };
             announce(
                 &daemon,
                 &name,
                 &queue,
-                &projection_kind_none(),
+                "",
                 &last_reason,
                 &mut last_notice,
                 generation,
-            )
-            .await;
-            wake.notified().await;
+                notice_every,
+            );
+            drop(daemon);
+            let held_back = lock_queue(&queue).dropped > 0;
+            match last_notice {
+                Some(at) if held_back => {
+                    tokio::select! {
+                        _ = wake.notified() => {}
+                        _ = tokio::time::sleep_until(at + notice_every) => {}
+                    }
+                }
+                _ => wake.notified().await,
+            }
             continue;
         };
         let mut reason = None;
@@ -478,6 +496,9 @@ async fn deliver(
             lock_queue(&queue).dropped += 1;
             last_reason = reason;
         }
+        let Some(daemon) = daemon.upgrade() else {
+            return;
+        };
         announce(
             &daemon,
             &name,
@@ -486,32 +507,35 @@ async fn deliver(
             &last_reason,
             &mut last_notice,
             generation,
-        )
-        .await;
+            notice_every,
+        );
     }
 }
 
-fn projection_kind_none() -> String {
-    String::new()
-}
-
-/// Say what was lost, at most once a minute per sink: the count since
-/// the last notice and the last reason (or `dropped` when the queue had
-/// no room and nothing was refused), through the ordinary event path.
-async fn announce(
-    daemon: &Arc<Daemon>,
+/// Say what was lost, at most once every `notice_every` per sink: the
+/// count since the last notice and the last reason (or `dropped` when
+/// the queue had no room and nothing was refused), through the ordinary
+/// event path. The count is taken under the one guard that decides to
+/// say it, so a loss the intake counts meanwhile is never lost twice
+/// over.
+#[allow(clippy::too_many_arguments)]
+fn announce(
+    daemon: &Daemon,
     name: &str,
-    queue: &Arc<std::sync::Mutex<Queue>>,
+    queue: &std::sync::Mutex<Queue>,
     kind: &str,
     last_reason: &str,
     last_notice: &mut Option<tokio::time::Instant>,
     generation: u64,
+    notice_every: Duration,
 ) {
-    let dropped = lock_queue(queue).dropped;
-    if dropped == 0 || last_notice.is_some_and(|at| at.elapsed() < FAILURE_NOTICE_EVERY) {
-        return;
-    }
-    lock_queue(queue).dropped = 0;
+    let dropped = {
+        let mut queue = lock_queue(queue);
+        if queue.dropped == 0 || last_notice.is_some_and(|at| at.elapsed() < notice_every) {
+            return;
+        }
+        std::mem::take(&mut queue.dropped)
+    };
     *last_notice = Some(tokio::time::Instant::now());
     let reason = if last_reason.is_empty() {
         "dropped".to_owned()
@@ -634,12 +658,13 @@ impl Daemon {
                 events,
             )));
             sinks.workers.push(tokio::spawn(deliver(
-                self.clone(),
+                Arc::downgrade(self),
                 generation,
                 sink,
                 secret,
                 queue,
                 wake,
+                FAILURE_NOTICE_EVERY,
             )));
         }
         if sinks.started_from.is_empty() && generation > 1 {
@@ -1053,5 +1078,120 @@ mod tests {
         );
         daemon.reload_webhooks().await;
         assert_eq!(lock_sinks(&daemon).generation, 2, "unchanged: no restart");
+    }
+
+    /// A loss inside the notice throttle is said when the throttle
+    /// lifts, even when nothing else arrives afterwards: the delivery
+    /// half waits on the next event or the throttle, whichever is first.
+    #[tokio::test]
+    async fn a_loss_held_back_by_the_throttle_is_said_after_silence() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_path_buf();
+        let daemon = Arc::new(Daemon::open(home.clone(), home.join("sock")).unwrap());
+        let (url, seen) = receiver(vec![404, 404]);
+        let sink = WebhookConfig {
+            name: "local".into(),
+            url,
+            secret_file: secret_file(&home),
+            events: vec!["policy_updated".into()],
+            project: None,
+            format: WebhookFormat::Json,
+        };
+        let queue = Arc::new(std::sync::Mutex::new(Queue::default()));
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let notice_every = Duration::from_secs(2);
+        let worker = tokio::spawn(deliver(
+            Arc::downgrade(&daemon),
+            1,
+            sink.clone(),
+            b"0123456789abcdef0123456789abcdef".to_vec(),
+            queue.clone(),
+            wake.clone(),
+            notice_every,
+        ));
+        let mut own = daemon.subscribe_events();
+        let event = Event::new(
+            EventKind::PolicyUpdated {
+                project: None,
+                rules: 0,
+                quotas: 0,
+                error: None,
+                using_last_good: false,
+            },
+            chrono::Utc::now(),
+        );
+        let projection = project_event(&event).unwrap();
+        let bytes = body(&projection, sink.format);
+        // Two refusals in a row: the first is said at once, the second
+        // falls inside the throttle and is held back.
+        for _ in 0..2 {
+            lock_queue(&queue).push(projection.clone(), bytes.clone());
+            wake.notify_one();
+        }
+        let mut notices = Vec::new();
+        let started = tokio::time::Instant::now();
+        let deadline = started + Duration::from_secs(20);
+        while notices.len() < 2 && tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(5), own.recv()).await {
+                Ok(Ok(Event {
+                    kind: EventKind::WebhookFailed { dropped, .. },
+                    ..
+                })) => notices.push((dropped, started.elapsed())),
+                Ok(Ok(_)) => {}
+                _ => break,
+            }
+        }
+        assert_eq!(seen.lock().unwrap().len(), 2, "both were posted once");
+        assert_eq!(
+            notices.iter().map(|(dropped, _)| *dropped).collect::<Vec<_>>(),
+            vec![1, 1],
+            "the held-back loss is said on its own: {notices:?}"
+        );
+        assert!(
+            notices[1].1 >= notice_every,
+            "not before the throttle lifts: {notices:?}"
+        );
+        worker.abort();
+    }
+
+    /// The daemon owns its sinks and no worker owns the daemon: when the
+    /// last handle goes, the sinks stop with it, without the file
+    /// having to be removed first.
+    #[tokio::test]
+    async fn the_last_owner_dropping_the_daemon_stops_its_sinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_path_buf();
+        let daemon = Arc::new(Daemon::open(home.clone(), home.join("sock")).unwrap());
+        let secret = secret_file(&home);
+        let (url, _seen) = receiver(Vec::new());
+        std::fs::write(
+            home.join("agentd.toml"),
+            format!(
+                "[[webhooks]]\nname = \"local\"\nurl = \"{url}\"\nsecret_file = \"{}\"\nevents = [\"policy_updated\"]\n",
+                secret.display()
+            ),
+        )
+        .unwrap();
+        daemon.reload_webhooks().await;
+        assert_eq!(daemon.webhook_sinks(), 1);
+        let workers: Vec<tokio::task::AbortHandle> = lock_sinks(&daemon)
+            .workers
+            .iter()
+            .map(tokio::task::JoinHandle::abort_handle)
+            .collect();
+        assert_eq!(workers.len(), 2, "an intake and a delivery per sink");
+        let weak = Arc::downgrade(&daemon);
+        drop(daemon);
+        assert!(weak.upgrade().is_none(), "a worker kept the daemon alive");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while workers.iter().any(|worker| !worker.is_finished())
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            workers.iter().all(tokio::task::AbortHandle::is_finished),
+            "the sinks stopped with the daemon"
+        );
     }
 }
