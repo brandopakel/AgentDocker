@@ -2198,7 +2198,7 @@
     "result": "passed",
     "scope": "A pause survives a rollback attempt: the schema-23 daemon records a hold,\nan installed schema-22 daemon refuses to open that state, and the hold is\nstill there for the 23 daemon. Private home; never the production state.",
     "steps": [
-      "schema-23 daemon paused the project: paused aef60cbc5ffb \u2014 rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
+      "schema-23 daemon paused the project: paused aef60cbc5ffb — rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
       "pause --list shows the hold",
       "state.db at schema 23 with one pause document",
       "schema-22 daemon refused to start (exit 1); state.db unchanged (sha256 e352e94e548a), pause document retained",
@@ -2870,6 +2870,30 @@
       "Old previews28f4f1f3 and6d168e4d were superseded without installation.",
       "Claude parent process18563 was not restarted or opted into channels. Its retained-history handoff and provider startup consent remain open.",
       "This ad-hoc signed local preview is not notarized or an externally certified release."
-    ]
+    ],
+    "post_update_idle_wake": {
+      "observed_at": "2026-09-17T17:52:08.652346+00:00",
+      "message": "b348b388328c4d48",
+      "completed_receipt": true,
+      "receipt_sha256": "0928c4e64e4ab108351f5ca4aa15cc5a2627d43dc402c071b4e8d94bf6677e7d",
+      "correlated_reply": "44f8bbb75d0046a8",
+      "model_turn": "New model turn after prior final response; no intervening human input in the conversation",
+      "scope": "CLI-origin self-addressed Codex idle wake; no Claude or broadcast proof",
+      "provider_pid": 51242,
+      "controller_pid": 25642,
+      "candidate": "f5e298f471dfadf5925558b44fb3f6e2d5d53a0172ce2e8a708af77a4f8dd192",
+      "sent_at": "2026-09-17T17:50:47.567827Z",
+      "marker": "CODEX-IDLE-20260917-1751",
+      "sender": "50fd100f4310452fae0435fd4b6a1981",
+      "recipient": "50fd100f4310452fae0435fd4b6a1981",
+      "probe_count": 1,
+      "evidence": "/private/tmp/agentdocker-post-install-idle-probe-20260917",
+      "limits": [
+        "One direct CLI-origin message to the sender's own registered Codex identity after a final response.",
+        "No human prompt intervened; the next model turn consumed the original ID and sent a correlated reply to Claude.",
+        "The receiver ledger contains one completed receipt for the original ID; raw receipt and binding tokens remain private.",
+        "Does not establish Claude idle wake, project/global fanout, sustained latency, or sleep/reboot recovery."
+      ]
+    }
   }
 }

@@ -25,7 +25,10 @@ remain pending. Local verification passed 1,147 Rust tests (seven skipped),
 94 Python checks (one skipped), 171 UI tests, the full release gate and
 429 native steps/26 checks. A targeted synthetic Enter submission from the
 reopened app reached this live Codex turn with a correlated receipt; physical
-keyboard/IME and idle-wake claims remain separate.
+keyboard/IME remains separate. A subsequent one-shot CLI message started a new
+Codex model turn after its final response, without human input; the receiver
+recorded the exact ID and Codex sent a correlated reply. This proves idle wake
+for this installed Codex receiver, not other providers or broadcast fanout.
 
 Claude's MCP entry now supports its channel, but the existing provider was not
 restarted or opted in. Retained observations in older lives block the current
