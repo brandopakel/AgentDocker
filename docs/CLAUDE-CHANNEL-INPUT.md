@@ -70,6 +70,23 @@ also stays separate: it may already have offered its queue head, so folding old
 backlog in front would change delivery order. Its old queue remains retained;
 this ordering does not establish successful existing-session handover.
 
+So that the hooks get there first, the channel waits for them when the
+session asked to resume: the MCP server reads its parent Claude command line
+(`--resume <id>`, `-r <id>`, a bare `--resume` picker or `--continue`) and,
+when it finds one, answers the MCP handshake as usual but does not report its
+readiness — the step that binds input delivery — until the daemon's record for
+this very process (the same pid and process birth, both known) carries the
+`session_id` the hooks registered, or ten seconds have passed. Each look at
+the record is bounded by the transport timeout and cut at the deadline, and is
+polled beside the transport, so a slow daemon neither holds up control or
+receipts nor stretches the wait. The hook's word is followed even
+when it names a different session from the one the command line asked for;
+a command-line id is a claim and is never registered as identity. Past the
+wait, input is bound anyway and the adapter says so on stderr — the daemon's
+guard then keeps the earlier record separate, as before. Control calls, `ping`
+and receipts are served throughout; no message is offered before readiness.
+A session started fresh binds at the handshake as it always did.
+
 This is how a session started plainly is relaunched with channel input
 without becoming a second agent: with the user-level entry carrying
 `--claude-channel` (see above), start the same session again as
