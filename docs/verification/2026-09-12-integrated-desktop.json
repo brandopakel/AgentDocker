@@ -2303,5 +2303,90 @@
       "The current plain Claude idle-channel bug remains open; real peer-only idle reply and safe same-session activation remain required.",
       "Schema23 remains23 after lifting a pause; older daemons need a compatible pre-upgrade backup or retain the newer daemon."
     ]
+  },
+  "linux_transport_observer_2026_09_17": {
+    "source_commit": "bf81ffe56d3f51bb42332e7eea282bbb8129e431",
+    "result": "bounded tests passed; final graphical CI/review pending",
+    "actual_linux": {
+      "source_commit": "bf81ffe56d3f51bb42332e7eea282bbb8129e431",
+      "sha256": {
+        "scripts/proc_tcp.py": "2312cf1867577d00a9a19606d3e4b9aa0495743751c3aab1d928d0a01b392c54",
+        "scripts/desktop_smoke.py": "65edd181605463d27627c492e0e4fbd8474c7b57c50fdd4f07a368802314543a",
+        "scripts/iced_workflow_smoke.py": "ae85c6bc72ef3cea831d52666a9a20550c08c95e4e49733304b8cc31bf8584be",
+        "tests/test_desktop_smoke.py": "48697b8cc9e80af314cfc7e835451f4373a014ce7293b685c54e91a14cb7ce6d"
+      },
+      "result": "passed",
+      "tests_passed": 15,
+      "vm_restored_stopped": true,
+      "scope": "Owned Linux subprocesses: UNIX acceptance and delayed TCP rejection plus capped/malformed/unknown/change/timeout/helper-protocol regressions. No graphical fixture in this VM trial.",
+      "log": "/private/tmp/agentdocker-linux-transport-vm2-20260917.log",
+      "kernel": "{\"kernel\": \"7.1.8-200.fc44.aarch64\", \"machine\": \"aarch64\", \"python\": \"3.14.7\"}"
+    },
+    "local_python": {
+      "tests_run": 92,
+      "skipped": 1,
+      "result": "passed",
+      "log": "/private/tmp/agentdocker-linux-transport-python2-20260917.log"
+    },
+    "limits": [
+      "Polling can miss sockets opened and closed between samples",
+      "Unclassified socket inodes or unavailable/malformed/oversized evidence fail the observer",
+      "The previous Linux ARM failure lacked this diagnostic and is not explained by the later mount-stat warning"
+    ],
+    "descriptor_churn_followup": {
+      "runtime_source": "3a768b4ee7d01b08f3fbd8876e807eced4011410",
+      "initial_ci_head": "97baf8618962fc45fddb4e156e22fdaf8a252de3",
+      "failed_job": 105077197449,
+      "retained_artifact": 10481200959,
+      "initial_failure": "The first graphical workflow refused a descriptor set that changed or could not be classified; no TCP or clean observation was claimed.",
+      "reproduction": {
+        "platform": "Linux ARM64 VM",
+        "immutable_daemon_artifact": 10481131188,
+        "concurrent_rpc_threads": 4,
+        "samples_per_trial": 100,
+        "original_refusals": 23,
+        "three_bracketed_samples_refusals": 1,
+        "eight_bracketed_samples_refusals": 0,
+        "baseline_and_managed_samples_each_trial": 6,
+        "owned_provider_process_stopped": true,
+        "vm_restored_stopped": true
+      },
+      "change": "Kernel tables bracket each observed descriptor sample. Any observed TCP fails; every observed non-TCP inode must be classified on at least one side. Up to eight bounded samples yield 1 ms on unknowns; unknowns after the budget still refuse. The helper response requires a valid socket_count.",
+      "validation": {
+        "local_python": {
+          "run": 92,
+          "passed": 91,
+          "skipped": 1,
+          "result": "passed"
+        },
+        "actual_linux_focused": {
+          "run": 15,
+          "passed": 15,
+          "skipped": 0,
+          "result": "passed"
+        }
+      },
+      "scope_limit": "Sampled detection can miss transient sockets between observations. A passing private trial is not final graphical CI, and does not explain the historical Linux ARM lsof failure.",
+      "source_sha256": {
+        "scripts/proc_tcp.py": "af47d273b005aeefd1dc974b849e7079944de47da997154114b4687d9a993b7a",
+        "scripts/desktop_smoke.py": "ef9ea0284dd36b31870bc25d5629b379d8cb4101a4ae37c068d6509c5a9c7289",
+        "tests/test_desktop_smoke.py": "1db27c6b315ee274c54d170ee23be234507ebaaa1ac68d8491c18132a294ef16"
+      }
+    },
+    "review_followup_2026_09_17": {
+      "changes": [
+        "Reject socket_count above4096, matching the descriptor budget.",
+        "Require a readable TCP6 table; absence refuses the observation."
+      ],
+      "validation": {
+        "command": "python3 -m unittest discover -s tests",
+        "run": 94,
+        "passed": 93,
+        "skipped": 1,
+        "skip_reason": "actual Linux proc observation on macOS",
+        "log": "/private/tmp/agentdocker-linux-observer-review-tests-20260917.log"
+      },
+      "acceptance": "Final Linux graphical CI remains required; prior attempts and failures are retained."
+    }
   }
 }
