@@ -2975,6 +2975,45 @@
     "merge": "df3b758",
     "artifact_directory": "/private/tmp/agentdocker-installed-upgrade-20260917T025744Z",
     "scope": "Actual installed daemon and receiver replacement; existing Codex and Claude sessions retained. No GUI was open during the switch, so this episode does not prove preservation of an open GUI draft. Earlier private acceptance covers drafts.",
-    "fresh_active_message_acceptance": "pending"
+    "fresh_active_message_acceptance": {
+      "result": "passed",
+      "same_live_model_turn": true,
+      "self_canary": "05f74b8c1c3246e8",
+      "cli_human_route_canary": "eefa2d12e90841ac",
+      "cli_canary_author": "Codex-authored clearly labeled test sent through CLI --from user",
+      "cli_canary_sent_at": "2026-09-17T03:02:31.749940Z",
+      "cli_provider_context_at": "2026-09-17T03:02:31.926Z",
+      "cli_context_latency_seconds": 0.17606,
+      "peer_canary": "ad06cd79e7244c62",
+      "peer": "ac5c138c2b3f4d8f90c5924988419055",
+      "peer_marker": "pause-peer-proof-030357",
+      "receipts": [
+        {
+          "message": "05f74b8c1c3246e8",
+          "receipt": {
+            "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+            "turn": "01a0acc0-bb93-7a82-9c6f-b7e89f1595d9",
+            "item": "msg_01a0ad4e-3f6c-7d21-bdea-f1ba89dd2d58"
+          }
+        },
+        {
+          "message": "eefa2d12e90841ac",
+          "receipt": {
+            "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+            "turn": "01a0acc0-bb93-7a82-9c6f-b7e89f1595d9",
+            "item": "msg_01a0ad50-d8f6-7ac0-9365-c8a59d78d6e2"
+          }
+        },
+        {
+          "message": "ad06cd79e7244c62",
+          "receipt": {
+            "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+            "turn": "01a0acc0-bb93-7a82-9c6f-b7e89f1595d9",
+            "item": "msg_01a0ad52-2b61-7ef1-a21a-cd384c3761b0"
+          }
+        }
+      ],
+      "scope": "Actual installed bounded-message delivery at tool boundaries, using existing live model sessions. No end of Codex turn, new human prompt, manual acknowledgment or queue mutation. Self-canary followed retained backlog. Single CLI latency sample is not a general bound. Does not establish idle wake for the plain Claude receiver or arbitrary interruption/oversized input."
+    }
   }
 }
