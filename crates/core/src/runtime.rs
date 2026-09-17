@@ -309,6 +309,12 @@ pub struct RuntimeInfo {
     pub config_dir: Option<PathBuf>,
     pub mcp: Wiring,
     pub hooks: Wiring,
+    /// The hook events our command is not wired for, when `hooks` is
+    /// `Missing`: what setup would add. A release that requires a new
+    /// event turns a wired machine into a missing one, and this is what
+    /// says so rather than "needs setup" alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks_missing: Vec<String>,
     /// Processes of this runtime seen by the daemon's last scan that no
     /// registered agent claims.
     #[serde(default)]

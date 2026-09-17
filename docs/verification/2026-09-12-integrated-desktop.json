@@ -797,6 +797,347 @@
       "branch_retained": "Claude still has it checked out; remove after it moves off."
     }
   },
+  "hook_status_review_2026_09_17": {
+    "build": {
+      "format": 1,
+      "source_commit": "c40332b5c1688cbfe2616fd75541947a77bb3a0b",
+      "source_tree": "e91416a1606c4e7229b6cf4219fa95b474054073",
+      "source_input_sha256": "c71c7c51d7f380adc6e84a5350b4f87d5ece6f7351a9ab821bf6427ac91f7926",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "baf175a0bd511848a5daf6abad2c45ef1e4b7d0620d0449a70dfee3a989db218",
+        "agentd": "761f3a4ae52d1e682467655686df0417e79f755ffb9da64d1049662e6099b970",
+        "agentdocker-ui": "fcc61773359f4f92c2f08b2cbfb5d60ef1f32fdb78297356e702a526b6f25389"
+      }
+    },
+    "gate": {
+      "result": "passed",
+      "rust_passed": 1096,
+      "rust_skipped": 7,
+      "python_checks": 84,
+      "log": "/private/tmp/agentdocker-hook-matcher-gate4-2026-09-17.log",
+      "junit": "/private/tmp/agentdocker-hook-matcher-gate4-nextest-2026-09-17/junit.xml"
+    },
+    "native": {
+      "result": "passed",
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences"
+      ],
+      "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+      "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+      "architecture": "arm64",
+      "binary_sha256": {
+        "agentd": "761f3a4ae52d1e682467655686df0417e79f755ffb9da64d1049662e6099b970",
+        "agentdocker": "baf175a0bd511848a5daf6abad2c45ef1e4b7d0620d0449a70dfee3a989db218",
+        "agentdocker-ui": "fcc61773359f4f92c2f08b2cbfb5d60ef1f32fdb78297356e702a526b6f25389"
+      },
+      "first_window": {
+        "samples": 334,
+        "elapsed_seconds": 48.03278766700532,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "restored_window": {
+        "samples": 18,
+        "elapsed_seconds": 2.58186254100292,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "activity_only_window": {
+        "samples": 45,
+        "elapsed_seconds": 6.4917722920072265,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "contact_window": {
+        "samples": 32,
+        "elapsed_seconds": 4.963189375004731,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "ready_window": {
+        "samples": 31,
+        "elapsed_seconds": 4.803272374992957,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "received_window": {
+        "samples": 31,
+        "elapsed_seconds": 5.061503500008257,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "paused_window": {
+        "samples": 32,
+        "elapsed_seconds": 4.823426582996035,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "provider_limit_window": {
+        "samples": 31,
+        "elapsed_seconds": 4.342019458999857,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "narrow_inbox_window": {
+        "samples": 99,
+        "elapsed_seconds": 14.102595042000758,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "constrained_panes_window": {
+        "samples": 70,
+        "elapsed_seconds": 10.003991125005996,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "idle_resources": {
+        "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+        "samples": [
+          {
+            "window": {
+              "rss_bytes": 178995200,
+              "ps_cpu_percent": 0.8
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178995200,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.1
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178995200,
+              "ps_cpu_percent": 0.8
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178896896,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178896896,
+              "ps_cpu_percent": 0.3
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178896896,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178847744,
+              "ps_cpu_percent": 1.1
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.1
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178847744,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178782208,
+              "ps_cpu_percent": 0.6
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 180633600,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178831360,
+              "ps_cpu_percent": 1.2
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178831360,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.1
+            }
+          }
+        ],
+        "summary": {
+          "window": {
+            "median_rss_bytes": 178896896.0,
+            "maximum_rss_bytes": 180633600,
+            "median_ps_cpu_percent": 0.15
+          },
+          "daemon": {
+            "median_rss_bytes": 18792448.0,
+            "maximum_rss_bytes": 18792448,
+            "median_ps_cpu_percent": 0.0
+          }
+        }
+      },
+      "elapsed_seconds": 121.06428062502528
+    },
+    "rendered_steps": 375,
+    "scope": "Malformed config remains unverified in inventory and direct missing-event queries; corrected contact-only heading passes actual Iced workflow. Provider configuration unchanged; hands-on keyboard/screen-reader acceptance remains separate.",
+    "previous_ci_failure": {
+      "head": "2d12b8a694c1fa6038ba6801d1e19544c857cf43",
+      "reason": "Both Linux architectures waited for obsolete contact-only heading; remaining jobs cancelled after the deterministic failure.",
+      "logs": [
+        "/private/tmp/agentdocker-pr168-linux-x86-final-job-2026-09-17.log",
+        "/private/tmp/agentdocker-pr168-linux-arm-final-job-2026-09-17.log"
+      ]
+    },
+    "combined_messaging_validation": {
+      "build": {
+        "format": 1,
+        "source_commit": "c75717765e5626826be7496c400dcf1410c34c5e",
+        "source_tree": "029af4ba0b0a97c8c21f148e720e1391e738ad20",
+        "source_input_sha256": "bd15869a1f14107701d01c05ec53647eb0ad1253df6df68ea46e7659514b76e8",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 22,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "86ab84ce6289a8a97683d974b0e8771b8fcbd1d1714a1b243def45b855f3bc44",
+          "agentd": "f04b1063158e1809b17866232cca5d7668ff58b8e45d711ed1218dddcc528f7f",
+          "agentdocker-ui": "def2e65634eac88203045c7293a0f0888cab9ac0ead32d6de3b12501a4143fab"
+        }
+      },
+      "gate": {
+        "result": "passed",
+        "rust_passed": 1110,
+        "rust_skipped": 7,
+        "python_checks": 84,
+        "log": "/private/tmp/agentdocker-hook-matcher-gate5-2026-09-17.log",
+        "junit": "/private/tmp/agentdocker-hook-matcher-gate5-nextest-2026-09-17/junit.xml"
+      },
+      "native": {
+        "result": "passed",
+        "scenario_steps": 415,
+        "outer_checks": 26,
+        "elapsed_seconds": 131.71476429101313,
+        "artifact_directory": "/private/tmp/agentdocker-hook-matcher-native2-2026-09-17"
+      },
+      "scope": "Actual isolated native windows and rendered workflow actions; no live provider hook configuration changed, no physical keyboard/IME trial claimed. Combined source includes messaging controls and installed receiver upgrade implementation.",
+      "status": "passed; final CI, review and installation pending"
+    },
+    "disable_flag_type_followup": {
+      "build": {
+        "format": 1,
+        "source_commit": "1cdec50471829d9d463cfa7410e71b5e3d12c14a",
+        "source_tree": "a500edd5bb75610486986df970af58c39cbee75d",
+        "source_input_sha256": "56605d7c87c7fa6b5a1589ef1148e35c49bd518b6c768b495d9a46fff3bb442a",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 22,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "554d6ed5acf209f36056aecbcbfba5c302e8c995780bf57a8efa18529a2fc3e2",
+          "agentd": "fdc6a847a7d0199ecaf817df6f8f665e4d16995e48e4821de85d0cd202d87d38",
+          "agentdocker-ui": "7c4a24b2a99b16efc4a63fa2c962f812faf078cfadc9ab0360d5a9aa5ada583a"
+        }
+      },
+      "gate": {
+        "result": "passed",
+        "rust_passed": 1118,
+        "rust_skipped": 7,
+        "python_checks": 84,
+        "checks": [
+          "formatting",
+          "strict Clippy",
+          "doctests",
+          "packaging",
+          "release build"
+        ],
+        "log": "/private/tmp/agentdocker-hook-disable-gate6-2026-09-17.log",
+        "junit": "/private/tmp/agentdocker-hook-disable-gate6-nextest-2026-09-17/junit.xml"
+      },
+      "scope": "Non-Boolean disableAllHooks stays Unverified, including direct missing-events helper; string, numeric, null, array and object cases plus valid false/true. Guide lists StopFailure. Includes merged164 session reconnect. No new native workflow or physical keyboard trial: changed behavior is host configuration validation; prior415-step workflow covers unchanged controls.",
+      "status": "local source gate passed; final review/CI and installed diagnostics acceptance pending"
+    }
+  },
   "messaging_controls_review_2026_09_17": {
     "status": "final combined source and native controls passed; final review, CI and install pending",
     "build": {
@@ -1713,7 +2054,73 @@
         ]
       },
       "native_scope": "Prior e6981a7 rendered workflow covers the unchanged composer controls. This follow-up changes retired-name accounting and adds an invitation reply regression; final-head graphical CI remains required. No physical Enter-key trial is claimed.",
-      "status": "source passed; final review, CI and install pending"
+      "status": "merged as 7df165e after final-head review and all CI; installed 79981beb passed the recorded backed-up switch and form-opening scope. Physical Enter/IME and hidden-draft persistence remain unverified.",
+      "integration": {
+        "pr": 170,
+        "final_head": "4721b34971d303c89293e9ecea56041f8e6223be",
+        "merged_as": "7df165e2a483eb722aab8900590490f049cde931",
+        "merged_at": "2026-09-17T03:54:29Z",
+        "ci": "all final-head checks passed, including graphical jobs",
+        "review": "https://github.com/brandopakel/AgentDocker/pull/170#issuecomment-5706915605"
+      }
     }
+  },
+  "installed_messaging_upgrade_2026_09_17": {
+    "result": "passed within stated installation scope",
+    "activated_at": "2026-09-17T03:58:24Z",
+    "candidate": "79981bebcc3f66b5d848a63f26b0b894698b73c9872c5c91c38dd2cc0159214f",
+    "source": "5c461e0df33be607ffd98b4b78b0f26f54f2dfda",
+    "schema": 22,
+    "providers_preserved": true,
+    "old_controller": {
+      "pid": 20912,
+      "started_at": "2026-09-17T02:57:52.717071Z"
+    },
+    "new_controller": {
+      "pid": 29976,
+      "started_at": "2026-09-17T03:58:23.432374Z"
+    },
+    "token_and_binding_preserved": true,
+    "retained_old_receipts_confirmed": 97,
+    "bounded_oldest_receipt_evictions": 0,
+    "external_provider_count": 4,
+    "previous_release": "9bc0f0fc1045ebb25c5b68641142bb4f6954440ba44cdf03613eeb964b5a627d",
+    "backup": "<private-evidence>/state.db",
+    "private_evidence": "/private/tmp/agentdocker-installed-messaging-20260917T035818Z",
+    "daemon_pid": 29921,
+    "gui_pid": 29983,
+    "gui_scope": "Observed visible editable fields were empty; this does not establish hidden GUI draft persistence",
+    "gui_restarted": true,
+    "installed_controls": {
+      "result": "New message or channel form opened through actual installed macOS accessibility controls",
+      "scope": "Selected project, Messages and New message or channel; observed Direct message/Channel choices and live-agent picks. No new DM/channel was submitted.",
+      "physical_enter": "not attempted; macOS CGSessionCopyCurrentDictionary reported CGSSessionScreenIsLocked=true",
+      "next_step": "physical Enter/IME and compose acceptance after the screen is unlocked",
+      "screenshot": "<private-evidence>/create-form.png"
+    },
+    "limits": [
+      "Does not establish persistence of hidden GUI drafts",
+      "Does not establish idle input for plain Claude sessions",
+      "Does not establish public signing/notarization or unattended live daemon transfer"
+    ],
+    "sanitization": "Only installation identity, process IDs and retention counts are retained here; raw receiver bindings, tokens, ledgers and state backup stay private."
+  },
+  "linux_transport_failure_2026_09_17": {
+    "pr": 172,
+    "source_commit": "862dce0f6e5f7f77a91ad8b23c910c90b92deae3",
+    "job": "https://github.com/brandopakel/AgentDocker/actions/runs/35179786336/job/105069250531",
+    "artifact_id": 10480450783,
+    "result": "failed: transport observation refused",
+    "observation": {
+      "process_index": 1,
+      "pid": 9128,
+      "reason": "transport could not be checked",
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "lsof: WARNING: can't stat() ext4 file system /var/lib/containers/storage/overlay\n      Output information may be incomplete.\n",
+      "process_status": null
+    },
+    "diagnosis": "This run captured an lsof mount-stat warning in the transport observer; it does not establish absence or presence of TCP. A previous Linux ARM failure did not retain this detail and is not explained by this later result.",
+    "log": "/private/tmp/agentdocker-pr172-linux-failure-20260917.log"
   }
 }
