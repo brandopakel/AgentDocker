@@ -219,3 +219,11 @@ requirements to 1/100 with three bracketed samples; the eight-sample version
 then completed 100/100. These are recorded trials, not a guarantee of detecting
 transient sockets or succeeding at arbitrary load. Persistent unknown sockets
 still refuse, and a successful helper report includes a bounded socket count.
+
+For local graphical checks while someone is using the desktop,
+`python3 scripts/iced_workflow_smoke.py --binary-dir <built-binaries> --output <new-directory> --skip-idle-measurement`
+runs the rendered workflows without opening the ordinary foreground window used
+for the idle CPU/RSS sample. The report marks `idle_resources` as `not_run`;
+this mode supplies no idle performance evidence. The default command and CI
+continue to run that measurement. Smoke workflow windows remain behind the
+user's real app.
