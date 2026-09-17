@@ -1497,13 +1497,11 @@ impl App {
                                 .as_ref()
                                 .is_some_and(|p| p.valid_for(&q.text) && p.permits_choice(&value))
                     })
-                {
-                    if self
+                    && self
                         .shell
                         .edit_draft(DraftKind::Answer, id.to_string(), value)
-                    {
-                        return self.update(Message::Answer(id));
-                    }
+                {
+                    return self.update(Message::Answer(id));
                 }
             }
             Message::Answer(id) => {
