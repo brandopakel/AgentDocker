@@ -366,4 +366,4 @@ consumption; it does not replace an idle-wake or sustained-load trial.
 
 Hook-status review also rejects malformed nested hook lists (a non-array or
 non-object list entry) as Unverified with no misleading missing-event list.
-This final shape-validation extension is awaiting its source gate.
+Source `5c2c0c6`, including merged main and the nested-list correction, passed the focused malformed-hook test and the full 1,096-Rust/84-Python gate (seven skipped), formatting, strict lint, doctests, packaging and release. Logs and JUnit reports are retained at `/private/tmp/agentdocker-hook-matcher-targeted2-2026-09-17.log`, `/private/tmp/agentdocker-hook-matcher-gate2-2026-09-17.log` and the corresponding `-nextest-` directories. Final review, CI and installed acceptance remain open.
