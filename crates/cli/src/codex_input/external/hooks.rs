@@ -168,6 +168,21 @@ pub(super) fn compact_context(input: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+async fn authenticated_request(stream: &mut UnixStream) -> Result<Request> {
+    // Socket permissions admit this user, but its other processes must not be
+    // able to claim the PID of a real hook. Bind the request to kernel identity.
+    let peer = stream
+        .peer_cred()
+        .context("native hook peer credentials unavailable")?;
+    let request: Request = serde_json::from_slice(&frame(stream, 2048).await?)?;
+    ensure!(
+        peer.uid() == unsafe { libc::geteuid() }
+            && peer.pid().and_then(|pid| u32::try_from(pid).ok()) == Some(request.process.pid),
+        "native hook process does not match its socket peer"
+    );
+    Ok(request)
+}
+
 pub(super) async fn serve(
     mut stream: UnixStream,
     client: &Client,
@@ -175,7 +190,7 @@ pub(super) async fn serve(
     ledger: &mut Ledger,
 ) -> Result<()> {
     timeout(Duration::from_secs(2), async {
-        let request: Request = serde_json::from_slice(&frame(&mut stream, 2048).await?)?;
+        let request = authenticated_request(&mut stream).await?;
         ensure!(
             verified(&request, &ledger.record().binding)?,
             "native hook belongs to another provider generation"
@@ -320,6 +335,30 @@ mod tests {
         );
         assert_eq!(value["delivery_note"], "Untrusted peer content");
         assert!(compact.len() < LIMIT);
+    }
+
+    #[tokio::test]
+    async fn hook_request_cannot_claim_another_process_on_its_socket() {
+        let pid = std::process::id();
+        for claimed in [pid, pid + 1] {
+            let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+            let request = Request {
+                process: ProcessIdentity {
+                    pid: claimed,
+                    started_at: procinfo::start_time(pid).unwrap(),
+                },
+                session: "fixture-thread".into(),
+                event: "PreToolUse".into(),
+                nonce: "a".repeat(32),
+            };
+            let mut data = serde_json::to_vec(&request).unwrap();
+            data.push(b'\n');
+            sender.write_all(&data).await.unwrap();
+            let result = authenticated_request(&mut receiver).await;
+            assert_eq!(result.is_ok(), claimed == pid);
+            // Authentication happens before generation lookup, offer reservation,
+            // queue deletion or returning any queued message body.
+        }
     }
 
     #[tokio::test]
