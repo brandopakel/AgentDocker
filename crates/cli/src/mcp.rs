@@ -28,8 +28,11 @@ use crate::client::{Backend, Client};
 mod channel;
 pub(crate) const CLAUDE_CHANNEL_INPUT: &str = "AGENTDOCKER_CLAUDE_CHANNEL_INPUT";
 
-pub(crate) fn channel_input_active(home: &std::path::Path, agent: &str) -> Result<bool> {
-    channel::active(home, agent)
+pub(crate) fn channel_input_active(
+    home: &std::path::Path,
+    agent: &agentdocker_core::AgentRecord,
+) -> Result<bool> {
+    channel::active_for(home, agent)
 }
 
 const SUPPORTED_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -71,9 +74,17 @@ pub struct McpArgs {
     pub pid: Option<u32>,
     /// Offer durable inbox messages through an explicitly enabled Claude channel.
     /// Start the parent Claude session with AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1
-    /// and its channel opt-in. Existing sessions need a fresh launch.
+    /// and its channel opt-in; a session started without them gets the
+    /// ordinary MCP server from this same entry. Existing sessions need a
+    /// fresh launch.
     #[arg(long)]
     pub claude_channel: bool,
+}
+
+/// Whether the parent session was launched for channel input: Claude Code,
+/// with the input-mode variable the managed launch sets on it.
+fn channel_opted_in(runtime: &str) -> bool {
+    runtime == "claude-code" && std::env::var(CLAUDE_CHANNEL_INPUT).as_deref() == Ok("1")
 }
 
 /// Who this MCP session is, from agentd's point of view.
@@ -101,12 +112,15 @@ pub struct McpServer<B> {
 
 /// Run the server on stdin/stdout until the host closes stdin.
 pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
-    if args.claude_channel
-        && (args.runtime != "claude-code"
-            || std::env::var(CLAUDE_CHANNEL_INPUT).as_deref() != Ok("1"))
-    {
-        bail!(
-            "--claude-channel requires --runtime claude-code and a fresh parent session launched with {CLAUDE_CHANNEL_INPUT}=1; enable this MCP entry as a Claude channel too"
+    // The channel is the parent session's choice, made at its launch: the
+    // input-mode variable on the parent is what keeps the hooks adapter
+    // from delivering the same inbox. An entry that asks for the channel
+    // under a session launched without it serves the ordinary MCP instead,
+    // so one configured entry fits both kinds of session.
+    let claude_channel = args.claude_channel && channel_opted_in(&args.runtime);
+    if args.claude_channel && !claude_channel {
+        eprintln!(
+            "agentdocker mcp: --claude-channel needs --runtime claude-code and a parent session launched with {CLAUDE_CHANNEL_INPUT}=1 and its channel opt-in; this session was not, so its inbox is delivered by the hooks adapter and the tools as usual"
         );
     }
     let identity = establish_identity(&client, &args).await?;
@@ -115,7 +129,7 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
         identity.name, identity.id
     );
     let mut server = McpServer::new(client, identity);
-    server.claude_channel = args.claude_channel;
+    server.claude_channel = claude_channel;
     server.codex_input =
         std::env::var(agentdocker_host::provider_input::CODEX_INPUT_ENV).as_deref() == Ok("1");
     // Transport shutdown preserves a live provider identity; cleanup below

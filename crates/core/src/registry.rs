@@ -134,6 +134,60 @@ impl Registry {
         Ok(record)
     }
 
+    /// Retire several records into one at once, the way a session come
+    /// back folds every life it left: each retired record leaves and its
+    /// id resolves to the canonical one, and an alias that pointed at any
+    /// of them is pointed at the canonical record instead, so the map
+    /// stays flat. Checked whole before anything moves: the canonical
+    /// record must exist and not be among the retired, and every retired
+    /// id must own a record of its own. The retired records are returned
+    /// in the order given.
+    pub fn fold_into(
+        &mut self,
+        retired: &[AgentId],
+        canonical: &AgentId,
+    ) -> Result<Vec<AgentRecord>, crate::identity::AliasError> {
+        if !self.agents.contains_key(canonical) {
+            return Err(crate::identity::AliasError {
+                retired: canonical.clone(),
+                reason: "canonical record is missing",
+            });
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for id in retired {
+            let reason = if id == canonical {
+                Some("self reference")
+            } else if !self.agents.contains_key(id) {
+                Some("retired ID owns no record")
+            } else if !seen.insert(id.clone()) {
+                Some("duplicate retired ID")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Err(crate::identity::AliasError {
+                    retired: id.clone(),
+                    reason,
+                });
+            }
+        }
+        for target in self.aliases.values_mut() {
+            if retired.contains(target) {
+                *target = canonical.clone();
+            }
+        }
+        Ok(retired
+            .iter()
+            .map(|id| {
+                let record = self.agents.remove(id).expect("checked");
+                self.retired_names
+                    .insert(id.clone(), record.spec.name.clone());
+                self.aliases.insert(id.clone(), canonical.clone());
+                record
+            })
+            .collect())
+    }
+
     pub fn canonical_id<'a>(&'a self, id: &'a AgentId) -> &'a AgentId {
         self.aliases.get(id).unwrap_or(id)
     }
@@ -382,6 +436,69 @@ mod tests {
         assert_eq!(registry.get(&current.id).unwrap().id, current.id);
         assert_eq!(registry.get(&later.id).unwrap().id, later.id);
         assert_eq!(registry.aliases().len(), 1);
+    }
+
+    /// Folding several records into one leaves a flat map: an alias that
+    /// pointed at a folded record points at the canonical one, every
+    /// folded id resolves there, and nothing moves when the set is wrong.
+    #[test]
+    fn folding_several_records_into_one_keeps_the_alias_map_flat() {
+        let mut registry = Registry::new();
+        let oldest = record("oldest");
+        let earlier = record("earlier");
+        let last = record("last");
+        let fresh = record("fresh");
+        for record in [&oldest, &earlier, &last, &fresh] {
+            registry.insert(record.clone()).unwrap();
+        }
+        // A life before this: oldest was retired into earlier.
+        registry.retire_into(&oldest.id, &earlier.id).unwrap();
+        // Refused whole: a retired id without a record, the canonical
+        // among the retired, or a duplicate.
+        for retired in [
+            vec![fresh.id.clone(), AgentId::from("nobody")],
+            vec![fresh.id.clone(), last.id.clone()],
+            vec![fresh.id.clone(), fresh.id.clone()],
+        ] {
+            assert!(registry.fold_into(&retired, &last.id).is_err());
+            assert_eq!(registry.len(), 3, "nothing moved");
+            assert_eq!(registry.resolve(oldest.id.as_str()).unwrap(), earlier.id);
+        }
+        let folded = registry
+            .fold_into(&[fresh.id.clone(), earlier.id.clone()], &last.id)
+            .unwrap();
+        assert_eq!(
+            folded.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+            vec![fresh.id.clone(), earlier.id.clone()]
+        );
+        assert_eq!(registry.len(), 1);
+        for id in [&oldest.id, &earlier.id, &fresh.id] {
+            assert_eq!(registry.resolve(id.as_str()).unwrap(), last.id, "{id}");
+            assert_eq!(registry.aliases()[id], last.id, "flat, not a chain");
+        }
+        // What the map holds now restores as it is.
+        let aliases: Vec<_> = registry
+            .aliases()
+            .iter()
+            .map(|(retired, canonical)| crate::identity::AgentAlias {
+                retired: retired.clone(),
+                canonical: canonical.clone(),
+                retired_name: registry.retired_names.get(retired).cloned(),
+                reconciled_at: Utc::now(),
+            })
+            .collect();
+        let mut again = Registry::new();
+        again.insert(last.clone()).unwrap();
+        again.restore_aliases(&aliases).unwrap();
+        assert_eq!(again.aliases().len(), 3);
+        assert_eq!(
+            registry.identity_names(&last.id),
+            ["earlier", "fresh", "last", "oldest"]
+        );
+        assert_eq!(
+            again.identity_names(&last.id),
+            registry.identity_names(&last.id)
+        );
     }
 
     #[test]

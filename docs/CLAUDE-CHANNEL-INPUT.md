@@ -30,6 +30,48 @@ update its own usage counters. Other configured MCP entries remain available;
 an explicit competing MCP/channel configuration or print-mode command is rejected
 before launch. Provider consent and organization policy still apply.
 
+## One entry for every session
+
+The entry may carry `--claude-channel` in a user-level MCP configuration: under
+a session launched without the input-mode variable and the channel opt-in it
+serves the ordinary MCP server (no channel capability, no offers, no owner
+lock; the hooks adapter and the tools deliver the inbox as usual) and says so
+on stderr, so the same entry fits a session started plainly and one started
+for channel input. Only the launch decides.
+
+## Resuming a session
+
+A session that comes back as a new process takes up the record it ended
+with: the hooks adapter names the session, and the daemon joins the new
+process to the ended records of that session in the same checkout, once
+their processes are gone. The record that ended last stays, with its id, its
+direct conversation and its journal cursor; whatever was still queued for it,
+for any earlier ended life of the session and for the new process's own
+registration is one queue in durable sequence order with each message once, a
+question an earlier life asked is now its own, and every other id becomes an
+alias. This applies only when the register/session-resumption eligibility rule
+in [ARCHITECTURE.md](ARCHITECTURE.md#wire-protocol) is satisfied. A record whose
+process still runs, or one that holds leases, sits in a channel or recorded
+observations of its own, is left as it is. An initialized fresh input receiver
+also stays separate: it may already have offered its queue head, so folding old
+backlog in front would change delivery order. Its old queue remains retained;
+this ordering does not establish successful existing-session handover.
+
+This is how a session started plainly is relaunched with channel input
+without becoming a second agent: with the user-level entry carrying
+`--claude-channel` (see above), start the same session again as
+
+```sh
+AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 claude --resume <session-id> \
+  --dangerously-load-development-channels server:agentdocker
+```
+
+from the same checkout, after the old process has exited. A managed launch
+(`agentdocker run ...`) is a new supervised agent, not a resumption: a
+supervised process is its supervisor's to bring back, and the daemon does
+not fold a managed record into an unmanaged one or the reverse. A running
+session cannot be given a channel; the relaunch is the whole of it.
+
 ## Manual local trial
 
 Use the rebuilt CLI; older installed binaries do not have this option. In a
@@ -196,3 +238,19 @@ authorization turn. An earlier unprimed trial requested further authorization;
 receipt is not permission to act. The retained report explains a controller
 replay mistake and the separate read-only audit of saved events/tool calls.
 Final CI/source review of this follow-up and broader recovery acceptance remain.
+
+Channel ownership now uses both the agent ID and provider process generation.
+If SessionStart folds an uninitialized registration before its channel starts
+input, a second MCP entry still cannot acquire another channel under the new
+canonical ID. Hooks check the process lock too. `claude_channel_smoke.py --resume`
+checks this boundary and the initialized-receiver refusal using real daemon/MCP
+processes with fixture provider processes. It does not prove model idle wake or
+actual Claude startup ordering. Verification of this follow-up is pending.
+
+September 17 reconnect review: a provider-generation owner lock supplements the
+agent-ID lock when SessionStart folds an MCP-first registration. A channel that
+has already initialized is not folded behind its offered head. Source `b5ea76c`
+passes the full 1,094-Rust/84-Python gate (seven skipped) and the actual daemon/MCP
+transport regression; the older binary admits a second channel and fails. See
+[existing channel evidence](verification/2026-09-11-claude-channel-input.json).
+Actual Claude relaunch and model idle wake still need separate acceptance.

@@ -240,9 +240,102 @@ def run(args):
             assert connection.process.wait(timeout=5) == 0
             report["steps"].append("an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact")
 
-            rejected = spawn(command, {**channel_env, "AGENTDOCKER_CLAUDE_CHANNEL_INPUT": "0"})
-            assert rejected.wait(timeout=5) != 0
-            report["steps"].append("missing parent-session opt-in refused channel startup instead of racing hook delivery")
+            # The same entry under a session launched without the opt-in is
+            # the ordinary MCP server: no channel capability, no offer, the
+            # queue left for the hooks adapter and the tools, and no owner
+            # lock, so a channel session can still start beside it.
+            plain = Connection(spawn(command, {**channel_env, "AGENTDOCKER_CLAUDE_CHANNEL_INPUT": "0"}))
+            left = send(peer, "for the hooks")
+            plain.send({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+                        "params": {"protocolVersion": "2025-06-18"}})
+            assert "claude/channel" not in plain.response(0)["result"]["capabilities"].get("experimental", {})
+            plain.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            assert plain.read(0.5) is None, "a plain server offered a channel message"
+            assert queued() == [left]
+            assert rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]["paused"] is False
+            connection = start_channel()
+            assert connection.offer()["meta"]["message_id"] == left, "the plain server held no channel lock"
+            connection.ack(108, [left])
+            assert queued() == []
+            connection.process.stdin.close()
+            assert connection.process.wait(timeout=5) == 0
+            plain.process.stdin.close()
+            assert plain.process.wait(timeout=5) == 0
+            report["steps"].append("without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks")
+            if args.resume:
+                project = root / "resume-project"
+                project.mkdir()
+                subprocess.run(["git", "init", "-q", str(project)], check=True)
+
+                def register_life(name, process, session=None):
+                    labels = {"session_id": session} if session else {}
+                    response = rpc(endpoint, {"op": "register", "spec": {
+                        "name": name, "runtime": "claude-code", "workdir": str(project),
+                        "labels": labels}, "pid": process.pid})
+                    assert response["type"] == "agent", response
+                    return response["agent"]["id"]
+
+                def send_to(agent, text):
+                    return rpc(endpoint, {"op": "send", "from": "user", "to": agent,
+                        "kind": "chat", "payload": {"text": text}})["message"]
+
+                def inbox(agent):
+                    return [m["id"] for m in rpc(endpoint, {
+                        "op": "inbox", "agent": agent, "drain": False})["messages"]]
+
+                def channel_for(agent, initialize):
+                    child_env = {**channel_env, "AGENTDOCKER_AGENT_ID": agent}
+                    opened = Connection(spawn(command, child_env))
+                    opened.send({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+                        "params": {"protocolVersion": "2025-06-18"}})
+                    assert "error" not in opened.response(0)
+                    if initialize:
+                        opened.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+                    return opened
+
+                old_parent = spawn(["sleep", "120"], env)
+                canonical = register_life("resume-old", old_parent, "fixture-resumed-session")
+                old_message = send_to(canonical, "older queued message")
+                old_parent.kill(); old_parent.wait(timeout=5)
+                retired = rpc(endpoint, {"op": "deregister", "agent": canonical})
+                assert retired["type"] == "agent" and retired["agent"]["finished_at"], retired
+                new_parent = spawn(["sleep", "120"], env)
+                fresh = register_life("resume-new", new_parent)
+                assert fresh != canonical
+                early = channel_for(fresh, initialize=False)
+                assert register_life("resume-hook", new_parent, "fixture-resumed-session") == canonical
+                # The first server still holds its pre-fold agent-ID lock.
+                # Only process-generation ownership excludes this second one.
+                duplicate = spawn(command, {**channel_env, "AGENTDOCKER_AGENT_ID": canonical})
+                try:
+                    assert duplicate.wait(timeout=3) != 0
+                except subprocess.TimeoutExpired as error:
+                    raise AssertionError("second MCP remained running after ID fold; duplicate channel admitted") from error
+                early.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+                assert early.offer()["meta"]["message_id"] == old_message
+                early.ack(400, [old_message])
+                assert inbox(canonical) == []
+                early.process.stdin.close()
+                assert early.process.wait(timeout=5) == 0
+                report["steps"].append("pre-initialization session fold preserved one channel owner across different agent IDs and delivered the older queue through its alias")
+
+                retained = send_to(canonical, "retained older backlog")
+                new_parent.kill(); new_parent.wait(timeout=5)
+                retired = rpc(endpoint, {"op": "deregister", "agent": canonical})
+                assert retired["type"] == "agent" and retired["agent"]["finished_at"], retired
+                next_parent = spawn(["sleep", "120"], env)
+                next_id = register_life("resume-next", next_parent)
+                initialized = channel_for(next_id, initialize=True)
+                offered = send_to(next_id, "already offered fresh input")
+                assert initialized.offer()["meta"]["message_id"] == offered
+                assert register_life("resume-hook-next", next_parent, "fixture-resumed-session") == next_id
+                assert inbox(canonical) == [retained] and inbox(next_id) == [offered]
+                initialized.ack(401, [offered])
+                assert inbox(canonical) == [retained] and inbox(next_id) == []
+                initialized.process.stdin.close()
+                assert initialized.process.wait(timeout=5) == 0
+                next_parent.kill(); next_parent.wait(timeout=5)
+                report["steps"].append("an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog")
             rpc(endpoint, {"op": "shutdown"})
             assert daemon.wait(timeout=5) == 0
             assert all(digest(output / name) == value for name, value in hashes.items())
@@ -268,4 +361,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--resume", action="store_true", help="also check session-fold ordering and channel ownership with fixture provider processes")
     raise SystemExit(run(parser.parse_args()))
