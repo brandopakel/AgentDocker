@@ -525,10 +525,10 @@ pub fn event_line(event: &Event) -> String {
         ),
         EventKind::ChannelInvited { channel, by, agent } => {
             format!(
-                "{} invited {} to channel {}",
+                "channel invited  {} by {} for {}",
+                channel.as_str(),
                 by.short(),
-                agent.short(),
-                channel.as_str()
+                agent.short()
             )
         }
         EventKind::ChannelJoined { channel, agent } => {

@@ -213,7 +213,7 @@ fn delegated_mcp(
     let ownership = uuid::Uuid::new_v4().to_string();
     let expected = json!({
         "type": "stdio", "command": executable,
-        "args": ["mcp", "--runtime", "claude-code"],
+        "args": super::mcp_args("claude-code"),
         "env": {"AGENTDOCKER_SETUP_RECEIPT": ownership},
     });
     let mut add: Vec<String> = vec![cli.clone()];
@@ -221,7 +221,11 @@ fn delegated_mcp(
     add.push(format!("AGENTDOCKER_SETUP_RECEIPT={ownership}"));
     add.push("--".into());
     add.push(executable);
-    add.extend(["mcp", "--runtime", "claude-code"].map(str::to_owned));
+    add.extend(
+        super::mcp_args("claude-code")
+            .into_iter()
+            .map(str::to_owned),
+    );
     let mut remove: Vec<String> = vec![cli];
     remove.extend(["mcp", "remove", "--scope", "user", "agentdocker"].map(str::to_owned));
     Ok(Some(Delegated {
@@ -1004,7 +1008,10 @@ path.write_text(json.dumps(value))
             add.contains("mcp add --scope user agentdocker --env AGENTDOCKER_SETUP_RECEIPT="),
             "{add}"
         );
-        assert!(add.ends_with("mcp --runtime claude-code"), "{add}");
+        assert!(
+            add.ends_with("mcp --runtime claude-code --claude-channel"),
+            "{add}"
+        );
         assert!(
             step.remove
                 .join(" ")

@@ -182,8 +182,18 @@ fn report(runtime: &str, what: &str, path: &Path, outcome: Outcome) {
 fn entry(exe: &Path, runtime: &str) -> Value {
     json!({
         "command": exe.to_string_lossy(),
-        "args": ["mcp", "--runtime", runtime],
+        "args": mcp_args(runtime),
     })
+}
+
+/// A Claude entry supports either ordinary MCP or the channel selected at
+/// provider startup. The flag alone never opts the parent into channel input.
+fn mcp_args(runtime: &str) -> Vec<&str> {
+    let mut args = vec!["mcp", "--runtime", runtime];
+    if runtime == "claude-code" {
+        args.push("--claude-channel");
+    }
+    args
 }
 
 /// Whether a JSON MCP server entry runs this binary: by the command it
@@ -451,7 +461,7 @@ fn register_with_claude_cli(cli: &Path, exe: &Path, dry_run: bool) -> Result<Out
             .context("AgentDocker path is not UTF-8")?
             .to_owned(),
     );
-    argv.extend(["mcp", "--runtime", "claude-code"].map(str::to_owned));
+    argv.extend(mcp_args("claude-code").into_iter().map(str::to_owned));
     let output = agentdocker_host::command::run(
         &std::env::current_dir()?,
         &argv,
@@ -537,6 +547,50 @@ mod tests {
                 assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
             }
         }
+    }
+
+    #[test]
+    fn claude_setup_creates_a_channel_capable_entry_and_preserves_existing_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(".claude.json");
+        let exe = Path::new("/opt/agentdocker");
+        let original = r#"{"theme":"dark","mcpServers":{"other":{"command":"cat"}}}"#;
+        std::fs::write(&path, original).unwrap();
+        assert_eq!(
+            register_json(&path, exe, "claude-code", true).unwrap(),
+            Outcome::Planned
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(
+            register_json(&path, exe, "claude-code", false).unwrap(),
+            Outcome::Added
+        );
+        let after = std::fs::read_to_string(&path).unwrap();
+        let document: Value = serde_json::from_str(&after).unwrap();
+        assert_eq!(
+            document["mcpServers"]["agentdocker"]["args"],
+            json!(["mcp", "--runtime", "claude-code", "--claude-channel"])
+        );
+        assert!(
+            document["mcpServers"]["agentdocker"].get("env").is_none(),
+            "startup opt-in is not enabled by setup"
+        );
+        assert_eq!(document["theme"], "dark");
+        assert_eq!(document["mcpServers"]["other"]["command"], "cat");
+        assert_eq!(
+            register_json(&path, exe, "claude-code", false).unwrap(),
+            Outcome::Present
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), after);
+        // A prior plain entry remains the person's configuration, not an
+        // implicit request to upgrade or rewrite their provider profile.
+        let legacy = r#"{"mcpServers":{"agentdocker":{"command":"agentdocker","args":["mcp","--runtime","claude-code"]}}}"#;
+        std::fs::write(&path, legacy).unwrap();
+        assert_eq!(
+            register_json(&path, exe, "claude-code", false).unwrap(),
+            Outcome::Present
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
     }
 
     #[test]

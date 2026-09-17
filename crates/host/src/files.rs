@@ -42,7 +42,7 @@ pub fn open_regular(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Stamp {
     length: u64,
     modified: i128,

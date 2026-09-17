@@ -1095,6 +1095,78 @@ cache/reasoning overlap and missing fields. Source `63f1dd3` also passed the ful
 1,026-Rust/77-Python gate (seven Rust tests skipped), strict lint, packaging and
 release compilation. File scanning and ingestion acceptance remain separate.
 
+The next source step adds `usage::reader`, a bounded per-file JSONL reader.
+A batch proposes samples, explicit malformed/unsupported-record gaps and a
+serializable parser cursor; it never commits progress itself. The cursor holds
+native file identity, length and change metadata, a complete-record prefix digest
+and accounting context, never transcript text. Reads reject final symlinks and
+special files, cap byte reads (including read-ahead), record size and result count,
+and check a cooperative time deadline between bounded reads. A trailing partial
+record does not advance the offset. Both the open object and current path are
+checked after reading, and the caller must validate again before committing.
+
+The cursor format is now version 2. An oversized record whose newline cannot
+fit in the bounded batch returns `Stop::Quarantined`, retaining only verified
+complete records before it and recording the attempted byte budget in the
+cursor. Commit those samples, gaps and the quarantined cursor together; the
+unfinished record is not covered. Reopening that cursor at the same or a smaller
+budget validates the prefix and then returns `Error::Oversized`, without
+reparsing accepted records or retrying the oversized record.
+A larger bounded budget may recover from the quarantined offset without replaying
+the accepted prefix; a changed file generation requires the existing new-scan
+path. Collector policy should make at most one escalation to the 16 MiB maximum
+and then keep the source quarantined until it changes or the person intervenes.
+I/O, generation and validation errors still return no proposed progress.
+This explicit partial-result contract is distinct from ordinary budget stopping;
+the future ingestion transaction must preserve its quarantine, rather than retry
+it as ordinary `Stop::Budget`. Runtime `344516e` passed all 13 reader
+regressions and the combined `be3086d` full gate (1,142 Rust tests, seven
+skipped; 92 Python checks, one Linux-only skip). The earlier quarantine
+fixture failed on Linux and Windows because its budget omitted the valid
+prefix length; that failure and the correction remain in the
+[integrated evidence](verification/2026-09-12-integrated-desktop.json). Final
+platform CI remains pending. The parser budget also reserves the restored boundary byte, ensuring
+the smallest accepted resumed budget can identify an oversized record.
+
+September 17 Windows CI exposed a same-length, restored-mtime rewrite that
+matched the captured change metadata (PR #167, job `105082608981`). Metadata
+alone therefore cannot establish unchanged content. The follow-up rehashes the
+complete-record prefix before restoring parser state and before returning a
+proposal; `Cursor::validate` repeats that check immediately before commit. Each
+rehash is limited to 16 MiB and a cooperative one-second deadline, with byte
+counts reported separately as `Batch::validation_bytes_read` (at most 32 MiB
+across the two checks). Exhaustion returns `ValidationIncomplete`, without a
+new cursor or coverage claim. Larger-prefix incremental validation remains
+open; a caller must not silently trust metadata to bypass this refusal. These
+are bounded observations, not a filesystem snapshot or a lock against writes
+after validation. The original failed Windows log is retained at
+`/private/tmp/agentdocker-167-failure-105082608981.log`. Follow-up runtime
+`d643275` passed all ten focused reader tests plus strict host/daemon Clippy on
+combined validation source `c833fb0`; the same campaign passed the deterministic
+terminal-fence regression. Windows run `35185667187` on head `63ea3ca` passed
+238 tests (two skipped), including the original restored-mtime failure and the
+new forced-equal-metadata and validation-budget regressions. Logs are
+`/private/tmp/agentdocker-prefix-fence-targeted1-20260917.log` and
+`/private/tmp/agentdocker-167-windows-prefix-success-20260917.log`. Full final
+review and the remaining CI checks are still required.
+
+This primitive conservatively rejects any changed generation, including append,
+so a caller must retain the old cursor, record the generation gap and start a
+new scan with source-ID deduplication. It does not yet reuse validated prefixes
+across growing-file generations. That optimization, bounded directory discovery,
+atomic ingestion and collection watermarks remain open; file completion alone
+never means collection is caught up. Source `a989ebf` passed seven focused reader
+tests and the full 1,033-Rust/77-Python gate (seven Rust tests skipped), strict
+lint, packaging and release compilation. Fixtures cover restart/replay, parser
+context across batches, malformed context, partial-tail completion, copied logs,
+replacement, truncation, same-length rewrites with restored modification times,
+special files, result limits and byte bounds. Initial fixture compilation and lint
+failures are retained at `/private/tmp/agentdocker-usage-reader-targeted1-2026-09-16.log`
+and `/private/tmp/agentdocker-usage-reader-gate1-2026-09-16.log`; passing logs are
+`/private/tmp/agentdocker-usage-reader-targeted2-2026-09-16.log` and
+`/private/tmp/agentdocker-usage-reader-gate2-2026-09-16.log`. These are local host
+fixtures, not an actual runtime collection or installed Usage-screen trial.
+
 Counter normalization follows [OpenAI usage breakdowns](https://developers.openai.com/api/reference/cli/resources/responses/methods/retrieve)
 and [Claude cache input semantics](https://platform.claude.com/docs/en/build-with-claude/prompt-caching):
 Codex input/output totals include their cache/reasoning components; Claude total
@@ -1221,6 +1293,15 @@ Provider questions hold ordinary messages until resolved. This contract does
 not give the external native-queue sidecar control of a standalone TUI turn.
 Bounded source and actual-Codex/local-model busy and lost-reply trials passed at
 `13c3e40`; hosted-model and existing-session acceptance remain open.
+
+Usage reader review follow-up (September 17 UTC): complete oversized records now
+advance as explicit gaps when their newline fits in the byte budget, allowing
+later supported records to be collected. A missing newline within that budget
+still preserves the prior cursor. The same bounded buffered reader counts
+prefetched bytes; skipped records reset Codex context and contribute once to the
+prefix digest. A regression covers a record larger than the maximum parser
+limit, subsequent supported usage, resumed digest equivalence and insufficient
+budget. Source `89ceabe` passed eight focused reader tests and the full 1,034-Rust/77-Python gate (seven skipped). After integration with merged main, `a05a751` passed the full 1,095-Rust/84-Python gate (seven skipped), formatting, strict Clippy, doctests, packaging and release build. Logs are `/private/tmp/agentdocker-usage-scan-targeted2-2026-09-17.log` and `/private/tmp/agentdocker-usage-scan-gate2-2026-09-17.log`; matching JUnit reports are retained in the corresponding `-nextest-` directories. The initial targeted command selected the wrong module and ran zero tests; that failed log remains as `targeted1`. These are file-fixture tests; daemon collection, persistence, CLI and screen acceptance remain open.
 
 Session resumption treats an unreadable observation record as a daemon storage failure. Identity lists are SQL parameters, and accepted empty observation documents for retired identities are removed in the same resume transaction; nonempty observations still refuse resumption.
 

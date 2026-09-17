@@ -225,6 +225,18 @@ message from your queue and **Clear shown** the visible ones; direct messages
 otherwise remain queued until a consumer explicitly takes them. The rail badge
 counts open questions and waiting messages together. Notification navigation
 opens the requested message, including an older one outside the recent window.
+On the Messages screen the message is a row of the archive: the row is marked
+and scrolled to once its page is here, and if the conversation was already open
+at its newest the pages before are read back for it, one at a time, up to five
+(one in flight at a time, so refreshes of the newest page do not spend the
+bound), before the person is told how many messages were searched and that
+**Show earlier messages** reads further back. When the archive's start is
+reached first the message is said to be no longer in the archive, and a
+conversation already holding all the window keeps (5,000 messages) is not
+paged further and is told that limit instead. Navigating away — another
+screen, project, session or conversation, or another notification — or
+losing the daemon ends the search, and a page that arrives late moves
+nothing.
 
 Tools shows **Input receiver active** only with a fresh report from a receiver
 bound to a live session. **Connected · messages wait for its next prompt**

@@ -32,7 +32,14 @@ before launch. Provider consent and organization policy still apply.
 
 ## One entry for every session
 
-The entry may carry `--claude-channel` in a user-level MCP configuration: under
+Fresh setup generates `--claude-channel` in the Claude MCP entry, and the
+inventory/setup checks recognize that exact form. The flag makes the adapter
+available; it does not enable the parent input-mode variable or accept provider
+consent. Existing plain MCP entries remain valid and are preserved. Before
+relaunching an existing session for idle input, ensure its actual entry includes
+`--claude-channel`; the provider launch flag alone cannot enable a plain adapter.
+
+With `--claude-channel` in a user-level MCP configuration, under
 a session launched without the input-mode variable and the channel opt-in it
 serves the ordinary MCP server (no channel capability, no offers, no owner
 lock; the hooks adapter and the tools deliver the inbox as usual) and says so
