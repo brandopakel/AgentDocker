@@ -523,7 +523,7 @@ def smoke(binary_dir, output):
             report["activity_only_window"] = readiness_window("readiness-activity", "Idle delivery not verified")
             rpc(endpoint, {"op": "report_adapter", "agent": receiver["id"], "adapter": "mcp",
                            "contact": {"process_started_at": receiver["process_started_at"], "observed_at": now()}})
-            report["contact_window"] = readiness_window("readiness-contact", "Connected · idle delivery not verified")
+            report["contact_window"] = readiness_window("readiness-contact", "Connected · messages wait for its next prompt")
             def input_report(value):
                 rpc(endpoint, {"op": "report_input", "agent": receiver["id"],
                                "process_started_at": receiver["process_started_at"],
