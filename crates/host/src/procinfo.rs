@@ -266,6 +266,7 @@ pub fn resume_request(argv: &[String]) -> Option<ResumeRequest> {
     let mut arguments = argv.iter().skip(1).peekable();
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
+            "--" => return None,
             "--continue" | "-c" => return Some(ResumeRequest { session: None }),
             "--resume" | "-r" => {
                 let session = arguments
@@ -519,6 +520,18 @@ mod tests {
             resume_request(&argv(&["claude", "-c"])),
             Some(ResumeRequest { session: None }),
             "continue names nothing"
+        );
+        for prompt in ["--resume", "--resume=session", "-r", "--continue", "-c"] {
+            assert_eq!(
+                resume_request(&argv(&["claude", "--", prompt, "session"])),
+                None,
+                "text after the option separator is a prompt"
+            );
+        }
+        assert_eq!(
+            resume_request(&argv(&["claude", "--continue", "--", "--resume"])),
+            Some(ResumeRequest { session: None }),
+            "a resume option before the separator still selects the wait"
         );
         assert_eq!(resume_request(&argv(&["claude"])), None);
         assert_eq!(resume_request(&argv(&["claude", "--verbose"])), None);

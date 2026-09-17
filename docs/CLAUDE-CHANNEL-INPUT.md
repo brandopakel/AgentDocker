@@ -75,7 +75,7 @@ the record is bounded by the transport timeout and cut at the deadline, and is
 polled beside the transport, so a slow daemon neither holds up control or
 receipts nor stretches the wait. The hook's word is followed even
 when it names a different session from the one the command line asked for;
-a command-line id is a claim and is never registered as identity. Past the
+a command-line id is a claim and is never registered as identity. Arguments after `--` are prompt text and do not select the wait. Past the
 wait, input is bound anyway and the adapter says so on stderr — the daemon's
 guard then keeps the earlier record separate, as before. Control calls, `ping`
 and receipts are served throughout; no message is offered before readiness.
