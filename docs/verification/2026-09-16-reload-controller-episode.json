@@ -3617,5 +3617,44 @@
       "Review7 pressure and native-TUI handovers were not rerun for this owned-bridge classifier change. The daemon hash is unchanged; their original source, CLI hashes, timings and warnings remain in review7.",
       "All four trials cleaned up without forced termination, errors or surviving fixture processes. Broader provider/model-service, installed, sleep/reboot and platform acceptance remain open."
     ]
+  },
+  "review9_2026_09_17": {
+    "result": "gate_passed_acceptance_provenance_retained",
+    "source": "f4ef6c3978bf9b4170474d2df5c1ac7d82343c48",
+    "build": {
+      "format": 1,
+      "source_commit": "f4ef6c3978bf9b4170474d2df5c1ac7d82343c48",
+      "source_tree": "6c0df14c10462aacbed54e655c773987d4043352",
+      "source_input_sha256": "bf67156c2243b55f0a4511a0e87495fdafef39878eaac876ce2202b121edaf72",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-reload-review9-binaries1-2026-09-17",
+      "binary_sha256": {
+        "agentdocker": "caa1816b787b772497074fd4a61ff004368d477873435da7e496191ad9bd6d71",
+        "agentd": "192f8698781c71142ed9c7bff86885f3634836a06d30701239fc42a8068c3496",
+        "agentdocker-ui": "a0adfe059103a6efd4e2f21ba7a9f56c826184381ee83271ee43834f5ce31d36"
+      }
+    },
+    "gate": {
+      "rust_passed": 1087,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "doctests": true,
+      "fmt": true,
+      "strict_clippy": true,
+      "packaging": true,
+      "release": true,
+      "log": "/private/tmp/agentdocker-reload-review9-gate1-2026-09-16.log"
+    },
+    "scope": "Integrated merged main including usage foundations and background smoke windows. Earlier review8 actual runtime trials retain their original source and hashes; this gate is not a rerun of those trials. Installed app unchanged.",
+    "notes": [
+      "The gate finished naturally before pause cleanup checked its exit status; the temporary assumption that it was aborted is withdrawn.",
+      "The incremental build_native call completed from cache after a Cargo claim conflict; no continuing process remained when checked. Record retained; subsequent builds require a separately confirmed claim."
+    ]
   }
 }

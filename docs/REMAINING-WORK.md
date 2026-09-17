@@ -1,5 +1,11 @@
 # Remaining engineering and release work
 
+September 17 UTC integration: source `f4ef6c3` passed the full 1,087-Rust/84-Python
+gate (seven skipped), formatting, strict lint, doctests, packaging and release.
+Earlier actual reload/controller trials retain their original source pins;
+this gate does not claim a new runtime trial or production installation.
+
+
 Audited September 14 against `aaa1b61`, with merged PRs #150/#152/#154, the September 15
 `72b1eb4` installed preview and PR #155 review acceptance recorded below. This is the current
 backlog for the requirements already in the project documents. The
