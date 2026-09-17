@@ -315,8 +315,16 @@ def run(args):
                 # is not part of the older backlog or a model receipt claim.
                 assert rpc(endpoint, {"op": "ack_inbox", "agent": fresh,
                     "messages": inbox(fresh)})["type"] == "ok"
+                card = rpc(endpoint, {"op": "task_create", "from": fresh,
+                    "title": fresh, "acceptance": "preserve this work", "column": "ready"})["task"]
+                assert rpc(endpoint, {"op": "task_pull", "agent": fresh, "task": card["id"]})["type"] == "task"
+                card = rpc(endpoint, {"op": "task_move", "agent": fresh,
+                    "task": card["id"], "column": "done"})["task"]
                 early = channel_for(fresh, initialize=False)
                 assert register_life("resume-hook", new_parent, "fixture-resumed-session") == canonical
+                cards = rpc(endpoint, {"op": "tasks", "project": str(project)})["tasks"]
+                restored_card = next(task for task in cards if task["id"] == card["id"])
+                assert restored_card == {**card, "assignee": canonical, "created_by": canonical}, restored_card
                 assert rpc(endpoint, {"op": "reads", "agent": canonical})["reads"] == expected_reads
                 assert rpc(endpoint, {"op": "reads", "agent": fresh})["reads"] == expected_reads
                 # The first server still holds its pre-fold agent-ID lock.
@@ -341,7 +349,7 @@ def run(args):
                 assert inbox(canonical) == []
                 early.process.stdin.close()
                 assert early.process.wait(timeout=5) == 0
-                report["steps"].append("pre-initialization session fold preserved observations and open memberships, retained one channel owner across different agent IDs, and delivered the older queue plus a new room message through the canonical alias")
+                report["steps"].append("pre-initialization session fold preserved observations, open memberships and completed card identity references without changing their text or state, retained one channel owner across different agent IDs, and delivered the older queue plus a new room message through the canonical alias")
 
                 retained = send_to(canonical, "retained older backlog")
                 new_parent.kill(); new_parent.wait(timeout=5)
