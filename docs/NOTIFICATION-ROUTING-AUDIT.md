@@ -189,7 +189,7 @@ revealed, and the GUI and both provider processes were unchanged. This closes
 the person's finding that a click while the app was already open did nothing,
 for that installed revision. Recorded in the
 [integrated record](verification/2026-09-12-integrated-desktop.json) under
-`installed_notification_click_2026_09_17`. Later the same day, with no app
+`installed_notification_click_2026_09_17`. Later the same day, with no GUI
 process before the post or the press, the same kind of press launched the
 installed app and revealed the message (`0691fa9fd985467f`) in 1.7 s with both
 provider generations unchanged (`installed_cold_notification_click_2026_09_17`),

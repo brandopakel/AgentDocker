@@ -3148,7 +3148,16 @@
       "A physical mouse click rather than an accessibility press.",
       "The same on a signed/notarized release and on candidate d14610b7.",
       "A click whose message lies outside the loaded pages (the bounded page-back path)."
-    ]
+    ],
+    "visual_followup": {
+      "at": "2026-09-17T20:43:04.216477+00:00",
+      "result": "passed",
+      "pid": 77901,
+      "window_id": 42373,
+      "screenshot_sha256": "ab6fc2a96913b9ef9fbf00c3d5be79ad9cb246e32f1c5497442c374c19c3461b",
+      "visual_finding": "Exact cold-notification marker AD-INSTALLED-COLD-20260917-2016 is visible and highlighted in the current conversation viewport. No scrolling or app input used before capture. Captured the owned window, independently of desktop occlusion.",
+      "scope": "Follow-up visual inspection of the same installed GUI launched by the 20:15 cold click; not a second click or timing measurement."
+    }
   },
   "combined_board_drafts_resume_2026_09_17": {
     "source": "4647c2e37002ae34259ae6a851ea868fe8d4d978",
@@ -3473,6 +3482,17 @@
       "Busy/interruption latency and broader provider adapters",
       "Remaining form persistence and physical keyboard/IME",
       "Signed distribution, Windows completion and sustained independent acceptance"
-    ]
+    ],
+    "actual_board_use": {
+      "at": "2026-09-17T21:03:07.451530+00:00",
+      "result": "passed",
+      "candidate": "d14610b7",
+      "pid": 22436,
+      "task_id": "027e77502b68",
+      "task_project": "6db5832c6f2848762c807a3800d85f65a9b37c31",
+      "durable_title_and_acceptance_verified": true,
+      "purpose": "Track the existing throughput defect on the actual installed Board, not a fixture or a new project requirement.",
+      "scope": "Filed the existing throughput defect through installed Board controls; CLI listing and durable task record confirmed exact title/acceptance and project. The card remains Backlog; no claim that its engineering is complete."
+    }
   }
 }

@@ -628,7 +628,12 @@ records appeared **104.19–119.36 seconds after sending**, so this is an orderi
 pass and an open latency finding, not immediate-delivery acceptance. Two earlier
 system notices were acknowledged before the first peer message. The external
 service retains one attempt and the active hook offers one head per tool
-boundary; the trace does not isolate every native queue/API wait.
+boundary. The first tool completed at 20:20:08.578 UTC; the next tool began at
+20:20:58.985 and was a 45-second coordinator sleep. The first peer input arrived
+when that wait ended at 20:21:44.314; the next tool at 20:21:59.161 delivered the
+other two. These are end-to-end context delays including gaps between tools
+and an explicit coordinator wait, not 104–119 seconds of daemon or RPC work.
+The trace does not isolate every native queue/API wait.
 
 The [existing queue record](verification/2026-09-15-native-codex-queue.json) retains
 all three IDs, timestamps and receipt hashes. Bounded batching and scheduling

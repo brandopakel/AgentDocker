@@ -53,10 +53,11 @@ limits through `report_provider_status`; do not guess reset times or report
 recovery from a heartbeat. Continue independent work while a peer is unavailable.
 
 When you drive the `agentdocker` command line rather than the tools, branch
-on its exit status rather than its text: 0 done, 2 invalid, 3 nothing by that
-name, 4 held by somebody else, 5 refused (not yours, or the project is
-paused), 6 not now (daemon, storage, engine or build unavailable), 1 anything
-unexpected. The words and details are on stderr.
+on its exit status rather than its text: 0 done; 2 invalid; 3 not found or
+ambiguous; 4 conflict, name_taken or deadlock; 5 forbidden or paused;
+6 unavailable, storage_unavailable, engine_unavailable, build_failed,
+backpressure, timeout, cancelled, transferring or event_history_lost;
+1 unexpected. The words and details are on stderr.
 
 ## Manual inbox delivery
 
