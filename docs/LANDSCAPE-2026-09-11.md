@@ -180,14 +180,32 @@ its comments are our channel, its Memory link is our `journal_note`.
 
 ### Combining rather than competing
 
-An agent can sit on both: Paprika tells it what to do next, AgentDocker keeps it
-from colliding with the others while it does it. A bridge is small and optional,
-like the herdr one: when an agent pulls Paprika card `T-7`, take the
+An agent can sit on both: Paprika tells it what to do next, AgentDocker helps it
+coordinate overlapping work with the others. An optional bridge, like the
+proposed herdr one, would work as follows: when an agent pulls Paprika card `T-7`, take the
 `task:paprika/T-7` lease here with the card's title as the note (so `agentdocker
 leases` shows who holds which card); when the card moves to Review, open a
 channel with the reviewer; post `agentdocker` journal commits back as card
 comments through Paprika's MCP. Nothing in that needs Paprika's cooperation
 beyond its public tools. Not started.
+
+A task lease has a TTL. The holder must renew it during long-running work;
+without renewal it expires and no longer excludes another local claimant.
+Exclusion applies only while a valid exclusive lease is held, and the agents
+must honor that coordination contract. It does not prevent arbitrary filesystem
+writes or make a remote card update atomic with a local lease.
+
+The proposed bridge needs explicit reconciliation before work or renewal: read
+both the card's current assignee/state and the local lease. If they disagree,
+stop new work and report the mismatch instead of claiming ownership from either
+one alone. A card still assigned to an ended agent after its lease expires is
+stale; require confirmed card reassignment (or the person's explicit recovery)
+and a fresh successful lease claim before another agent starts. If the card was
+reassigned or closed while a local lease survives, release the old claim and
+report the transition. Lost replies must be reconciled by reading both states
+before retrying, so a retry cannot duplicate assignment or silently extend an
+expired claim. These are acceptance requirements for the optional proposal,
+not delivered integration behavior.
 
 ### Adoption status of the September 11 notes
 
