@@ -134,6 +134,11 @@ impl Daemon {
         self.pin_controllers();
         let bindings: Vec<(AgentId, InputBinding)> = {
             let state = lock(&self.state);
+            if state.fenced() {
+                // A fenced coordinator writes nothing and starts nothing:
+                // the successor tends the controllers once it serves.
+                return;
+            }
             state
                 .registry
                 .list(true)
@@ -180,6 +185,20 @@ impl Daemon {
                     });
                 }
                 ControllerStep::Terminate { kill: hard } => {
+                    // Under the guard, and only if the binding is still the
+                    // one decided on: a bind that landed since made this
+                    // process the controller, and a fence since makes it
+                    // the successor's to judge.
+                    let state = lock(&self.state);
+                    if state.fenced()
+                        || state
+                            .registry
+                            .get(&id)
+                            .and_then(|r| r.input_binding.as_ref())
+                            != Some(&binding)
+                    {
+                        continue;
+                    }
                     if let Some(launched) = &binding.restart.launched {
                         warn!(agent = %id, pid = launched.pid, "launched controller did not bind in time");
                         signal(
@@ -202,11 +221,12 @@ impl Daemon {
                     // itself already noted as the launched process, so its
                     // bind resumes the binding rather than overtaking it.
                     let mut state = lock(&self.state);
-                    if state
-                        .registry
-                        .get(&id)
-                        .and_then(|r| r.input_binding.as_ref())
-                        != Some(&binding)
+                    if state.fenced()
+                        || state
+                            .registry
+                            .get(&id)
+                            .and_then(|r| r.input_binding.as_ref())
+                            != Some(&binding)
                     {
                         continue;
                     }
@@ -253,22 +273,25 @@ impl Daemon {
     /// Called before serving and on every tick; a pin that cannot be
     /// taken is logged here and refused at the launch that needs it.
     pub fn pin_controllers(&self) {
-        let wanted: Vec<(AgentId, ControllerLaunch)> = {
-            let state = lock(&self.state);
-            state
-                .registry
-                .list(true)
-                .into_iter()
-                .filter_map(|r| {
-                    r.input_binding
-                        .as_ref()
-                        .and_then(|b| b.launch.clone())
-                        .filter(|_| !state.controller_pins.contains_key(&r.id))
-                        .map(|launch| (r.id.clone(), launch))
-                })
-                .collect()
-        };
+        // One guard from the look to the pins: a transfer that begins in
+        // between would otherwise find pins taken past the fence.
         let mut state = lock(&self.state);
+        if state.fenced() {
+            // Held pins stay held; new ones are the successor's to take.
+            return;
+        }
+        let wanted: Vec<(AgentId, ControllerLaunch)> = state
+            .registry
+            .list(true)
+            .into_iter()
+            .filter_map(|r| {
+                r.input_binding
+                    .as_ref()
+                    .and_then(|b| b.launch.clone())
+                    .filter(|_| !state.controller_pins.contains_key(&r.id))
+                    .map(|launch| (r.id.clone(), launch))
+            })
+            .collect();
         for (id, launch) in wanted {
             if let Err(error) = state.pin_controller(&id, &launch) {
                 warn!(agent = %id, %error, "could not pin the controller's release");
@@ -376,8 +399,9 @@ impl State {
         {
             return;
         }
-        self.persist("legacy offers", |store| store.upsert_agent(&record));
-        if self.storage_error.is_none() {
+        if self.persist("legacy offers", |store| store.upsert_agent(&record))
+            == Persisted::Committed
+        {
             *self.registry.get_mut(id).expect("resolved agent") = record;
         }
     }
@@ -402,8 +426,9 @@ impl State {
         }
         // Stored first, then in memory, so the two never disagree about
         // what is still uncertain.
-        self.persist("input bookkeeping", |store| store.upsert_agent(&record));
-        if self.storage_error.is_none() {
+        if self.persist("input bookkeeping", |store| store.upsert_agent(&record))
+            == Persisted::Committed
+        {
             *self.registry.get_mut(id).expect("resolved agent") = record;
         }
     }
@@ -466,10 +491,10 @@ impl State {
         let mut record = record.clone();
         let mut event = Event::new(change(&mut record), now);
         event.seq = self.next_seq;
-        self.persist("controller restart", |store| {
+        if self.persist("controller restart", |store| {
             store.agent_transition(&record, &event)
-        });
-        if self.storage_error.is_some() {
+        }) != Persisted::Committed
+        {
             return false;
         }
         *self.registry.get_mut(id).expect("resolved agent") = record;
@@ -655,11 +680,13 @@ impl State {
             now,
         );
         event.seq = self.next_seq;
-        self.persist("input binding", |store| {
+        let committed = self.persist("input binding", |store| {
             store.agent_transition(&record, &event)
         });
-        if let Some(error) = self.storage_failure() {
-            return error;
+        if committed != Persisted::Committed {
+            return self
+                .write_failure()
+                .expect("refused input binding write has a reason");
         }
         *self.registry.get_mut(&id).expect("resolved agent") = record;
         self.next_seq += 1;
@@ -725,11 +752,13 @@ impl State {
             now,
         );
         event.seq = self.next_seq;
-        self.persist("input unbinding", |store| {
+        let committed = self.persist("input unbinding", |store| {
             store.agent_transition(&record, &event)
         });
-        if let Some(error) = self.storage_failure() {
-            return error;
+        if committed != Persisted::Committed {
+            return self
+                .write_failure()
+                .expect("refused input unbinding write has a reason");
         }
         *self.registry.get_mut(&id).expect("resolved agent") = record;
         self.controller_pins.remove(&id);
@@ -992,15 +1021,17 @@ impl State {
             now,
         );
         event.seq = self.next_seq;
-        self.persist("input resume", |store| {
+        let committed = self.persist("input resume", |store| {
             store.resume_input(&canonical, &alias, &event)
         });
-        if let Some(error) = self.storage_failure() {
+        if committed != Persisted::Committed {
             self.controller_pins.remove(&prior.id);
             if let Some(pin) = previous_pin {
                 self.controller_pins.insert(prior.id.clone(), pin);
             }
-            return error;
+            return self
+                .write_failure()
+                .expect("refused input resume write has a reason");
         }
         if let Err(error) = self.registry.retire_into(&caller.id, &prior.id) {
             // Checked above; the store has the alias, memory must follow.
@@ -1905,7 +1936,10 @@ mod tests {
             let binding = record.input_binding.as_mut().unwrap();
             binding.restart.attempts = agentdocker_core::CONTROLLER_RESTARTS;
             binding.restart.exhausted = true;
-            state.persist("test", |store| store.upsert_agent(&record));
+            assert_eq!(
+                state.persist("test", |store| store.upsert_agent(&record)),
+                Persisted::Committed
+            );
             *state.registry.get_mut(&receiver.id).unwrap() = record;
         }
         let seq = lock(&daemon.state).next_seq;
@@ -1968,6 +2002,158 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A fenced coordinator neither notes an end nor launches anything:
+    /// the tick leaves memory and disk as they are, and the successor,
+    /// or this daemon once it takes authority back, does the work.
+    #[tokio::test]
+    async fn a_fenced_tick_neither_notes_an_end_nor_launches() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = provider(&daemon, "receiver", "sess-1").await;
+        let controller = Other::spawn();
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: generation(&receiver, "sess-1"),
+                    controller: controller.identity(),
+                    token: TOKEN.into(),
+                    launch: Some(descriptor(&dir)),
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        drop(controller);
+        daemon.offer_transfer(1).unwrap();
+        let seq = lock(&daemon.state).next_seq;
+        daemon.tend_controllers();
+        daemon.tend_controllers();
+        let binding = binding_of(&daemon, &receiver.id);
+        assert_eq!(binding.restart.ended_at, None, "nothing noted while fenced");
+        assert_eq!(
+            binding.restart.launched, None,
+            "nothing launched while fenced"
+        );
+        assert_eq!(lock(&daemon.state).next_seq, seq, "no event while fenced");
+        assert!(
+            !dir.path().join("mark").exists(),
+            "the descriptor did not run"
+        );
+        // A bind while fenced is refused as transferring, memory untouched.
+        let other = Other::spawn();
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: generation(&receiver, "sess-1"),
+                    controller: other.identity(),
+                    token: TOKEN.into(),
+                    launch: Some(descriptor(&dir)),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Transferring,
+                ..
+            }
+        ));
+        drop(other);
+        assert!(daemon.abort_transfer("cleanup"));
+        daemon.tend_controllers();
+        daemon.tend_controllers();
+        let launched = binding_of(&daemon, &receiver.id)
+            .restart
+            .launched
+            .expect("launched once authority is back");
+        assert!(is_running(&launched));
+        // Its bind grace runs out while a new offer is up: a fenced tick
+        // signals nothing either, since the successor is the one to judge;
+        // once authority is back the tick tells it to stop.
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&receiver.id).unwrap();
+            let binding = record.input_binding.as_mut().unwrap();
+            binding.restart.launched_at = Some(
+                Utc::now() - agentdocker_core::CONTROLLER_BIND_GRACE - chrono::Duration::seconds(1),
+            );
+        }
+        daemon.offer_transfer(1).unwrap();
+        daemon.tend_controllers();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(is_running(&launched), "a fenced tick signals nobody");
+        assert!(daemon.abort_transfer("cleanup"));
+        daemon.tend_controllers();
+        // Yield to the runtime while waiting: it reaps the child, which
+        // on Linux stays a visible zombie until then.
+        let gone = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while is_running(&launched) && std::time::Instant::now() < gone {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(
+            !is_running(&launched),
+            "told to stop once authority is back"
+        );
+    }
+
+    /// A delivery read records the offer it makes, so it is a mutation: a
+    /// fenced daemon refuses it rather than hand a hook a message whose
+    /// exposure nobody would record, which a controller binding later
+    /// would take for never offered. A person's look stays a read.
+    #[tokio::test]
+    async fn a_fenced_delivery_read_is_refused_rather_than_unrecorded() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = provider(&daemon, "receiver", "sess-1").await;
+        let sender = peer(&daemon, "sender").await;
+        let queued = send(&daemon, &sender, &receiver, "one").await;
+        daemon.offer_transfer(1).unwrap();
+        assert!(matches!(
+            daemon
+                .handle(Request::DeliveryQueue {
+                    agent: receiver.id.to_string(),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Transferring,
+                ..
+            }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::PeekInput {
+                    agent: receiver.id.to_string(),
+                })
+                .await,
+            Response::Messages { messages } if messages.iter().map(|m| &m.id).eq([&queued])
+        ));
+        assert!(
+            lock(&daemon.state)
+                .registry
+                .get(&receiver.id)
+                .unwrap()
+                .legacy_offers
+                .is_empty(),
+            "nothing was offered while fenced"
+        );
+        assert!(daemon.abort_transfer("cleanup"));
+        assert!(matches!(
+            daemon
+                .handle(Request::DeliveryQueue {
+                    agent: receiver.id.to_string(),
+                })
+                .await,
+            Response::Messages { messages } if messages.len() == 1
+        ));
+        assert!(
+            lock(&daemon.state)
+                .registry
+                .get(&receiver.id)
+                .unwrap()
+                .legacy_offers
+                .contains_key(&queued),
+            "the offer is recorded once the write can land"
+        );
     }
 
     /// The restart record is on the agent record: a daemon opened again

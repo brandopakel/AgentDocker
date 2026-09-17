@@ -79,7 +79,13 @@ impl Daemon {
         let before = record.clone();
         change(&mut record);
         if record != before {
-            state.save_container_transition(record);
+            let committed = state.save_container_transition(record);
+            if committed == Persisted::Skipped {
+                return Err(ContainerError::with_code(
+                    ErrorCode::Transferring,
+                    "container transition was not applied during coordinator transfer".into(),
+                ));
+            }
         }
         if let Some(error) = &state.storage_error {
             return Err(ContainerError::unavailable(error.clone()));
@@ -276,8 +282,22 @@ impl Daemon {
         // Asked for by a person, so it is not the daemon going down: an
         // agent stopped on purpose is neither brought back by the next
         // start nor restarted by its own policy.
-        self.clear_restore(&id);
-        self.clear_restart(&id);
+        if !self.clear_restore(&id) {
+            return lock(&self.state).write_failure().unwrap_or_else(|| {
+                Response::error(
+                    ErrorCode::StorageUnavailable,
+                    "the restore policy could not be cleared; the agent was not stopped",
+                )
+            });
+        }
+        if !self.clear_restart(&id) {
+            // The policy that would start it again is still in force on
+            // disk: stopping now would be undone by the next daemon.
+            return Response::error(
+                ErrorCode::StorageUnavailable,
+                "the restart policy could not be cleared; the agent was not stopped",
+            );
+        }
         if self.container_record(&id).is_none() {
             return self.stop(reference, force);
         }
@@ -350,6 +370,10 @@ impl Daemon {
         id: AgentId,
         create: bool,
     ) -> Result<(), ContainerError> {
+        let _admitted = self.admit_background().map_err(|error| match *error {
+            Response::Error { code, message, .. } => ContainerError::with_code(code, message),
+            _ => ContainerError::unavailable("container reconciliation was not admitted".into()),
+        })?;
         {
             let mut state = lock(&self.state);
             if !state.container_busy.insert(id.clone()) && !create {
@@ -519,9 +543,9 @@ impl Daemon {
 }
 
 impl State {
-    fn save_container_transition(&mut self, mut record: AgentRecord) {
+    fn save_container_transition(&mut self, mut record: AgentRecord) -> Persisted {
         let Some(previous) = self.registry.get(&record.id).cloned() else {
-            return;
+            return Persisted::Skipped;
         };
         let now = Utc::now();
         let exited = previous.status.is_live() && !record.status.is_live();
@@ -586,6 +610,7 @@ impl State {
                 .cloned()
                 .map(|lease| EventKind::LeaseReleased { lease }),
         );
+        let previous_journal_seq = self.journal_seq.clone();
         for entry in &mut journal {
             entry.seq = self.next_journal_seq(&entry.project);
             kinds.push(EventKind::JournalAppended {
@@ -602,11 +627,12 @@ impl State {
             })
             .collect();
         let leases: Vec<_> = released.iter().map(|l| l.id.clone()).collect();
-        self.persist("container transition", |store| {
+        let committed = self.persist("container transition", |store| {
             store.container_transition(&record, &leases, &journal, &events)
         });
-        if self.storage_error.is_some() {
-            return;
+        if committed != Persisted::Committed {
+            self.journal_seq = previous_journal_seq;
+            return committed;
         }
         *self.registry.get_mut(&record.id).unwrap() = record.clone();
         if exited {
@@ -619,6 +645,7 @@ impl State {
         for event in events {
             let _ = self.events.send(event);
         }
+        Persisted::Committed
     }
 }
 
@@ -978,7 +1005,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_grant_distinguishes_stopped_endpoint_from_storage_failure() {
+    async fn workspace_grant_distinguishes_stopped_endpoint_from_write_failure() {
         use agentdocker_core::container::{ContainerWorkspace, WorkspaceAccess};
         let tmp = tempfile::tempdir().unwrap();
         let daemon = open(tmp.path(), Arc::new(Fake::default()));
@@ -1333,6 +1360,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fenced_container_updates_are_refused_without_state_or_engine_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Arc::new(Fake::default());
+        let daemon = open(tmp.path(), fake.clone());
+        seed(&daemon);
+        let Response::Agent { agent } = launch(&daemon, tmp.path()).await else {
+            panic!()
+        };
+        let before = daemon.container_record(&agent.id).unwrap();
+        daemon.offer_transfer(4242).unwrap();
+        let mut events = daemon.subscribe_events();
+        let error = daemon.request_container_stop(&agent.id, true).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Transferring);
+        assert_eq!(daemon.container_record(&agent.id).unwrap(), before);
+        assert_eq!(
+            lock(&daemon.state).store.load_agents().unwrap(),
+            vec![before.clone()]
+        );
+        assert!(events.try_recv().is_err());
+        let error = daemon
+            .drive_container(agent.id.clone(), false)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Transferring);
+        assert_eq!(lock(&fake.actions).as_slice(), ["create", "start"]);
+        assert!(daemon.abort_transfer("container trial"));
+        daemon.request_container_stop(&agent.id, true).unwrap();
+        daemon
+            .drive_container(agent.id.clone(), false)
+            .await
+            .unwrap();
+        assert!(!daemon.is_live(&agent.id));
+        assert_eq!(lock(&fake.actions).last(), Some(&"kill"));
+    }
+
+    #[tokio::test]
     async fn reconciliation_waits_for_capacity_instead_of_skipping_the_agent() {
         let tmp = tempfile::tempdir().unwrap();
         let fake = Arc::new(Fake::default());
@@ -1354,6 +1417,14 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(lock(&daemon.state).container_busy.contains(&agent.id));
         assert!(!task.is_finished());
+        let refused = daemon.offer_transfer(4242).unwrap_err();
+        assert!(matches!(
+            *refused,
+            Response::Error {
+                code: ErrorCode::Backpressure,
+                ..
+            }
+        ));
         drop(held);
         tokio::time::timeout(std::time::Duration::from_secs(2), task)
             .await

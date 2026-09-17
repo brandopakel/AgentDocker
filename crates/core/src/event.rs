@@ -290,6 +290,15 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<ProjectId>,
     },
+    /// The human's working location changed durably.
+    HumanLocationChanged {
+        agent: AgentId,
+        workdir: std::path::PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<ProjectRef>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vcs: Option<VcsState>,
+    },
     AgentStarted {
         agent: AgentId,
         pid: Option<u32>,
@@ -387,6 +396,16 @@ pub enum EventKind {
         pid: Option<u32>,
         attempt: u32,
     },
+    /// An explicit stop cleared the agent's restart policy: it will not
+    /// come back on its own.
+    AgentRestartCleared {
+        agent: AgentId,
+    },
+    /// An explicit stop cleared the agent's restore intent: a daemon
+    /// restart will not bring it back.
+    AgentRestoreCleared {
+        agent: AgentId,
+    },
     /// A restarted daemon brought a managed agent back under its own
     /// identity, so everything already recorded about it still applies.
     /// Durable restore intent and lease protection precede process launch.
@@ -481,6 +500,10 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resolution: Option<String>,
     },
+    /// Closed channels were durably removed by housekeeping.
+    ChannelsPruned {
+        channels: Vec<crate::ChannelId>,
+    },
     /// A reviewer gave a verdict on another agent's work in a channel.
     ReviewSubmitted {
         channel: crate::ChannelId,
@@ -536,8 +559,33 @@ pub enum EventKind {
         agent: AgentId,
         vcs: VcsState,
     },
-    /// The daemon is about to exit; `reason` is `signal` or `request`.
+    /// The daemon is about to exit; `reason` is `signal`, `request` or
+    /// `transferred`.
     DaemonStopping {
+        reason: String,
+    },
+    /// This daemon stopped writing and offered coordination to a successor
+    /// process. Mutating requests answer `transferring` until the transfer
+    /// settles.
+    DaemonTransferOffered {
+        transfer: String,
+        successor_pid: u32,
+    },
+    /// The offer now names the successor process that was actually
+    /// started; the offer itself named a placeholder because a pid is
+    /// only known once the process exists.
+    DaemonTransferReaddressed {
+        transfer: String,
+        successor_pid: u32,
+    },
+    /// The successor wrote once and owns the database; this daemon will
+    /// exit without touching agents.
+    DaemonTransferAccepted {
+        transfer: String,
+    },
+    /// The transfer did not complete; this daemon resumed writing.
+    DaemonTransferAborted {
+        transfer: String,
         reason: String,
     },
     /// An event this build has never heard of.
@@ -619,5 +667,18 @@ mod tests {
             assert_eq!(back, kind, "{text}");
             assert_ne!(back, EventKind::Unknown, "{text}");
         }
+    }
+
+    #[test]
+    fn human_location_optional_fields_accept_legacy_null_and_omission() {
+        let omitted = serde_json::json!({
+            "event": "human_location_changed", "agent": "human", "workdir": "/project"
+        });
+        let mut legacy = omitted.clone();
+        legacy["project"] = serde_json::Value::Null;
+        legacy["vcs"] = serde_json::Value::Null;
+        let kind: EventKind = serde_json::from_value(omitted.clone()).unwrap();
+        assert_eq!(serde_json::from_value::<EventKind>(legacy).unwrap(), kind);
+        assert_eq!(serde_json::to_value(kind).unwrap(), omitted);
     }
 }

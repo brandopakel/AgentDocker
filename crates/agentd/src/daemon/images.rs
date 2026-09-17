@@ -45,10 +45,10 @@ impl State {
             Utc::now(),
         );
         event.seq = self.next_seq;
-        self.persist("image build", |store| {
+        let _ = self.persist("image build", |store| {
             store.put_document_with_event("image_build", &build.id, &build, &event)
         });
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
         }
         self.next_seq += 1;

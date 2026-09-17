@@ -1,6 +1,6 @@
 # Claude channel input
 
-AgentDocker has an opt-in Claude Code input adapter over MCP stdio. It offers
+AgentDocker has a Claude Code input adapter over MCP stdio. It offers
 addressed messages from the durable inbox through Claude's channel interface,
 including messages sent while no MCP request is running. The ordinary MCP
 integration remains available for other providers.
@@ -12,10 +12,11 @@ See the [official channel contract](https://code.claude.com/docs/en/channels-ref
 
 ## Launch from AgentDocker
 
-For a new Claude session, open **New session**, choose Claude Code and enable
-**Receive messages while idle (experimental)**. The choice resets when the form
-opens or the provider changes. Complete Claude's consent in the terminal. The CLI
-equivalent is:
+For a new Claude session, open **New session** and choose Claude Code.
+**Idle messages: On** is selected by default. You can turn it off for a terminal
+session without the channel. Opening the form or choosing a supported provider
+restores the On default. Complete Claude's channel consent in the terminal;
+organization policy and tool permissions still apply. The CLI equivalent is:
 
 ```sh
 agentdocker run --runtime claude-code --tty --claude-channel -- claude
@@ -59,8 +60,10 @@ Complete Claude's displayed consent for this trusted local server. The
 development flag bypasses its channel allowlist for this entry; it does not
 bypass organization policy or general tool permissions. The `--strict-mcp-config`
 option limits which MCP entries load; it does not isolate the provider profile.
-Existing sessions must be
-relaunched normally to load another configuration.
+Existing sessions must be relaunched normally to load another configuration.
+That alone does not transfer an old AgentDocker record's queue to the resumed
+process. A safe existing-session handover remains open; do not restart a working
+session merely to make the connection indicator green.
 
 Actual-provider acceptance uses an owned `CLAUDE_CONFIG_DIR` and private daemon
 home/socket, monitors existing provider configuration for changes, and reuses

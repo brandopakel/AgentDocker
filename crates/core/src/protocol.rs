@@ -20,6 +20,48 @@ use crate::{
 
 pub const DEFAULT_LEASE_TTL_SECS: u64 = 300;
 
+/// Per-request capabilities. Old clients omit these fields, and old daemons
+/// ignore them. Capability negotiation never changes whether a request is safe
+/// to retry: only an explicit refusal before application establishes that.
+#[derive(Debug, Deserialize)]
+pub struct RequestFrame {
+    #[serde(flatten)]
+    pub request: Request,
+    #[serde(default)]
+    pub handover_retry: bool,
+}
+
+/// Encode a current client request, advertising the explicit handover error.
+pub fn request_json(request: &Request) -> serde_json::Result<String> {
+    let mut frame = serde_json::to_value(request)?;
+    frame
+        .as_object_mut()
+        .expect("requests are JSON objects")
+        .insert("handover_retry".into(), Value::Bool(true));
+    serde_json::to_string(&frame)
+}
+
+/// Older binaries cannot decode `transferring`, and cannot acquire automatic
+/// retry logic from a new daemon. Preserve a decodable, safe refusal for them;
+/// only clients advertising the capability receive the dedicated retry code.
+pub fn handover_response(response: Response, handover_retry: bool) -> Response {
+    if !handover_retry
+        && let Response::Error {
+            code: ErrorCode::Transferring,
+            message,
+            ..
+        } = &response
+    {
+        return Response::error(
+            ErrorCode::Unavailable,
+            format!(
+                "{message}; nothing was applied. Retry after the handover; update this client for automatic retry."
+            ),
+        );
+    }
+    response
+}
+
 /// The digest form of `journal`; see [`crate::journal::digest`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DigestRequest {
@@ -883,6 +925,10 @@ pub enum ErrorCode {
     Timeout,
     /// The owner explicitly cancelled the pending operation.
     Cancelled,
+    /// The daemon is handing coordination to a successor: this request
+    /// was not applied. Retry it against the daemon that answers next;
+    /// nothing from it was accepted, so nothing needs undoing.
+    Transferring,
     /// Waiting for this would close a cycle: every agent in it is
     /// waiting for something another member holds, so none could ever
     /// proceed. `details.cycle` says who and what.
@@ -970,6 +1016,13 @@ pub enum Response {
         /// absent when it is off or still starting.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         restricted: Option<std::path::PathBuf>,
+        /// The serving daemon's process, and the executable it runs from:
+        /// after a reload these say which release actually serves, which
+        /// the version alone cannot when two releases share one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        executable: Option<std::path::PathBuf>,
     },
     Agent {
         agent: AgentRecord,
@@ -1184,6 +1237,32 @@ fn access_ttl() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handover_capability_is_optional_and_never_relabels_other_errors() {
+        let request = Request::Ping;
+        let encoded = request_json(&request).unwrap();
+        // This is the parser used by pre-capability daemons.
+        assert_eq!(serde_json::from_str::<Request>(&encoded).unwrap(), request);
+        assert!(
+            serde_json::from_str::<RequestFrame>(&encoded)
+                .unwrap()
+                .handover_retry
+        );
+        assert!(
+            !serde_json::from_str::<RequestFrame>(r#"{"op":"ping"}"#)
+                .unwrap()
+                .handover_retry
+        );
+        let error = Response::error(ErrorCode::StorageUnavailable, "disk failed");
+        assert_eq!(handover_response(error.clone(), false), error);
+        assert!(
+            serde_json::from_str::<Response>(
+                r#"{"type":"error","code":"future_unknown_error","message":"not a handover"}"#
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn journal_snapshot_head_is_optional_for_older_daemons() {

@@ -154,15 +154,15 @@ impl State {
             now,
         );
         event.seq = self.next_seq;
-        self.persist("adapter contact", |store| {
+        let committed = self.persist("adapter contact", |store| {
             store.agent_transition(&record, &event)
         });
-        if self.storage_error.is_none() {
+        if committed == Persisted::Committed {
             *self.registry.get_mut(&id).expect("resolved agent") = record;
             self.next_seq += 1;
             let _ = self.events.send(event);
         }
-        self.storage_failure().unwrap_or(Response::Ok)
+        self.write_failure().unwrap_or(Response::Ok)
     }
 
     pub(super) fn report_input(
@@ -283,15 +283,15 @@ impl State {
             now,
         );
         event.seq = self.next_seq;
-        self.persist("input delivery report", |store| {
+        let committed = self.persist("input delivery report", |store| {
             store.agent_transition(&record, &event)
         });
-        if self.storage_error.is_none() {
+        if committed == Persisted::Committed {
             *self.registry.get_mut(&id).expect("resolved agent") = record;
             self.next_seq += 1;
             let _ = self.events.send(event);
         }
-        self.storage_failure().unwrap_or(Response::Ok)
+        self.write_failure().unwrap_or(Response::Ok)
     }
 
     pub(super) fn report_activity(
@@ -336,15 +336,15 @@ impl State {
             now,
         );
         event.seq = self.next_seq;
-        self.persist("activity report", |store| {
+        let committed = self.persist("activity report", |store| {
             store.agent_transition(&record, &event)
         });
-        if self.storage_error.is_none() {
+        if committed == Persisted::Committed {
             *self.registry.get_mut(&id).expect("resolved agent") = record;
             self.next_seq += 1;
             let _ = self.events.send(event);
         }
-        self.storage_failure().unwrap_or(Response::Ok)
+        self.write_failure().unwrap_or(Response::Ok)
     }
 
     /// Whether it is this waiter's turn. A claim with no ticket has not

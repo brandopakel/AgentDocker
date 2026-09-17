@@ -288,6 +288,9 @@ def smoke(binary_dir, output):
                          step("fill", id=f"project-rename-{pinned}", text=""), step("click", id=f"project-rename-save-{pinned}"),
                          step("wait_control", id=f"project-rename-save-{pinned}", present=False), step("wait_text", text="pinned-api"),
                          step("click", id="launch-agent"), step("click", id="launch-tool-codex"),
+                         step("wait_text", text="Idle messages: On"), step("click", id="launch-idle-input"),
+                         step("wait_text", text="Idle messages: Off"),
+                         # This fake CLI is a terminal fixture, not a provider input server.
                          step("fill", id="launch-name", text="launched-from-iced"), step("click", id="confirm-launch"),
                          step("wait_text", text="Agent launched"), step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="launched-terminal"), step("click", id="detach-terminal"),
@@ -501,10 +504,20 @@ def smoke(binary_dir, output):
             def now():
                 return datetime.now(timezone.utc).isoformat()
             def readiness_window(name, expected):
+                conversation = "dm:" + ":".join(sorted([human["id"], receiver["id"]]))
+                input_status = "Idle delivery not verified" if name == "readiness-contact" else expected
                 return launch(name, [step("click", id="connections"),
                                      step("click", id="connection-details-claude-code"),
                                      step("wait_text", text="readiness-fixture"),
-                                     step("wait_text", text=expected), step("capture", name=name)])
+                                     step("wait_text", text=expected), step("capture", name=name),
+                                     step("click", id="projects"), step("click", id=f"project-{project}"),
+                                     step("click", id="inbox"), step("click", id=f"thread-{receiver['id']}"),
+                                     step("wait_text", text=input_status),
+                                     step("fill", id=f"reply-{receiver['id']}", text="Keep the connection draft"),
+                                     step("click", id=f"input-connection-{conversation}"),
+                                     step("wait_text", text="Tools (MCP)"), step("click", id="inbox"),
+                                     step("wait_text", text="Keep the connection draft"),
+                                     step("wait_text", text=input_status), step("capture", name=name+"-composer")])
             rpc(endpoint, {"op": "report_activity", "agent": receiver["id"],
                            "observation": {"activity": "working", "observed_at": now()}})
             report["activity_only_window"] = readiness_window("readiness-activity", "Idle delivery not verified")
