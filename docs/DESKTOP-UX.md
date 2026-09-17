@@ -59,6 +59,36 @@ input appear first within each project. Select a row for terminal access, reply,
 window, the session replaces the list; **Back to sessions** returns to it. On a
 wide window, it opens beside the list. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
+**Board**, between Sessions and Activity, is the project's work: five
+columns — Backlog, Ready, In progress, Review, Done — of cards with a title
+and what done means. **File a card** at the top takes a title and the
+acceptance text and files it **as Ready** (for the next agent to pull) or
+**in Backlog** (yours to think about). A card shows who holds it with a
+presence dot, or *for the taking* in Ready; opening a card shows its
+acceptance text and its moves: one column back or forward, **Hand to** an
+agent running here (or *nobody*), and **Archive**. An agent pulls a Ready
+card with the `pull_task` tool and the board shows it in progress under that
+agent at once; two agents never get one card. The pull is a `task:<id>`
+lease: a card whose holder's lease has lapsed — expired, released, or the
+agent gone — says *hold lapsed* beside the holder; nobody takes it by a
+plain pull, only by naming that holder (`pull_task` with `take_over_from`)
+or by your **Hand to**, which ends the old hold and gives a running agent
+the card's lease in one step. A move back to Ready or Backlog, or to Done,
+ends the hold. The board reads again on every board or lease event; when it
+could not be read the last board stays and the status says why. A card's draft is the project's: text typed for one board waits
+while another is on view, and filing it is answered by its own reply — a
+move or hand of some other card never clears it, and a filing the app could
+not queue says so under the form. The board is read a page at a time (100
+cards, Backlog to Done, within a byte budget); when it goes on, **Show
+more** appends the next page where the board ends — every ask is numbered
+and only its own reply moves the board, so a late or unsolicited page is
+ignored; a refresh asks for as many cards as are on view and supersedes
+every ask still on its way — a page or an earlier refresh — and Show more
+waits while a refresh is out, so the board never folds back whichever reply
+lands first; choosing another project forgets the old asks — and at five pages
+the board says so and points to archiving or `agentdocker task list
+--column`. Narrow, the columns stack.
+
 **Pause…** beside it asks for a reason and tells every agent in the project
 to hold: they read the reason as a `pause` message, the daemon refuses their
 new leases until **Resume**, and the header shows **Paused · reason** while

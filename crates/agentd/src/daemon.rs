@@ -58,6 +58,7 @@ mod relay;
 pub mod reload;
 mod restarts;
 mod restore;
+mod tasks;
 mod transport;
 mod waiting;
 mod working;
@@ -213,6 +214,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Thread { .. }
             | Request::SearchMessages { .. }
             | Request::Leases { .. }
+            | Request::Tasks { .. }
             | Request::Events { .. }
             | Request::ResumeEvents { .. }
             | Request::Logs { .. }
@@ -1769,6 +1771,41 @@ impl Daemon {
                 all,
             } => self.activity(agent, project, all).await,
             Request::Waiting => self.waiting(),
+            Request::TaskCreate {
+                from,
+                project,
+                title,
+                acceptance,
+                column,
+            } => {
+                self.task_create(from, project, title, acceptance, column)
+                    .await
+            }
+            Request::TaskPull {
+                agent,
+                task,
+                take_over_from,
+            } => self.task_pull(&agent, &task, take_over_from.as_deref()),
+            Request::TaskMove {
+                agent,
+                task,
+                column,
+            } => self.task_move(&agent, &task, column),
+            Request::TaskUpdate {
+                agent,
+                task,
+                title,
+                acceptance,
+                assignee,
+            } => self.task_update(&agent, &task, title, acceptance, assignee),
+            Request::TaskArchive { agent, task } => self.task_archive(&agent, &task),
+            Request::Tasks {
+                project,
+                column,
+                archived,
+                offset,
+                limit,
+            } => self.tasks(project, column, archived, offset, limit).await,
             Request::Pause {
                 from,
                 project,

@@ -614,6 +614,7 @@ impl App {
             let mut tabs = row![].spacing(14);
             for (screen, label, glyph) in [
                 (Screen::Agents, "Sessions", Icon::Sessions),
+                (Screen::Board, "Board", Icon::Board),
                 (Screen::Journal, "Activity", Icon::Activity),
             ] {
                 let selected = self.screen == screen
@@ -746,6 +747,7 @@ impl App {
         }
         let body = match self.screen {
             Screen::Agents => self.sessions(c),
+            Screen::Board => self.board_view(c),
             Screen::Questions if self.has_conversations() => self.messages_view(c),
             Screen::Questions => self.questions(c),
             Screen::Runtimes => self.connections(c),
