@@ -12,34 +12,35 @@ evidence; an old “pending” entry is not by itself a current implementation g
 
 ### Current integration and installation (September 17 UTC)
 
-The current desktop and daemon are reviewed local preview `f5e298f4`
-(source `418fbc9`, schema 23), activated at 17:38 UTC with a fresh state backup.
-The GUI reopened after the user confirmed no unsent drafts. Provider processes
-and registered identities remained unchanged; receiver 29976 became 25642 with
-its binding/token and all 128 retained receipts preserved. Hidden-draft
-persistence was absent from that installed build. PR #178 has since merged,
-with bounded conversation, thread, channel and session text recovery; it is not
-yet installed. Question and other form drafts remain window-local.
+The current desktop and daemon are reviewed local preview `d14610b7`
+(source `3785e81`, runtime identical to merged `e9c4ab2`, schema 23), activated
+at 20:55 UTC with a fresh integrity-checked state backup. Both provider processes
+and every registered live identity stayed unchanged. Receiver 25642 became 18735
+with its binding/token and all 128 retained receipts preserved; `f5e298f4` is retained.
 
-PRs #174/#167/#175/#177 are merged with final review and all CI checks; the
-installed preview includes #175 and #177. Local verification passed 1,147 Rust tests (seven skipped),
-94 Python checks (one skipped), 171 UI tests, the full release gate and
-429 native steps/26 checks. A targeted synthetic Enter submission from the
-reopened app reached this live Codex turn with a correlated receipt; physical
-keyboard/IME remains separate. A subsequent one-shot CLI message started a new
-Codex model turn after its final response, without human input; the receiver
-recorded the exact ID and Codex sent a correlated reply. This proves idle wake
-for this installed Codex receiver, not other providers or broadcast fanout.
+The installed batch includes the Board (#176), saved message drafts (#178),
+transactional session-state preservation (#179) and bounded startup ordering
+(#180), all merged after final review and all five CI workflows. The combined
+source gate passed 1,167 Rust tests (seven skipped), 94 Python checks (one skipped)
+and the release checks; the packaged candidate passed 485 rendered steps/28 checks.
+An unsent Unicode conversation draft survived the actual installed GUI's close,
+reopen and return to that conversation, was never submitted, and was cleared.
+Question, board and other forms and automatic view restoration remain separate.
 
-Claude's MCP entry now supports its channel, but the existing provider was not
-restarted or opted in. Retained observations in older lives block the current
-all-record resumption rule; #179 preserves the eligible observations, channels
-and task references transactionally. #180 bounds the SessionStart ordering wait
-while keeping MCP control responsive. PR #179 is merged after final CI/review; #180 has a clean review and its
-merge resolution awaits final CI. Safe handoff and actual idle receipt remain open.
-The task board in #176 is not in this preview. Current completion conditions
-are in [Remaining work](REMAINING-WORK.md), with source pins, failed trials and
-installation details in the [integrated record](verification/2026-09-12-integrated-desktop.json).
+Earlier on September 17, a targeted synthetic Enter submission reached this
+live Codex turn with its exact receipt. A later one-shot CLI message started a
+new Codex model turn without human input. Those installed `f5e298f4` trials retain
+their own source pins; they do not prove universal provider or broadcast behavior.
+The subsequent active-burst trial preserved IDs and order but its 104–119-second
+context latency includes model/tool-boundary waits; prompt-like interruption
+remains open. Physical keyboard/IME remains separate.
+
+Claude's MCP entry supports the channel and the resumption fixes are installed,
+but its existing plain provider session has not been relaunched or opted in.
+Provider startup consent, same-session handoff and actual peer-only idle receipt
+remain required. Current completion conditions are in [Remaining work](REMAINING-WORK.md),
+with source pins, failed trials and installation details in the
+[integrated record](verification/2026-09-12-integrated-desktop.json).
 
 ### Previous integration and installation (September 15)
 

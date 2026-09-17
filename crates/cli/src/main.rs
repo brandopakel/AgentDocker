@@ -1249,8 +1249,18 @@ struct ClaimArgs {
     amount: Option<u64>,
 }
 
+/// A command ends with a status a script can branch on: the daemon's
+/// answer by its class (see [`client::exit_code`]), anything else as
+/// unexpected. The words go to stderr as they always did.
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!("Error: {error:#}");
+        std::process::exit(client::exit_code_for(&error));
+    }
+}
+
+async fn run() -> Result<()> {
     agentdocker_host::installation::redirect_managed_launcher()?;
     let _installation_pin = agentdocker_host::installation::pin_current_executable()?;
     let cli = Cli::parse();
@@ -1686,6 +1696,10 @@ async fn main() -> Result<()> {
                 else {
                     bail!("unexpected reply to discover");
                 };
+                // Every process is tried; the status is that of the first
+                // refusal, since a mixed result has no single class of its
+                // own, and each refusal is said with its pid.
+                let mut first: Option<client::RemoteError> = None;
                 let mut failed = 0;
                 for process in processes {
                     match client
@@ -1697,15 +1711,25 @@ async fn main() -> Result<()> {
                         .await?
                     {
                         Response::Agent { agent } => println!("{}", agent.id),
-                        Response::Error { message, .. } => {
+                        Response::Error {
+                            code,
+                            message,
+                            details,
+                        } => {
                             failed += 1;
                             eprintln!("pid {}: {message}", process.pid);
+                            first.get_or_insert(client::RemoteError {
+                                code,
+                                message,
+                                details,
+                            });
                         }
                         _ => {}
                     }
                 }
-                if failed > 0 {
-                    bail!("{failed} process(es) could not be adopted");
+                if let Some(first) = first {
+                    return Err(anyhow::Error::from(first)
+                        .context(format!("{failed} process(es) could not be adopted")));
                 }
             } else if let Some(pid) = pid {
                 let request = Request::Adopt { pid, name, runtime };

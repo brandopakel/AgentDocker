@@ -328,7 +328,9 @@ See [distribution and signing](DESKTOP-DISTRIBUTION.md) for public release gates
 Messages review (September 17): mentioning an agent does not change recipients
 or grant channel membership. Suggestions only name current recipients. A late
 channel-creation reply may update only its originating form, preserving a newer
-form and its draft. These corrections are awaiting source and native validation.
+form and its draft. These corrections are merged in #170 and installed; source
+and rendered workflow validation passed. Physical keyboard and IME acceptance
+remain open, as recorded in [remaining work](REMAINING-WORK.md).
 
 For an open named channel the person belongs to, **Add members** opens a list
 of available agents who are not members yet. Adding one shows progress and
