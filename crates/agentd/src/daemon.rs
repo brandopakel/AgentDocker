@@ -514,7 +514,8 @@ fn registry_error(err: RegistryError) -> Response {
         RegistryError::NotFound(_) | RegistryError::RoleNotFound(_) => ErrorCode::NotFound,
         RegistryError::Ambiguous(_)
         | RegistryError::ProjectAmbiguous(_)
-        | RegistryError::RoleAmbiguous(_) => ErrorCode::Ambiguous,
+        | RegistryError::RoleAmbiguous(_)
+        | RegistryError::RoleShadowed(_) => ErrorCode::Ambiguous,
         RegistryError::ProjectNotFound(_) => ErrorCode::NotFound,
     };
     Response::error(code, err.to_string())

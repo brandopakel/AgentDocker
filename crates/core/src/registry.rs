@@ -26,6 +26,10 @@ pub enum RegistryError {
     RoleNotFound(String),
     #[error("several live agents hold the role `{0}`; name one")]
     RoleAmbiguous(String),
+    #[error(
+        "`role:{0}` is also a live agent's name; the role cannot be addressed until it is renamed"
+    )]
+    RoleShadowed(String),
 }
 
 #[derive(Debug, Default)]
@@ -288,11 +292,18 @@ impl Registry {
     /// The one live agent holding `role` — in `project` when one is
     /// given, anywhere otherwise. None is not found; several are
     /// ambiguous: a role is an address only while one agent answers to it.
+    /// A live agent *named* `role:<name>` (a record from before names
+    /// spelled that way were refused) is neither reached nor bypassed:
+    /// the reference is refused as shadowed until the record is renamed.
     pub fn resolve_role(
         &self,
         role: &str,
         project: Option<&ProjectId>,
     ) -> Result<AgentId, RegistryError> {
+        let spelled = format!("{ROLE_PREFIX}{role}");
+        if self.live().any(|a| a.spec.name == spelled) {
+            return Err(RegistryError::RoleShadowed(role.to_owned()));
+        }
         let holders: Vec<&AgentRecord> = self
             .live()
             .filter(|a| a.role() == Some(role))
@@ -684,9 +695,25 @@ mod tests {
         );
         assert_eq!(
             reg.resolve("role:reviewer"),
-            Ok(reviewer_id),
+            Ok(reviewer_id.clone()),
             "one live holder"
         );
+        // A record named like a role — from before such names were
+        // refused — neither takes the role's messages nor loses its own:
+        // the reference is refused until it is renamed.
+        let legacy = record("role:reviewer");
+        let legacy_id = legacy.id.clone();
+        reg.insert(legacy).unwrap();
+        assert_eq!(
+            reg.resolve("role:reviewer"),
+            Err(RegistryError::RoleShadowed("reviewer".into()))
+        );
+        assert_eq!(
+            reg.resolve_role("reviewer", Some(&one)),
+            Err(RegistryError::RoleShadowed("reviewer".into()))
+        );
+        reg.set_status(&legacy_id, AgentStatus::Exited { code: None }, Utc::now());
+        assert_eq!(reg.resolve("role:reviewer"), Ok(reviewer_id));
         assert!(check_role("reviewer").is_ok());
         assert!(check_role("code-reviewer-2").is_ok());
         for bad in ["", "Reviewer", "re viewer", "-rev", "rev-", &"r".repeat(41)] {
