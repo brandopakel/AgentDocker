@@ -11,8 +11,10 @@ ordinary input and preserves the terminal's unfinished draft and permission UI.
 
 The receiver requires the schema-20 controller binding and answer migration and
 Codex's experimental native queue API (tested with CLI 0.154.0). The current
-installed `79981beb` package (source `5c461e0`, schema22) includes the reviewed
-active-hook and receiver-upgrade fixes. Broader lifecycle acceptance remains.
+installed `f5e298f4` package (source `418fbc9`, schema 23) includes the reviewed
+active-hook and receiver-upgrade fixes; its September 17 receiver upgrade kept
+every retained receipt in order, and one CLI-origin message then started a new
+Codex turn while idle, with a correlated reply. Broader lifecycle acceptance remains.
 At the earlier September 15 `cf64ca3` installation (schema20),
 the existing Codex session auto-started its receiver and offered a queued peer
 message. That message automatically started the next ordinary turn without

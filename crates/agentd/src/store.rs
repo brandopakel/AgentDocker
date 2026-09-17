@@ -36,6 +36,22 @@ pub(crate) use event_replay::EventReplay;
 // daemon would not know a queue is a bound controller's and would drain it.
 // Schema 22 adds a durable receiver-upgrade intent to bound-controller state.
 // Older readers reject that field, so a downgrade must not open this database.
+/// What a card's transition writes besides the card: see
+/// [`Store::task_transition`].
+pub struct TaskTransition<'a> {
+    /// The holder whose liveness the transition records, if any.
+    pub holder: Option<&'a AgentRecord>,
+    /// The lease taken or renewed.
+    pub claimed: Option<&'a Lease>,
+    /// The leases ended.
+    pub released: &'a [LeaseId],
+    /// The document kind and id.
+    pub kind: &'a str,
+    pub id: &'a str,
+    /// The events, in order.
+    pub events: &'a [Event],
+}
+
 pub(crate) const SCHEMA_VERSION: i64 = 23;
 
 const SCHEMA: &str = "
@@ -422,6 +438,105 @@ impl Store {
             .into_iter()
             .filter(agentdocker_core::Validation::passed)
             .collect())
+    }
+
+    /// The documents of one kind whose id starts with `prefix`, at most
+    /// `limit`: a lookup by a unique prefix asks for two, to tell one
+    /// match from several without reading every card.
+    pub fn documents_with_prefix<T: serde::de::DeserializeOwned>(
+        &self,
+        kind: &str,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<T>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT json FROM documents WHERE kind=?1 AND substr(id, 1, ?2) = ?3 ORDER BY id LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                kind,
+                i64::try_from(prefix.chars().count()).unwrap_or(i64::MAX),
+                prefix,
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
+            |row| row.get::<_, String>(0),
+        )?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
+    /// One page of the board: `task` documents for a project (or every
+    /// project), in a column (or every column), without the archived
+    /// ones unless asked — Backlog to Done, oldest first within a
+    /// column — from `offset`, at most `limit` cards and about `bytes`
+    /// of them (a page holds at least one), and whether more follow.
+    /// Read as a page so a board of long cards never fills a frame or
+    /// holds the lock.
+    pub fn tasks_page(
+        &self,
+        project: Option<&str>,
+        column: Option<&str>,
+        archived: bool,
+        offset: usize,
+        limit: usize,
+        bytes: usize,
+    ) -> Result<(Vec<agentdocker_core::Task>, bool)> {
+        let mut stmt = self.conn.prepare(
+            "SELECT json FROM documents WHERE kind='task'
+             AND (?1 IS NULL OR json_extract(json, '$.project') = ?1)
+             AND (?2 IS NULL OR json_extract(json, '$.column') = ?2)
+             AND (?3 OR json_extract(json, '$.archived_at') IS NULL)
+             ORDER BY CASE json_extract(json, '$.column')
+                 WHEN 'backlog' THEN 0 WHEN 'ready' THEN 1 WHEN 'in_progress' THEN 2
+                 WHEN 'review' THEN 3 ELSE 4 END,
+               json_extract(json, '$.created_at'), id
+             LIMIT ?4 OFFSET ?5",
+        )?;
+        let page = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
+        let skip = i64::try_from(offset).unwrap_or(i64::MAX);
+        let rows = stmt.query_map(params![project, column, archived, page, skip], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut tasks = Vec::new();
+        let mut more = false;
+        let mut size = 0usize;
+        for row in rows {
+            let json = row?;
+            if tasks.len() >= limit || (!tasks.is_empty() && size + json.len() > bytes) {
+                more = true;
+                break;
+            }
+            size += json.len();
+            tasks.push(serde_json::from_str(&json)?);
+        }
+        Ok((tasks, more))
+    }
+
+    /// A card's transition and the leases it moves, as one commit: the
+    /// card as it now reads, the lease a pull or hand took (with its
+    /// holder's liveness), the leases a release, hand or archive ended,
+    /// and the events for all of it — a lease without its card, or a
+    /// card without its lease, is what two commits could leave behind.
+    pub fn task_transition<T: serde::Serialize + ?Sized>(
+        &self,
+        transition: &TaskTransition<'_>,
+        value: &T,
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        if let Some(holder) = transition.holder {
+            self.upsert_agent(holder)?;
+        }
+        if let Some(lease) = transition.claimed {
+            self.upsert_lease(lease)?;
+        }
+        for lease in transition.released {
+            self.delete_lease(lease)?;
+        }
+        self.put_document(transition.kind, transition.id, value)?;
+        for event in transition.events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Atomically persist a typed recovery document before publishing its event.

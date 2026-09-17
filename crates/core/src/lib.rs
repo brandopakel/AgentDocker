@@ -29,6 +29,7 @@ pub mod permissions;
 pub mod project;
 pub mod protocol;
 pub mod provider;
+pub mod task;
 pub use provider::{
     ProviderAvailability, ProviderIssue, ProviderIssueKind, ProviderReport, provider_block,
 };
@@ -55,6 +56,7 @@ pub use project::{Pause, ProjectId, ProjectRef, ProjectSource};
 pub use protocol::DigestRequest;
 pub use protocol::{ErrorCode, Request, Response};
 pub use registry::{Registry, RegistryError};
+pub use task::{Column, Task, TaskId};
 
 pub mod policy;
 pub use policy::{Policy, Ruling};

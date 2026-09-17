@@ -93,6 +93,12 @@ The app remembers the selected project and keeps quiet projects available.
 - **Activity** shows the recent project journal, newest first. **More → Channels** shows
   project rooms and messages queued for you. **More** also holds **Files in use**,
   **Command line**, and project pin/forget actions.
+- **Pause…** on the project header asks for a reason and tells every agent in
+  the project to hold; the daemon refuses their new leases until **Resume**.
+  What an agent already holds, it keeps; only you can pause or resume.
+- **Board** (in review as PR #176) is the project's cards: file work with a
+  title and what done means, agents pull Ready cards once, and the columns
+  say where everything is.
 
 On narrow windows the selected session replaces the list, with **Back to sessions**
 to return. Wide windows show actions beside the list. The human `user` identity
@@ -214,6 +220,7 @@ the flags.
 | `renew` / `release` | Extend or give up a lease you hold |
 | `leases` | Every lease held right now |
 | `waiting` | Claims waiting for a resource, oldest first |
+| `task` | The board of work: `task create "Fix login" --acceptance "SSO works" --column ready` files a card; `task pull <id> --as <agent>` takes a Ready card once and holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`, naming whom it is expected from); `task move <id> review` (an agent moves only a card it holds; back to Ready or to Done ends the hold), `task update <id> --assignee bob` (a hand ends the old hold and takes the lease for a running agent), `task archive <id>`, `task list [--column ready] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
 | `pause` | `agentdocker pause "sleeping the laptop"` tells every agent in this directory's project to hold: they get the reason as a `pause` message and their new leases are refused until `agentdocker pause --lift`; `--project` names another project; `pause --list` lists what is paused and why |
 
 ### Know what changed
@@ -427,6 +434,25 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- A project pause: `agentdocker pause "reason"` tells every agent in the
+  project to hold — the reason reaches each live one as a `pause` message
+  and their new leases are refused with it until `pause --lift`; `pause
+  --list` shows what is paused. The app has **Pause…**/**Resume** on the
+  project header. Schema 23.
+- Notifications open their message: a click on a notification for an
+  archived message opens the conversation on the Messages screen and
+  scrolls to the row, paging back a bounded number of pages for an older
+  one, even when that conversation is already open.
+- A provider session that comes back as a new process (a resumed Claude
+  or Codex) is folded into the record it had, keeping its queue and name.
+- Setup writes the channel-capable Claude MCP entry (`--claude-channel`)
+  and health checks recognise it; a plain entry stays valid MCP.
+- The Messages workspace: **+** for a new direct message or channel,
+  invitations, `@` mentions with counts, Enter to send, resizable panes,
+  an Earlier group for ended sessions' conversations.
+- A bounded reader of local Codex rollouts and Claude transcripts for
+  token usage, with explicit gaps; the `usage` command and screen are not
+  built yet.
 - Conversations: every message is archived in the one conversation its
   destination names (`everyone:<project>`, `all`, `channel:<id>`,
   `dm:<a>:<b>`, `notices:<agent>`), beside the queue it is delivered to and

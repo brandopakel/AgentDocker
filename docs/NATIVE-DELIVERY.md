@@ -29,7 +29,7 @@ These changes do not provide a preserved terminal across daemon replacement, ven
 2. Expand per-tool capabilities, executable health checks, broader installation paths and distinct desktop-host identities beyond the implemented guided preview/apply/undo flow.
 3. Extend the [completed bounded Claude Code hooks and Codex MCP trials](INTEGRATION-ACCEPTANCE.md) across supported versions and longer sessions; no bulk adoption of active user work.
 4. Windows IPC, access control, process/terminal/service/path adapters, installers and native Windows CI/runtime acceptance.
-5. Sustained-use restart/dependency/retention and planned-upgrade behavior, then longer controlled soaks and the independent second-Mac trial. Federation remains a later delivery.
+5. Restart/dependency policies and bounded retention are implemented; planned-upgrade behavior (live daemon replacement) is in source behind `AGENTDOCKER_EXPERIMENTAL_RELOAD` with reviewed coordinator switches on this Mac. Longer controlled soaks and the independent second-Mac trial remain. Federation remains a later delivery.
 
 The development Mac currently has no Developer ID Application signing identity installed. Build and local preview verification can proceed; public signing/notarization requires the user's developer identity and credentials through local secure configuration. Bencher credentials remain outside the repository and GitHub.
 

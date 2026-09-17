@@ -610,6 +610,19 @@ fn repair_moves_typed_protection_and_membership_and_refuses_self_review() {
         resolution: None,
     };
     store.put_document("channel", "room", &channel).unwrap();
+    let mut card = agentdocker_core::Task {
+        id: "repair-card".to_owned().into(),
+        project: channel.project.clone(),
+        title: "retired".into(),
+        acceptance: "retired".into(),
+        column: agentdocker_core::task::Column::Done,
+        assignee: Some(b.clone()),
+        created_by: b.to_string(),
+        created_at: now(),
+        updated_at: now(),
+        archived_at: Some(now()),
+    };
+    store.put_document("task", card.id.as_str(), &card).unwrap();
     let lease = Lease {
         id: "protected".into(),
         holder: b.clone(),
@@ -642,6 +655,22 @@ fn repair_moves_typed_protection_and_membership_and_refuses_self_review() {
     assert_eq!(
         archive["before"]["leases"][0],
         serde_json::to_value(lease).unwrap()
+    );
+    let original_card = serde_json::to_value(&card).unwrap();
+    card.assignee = Some(a.clone());
+    card.created_by = a.to_string();
+    assert_eq!(
+        store
+            .document::<agentdocker_core::Task>("task", card.id.as_str())
+            .unwrap(),
+        Some(card)
+    );
+    assert!(
+        archive["before"]["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|document| document["kind"] == "task" && document["value"] == original_card)
     );
     // New self-review must not silently become accepted review evidence.
     let doc = Document {
@@ -708,7 +737,7 @@ fn missing_cursor_is_unread_and_incompatible_read_sets_are_refused() {
 /// asked now the canonical record's, an alias that pointed at an earlier
 /// life pointed at the canonical record, every retired id an alias — in
 /// one transaction. A duplicate message that differs, a retired record
-/// with observations or a lease of its own, or an id that is already an
+/// with conflicting observations or a lease of its own, or an id that is already an
 /// alias refuses the plan and writes nothing.
 #[test]
 fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
@@ -883,9 +912,22 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
             }],
         )
         .unwrap();
+    store
+        .put_document(
+            "reads",
+            last.id.as_str(),
+            &vec![ReadMark {
+                path: "/fixture/checkout/src/lib.rs".into(),
+                version: "different".into(),
+                head: None,
+                at: now(),
+            }],
+        )
+        .unwrap();
     let error = store.plan_resume(&canonical, &retired).unwrap_err();
     assert!(error.to_string().contains("observations"), "{error}");
     store.delete_document("reads", earlier.id.as_str()).unwrap();
+    store.delete_document("reads", last.id.as_str()).unwrap();
     store
         .upsert_lease(&agentdocker_core::Lease {
             id: agentdocker_core::LeaseId::generate(),
@@ -922,4 +964,342 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
     let error = store.plan_resume(&canonical, &retired).unwrap_err();
     assert!(error.to_string().contains("one record may hold"), "{error}");
     assert_eq!(snapshot(&store)[0], before[0], "nothing moved");
+}
+
+#[test]
+fn resumed_read_sets_keep_latest_paths_and_roll_back_with_the_queue_and_event() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("state.db");
+    let store = Store::open(&path).unwrap();
+    let (last, earlier, fresh) = (record("last"), record("earlier"), record("fresh"));
+    for record in [&last, &earlier, &fresh] {
+        store.upsert_agent(record).unwrap();
+    }
+    let mark = |path: &str, version: &str, seconds: i64| ReadMark {
+        path: path.into(),
+        version: version.into(),
+        head: Some("head".into()),
+        at: now() + Duration::seconds(seconds),
+    };
+    let old = mark("/checkout/shared", "old", 1);
+    let latest = mark("/checkout/shared", "new", 3);
+    let unique = mark("/checkout/earlier", "retained", 2);
+    let fresh_mark = mark("/checkout/fresh", "fresh", 4);
+    store
+        .put_document("reads", last.id.as_str(), &vec![old])
+        .unwrap();
+    store
+        .put_document(
+            "reads",
+            earlier.id.as_str(),
+            &vec![unique.clone(), latest.clone()],
+        )
+        .unwrap();
+    store
+        .put_document(
+            "reads",
+            fresh.id.as_str(),
+            &vec![fresh_mark.clone(), latest.clone()],
+        )
+        .unwrap();
+    let message = envelope("retained-input", &earlier.id);
+    store.enqueue(&earlier.id, &message, 64).unwrap();
+    let retired = vec![fresh.id.clone(), earlier.id.clone()];
+    let mut canonical = last.clone();
+    canonical.pid = Some(456);
+    canonical.status = AgentStatus::Running;
+    canonical.finished_at = None;
+    let mut event = Event::new(
+        EventKind::SessionResumed {
+            agent: last.id.clone(),
+            retired: retired.clone(),
+            session: "session".into(),
+            pid: 456,
+        },
+        now(),
+    );
+    event.seq = 1;
+    let mut room = Channel {
+        id: "room".into(),
+        project: last.project.as_ref().unwrap().id(),
+        name: Some("room".into()),
+        subject: agentdocker_core::channel::ChannelSubject::Task {
+            task: "retained room".into(),
+        },
+        members: vec![
+            earlier.id.clone(),
+            last.id.clone(),
+            fresh.id.clone(),
+            "peer".into(),
+        ],
+        opened_by: Some(earlier.id.clone()),
+        opened_at: now(),
+        reviews: vec![],
+        closed_at: None,
+        resolution: None,
+    };
+    store
+        .put_document("channel", room.id.as_str(), &room)
+        .unwrap();
+    // Even an eligible open room must refuse a fold that changes who reviewed whom.
+    room.reviews.push(agentdocker_core::channel::Review {
+        by: earlier.id.clone(),
+        by_name: "earlier".into(),
+        of: fresh.id.clone(),
+        of_name: "fresh".into(),
+        verdict: agentdocker_core::channel::Verdict::Approve,
+        note: "review".into(),
+        at: now(),
+        head: None,
+    });
+    store
+        .put_document("channel", room.id.as_str(), &room)
+        .unwrap();
+    let conflict = snapshot(&store);
+    assert!(
+        store
+            .plan_resume(&canonical, &retired)
+            .unwrap_err()
+            .to_string()
+            .contains("self-review")
+    );
+    assert_eq!(snapshot(&store), conflict);
+    room.reviews.clear();
+    store
+        .put_document("channel", room.id.as_str(), &room)
+        .unwrap();
+    let before = snapshot(&store);
+    let plan = store.plan_resume(&canonical, &retired).unwrap();
+    assert_eq!(snapshot(&store), before);
+    store.conn.execute_batch("CREATE TRIGGER refuse_resume_event BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
+    assert!(store.write_resume(&plan, &event).is_err());
+    assert_eq!(
+        snapshot(&store),
+        before,
+        "the read rewrite, aliases and queue roll back together"
+    );
+    store
+        .conn
+        .execute_batch("DROP TRIGGER refuse_resume_event")
+        .unwrap();
+    store.write_resume(&plan, &event).unwrap();
+    drop(store);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(
+        reopened
+            .document::<Vec<ReadMark>>("reads", last.id.as_str())
+            .unwrap(),
+        Some(vec![unique, fresh_mark, latest])
+    );
+    for id in &retired {
+        assert!(
+            reopened
+                .document::<Vec<ReadMark>>("reads", id.as_str())
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert_eq!(
+        reopened.load_inboxes().unwrap()[&last.id]
+            .iter()
+            .map(|m| m.id.clone())
+            .collect::<Vec<_>>(),
+        vec![message.id]
+    );
+    assert_eq!(reopened.identity_aliases().unwrap().len(), 2);
+    let restored = reopened
+        .document::<Channel>("channel", room.id.as_str())
+        .unwrap()
+        .unwrap();
+    assert!(restored.is_open());
+    assert_eq!(restored.members, vec![last.id.clone(), "peer".into()]);
+    assert_eq!(restored.opened_by, Some(last.id));
+}
+
+#[test]
+fn resumed_cards_keep_their_work_without_inventing_a_hold() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("state.db");
+    let store = Store::open(&path).unwrap();
+    let (last, earlier, fresh) = (record("last"), record("earlier"), record("fresh"));
+    for record in [&last, &earlier, &fresh] {
+        store.upsert_agent(record).unwrap();
+    }
+    let task = agentdocker_core::Task {
+        id: "resume-card".to_owned().into(),
+        project: last.project.as_ref().unwrap().id(),
+        title: earlier.id.to_string(),
+        acceptance: fresh.id.to_string(),
+        column: agentdocker_core::task::Column::InProgress,
+        assignee: Some(earlier.id.clone()),
+        created_by: fresh.id.to_string(),
+        created_at: now(),
+        updated_at: now(),
+        archived_at: None,
+    };
+    store.put_document("task", task.id.as_str(), &task).unwrap();
+    let lease = Lease {
+        id: "card-hold".into(),
+        holder: earlier.id.clone(),
+        resource: ResourceKey::new("task:resume-card"),
+        mode: LeaseMode::Exclusive,
+        acquired_at: now(),
+        expires_at: now() + Duration::days(1),
+        change_seq: None,
+        note: None,
+        amount: 0,
+    };
+    store.upsert_lease(&lease).unwrap();
+    let retired = vec![fresh.id.clone(), earlier.id.clone()];
+    let held = snapshot(&store);
+    assert!(
+        store
+            .plan_resume(&last, &retired)
+            .unwrap_err()
+            .to_string()
+            .contains("holds a lease")
+    );
+    assert_eq!(snapshot(&store), held);
+    store.delete_lease(&lease.id).unwrap();
+    let message = envelope("resume-card-input", &earlier.id);
+    store.enqueue(&earlier.id, &message, 64).unwrap();
+    let mut event = Event::new(
+        EventKind::SessionResumed {
+            agent: last.id.clone(),
+            retired: retired.clone(),
+            session: "same-session".into(),
+            pid: 456,
+        },
+        now(),
+    );
+    event.seq = 1;
+    let before = snapshot(&store);
+    let plan = store.plan_resume(&last, &retired).unwrap();
+    assert_eq!(snapshot(&store), before);
+    store.conn.execute_batch("CREATE TRIGGER refuse_card_resume BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
+    assert!(store.write_resume(&plan, &event).is_err());
+    assert_eq!(
+        snapshot(&store),
+        before,
+        "card, queue and aliases roll back together"
+    );
+    store
+        .conn
+        .execute_batch("DROP TRIGGER refuse_card_resume")
+        .unwrap();
+    store.write_resume(&plan, &event).unwrap();
+    drop(store);
+    let reopened = Store::open(&path).unwrap();
+    let mut expected = task;
+    expected.assignee = Some(last.id.clone());
+    expected.created_by = last.id.to_string();
+    let actual = reopened
+        .document::<agentdocker_core::Task>("task", expected.id.as_str())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        actual, expected,
+        "free text, column and dates are preserved exactly"
+    );
+    assert!(
+        reopened.load_leases().unwrap().is_empty(),
+        "resumption creates no work hold"
+    );
+    assert_eq!(reopened.load_inboxes().unwrap()[&last.id][0].id, message.id);
+    assert_eq!(reopened.identity_aliases().unwrap().len(), 2);
+    assert_eq!(
+        reopened
+            .tasks_page(None, None, false, 0, 10, 65536)
+            .unwrap()
+            .0,
+        vec![expected]
+    );
+}
+
+#[test]
+fn conflicting_or_excessive_resumed_observations_leave_every_record_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    let (last, earlier, fresh) = (record("last"), record("earlier"), record("fresh"));
+    for record in [&last, &earlier, &fresh] {
+        store.upsert_agent(record).unwrap();
+    }
+    let retired = vec![fresh.id.clone(), earlier.id.clone()];
+    let mark = |path: String, at, version: &str| ReadMark {
+        path: path.into(),
+        at,
+        version: version.into(),
+        head: None,
+    };
+    // Conflicting older captures must fail even when a newer one was visited first.
+    store
+        .put_document(
+            "reads",
+            last.id.as_str(),
+            &vec![mark("/same".into(), now() + Duration::seconds(1), "newest")],
+        )
+        .unwrap();
+    store
+        .put_document(
+            "reads",
+            earlier.id.as_str(),
+            &vec![mark("/same".into(), now(), "one")],
+        )
+        .unwrap();
+    store
+        .put_document(
+            "reads",
+            fresh.id.as_str(),
+            &vec![mark("/same".into(), now(), "two")],
+        )
+        .unwrap();
+    let before = snapshot(&store);
+    for ids in [retired.clone(), retired.iter().rev().cloned().collect()] {
+        assert!(
+            store
+                .plan_resume(&last, &ids)
+                .unwrap_err()
+                .to_string()
+                .contains("same capture time")
+        );
+        assert_eq!(snapshot(&store), before);
+    }
+    store
+        .put_document(
+            "reads",
+            earlier.id.as_str(),
+            &vec![mark("/same".into(), now(), "two")],
+        )
+        .unwrap();
+    let marks: Vec<_> = (0..RESUME_READS)
+        .map(|i| mark(format!("/unique-{i}"), now(), "v"))
+        .collect();
+    store
+        .put_document("reads", fresh.id.as_str(), &marks)
+        .unwrap();
+    let before = snapshot(&store);
+    assert!(
+        store
+            .plan_resume(&last, &retired)
+            .unwrap_err()
+            .to_string()
+            .contains("capacity")
+    );
+    assert_eq!(snapshot(&store), before);
+    store
+        .put_document(
+            "reads",
+            fresh.id.as_str(),
+            &vec![mark("/large".into(), now(), &"x".repeat(RESUME_READ_BYTES))],
+        )
+        .unwrap();
+    let before = snapshot(&store);
+    assert!(
+        store
+            .plan_resume(&last, &retired)
+            .unwrap_err()
+            .to_string()
+            .contains("4 MiB")
+    );
+    assert_eq!(snapshot(&store), before);
 }

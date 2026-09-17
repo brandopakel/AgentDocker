@@ -2198,7 +2198,7 @@
     "result": "passed",
     "scope": "A pause survives a rollback attempt: the schema-23 daemon records a hold,\nan installed schema-22 daemon refuses to open that state, and the hold is\nstill there for the 23 daemon. Private home; never the production state.",
     "steps": [
-      "schema-23 daemon paused the project: paused aef60cbc5ffb — rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
+      "schema-23 daemon paused the project: paused aef60cbc5ffb \u2014 rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
       "pause --list shows the hold",
       "state.db at schema 23 with one pause document",
       "schema-22 daemon refused to start (exit 1); state.db unchanged (sha256 e352e94e548a), pause document retained",
@@ -2895,5 +2895,459 @@
         "Does not establish Claude idle wake, project/global fanout, sustained latency, or sleep/reboot recovery."
       ]
     }
+  },
+  "draft_persistence_2026_09_17": {
+    "source": "017ef68a0f9c19f9dfd02198057c56c98a697045",
+    "installed": false,
+    "pr": 178,
+    "behavior": "Conversation/thread, channel and session text persists per desktop state-root/socket identity. Restore is editable and does not submit input. Failed saves preserve text; close waits for the latest save or an explicit unsaved-close choice.",
+    "validation": {
+      "rust_passed": 1152,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "full_gate": "passed",
+      "gate_log": "/private/tmp/agentdocker-draft-persistence-gate-20260917.log",
+      "gate_log_sha256": "c898817c15eb9dd2350f2784b5ce2bca437e8d9181ebcd3a04307757e03fc97c",
+      "binary_sha256": {
+        "agentdocker": "1874c66870742d7908eba86e9e5f9a442e46d8cd3ef81e96330999e716a0ba57",
+        "agentdocker-ui": "7b8a2181925a55edcfa2c46242d6201f0f3c08ef67e820a5ff7555542641b0a8",
+        "agentd": "be800d1db07fa247345094f8d6ec17a06df131d4d956412b7ffaf3e28864d745"
+      }
+    },
+    "native": {
+      "result": "passed",
+      "elapsed_seconds": 128.94570845901035,
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+        "normal_close_flushes_hidden_conversation_thread_session_and_channel_drafts_and_reopen_never_sends_them"
+      ],
+      "windows": {
+        "restored-drafts": 21,
+        "readiness-received": 17,
+        "provider-limit": 14,
+        "readiness-activity": 17,
+        "readiness-ready": 17,
+        "workflows": 187,
+        "restored": 6,
+        "readiness-paused": 17,
+        "readiness-contact": 17,
+        "narrow-inbox": 100,
+        "constrained-panes": 48
+      },
+      "total_rendered_steps": 461,
+      "artifacts": "/private/tmp/agentdocker-draft-persistence-workflow-reproducible-20260917",
+      "idle_resources": {
+        "result": "not_run",
+        "reason": "Explicit --skip-idle-measurement: foreground CPU/RSS sample omitted; no idle performance claim."
+      },
+      "cleanup_errors": [],
+      "driver_sha256": "33b70c8f3f180cc0f01a4043a131b1a3cab638daedaec1b2649e70d048222e77",
+      "command": [
+        "python3",
+        "scripts/iced_workflow_smoke.py",
+        "--binary-dir",
+        "/private/tmp/agentdocker-draft-persistence-binaries-20260917",
+        "--output",
+        "/private/tmp/agentdocker-draft-persistence-workflow-reproducible-20260917",
+        "--skip-idle-measurement"
+      ]
+    },
+    "review": "The channel-draft review finding is addressed in a72160f. The reproducibility follow-up adds a documented skip flag and reruns the repository command directly with no wrapper. All 461 rendered steps/27 checks pass; idle_resources explicitly says not_run. Runtime binaries remain 017ef68. Final review and CI remain pending.",
+    "limits": [
+      "Native scenarios invoke callbacks from rendered controls, not physical keyboard or screen-reader testing.",
+      "The ordinary foreground idle-resource sample was explicitly omitted to avoid covering the user desktop; no new CPU/RSS benchmark is claimed.",
+      "Question answers, task-card forms, pause forms and command text remain window-local.",
+      "A crash after send acceptance but before the text-clearing save can restore an uncertain draft; it is never automatically sent and history should be checked before retrying.",
+      "No production app was restarted or updated for this trial."
+    ],
+    "native_prior": {
+      "result": "passed",
+      "elapsed_seconds": 121.05517937499098,
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+        "normal_close_flushes_hidden_conversation_thread_and_session_drafts_and_reopen_never_sends_them"
+      ],
+      "windows": {
+        "restored-drafts": 14,
+        "readiness-received": 17,
+        "provider-limit": 14,
+        "readiness-activity": 17,
+        "readiness-ready": 17,
+        "workflows": 187,
+        "restored": 6,
+        "readiness-paused": 17,
+        "readiness-contact": 17,
+        "narrow-inbox": 100,
+        "constrained-panes": 42
+      },
+      "total_rendered_steps": 448,
+      "artifacts": "/private/tmp/agentdocker-draft-persistence-workflow-20260917",
+      "idle_resources": {
+        "result": "not_run",
+        "reason": "Ordinary idle measurement would open a foreground fixture window; omitted to preserve the user desktop. No new CPU/RSS benchmark is claimed."
+      },
+      "cleanup_errors": []
+    },
+    "native_channel_wrapper_prior": {
+      "result": "passed",
+      "elapsed_seconds": 126.85497358400607,
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+        "normal_close_flushes_hidden_conversation_thread_session_and_channel_drafts_and_reopen_never_sends_them"
+      ],
+      "windows": {
+        "restored-drafts": 21,
+        "readiness-received": 17,
+        "provider-limit": 14,
+        "readiness-activity": 17,
+        "readiness-ready": 17,
+        "workflows": 187,
+        "restored": 6,
+        "readiness-paused": 17,
+        "readiness-contact": 17,
+        "narrow-inbox": 100,
+        "constrained-panes": 48
+      },
+      "total_rendered_steps": 461,
+      "artifacts": "/private/tmp/agentdocker-draft-persistence-workflow-channels-20260917",
+      "idle_resources": {
+        "result": "not_run",
+        "reason": "Ordinary idle measurement would open a foreground fixture window; omitted to preserve the user desktop. No new CPU/RSS benchmark is claimed."
+      },
+      "cleanup_errors": [],
+      "driver_sha256": "c67cdf83430d98dfb370f2f98cdca307be97b58225edd210444f5353855ca9ae"
+    }
+  },
+  "installed_notification_click_2026_09_17": {
+    "result": "passed",
+    "at": "2026-09-17T18:48:58.890990+00:00",
+    "candidate": "f5e298f471dfadf5925558b44fb3f6e2d5d53a0172ce2e8a708af77a4f8dd192",
+    "source": "418fbc93c86d1658ab4c5c9975eeb76e581a4915",
+    "scope": "Actual Notification Center accessibility click on installed f5e298f4 while explicitly hidden; existing production window and provider generations preserved. No app restart, physical mouse/IME or zero-process launch tested.",
+    "case": "The person's September 17 finding (a click on a notification while the app was already open did nothing visible) on the installed revision that carries PR #175: the production app was explicitly hidden, the daemon posted an ordinary message, Notification Center's owned notification was pressed through accessibility, and the app became visible with the exact message row revealed.",
+    "message_id": "26beba01be15456f",
+    "hidden_before_click": true,
+    "click": "pressed_owned_notification",
+    "visible_and_target_found": "true, true",
+    "processes_unchanged": {
+      "gui": 25649,
+      "codex": 51242,
+      "claude": 18563
+    },
+    "poster_sha256": "0593959cd3162693d343d44c9b7bb7e2751685d225bb1fbe99ae1884eee92da4",
+    "driver_sha256": "ca6a485618c9fc08e8b6f5fdcc4453b3fa135b35a6f29a0fe503555456261769",
+    "evidence": "/private/tmp/agentdocker-installed-notification-click-20260917/result.json (private, this Mac)",
+    "recorded_by": "codex-51242; folded into this record by claude-code-18563",
+    "remaining": [
+      "Zero-process OS cold launch from a notification.",
+      "A physical mouse click rather than an accessibility press.",
+      "A click while the same conversation is open with the message outside the loaded pages (the bounded page-back path).",
+      "Signed/notarized release acceptance."
+    ]
+  },
+  "combined_board_drafts_resume_2026_09_17": {
+    "source": "4647c2e37002ae34259ae6a851ea868fe8d4d978",
+    "components": {
+      "176": "b4b7cccff14acdbb6784b3c1dfc7a054166e895b",
+      "178": "faf54b165c1c22e90ee8b54519ef8abffbbf2960",
+      "179": "2985cb79572381e6e22c7bf656145b2f5863470c"
+    },
+    "installed": false,
+    "gate": {
+      "result": "passed",
+      "rust_passed": 1164,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "log": "/private/tmp/agentdocker-desktop-integration-gate-20260917.log",
+      "log_sha256": "96d6341d8b542f88a31b7103295f3248715967f5a6da92818e090e62f6a77f62"
+    },
+    "build_manifest": {
+      "format": 1,
+      "source_commit": "4647c2e37002ae34259ae6a851ea868fe8d4d978",
+      "source_tree": "33b6fcb0b49aeb4bc9f1183cba08b48ed3a43752",
+      "source_input_sha256": "1e44da3c874c47fd3fe7b048ee1947e88a3cb37d272c6aca3ff1bc2b1e73e8d0",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 23,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "e1067f6102995522d378929c6dafe3fecea91c330a7909cad582380885eb5e04",
+        "agentd": "df02594a41d29487781708928e13b7ced595c574df98e77e6764134c8624195e",
+        "agentdocker-ui": "13529d1f0d92be391f7688b8dc8e4d79cf86a435173665814c1cfeccb0859740"
+      }
+    },
+    "native": {
+      "result": "passed",
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived",
+        "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+        "normal_close_flushes_hidden_conversation_thread_session_and_channel_drafts_and_reopen_never_sends_them"
+      ],
+      "total_rendered_steps": 485,
+      "windows": {
+        "restored-drafts": 21,
+        "readiness-received": 17,
+        "provider-limit": 14,
+        "readiness-activity": 17,
+        "readiness-ready": 17,
+        "workflows": 187,
+        "restored": 6,
+        "readiness-paused": 17,
+        "readiness-contact": 17,
+        "narrow-inbox": 124,
+        "constrained-panes": 48
+      },
+      "elapsed_seconds": 132.10974758298835,
+      "artifacts": "/private/tmp/agentdocker-desktop-integration-workflow-20260917",
+      "idle_resources": {
+        "result": "not_run",
+        "reason": "Explicit --skip-idle-measurement: foreground CPU/RSS sample omitted; no idle performance claim."
+      },
+      "cleanup_errors": []
+    },
+    "limits": [
+      "Private combined source, not installed; final PR review and platform CI still required.",
+      "This snapshot predates the open-channel membership extension in #179 and the separate startup-order change.",
+      "Native controls are rendered-callback acceptance, not physical keyboard or screen-reader trials."
+    ]
+  },
+  "reviewed_batch_candidate_2026_09_17": {
+    "source": "3785e810cb923097f55060e1940fc45eb2ae3766",
+    "candidate": "d14610b7d5f5c3d338032666ba9d774c6696fa926f74499d0ecd69fc4d1ffa85",
+    "installed": false,
+    "includes": {
+      "board_pr": 176,
+      "drafts_pr": 178,
+      "resume_state_pr": 179,
+      "startup_order_pr": 180
+    },
+    "build": {
+      "format": 1,
+      "source_commit": "3785e810cb923097f55060e1940fc45eb2ae3766",
+      "source_tree": "73c6a65dd812e4336d64a7491b07c9f84cf57324",
+      "source_input_sha256": "333aab25d6ad183e4d7235fc9c045a35a48ef5a2d7afedeb45983ce07441d953",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 23,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "822ba03209cbbda5d44c79099dab30b92dfe9adf4adefca842d464870f8d41af",
+        "agentd": "78aa36a57cf45215937f3f2ff7debed459558e1231b8404571283181b4d659ef",
+        "agentdocker-ui": "ba9385904e0e54e3238828b3090b5d58b8bef9ea7ec007d09683f171d0cc8bff"
+      }
+    },
+    "gate": {
+      "source": "d4980777f85120a56d4ff55c70d69ad8cdfcd797",
+      "rust_passed": 1167,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "format_clippy_doctest_package_release": "passed",
+      "log": "/private/tmp/agentdocker-desktop-final-integration-gate-20260917.log",
+      "log_sha256": "273c021238655ddd114ab92ad3a2bd5ad231b227abf4be78477598bc303a53db"
+    },
+    "post_gate_change": {
+      "source": "4323099b9849a9fe40245321f1ad34c2504fc34e",
+      "change": "Stop Claude resume option detection at --; remaining source changes are docs/evidence.",
+      "validation": "Changed parser regression passed; strict workspace Clippy and release/provenance build passed. The same patch also passed the separate PR #180 full gate on a45f831."
+    },
+    "native": {
+      "result": "passed",
+      "steps": 485,
+      "windows": {
+        "restored-drafts": 21,
+        "readiness-received": 17,
+        "provider-limit": 14,
+        "readiness-activity": 17,
+        "readiness-ready": 17,
+        "workflows": 187,
+        "restored": 6,
+        "readiness-paused": 17,
+        "readiness-contact": 17,
+        "narrow-inbox": 124,
+        "constrained-panes": 48
+      },
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived",
+        "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+        "normal_close_flushes_hidden_conversation_thread_session_and_channel_drafts_and_reopen_never_sends_them"
+      ],
+      "elapsed_seconds": 136.1141859589843,
+      "artifacts": "/private/tmp/agentdocker-desktop-candidate-workflow-20260917",
+      "command": "python3 scripts/iced_workflow_smoke.py --binary-dir /private/tmp/agentdocker-desktop-candidate-binaries-20260917 --output /private/tmp/agentdocker-desktop-candidate-workflow-20260917 --skip-idle-measurement",
+      "idle_resources": {
+        "result": "not_run",
+        "reason": "Explicit --skip-idle-measurement: foreground CPU/RSS sample omitted; no idle performance claim."
+      }
+    },
+    "transport": {
+      "result": "passed",
+      "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+      "steps": [
+        "idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption",
+        "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+        "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+        "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+        "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+        "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+        "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+        "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+        "pre-initialization session fold preserved observations, open memberships and completed card identity references without changing their text or state, retained one channel owner across different agent IDs, and delivered the older queue plus a new room message through the canonical alias",
+        "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+      ],
+      "binary_sha256": {
+        "agentd": "78aa36a57cf45215937f3f2ff7debed459558e1231b8404571283181b4d659ef",
+        "agentdocker": "822ba03209cbbda5d44c79099dab30b92dfe9adf4adefca842d464870f8d41af"
+      },
+      "driver_sha256": {
+        "claude_channel_smoke.py": "5e8c091e4cd87b30eddecfa83008dd01581c4efa9fa316c458b4a38712ce8401",
+        "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+        "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+      },
+      "remaining_owned_processes": 0,
+      "duration_seconds": 42.14287045801757
+    },
+    "package": "/private/tmp/agentdocker-desktop-candidate-package-20260917",
+    "limits": [
+      "The package is an ad-hoc signed local preview, not a notarized public release.",
+      "Native scenarios invoke rendered callbacks; physical input, IME and screen-reader acceptance remain open.",
+      "The MCP fixture does not prove actual Claude startup/consent or idle model delivery.",
+      "Final PR CI/review and production activation remain pending."
+    ]
   }
 }

@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
+mod board;
 mod icons;
 mod messages;
 pub(crate) mod panes;
@@ -72,6 +73,7 @@ const STATUS_FOR: Duration = Duration::from_secs(20);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Agents,
+    Board,
     Questions,
     Channels,
     Terminal,
@@ -94,6 +96,36 @@ enum Cmd {
     Channels(String, String),
     Inbox,
     Activity,
+    /// The selected project's board.
+    /// The selected project's board: a page from `offset`, `limit`
+    /// cards at most (a refresh asks for as many as are on view), for
+    /// the ask numbered `request`, which is what its reply answers to.
+    Tasks {
+        project: String,
+        request: u64,
+        offset: usize,
+        limit: usize,
+    },
+    /// The person files a card.
+    TaskCreate {
+        project: String,
+        /// Which filing this is, so a late reply cannot clear a newer
+        /// draft or be taken for it.
+        request: u64,
+        title: String,
+        acceptance: String,
+        column: agentdocker_core::Column,
+    },
+    /// The person moves a card, or an agent it is handed to does.
+    TaskMove {
+        task: agentdocker_core::TaskId,
+        column: agentdocker_core::Column,
+    },
+    TaskAssign {
+        task: agentdocker_core::TaskId,
+        assignee: Option<agentdocker_core::AgentId>,
+    },
+    TaskArchive(agentdocker_core::TaskId),
     /// The projects that are paused, and why.
     Pauses,
     /// The person tells a project's agents to hold, with the reason.
@@ -238,6 +270,18 @@ enum Msg {
     Channels(String, Vec<agentdocker_core::Channel>),
     Inbox(Vec<agentdocker_core::Envelope>),
     Activity(Vec<AgentActivity>),
+    /// The board of the project asked for.
+    /// The board read for a project: its cards and whether the page
+    /// cut the board short, or why it could not be read.
+    Tasks(
+        String,
+        u64,
+        Result<(Vec<agentdocker_core::Task>, bool), String>,
+    ),
+    /// A filing's outcome, for the draft that made it.
+    TaskCreated(String, u64, Result<(), String>),
+    /// A change to the board, done (the board is read again) or refused.
+    TaskChanged(Result<(), String>),
     Pauses(Vec<agentdocker_core::Pause>),
     /// The pause or resume the person asked for a project, done or
     /// refused; the project says which form or control it answers.
@@ -381,6 +425,21 @@ pub struct App {
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
+    /// The board on view.
+    tasks: Option<Board>,
+    /// Board asks on their way, by number: which project's, and from
+    /// what offset. A reply answers one ask; a reply to none — an ask
+    /// cancelled by a later refresh, or made for a project no longer on
+    /// view — moves nothing.
+    board_asks: BTreeMap<u64, (String, usize)>,
+    /// A card being filed, per project: its title and what done means.
+    /// Text typed for one project's board waits there while another's
+    /// is on view.
+    task_drafts: BTreeMap<String, TaskDraft>,
+    /// Filings so far, numbering each so its reply is told apart.
+    task_requests: u64,
+    /// A card whose acceptance text is open.
+    task_open: Option<agentdocker_core::TaskId>,
     /// The projects told to hold, and why.
     pauses: Vec<agentdocker_core::Pause>,
     /// The pause being written, while its form is open: bound to the
@@ -500,6 +559,11 @@ impl App {
             sending: std::collections::BTreeSet::new(),
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            tasks: None,
+            task_drafts: BTreeMap::new(),
+            task_requests: 0,
+            board_asks: BTreeMap::new(),
+            task_open: None,
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
@@ -565,6 +629,11 @@ impl App {
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            tasks: None,
+            task_drafts: BTreeMap::new(),
+            task_requests: 0,
+            board_asks: BTreeMap::new(),
+            task_open: None,
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
@@ -588,7 +657,16 @@ impl App {
 
     fn send(&mut self, cmd: Cmd) {
         if let Err(queue::Rejected { command, reason }) = self.tx.send(cmd) {
-            match *command {
+            self.rejected(*command, reason);
+        }
+    }
+
+    /// A command the worker queue would not take: whatever the person
+    /// started with it is told so, or it would wait for a reply that
+    /// never comes.
+    fn rejected(&mut self, command: Cmd, reason: &'static str) {
+        {
+            match command {
                 Cmd::Answer(id, _) => {
                     self.sending.remove(&id);
                     if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
@@ -637,7 +715,41 @@ impl App {
                         .or_default()
                         .complete(Err(reason.into()));
                 }
-                Cmd::Adopt(_)
+                // A filing that could not be queued is told so, or it
+                // would stay "Filing…" for good; a move, a hand or an
+                // archive says so in the status.
+                Cmd::TaskCreate {
+                    project, request, ..
+                } => {
+                    if let Some(draft) = self.task_drafts.get_mut(&project)
+                        && draft.sending == Some(request)
+                    {
+                        draft.sending = None;
+                        draft.error = Some(reason.into());
+                    }
+                }
+                // A page asked for by hand that could not be queued is
+                // told so; a refresh is not.
+                Cmd::Tasks {
+                    project,
+                    request,
+                    offset,
+                    ..
+                } => {
+                    self.board_asks.remove(&request);
+                    if offset == 0 {
+                        return;
+                    }
+                    if let Some(board) = self.tasks.as_mut().filter(|b| b.project == project)
+                        && board.pending_more == Some(request)
+                    {
+                        board.pending_more = None;
+                    }
+                }
+                Cmd::TaskMove { .. }
+                | Cmd::TaskAssign { .. }
+                | Cmd::TaskArchive(_)
+                | Cmd::Adopt(_)
                 | Cmd::AdoptAll
                 | Cmd::Stop(_)
                 | Cmd::ResumeProvider(..)
@@ -815,6 +927,77 @@ impl App {
                         self.session_log = Some((agent, result));
                     }
                 }
+                Msg::Tasks(project, request, result) => {
+                    // Only a reply to an ask still standing, for the
+                    // project on view, moves the board.
+                    let Some((asked_for, offset)) = self.board_asks.remove(&request) else {
+                        continue;
+                    };
+                    if let Some(board) = self.tasks.as_mut().filter(|b| b.project == project)
+                        && board.pending_more == Some(request)
+                    {
+                        board.pending_more = None;
+                    }
+                    if asked_for != project
+                        || self.selected_project_root().as_deref() != Some(project.as_str())
+                    {
+                        continue;
+                    }
+                    match result {
+                        // A first page is the board anew, keeping a later
+                        // page still on its way; a later page is appended
+                        // only where it was asked for.
+                        Ok((tasks, more)) if offset == 0 => {
+                            let pending_more = self
+                                .tasks
+                                .as_ref()
+                                .filter(|b| b.project == project)
+                                .and_then(|b| b.pending_more);
+                            self.tasks = Some(Board {
+                                project,
+                                cards: tasks,
+                                more,
+                                pending_more,
+                            });
+                        }
+                        Ok((tasks, more)) => {
+                            if let Some(board) =
+                                self.tasks.as_mut().filter(|b| b.project == project)
+                                && board.cards.len() == offset
+                            {
+                                board.cards.extend(tasks);
+                                board.more = more;
+                            }
+                        }
+                        // The board as last read stays on view; the
+                        // person is told why it is not newer.
+                        Err(error) => {
+                            self.say(format!("The board could not be read: {error}"));
+                        }
+                    }
+                }
+                Msg::TaskCreated(project, request, result) => {
+                    // Only the filing this reply answers: a draft typed
+                    // since, after a refusal, keeps its text.
+                    if let Some(draft) = self.task_drafts.get_mut(&project)
+                        && draft.sending == Some(request)
+                    {
+                        draft.sending = None;
+                        match result {
+                            Ok(()) => {
+                                draft.title.clear();
+                                draft.acceptance.clear();
+                                draft.error = None;
+                            }
+                            Err(error) => draft.error = Some(error),
+                        }
+                    }
+                    self.request_tasks();
+                }
+                Msg::TaskChanged(result) => match result {
+                    Ok(()) => self.request_tasks(),
+                    Err(error) => self.say(error),
+                },
                 Msg::Pauses(pauses) => self.pauses = pauses,
                 Msg::Paused(request, result) => self.complete_pause(request, result),
                 Msg::Activity(activity) => {
@@ -1080,6 +1263,7 @@ impl App {
                         }
                         Err(error) => draft.complete(Err(error)),
                     }
+                    self.shell.drafts.changed();
                 }
                 Msg::SessionSent(id, result) => {
                     if let Some(entry) = self.shell.session_drafts.get_mut(&id) {
@@ -1091,6 +1275,7 @@ impl App {
                             Err(error) => entry.draft.complete(Err(error)),
                         }
                     }
+                    self.shell.drafts.changed();
                 }
                 Msg::ChannelInvited(request, member, result) => {
                     if let Some(form) = &mut self.new_conversation
@@ -1173,6 +1358,7 @@ impl App {
                         }
                         Err(error) => draft.complete(Err(error)),
                     }
+                    self.shell.drafts.changed();
                 }
             }
         }
@@ -1236,6 +1422,11 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
+            EventKind::TaskCreated { .. }
+            | EventKind::TaskPulled { .. }
+            | EventKind::TaskMoved { .. }
+            | EventKind::TaskUpdated { .. }
+            | EventKind::TaskArchived { .. } => self.request_tasks(),
             EventKind::ProjectPaused { .. } | EventKind::ProjectResumed { .. } => {
                 self.send(Cmd::Pauses);
             }
@@ -1466,6 +1657,92 @@ impl App {
             .find(|p| p.id().as_str() == id)
             .map_or_else(|| id.to_owned(), |p| p.root.to_string_lossy().into_owned())
     }
+    /// The selected project's card draft, made on first use; bounded
+    /// like the other drafts so a long life of switching projects does
+    /// not keep text for every one of them.
+    pub(crate) fn task_draft_mut(&mut self) -> Option<&mut TaskDraft> {
+        let project = self.selected_project_root()?;
+        if !self.task_drafts.contains_key(&project) && self.task_drafts.len() >= 128 {
+            let stale = self
+                .task_drafts
+                .iter()
+                .find(|(_, d)| !d.sending() && d.title.is_empty() && d.acceptance.is_empty())
+                .map(|(k, _)| k.clone())?;
+            self.task_drafts.remove(&stale);
+        }
+        Some(self.task_drafts.entry(project).or_default())
+    }
+
+    /// Read the selected project's board, when there is one and the
+    /// daemon is there: as many cards as are on view, so a board
+    /// expanded past its first page stays expanded through a refresh.
+    pub(crate) fn request_tasks(&mut self) {
+        if self.connected.is_ok()
+            && let Some(project) = self.selected_project_root()
+        {
+            // A refresh supersedes every ask still on its way for this
+            // board — earlier refreshes and a page alike: were a page to
+            // land first, the refresh, sized to what was on view when it
+            // was asked, would fold the board back; were an earlier
+            // refresh to land last, it would overwrite the newer read.
+            self.board_asks.retain(|_, (p, _)| *p != project);
+            let on_view = match self.tasks.as_mut().filter(|b| b.project == project) {
+                Some(board) => {
+                    board.pending_more = None;
+                    board.cards.len()
+                }
+                None => 0,
+            };
+            let limit = on_view.clamp(agentdocker_core::protocol::TASKS_LIMIT, BOARD_KEEP);
+            let request = self.next_board_ask(&project, 0);
+            self.send(Cmd::Tasks {
+                project,
+                request,
+                offset: 0,
+                limit,
+            });
+        }
+    }
+
+    /// The next page of the board on view, appended to it, up to what
+    /// the window keeps. Not while any ask for this board is on its way:
+    /// a page appended now would be to a board a refresh is about to
+    /// replace, or would double one already asked for.
+    pub(crate) fn request_more_tasks(&mut self) {
+        if self.connected.is_ok()
+            && let Some(project) = self.selected_project_root()
+            && !self.board_asks.values().any(|(p, _)| *p == project)
+            && self
+                .tasks
+                .as_ref()
+                .is_some_and(|b| b.project == project && b.more && b.cards.len() < BOARD_KEEP)
+        {
+            let offset = self.tasks.as_ref().map_or(0, |b| b.cards.len());
+            let limit = agentdocker_core::protocol::TASKS_LIMIT.min(BOARD_KEEP - offset);
+            let request = self.next_board_ask(&project, offset);
+            if let Some(board) = self.tasks.as_mut() {
+                board.pending_more = Some(request);
+            }
+            self.send(Cmd::Tasks {
+                project,
+                request,
+                offset,
+                limit,
+            });
+        }
+    }
+
+    /// Number a board ask and remember what it was for. Asks are few
+    /// and answered or refused in order; the map stays small, and is
+    /// cleared with the board when another project is chosen.
+    fn next_board_ask(&mut self, project: &str, offset: usize) -> u64 {
+        self.task_requests += 1;
+        let request = self.task_requests;
+        self.board_asks
+            .insert(request, (project.to_owned(), offset));
+        request
+    }
+
     fn request_channels(&mut self, id: String) {
         let selector = self.project_selector(&id);
         self.send(Cmd::Channels(id, selector));
@@ -2165,6 +2442,87 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             let result = read_session_log(client, &agent).map_err(|error| format!("{error:#}"));
             Some(Msg::SessionLog(agent, result))
         }
+        Cmd::Tasks {
+            project,
+            request,
+            offset,
+            limit,
+        } => {
+            let result = match client.call(&Request::Tasks {
+                project: Some(project.clone()),
+                column: None,
+                archived: false,
+                offset,
+                limit,
+            }) {
+                Ok(Response::Tasks { tasks, more }) => Ok((tasks, more)),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Tasks(project, request, result))
+        }
+        Cmd::TaskCreate {
+            project,
+            request,
+            title,
+            acceptance,
+            column,
+        } => {
+            let result = match client.call(&Request::TaskCreate {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project.clone()),
+                title,
+                acceptance,
+                column: Some(column),
+            }) {
+                Ok(Response::Task { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskCreated(project, request, result))
+        }
+        Cmd::TaskMove { task, column } => {
+            let result = match client.call(&Request::TaskMove {
+                agent: agentdocker_core::HUMAN.into(),
+                task: task.to_string(),
+                column,
+            }) {
+                Ok(Response::Task { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
+        Cmd::TaskAssign { task, assignee } => {
+            let result = match client.call(&Request::TaskUpdate {
+                agent: agentdocker_core::HUMAN.into(),
+                task: task.to_string(),
+                title: None,
+                acceptance: None,
+                assignee: Some(assignee.map(|a| a.to_string()).unwrap_or_default()),
+            }) {
+                Ok(Response::Task { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
+        Cmd::TaskArchive(task) => {
+            let result = match client.call(&Request::TaskArchive {
+                agent: agentdocker_core::HUMAN.into(),
+                task: task.to_string(),
+            }) {
+                Ok(Response::Ok) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
         Cmd::Pauses => match client.call(&Request::Pauses)? {
             Response::Pauses { pauses } => Some(Msg::Pauses(pauses)),
             _ => None,
@@ -2684,6 +3042,44 @@ pub(crate) fn runtime_label(runtime: &str) -> String {
     agentdocker_core::runtime::spec(runtime)
         .map(|spec| spec.label.to_owned())
         .unwrap_or_else(|| runtime.to_owned())
+}
+
+/// How many cards the window keeps of one board: five pages. Past that
+/// the board says so; archiving done cards is how it gets shorter.
+pub(crate) const BOARD_KEEP: usize = 500;
+
+/// The board on view: which project's, its cards as read so far —
+/// pages appended as asked for — and whether the daemon has more.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Board {
+    pub project: String,
+    pub cards: Vec<agentdocker_core::Task>,
+    pub more: bool,
+    /// The page on its way, by ask; the control says so and asks for no
+    /// other until it is answered, refused or superseded.
+    pub pending_more: Option<u64>,
+}
+
+impl Board {
+    pub fn loading_more(&self) -> bool {
+        self.pending_more.is_some()
+    }
+}
+
+/// A card being filed from the board.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TaskDraft {
+    pub title: String,
+    pub acceptance: String,
+    /// The filing on its way, by number; typing waits for its reply.
+    pub sending: Option<u64>,
+    pub error: Option<String>,
+}
+
+impl TaskDraft {
+    pub fn sending(&self) -> bool {
+        self.sending.is_some()
+    }
 }
 
 const PAUSE_CONTROLS: usize = 64;
