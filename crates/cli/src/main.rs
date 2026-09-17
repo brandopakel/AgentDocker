@@ -3813,7 +3813,6 @@ mod tests {
 
     #[test]
     fn pause_list_rejects_an_ignored_project_selector() {
-        use super::*;
         for selector in [".", "another-project"] {
             let error = parse_cli(["agentdocker", "pause", "--list", "--project", selector])
                 .err()
