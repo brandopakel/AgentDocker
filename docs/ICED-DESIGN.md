@@ -317,3 +317,12 @@ Closing/replacing the form prevents a late reply from changing the new form.
 A refused local queue submission releases the busy state and preserves the form.
 
 The new-conversation button keeps a compact width beside search; opening its form does not divide the search row into two equally wide controls. Its accessible name remains “New message or channel” (or “Close” for the open form).
+
+Project pause forms retain a separate bounded draft for each project. Their
+buttons and Enter action carry that project, and a unique request identity
+distinguishes pause from resume and old replies from new ones. Refusal, full
+queues and transport failures preserve the reason and release pending controls;
+a lost reply is an uncertain outcome to check before retrying, not an automatic
+resubmission. The pause reason and actions occupy separate rows on narrow
+windows. A durable pause blocks new agent lease claims but does not stop a model
+process or establish that every recipient has consumed the pause message.

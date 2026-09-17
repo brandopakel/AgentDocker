@@ -2192,5 +2192,115 @@
         "tests/test_desktop_smoke.py": "1db27c6b315ee274c54d170ee23be234507ebaaa1ac68d8491c18132a294ef16"
       }
     }
+  },
+  "pause_rollback_refusal_2026_09_17": {
+    "result": "passed",
+    "scope": "A pause survives a rollback attempt: the schema-23 daemon records a hold,\nan installed schema-22 daemon refuses to open that state, and the hold is\nstill there for the 23 daemon. Private home; never the production state.",
+    "steps": [
+      "schema-23 daemon paused the project: paused aef60cbc5ffb — rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
+      "pause --list shows the hold",
+      "state.db at schema 23 with one pause document",
+      "schema-22 daemon refused to start (exit 1); state.db unchanged (sha256 e352e94e548a), pause document retained",
+      "schema-23 daemon reopened the state and still lists the hold",
+      "the person lifted it; nothing paused"
+    ],
+    "new_daemon": {
+      "path": "/Users/brandopakel/AgentDocker/target/release/agentd",
+      "sha256": "8a28bc25d3f5b95d99d9afd2448b04804f4271d6a6d0148d25c5bf19332b5158",
+      "build_info": {
+        "arch": "aarch64",
+        "format": 1,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "os": "macos",
+        "state_schema": 23,
+        "version": "0.1.0"
+      }
+    },
+    "old_daemon": {
+      "path": "/Applications/AgentDocker.app/Contents/MacOS/agentd",
+      "sha256": "35038713472fa245a719b11135e3ac83d46fcc6e1ab9b258699c292652bc1dcb",
+      "build_info": {
+        "arch": "aarch64",
+        "format": 1,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "os": "macos",
+        "state_schema": 22,
+        "version": "0.1.0"
+      }
+    },
+    "old_daemon_refusal": [
+      "Error: state database has schema version \"23\"; this build expects 22"
+    ],
+    "record": {
+      "date": "2026-09-17",
+      "title": "A pause survives a rollback attempt: the schema-22 daemon refuses a schema-23 state",
+      "source": {
+        "new_daemon_built_from": "68189e7 (claude/project-pause, release build of the verify.sh gate; the daemon is unchanged by the later merge and form commits)",
+        "old_daemon": "installed release 79981beb / source 5c461e0 (merged #170), schema 22"
+      },
+      "driver": {
+        "path": "<session scratchpad>/pause_rollback_trial.py",
+        "sha256": "4c13c25f5c10eb122f9582a7a771453b6c16ae805b914da6dda8273a8860b68b"
+      },
+      "state": "private temporary home under /tmp; the production state was not touched",
+      "note": "`pause --list` needed `--from user` at this build because the CLI resolved a sender for listing; corrected in the same PR so listing names nobody."
+    }
+  },
+  "pause_request_followup_2026_09_17": {
+    "status": "source gate and isolated native workflow passed; final review/CI and installed recipient acceptance pending",
+    "runtime_source": "60380fdb30cdc8e15fdcdf985b23e9442bafeaf3",
+    "state_schema": 23,
+    "binary_sha256": {
+      "agentdocker": "d0cb192c24b0df4b0cf68f56705adf5849608c1673812c5f5481d5dfb850d0a4",
+      "agentd": "c38fef7851bb6f112fa00486068be8b5f21098e9280b21062b55b38930e80370",
+      "agentdocker-ui": "5e9e3601c1fa6abc1b09600b03b7673fdb888e269e104550db6b76af1fad2f6f"
+    },
+    "gate": {
+      "rust_passed": 1125,
+      "rust_skipped": 7,
+      "python_run": 84,
+      "result": "passed",
+      "includes": [
+        "format",
+        "strict clippy",
+        "workspace nextest",
+        "doctests",
+        "Python",
+        "package",
+        "release build"
+      ]
+    },
+    "native_workflow": {
+      "result": "passed",
+      "rendered_steps": 429,
+      "outer_checks": 26,
+      "elapsed_seconds": 137.28211304199067,
+      "driver_sha256": "8049cb372c0cd059b67d9e287a6a22cbfd5364dc1311e6669732be1e8d2051cf",
+      "cases": [
+        "project pause with Unicode reason",
+        "daemon-confirmed paused state and resume control",
+        "resume restores pause action",
+        "720x540 reason form and cancellation",
+        "existing navigation/messaging/limit/receipt workflows"
+      ],
+      "scope": "owned fixture daemon/profile/processes; no production pause, provider restart or physical keyboard claim"
+    },
+    "request_regressions": [
+      "per-project drafts survive navigation",
+      "unique operation IDs reject stale success and refusal, including same-project resume replies",
+      "duplicate in-flight submission and cancellation refused",
+      "queue-full admission keeps reason and clears pending",
+      "400-character draft and command byte bounds",
+      "transport failure emits uncertain-result completion plus Disconnected",
+      "restricted endpoint refuses human-identity pause/resume requests",
+      "existing queued waiter deterministically receives paused refusal"
+    ],
+    "limits": [
+      "A durable pause blocks new agent lease claims; it does not kill processes or prove that every provider consumed the message.",
+      "The current plain Claude idle-channel bug remains open; real peer-only idle reply and safe same-session activation remain required.",
+      "Schema23 remains23 after lifting a pause; older daemons need a compatible pre-upgrade backup or retain the newer daemon."
+    ]
   }
 }
