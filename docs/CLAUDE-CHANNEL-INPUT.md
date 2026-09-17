@@ -278,3 +278,12 @@ passes the full 1,094-Rust/84-Python gate (seven skipped) and the actual daemon/
 transport regression; the older binary admits a second channel and fails. See
 [existing channel evidence](verification/2026-09-11-claude-channel-input.json).
 Actual Claude relaunch and model idle wake still need separate acceptance.
+
+September 17 startup validation: runtime `a45f831` passed the full gate with
+1,149 Rust tests (seven skipped), 94 Python checks (one skipped), formatting,
+strict Clippy, doctests, packaging and release build. The parser regression
+includes resume-like prompt text after `--`. Local backend fixtures cover both
+startup orders, wrong/missing generations, a silent daemon, timeout, and control
+and explicit receipts before readiness. These do not establish actual provider
+startup/consent or an idle model reply; those remain open in the
+[existing channel record](verification/2026-09-11-claude-channel-input.json).
