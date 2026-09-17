@@ -34,7 +34,9 @@ pub(crate) use event_replay::EventReplay;
 // v17 retains independent session-owner identity; v18 retains provider blocks.
 // v19 retains input bindings and legacy offers on the agent record: an older
 // daemon would not know a queue is a bound controller's and would drain it.
-pub(crate) const SCHEMA_VERSION: i64 = 21;
+// Schema 22 adds a durable receiver-upgrade intent to bound-controller state.
+// Older readers reject that field, so a downgrade must not open this database.
+pub(crate) const SCHEMA_VERSION: i64 = 22;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
