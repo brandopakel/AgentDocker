@@ -459,12 +459,16 @@ fn hook_configuration_shape_valid(value: &serde_json::Value) -> bool {
 
 /// The required events that do not include our command with the full
 /// matcher, in the order the runtime's list gives them. Every event when
-/// hooks are disabled wholesale or there are none.
+/// hooks are disabled wholesale or there are none. Malformed configurations
+/// return no names: their wiring is unknown, rather than missing.
 pub fn missing_hook_events<'a>(
     value: &serde_json::Value,
     marker: &str,
     runtime: &'a str,
 ) -> Vec<&'a str> {
+    if !hook_configuration_shape_valid(value) {
+        return Vec::new();
+    }
     let disabled = value["disableAllHooks"] == true;
     let events = value.get("hooks").and_then(|h| h.as_object());
     let wired = |event: &str, matcher: Option<&str>| -> bool {
@@ -601,10 +605,7 @@ mod tests {
                 "agentdocker",
                 "claude-code"
             ));
-            assert_eq!(
-                missing_hook_events(&invalid, "agentdocker", "claude-code"),
-                vec!["StopFailure"]
-            );
+            assert!(missing_hook_events(&invalid, "agentdocker", "claude-code").is_empty());
         }
         for malformed in [
             serde_json::json!("bad"),
@@ -619,6 +620,7 @@ mod tests {
                 Wiring::Unverified
             );
             assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
+            assert!(missing_hook_events(&invalid, "agentdocker", "claude-code").is_empty());
         }
         settings["disableAllHooks"] = serde_json::Value::Bool(true);
         std::fs::write(&file, settings.to_string()).unwrap();
