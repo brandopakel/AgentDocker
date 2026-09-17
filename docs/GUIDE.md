@@ -45,6 +45,7 @@ Then bring in the agents already on the machine:
 
 ```sh
 agentdocker runtimes        # what is installed, and whether we are wired into it
+                            # (HOOKS `no (StopFailure)` names the events setup would add)
 agentdocker setup           # register the MCP server and install hooks
 agentdocker discover        # agent processes nobody registered
 agentdocker adopt --all     # register all of them
@@ -311,7 +312,7 @@ Pass `verbose: true` for the whole record.
 ## Hooks
 
 For Claude Code, `agentdocker setup claude-code` installs handlers for
-`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`
+`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `StopFailure`
 and `SessionEnd`. They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, and

@@ -196,10 +196,17 @@ counts open questions and waiting messages together. Notification navigation
 opens the requested message, including an older one outside the recent window.
 
 Tools shows **Input receiver active** only with a fresh report from a receiver
-bound to a live session. **Connected · idle delivery not verified** requires
-recent MCP or hook contact; activity and configuration alone cannot establish
-it. Other states distinguish **Needs setup**, **Setup needs review**,
-**Configured · waiting for contact**, unavailable integration and **Not installed**.
+bound to a live session. **Connected · messages wait for its next prompt**
+requires recent MCP or hook contact and no input route at all — the session
+is in touch, but nothing reaches it while it is idle — and activity and
+configuration alone cannot establish it; a session whose receiver is paused
+reads **Connected · input receiver paused** and one whose receiver has stopped
+reporting **Connected · input receiver silent**, since a prompt does not
+release what such a route holds. Other states distinguish **Needs setup · missing …** (which says
+what: the MCP entry, the hooks, or the one or two hook events a release began
+to require, so a machine wired before that release reads as missing
+*StopFailure hook*, not as never set up), **Setup needs review**, **Configured ·
+waiting for contact**, unavailable integration and **Not installed**.
 Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
 [CLAUDE-CHANNEL-INPUT.md](CLAUDE-CHANNEL-INPUT.md). Missing supported setup offers
 **Set up**. **Details** holds versions, commands, per-channel configuration and
