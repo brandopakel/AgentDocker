@@ -223,4 +223,3 @@ bridge and blocked-state mirror are designed and measured in
 (the portable coordination skill). From Dax: per-project visual identity,
 **Set up** for hooks and per-tool status badges are present; reply from the
 notification and trace-file resume are not.
-
