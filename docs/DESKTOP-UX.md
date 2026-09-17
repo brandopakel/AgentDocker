@@ -79,6 +79,12 @@ move or hand of some other card never clears it, and a filing the app could
 not queue says so under the form. The board is read a page at a time (200
 cards, Backlog to Done); past that a note says so and points to `agentdocker
 task list --column`. Narrow, the columns stack.
+
+**Pause…** beside it asks for a reason and tells every agent in the project
+to hold: they read the reason as a `pause` message, the daemon refuses their
+new leases until **Resume**, and the header shows **Paused · reason** while
+it holds (what an agent already holds, it keeps; your own actions are not
+held; only you can pause or resume, an agent asks with a message).
 **Launch agent…** chooses an installed CLI and starts it at the project root shown
 in the header. Claude and Codex launches default to **Idle messages: On**;
 turning it off visibly warns that messages may wait. Claude still requires its

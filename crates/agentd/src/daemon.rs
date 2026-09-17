@@ -50,6 +50,7 @@ mod handoff;
 pub mod humans;
 mod images;
 mod panes;
+mod pause;
 pub mod policies;
 mod provider;
 mod recovery;
@@ -115,6 +116,17 @@ const OVERLAP_PAGE: usize = 2_000;
 
 /// Maximum foreground wait while failed-launch supervision stops its owned group.
 const SUPERVISION_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A document written or removed in the same transaction as a message,
+/// with the event that announces it: what must not exist without the
+/// words that go with it.
+pub(crate) struct DocumentTransition {
+    pub kind: &'static str,
+    pub id: String,
+    /// The document to put, or none to delete it.
+    pub value: Option<serde_json::Value>,
+    pub event: EventKind,
+}
 
 /// What became of a write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,6 +205,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Questions { .. }
             | Request::Activity { .. }
             | Request::Waiting
+            | Request::Pauses
             | Request::Contests { .. }
             | Request::Journal { digest: None, .. }
             | Request::Channels { .. }
@@ -402,6 +415,8 @@ struct State {
     /// Questions somebody is blocked on, by message id: an answer names
     /// one and only the question knows who is waiting for it.
     questions: HashMap<MessageId, agentdocker_core::Question>,
+    /// The projects told to hold, and why; kept as documents.
+    pauses: HashMap<ProjectId, agentdocker_core::Pause>,
     /// Claims waiting for a resource, in arrival order. Connection-scoped
     /// and never persisted: a restart drops every waiting client, which
     /// reconnects and takes a new place.
@@ -472,6 +487,24 @@ fn watchable(record: &AgentRecord) -> bool {
         .project
         .as_ref()
         .is_some_and(|p| matches!(p.source, ProjectSource::Git | ProjectSource::Agentfile))
+}
+
+/// A claim refused because the project is paused: the person's reason,
+/// and enough to say who paused and when.
+fn pause_refusal(pause: &agentdocker_core::Pause) -> Response {
+    Response::Error {
+        code: ErrorCode::Paused,
+        message: format!(
+            "the project is paused: {}; finish the step in hand and take nothing new until it is resumed",
+            pause.reason
+        ),
+        details: Some(serde_json::json!({
+            "project": pause.project,
+            "reason": pause.reason,
+            "by": pause.by,
+            "at": pause.at,
+        })),
+    }
 }
 
 fn registry_error(err: RegistryError) -> Response {
@@ -1191,6 +1224,11 @@ impl Daemon {
             "state restored"
         );
 
+        let pauses: HashMap<ProjectId, agentdocker_core::Pause> = store
+            .documents::<agentdocker_core::Pause>("pause", None)?
+            .into_iter()
+            .map(|pause| (pause.project.clone(), pause))
+            .collect();
         let mut questions: HashMap<_, _> = store
             .documents::<agentdocker_core::Question>("question", None)?
             .into_iter()
@@ -1288,6 +1326,7 @@ impl Daemon {
                 channels,
                 contested: HashMap::new(),
                 questions,
+                pauses,
                 waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
                 host_policy: policies::Loaded::default(),
@@ -1762,6 +1801,13 @@ impl Daemon {
                 archived,
                 limit,
             } => self.tasks(project, column, archived, limit).await,
+            Request::Pause {
+                from,
+                project,
+                reason,
+            } => self.pause(from, project, reason).await,
+            Request::ResumeProject { from, project } => self.resume_project(from, project).await,
+            Request::Pauses => self.pauses(),
             Request::ContestOpen {
                 agent,
                 project,
@@ -3671,6 +3717,12 @@ impl Daemon {
         payload: Value,
         reply_to: Option<MessageId>,
     ) -> Response {
+        if pause::reserved_message_kind(&kind) {
+            return Response::error(
+                ErrorCode::Forbidden,
+                "pause and resume notices require a project lifecycle request",
+            );
+        }
         let (from, to) = match self.endpoints(from, to).await {
             Ok(pair) => pair,
             Err(response) => return *response,
@@ -3787,6 +3839,11 @@ impl Daemon {
             if !ruling.is_allowed() {
                 return state.refuse(&holder, &action, ruling);
             }
+            // A paused project's agents take nothing new until the person
+            // lifts it; what they hold, they keep.
+            if let Some(pause) = state.pause_holding(&holder) {
+                return pause_refusal(pause);
+            }
         }
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(wait_secs.min(MAX_WAIT_SECS));
@@ -3812,6 +3869,11 @@ impl Daemon {
                 }
                 if let Some(error) = state.write_failure() {
                     return error;
+                }
+                // A waiter queued before the pause is held too: a release
+                // during the pause grants nothing to the project's agents.
+                if let Some(pause) = state.pause_holding(&holder) {
+                    return pause_refusal(pause);
                 }
                 let now = Utc::now();
                 state.expire_leases_at(now);
@@ -5618,16 +5680,20 @@ impl State {
         envelope: Envelope,
         question: Option<agentdocker_core::Question>,
     ) -> Response {
-        self.publish_with_channel(envelope, question, None)
+        self.publish_with_channel(envelope, question, None, None)
     }
 
     /// Prepare channel state and ancillary effects without changing live state;
     /// publish the complete transition only after the message transaction commits.
+    /// `document` is one more thing that lands with the message or not at
+    /// all — a project's pause, whose word to the agents and whose record
+    /// must not exist without each other — with the event that announces it.
     fn publish_with_channel(
         &mut self,
         envelope: Envelope,
         question: Option<agentdocker_core::Question>,
         channel: Option<(Channel, EventKind, Option<JournalEntry>)>,
+        document: Option<DocumentTransition>,
     ) -> Response {
         let (channel, transition, mut journal) = match channel {
             Some((channel, event, journal)) => (Some(channel), Some(event), journal),
@@ -5733,6 +5799,9 @@ impl State {
             };
         }
         let mut kinds: Vec<_> = transition.into_iter().collect();
+        if let Some(document) = &document {
+            kinds.push(document.event.clone());
+        }
         kinds.push(EventKind::MessageSent {
             message: envelope.id.clone(),
             from: envelope.from.clone(),
@@ -5775,6 +5844,9 @@ impl State {
                 closed.as_ref(),
                 &events,
                 channel.as_ref().map(|channel| (channel, journal.as_ref())),
+                document
+                    .as_ref()
+                    .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
             )
         });
         if let Some(error) = self.write_failure() {

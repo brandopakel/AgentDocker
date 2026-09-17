@@ -376,6 +376,14 @@ pub fn event_line(event: &Event) -> String {
         } => format!("card moved       {task} to {column} by {by}"),
         EventKind::TaskUpdated { task, by, .. } => format!("card edited      {task} by {by}"),
         EventKind::TaskArchived { task, by, .. } => format!("card archived    {task} by {by}"),
+        EventKind::ProjectPaused {
+            project,
+            by,
+            reason,
+        } => format!("project paused   {} by {by}: {reason}", project.short()),
+        EventKind::ProjectResumed { project, by } => {
+            format!("project resumed  {} by {by}", project.short())
+        }
         EventKind::AgentRestarted {
             agent,
             pid,

@@ -212,6 +212,15 @@ def smoke(binary_dir, output):
                                 step("click", id=f"answer-choice-{choice}-0"), step("wait_control", id=f"answer-choice-{choice}-0", present=False)]
                 steps = [step("click", id=f"project-{project}"), step("wait_text", text="terminal-fixture"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("wait_control", id=f"session-{previous['id']}", present=False), step("capture", name="projects-live"),
+                         step("click", id="pause-project"),
+                         step("fill", id="pause-reason", text="Fixture pause · preserve this reason 日本語"),
+                         step("capture", name="pause-draft"),
+                         step("click", id="pause-submit"),
+                         step("wait_control", id="resume-project", present=True),
+                         step("wait_text", text="Paused · Fixture pause"),
+                         step("capture", name="project-paused"),
+                         step("click", id="resume-project"),
+                         step("wait_control", id="pause-project", present=True),
                          # The uppercase eyebrow is a separate rendered heading:
                          # seeing the mixed-case sidebar label alone cannot pass.
                          step("click", id=f"project-menu-{project}"), step("click", id=f"project-rename-start-{project}"),
@@ -363,7 +372,11 @@ def smoke(binary_dir, output):
                                         "kind": "chat", "payload": {"text": "NARROW ROUTE TARGET"}})["message"]
                 route = {"home": str(state), "socket": str(endpoint),
                          "target": {"message": routed, "agent": narrow["id"], "project": room["project"], "channel": None}}
-                narrow_steps = [step("resize", width=720, height=540), step("click", id="inbox"),
+                narrow_steps = [step("resize", width=720, height=540),
+                                step("click", id=f"project-{project}"), step("click", id="pause-project"),
+                                step("fill", id="pause-reason", text="Narrow pause draft 日本語"),
+                                step("capture", name="narrow-pause-draft"), step("click", id="pause-cancel"),
+                                step("click", id="inbox"),
                                 step("wait_control", id=f"thread-{agent['id']}", present=True),
                                 step("wait_control", id="thread-back", present=False), step("capture", name="narrow-inbox-list"),
                                 step("click", id=f"thread-{agent['id']}"), step("wait_control", id="thread-back", present=True),

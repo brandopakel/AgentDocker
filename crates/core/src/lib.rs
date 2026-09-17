@@ -52,7 +52,7 @@ pub use permissions::{
     QuestionFileSystemPermissions, QuestionNetworkPermissions, QuestionPermissionAccess,
     QuestionPermissionEntry, QuestionPermissionPath, QuestionPermissions,
 };
-pub use project::{ProjectId, ProjectRef, ProjectSource};
+pub use project::{Pause, ProjectId, ProjectRef, ProjectSource};
 pub use protocol::DigestRequest;
 pub use protocol::{ErrorCode, Request, Response};
 pub use registry::{Registry, RegistryError};

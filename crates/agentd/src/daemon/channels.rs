@@ -491,8 +491,12 @@ impl Daemon {
             None,
             channel.opened_at,
         );
-        let response =
-            state.publish_with_channel(envelope, None, Some((channel.clone(), event, journal)));
+        let response = state.publish_with_channel(
+            envelope,
+            None,
+            Some((channel.clone(), event, journal)),
+            None,
+        );
         if !matches!(response, Response::Sent { .. }) {
             return response;
         }
@@ -549,7 +553,7 @@ impl Daemon {
             Utc::now(),
         );
         let response =
-            state.publish_with_channel(envelope, None, Some((channel.clone(), event, None)));
+            state.publish_with_channel(envelope, None, Some((channel.clone(), event, None)), None);
         if !matches!(response, Response::Sent { .. }) {
             return response;
         }
@@ -614,8 +618,12 @@ impl Daemon {
             None,
             Utc::now(),
         );
-        let response =
-            state.publish_with_channel(envelope, None, Some((channel.clone(), event, journal)));
+        let response = state.publish_with_channel(
+            envelope,
+            None,
+            Some((channel.clone(), event, journal)),
+            None,
+        );
         if !matches!(response, Response::Sent { .. }) {
             return response;
         }
@@ -829,8 +837,12 @@ impl Daemon {
             review.summary(),
             SummarySource::Explicit,
         );
-        let response =
-            state.publish_with_channel(envelope, None, Some((channel.clone(), event, journal)));
+        let response = state.publish_with_channel(
+            envelope,
+            None,
+            Some((channel.clone(), event, journal)),
+            None,
+        );
         if !matches!(response, Response::Sent { .. }) {
             return response;
         }

@@ -243,6 +243,14 @@ pub enum Message {
     TaskOpen(agentdocker_core::TaskId),
     TaskAssign(agentdocker_core::TaskId, Option<agentdocker_core::AgentId>),
     TaskArchive(agentdocker_core::TaskId),
+    /// Tell the selected project's agents to hold: open the reason, or
+    /// send it, or lift the pause.
+    PauseStart(String),
+    PauseDraft(String, String),
+    PauseSubmit(String),
+    PauseCancel(String),
+    ResumeProject(String),
+
     /// Start a conversation: open or close the form.
     NewConversation,
     /// A direct message or a channel.
@@ -809,6 +817,44 @@ impl App {
                     self.shell.changed();
                 }
             }
+            Message::PauseStart(project) => {
+                if self.pause_states.len() >= PAUSE_CONTROLS
+                    && !self.pause_states.contains_key(&project)
+                {
+                    self.say("Finish or cancel an existing pause draft first.");
+                } else {
+                    let control = self.pause_states.entry(project).or_default();
+                    if control.pending.is_none() {
+                        control.draft.get_or_insert_with(String::new);
+                        control.error = None;
+                    }
+                }
+            }
+            Message::PauseDraft(project, reason) => {
+                if let Some(control) = self.pause_states.get_mut(&project)
+                    && control.pending.is_none()
+                    && control.draft.is_some()
+                {
+                    if reason.chars().count() > 400 {
+                        control.error = Some("A pause reason is at most 400 characters.".into());
+                    } else {
+                        // Copy only the accepted text, not a paste buffer's capacity.
+                        control.draft = Some(reason.as_str().to_owned());
+                        control.error = None;
+                    }
+                }
+            }
+            Message::PauseCancel(project) => {
+                if self
+                    .pause_states
+                    .get(&project)
+                    .is_some_and(|control| control.pending.is_none())
+                {
+                    self.pause_states.remove(&project);
+                }
+            }
+            Message::PauseSubmit(project) => self.submit_pause(project, PauseAction::Pause),
+            Message::ResumeProject(project) => self.submit_pause(project, PauseAction::Resume),
             Message::NewConversation => {
                 self.new_conversation = match self.new_conversation {
                     Some(_) => None,

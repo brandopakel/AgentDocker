@@ -425,6 +425,14 @@ pub enum EventKind {
     /// A card left the board.
     TaskArchived {
         task: crate::TaskId,
+    /// The person told a project's agents to hold, and why.
+    ProjectPaused {
+        project: ProjectId,
+        by: String,
+        reason: String,
+    },
+    /// The person lifted a project's pause.
+    ProjectResumed {
         project: ProjectId,
         by: String,
     },
