@@ -378,19 +378,22 @@ findings through AgentDocker on September 14. The peer acknowledged the message
 and returned its findings. This verifies active-session routing and model
 consumption; it does not replace an idle-wake or sustained-load trial.
 
-September 17 Messages review correction in progress: mention suggestions are
-limited to the selected conversation's live recipients, channel-creation replies
-carry their originating form identity, purposes are bounded, and relative CLI
-project selectors are normalized. Unicode lowercase mention matching and
-per-pane mention-name collection are included. Regression tests are written;
-compilation and native workflow acceptance remain pending. Existing-channel
-invitations are now written: Add members uses the same bounded UI worker and
-ordinary daemon queue. Membership, event and notice commit together; repeated
-invites are no-ops. Source tests and rendered workflow acceptance are pending.
+September 17 Messages review corrections limit mention suggestions to the
+selected conversation's live recipients, identify channel forms in replies,
+bound purposes, normalize relative CLI project selectors and match Unicode
+names. New DM, New channel, Enter-to-send and Add members use the ordinary
+bounded UI worker and daemon queue. Channel creation and invitations commit
+membership, event and notice together; repeated invites are no-ops. Failure and
+reopen tests cover atomic creation and the explicitly selected project journal.
 
-Messaging controls review validation: source `c3bceb3` passed 1,102 Rust tests (seven skipped), 84 Python checks, formatting, strict lint, doctests, packaging and release. The first native trial passed 378 rendered steps including creation and invitation, then the driver incorrectly expected the original two-member set after inviting a third member. The corrected assertion includes the invited member and requires exactly one invitation in that agent's actual queue; its full native repeat passed 415 rendered steps and 26 outer checks using the same c3bceb3 release binaries. The failed trial is retained. The later atomic creation correction still awaits validation.
-
-Named channel creation now publishes the room, opening event, journal entry and first notice in one transaction, using the new membership for routing. A failure must leave no room or notice after reopen, and the journal belongs to the explicitly selected project. The channel-form queue budget includes retained member-list allocations. Validation of this follow-up is pending.
+Source `3646efb` passed 1,103 Rust tests (seven skipped), 84 Python checks,
+formatting, strict lint, doctests, packaging and release, followed by the native
+workflow. Earlier source `c3bceb3` passed 415 rendered steps and 26 outer checks;
+the initial driver's obsolete two-member assertion is retained as a failed
+trial alongside its correction. Build provenance and reports are in the
+existing integrated-desktop verification record. The combined build with the
+compact create button and schema22 receiver upgrade still awaits its gate,
+native acceptance, final review, CI and installation.
 
 Receiver-upgrade review follow-up: the hidden CLI accepts the standard
 `AGENTDOCKER_AGENT_ID` default, and the architecture request table now spells out
