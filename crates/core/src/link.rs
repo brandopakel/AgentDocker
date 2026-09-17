@@ -114,11 +114,9 @@ impl Link {
         if target.chars().count() > TARGET_CHARS || target.contains(['\0', '\n', '\r']) {
             return Err("a link's target is one line of at most 2,048 characters");
         }
-        if self
-            .note
-            .as_ref()
-            .is_some_and(|note| note.chars().count() > NOTE_CHARS || note.contains(['\0', '\n']))
-        {
+        if self.note.as_ref().is_some_and(|note| {
+            note.chars().count() > NOTE_CHARS || note.contains(['\0', '\n', '\r'])
+        }) {
             return Err("a link's note is one line of at most 200 characters");
         }
         let hex = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit());
@@ -236,6 +234,10 @@ mod tests {
         let mut noted = Link::parse("pr:#1").unwrap();
         noted.note = Some("n".repeat(NOTE_CHARS + 1));
         assert!(noted.check().is_err());
+        noted.note = Some("one line\ronly".into());
+        assert!(noted.check().is_err(), "a carriage return is not one line");
+        noted.note = Some("a word".into());
+        assert!(noted.check().is_ok());
         assert!(check(&vec![Link::parse("pr:#1").unwrap(); LINKS]).is_ok());
         assert!(check(&vec![Link::parse("pr:#1").unwrap(); LINKS + 1]).is_err());
         assert_eq!(

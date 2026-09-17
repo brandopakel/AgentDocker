@@ -292,10 +292,21 @@ impl Daemon {
         if bundle.id.is_empty() || bundle.id.len() > 256 || bundle.task.is_empty() {
             return Response::error(ErrorCode::Invalid, "bundle needs an id and a task");
         }
-        // Links in a bundle from elsewhere are held to the same shape and
-        // count as links made here, before anything is written.
+        // Links in a bundle from elsewhere — its own, and those on every
+        // message it carries — are held to the same shape and count as
+        // links made here, before anything is written.
         if let Err(reason) = agentdocker_core::link::check(&bundle.links) {
             return Response::error(ErrorCode::Invalid, format!("bundle links: {reason}"));
+        }
+        if let Some(reason) = bundle
+            .unread_inbox
+            .iter()
+            .find_map(|message| agentdocker_core::link::check(&message.links).err())
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                format!("bundle message links: {reason}"),
+            );
         }
         // The bounds this daemon's own bundles and checkpoints keep, before
         // anything is written.
@@ -926,6 +937,29 @@ mod tests {
         overlinked.links = vec![agentdocker_core::Link::parse("pr:#1").unwrap(); 17];
         assert!(matches!(
             elsewhere.import("recipient", overlinked).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        // A message the bundle carries is held to it too.
+        let mut carried = bundle.clone();
+        let mut message = Envelope::new(
+            "sender",
+            Destination::Agent("recipient".into()),
+            "chat",
+            json!({"text": "see"}),
+            None,
+            Utc::now(),
+        );
+        message.links = vec![agentdocker_core::Link {
+            kind: agentdocker_core::LinkKind::Commit,
+            target: "nothex".into(),
+            note: None,
+        }];
+        carried.unread_inbox = vec![message];
+        assert!(matches!(
+            elsewhere.import("recipient", carried).await,
             Response::Error {
                 code: ErrorCode::Invalid,
                 ..
