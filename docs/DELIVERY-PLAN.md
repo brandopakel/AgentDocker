@@ -168,6 +168,17 @@ and Enter to send. Claude owns those interaction changes in the existing
 [design document](ICED-DESIGN.md); they are implementation/acceptance work, not
 completed merely by this plan entry.
 
+**September 17 user reconfirmation — still an open bug:** Claude's saved
+changes and hooks/MCP registration do not establish input readiness. The current
+plain session has no channel binding, and recent handoffs can remain queued at
+its idle prompt. Close this only after the supported same-session channel
+relaunch preserves drafts and queued message IDs, an actual peer-only message
+starts an idle turn and receives a correlated model reply without another human
+prompt, and reconnect/retry trials preserve order without duplicate execution.
+Run equivalent idle, busy and provider-limit cases for every supported runtime;
+show unavailable input explicitly until those cases pass. The merged reconnect
+fixture and installed Codex active-input receipts do not close this Claude case.
+
 **September 16 live regression:** Claude confirmed twelve peer messages waited at
 its idle prompt until a human supplied input. The process had hooks/MCP but no
 channel receiver. Finish safe existing-session input connection and per-provider

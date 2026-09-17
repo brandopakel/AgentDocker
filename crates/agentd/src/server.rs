@@ -840,6 +840,17 @@ mod tests {
                 );
                 drop(new_client);
                 new_serving.await.unwrap().unwrap();
+                // Output is legal while fenced and shares this duplex stream
+                // with input/resize errors. Force some output to be waiting
+                // before sending a refused mutation, without consuming it.
+                std::fs::write(go, "").unwrap();
+                assert!(
+                    !tokio::time::timeout(Duration::from_secs(5), client.fill_buf())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .is_empty()
+                );
                 for request in [
                     Request::AttachInput {
                         data: agentdocker_core::protocol::encode_bytes(b"blocked\n"),
@@ -850,11 +861,32 @@ mod tests {
                     },
                 ] {
                     send(&mut client, request, capable).await;
-                    assert!(
-                        matches!(next(&mut client).await, Response::Error { code, .. } if code == if capable { ErrorCode::Transferring } else { ErrorCode::Unavailable })
-                    );
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        loop {
+                            match next(&mut client).await {
+                                Response::Output { data } => {
+                                    text.push_str(&String::from_utf8_lossy(
+                                        &agentdocker_core::protocol::decode_bytes(&data).unwrap(),
+                                    ));
+                                }
+                                Response::Error { code, .. } => {
+                                    assert_eq!(
+                                        code,
+                                        if capable {
+                                            ErrorCode::Transferring
+                                        } else {
+                                            ErrorCode::Unavailable
+                                        }
+                                    );
+                                    break;
+                                }
+                                other => panic!("expected fenced refusal or output: {other:?}"),
+                            }
+                        }
+                    })
+                    .await
+                    .expect("fenced mutation did not receive its refusal");
                 }
-                std::fs::write(go, "").unwrap();
                 while !text.contains("during-fence") {
                     if let Response::Output { data } = next(&mut client).await {
                         text.push_str(&String::from_utf8_lossy(
