@@ -437,6 +437,9 @@ fn hooks_configuration_matches_for(value: &serde_json::Value, marker: &str, runt
 // notably a non-string matcher must not be treated as an absent matcher.
 fn hook_configuration_shape_valid(value: &serde_json::Value) -> bool {
     value.is_object()
+        && value
+            .get("disableAllHooks")
+            .is_none_or(|disabled| disabled.is_boolean())
         && value.get("hooks").is_none_or(|hooks| {
             hooks.as_object().is_some_and(|events| {
                 events.values().all(|entries| {
@@ -622,6 +625,32 @@ mod tests {
             assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
             assert!(missing_hook_events(&invalid, "agentdocker", "claude-code").is_empty());
         }
+        for malformed in [
+            serde_json::json!("false"),
+            serde_json::json!(0),
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let mut invalid = settings.clone();
+            invalid["disableAllHooks"] = malformed;
+            std::fs::write(&file, invalid.to_string()).unwrap();
+            assert_eq!(
+                hooks_wiring_file(spec, &file, "agentdocker"),
+                Wiring::Unverified
+            );
+            assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
+            assert!(!hooks_configuration_matches_for(
+                &invalid,
+                "agentdocker",
+                "claude-code"
+            ));
+            assert!(missing_hook_events(&invalid, "agentdocker", "claude-code").is_empty());
+        }
+        settings["disableAllHooks"] = serde_json::Value::Bool(false);
+        std::fs::write(&file, settings.to_string()).unwrap();
+        assert_eq!(hooks_wiring_file(spec, &file, "agentdocker"), Wiring::Wired);
+        assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
         settings["disableAllHooks"] = serde_json::Value::Bool(true);
         std::fs::write(&file, settings.to_string()).unwrap();
         assert_eq!(hooks_missing_file(spec, &file, "agentdocker"), every);
