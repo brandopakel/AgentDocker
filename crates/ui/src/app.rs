@@ -321,6 +321,10 @@ pub struct App {
     /// The form for a conversation the person is starting — a direct
     /// message or a channel — while it is open.
     new_conversation: Option<NewConversation>,
+    /// A notification's message to scroll to once its conversation's
+    /// archive has it: the conversation, the message, and how many pages
+    /// back have been asked for it.
+    reveal_archived: Option<(String, MessageId, usize)>,
     /// Archived history per conversation, oldest first, as last fetched.
     history: BTreeMap<String, Vec<agentdocker_core::ArchivedMessage>>,
     /// Conversations whose earliest archived message is on view.
@@ -444,6 +448,7 @@ impl App {
             conversations: Vec::new(),
             conversations_supported: None,
             new_conversation: None,
+            reveal_archived: None,
             history: BTreeMap::new(),
             history_complete: BTreeSet::new(),
             history_epoch: 0,
@@ -507,6 +512,7 @@ impl App {
             conversations: Vec::new(),
             conversations_supported: None,
             new_conversation: None,
+            reveal_archived: None,
             history: BTreeMap::new(),
             history_complete: BTreeSet::new(),
             history_epoch: 0,
@@ -926,7 +932,8 @@ impl App {
                         .filter(|m| messages.first().is_none_or(|first| m.seq < first.seq))
                         .collect();
                     merged.extend(messages);
-                    self.keep_history(conversation, merged);
+                    self.keep_history(conversation.clone(), merged);
+                    self.seek_archived(&conversation);
                 }
                 Msg::HistoryEarlier(conversation, epoch, earlier) => {
                     if epoch != self.history_epoch {
@@ -942,7 +949,8 @@ impl App {
                         .filter(|m| first.is_none_or(|f| m.seq < f))
                         .collect();
                     merged.append(&mut shown);
-                    self.keep_history(conversation, merged);
+                    self.keep_history(conversation.clone(), merged);
+                    self.seek_archived(&conversation);
                 }
                 Msg::Thread(epoch, root, replies) => {
                     if epoch == self.history_epoch
@@ -1440,6 +1448,50 @@ impl App {
     /// Keep one conversation's archive within the window's bound: the
     /// newest rows stay, and once the earliest have gone they can be paged
     /// in again.
+    /// How far back a notification's message is looked for: pages of the
+    /// archive, past the newest one.
+    const REVEAL_PAGES: usize = 5;
+
+    /// A page of a conversation arrived: if a notification's message is
+    /// wanted there, it is either on view now — the next tick scrolls to
+    /// it — or further back, and the page before is asked for, up to a
+    /// bound; past that the person is told, and the conversation stays
+    /// open at its newest.
+    fn seek_archived(&mut self, conversation: &str) {
+        let Some((wanted_in, wanted, pages)) = self.reveal_archived.clone() else {
+            return;
+        };
+        if wanted_in != conversation {
+            return;
+        }
+        // No page yet: the one asked for is still on its way.
+        let Some(messages) = self.history.get(conversation) else {
+            return;
+        };
+        if messages.iter().any(|m| m.envelope.id == wanted) {
+            self.reveal_archived = None;
+            self.shell.pending_answer_reveal = None;
+            self.shell.reveal_archived_next = Some(wanted);
+            return;
+        }
+        let first = messages.first().map(|m| m.seq);
+        if self.history_complete.contains(conversation)
+            || pages >= Self::REVEAL_PAGES
+            || first.is_none()
+            || self.connected.is_err()
+        {
+            self.reveal_archived = None;
+            self.say("This notification's message is not in the conversation kept here.");
+            return;
+        }
+        self.reveal_archived = Some((wanted_in, wanted, pages + 1));
+        self.send(Cmd::HistoryBefore(
+            conversation.to_owned(),
+            first.expect("checked"),
+            self.history_epoch,
+        ));
+    }
+
     fn keep_history(
         &mut self,
         conversation: String,
@@ -3834,6 +3886,128 @@ pub(crate) mod tests {
         assert_eq!(requests.try_iter().count(), 0);
         app.send(Cmd::Agents);
         assert!(matches!(requests.try_iter().next(), Some(Cmd::Agents)));
+    }
+
+    /// A notification's message on the Messages screen is scrolled to
+    /// once its page is here: on the newest page at once; older, the
+    /// pages before are asked for one at a time until it is, and then;
+    /// and past the bound the person is told and nothing more is asked.
+    #[test]
+    fn a_notification_pages_back_to_its_archived_message_and_then_reveals_it() {
+        let (tx, requests) = queue::channel();
+        let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        app.conversations_supported = Some(true);
+        app.screen = Screen::Questions;
+        let room = "channel:abc".to_owned();
+        app.shell.conversation = Some(room.clone());
+        let archived = |seq: u64| agentdocker_core::ArchivedMessage {
+            seq,
+            conversation: agentdocker_core::ConversationId::from(room.clone()),
+            envelope: {
+                let mut envelope = agentdocker_core::Envelope::new(
+                    "a",
+                    agentdocker_core::Destination::Broadcast,
+                    "chat",
+                    serde_json::json!({ "text": format!("{seq}") }),
+                    None,
+                    Utc::now(),
+                );
+                envelope.id = MessageId::from(format!("m{seq}"));
+                envelope
+            },
+            replies: 0,
+        };
+        let page = |from: u64| {
+            (from..from + HISTORY_PAGE as u64)
+                .map(archived)
+                .collect::<Vec<_>>()
+        };
+        // The newest page has it: revealed on the next tick, nothing asked.
+        app.reveal_archived = Some((room.clone(), MessageId::from("m950".to_owned()), 0));
+        messages
+            .send(Msg::History(room.clone(), app.history_epoch, page(801)))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.shell
+                .reveal_archived_next
+                .take()
+                .map(|id| id.to_string()),
+            Some("m950".into())
+        );
+        assert!(app.reveal_archived.is_none());
+        assert!(
+            !requests
+                .try_iter()
+                .any(|c| matches!(c, Cmd::HistoryBefore(..)))
+        );
+        // Older: the page before is asked for, once per page, until found.
+        app.reveal_archived = Some((room.clone(), MessageId::from("m700".to_owned()), 0));
+        app.seek_archived(&room);
+        assert!(matches!(
+            requests.try_iter().next(),
+            Some(Cmd::HistoryBefore(c, 801, _)) if c == room
+        ));
+        assert_eq!(app.reveal_archived.as_ref().map(|r| r.2), Some(1));
+        messages
+            .send(Msg::HistoryEarlier(
+                room.clone(),
+                app.history_epoch,
+                page(601),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.shell
+                .reveal_archived_next
+                .take()
+                .map(|id| id.to_string()),
+            Some("m700".into())
+        );
+        assert!(app.reveal_archived.is_none());
+        // A message that is nowhere: the pages before are asked for until
+        // the archive's first page says there is no more, then the person
+        // is told and nothing more is asked.
+        app.reveal_archived = Some((room.clone(), MessageId::from("m0".to_owned()), 0));
+        app.seek_archived(&room);
+        let mut asked = 0;
+        for from in [401u64, 201, 1] {
+            let before: Vec<_> = requests.try_iter().collect();
+            assert!(
+                before
+                    .iter()
+                    .any(|c| matches!(c, Cmd::HistoryBefore(c, _, _) if *c == room)),
+                "asked for the page before, round {asked}: {before:?}"
+            );
+            asked += 1;
+            let earlier = if from == 1 {
+                page(1)[..HISTORY_PAGE - 1].to_vec()
+            } else {
+                page(from)
+            };
+            messages
+                .send(Msg::HistoryEarlier(
+                    room.clone(),
+                    app.history_epoch,
+                    earlier,
+                ))
+                .unwrap();
+            app.drain();
+        }
+        assert!(
+            app.reveal_archived.is_none(),
+            "given up at the archive's start"
+        );
+        assert!(app.shell.reveal_archived_next.is_none());
+        assert!(app.status.contains("not in the conversation kept here"));
+        assert!(
+            !requests
+                .try_iter()
+                .any(|c| matches!(c, Cmd::HistoryBefore(..)))
+        );
+        assert!(asked <= App::REVEAL_PAGES);
     }
 
     #[test]
