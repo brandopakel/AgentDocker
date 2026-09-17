@@ -240,10 +240,13 @@ mod tests {
     /// on the count.
     #[test]
     fn webhook_sinks_are_checked_for_shape() {
+        // An absolute path on this platform: `/Users/…` is relative on
+        // Windows, where the core tests also run.
+        let secret = std::env::temp_dir().join("slack.secret");
         let good = |url: &str| WebhookConfig {
             name: "team-slack".into(),
             url: url.into(),
-            secret_file: "/Users/me/.config/agentdocker/slack.secret".into(),
+            secret_file: secret.clone(),
             events: vec!["question_asked".into(), "lease_deadlock".into()],
             project: None,
             format: WebhookFormat::Slack,
@@ -278,19 +281,22 @@ mod tests {
         let mut sink = good("https://example.com/hook");
         sink.events = vec!["Question Asked".into()];
         assert!(sink.check().is_err(), "not a kind");
-        let text = r#"
+        let text = format!(
+            r#"
 [[webhooks]]
 name = "a"
 url = "https://example.com/a"
-secret_file = "/tmp/a.secret"
+secret_file = {secret:?}
 events = ["agent_exited"]
 
 [[webhooks]]
 name = "a"
 url = "https://example.com/b"
-secret_file = "/tmp/b.secret"
-"#;
-        let config: DaemonConfig = toml::from_str(text).unwrap();
+secret_file = {secret:?}
+"#,
+            secret = secret.display().to_string()
+        );
+        let config: DaemonConfig = toml::from_str(&text).unwrap();
         assert!(config.webhooks().unwrap_err().contains("named twice"));
         let many: Vec<WebhookConfig> = (0..=WEBHOOKS)
             .map(|i| {
