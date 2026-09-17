@@ -293,8 +293,12 @@ def run(args):
                         opened.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
                     return opened
 
+                for name in ["earlier.txt", "fresh.txt"]:
+                    (project / name).write_text(f"{name} fixture\n")
                 old_parent = spawn(["sleep", "120"], env)
                 canonical = register_life("resume-old", old_parent, "fixture-resumed-session")
+                old_reads = rpc(endpoint, {"op": "observe", "agent": canonical, "paths": ["earlier.txt"]})
+                assert old_reads["type"] == "reads", old_reads
                 old_message = send_to(canonical, "older queued message")
                 old_parent.kill(); old_parent.wait(timeout=5)
                 retired = rpc(endpoint, {"op": "deregister", "agent": canonical})
@@ -302,8 +306,13 @@ def run(args):
                 new_parent = spawn(["sleep", "120"], env)
                 fresh = register_life("resume-new", new_parent)
                 assert fresh != canonical
+                fresh_reads = rpc(endpoint, {"op": "observe", "agent": fresh, "paths": ["fresh.txt"]})
+                assert fresh_reads["type"] == "reads", fresh_reads
+                expected_reads = sorted(old_reads["reads"] + fresh_reads["reads"], key=lambda read: read["path"])
                 early = channel_for(fresh, initialize=False)
                 assert register_life("resume-hook", new_parent, "fixture-resumed-session") == canonical
+                assert rpc(endpoint, {"op": "reads", "agent": canonical})["reads"] == expected_reads
+                assert rpc(endpoint, {"op": "reads", "agent": fresh})["reads"] == expected_reads
                 # The first server still holds its pre-fold agent-ID lock.
                 # Only process-generation ownership excludes this second one.
                 duplicate = spawn(command, {**channel_env, "AGENTDOCKER_AGENT_ID": canonical})
@@ -317,7 +326,7 @@ def run(args):
                 assert inbox(canonical) == []
                 early.process.stdin.close()
                 assert early.process.wait(timeout=5) == 0
-                report["steps"].append("pre-initialization session fold preserved one channel owner across different agent IDs and delivered the older queue through its alias")
+                report["steps"].append("pre-initialization session fold preserved both observation sets and one channel owner across different agent IDs and delivered the older queue through its alias")
 
                 retained = send_to(canonical, "retained older backlog")
                 new_parent.kill(); new_parent.wait(timeout=5)
