@@ -2936,5 +2936,45 @@
       "artifacts": "/private/tmp/agentdocker-controller-upgrade-native2-2026-09-17",
       "status": "passed; final review, CI and production acceptance pending"
     }
+  },
+  "installed_receiver_upgrade_2026_09_17": {
+    "result": "passed",
+    "candidate": "9bc0f0fc1045ebb25c5b68641142bb4f6954440ba44cdf03613eeb964b5a627d",
+    "source": "8d42db5f3599ec8105286bdea78afa112ae5ddf8",
+    "providers_preserved": true,
+    "gui_processes_preserved": [],
+    "old_controller": {
+      "pid": 94744,
+      "started_at": "2026-09-16T02:32:58.433259Z"
+    },
+    "new_controller": {
+      "pid": 20912,
+      "started_at": "2026-09-17T02:57:52.717071Z"
+    },
+    "token_and_binding_preserved": true,
+    "retained_old_receipts_confirmed": 58,
+    "bounded_oldest_receipt_evictions": 0,
+    "schema": 22,
+    "backup": "/private/tmp/agentdocker-installed-upgrade-20260917T025744Z/state.db",
+    "provider_processes": [
+      {
+        "id": "50fd100f4310452fae0435fd4b6a1981",
+        "pid": 51242,
+        "birth": "2026-09-12T23:36:03.055103Z",
+        "pid_after": 51242,
+        "birth_after": "2026-09-12T23:36:03.055103Z"
+      },
+      {
+        "id": "ac5c138c2b3f4d8f90c5924988419055",
+        "pid": 74231,
+        "birth": "2026-09-17T02:43:55.823075Z",
+        "pid_after": 74231,
+        "birth_after": "2026-09-17T02:43:55.823075Z"
+      }
+    ],
+    "merge": "df3b758",
+    "artifact_directory": "/private/tmp/agentdocker-installed-upgrade-20260917T025744Z",
+    "scope": "Actual installed daemon and receiver replacement; existing Codex and Claude sessions retained. No GUI was open during the switch, so this episode does not prove preservation of an open GUI draft. Earlier private acceptance covers drafts.",
+    "fresh_active_message_acceptance": "pending"
   }
 }

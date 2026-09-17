@@ -398,4 +398,4 @@ native acceptance, final review, CI and installation.
 Receiver-upgrade review follow-up: the hidden CLI accepts the standard
 `AGENTDOCKER_AGENT_ID` default, and the architecture request table now spells out
 `upgrade_controller`, its binding response and commit-before-stop semantics.
-The full source gate passed for these two review corrections at `8d42db5`; final review, CI and installed-session acceptance remain open.
+The full source gate passed for these two review corrections at `8d42db5`. PR #171 merged as `df3b758` after final review and all CI checks. The backed-up installed switch to candidate `9bc0f0fc` passed with schema22, unchanged live provider identities, receiver 94744 replaced by 20912, and all 58 earlier receipts plus the token/binding retained. Queued messages entered this active Codex turn through the new hook route; a fresh-message check is in progress. The actual app was closed during the switch and reopened afterward. The existing native-queue record contains the production evidence; other-provider, oversized-message and long-run acceptance remain open.
