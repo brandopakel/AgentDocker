@@ -461,13 +461,40 @@ impl Daemon {
             closed_at: None,
             resolution: None,
         };
-        state.install_channel(channel.clone(), &records);
-        state.tell_channel(
-            &channel,
-            format!("{} opened this channel: {task}", record.spec.name),
+        let names = records
+            .iter()
+            .map(|member| member.spec.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let journal = state
+            .plain_entry(
+                &record,
+                JournalKind::Review,
+                format!("opened a channel on {} for {names}", channel.title()),
+                SummarySource::Synthesised,
+            )
+            .map(|mut entry| {
+                entry.project = channel.project.clone();
+                entry
+            });
+        let event = EventKind::ChannelOpened {
+            channel: channel.id.clone(),
+            project: channel.project.clone(),
+            title: channel.title(),
+            members: channel.members.clone(),
+        };
+        let envelope = Envelope::new(
+            "agentd",
+            Destination::Channel(channel.id.clone()),
+            "channel",
+            json!({"channel":channel.id.as_str(), "title":channel.title(), "text":format!("{} opened this channel: {task}", record.spec.name)}),
+            None,
+            channel.opened_at,
         );
-        if let Some(error) = state.write_failure() {
-            return error;
+        let response =
+            state.publish_with_channel(envelope, None, Some((channel.clone(), event, journal)));
+        if !matches!(response, Response::Sent { .. }) {
+            return response;
         }
         Response::Channel { channel }
     }
@@ -1168,6 +1195,47 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn refused_channel_creation_leaves_no_room_or_notice() {
+        for failed_event in ["channel_opened", "message_sent", "journal_appended"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (daemon, _) = fixture(&tmp).await;
+            let (queues, seq, mut events) = {
+                let state = lock(&daemon.state);
+                state.store.reject_event_for_test(failed_event);
+                (
+                    serde_json::to_value(&state.inboxes).unwrap(),
+                    state.next_seq,
+                    state.events.subscribe(),
+                )
+            };
+            assert!(matches!(
+                daemon
+                    .channel_open("writer", "plan".into(), vec!["reviewer".into()], None, None)
+                    .await,
+                Response::Error {
+                    code: ErrorCode::StorageUnavailable,
+                    ..
+                }
+            ));
+            {
+                let state = lock(&daemon.state);
+                assert!(state.channels.is_empty());
+                assert_eq!(serde_json::to_value(&state.inboxes).unwrap(), queues);
+                assert_eq!(state.next_seq, seq);
+                assert!(events.try_recv().is_err());
+            }
+            drop(daemon);
+            let reopened = Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap();
+            let state = lock(&reopened.state);
+            assert!(
+                state.channels.is_empty(),
+                "no room left after {failed_event}"
+            );
+            assert_eq!(serde_json::to_value(&state.inboxes).unwrap(), queues);
+        }
     }
 
     #[tokio::test]

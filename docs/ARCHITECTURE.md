@@ -1214,3 +1214,5 @@ Lost removal/output confirmation keeps the original message for reconciliation.
 The daemon protocol and database schema are unchanged. See
 [Codex input](CODEX-INPUT.md#active-input-in-an-existing-terminal-candidate-september-17-utc)
 for limits and acceptance status.
+
+Named channel creation now publishes the room, opening event, journal entry and first notice in one transaction, using the new membership for routing. A failure must leave no room or notice after reopen, and the journal belongs to the explicitly selected project. The channel-form queue budget includes retained member-list allocations. Validation of this follow-up is pending.

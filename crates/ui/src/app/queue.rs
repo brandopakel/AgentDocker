@@ -32,10 +32,13 @@ fn bytes(command: &Cmd) -> usize {
             members,
             project,
         } => members.iter().fold(
-            request.as_str().len()
-                + name.capacity()
-                + task.capacity()
-                + project.as_ref().map_or(0, |p| p.capacity()),
+            members
+                .capacity()
+                .saturating_mul(size_of::<String>())
+                .saturating_add(request.as_str().len())
+                .saturating_add(name.capacity())
+                .saturating_add(task.capacity())
+                .saturating_add(project.as_ref().map_or(0, |p| p.capacity())),
             |sum, member| sum.saturating_add(member.capacity()),
         ),
         Cmd::ChannelInvite {
