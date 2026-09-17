@@ -159,6 +159,10 @@ the dropped-output trial retained all three IDs, paused, and did not invent a
 receipt or replay. Baseline idle wake, draft/FIFO preservation and receiver crash
 recovery passed. The old-binary failure and initial receipt-reader failure remain
 in the [existing evidence](verification/2026-09-15-native-codex-queue.json).
+Review follow-up `e896111` authenticates the claimed hook PID with kernel Unix
+peer credentials before queue access. Its full 1,094-Rust/84-Python gate passed
+(seven skipped), and both actual-client scenarios passed again with an explicit
+provider-visible order/exactly-once assertion.
 The installed receiver still runs an older pinned release: installing the app
 alone does not change its immutable launch descriptor. A safe receiver upgrade
 and installed acceptance are required before closing this bug. Broader provider

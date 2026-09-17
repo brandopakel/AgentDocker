@@ -2460,6 +2460,108 @@
       "Installed controller 94744 still runs its retained older release. Updating the application alone does not replace its immutable launch descriptor.",
       "No arbitrary interruption without a provider tool boundary; human/peer contexts above 6000 bytes stay on the native idle route.",
       "No-prompt startup/reopen, provider review/wait races and broader provider/service acceptance remain open."
-    ]
+    ],
+    "review_followup": {
+      "source_commit": "e896111de95b9fc6ba38e0c9067a8a3d12552abd",
+      "changes": [
+        "Kernel Unix peer credentials authenticate the claimed hook PID before any queue access; process birth and ancestry remain checked.",
+        "The actual provider input must contain each of the three markers exactly once and in send order."
+      ],
+      "validation": {
+        "rust_tests": 1094,
+        "skipped": 7,
+        "python_checks": 84,
+        "format_lint_doctests_packaging_release": "passed",
+        "gate_log": "/private/tmp/agentdocker-native-hook-gate3-2026-09-17.log",
+        "junit": "/private/tmp/agentdocker-native-hook-gate3-nextest-2026-09-17/junit.xml"
+      },
+      "trials": [
+        {
+          "result": "passed",
+          "scenario": "active-hook",
+          "source": {
+            "commit": "e896111de95b9fc6ba38e0c9067a8a3d12552abd",
+            "dirty": false,
+            "rust_and_driver_sha256": "7f339e642aadb9ec4833672fe4ae1b3506084648222ca9c3dd60ee0e7b4b3a42"
+          },
+          "driver_sha256": "efc25d11e3a6419440a1e2f2a2ceb1bcdf812ede0bbd79c1de6c0eb79be13384",
+          "cli_sha256": "fdee3819a072660465d6ef8bdd49ffac0240e7419b49d91564049be25ffbc21e",
+          "daemon_sha256": "192f8698781c71142ed9c7bff86885f3634836a06d30701239fc42a8068c3496",
+          "active_hook": {
+            "messages": [
+              "2a06f818fd4649f6",
+              "5c7f12d2aee34f1a",
+              "fe1d0e7183b44a3e"
+            ],
+            "receipts": [
+              {
+                "message": "2a06f818fd4649f6",
+                "receipt": {
+                  "thread": "01a0acf7-517c-76a3-8f13-c87c7ce44ba8",
+                  "turn": "01a0acf8-1969-7130-854d-a79a663b3525",
+                  "item": "msg_01a0acf8-1a3a-7a32-af93-cbc49ec49679"
+                }
+              },
+              {
+                "message": "5c7f12d2aee34f1a",
+                "receipt": {
+                  "thread": "01a0acf7-517c-76a3-8f13-c87c7ce44ba8",
+                  "turn": "01a0acf8-1969-7130-854d-a79a663b3525",
+                  "item": "msg_01a0acf8-26b0-74d2-bdc1-40a9abc0325d"
+                }
+              },
+              {
+                "message": "fe1d0e7183b44a3e",
+                "receipt": {
+                  "thread": "01a0acf7-517c-76a3-8f13-c87c7ce44ba8",
+                  "turn": "01a0acf8-1969-7130-854d-a79a663b3525",
+                  "item": "msg_01a0acf8-339b-78a2-9c1d-53a04f4e4c2e"
+                }
+              }
+            ],
+            "seconds": 8.660149083996657,
+            "same_turn": true,
+            "model_requests": 3,
+            "original_provider_pid": 50467
+          },
+          "draft_preserved": true,
+          "busy_order_preserved": true,
+          "automatic_receiver_restart_no_replay": true,
+          "cleanup_errors": [],
+          "raw_result_sha256": "4f4f5080be28bfe4abd6a63c9ff0859330e1d1e750d6e58b21f6845e5785d39e",
+          "artifact_directory": "/private/tmp/agentdocker-native-active-after3-2026-09-17",
+          "result_sha256": "f5986b36a58c4d5404f5d81c65d99d06bef16e647f86213eec060582975f1618"
+        },
+        {
+          "result": "passed",
+          "scenario": "active-hook-lost",
+          "source": {
+            "commit": "e896111de95b9fc6ba38e0c9067a8a3d12552abd",
+            "dirty": false,
+            "rust_and_driver_sha256": "7f339e642aadb9ec4833672fe4ae1b3506084648222ca9c3dd60ee0e7b4b3a42"
+          },
+          "driver_sha256": "efc25d11e3a6419440a1e2f2a2ceb1bcdf812ede0bbd79c1de6c0eb79be13384",
+          "cli_sha256": "fdee3819a072660465d6ef8bdd49ffac0240e7419b49d91564049be25ffbc21e",
+          "daemon_sha256": "192f8698781c71142ed9c7bff86885f3634836a06d30701239fc42a8068c3496",
+          "lost_hook_output": {
+            "retained_messages": [
+              "1217d170b50f4e65",
+              "9bef4f4fb1404c5f",
+              "1a727f8e00f241d4"
+            ],
+            "paused": true,
+            "no_provider_receipt": true,
+            "no_blind_resubmission": true
+          },
+          "draft_preserved": true,
+          "busy_order_preserved": true,
+          "automatic_receiver_restart_no_replay": true,
+          "cleanup_errors": [],
+          "raw_result_sha256": "a6ceaf19aa1cd6e563f6a9a4eac941ec4997919a3632a728b6aed46317004c77",
+          "artifact_directory": "/private/tmp/agentdocker-native-active-lost3-2026-09-17",
+          "result_sha256": "eb84108a4669efbda90bdb2317c86cc314b6c1d92c9972e013124ddac9afd63f"
+        }
+      ]
+    }
   }
 }

@@ -7,6 +7,9 @@ this gate does not claim a new runtime trial or production installation.
 PR #155 merged as `fec093c` after final-head review and CI; its included #161
 is also merged. PR #169 source `5545697` passed the 1,093-Rust/84-Python gate
 (seven skipped), 14 focused tests and actual-client active-hook/lost-output trials.
+Review follow-up `e896111` passed 1,094 Rust tests (seven skipped), 84 Python
+checks and both actual-client repeats, adding kernel hook-peer authentication
+and explicit provider-visible order/exactly-once assertions.
 The installed receiver upgrade remains open; see the priority row below.
 
 
