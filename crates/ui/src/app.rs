@@ -2364,7 +2364,7 @@ pub(crate) struct NewConversation {
 impl NewConversation {
     pub(crate) fn new() -> Self {
         Self {
-            request: MessageId::new(),
+            request: MessageId::generate(),
             kind: NewKind::Direct,
             name: String::new(),
             purpose: String::new(),
