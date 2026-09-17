@@ -1666,6 +1666,54 @@
       },
       "rendered_steps": 415,
       "scope": "Merged171/schema22 plus compact create button, Enter callbacks, scoped mentions, creation and invitation; real Iced windows use owned fixtures beneath other windows. Not physical keyboard or assistive-technology trials."
+    },
+    "historical_names_followup": {
+      "build": {
+        "format": 1,
+        "source_commit": "5c461e0df33be607ffd98b4b78b0f26f54f2dfda",
+        "source_tree": "6238a3b6f5d312f2f89d7a919d298b874bc8e960",
+        "source_input_sha256": "58cca8f82ede1e0c2e162d172075e175791c2f012c50045393c789b11d0820c7",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 22,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "cef78ac6943f7a6a9228231d698307871985dadb5342228db540b94128a57311",
+          "agentd": "c36f01757fb224872d0074e7f1acca31d52390ca002554ac0f337350d5843739",
+          "agentdocker-ui": "d4c82d2c3b38f9ace617e709c706dcf94f04ade4025f87896fe71d0f04797044"
+        }
+      },
+      "gate": {
+        "result": "passed",
+        "rust_passed": 1108,
+        "rust_skipped": 7,
+        "python_checks": 84,
+        "checks": [
+          "formatting",
+          "strict Clippy",
+          "doctests",
+          "packaging",
+          "release build"
+        ],
+        "log": "/private/tmp/agentdocker-compose-gate6-2026-09-17.log",
+        "junit": "/private/tmp/agentdocker-compose-gate6-nextest-2026-09-17/junit.xml"
+      },
+      "focused": {
+        "passed": 4,
+        "log": "/private/tmp/agentdocker-compose-focused6-2026-09-17.log",
+        "cases": [
+          "retired mention count before and after reopen",
+          "offline repair persists retired name through reopen",
+          "alias name restoration and legacy missing metadata",
+          "stale successful and failed invitation replies preserve replacement form"
+        ]
+      },
+      "native_scope": "Prior e6981a7 rendered workflow covers the unchanged composer controls. This follow-up changes retired-name accounting and adds an invitation reply regression; final-head graphical CI remains required. No physical Enter-key trial is claimed.",
+      "status": "source passed; final review, CI and install pending"
     }
   }
 }
