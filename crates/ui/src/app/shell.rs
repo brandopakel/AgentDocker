@@ -235,11 +235,11 @@ pub enum Message {
     MarkAllRead,
     /// Tell the selected project's agents to hold: open the reason, or
     /// send it, or lift the pause.
-    PauseStart,
-    PauseDraft(String),
-    PauseSubmit,
-    PauseCancel,
-    ResumeProject,
+    PauseStart(String),
+    PauseDraft(String, String),
+    PauseSubmit(String),
+    PauseCancel(String),
+    ResumeProject(String),
 
     /// Start a conversation: open or close the form.
     NewConversation,
@@ -804,50 +804,44 @@ impl App {
                     self.shell.changed();
                 }
             }
-            Message::PauseStart => {
-                // The form is the selected project's from here on, whatever
-                // is selected by the time it is sent.
-                if let Some(project) = self.selected_project_root()
-                    && self.pause_form.as_ref().is_none_or(|form| !form.sending)
+            Message::PauseStart(project) => {
+                if self.pause_states.len() >= PAUSE_CONTROLS
+                    && !self.pause_states.contains_key(&project)
                 {
-                    self.pause_form = Some(super::PauseForm {
-                        project,
-                        reason: String::new(),
-                        sending: false,
-                        error: None,
-                    });
+                    self.say("Finish or cancel an existing pause draft first.");
+                } else {
+                    let control = self.pause_states.entry(project).or_default();
+                    if control.pending.is_none() {
+                        control.draft.get_or_insert_with(String::new);
+                        control.error = None;
+                    }
                 }
             }
-            Message::PauseDraft(reason) => {
-                if let Some(form) = &mut self.pause_form
-                    && !form.sending
+            Message::PauseDraft(project, reason) => {
+                if let Some(control) = self.pause_states.get_mut(&project)
+                    && control.pending.is_none()
+                    && control.draft.is_some()
                 {
-                    form.reason = reason;
-                    form.error = None;
+                    if reason.chars().count() > 400 {
+                        control.error = Some("A pause reason is at most 400 characters.".into());
+                    } else {
+                        // Copy only the accepted text, not a paste buffer's capacity.
+                        control.draft = Some(reason.as_str().to_owned());
+                        control.error = None;
+                    }
                 }
             }
-            Message::PauseCancel => {
-                if self.pause_form.as_ref().is_some_and(|form| !form.sending) {
-                    self.pause_form = None;
-                }
-            }
-            Message::PauseSubmit => {
-                if let Some(form) = &mut self.pause_form
-                    && !form.sending
-                    && !form.reason.trim().is_empty()
+            Message::PauseCancel(project) => {
+                if self
+                    .pause_states
+                    .get(&project)
+                    .is_some_and(|control| control.pending.is_none())
                 {
-                    form.sending = true;
-                    form.error = None;
-                    let cmd = Cmd::Pause {
-                        project: form.project.clone(),
-                        reason: form.reason.trim().to_owned(),
-                    };
-                    self.send(cmd);
+                    self.pause_states.remove(&project);
                 }
             }
-            Message::ResumeProject => {
-                if let Some(project) = self.selected_project_root() {
-                    self.send(Cmd::ResumeProject { project });
+            Message::PauseSubmit(project) => self.submit_pause(project, PauseAction::Pause),
+            Message::ResumeProject(project) => self.submit_pause(project, PauseAction::Resume),
             Message::NewConversation => {
                 self.new_conversation = match self.new_conversation {
                     Some(_) => None,

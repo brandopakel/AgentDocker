@@ -2208,10 +2208,11 @@ async fn main() -> Result<()> {
         }
         Command::Top => top::run(&client).await?,
         Command::Pause(args) => {
-            let project = Some(match args.project {
-                Some(selector) => selector,
-                None => std::env::current_dir()?.display().to_string(),
-            });
+            let project = match args.project {
+                Some(selector) => Some(project_selector(&selector)),
+                None if args.list => None,
+                None => Some(std::env::current_dir()?.display().to_string()),
+            };
             // Listing names nobody; a sender is resolved only for a hold
             // or its lifting, so `pause --list` works from any shell.
             let from = if args.list {
@@ -2259,10 +2260,10 @@ async fn main() -> Result<()> {
                     })
                     .await?
                 {
-                    println!(
-                        "paused {} — {}; agents there take no new leases until `agentdocker pause --lift`",
-                        pause.project.short(),
-                        pause.reason
+                    println!("{}", pause.project);
+                    eprintln!(
+                        "Paused: {}. Agents take no new leases until `agentdocker pause --project {} --lift`.",
+                        pause.reason, pause.project
                     );
                 }
             }

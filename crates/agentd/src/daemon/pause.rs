@@ -290,7 +290,19 @@ mod tests {
                     .await
             })
         };
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let Response::Waiting { waiting } = daemon.handle(Request::Waiting).await else {
+                    panic!("waiting response")
+                };
+                if waiting.iter().any(|waiter| waiter.agent == bob.id) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Bob entered the claim queue before the pause");
         let Response::Pause { pause } = daemon
             .handle(Request::Pause {
                 from: HUMAN.to_owned(),

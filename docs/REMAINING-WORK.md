@@ -1,5 +1,16 @@
 # Remaining engineering and release work
 
+**Open, top priority — user reconfirmed September 17:** the current plain Claude
+session still has no input channel and may not consume handoffs while idle.
+Saved changes, a live process and MCP registration are not delivery evidence.
+Finish supported same-session channel activation with draft/queue preservation,
+then record a peer-only idle turn and correlated reply without a human prompt,
+plus reconnect/retry ordering and duplicate prevention. Equivalent acceptance
+is required across supported providers. This remains open separately from the
+merged reconnect source and the installed Codex active-input fix. See the
+[existing delivery plan](DELIVERY-PLAN.md#submitted-input-parity-and-idle-wake).
+
+
 September 17 UTC integration: source `f4ef6c3` passed the full 1,087-Rust/84-Python
 gate (seven skipped), formatting, strict lint, doctests, packaging and release.
 Earlier actual reload/controller trials retain their original source pins;

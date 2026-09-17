@@ -1295,64 +1295,69 @@ impl App {
     pub(super) fn pause_controls(&self, c: Colors) -> Option<Element<'_, Message>> {
         let root = self.selected_project_root()?;
         let connected = self.connected.is_ok();
-        if let Some(pause) = self.selected_pause() {
-            // The reason on one line, cut short: the whole of it is in
-            // #everyone, where the agents read it.
-            let shown = first_line(&pause.reason, 48);
-            return Some(
+        let control = self.pause_states.get(&root);
+        let sending = control.is_some_and(|control| control.pending.is_some());
+        let mut controls = if let Some(pause) = self.selected_pause() {
+            column![
                 row![
-                    pill(format!("Paused · {shown}"), c.amber, iced::Color::WHITE, c),
+                    text(format!("Paused · {}", first_line(&pause.reason, 48)))
+                        .color(c.amber)
+                        .width(Fill),
                     action(
                         "resume-project",
-                        "Resume",
-                        connected.then_some(Message::ResumeProject),
-                        false,
-                    ),
-                ]
-                .spacing(8)
-                .align_y(Center)
-                .into(),
-            );
-        }
-        if let Some(form) = self.pause_form.as_ref().filter(|form| form.project == root) {
-            let ready = connected && !form.sending && !form.reason.trim().is_empty();
-            let mut controls = column![
-                row![
-                    input_enabled(
-                        "pause-reason",
-                        "Why: what the agents will read",
-                        &form.reason,
-                        Message::PauseDraft,
-                        !form.sending,
-                    ),
-                    primary(
-                        "pause-submit",
-                        if form.sending { "Pausing…" } else { "Pause agents" },
-                        ready.then_some(Message::PauseSubmit),
-                    ),
-                    action(
-                        "pause-cancel",
-                        "Cancel",
-                        (!form.sending).then_some(Message::PauseCancel),
-                        false,
+                        if sending { "Resuming…" } else { "Resume" },
+                        (connected && !sending).then_some(Message::ResumeProject(root.clone())),
+                        false
                     ),
                 ]
                 .spacing(8)
                 .align_y(Center)
             ]
-            .spacing(4);
-            if let Some(error) = &form.error {
-                controls = controls.push(text(error.clone()).size(13).color(c.amber));
-            }
-            return Some(controls.into());
+        } else if let Some(reason) = control.and_then(|control| control.draft.as_ref()) {
+            let ready = connected && !sending && !reason.trim().is_empty();
+            let draft_project = root.clone();
+            column![
+                input_submitting(
+                    "pause-reason",
+                    "Why: what the agents will read",
+                    reason,
+                    move |reason| Message::PauseDraft(draft_project.clone(), reason),
+                    connected && !sending,
+                    ready.then_some(Message::PauseSubmit(root.clone())),
+                ),
+                row![
+                    primary(
+                        "pause-submit",
+                        if sending {
+                            "Pausing…"
+                        } else {
+                            "Pause agents"
+                        },
+                        ready.then_some(Message::PauseSubmit(root.clone()))
+                    ),
+                    action(
+                        "pause-cancel",
+                        "Cancel",
+                        (!sending).then_some(Message::PauseCancel(root.clone())),
+                        false
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Center),
+            ]
+        } else {
+            column![action(
+                "pause-project",
+                "Pause…",
+                (connected && !sending).then_some(Message::PauseStart(root)),
+                false
+            )]
         }
-        Some(action(
-            "pause-project",
-            "Pause…",
-            (connected && self.pause_form.as_ref().is_none_or(|form| !form.sending))
-                .then_some(Message::PauseStart),
-            false,
-        ))
+        .spacing(4);
+        if let Some(error) = control.and_then(|control| control.error.as_ref()) {
+            controls = controls.push(text(error.clone()).size(13).color(c.amber));
+        }
+        Some(controls.into())
     }
 
     /// The project's one primary action, when there is a project to act in.

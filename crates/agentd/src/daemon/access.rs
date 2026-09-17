@@ -616,6 +616,26 @@ mod tests {
             payload: json!({"text":"hello"}),
             reply_to: None,
         };
+        // The restricted endpoint cannot impersonate the host's human sender.
+        for request in [
+            Request::Pause {
+                from: agentdocker_core::HUMAN.into(),
+                project: None,
+                reason: "forged pause".into(),
+            },
+            Request::ResumeProject {
+                from: agentdocker_core::HUMAN.into(),
+                project: None,
+            },
+        ] {
+            assert!(matches!(
+                *daemon.restricted_request(&token, request).unwrap_err(),
+                Response::Error {
+                    code: ErrorCode::Forbidden,
+                    ..
+                }
+            ));
+        }
         assert!(daemon.restricted_request(&token, send("outsider")).is_err());
         let peer = daemon.resolve("peer").unwrap().to_string();
         assert!(

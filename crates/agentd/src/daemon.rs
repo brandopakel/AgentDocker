@@ -204,6 +204,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Questions { .. }
             | Request::Activity { .. }
             | Request::Waiting
+            | Request::Pauses
             | Request::Contests { .. }
             | Request::Journal { digest: None, .. }
             | Request::Channels { .. }
