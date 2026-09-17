@@ -10,7 +10,7 @@ use std::time::Duration;
 #[derive(clap::Args)]
 pub struct Args {
     /// Existing external Codex agent whose receiver should use this CLI release.
-    #[arg(long)]
+    #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
     pub agent: String,
 }
 

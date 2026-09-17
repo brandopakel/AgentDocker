@@ -5,7 +5,7 @@ gate (seven skipped), formatting, strict lint, doctests, packaging and release.
 Earlier actual reload/controller trials retain their original source pins;
 this gate does not claim a new runtime trial or production installation.
 PR #155 merged as `fec093c` after final-head review and CI; its included #161
-is also merged. PR #169 source `5545697` passed the 1,093-Rust/84-Python gate
+is also merged. PR #169 merged as `82ff4da` after final review and all CI checks. Its source `5545697` passed the 1,093-Rust/84-Python gate
 (seven skipped), 14 focused tests and actual-client active-hook/lost-output trials.
 Review follow-up `e896111` passed 1,094 Rust tests (seven skipped), 84 Python
 checks and both actual-client repeats, adding kernel hook-peer authentication
@@ -376,3 +376,8 @@ The connected Claude and Codex sessions exchanged this audit's ownership and
 findings through AgentDocker on September 14. The peer acknowledged the message
 and returned its findings. This verifies active-session routing and model
 consumption; it does not replace an idle-wake or sustained-load trial.
+
+Receiver-upgrade review follow-up: the hidden CLI accepts the standard
+`AGENTDOCKER_AGENT_ID` default, and the architecture request table now spells out
+`upgrade_controller`, its binding response and commit-before-stop semantics.
+These two review corrections are awaiting the final source gate.
