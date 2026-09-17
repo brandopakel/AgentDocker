@@ -315,3 +315,5 @@ of available agents who are not members yet. Adding one shows progress and
 keeps failures in the form; confirmed members disappear from the available list.
 Closing/replacing the form prevents a late reply from changing the new form.
 A refused local queue submission releases the busy state and preserves the form.
+
+The new-conversation button keeps a compact width beside search; opening its form does not divide the search row into two equally wide controls. Its accessible name remains “New message or channel” (or “Close” for the open form).

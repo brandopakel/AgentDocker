@@ -508,7 +508,7 @@ impl App {
                         Message::MessagesSearch,
                         true,
                     ),
-                    custom(
+                    container(custom(
                         "new-conversation",
                         if form_open {
                             "Close"
@@ -522,7 +522,8 @@ impl App {
                         form_open,
                         Kind::Quiet,
                         [4, 10],
-                    ),
+                    ))
+                    .width(40),
                 ]
                 .spacing(4)
                 .align_y(Center),
