@@ -148,7 +148,7 @@ impl ProviderGeneration {
 }
 
 /// How the daemon starts a controller again once it has ended: the exact
-/// command it was started with, fixed for the binding's life. An idle
+/// command it was started with, changed only by an explicit receiver upgrade. An idle
 /// provider has no hook left to restart its receiver, so without this a
 /// controller that was killed stays bound and dead until somebody types.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +203,10 @@ pub fn controller_backoff(attempt: u32) -> chrono::Duration {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ControllerRestart {
+    /// Durable intent to stop the bound receiver for an executable upgrade.
+    /// Survives a coordinator crash after the new descriptor committed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upgrade_requested_at: Option<DateTime<Utc>>,
     /// Launches since a controller last stayed bound for [`CONTROLLER_STABLE`].
     pub attempts: u32,
     /// The process the daemon launched last, until it binds or ends.
@@ -221,6 +225,8 @@ pub struct ControllerRestart {
 /// What the daemon does about a binding's controller at one look.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControllerStep {
+    /// The bound receiver must stop for an explicitly committed upgrade.
+    Upgrade { kill: bool },
     /// Alive, starting, waiting out a backoff, unmanaged, or given up.
     Keep,
     /// The bound or launched controller is gone and nobody has noted it.
@@ -288,7 +294,12 @@ impl InputBinding {
         alive: impl Fn(&ProcessIdentity) -> bool,
     ) -> ControllerStep {
         if alive(&self.controller) {
-            return ControllerStep::Keep;
+            return match self.restart.upgrade_requested_at {
+                Some(since) => ControllerStep::Upgrade {
+                    kill: now - since >= CONTROLLER_KILL_AFTER,
+                },
+                None => ControllerStep::Keep,
+            };
         }
         let restart = &self.restart;
         if let Some(launched) = &restart.launched {
@@ -323,6 +334,7 @@ impl InputBinding {
     /// has ended. A controller that had stayed bound long enough starts
     /// the episode over.
     pub fn note_controller_ended(&mut self, now: DateTime<Utc>) {
+        self.restart.upgrade_requested_at = None;
         if self.restart.launched.is_none() && now - self.controller_since >= CONTROLLER_STABLE {
             self.restart.attempts = 0;
             self.restart.exhausted = false;
@@ -344,6 +356,7 @@ impl InputBinding {
     /// A controller bound: the one the daemon launched, which keeps the
     /// episode's count, or another one, which starts a new life.
     pub fn note_controller_bound(&mut self, controller: ProcessIdentity, now: DateTime<Utc>) {
+        self.restart.upgrade_requested_at = None;
         if self.restart.launched.as_ref() != Some(&controller) {
             self.restart.attempts = 0;
             self.restart.exhausted = false;

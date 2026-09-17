@@ -723,6 +723,9 @@ enum Command {
     /// Feed an existing Codex conversation through its native input queue.
     #[command(hide = true)]
     CodexQueue(codex_input::external::Args),
+    /// Upgrade only an existing Codex session's receiver to this CLI release.
+    #[command(hide = true)]
+    CodexQueueUpgrade(codex_input::external::upgrade::Args),
     /// Start the agents in an Agentfile.toml that are not already running.
     Up {
         /// Agentfile to read (default: ./Agentfile.toml).
@@ -2336,6 +2339,9 @@ async fn main() -> Result<()> {
         Command::Mcp(args) => mcp::serve(client, args).await?,
         Command::CodexInput(args) => codex_input::run(client, socket, args).await?,
         Command::CodexQueue(args) => codex_input::external::run(client, socket, args).await?,
+        Command::CodexQueueUpgrade(args) => {
+            codex_input::external::upgrade::run(client, args).await?
+        }
         Command::Up { file, names } => teams::up(&client, file.as_deref(), &names).await?,
         Command::Down { file, names, force } => {
             teams::down(&client, file.as_deref(), &names, force).await?;
