@@ -1080,6 +1080,7 @@ impl App {
                         }
                         Err(error) => draft.complete(Err(error)),
                     }
+                    self.shell.drafts.changed();
                 }
                 Msg::SessionSent(id, result) => {
                     if let Some(entry) = self.shell.session_drafts.get_mut(&id) {
@@ -1091,6 +1092,7 @@ impl App {
                             Err(error) => entry.draft.complete(Err(error)),
                         }
                     }
+                    self.shell.drafts.changed();
                 }
                 Msg::ChannelInvited(request, member, result) => {
                     if let Some(form) = &mut self.new_conversation
@@ -1173,6 +1175,7 @@ impl App {
                         }
                         Err(error) => draft.complete(Err(error)),
                     }
+                    self.shell.drafts.changed();
                 }
             }
         }
