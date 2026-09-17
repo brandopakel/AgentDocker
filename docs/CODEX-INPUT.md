@@ -165,6 +165,30 @@ and installed acceptance are required before closing this bug. Broader provider
 parity remains open. The provider's [hook contract](https://learn.chatgpt.com/docs/hooks)
 supports additional context without replacing the tool result.
 
+### Receiver upgrade candidate
+
+`agentdocker codex-queue-upgrade --agent <id>` replaces only the existing
+receiver with the CLI release running that command. It requires a matching
+schema-22 daemon, checks the live provider and retained ledger without migrating
+it, and probes the provider's read-only native APIs. Only the receiver executable
+may change; its arguments, environment, checkout, provider PID/thread/profile,
+queue, token and receipts remain. The daemon compares the expected controller
+and launch, pins the new release, and commits a replacement intent before its
+normal supervision stops the old process. A coordinator crash resumes that
+intent. Refused writes and a transfer fence leave the running receiver alone.
+The successor takes the same lifetime ledger lock and reconciles pending input;
+a missing receipt never authorizes resubmission. Repeating an accepted request
+cannot stop the successor.
+
+The schema version prevents an older daemon from opening a retained replacement
+intent it cannot understand. The candidate includes refusal/write-failure/reopen
+regressions and an actual-client `controller-upgrade` scenario with
+`--initial-receiver-cli` pointing to immutable older binaries. It deliberately
+keeps a native queue offer pending through replacement and requires the same
+provider and token, old receipts, new exact FIFO receipts and clean retirement.
+Implementation and driver are written; compilation, acceptance and installation
+remain pending. This command has not been run against the user's session.
+
 ## New managed conversations
 
 New Codex sessions can receive human and peer messages while idle. In New session,

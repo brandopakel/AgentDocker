@@ -1213,3 +1213,14 @@ Lost removal/output confirmation keeps the original message for reconciliation.
 The daemon protocol and database schema are unchanged. See
 [Codex input](CODEX-INPUT.md#active-input-in-an-existing-terminal-candidate-september-17-utc)
 for limits and acceptance status.
+
+The receiver-upgrade candidate adds `upgrade_controller`: token-authenticated
+comparison of the provider generation, old controller and launch descriptor,
+changing only the executable. It acquires the new installation pin and commits
+the descriptor plus `ControllerRestart.upgrade_requested_at` before the normal
+tick stops the old receiver. Schema 22 excludes older readers of that intent.
+A fenced or failed write cannot signal; a persisted intent survives daemon loss.
+The normal restart path takes the existing ledger lock and keeps queued IDs,
+token and provider receipts. The hidden CLI command preflights the existing
+provider and waits for the successor's fresh readiness. Acceptance remains
+pending in [Codex input](CODEX-INPUT.md#receiver-upgrade-candidate).

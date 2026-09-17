@@ -8,6 +8,9 @@ PR #155 merged as `fec093c` after final-head review and CI; its included #161
 is also merged. PR #169 source `5545697` passed the 1,093-Rust/84-Python gate
 (seven skipped), 14 focused tests and actual-client active-hook/lost-output trials.
 The installed receiver upgrade remains open; see the priority row below.
+A separate candidate now implements an explicit same-provider receiver upgrade,
+with schema-22 durable replacement intent and retained ledger reconciliation.
+Its tests and distinct-version actual-client driver are written but not yet run.
 
 
 Audited September 14 against `aaa1b61`, with merged PRs #150/#152/#154, the September 15

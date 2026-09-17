@@ -243,6 +243,15 @@ pub fn event_line(event: &Event) -> String {
             "controller restarts exhausted {} after {attempts}",
             agent.short()
         ),
+        EventKind::InputControllerUpgraded {
+            agent, executable, ..
+        } => {
+            format!(
+                "controller upgraded {} → {}",
+                agent.short(),
+                executable.display()
+            )
+        }
         EventKind::InputRestartsReset { agent } => {
             format!("controller restart requested {}", agent.short())
         }
