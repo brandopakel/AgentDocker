@@ -694,6 +694,15 @@ mod exit_tests {
             exit_code_for(&anyhow::anyhow!("cannot reach agentd")),
             EXIT_UNEXPECTED
         );
+        // A caller's context around the daemon's answer does not hide it.
+        let wrapped: anyhow::Error = anyhow::Error::from(RemoteError {
+            code: ErrorCode::Paused,
+            message: "the project is paused".into(),
+            details: None,
+        })
+        .context("pull as an agent");
+        assert_eq!(exit_code_for(&wrapped), EXIT_REFUSED);
+        assert!(format!("{wrapped:#}").contains("the project is paused (Paused)"));
     }
 }
 
