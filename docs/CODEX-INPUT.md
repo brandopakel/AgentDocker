@@ -183,6 +183,44 @@ and installed acceptance are required before closing this bug. Broader provider
 parity remains open. The provider's [hook contract](https://learn.chatgpt.com/docs/hooks)
 supports additional context without replacing the tool result.
 
+### Receiver upgrade candidate
+
+`agentdocker codex-queue-upgrade --agent <id>` replaces only the existing
+receiver with the CLI release running that command. It requires a matching
+schema-22 daemon, checks the live provider and retained ledger without migrating
+it, and probes the provider's read-only native APIs. Only the receiver executable
+may change; its arguments, environment, checkout, provider PID/thread/profile,
+queue, token and receipts remain. The daemon compares the expected controller
+and launch, pins the new release, and commits a replacement intent before its
+normal supervision stops the old process. A coordinator crash resumes that
+intent. Refused writes and a transfer fence leave the running receiver alone.
+The successor takes the same lifetime ledger lock and reconciles pending input;
+a missing receipt never authorizes resubmission. Repeating an accepted request
+cannot stop the successor.
+
+The schema version prevents an older daemon from opening a retained replacement
+intent it cannot understand. The candidate includes refusal/write-failure/reopen
+regressions and an actual-client `controller-upgrade` scenario with
+`--initial-receiver-cli` pointing to immutable older binaries. It deliberately
+keeps a native queue offer pending through replacement and requires the same
+provider and token, old receipts, new exact FIFO receipts and clean retirement.
+Source `5b3d688` passed three focused regressions and the full 1,097-Rust/84-Python
+gate (seven skipped), including formatting, strict lint, doctests, packaging and
+release. The actual Codex 0.154.0/local-model trial passed using an older
+`f4ef6c3` receiver with a version-2 ledger and a pending native offer. It retained
+the live provider, token, binding time and six prior receipts, retired the old
+receiver, and delivered three messages exactly once in FIFO order during the
+same active turn in 14.85 seconds including the handover. Cleanup found no
+surviving controllers. See the receiver-upgrade section of the existing
+[native queue evidence](verification/2026-09-15-native-codex-queue.json).
+A second actual trial used two installed packages in a disposable prefix: pins
+were held while the receivers ran, released at cleanup, and the retired release
+was pruned after activating a third package. The provider and six old receipts
+survived; the three new messages arrived in order in 14.86 seconds.
+Final review follow-up `8d42db5` defaults the upgrade identity from the environment and documents the request table. The full 1,097-Rust/84-Python gate passed again (seven skipped), as did a repeat with the actual older receiver: the same provider, token and six prior receipts survived, and three messages entered the same active turn in order in 14.84 seconds with clean cleanup.
+Final review, CI and installed-session acceptance remain open. This command has
+not been run against the user's session.
+
 ## New managed conversations
 
 New Codex sessions can receive human and peer messages while idle. In New session,

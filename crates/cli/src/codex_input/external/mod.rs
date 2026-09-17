@@ -7,6 +7,7 @@ pub mod hooks;
 mod ledger;
 mod receipts;
 mod resume;
+pub mod upgrade;
 pub use bootstrap::ensure_started;
 
 use super::{call, transport::Provider};
