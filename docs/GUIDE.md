@@ -214,7 +214,7 @@ the flags.
 | `renew` / `release` | Extend or give up a lease you hold |
 | `leases` | Every lease held right now |
 | `waiting` | Claims waiting for a resource, oldest first |
-| `task` | The board of work: `task create "Fix login" --acceptance "SSO works" --column ready` files a card; `task pull <id> --as <agent>` takes a Ready card once and holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it, and a card whose hold lapsed passes to the next puller); `task move <id> review`, `task update <id> --assignee bob`, `task archive <id>`, `task list [--column ready] [--archived] [--limit 200]` (a page; it says when the board goes on) |
+| `task` | The board of work: `task create "Fix login" --acceptance "SSO works" --column ready` files a card; `task pull <id> --as <agent>` takes a Ready card once and holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`, naming whom it is expected from); `task move <id> review` (an agent moves only a card it holds; back to Ready or to Done ends the hold), `task update <id> --assignee bob` (a hand ends the old hold and takes the lease for a running agent), `task archive <id>`, `task list [--column ready] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
 | `pause` | `agentdocker pause "sleeping the laptop"` tells every agent in this directory's project to hold: they get the reason as a `pause` message and their new leases are refused until `agentdocker pause --lift`; `--project` names another project; `pause --list` lists what is paused and why |
 
 ### Know what changed

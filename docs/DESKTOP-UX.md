@@ -70,15 +70,17 @@ agent running here (or *nobody*), and **Archive**. An agent pulls a Ready
 card with the `pull_task` tool and the board shows it in progress under that
 agent at once; two agents never get one card. The pull is a `task:<id>`
 lease: a card whose holder's lease has lapsed — expired, released, or the
-agent gone — says *hold lapsed* beside the holder, and the next agent to pull
-it takes it over where it sits. The board reads again on every board or
-lease event; when it could not be read the last board stays and the status
-says why. A card's draft is the project's: text typed for one board waits
+agent gone — says *hold lapsed* beside the holder; nobody takes it by a
+plain pull, only by naming that holder (`pull_task` with `take_over_from`)
+or by your **Hand to**, which ends the old hold and gives a running agent
+the card's lease in one step. A move back to Ready or Backlog, or to Done,
+ends the hold. The board reads again on every board or lease event; when it
+could not be read the last board stays and the status says why. A card's draft is the project's: text typed for one board waits
 while another is on view, and filing it is answered by its own reply — a
 move or hand of some other card never clears it, and a filing the app could
-not queue says so under the form. The board is read a page at a time (200
-cards, Backlog to Done); past that a note says so and points to `agentdocker
-task list --column`. Narrow, the columns stack.
+not queue says so under the form. The board is read a page at a time (100
+cards, Backlog to Done, within a byte budget); past that a note says so and
+points to `agentdocker task list --column`. Narrow, the columns stack.
 
 **Pause…** beside it asks for a reason and tells every agent in the project
 to hold: they read the reason as a `pause` message, the daemon refuses their

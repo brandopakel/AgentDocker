@@ -200,40 +200,53 @@ impl Task {
         })
     }
 
-    /// An agent takes a card. A Ready card nobody holds becomes theirs,
-    /// in progress. A card in progress or review whose holder is gone —
-    /// `holder_gone` is the daemon's word, from the lease the pull took:
-    /// expired, released, or its agent exited — passes to the taker where
-    /// it sits, and whoever held it is returned so the event can say so.
-    /// Anything else is refused, which is the whole point.
-    pub fn pull(
-        &mut self,
-        agent: &AgentId,
-        holder_gone: bool,
-        now: DateTime<Utc>,
-    ) -> Result<Option<AgentId>, TaskError> {
+    /// An agent takes a Ready card nobody holds: it becomes theirs, in
+    /// progress. Anything else is refused, which is the whole point — a
+    /// card somebody holds, or held once and lapsed, is only taken over
+    /// by name, with [`Task::take_over`].
+    pub fn pull(&mut self, agent: &AgentId, now: DateTime<Utc>) -> Result<(), TaskError> {
         if self.archived_at.is_some() {
             return Err(TaskError::Archived);
         }
-        let taken = || TaskError::Taken {
-            assignee: self.assignee.clone(),
-            column: self.column,
-        };
-        let previous = match self.column {
-            Column::Ready if self.assignee.is_none() => {
-                self.column = Column::InProgress;
-                None
-            }
-            Column::InProgress | Column::Review
-                if holder_gone && self.assignee.as_ref() != Some(agent) =>
-            {
-                self.assignee.take()
-            }
-            _ => return Err(taken()),
-        };
+        if self.column != Column::Ready || self.assignee.is_some() {
+            return Err(TaskError::Taken {
+                assignee: self.assignee.clone(),
+                column: self.column,
+            });
+        }
+        self.assignee = Some(agent.clone());
+        self.column = Column::InProgress;
+        self.updated_at = now;
+        Ok(())
+    }
+
+    /// Explicit recovery of a card whose holder's lease lapsed: the taker
+    /// names whom it expects to take the card from — its holder, or
+    /// itself, re-taking its own lapsed hold — and the card passes where
+    /// it sits, in progress or review. Whether the hold has in fact
+    /// lapsed is the daemon's to check, from the lease, before this; a
+    /// card that names somebody else, or sits in another column, is
+    /// refused so a stale expectation never takes a card.
+    pub fn take_over(
+        &mut self,
+        agent: &AgentId,
+        from: &AgentId,
+        now: DateTime<Utc>,
+    ) -> Result<(), TaskError> {
+        if self.archived_at.is_some() {
+            return Err(TaskError::Archived);
+        }
+        if !matches!(self.column, Column::InProgress | Column::Review)
+            || self.assignee.as_ref() != Some(from)
+        {
+            return Err(TaskError::Taken {
+                assignee: self.assignee.clone(),
+                column: self.column,
+            });
+        }
         self.assignee = Some(agent.clone());
         self.updated_at = now;
-        Ok(previous)
+        Ok(())
     }
 
     /// Move the card: its assignee may, and the person always may. A card
@@ -393,13 +406,13 @@ mod tests {
         let mut card = ready_card();
         let a = AgentId::from("a".to_owned());
         let b = AgentId::from("b".to_owned());
-        assert_eq!(card.pull(&a, false, Utc::now()).unwrap(), None);
+        card.pull(&a, Utc::now()).unwrap();
         assert_eq!(
             (card.assignee.as_ref(), card.column),
             (Some(&a), Column::InProgress)
         );
         assert_eq!(
-            card.pull(&b, false, Utc::now()).unwrap_err(),
+            card.pull(&b, Utc::now()).unwrap_err(),
             TaskError::Taken {
                 assignee: Some(a.clone()),
                 column: Column::InProgress
@@ -408,18 +421,18 @@ mod tests {
         let mut backlog = ready_card();
         backlog.column = Column::Backlog;
         assert_eq!(
-            backlog.pull(&b, false, Utc::now()).unwrap_err(),
+            backlog.pull(&b, Utc::now()).unwrap_err(),
             TaskError::Taken {
                 assignee: None,
                 column: Column::Backlog
             }
         );
-        // A holder that is gone — the daemon says so, from the lease — is
-        // no holder: the card passes where it sits, and the pull says
-        // from whom. A Backlog card is nobody's to take either way, and
-        // the holder itself gains nothing by pulling again.
+        // A take-over names whom the card is taken from: the wrong name,
+        // or a card outside In progress/Review, takes nothing. The right
+        // name passes the card where it sits — including to its own
+        // holder, re-taking a lapsed hold.
         assert_eq!(
-            backlog.pull(&b, true, Utc::now()).unwrap_err(),
+            backlog.take_over(&b, &a, Utc::now()).unwrap_err(),
             TaskError::Taken {
                 assignee: None,
                 column: Column::Backlog
@@ -428,13 +441,15 @@ mod tests {
         card.move_to("a", false, Column::Review, Utc::now())
             .unwrap();
         assert_eq!(
-            card.pull(&a, true, Utc::now()).unwrap_err(),
+            card.take_over(&b, &b, Utc::now()).unwrap_err(),
             TaskError::Taken {
                 assignee: Some(a.clone()),
                 column: Column::Review
             }
         );
-        assert_eq!(card.pull(&b, true, Utc::now()).unwrap(), Some(a.clone()));
+        card.take_over(&a, &a, Utc::now()).unwrap();
+        assert_eq!(card.assignee.as_ref(), Some(&a), "re-taken by its holder");
+        card.take_over(&b, &a, Utc::now()).unwrap();
         assert_eq!(
             (card.assignee.as_ref(), card.column),
             (Some(&b), Column::Review),
@@ -448,7 +463,7 @@ mod tests {
     fn moves_are_the_assignees_or_the_persons() {
         let mut card = ready_card();
         let a = AgentId::from("a".to_owned());
-        card.pull(&a, false, Utc::now()).unwrap();
+        card.pull(&a, Utc::now()).unwrap();
         assert_eq!(
             card.move_to("b", false, Column::Review, Utc::now())
                 .unwrap_err(),
@@ -471,7 +486,7 @@ mod tests {
             "released for the next taker"
         );
         let b = AgentId::from("b".to_owned());
-        card.pull(&b, false, Utc::now()).unwrap();
+        card.pull(&b, Utc::now()).unwrap();
         // Edits: the holder edits words, the person reassigns; an archived
         // card is done with.
         assert_eq!(
@@ -518,9 +533,6 @@ mod tests {
                 .unwrap_err(),
             TaskError::Archived
         );
-        assert_eq!(
-            card.pull(&b, false, Utc::now()).unwrap_err(),
-            TaskError::Archived
-        );
+        assert_eq!(card.pull(&b, Utc::now()).unwrap_err(), TaskError::Archived);
     }
 }

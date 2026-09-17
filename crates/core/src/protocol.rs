@@ -524,13 +524,29 @@ pub enum Request {
     },
     /// Who is waiting for what, oldest first.
     Waiting,
-    /// File a card on a project's board. Answers `task`.
-    TaskCreate {
     /// Tell every agent in a project to hold: a `pause` message from
     /// `from` reaches each live agent there, the daemon refuses their new
     /// leases until the project is resumed, and the reason is what they
     /// read. A second pause replaces the reason. Answers `pause`.
     Pause {
+        from: String,
+        /// Project id, root or unique prefix; the caller's own when absent.
+        #[serde(default)]
+        project: Option<String>,
+        reason: String,
+    },
+    /// Lift a pause: a `resume` message reaches the project's live agents
+    /// and their leases are theirs to take again. Answers `ok`, and `ok`
+    /// again for a project that is not paused.
+    ResumeProject {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+    },
+    /// The projects that are paused, and why. Answers `pauses`.
+    Pauses,
+    /// File a card on a project's board. Answers `task`.
+    TaskCreate {
         from: String,
         /// Project id, root or unique prefix; the caller's own when absent.
         #[serde(default)]
@@ -543,11 +559,18 @@ pub enum Request {
         column: Option<crate::Column>,
     },
     /// An agent takes a Ready card nobody holds: it becomes theirs, in
-    /// progress. Answers `task`, or `conflict` when it is held or not
-    /// ready, `paused` while its project is paused.
+    /// progress, held as the `task:<id>` lease. Answers `task`, or
+    /// `conflict` when it is held or not ready, `paused` while its
+    /// project is paused. A card whose holder's lease lapsed is not
+    /// taken by a plain pull: `take_over_from` names the holder the
+    /// caller expects to take it from (itself, for its own lapsed hold),
+    /// and the pull is refused if the card names somebody else or that
+    /// hold is live.
     TaskPull {
         agent: String,
         task: String,
+        #[serde(default)]
+        take_over_from: Option<String>,
     },
     /// Move a card: its assignee may, the person always may. Answers
     /// `task`, or `forbidden`.
@@ -573,10 +596,11 @@ pub enum Request {
         agent: String,
         task: String,
     },
-    /// A project's cards, Backlog to Done, oldest first within a column;
-    /// archived ones only when asked; at most `limit` (1–1,000, 200 by
-    /// default), and `more` says whether the board goes on past them.
-    /// Answers `tasks`.
+    /// One page of a project's cards, Backlog to Done, oldest first
+    /// within a column; archived ones only when asked; from `offset`, at
+    /// most `limit` (1–500, 100 by default) and within a page's byte
+    /// budget, and `more` says whether the board goes on past them —
+    /// the next page starts at `offset + tasks.len()`. Answers `tasks`.
     Tasks {
         #[serde(default)]
         project: Option<String>,
@@ -584,21 +608,11 @@ pub enum Request {
         column: Option<crate::Column>,
         #[serde(default)]
         archived: bool,
+        #[serde(default)]
+        offset: usize,
         #[serde(default = "default_tasks_limit")]
         limit: usize,
     },
-        reason: String,
-    },
-    /// Lift a pause: a `resume` message reaches the project's live agents
-    /// and their leases are theirs to take again. Answers `ok`, and `ok`
-    /// again for a project that is not paused.
-    ResumeProject {
-        from: String,
-        #[serde(default)]
-        project: Option<String>,
-    },
-    /// The projects that are paused, and why. Answers `pauses`.
-    Pauses,
 
     /// Announce a task several agents will attempt, with the measure
     /// that ranks them. The measure is fixed here and never changes.
@@ -948,10 +962,13 @@ pub enum Request {
     },
 }
 
-/// A board page: enough for any real board at once, small enough for one
-/// frame with every card's full acceptance text.
-pub const TASKS_LIMIT: usize = 200;
-pub const TASKS_LIMIT_MAX: usize = 1_000;
+/// A board page: enough for a real board at once, and bounded in bytes
+/// as well as cards so a page of long cards never fills a frame.
+pub const TASKS_LIMIT: usize = 100;
+pub const TASKS_LIMIT_MAX: usize = 500;
+/// The serialised cards of one page stay under this many bytes; a page
+/// holds at least one card whatever its size.
+pub const TASKS_PAGE_BYTES: usize = 768 * 1024;
 
 fn default_tasks_limit() -> usize {
     TASKS_LIMIT
@@ -1242,10 +1259,11 @@ pub enum Response {
     },
     Tasks {
         tasks: Vec<crate::Task>,
-        /// The board holds more cards than `limit` allowed; archive or
-        /// filter by column to see the rest.
+        /// The board goes on past this page: ask again from
+        /// `offset + tasks.len()`.
         #[serde(default)]
         more: bool,
+    },
     Pause {
         pause: crate::Pause,
     },

@@ -1781,7 +1781,11 @@ impl Daemon {
                 self.task_create(from, project, title, acceptance, column)
                     .await
             }
-            Request::TaskPull { agent, task } => self.task_pull(&agent, &task),
+            Request::TaskPull {
+                agent,
+                task,
+                take_over_from,
+            } => self.task_pull(&agent, &task, take_over_from.as_deref()),
             Request::TaskMove {
                 agent,
                 task,
@@ -1799,8 +1803,9 @@ impl Daemon {
                 project,
                 column,
                 archived,
+                offset,
                 limit,
-            } => self.tasks(project, column, archived, limit).await,
+            } => self.tasks(project, column, archived, offset, limit).await,
             Request::Pause {
                 from,
                 project,

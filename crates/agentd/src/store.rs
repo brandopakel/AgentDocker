@@ -36,6 +36,22 @@ pub(crate) use event_replay::EventReplay;
 // daemon would not know a queue is a bound controller's and would drain it.
 // Schema 22 adds a durable receiver-upgrade intent to bound-controller state.
 // Older readers reject that field, so a downgrade must not open this database.
+/// What a card's transition writes besides the card: see
+/// [`Store::task_transition`].
+pub struct TaskTransition<'a> {
+    /// The holder whose liveness the transition records, if any.
+    pub holder: Option<&'a AgentRecord>,
+    /// The lease taken or renewed.
+    pub claimed: Option<&'a Lease>,
+    /// The leases ended.
+    pub released: &'a [LeaseId],
+    /// The document kind and id.
+    pub kind: &'a str,
+    pub id: &'a str,
+    /// The events, in order.
+    pub events: &'a [Event],
+}
+
 pub(crate) const SCHEMA_VERSION: i64 = 23;
 
 const SCHEMA: &str = "
@@ -451,14 +467,18 @@ impl Store {
     /// One page of the board: `task` documents for a project (or every
     /// project), in a column (or every column), without the archived
     /// ones unless asked — Backlog to Done, oldest first within a
-    /// column — at most `limit`, and whether more follow. Read as a page
-    /// so a board of long cards never fills a frame or holds the lock.
+    /// column — from `offset`, at most `limit` cards and about `bytes`
+    /// of them (a page holds at least one), and whether more follow.
+    /// Read as a page so a board of long cards never fills a frame or
+    /// holds the lock.
     pub fn tasks_page(
         &self,
         project: Option<&str>,
         column: Option<&str>,
         archived: bool,
+        offset: usize,
         limit: usize,
+        bytes: usize,
     ) -> Result<(Vec<agentdocker_core::Task>, bool)> {
         let mut stmt = self.conn.prepare(
             "SELECT json FROM documents WHERE kind='task'
@@ -469,38 +489,50 @@ impl Store {
                  WHEN 'backlog' THEN 0 WHEN 'ready' THEN 1 WHEN 'in_progress' THEN 2
                  WHEN 'review' THEN 3 ELSE 4 END,
                json_extract(json, '$.created_at'), id
-             LIMIT ?4",
+             LIMIT ?4 OFFSET ?5",
         )?;
         let page = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
-        let rows = stmt.query_map(params![project, column, archived, page], |row| {
+        let skip = i64::try_from(offset).unwrap_or(i64::MAX);
+        let rows = stmt.query_map(params![project, column, archived, page, skip], |row| {
             row.get::<_, String>(0)
         })?;
-        let mut tasks: Vec<agentdocker_core::Task> = rows
-            .map(|row| Ok(serde_json::from_str(&row?)?))
-            .collect::<Result<_>>()?;
-        let more = tasks.len() > limit;
-        tasks.truncate(limit);
+        let mut tasks = Vec::new();
+        let mut more = false;
+        let mut size = 0usize;
+        for row in rows {
+            let json = row?;
+            if tasks.len() >= limit || (!tasks.is_empty() && size + json.len() > bytes) {
+                more = true;
+                break;
+            }
+            size += json.len();
+            tasks.push(serde_json::from_str(&json)?);
+        }
         Ok((tasks, more))
     }
 
-    /// A pull: the agent's liveness, the `task:<id>` lease it took, the
-    /// card as it now reads and the events for both, as one commit — a
-    /// lease without its card, or a card without its lease, is what
-    /// two commits could leave behind.
-    pub fn lease_with_document<T: serde::Serialize + ?Sized>(
+    /// A card's transition and the leases it moves, as one commit: the
+    /// card as it now reads, the lease a pull or hand took (with its
+    /// holder's liveness), the leases a release, hand or archive ended,
+    /// and the events for all of it — a lease without its card, or a
+    /// card without its lease, is what two commits could leave behind.
+    pub fn task_transition<T: serde::Serialize + ?Sized>(
         &self,
-        agent: &AgentRecord,
-        lease: &Lease,
-        kind: &str,
-        id: &str,
+        transition: &TaskTransition<'_>,
         value: &T,
-        events: &[Event],
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
-        self.upsert_agent(agent)?;
-        self.upsert_lease(lease)?;
-        self.put_document(kind, id, value)?;
-        for event in events {
+        if let Some(holder) = transition.holder {
+            self.upsert_agent(holder)?;
+        }
+        if let Some(lease) = transition.claimed {
+            self.upsert_lease(lease)?;
+        }
+        for lease in transition.released {
+            self.delete_lease(lease)?;
+        }
+        self.put_document(transition.kind, transition.id, value)?;
+        for event in transition.events {
             self.append_event(event)?;
         }
         tx.commit()?;

@@ -890,6 +890,11 @@ enum TaskAction {
         task: String,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
+        /// Take over a card whose holder's lease lapsed, naming that
+        /// holder (yourself, for your own lapsed hold); refused if the
+        /// card names somebody else or the hold is live.
+        #[arg(long, value_name = "AGENT")]
+        take_over_from: Option<String>,
     },
     /// Move a card to a column: its holder may, the person always may.
     Move {
@@ -928,9 +933,14 @@ enum TaskAction {
         /// Include archived cards.
         #[arg(long)]
         archived: bool,
-        /// At most this many cards (1-1000; 200 by default).
+        /// At most this many cards (1-500; 100 by default), within a
+        /// page's byte budget.
         #[arg(long, default_value_t = agentdocker_core::protocol::TASKS_LIMIT)]
         limit: usize,
+        /// Skip this many cards first: the next page starts where the
+        /// last one said it went on.
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
     },
 }
 
@@ -1842,12 +1852,21 @@ async fn main() -> Result<()> {
                         eprintln!("{}", card_line(&task));
                     }
                 }
-                TaskAction::Pull { task, agent } => {
+                TaskAction::Pull {
+                    task,
+                    agent,
+                    take_over_from,
+                } => {
                     let agent = sender::resolve(&client, agent)
                         .await?
                         .context("pull as an agent: give --as")?;
-                    if let Response::Task { task } =
-                        client.call(&Request::TaskPull { agent, task }).await?
+                    if let Response::Task { task } = client
+                        .call(&Request::TaskPull {
+                            agent,
+                            task,
+                            take_over_from,
+                        })
+                        .await?
                     {
                         println!("{}", card_line(&task));
                     }
@@ -1905,11 +1924,13 @@ async fn main() -> Result<()> {
                     column,
                     archived,
                     limit,
+                    offset,
                 } => {
                     let request = Request::Tasks {
                         project: Some(project.map_or_else(here, Ok)?),
                         column: column_of(column)?,
                         archived,
+                        offset,
                         limit,
                     };
                     if let Response::Tasks { tasks, more } = client.call(&request).await? {
@@ -1944,8 +1965,8 @@ async fn main() -> Result<()> {
                             format::table(&["CARD", "COLUMN", "TITLE", "HOLDER", ""], &rows);
                             if more {
                                 println!(
-                                    "and more: the first {} shown; --column or --limit narrows or widens the page",
-                                    tasks.len()
+                                    "and more: the board goes on; --offset {} shows the next page",
+                                    offset + tasks.len()
                                 );
                             }
                         }

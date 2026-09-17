@@ -27,8 +27,11 @@ The project may have a board of work: `list_tasks` shows cards in columns
 means. Take work with `pull_task` on a Ready card — it becomes yours, in
 progress, and nobody else can take it; if it is refused, somebody holds it, so
 pull another. The pull holds the card as a `task:<id>` lease for four hours:
-`renew` it during longer work, or the card passes to the next agent that pulls
-it; your exit releases it. Read the card's acceptance text before starting.
+`renew` it during longer work (pulling your own held card renews it too); your
+exit releases it. A card whose holder's lease has lapsed is refused with `hold:
+lapsed`: take it over only by naming that holder in `take_over_from`, when you
+know they are gone or the person told you to, and never as a way to work a card
+somebody may still be on. Read the card's acceptance text before starting.
 Move it with `move_task` to review when it is ready for eyes and to done when
 the acceptance text is met; file follow-up work with `create_task`. Do not
 move cards you do not hold.

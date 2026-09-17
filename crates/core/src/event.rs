@@ -402,8 +402,10 @@ pub enum EventKind {
         task: crate::TaskId,
         project: ProjectId,
         agent: AgentId,
-        /// Whom the card was taken over from: its holder had gone (the
-        /// lease expired, was released, or its agent exited).
+        /// Whom the card was taken over from, when the pull was an
+        /// explicit recovery of a hold that had lapsed (the lease
+        /// expired, was released, or its agent exited); the holder
+        /// itself, re-taking its own.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<AgentId>,
         /// The `task:<id>` lease the pull took; it is the holding.
@@ -425,6 +427,9 @@ pub enum EventKind {
     /// A card left the board.
     TaskArchived {
         task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+    },
     /// The person told a project's agents to hold, and why.
     ProjectPaused {
         project: ProjectId,

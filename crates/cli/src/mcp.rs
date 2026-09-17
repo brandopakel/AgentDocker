@@ -1759,18 +1759,20 @@ fn tool_definitions() -> Vec<Value> {
                     "project": { "type": "string", "description": "Project id or path; your own when absent." },
                     "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done"] },
                     "archived": { "type": "boolean", "description": "Include cards taken off the board." },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "At most this many cards (200 by default); the reply's `more` says whether the board goes on." }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 500, "description": "At most this many cards (100 by default), within a page's byte budget; the reply's `more` says whether the board goes on." },
+                    "offset": { "type": "integer", "minimum": 0, "description": "Skip this many cards: the next page starts at offset + the cards returned." }
                 },
                 "additionalProperties": false
             }
         }),
         json!({
             "name": "pull_task",
-            "description": "Take a Ready card nobody holds: it becomes yours, in progress, and you hold its task:<id> lease (four hours; renew it during long work — an exit releases it). Refused if somebody holds it or it is not ready, so two agents never work the same card; a card whose holder's lease lapsed passes to you where it sits. Read its acceptance text before you start.",
+            "description": "Take a Ready card nobody holds: it becomes yours, in progress, and you hold its task:<id> lease (four hours; renew it during long work — an exit releases it; pulling your own held card renews it). Refused if somebody holds it or it is not ready, so two agents never work the same card. A card whose holder's lease lapsed is refused too, with hold: lapsed: take it over only by naming that holder in take_over_from, when you know they are gone or the person said so. Read its acceptance text before you start.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "task": { "type": "string", "description": "Card id or unique prefix." }
+                    "task": { "type": "string", "description": "Card id or unique prefix." },
+                    "take_over_from": { "type": "string", "description": "The holder whose lapsed hold you take the card from (yourself, for your own). Refused if the card names somebody else or that hold is live." }
                 },
                 "required": ["task"],
                 "additionalProperties": false

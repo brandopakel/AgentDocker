@@ -2153,6 +2153,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 project: Some(project.clone()),
                 column: None,
                 archived: false,
+                offset: 0,
                 limit: agentdocker_core::protocol::TASKS_LIMIT,
             }) {
                 Ok(Response::Tasks { tasks, more }) => Ok((tasks, more)),
@@ -2222,6 +2223,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::TaskChanged(result))
+        }
         Cmd::Pauses => match client.call(&Request::Pauses)? {
             Response::Pauses { pauses } => Some(Msg::Pauses(pauses)),
             _ => None,
@@ -2757,6 +2759,8 @@ impl TaskDraft {
     pub fn sending(&self) -> bool {
         self.sending.is_some()
     }
+}
+
 const PAUSE_CONTROLS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
