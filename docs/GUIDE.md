@@ -72,6 +72,15 @@ that drives the browser). That bridge is the tool's helper, not a session:
 registered it would sit in a project called `chrome` looking like your browser
 agent, connected — and it is neither.
 
+When the browser agent has something a terminal agent should know, the way in
+is the one the vendors give hosted agents: a remote MCP connector.
+`agentdocker connector serve --public-url https://<your tunnel>` serves one on
+loopback for a tunnel you run, prints the URL to add as a custom connector in
+Claude or ChatGPT and a pairing code for the consent page, and each consent
+becomes a browser agent in the project with the messaging tools and nothing
+that touches a checkout. [The remote connector](REMOTE-CONNECTOR.md) has the
+whole contract.
+
 Everything respects `AGENTDOCKER_HOME`, so a throwaway daemon for
 experiments costs nothing:
 
@@ -296,6 +305,7 @@ the flags.
 | `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
+| `connector serve` / `grants` / `revoke` | Let an agent that works inside a browser join this project's messaging through a tunnel you run; see [the remote connector](REMOTE-CONNECTOR.md) |
 
 ---
 
@@ -447,6 +457,18 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- The remote connector: `agentdocker connector serve --public-url <https://…>`
+  serves an OAuth-protected MCP endpoint on loopback for a tunnel you run, so
+  Claude's or ChatGPT's browser side panel can join a project as a browser
+  agent — registered when its code is redeemed, after the pairing code from
+  the terminal is typed on the consent page — with the messaging tools only.
+  `connector grants` lists consents, `connector revoke <agent>` ends one.
+- Agents that work inside a browser are inventoried: `runtimes` lists each
+  vendor's extension per browser profile (`claude-browser`, `chatgpt-browser`)
+  and says that its sessions run in the browser and cannot be listed or
+  messaged; a runtime's helper such as `claude --chrome-native-host` is never
+  discovered and cannot be adopted; `rm` on a live external record says
+  `deregister`.
 - A project pause: `agentdocker pause "reason"` tells every agent in the
   project to hold — the reason reaches each live one as a `pause` message
   and their new leases are refused with it until `pause --lift`; `pause

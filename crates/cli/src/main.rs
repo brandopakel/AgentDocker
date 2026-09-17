@@ -4,6 +4,7 @@ mod agentfile;
 mod attach;
 mod client;
 mod codex_input;
+mod connector;
 mod desktop;
 mod format;
 mod hooks;
@@ -722,6 +723,8 @@ enum Command {
     Hook(hooks::HookArgs),
     /// Serve AgentDocker's tools to an MCP host (Claude Code, Codex, Cursor...) over stdio.
     Mcp(mcp::McpArgs),
+    /// Let agents that work inside a browser (Claude's or ChatGPT's extension) join a project's messaging, through a tunnel you run.
+    Connector(connector::ConnectorArgs),
     /// Supervised Codex input controller (launched by run --codex-input).
     #[command(hide = true)]
     CodexInput(codex_input::Args),
@@ -2708,6 +2711,7 @@ async fn main() -> Result<()> {
         Command::Daemon(args) => service::run(socket, args).await?,
         Command::Hook(args) => hooks::run(client, args).await?,
         Command::Mcp(args) => mcp::serve(client, args).await?,
+        Command::Connector(args) => connector::run(client, args).await?,
         Command::CodexInput(args) => codex_input::run(client, socket, args).await?,
         Command::CodexQueue(args) => codex_input::external::run(client, socket, args).await?,
         Command::CodexQueueUpgrade(args) => {
