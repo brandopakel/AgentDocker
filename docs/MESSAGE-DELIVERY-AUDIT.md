@@ -264,7 +264,7 @@ exit, reconnect and draft preservation in the acceptance gate.
 | Connected mode | Idle delivery evidence |
 | --- | --- |
 | Current bound external Codex session | Installed native receiver has exact existing-session idle-wake and active-hook receipts. Active hooks run at tool boundaries with bounded context; startup/reopen and broader lifecycle cases remain. |
-| Current plain external Claude session, hooks/MCP only | No channel input binding; messages can wait at the prompt until another user/tool event. Merged #164 supplies safe reconnect support, but enabling channel input still requires a provider relaunch and a live idle trial. |
+| Current plain external Claude session, hooks/MCP only | No channel input binding; messages can wait at the prompt until another user/tool event. Merged #164 supplies guarded reconnect support. A follow-up preserves bounded retained file observations and eligible channel memberships transactionally, refusing ambiguous captures or newly created self-reviews. Initialization before SessionStart still refuses a fold; enabling channel input still requires safe startup ordering, provider consent and an actual idle trial. |
 | Managed Codex input bridge | Existing opt-in adapter trials below; does not attach an existing terminal. |
 | Enabled Claude channel | Existing opt-in idle/busy/draft trials below; must be enabled for the actual session. |
 | Native Codex 0.154.0 queue | Implemented and installed on the current Mac; bounded TUI, exact idle/active receipt and receiver-upgrade trials pass. Zero-prompt startup/reopen, oversized input and sustained acceptance remain. |

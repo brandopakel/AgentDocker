@@ -566,5 +566,303 @@
       "scope": "Real adapter processes driven by an MCP fixture, not a Claude model idle-wake trial. Names retained across N-way folds and alias flattening are covered by registry/store regressions through reopen. Existing live provider sessions were unchanged.",
       "status": "passed; final CI, review and installed acceptance pending"
     }
+  },
+  "observation_preserving_resume_2026_09_17": {
+    "source_commit": "ef369d8289d19b46a83ab93b31096068093b5e58",
+    "pr": 179,
+    "installed": false,
+    "gate": {
+      "result": "passed",
+      "rust_passed": 1149,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "includes": [
+        "format",
+        "strict_clippy",
+        "doctests",
+        "packaging",
+        "release_build"
+      ],
+      "log": "/private/tmp/agentdocker-resume-observations-gate-20260917.log",
+      "log_sha256": "88cf1f4863c51569b03f82a5ee98f5b33003f1f73f50e7317bbf6940ded4ff46"
+    },
+    "transport": {
+      "result": "passed",
+      "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+      "steps": [
+        "idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption",
+        "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+        "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+        "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+        "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+        "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+        "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+        "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+        "pre-initialization session fold preserved both observation sets and one channel owner across different agent IDs and delivered the older queue through its alias",
+        "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+      ],
+      "binary_sha256": {
+        "agentd": "b66936f466a4a5b84f9b13059ddf9efddebd77e947f838161488d57849da7462",
+        "agentdocker": "cf6824049e550a7a04266f2b581942f983adf4a7c2c909065a2aa78653f41012"
+      },
+      "driver_sha256": {
+        "claude_channel_smoke.py": "cf9d039290fbea61a4ca2815d9e170adc652470a55e9c4d0e65ce457437bc5b1",
+        "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+        "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+      },
+      "remaining_owned_processes": 0,
+      "duration_seconds": 38.92764129099669
+    },
+    "artifacts": "/private/tmp/agentdocker-resume-observations-channel-20260917",
+    "limits": [
+      "The transport fixture speaks MCP and uses owned sleep processes, not a real provider model.",
+      "The installed Claude process and production database were not restarted or rewritten.",
+      "Initialized-before-SessionStart remains a guarded refusal; provider startup ordering, consent and actual idle model receipt remain open."
+    ],
+    "production_preflight": {
+      "distinct_paths": 26,
+      "stored_bytes": 6205,
+      "overlapping_different_versions": 0,
+      "equal_time_conflicts": 0,
+      "result": "read-only inspection; current installed guard refuses the retained sets"
+    },
+    "before_fix_transport": {
+      "source_commit": "017ef68a0f9c19f9dfd02198057c56c98a697045",
+      "expected_failure": "retained observations prevent canonical registration at driver line 313",
+      "report": {
+        "result": "failed",
+        "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+        "steps": [
+          "idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption",
+          "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+          "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+          "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+          "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+          "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+          "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+          "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks"
+        ],
+        "binary_sha256": {
+          "agentd": "be800d1db07fa247345094f8d6ec17a06df131d4d956412b7ffaf3e28864d745",
+          "agentdocker": "1874c66870742d7908eba86e9e5f9a442e46d8cd3ef81e96330999e716a0ba57"
+        },
+        "driver_sha256": {
+          "claude_channel_smoke.py": "cf9d039290fbea61a4ca2815d9e170adc652470a55e9c4d0e65ce457437bc5b1",
+          "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+          "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+        },
+        "error": "AssertionError: ",
+        "failed_driver_line": 313,
+        "remaining_owned_processes": 0,
+        "duration_seconds": 38.730742916988675
+      }
+    }
+  },
+  "observations_and_channels_resume_2026_09_17": {
+    "source_commit": "3b21d64ae9b184eb9d5ff9e3213a9b96742a6b47",
+    "pr": 179,
+    "installed": false,
+    "gate": {
+      "result": "passed",
+      "rust_passed": 1149,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "includes": [
+        "format",
+        "strict_clippy",
+        "doctests",
+        "packaging",
+        "release_build"
+      ],
+      "log": "/private/tmp/agentdocker-resume-channels-gate-20260917.log",
+      "log_sha256": "5625966dd59516add6c588c2d3f2f827ec829ccc3526c86d25304bc3de8ba1c3"
+    },
+    "build": {
+      "format": 1,
+      "source_commit": "3b21d64ae9b184eb9d5ff9e3213a9b96742a6b47",
+      "source_tree": "41b17c2422b890ba1cbdc5007bbc9021e8a8b7d0",
+      "source_input_sha256": "0bcd8fa0f6be97dd5c1fabc5052f55fe9c5ad842caf6923efc0017a03d4866db",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 23,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "5ddac0e73c3e6d526bdcd1382d034f43c6ba33fa78b9b7ba28f163dfc80bcb67",
+        "agentd": "c449055c2bacdead5ab167de9c453929707ef224016e3152fcf5ac6e4f0bd2ad",
+        "agentdocker-ui": "a5fa496e76ffc2249ec4cc42cc8b4d2e33b9ac882159e0d4396b2faaa4a4598c"
+      }
+    },
+    "transport": {
+      "result": "passed",
+      "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+      "steps": [
+        "idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption",
+        "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+        "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+        "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+        "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+        "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+        "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+        "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+        "pre-initialization session fold preserved observations and open memberships, retained one channel owner across different agent IDs, and delivered the older queue plus a new room message through the canonical alias",
+        "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+      ],
+      "binary_sha256": {
+        "agentd": "c449055c2bacdead5ab167de9c453929707ef224016e3152fcf5ac6e4f0bd2ad",
+        "agentdocker": "5ddac0e73c3e6d526bdcd1382d034f43c6ba33fa78b9b7ba28f163dfc80bcb67"
+      },
+      "driver_sha256": {
+        "claude_channel_smoke.py": "43b3a9af0f803853c8f54abaa4e0cb7f2d48d568e20b37efe17414b6a29298ba",
+        "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+        "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+      },
+      "remaining_owned_processes": 0,
+      "duration_seconds": 38.73346620803932
+    },
+    "artifacts": "/private/tmp/agentdocker-resume-channels-channel-20260917",
+    "command": "python3 scripts/claude_channel_smoke.py --resume --binary-dir /private/tmp/agentdocker-resume-channels-binaries-20260917 --output /private/tmp/agentdocker-resume-channels-channel-20260917",
+    "targeted_tests": {
+      "agentd_passed": 401,
+      "agentd_skipped": 2,
+      "cases": [
+        "observations and open memberships survive resume and storage reopen",
+        "new channel message reaches the canonical recipient once",
+        "new self-review refuses without changing stored state",
+        "injected event failure rolls back observations, channels, aliases and queue"
+      ]
+    },
+    "review": {
+      "claude_message_id": "c3aabc346e8c4007",
+      "source": "3b21d64",
+      "result": "no blocker reported; startup-order work remains separate"
+    },
+    "production_preflight": {
+      "mode": "read-only",
+      "open_channels_with_session_members": 2,
+      "new_self_reviews": 0,
+      "ended_queue_messages": 95,
+      "limitations": "Snapshot counts do not establish in-memory subscriber, pending-stale or lease state at a later relaunch."
+    },
+    "limits": [
+      "The transport fixture speaks MCP and uses owned sleep processes, not a real provider model.",
+      "The installed Claude process and production database were not restarted or rewritten.",
+      "Initialized-before-SessionStart remains a guarded refusal; provider startup ordering, consent and actual idle model receipt remain open."
+    ]
+  },
+  "board_identity_resume_2026_09_17": {
+    "runtime_source": "197bca46c174a571e2e2bd20dd08862ae8e6c899",
+    "build": {
+      "format": 1,
+      "source_commit": "0bd8331cd12262fed22161de4141fcfd6d8632b1",
+      "source_tree": "4433090326159e4d109c2b8615f7a8d4e0d08047",
+      "source_input_sha256": "085fc63502f96c762f54d01a94c24d25d8c71637b445a767435b3ad51203e2bc",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 23,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "ef4112a1f032a48d366f97f4f47f440853f6d82d443cd26c899bf25567db0f18",
+        "agentd": "6379c85ed4926f13eb0cd59183d4bb4ce949c4d43b78428107b3c5fad84bea75",
+        "agentdocker-ui": "13529d1f0d92be391f7688b8dc8e4d79cf86a435173665814c1cfeccb0859740"
+      }
+    },
+    "installed": false,
+    "pr": 179,
+    "gate": {
+      "result": "passed",
+      "rust_passed": 1165,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "format_clippy_doctest_package_release": "passed",
+      "log": "/private/tmp/agentdocker-resume-cards-gate-20260917.log",
+      "log_sha256": "3579731f22e907db6b95b603366e4678930bbcbdf277ac1c09acaafe3b56c837"
+    },
+    "transport": {
+      "result": "passed",
+      "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+      "steps": [
+        "idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption",
+        "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+        "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+        "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+        "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+        "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+        "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+        "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+        "pre-initialization session fold preserved observations, open memberships and completed card identity references without changing their text or state, retained one channel owner across different agent IDs, and delivered the older queue plus a new room message through the canonical alias",
+        "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+      ],
+      "binary_sha256": {
+        "agentd": "6379c85ed4926f13eb0cd59183d4bb4ce949c4d43b78428107b3c5fad84bea75",
+        "agentdocker": "ef4112a1f032a48d366f97f4f47f440853f6d82d443cd26c899bf25567db0f18"
+      },
+      "driver_sha256": {
+        "claude_channel_smoke.py": "5e8c091e4cd87b30eddecfa83008dd01581c4efa9fa316c458b4a38712ce8401",
+        "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+        "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+      },
+      "remaining_owned_processes": 0,
+      "duration_seconds": 38.77594962500734
+    },
+    "transport_artifacts": "/private/tmp/agentdocker-resume-cards-channel-20260917",
+    "card_regression": {
+      "before": {
+        "result": "passed",
+        "scope": "Private actual-daemon completed-card session-resume regression; owned fixture processes, not provider/model acceptance",
+        "binary_sha256": "df02594a41d29487781708928e13b7ced595c574df98e77e6764134c8624195e",
+        "driver_sha256": "ab54bcef5d3975c841e786214d4582246914077d9c9ff8e3552962ef90974784",
+        "observed": "refused",
+        "expected": "refused",
+        "card_text_column_timestamps_preserved": true,
+        "older_queue_id_preserved": true,
+        "remaining_owned_processes": 0,
+        "duration_seconds": 0.1460913330083713
+      },
+      "after": {
+        "result": "passed",
+        "scope": "Private actual-daemon completed-card session-resume regression; owned fixture processes, not provider/model acceptance",
+        "binary_sha256": "6379c85ed4926f13eb0cd59183d4bb4ce949c4d43b78428107b3c5fad84bea75",
+        "driver_sha256": "ab54bcef5d3975c841e786214d4582246914077d9c9ff8e3552962ef90974784",
+        "observed": "preserved",
+        "expected": "preserved",
+        "card_text_column_timestamps_preserved": true,
+        "older_queue_id_preserved": true,
+        "remaining_owned_processes": 0,
+        "duration_seconds": 0.3339037080295384
+      },
+      "driver": "/private/tmp/agentdocker-task-resume-trial-20260917/run.py",
+      "before_refusal": "document kind task contains the retired identity and requires explicit migration support",
+      "initial_driver_failure": {
+        "result": "failed",
+        "scope": "Private actual-daemon completed-card session-resume regression; owned fixture processes, not provider/model acceptance",
+        "binary_sha256": "df02594a41d29487781708928e13b7ced595c574df98e77e6764134c8624195e",
+        "driver_sha256": "8f7933e9abc64552fb20079c097214f228840f5843c22a2d3c249e38039b7bb7",
+        "error": "TypeError: string indices must be integers, not 'str'",
+        "remaining_owned_processes": 0,
+        "duration_seconds": 0.0707944999448955
+      },
+      "initial_driver_correction": "Read the Send response message field as an ID string, not as an envelope; the failed setup left no owned processes."
+    },
+    "targeted_tests": {
+      "selected": 2,
+      "passed": 2,
+      "scope": "Typed task migration during offline repair and session resumption, held-lease refusal, injected transaction rollback, reopen/listing and no synthetic lease. The repair audit keeps the original card."
+    },
+    "limits": [
+      "The transport fixture speaks MCP with owned fixture processes, not a provider model.",
+      "Production state and existing provider sessions were unchanged.",
+      "The startup-order adapter in PR #180 and actual provider consent/idle receipt need separate integration acceptance."
+    ]
   }
 }
