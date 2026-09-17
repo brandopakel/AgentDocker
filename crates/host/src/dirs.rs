@@ -54,11 +54,20 @@ pub fn private_file(path: &Path, create: bool, append: bool) -> io::Result<std::
     Ok(file)
 }
 
-/// This process's effective user, for ownership checks elsewhere.
+/// Open an existing private file for reading only: a regular file with
+/// one link, owned by this user, not writable by others, opened without
+/// following a symlink, and checked again on the handle so what was
+/// checked is what is read. Nothing is created or changed.
 #[cfg(unix)]
-pub fn current_uid() -> u32 {
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    unsafe { libc::geteuid() }
+pub fn open_private(path: &Path) -> io::Result<std::fs::File> {
+    let meta = std::fs::symlink_metadata(path)?;
+    validate_file(&meta, path)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    validate_file(&file.metadata()?, path)?;
+    Ok(file)
 }
 
 #[cfg(unix)]

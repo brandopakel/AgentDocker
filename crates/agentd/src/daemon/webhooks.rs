@@ -55,7 +55,7 @@ pub const SECRET_MIN_BYTES: usize = 16;
 #[derive(Default)]
 pub(super) struct Sinks {
     generation: u64,
-    started_from: Vec<WebhookConfig>,
+    started_from: Vec<Started>,
     workers: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -119,7 +119,7 @@ fn kind_name(kind: &EventKind) -> String {
 
 /// The projection of one event, or `None` for an event that is never
 /// posted (a webhook's own).
-fn project(event: &Event) -> Option<Projection> {
+fn project_event(event: &Event) -> Option<Projection> {
     let name = kind_name(&event.kind);
     if name.starts_with("webhook_") {
         return None;
@@ -208,20 +208,20 @@ pub fn signature(secret: &[u8], timestamp: &str, body: &[u8]) -> String {
 }
 
 /// The secret, from a regular file of this user with mode 0600 and at
-/// least sixteen bytes of content once trimmed. Anything else is refused
-/// so a world-readable or empty secret never signs anything.
+/// least sixteen bytes of content once trimmed, read through the opened
+/// handle (no symlink is followed, and what is checked is what is read)
+/// and never more than 4 KiB of it. Anything else is refused so a
+/// world-readable, replaced or empty secret never signs anything.
 pub fn read_secret(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata = std::fs::symlink_metadata(path)
+    use std::io::Read;
+    let file = agentdocker_host::dirs::open_private(path)
+        .map_err(|error| format!("secret_file: {error}"))?;
+    let metadata = file
+        .metadata()
         .map_err(|error| format!("secret_file: {}", error.kind()))?;
-    if !metadata.is_file() {
-        return Err("secret_file must be a regular file".into());
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        if metadata.uid() != unsafe_uid() {
-            return Err("secret_file must be owned by this user".into());
-        }
         if metadata.mode() & 0o077 != 0 {
             return Err("secret_file must be mode 0600".into());
         }
@@ -229,30 +229,28 @@ pub fn read_secret(path: &Path) -> Result<Vec<u8>, String> {
     if metadata.len() > 4096 {
         return Err("secret_file is too large for a secret".into());
     }
-    let content = std::fs::read(path).map_err(|error| format!("secret_file: {}", error.kind()))?;
-    let trimmed: Vec<u8> = content
+    let mut content = Vec::new();
+    file.take(4097)
+        .read_to_end(&mut content)
+        .map_err(|error| format!("secret_file: {}", error.kind()))?;
+    if content.len() > 4096 {
+        return Err("secret_file is too large for a secret".into());
+    }
+    let start = content
         .iter()
-        .copied()
-        .skip_while(u8::is_ascii_whitespace)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .skip_while(u8::is_ascii_whitespace)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(content.len());
+    let end = content
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map_or(start, |i| i + 1);
+    let trimmed = content[start..end].to_vec();
     if trimmed.len() < SECRET_MIN_BYTES {
         return Err(format!(
             "secret_file holds fewer than {SECRET_MIN_BYTES} bytes"
         ));
     }
     Ok(trimmed)
-}
-
-#[cfg(unix)]
-fn unsafe_uid() -> u32 {
-    agentdocker_host::dirs::current_uid()
 }
 
 /// What one attempt came to.
@@ -296,14 +294,118 @@ fn retry_after(response: &ureq::http::Response<ureq::Body>) -> Option<Duration> 
         .map(|secs| Duration::from_secs(secs).min(RETRY_AFTER_CAP))
 }
 
-/// One sink's task: filter, queue, deliver, retry, give up, say so.
-async fn run(
+/// A sink's queue between intake and delivery: bounded by events and
+/// bytes, the oldest dropped and counted when full, so a receiver that
+/// stalls can never make the daemon hold more than this.
+#[derive(Default)]
+struct Queue {
+    items: VecDeque<(Projection, Vec<u8>)>,
+    bytes: usize,
+    /// Deliveries lost since the last notice: dropped for room, too
+    /// large, or the bus overtook the intake.
+    dropped: u64,
+}
+
+impl Queue {
+    fn push(&mut self, projection: Projection, body: Vec<u8>) {
+        while self.items.len() >= QUEUE_EVENTS || self.bytes + body.len() > QUEUE_BYTES {
+            let Some((_, old)) = self.items.pop_front() else {
+                break;
+            };
+            self.bytes -= old.len();
+            self.dropped += 1;
+        }
+        self.bytes += body.len();
+        self.items.push_back((projection, body));
+    }
+
+    fn pop(&mut self) -> Option<(Projection, Vec<u8>)> {
+        let item = self.items.pop_front()?;
+        self.bytes -= item.1.len();
+        Some(item)
+    }
+}
+
+/// Whether an event is for this sink: one of its kinds, and — for a
+/// project-scoped sink — of that project. An event that names no project
+/// is not that project's and is not posted to a scoped sink.
+fn wanted(sink: &WebhookConfig, project: Option<&ProjectId>, event: &Event) -> bool {
+    if !sink
+        .events
+        .iter()
+        .any(|kind| *kind == kind_name(&event.kind))
+    {
+        return false;
+    }
+    match project {
+        None => true,
+        Some(wanted) => serde_json::to_value(&event.kind)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("project")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .is_some_and(|project| project == wanted.as_str()),
+    }
+}
+
+/// The intake half of a sink: receives from the bus without ever
+/// waiting on the receiver, keeps the bounded queue, counts what it had
+/// to drop.
+async fn intake(
+    sink: WebhookConfig,
+    project: Option<ProjectId>,
+    queue: Arc<std::sync::Mutex<Queue>>,
+    wake: Arc<tokio::sync::Notify>,
+    mut events: broadcast::Receiver<Event>,
+) {
+    loop {
+        match events.recv().await {
+            Ok(event) => {
+                if !wanted(&sink, project.as_ref(), &event) {
+                    continue;
+                }
+                let Some(projection) = project_event(&event) else {
+                    continue;
+                };
+                let bytes = body(&projection, sink.format);
+                let mut queue = lock_queue(&queue);
+                if bytes.len() > BODY_BYTES {
+                    queue.dropped += 1;
+                } else {
+                    queue.push(projection, bytes);
+                }
+                drop(queue);
+                wake.notify_one();
+            }
+            Err(broadcast::error::RecvError::Closed) => return,
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                lock_queue(&queue).dropped += n;
+                wake.notify_one();
+            }
+        }
+    }
+}
+
+fn lock_queue(queue: &std::sync::Mutex<Queue>) -> std::sync::MutexGuard<'_, Queue> {
+    queue
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The delivery half of a sink: one request at a time, retries, and a
+/// notice — at most once a minute — for whatever was lost, whether a
+/// receiver refused it or the queue had no room, even after deliveries
+/// succeed again.
+async fn deliver(
     daemon: Arc<Daemon>,
     generation: u64,
     sink: WebhookConfig,
-    project_id: Option<ProjectId>,
     secret: Vec<u8>,
-    mut events: broadcast::Receiver<Event>,
+    queue: Arc<std::sync::Mutex<Queue>>,
+    wake: Arc<tokio::sync::Notify>,
 ) {
     let name = sink.name.clone();
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -313,77 +415,25 @@ async fn run(
         .build()
         .into();
     let agent = Arc::new(agent);
-    let mut queue: VecDeque<(Projection, Vec<u8>)> = VecDeque::new();
-    let mut queued_bytes = 0usize;
-    let mut dropped: u64 = 0;
     let mut last_notice: Option<tokio::time::Instant> = None;
+    let mut last_reason = String::new();
     loop {
-        // Receive until the bus is quiet or the queue holds something.
-        let received = if queue.is_empty() {
-            events.recv().await
-        } else {
-            match events.try_recv() {
-                Ok(event) => Ok(event),
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    Err(broadcast::error::RecvError::Lagged(0))
-                }
-                Err(broadcast::error::TryRecvError::Closed) => {
-                    Err(broadcast::error::RecvError::Closed)
-                }
-                Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                    Err(broadcast::error::RecvError::Lagged(n))
-                }
-            }
-        };
-        match received {
-            Ok(event) => {
-                if !sink
-                    .events
-                    .iter()
-                    .any(|kind| *kind == kind_name(&event.kind))
-                {
-                    continue;
-                }
-                if let Some(wanted) = &project_id
-                    && let Some(Value::String(project)) = serde_json::to_value(&event.kind)
-                        .ok()
-                        .and_then(|v| v.get("project").cloned())
-                    && project != wanted.as_str()
-                {
-                    continue;
-                }
-                let Some(projection) = project(&event) else {
-                    continue;
-                };
-                let bytes = body(&projection, sink.format);
-                if bytes.len() > BODY_BYTES {
-                    dropped += 1;
-                    continue;
-                }
-                while queue.len() >= QUEUE_EVENTS || queued_bytes + bytes.len() > QUEUE_BYTES {
-                    let Some((_, old)) = queue.pop_front() else {
-                        break;
-                    };
-                    queued_bytes -= old.len();
-                    dropped += 1;
-                }
-                queued_bytes += bytes.len();
-                queue.push_back((projection, bytes));
-                if queue.len() > 1 {
-                    continue;
-                }
-            }
-            Err(broadcast::error::RecvError::Closed) => return,
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                // Lagged(0) is our own "nothing new" marker above.
-                dropped += n;
-            }
-        }
-        // Deliver the head, with retries, then say what was lost.
-        let Some((projection, bytes)) = queue.pop_front() else {
+        let next = lock_queue(&queue).pop();
+        let Some((projection, bytes)) = next else {
+            // Nothing queued: say what was lost meanwhile, then wait.
+            announce(
+                &daemon,
+                &name,
+                &queue,
+                &projection_kind_none(),
+                &last_reason,
+                &mut last_notice,
+                generation,
+            )
+            .await;
+            wake.notified().await;
             continue;
         };
-        queued_bytes -= bytes.len();
         let mut reason = None;
         for attempt in 0..=RETRY_DELAYS.len() {
             let timestamp = chrono::Utc::now().timestamp().to_string();
@@ -425,35 +475,92 @@ async fn run(
             }
         }
         if let Some(reason) = reason {
-            dropped += 1;
-            let due = last_notice.is_none_or(|at| at.elapsed() >= FAILURE_NOTICE_EVERY);
-            if due {
-                warn!(sink = %name, %reason, dropped, generation, "webhook delivery failed");
-                daemon.emit(EventKind::WebhookFailed {
-                    name: name.clone(),
-                    kind: projection.event.clone(),
-                    reason,
-                    dropped,
-                });
-                dropped = 0;
-                last_notice = Some(tokio::time::Instant::now());
-            }
+            lock_queue(&queue).dropped += 1;
+            last_reason = reason;
         }
+        announce(
+            &daemon,
+            &name,
+            &queue,
+            &projection.event,
+            &last_reason,
+            &mut last_notice,
+            generation,
+        )
+        .await;
+    }
+}
+
+fn projection_kind_none() -> String {
+    String::new()
+}
+
+/// Say what was lost, at most once a minute per sink: the count since
+/// the last notice and the last reason (or `dropped` when the queue had
+/// no room and nothing was refused), through the ordinary event path.
+async fn announce(
+    daemon: &Arc<Daemon>,
+    name: &str,
+    queue: &Arc<std::sync::Mutex<Queue>>,
+    kind: &str,
+    last_reason: &str,
+    last_notice: &mut Option<tokio::time::Instant>,
+    generation: u64,
+) {
+    let dropped = lock_queue(queue).dropped;
+    if dropped == 0 || last_notice.is_some_and(|at| at.elapsed() < FAILURE_NOTICE_EVERY) {
+        return;
+    }
+    lock_queue(queue).dropped = 0;
+    *last_notice = Some(tokio::time::Instant::now());
+    let reason = if last_reason.is_empty() {
+        "dropped".to_owned()
+    } else {
+        last_reason.to_owned()
+    };
+    warn!(sink = %name, %reason, dropped, generation, "webhook deliveries lost");
+    daemon.emit(EventKind::WebhookFailed {
+        name: name.to_owned(),
+        kind: kind.to_owned(),
+        reason,
+        dropped,
+    });
+}
+
+/// The identity of a sink as started: its configuration and the digest
+/// of its secret, so rotating the secret restarts the sink.
+type Started = (WebhookConfig, [u8; 32]);
+
+fn digest(secret: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    Sha256::digest(secret).into()
+}
+
+/// A TOML problem without its snippet: the file may hold an address
+/// whose query carries a credential, and a log is not the place for it.
+fn redacted(error: &toml::de::Error) -> String {
+    match error.span() {
+        Some(span) => format!(
+            "agentd.toml is not valid TOML at bytes {}..{}",
+            span.start, span.end
+        ),
+        None => "agentd.toml is not valid TOML".to_owned(),
     }
 }
 
 impl Daemon {
     /// Start, restart or stop the sinks from `agentd.toml`. Called at
-    /// start and every few seconds: an unchanged configuration does
-    /// nothing; a changed one stops every running sink and starts anew
-    /// under the next generation; an unreadable one keeps the last good
-    /// sinks running and says so once.
+    /// start and every few seconds: an unchanged configuration and
+    /// secrets do nothing; a change to either stops every running sink
+    /// and starts anew under the next generation; an unreadable file or
+    /// secret keeps the last good sinks running and says so once.
     pub async fn reload_webhooks(self: &Arc<Self>) {
         use agentdocker_core::config::FILE_NAME;
         let path = self.home.join(FILE_NAME);
-        let read = tokio::task::spawn_blocking({
-            let path = path.clone();
-            move || -> Result<Vec<WebhookConfig>, String> {
+        // Everything that touches the disk happens off the runtime: the
+        // file, and every secret through a verified handle.
+        let read = tokio::task::spawn_blocking(
+            move || -> Result<Vec<(WebhookConfig, Vec<u8>)>, String> {
                 let text = match std::fs::read_to_string(&path) {
                     Ok(text) => text,
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -464,14 +571,20 @@ impl Daemon {
                     }
                 };
                 let config: DaemonConfig =
-                    toml::from_str(&text).map_err(|error| error.to_string())?;
-                config.webhooks().map(<[WebhookConfig]>::to_vec)
-            }
-        })
+                    toml::from_str(&text).map_err(|error| redacted(&error))?;
+                let sinks = config.webhooks()?;
+                sinks
+                    .iter()
+                    .map(|sink| {
+                        read_secret(&sink.secret_file)
+                            .map(|secret| (sink.clone(), secret))
+                            .map_err(|reason| format!("webhook {}: {reason}", sink.name))
+                    })
+                    .collect()
+            },
+        )
         .await
         .unwrap_or_else(|_| Err("configuration read did not complete".into()));
-        // An unreadable file keeps the last good sinks running and is
-        // said once per distinct notice.
         let wanted = match read {
             Ok(wanted) => wanted,
             Err(notice) => {
@@ -479,17 +592,8 @@ impl Daemon {
                 return;
             }
         };
-        // Everything the sinks need before any of them starts, so a
-        // half-readable set never runs half.
         let mut prepared = Vec::new();
-        for sink in &wanted {
-            let secret = match read_secret(&sink.secret_file) {
-                Ok(secret) => secret,
-                Err(reason) => {
-                    self.config_notice(format!("webhook {}: {reason}", sink.name));
-                    return;
-                }
-            };
+        for (sink, secret) in wanted {
             let project = match &sink.project {
                 Some(selector) => match self.resolve_project(selector).await {
                     Ok(id) => Some(id),
@@ -503,36 +607,49 @@ impl Daemon {
                 },
                 None => None,
             };
-            prepared.push((sink.clone(), project, secret));
+            prepared.push((sink, project, secret));
         }
+        let started: Vec<Started> = prepared
+            .iter()
+            .map(|(sink, _, secret)| (sink.clone(), digest(secret)))
+            .collect();
         let mut sinks = lock_sinks(self);
-        if sinks.generation > 0 && sinks.started_from == wanted {
+        if sinks.generation > 0 && sinks.started_from == started {
             return;
         }
         sinks.stop();
         sinks.generation += 1;
         let generation = sinks.generation;
-        sinks.started_from = wanted.clone();
+        sinks.started_from = started;
         for (sink, project, secret) in prepared {
             let events = self.subscribe_events();
+            let queue = Arc::new(std::sync::Mutex::new(Queue::default()));
+            let wake = Arc::new(tokio::sync::Notify::new());
             info!(sink = %sink.name, generation, events = sink.events.len(), "webhook sink started");
-            sinks.workers.push(tokio::spawn(run(
+            sinks.workers.push(tokio::spawn(intake(
+                sink.clone(),
+                project,
+                queue.clone(),
+                wake.clone(),
+                events,
+            )));
+            sinks.workers.push(tokio::spawn(deliver(
                 self.clone(),
                 generation,
                 sink,
-                project,
                 secret,
-                events,
+                queue,
+                wake,
             )));
         }
-        if wanted.is_empty() && generation > 1 {
+        if sinks.started_from.is_empty() && generation > 1 {
             info!(generation, "webhook sinks stopped: none configured");
         }
     }
 
     /// How many sinks run, for tests and status.
     pub fn webhook_sinks(&self) -> usize {
-        lock_sinks(self).workers.len()
+        lock_sinks(self).started_from.len()
     }
 }
 
@@ -566,6 +683,14 @@ mod tests {
             for status in answers {
                 let Ok((stream, _)) = listener.accept() else {
                     return;
+                };
+                // A status of 0 is a receiver that stalls for two
+                // seconds before answering 200: pressure on the queue.
+                let status = if status == 0 {
+                    std::thread::sleep(Duration::from_secs(2));
+                    200
+                } else {
+                    status
                 };
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -632,7 +757,7 @@ mod tests {
             },
             chrono::Utc::now(),
         );
-        let projection = project(&event).unwrap();
+        let projection = project_event(&event).unwrap();
         assert_eq!(projection.event, "message_sent");
         assert!(
             projection.text.starts_with("message sent "),
@@ -651,7 +776,7 @@ mod tests {
             },
             chrono::Utc::now(),
         );
-        assert!(project(&own).is_none());
+        assert!(project_event(&own).is_none());
         let a = signature(b"secret", "1", b"body");
         assert!(a.starts_with("sha256=") && a.len() == 7 + 64);
         assert_ne!(a, signature(b"secret", "2", b"body"));
@@ -683,11 +808,77 @@ mod tests {
         std::fs::write(&path, "short").unwrap();
         assert!(read_secret(&path).unwrap_err().contains("fewer"));
         assert!(read_secret(&dir.path().join("missing")).is_err());
-        assert!(
-            read_secret(dir.path())
-                .unwrap_err()
-                .contains("regular file")
+        assert!(read_secret(dir.path()).is_err(), "a directory");
+        // Replaced by a symlink to a real secret: refused, not followed.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let real = secret_file(&elsewhere);
+        let link = dir.path().join("link.secret");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            assert!(read_secret(&link).is_err(), "a symlink");
+        }
+        // Grown past what a secret can be: refused.
+        std::fs::write(&path, "x".repeat(5000)).unwrap();
+        assert!(read_secret(&path).unwrap_err().contains("too large"));
+    }
+
+    /// A project-scoped sink posts only that project's events: another
+    /// project's are not its, and an event that names no project is not
+    /// its either.
+    #[test]
+    fn a_scoped_sink_takes_only_its_projects_events() {
+        let sink = WebhookConfig {
+            name: "alpha".into(),
+            url: "https://example.com/hook".into(),
+            secret_file: "/tmp/x".into(),
+            events: vec!["journal_pruned".into(), "policy_updated".into()],
+            project: Some("alpha".into()),
+            format: WebhookFormat::Json,
+        };
+        let alpha = ProjectId::from("alpha");
+        let of = |project: &str| {
+            Event::new(
+                EventKind::JournalPruned {
+                    project: ProjectId::from(project),
+                    before_seq: 1,
+                    removed: 0,
+                    reason: "request".into(),
+                },
+                chrono::Utc::now(),
+            )
+        };
+        assert!(wanted(&sink, Some(&alpha), &of("alpha")));
+        assert!(!wanted(&sink, Some(&alpha), &of("beta")));
+        let projectless = Event::new(
+            EventKind::PolicyUpdated {
+                project: None,
+                rules: 0,
+                quotas: 0,
+                error: None,
+                using_last_good: false,
+            },
+            chrono::Utc::now(),
         );
+        assert!(
+            !wanted(&sink, Some(&alpha), &projectless),
+            "no project: not this one's"
+        );
+        assert!(
+            wanted(&sink, None, &projectless),
+            "an unscoped sink takes it"
+        );
+        let other_kind = Event::new(
+            EventKind::WebhookFailed {
+                name: "x".into(),
+                kind: "y".into(),
+                reason: "z".into(),
+                dropped: 1,
+            },
+            chrono::Utc::now(),
+        );
+        assert!(!wanted(&sink, None, &other_kind));
     }
 
     /// A configured sink posts only the kinds it asked for, signed, with
@@ -789,5 +980,78 @@ mod tests {
         std::fs::remove_file(home.join("agentd.toml")).unwrap();
         daemon.reload_webhooks().await;
         assert_eq!(daemon.webhook_sinks(), 0);
+    }
+
+    /// A receiver that stalls does not stall the intake: the queue takes
+    /// events up to its room, drops the oldest past it and counts them,
+    /// and once deliveries succeed again what was lost is still said.
+    /// Rotating the secret restarts the sink under a new generation.
+    #[tokio::test]
+    async fn a_stalled_receiver_costs_bounded_room_and_the_loss_is_said_after_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().to_path_buf();
+        let daemon = Arc::new(Daemon::open(home.clone(), home.join("sock")).unwrap());
+        let secret = secret_file(&home);
+        // The first answer stalls; then enough 200s for the queue's room.
+        let mut answers = vec![0];
+        answers.extend(std::iter::repeat_n(200, QUEUE_EVENTS + 2));
+        let (url, seen) = receiver(answers);
+        let config = format!(
+            "[[webhooks]]\nname = \"local\"\nurl = \"{url}\"\nsecret_file = \"{}\"\nevents = [\"policy_updated\"]\n",
+            secret.display()
+        );
+        std::fs::write(home.join("agentd.toml"), &config).unwrap();
+        daemon.reload_webhooks().await;
+        let mut own = daemon.subscribe_events();
+        let burst = QUEUE_EVENTS + 40;
+        for _ in 0..burst {
+            daemon.emit(EventKind::PolicyUpdated {
+                project: None,
+                rules: 0,
+                quotas: 0,
+                error: None,
+                using_last_good: false,
+            });
+        }
+        // Everything the receiver takes arrives: the first (stalled) plus
+        // what the queue held, never the whole burst.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while seen.lock().unwrap().len() < QUEUE_EVENTS + 1 && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let delivered = seen.lock().unwrap().len();
+        assert!(
+            delivered >= QUEUE_EVENTS + 1 && delivered < burst,
+            "{delivered} delivered of {burst}"
+        );
+        let mut lost = None;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        while lost.is_none() && tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(Duration::from_secs(5), own.recv()).await {
+                Ok(Ok(Event {
+                    kind:
+                        EventKind::WebhookFailed {
+                            reason, dropped, ..
+                        },
+                    ..
+                })) => lost = Some((reason, dropped)),
+                Ok(Ok(_)) => {}
+                _ => break,
+            }
+        }
+        let (reason, dropped) = lost.expect("the loss is said after recovery");
+        assert_eq!(reason, "dropped");
+        assert!(dropped >= (burst - QUEUE_EVENTS - 1) as u64, "{dropped}");
+        // A rotated secret restarts the sink even with the file unchanged.
+        std::fs::write(&secret, "fedcba9876543210fedcba9876543210\n").unwrap();
+        daemon.reload_webhooks().await;
+        assert_eq!(
+            lock_sinks(&daemon).generation,
+            2,
+            "rotation is a new generation"
+        );
+        daemon.reload_webhooks().await;
+        assert_eq!(lock_sinks(&daemon).generation, 2, "unchanged: no restart");
     }
 }
