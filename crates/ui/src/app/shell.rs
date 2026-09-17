@@ -60,6 +60,8 @@ pub(super) struct State {
     pub needs_you_expanded: bool,
     pub pending_answer_reveal: Option<MessageId>,
     pub reveal_next_question: bool,
+    /// An archived message now on view that the next tick scrolls to.
+    pub reveal_archived_next: Option<MessageId>,
     pub channel_drafts: BTreeMap<String, ChannelDraft>,
     pub channel_target: Option<String>,
     pub generation: u64,
@@ -484,6 +486,10 @@ impl App {
         ) {
             self.shell.pending_notification = None;
             self.shell.notification_message = None;
+            // The search for a notification's archived message, and the
+            // scroll to it, are its conversation's: the person moving on
+            // ends them, so a late page moves nothing.
+            self.cancel_reveal();
         }
         if matches!(
             &message,
@@ -506,6 +512,16 @@ impl App {
                 if let Some(id) = self.take_answer_reveal() {
                     tasks.push(crate::controls::reveal(format!(
                         "notification-question-{id}"
+                    )));
+                }
+                // The scroll is for the Messages screen the page arrived
+                // on; anywhere else the row is not on view.
+                if let Some(id) = self.shell.reveal_archived_next.take()
+                    && self.screen == Screen::Questions
+                    && self.shell.conversation.is_some()
+                {
+                    tasks.push(crate::controls::reveal(format!(
+                        "notification-message-{id}"
                     )));
                 }
                 self.schedule_update_check(chrono::Utc::now().timestamp());
@@ -716,6 +732,7 @@ impl App {
                 if self.shell.conversation.as_deref() != Some(id.as_str()) {
                     self.shell.thread = None;
                     self.thread = None;
+                    self.cancel_reveal();
                 }
                 self.shell.conversation = Some(id.clone());
                 self.shell.inbox_open = true;
@@ -1819,6 +1836,7 @@ impl App {
         self.shell.pending_notification = None;
         self.shell.notification_message = Some(target.message.clone());
         self.shell.message_detail = Some(target.message.clone());
+        self.cancel_reveal();
         self.shell.selected = Some(self.canonical_agent(target.agent.as_str()).to_owned());
         self.shell.more = false;
         self.confirm_stop = None;
@@ -1852,6 +1870,22 @@ impl App {
                 self.shell.inbox_open = true;
                 self.send(Cmd::History(conversation, self.history_epoch));
             }
+        }
+        // On the Messages screen the message is a row of the archive, not
+        // of the inbox: it is scrolled to once its page is here, paging
+        // back for it if the conversation was already open at its newest
+        // — a click on a notification must always show its message.
+        if self.has_conversations()
+            && self.screen == Screen::Questions
+            && let Some(conversation) = self.shell.conversation.clone()
+        {
+            self.reveal_archived = Some(super::Seek {
+                conversation: conversation.clone(),
+                message: target.message.clone(),
+                pages: 0,
+                before: None,
+            });
+            self.seek_archived(&conversation);
         }
         // Revealing the card expands its retained text and scrolls to it. Existing answer/channel
         // drafts and their keyboard focus are not submitted or rewritten.

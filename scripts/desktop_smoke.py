@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -50,22 +51,47 @@ def bounded_output(value):
 
 
 def check_no_tcp(processes, deadline, capture=None):
-    if not shutil.which("lsof"):
+    linux = sys.platform.startswith("linux")
+    if not linux and not shutil.which("lsof"):
         raise RuntimeError("lsof is required to check the native app's transport")
     for index, process in enumerate(processes):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("native fixture transport observation timed out")
-        observation = {"process_index": index, "pid": process.pid}
+        method = "linux-proc" if linux else "lsof"
+        observation = {"process_index": index, "pid": process.pid, "method": method}
+        command = ([sys.executable, str(Path(__file__).with_name("proc_tcp.py")), str(process.pid)]
+                   if linux else ["lsof", "-nP", "-a", "-p", str(process.pid), "-iTCP"])
+        tcp_reported = False
         try:
-            result = subprocess.run(["lsof", "-nP", "-a", "-p", str(process.pid), "-iTCP"], capture_output=True, text=True, errors="replace", timeout=min(5, remaining))
+            result = subprocess.run(command, capture_output=True, text=True, errors="replace", timeout=min(5, remaining))
         except subprocess.TimeoutExpired as error:
-            observation.update(reason="lsof timed out", returncode=None,
+            observation.update(reason=method + " timed out", returncode=None,
                                stdout=bounded_output(error.stdout), stderr=bounded_output(error.stderr))
         else:
-            if result.returncode == 1 and not result.stdout and not result.stderr:
-                continue
-            observation.update(reason="TCP socket reported" if result.returncode == 0 and result.stdout else "transport could not be checked",
+            if linux:
+                try:
+                    report = json.loads(result.stdout)
+                except (ValueError, TypeError):
+                    report = None
+                if (result.returncode == 0 and not result.stderr and isinstance(report, dict)
+                        and type(report.get("tcp")) is bool
+                        and type(report.get("socket_count")) is int
+                        and 0 <= report["socket_count"] <= 4096):
+                    if not report["tcp"]:
+                        continue
+                    tcp_reported = True
+                    result = subprocess.CompletedProcess(command, 0, "TCP socket observed by Linux proc tables", "")
+                elif process.poll() is not None:
+                    # A child can finish between polling and opening its proc
+                    # directory. Its exit status is checked by the caller; no
+                    # post-exit sample is claimed as a live observation.
+                    continue
+            else:
+                if result.returncode == 1 and not result.stdout and not result.stderr:
+                    continue
+                tcp_reported = result.returncode == 0 and bool(result.stdout)
+            observation.update(reason="TCP socket reported" if tcp_reported else "transport could not be checked",
                                returncode=result.returncode, stdout=bounded_output(result.stdout), stderr=bounded_output(result.stderr))
         observation["process_status"] = process.poll()
         if capture is not None:
@@ -109,7 +135,7 @@ def wait_window(daemon, window, capture=None, timeout=WINDOW_DEADLINE + HARNESS_
                         pass
                 raise RuntimeError(f"graphical acceptance failed: {reason}")
             return {"samples": samples, "elapsed_seconds": time.monotonic() - started,
-                    "method": "lsof polling through window exit; short-lived sockets between samples may be missed"}
+                    "method": ("Linux proc socket-inode polling" if sys.platform.startswith("linux") else "lsof polling") + " through window exit; short-lived sockets between samples may be missed"}
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("native window did not exit before the graphical acceptance deadline")
