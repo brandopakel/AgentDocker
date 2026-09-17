@@ -406,6 +406,18 @@ pub enum Message {
     PaneResized(super::panes::Grid, iced::widget::pane_grid::ResizeEvent),
     /// Every conversation the person owes a read is read through its head.
     MarkAllRead,
+    /// The board: a card being filed, filed to Backlog or straight to
+    /// Ready, moved, opened to read what done means, handed to an agent,
+    /// or taken off the board.
+    TaskTitle(String),
+    TaskAcceptance(String),
+    TaskFile(agentdocker_core::Column),
+    TaskMove(agentdocker_core::TaskId, agentdocker_core::Column),
+    TaskOpen(agentdocker_core::TaskId),
+    TaskAssign(agentdocker_core::TaskId, Option<agentdocker_core::AgentId>),
+    TaskArchive(agentdocker_core::TaskId),
+    /// The next page of the board.
+    TasksMore,
     /// Tell the selected project's agents to hold: open the reason, or
     /// send it, or lift the pause.
     PauseStart(String),
@@ -772,6 +784,9 @@ impl App {
                 self.shell.notification_message = None;
                 self.screen = screen;
                 self.shell.more = false;
+                if screen == Screen::Board {
+                    self.request_tasks();
+                }
                 if screen == Screen::Runtimes {
                     self.send(Cmd::Runtimes);
                 }
@@ -1097,6 +1112,53 @@ impl App {
                     self.send(cmd);
                 }
             }
+            Message::TaskTitle(title) => {
+                if let Some(draft) = self.task_draft_mut()
+                    && !draft.sending()
+                {
+                    draft.title = title;
+                    draft.error = None;
+                }
+            }
+            Message::TaskAcceptance(acceptance) => {
+                if let Some(draft) = self.task_draft_mut()
+                    && !draft.sending()
+                {
+                    draft.acceptance = acceptance;
+                    draft.error = None;
+                }
+            }
+            Message::TaskFile(column) => {
+                if let Some(project) = self.selected_project_root()
+                    && let Some(draft) = self.task_drafts.get_mut(&project)
+                    && !draft.sending()
+                    && !draft.title.trim().is_empty()
+                {
+                    self.task_requests += 1;
+                    let request = self.task_requests;
+                    draft.sending = Some(request);
+                    draft.error = None;
+                    let cmd = Cmd::TaskCreate {
+                        project,
+                        request,
+                        title: draft.title.trim().to_owned(),
+                        acceptance: draft.acceptance.trim().to_owned(),
+                        column,
+                    };
+                    self.send(cmd);
+                }
+            }
+            Message::TaskMove(task, column) => self.send(Cmd::TaskMove { task, column }),
+            Message::TaskOpen(task) => {
+                self.task_open = if self.task_open.as_ref() == Some(&task) {
+                    None
+                } else {
+                    Some(task)
+                };
+            }
+            Message::TaskAssign(task, assignee) => self.send(Cmd::TaskAssign { task, assignee }),
+            Message::TaskArchive(task) => self.send(Cmd::TaskArchive(task)),
+            Message::TasksMore => self.request_more_tasks(),
             Message::MarkAllRead => {
                 if self.connected.is_ok() {
                     let heads: Vec<(String, u64)> = self
@@ -1921,6 +1983,14 @@ impl App {
                     self.request_channels(entry.project.id().to_string());
                 }
             }
+            // Another project's board, and a card open on the old one
+            // is not open on this.
+            self.tasks = None;
+            self.task_open = None;
+            self.board_asks.clear();
+            if self.screen == Screen::Board {
+                self.request_tasks();
+            }
         }
     }
 
@@ -2175,6 +2245,338 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    /// The board asks sent so far, newest last: `(request, offset, limit)`.
+    fn board_asks(requests: &CommandReceiver) -> Vec<(u64, usize, usize)> {
+        requests
+            .try_iter()
+            .filter_map(|c| match c {
+                Cmd::Tasks {
+                    request,
+                    offset,
+                    limit,
+                    ..
+                } => Some((request, offset, limit)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A card's draft is the project's: text typed for one board waits
+    /// while another is on view, a move or hand of some other card does
+    /// not clear it, a late reply to an earlier filing does not take
+    /// newer text, a filing that cannot be queued says so instead of
+    /// staying "Filing…", and a board that cannot be read stays as last
+    /// read.
+    #[test]
+    fn a_card_draft_survives_other_board_actions_late_replies_and_refused_queues() {
+        let (mut app, requests, messages) = app();
+        app.connected = Ok(());
+        let dir = tempfile::tempdir().unwrap();
+        let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
+        let beta = agentdocker_core::ProjectRef::directory(dir.path().join("beta"));
+        app.shell.catalog.remember(alpha.clone(), true);
+        app.shell.catalog.remember(beta.clone(), true);
+        app.shell.catalog.selected = Some(alpha.root.clone());
+        let alpha_root = alpha.root.display().to_string();
+        let beta_root = beta.root.display().to_string();
+        let card = |id: &str, column: agentdocker_core::Column| agentdocker_core::Task {
+            id: agentdocker_core::TaskId::from(id.to_owned()),
+            project: alpha.id(),
+            title: format!("card {id}"),
+            acceptance: String::new(),
+            column,
+            assignee: None,
+            created_by: "user".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            archived_at: None,
+        };
+        app.request_tasks();
+        let (ask, _, _) = board_asks(&requests).pop().expect("asked");
+        messages
+            .send(Msg::Tasks(
+                alpha_root.clone(),
+                ask,
+                Ok((
+                    vec![card("aaaaaaaaaaaa", agentdocker_core::Column::Ready)],
+                    false,
+                )),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.tasks.as_ref().map(|b| b.cards.len()), Some(1));
+
+        let _ = app.update(Message::TaskTitle("Port the parser".into()));
+        let _ = app.update(Message::TaskAcceptance("tests pass".into()));
+        // Another card is moved and the reply comes: the draft stays.
+        let _ = app.update(Message::TaskMove(
+            agentdocker_core::TaskId::from("aaaaaaaaaaaa".to_owned()),
+            agentdocker_core::Column::Review,
+        ));
+        messages.send(Msg::TaskChanged(Ok(()))).unwrap();
+        app.drain();
+        assert_eq!(
+            app.task_drafts[&alpha_root].title, "Port the parser",
+            "a move of some other card is not a filing"
+        );
+        // A board that cannot be read is said so, and the last board stays.
+        app.request_tasks();
+        let (ask, _, _) = board_asks(&requests).pop().expect("asked");
+        messages
+            .send(Msg::Tasks(
+                alpha_root.clone(),
+                ask,
+                Err("storage failed".into()),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.tasks.as_ref().map(|b| b.cards.len()), Some(1));
+        assert!(app.status.contains("storage failed"), "{}", app.status);
+
+        // Filed: typing waits; a reply to an *earlier* filing changes
+        // nothing; the reply to this one clears the text.
+        let _ = app.update(Message::TaskFile(agentdocker_core::Column::Ready));
+        let request = app.task_drafts[&alpha_root].sending.expect("filing");
+        assert!(requests.try_iter().any(|c| matches!(
+            c,
+            Cmd::TaskCreate { ref project, request: r, .. } if *project == alpha_root && r == request
+        )));
+        let _ = app.update(Message::TaskTitle("typed while filing".into()));
+        assert_eq!(app.task_drafts[&alpha_root].title, "Port the parser");
+        messages
+            .send(Msg::TaskCreated(alpha_root.clone(), request - 1, Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.task_drafts[&alpha_root].sending,
+            Some(request),
+            "a late reply to an earlier filing is not this one's"
+        );
+        messages
+            .send(Msg::TaskCreated(alpha_root.clone(), request, Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.task_drafts[&alpha_root].title, "");
+        assert!(app.task_drafts[&alpha_root].sending.is_none());
+
+        // Beta's draft is beta's: alpha's text waits while beta is on view.
+        let _ = app.update(Message::TaskTitle("alpha again".into()));
+        app.shell.catalog.selected = Some(beta.root.clone());
+        let _ = app.update(Message::TaskTitle("beta's card".into()));
+        assert_eq!(app.task_drafts[&alpha_root].title, "alpha again");
+        assert_eq!(app.task_drafts[&beta_root].title, "beta's card");
+
+        // A filing the command queue refuses is told so at once.
+        let _ = app.update(Message::TaskFile(agentdocker_core::Column::Backlog));
+        let request = app.task_drafts[&beta_root].sending.expect("filing");
+        app.rejected(
+            Cmd::TaskCreate {
+                project: beta_root.clone(),
+                request,
+                title: "beta's card".into(),
+                acceptance: String::new(),
+                column: agentdocker_core::Column::Backlog,
+            },
+            "the command queue is full",
+        );
+        let draft = &app.task_drafts[&beta_root];
+        assert!(draft.sending.is_none(), "not left filing for good");
+        assert!(draft.error.is_some());
+        assert_eq!(draft.title, "beta's card", "the text is kept to retry");
+    }
+
+    /// The board goes on past a page: Show more asks for the next page
+    /// where the board ends and appends it only when that very ask is
+    /// answered; a reply to no standing ask moves nothing; a refresh
+    /// asks for as many cards as are on view and supersedes a page still
+    /// on its way, whichever order the replies come in, so the board
+    /// never folds back; choosing another project and back forgets the
+    /// old asks; the window keeps five pages and then asks for no more.
+    #[test]
+    fn the_board_shows_more_a_page_at_a_time_and_stays_expanded_through_a_refresh() {
+        let (mut app, requests, messages) = app();
+        app.connected = Ok(());
+        let dir = tempfile::tempdir().unwrap();
+        let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
+        let beta = agentdocker_core::ProjectRef::directory(dir.path().join("beta"));
+        app.shell.catalog.remember(alpha.clone(), true);
+        app.shell.catalog.remember(beta.clone(), true);
+        app.shell.catalog.selected = Some(alpha.root.clone());
+        let root = alpha.root.display().to_string();
+        let page = |from: usize, count: usize| {
+            (from..from + count)
+                .map(|i| agentdocker_core::Task {
+                    id: agentdocker_core::TaskId::from(format!("{i:012x}")),
+                    project: alpha.id(),
+                    title: format!("card {i}"),
+                    acceptance: String::new(),
+                    column: agentdocker_core::Column::Backlog,
+                    assignee: None,
+                    created_by: "user".into(),
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    archived_at: None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let limit = agentdocker_core::protocol::TASKS_LIMIT;
+        let cards = |app: &App| app.tasks.as_ref().map_or(0, |b| b.cards.len());
+
+        // A reply to no ask moves nothing.
+        messages
+            .send(Msg::Tasks(root.clone(), 999, Ok((page(0, 3), false))))
+            .unwrap();
+        app.drain();
+        assert!(app.tasks.is_none());
+
+        app.request_tasks();
+        let (first, _, _) = board_asks(&requests).pop().expect("asked");
+        messages
+            .send(Msg::Tasks(root.clone(), first, Ok((page(0, limit), true))))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), limit);
+        let _ = app.update(Message::TasksMore);
+        assert!(app.tasks.as_ref().unwrap().loading_more());
+        let (more_ask, offset, asked) = board_asks(&requests).pop().expect("asked for more");
+        assert_eq!((offset, asked), (limit, limit));
+        // A second click while a page is on its way asks for nothing;
+        // a reply to an ask already answered is not appended.
+        let _ = app.update(Message::TasksMore);
+        assert!(board_asks(&requests).is_empty());
+        messages
+            .send(Msg::Tasks(root.clone(), first, Ok((page(7, 3), true))))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), limit);
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                more_ask,
+                Ok((page(limit, limit), true)),
+            ))
+            .unwrap();
+        app.drain();
+        let board = app.tasks.as_ref().unwrap();
+        assert_eq!(
+            (board.cards.len(), board.more, board.loading_more()),
+            (2 * limit, true, false)
+        );
+
+        // Order one: a refresh is asked while a page is on its way. The
+        // refresh supersedes the page — whichever reply lands first the
+        // board is what the refresh says, and never folds back.
+        let _ = app.update(Message::TasksMore);
+        let (superseded, _, _) = board_asks(&requests).pop().unwrap();
+        app.request_tasks();
+        let (refresh, _, asked) = board_asks(&requests).pop().unwrap();
+        assert_eq!(asked, 2 * limit, "a refresh asks for what is on view");
+        assert!(!app.tasks.as_ref().unwrap().loading_more(), "superseded");
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                superseded,
+                Ok((page(2 * limit, limit), true)),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), 2 * limit, "a superseded page is not appended");
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                refresh,
+                Ok((page(0, 2 * limit), true)),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), 2 * limit);
+
+        // Order two: while a refresh is on its way, Show more asks for
+        // nothing — a page appended now would be to a board the refresh
+        // is about to replace — and works again once the refresh lands.
+        app.request_tasks();
+        let (refresh, _, _) = board_asks(&requests).pop().unwrap();
+        let _ = app.update(Message::TasksMore);
+        assert!(
+            board_asks(&requests).is_empty(),
+            "deferred behind the refresh"
+        );
+        assert!(!app.tasks.as_ref().unwrap().loading_more());
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                refresh,
+                Ok((page(0, 2 * limit), true)),
+            ))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::TasksMore);
+        let (more_ask, _, _) = board_asks(&requests).pop().unwrap();
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                more_ask,
+                Ok((page(2 * limit, limit), true)),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), 3 * limit);
+
+        // Two refreshes: the newer supersedes the older, so the older's
+        // reply — even landing last — cannot overwrite the newer read.
+        app.request_tasks();
+        let (older, _, _) = board_asks(&requests).pop().unwrap();
+        app.request_tasks();
+        let (newer, _, _) = board_asks(&requests).pop().unwrap();
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                newer,
+                Ok((page(0, 3 * limit), true)),
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Tasks(root.clone(), older, Ok((page(0, limit), true))))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), 3 * limit, "the older refresh is ignored");
+
+        // Another project and back: the old asks are forgotten, so a
+        // late page for alpha moves nothing, and alpha is read anew.
+        let _ = app.update(Message::TasksMore);
+        let (late, _, _) = board_asks(&requests).pop().unwrap();
+        let _ = app.update(Message::SelectProject(beta.root.clone()));
+        assert!(app.tasks.is_none());
+        let _ = app.update(Message::SelectProject(alpha.root.clone()));
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                late,
+                Ok((page(3 * limit, limit), true)),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(
+            app.tasks.is_none(),
+            "a page for an ask made before the switch"
+        );
+
+        // Filled to what the window keeps: no more is asked for.
+        app.request_tasks();
+        let (fill, _, _) = board_asks(&requests).pop().unwrap();
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                fill,
+                Ok((page(0, BOARD_KEEP), true)),
+            ))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::TasksMore);
+        assert!(board_asks(&requests).is_empty());
+        assert_eq!(cards(&app), BOARD_KEEP);
     }
 
     /// The menu under a project row renames the entry here, pins it, or
