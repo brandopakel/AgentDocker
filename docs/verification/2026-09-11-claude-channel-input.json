@@ -345,5 +345,96 @@
     "Physical Notification Center clicks, signing/notarization and installed launcher acceptance",
     "Full platform and sustained-use acceptance"
   ],
-  "evidence_policy": "Only sanitized fixture IDs, results, source and hashes are committed. Raw provider transcripts, configuration snapshots, authentication and GUI frames remain private."
+  "evidence_policy": "Only sanitized fixture IDs, results, source and hashes are committed. Raw provider transcripts, configuration snapshots, authentication and GUI frames remain private.",
+  "session_reconnect_review_2026_09_17": {
+    "source_commit": "b5ea76cff04ba67564d78f4d452a9e6d16778c58",
+    "build": {
+      "format": 1,
+      "source_commit": "b5ea76cff04ba67564d78f4d452a9e6d16778c58",
+      "source_tree": "e27d9ebf39477f540a943c9460119766afd340a7",
+      "source_input_sha256": "e1d933ad159438a18e694842e05f6ff28ceb21c35444b702d79e38180930911e",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "60720e460cd467846fdde43eaa235f9145f20ac8812684156ac6fdb45db50a58",
+        "agentd": "b8266a5200e4350c9335e63f50e4de870a49d50efedcccb37a71c439f22dad00",
+        "agentdocker-ui": "edfdbe4dd7392bac80c218ff633b47ac22b51b0e6c3f0e3f7684108fe5cc9fcb"
+      }
+    },
+    "before": {
+      "result": "failed",
+      "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+      "steps": [
+        "idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption",
+        "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+        "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+        "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+        "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+        "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+        "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+        "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks"
+      ],
+      "binary_sha256": {
+        "agentd": "f8a343702b7089d50d852e5509364c2f6ddb7f679bdfbd1837bf128aaf39367b",
+        "agentdocker": "3db6bc426e897f6da81fdc0e7b8a69543e178eb04e71c6ccc3952fc3c4ac6eb6"
+      },
+      "driver_sha256": {
+        "claude_channel_smoke.py": "1c3d58b2c5f77cbfab6e4e45e7f3a9ee98a483580d49143ac8ef87f937dd0959",
+        "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+        "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+      },
+      "error": "AssertionError: second MCP remained running after ID fold; duplicate channel admitted",
+      "failed_driver_line": 313,
+      "remaining_owned_processes": 0,
+      "duration_seconds": 41.54679766698973
+    },
+    "before_artifacts": "/private/tmp/agentdocker-reconnect-review-before2-2026-09-16",
+    "after": {
+      "result": "passed",
+      "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+      "steps": [
+        "idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption",
+        "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+        "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+        "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+        "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+        "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+        "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+        "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+        "pre-initialization session fold preserved one channel owner across different agent IDs and delivered the older queue through its alias",
+        "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+      ],
+      "binary_sha256": {
+        "agentd": "b8266a5200e4350c9335e63f50e4de870a49d50efedcccb37a71c439f22dad00",
+        "agentdocker": "60720e460cd467846fdde43eaa235f9145f20ac8812684156ac6fdb45db50a58"
+      },
+      "driver_sha256": {
+        "claude_channel_smoke.py": "1c3d58b2c5f77cbfab6e4e45e7f3a9ee98a483580d49143ac8ef87f937dd0959",
+        "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+        "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+      },
+      "remaining_owned_processes": 0,
+      "duration_seconds": 38.66051545899245
+    },
+    "after_artifacts": "/private/tmp/agentdocker-reconnect-review-after1-2026-09-17",
+    "validation": {
+      "rust_tests": 1094,
+      "skipped": 7,
+      "python_checks": 84,
+      "format_strict_clippy_doctests_packaging_release": "passed",
+      "log": "/private/tmp/agentdocker-reconnect-review-gate1-2026-09-17.log",
+      "junit": "/private/tmp/agentdocker-reconnect-review-gate1-nextest-2026-09-17/junit.xml"
+    },
+    "remaining": [
+      "Final review and CI on integrated head.",
+      "Actual Claude model/session relaunch and a peer-only idle response; transport fixture is not Claude.",
+      "Existing hooks-only provider was not restarted and no production queue was changed."
+    ]
+  }
 }

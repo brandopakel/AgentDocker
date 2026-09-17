@@ -159,8 +159,14 @@ The reconnect review found a channel ownership race if SessionStart folds a
 registration after MCP acquires its agent-ID lock. Source now holds an additional
 provider-process-generation lock, and hooks check it across an ID change. An
 already initialized receiver stays separate to preserve its offered message and
-the old backlog. A real daemon/MCP transport regression is added; verification
-is pending. Actual existing-Claude startup/idle-wake acceptance remains open.
+the old backlog. Integrated `b5ea76c` passed the full 1,094-Rust/84-Python
+gate (seven skipped), formatting, strict lint, doctests, packaging and release.
+The actual daemon/MCP transport trial passed both regression paths and eight
+existing channel cases in 38.66 seconds, with zero surviving processes. The old
+binary admitted a duplicate channel and failed the same driver as expected.
+[Evidence](verification/2026-09-11-claude-channel-input.json) retains both results.
+Final review/CI and actual existing-Claude startup/idle-wake acceptance remain
+open; the fixture speaks MCP and does not prove a model was woken.
 The next combined review found that a different-active-turn steering refusal was
 handled like a just-finished turn. Source now distinguishes them and pauses on
 changed ownership, retaining the original receipt and the unsubmitted queue

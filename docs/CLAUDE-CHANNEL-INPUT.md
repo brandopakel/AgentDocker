@@ -246,3 +246,11 @@ canonical ID. Hooks check the process lock too. `claude_channel_smoke.py --resum
 checks this boundary and the initialized-receiver refusal using real daemon/MCP
 processes with fixture provider processes. It does not prove model idle wake or
 actual Claude startup ordering. Verification of this follow-up is pending.
+
+September 17 reconnect review: a provider-generation owner lock supplements the
+agent-ID lock when SessionStart folds an MCP-first registration. A channel that
+has already initialized is not folded behind its offered head. Source `b5ea76c`
+passes the full 1,094-Rust/84-Python gate (seven skipped) and the actual daemon/MCP
+transport regression; the older binary admits a second channel and fails. See
+[existing channel evidence](verification/2026-09-11-claude-channel-input.json).
+Actual Claude relaunch and model idle wake still need separate acceptance.
