@@ -569,21 +569,143 @@ impl Backend for Client {
     }
 }
 
-fn into_result(response: Response) -> Result<Response> {
+/// The daemon's answer as a result: an error answer keeps its code, words
+/// and details as a [`RemoteError`], so the status a command ends with is
+/// the answer's class wherever the answer was read.
+pub fn into_result(response: Response) -> Result<Response> {
     match response {
         Response::Error {
             code,
             message,
             details,
-        } => {
-            let mut text = format!("{message} ({code:?})");
-            if let Some(details) = details {
-                text.push('\n');
-                text.push_str(&serde_json::to_string_pretty(&details)?);
-            }
-            bail!(text)
+        } => Err(RemoteError {
+            code,
+            message,
+            details,
         }
+        .into()),
         other => Ok(other),
+    }
+}
+
+/// The daemon refused or could not do what was asked: its code, its
+/// words and any details, kept whole so the command line can exit by the
+/// code's class and a script can tell one refusal from another.
+#[derive(Clone, Debug)]
+pub struct RemoteError {
+    pub code: agentdocker_core::ErrorCode,
+    pub message: String,
+    pub details: Option<serde_json::Value>,
+}
+
+impl std::fmt::Display for RemoteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({:?})", self.message, self.code)?;
+        if let Some(details) = &self.details
+            && let Ok(text) = serde_json::to_string_pretty(details)
+        {
+            write!(f, "\n{text}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for RemoteError {}
+
+/// The exit status a command ends with, by the class of what went wrong,
+/// so an agent driving the command line can branch without parsing
+/// text: 0 done; 1 something unexpected (an internal error, or a failure
+/// that is not the daemon's answer); 2 a usage error (the argument
+/// parser's own); 3 nothing by that name, or too many; 4 held or taken
+/// by somebody else, including a deadlock; 5 refused — not the caller's
+/// to do, or the project is paused; 6 not now — the daemon, its storage,
+/// an engine or a build is unavailable, busy, handing over, timed out or
+/// cancelled.
+pub const EXIT_UNEXPECTED: i32 = 1;
+pub const EXIT_USAGE: i32 = 2;
+pub const EXIT_NOT_FOUND: i32 = 3;
+pub const EXIT_HELD: i32 = 4;
+pub const EXIT_REFUSED: i32 = 5;
+pub const EXIT_UNAVAILABLE: i32 = 6;
+
+pub fn exit_code(code: &agentdocker_core::ErrorCode) -> i32 {
+    use agentdocker_core::ErrorCode::*;
+    match code {
+        Invalid => EXIT_USAGE,
+        NotFound | Ambiguous => EXIT_NOT_FOUND,
+        Conflict | NameTaken | Deadlock => EXIT_HELD,
+        Forbidden | Paused => EXIT_REFUSED,
+        StorageUnavailable | Unavailable | EngineUnavailable | BuildFailed | Backpressure
+        | Timeout | Cancelled | Transferring | EventHistoryLost => EXIT_UNAVAILABLE,
+        Internal => EXIT_UNEXPECTED,
+    }
+}
+
+/// The exit status for whatever a command ended with: the daemon's
+/// answer by its class, anything else as unexpected.
+pub fn exit_code_for(error: &anyhow::Error) -> i32 {
+    error
+        .downcast_ref::<RemoteError>()
+        .map_or(EXIT_UNEXPECTED, |remote| exit_code(&remote.code))
+}
+
+#[cfg(test)]
+mod exit_tests {
+    use super::*;
+    use agentdocker_core::ErrorCode;
+
+    /// Every answer the daemon can give lands in one class, and only the
+    /// daemon's answers are classed — anything else is unexpected.
+    #[test]
+    fn every_error_code_has_a_class_and_only_remote_errors_are_classed() {
+        let classes = [
+            (ErrorCode::Invalid, EXIT_USAGE),
+            (ErrorCode::NotFound, EXIT_NOT_FOUND),
+            (ErrorCode::Ambiguous, EXIT_NOT_FOUND),
+            (ErrorCode::Conflict, EXIT_HELD),
+            (ErrorCode::NameTaken, EXIT_HELD),
+            (ErrorCode::Deadlock, EXIT_HELD),
+            (ErrorCode::Forbidden, EXIT_REFUSED),
+            (ErrorCode::Paused, EXIT_REFUSED),
+            (ErrorCode::StorageUnavailable, EXIT_UNAVAILABLE),
+            (ErrorCode::Unavailable, EXIT_UNAVAILABLE),
+            (ErrorCode::EngineUnavailable, EXIT_UNAVAILABLE),
+            (ErrorCode::BuildFailed, EXIT_UNAVAILABLE),
+            (ErrorCode::Backpressure, EXIT_UNAVAILABLE),
+            (ErrorCode::Timeout, EXIT_UNAVAILABLE),
+            (ErrorCode::Cancelled, EXIT_UNAVAILABLE),
+            (ErrorCode::Transferring, EXIT_UNAVAILABLE),
+            (ErrorCode::EventHistoryLost, EXIT_UNAVAILABLE),
+            (ErrorCode::Internal, EXIT_UNEXPECTED),
+        ];
+        for (code, status) in classes {
+            assert_eq!(exit_code(&code), status, "{code:?}");
+            let error: anyhow::Error = RemoteError {
+                code,
+                message: "why".into(),
+                details: Some(serde_json::json!({"held_by": "x"})),
+            }
+            .into();
+            assert_eq!(exit_code_for(&error), status);
+            let text = format!("{error:#}");
+            assert!(
+                text.starts_with("why (") && text.contains("held_by"),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            exit_code_for(&anyhow::anyhow!("cannot reach agentd")),
+            EXIT_UNEXPECTED
+        );
+        // A caller's context around the daemon's answer does not hide it.
+        let wrapped: anyhow::Error = anyhow::Error::from(RemoteError {
+            code: ErrorCode::Paused,
+            message: "the project is paused".into(),
+            details: None,
+        })
+        .context("pull as an agent");
+        assert_eq!(exit_code_for(&wrapped), EXIT_REFUSED);
+        assert!(format!("{wrapped:#}").contains("the project is paused (Paused)"));
     }
 }
 
