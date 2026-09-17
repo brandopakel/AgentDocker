@@ -3040,6 +3040,9 @@ mod tests {
         assert_eq!(binding_of(&daemon, &receiver.id), before);
         assert!(is_running(&old_process));
         assert!(daemon.abort_transfer("upgrade test"));
+        // Offer and abort intentionally emitted their two coordinator events.
+        // The rejected upgrade itself must add none after that boundary.
+        let seq = lock(&daemon.state).next_seq;
         lock(&daemon.state)
             .store
             .reject_event_for_test("input_controller_upgraded");
