@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentStatus, Change, Destination, JournalEntry, Lease, MessageId, ProjectId,
+    AgentId, AgentStatus, Change, ChannelId, Destination, JournalEntry, Lease, MessageId, ProjectId,
     ProjectRef, ResourceKey, VcsState,
 };
 
