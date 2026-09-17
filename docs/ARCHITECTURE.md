@@ -1094,7 +1094,22 @@ and accounting context, never transcript text. Reads reject final symlinks and
 special files, cap byte reads (including read-ahead), record size and result count,
 and check a cooperative time deadline between bounded reads. A trailing partial
 record does not advance the offset. Both the open object and current path are
-checked after reading, and the caller can validate again before committing.
+checked after reading, and the caller must validate again before committing.
+
+September 17 Windows CI exposed a same-length, restored-mtime rewrite that
+matched the captured change metadata (PR #167, job `105082608981`). Metadata
+alone therefore cannot establish unchanged content. The follow-up rehashes the
+complete-record prefix before restoring parser state and before returning a
+proposal; `Cursor::validate` repeats that check immediately before commit. Each
+rehash is limited to 16 MiB and a cooperative one-second deadline, with byte
+counts reported separately as `Batch::validation_bytes_read` (at most 32 MiB
+across the two checks). Exhaustion returns `ValidationIncomplete`, without a
+new cursor or coverage claim. Larger-prefix incremental validation remains
+open; a caller must not silently trust metadata to bypass this refusal. These
+are bounded observations, not a filesystem snapshot or a lock against writes
+after validation. The original failed Windows log is retained at
+`/private/tmp/agentdocker-167-failure-105082608981.log`; the follow-up still needs
+its local gate and Windows CI before it can be marked verified.
 
 This primitive conservatively rejects any changed generation, including append,
 so a caller must retain the old cursor, record the generation gap and start a

@@ -18,6 +18,7 @@ use std::{
 const MAX_BATCH: u64 = 16 * 1024 * 1024;
 const MAX_RECORD: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 4096;
+const PREFIX_DEADLINE: Duration = Duration::from_secs(1);
 
 /// Local formats supported by the accounting parsers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,8 +28,9 @@ pub enum Runtime {
     Claude,
 }
 
-/// Byte reads include buffered read-ahead. Time is checked between bounded
-/// regular-file reads; it is a cooperative deadline, not cancellation of I/O.
+/// Parser byte reads include buffered read-ahead. Prefix verification has a
+/// separate 16 MiB / one-second bound per check, reported by the batch. Time
+/// limits are cooperative deadlines, not cancellation of regular-file I/O.
 #[derive(Clone, Copy, Debug)]
 pub struct Budget {
     pub bytes: u64,
@@ -118,14 +120,71 @@ impl Cursor {
         self.generation.length
     }
 
-    /// Check the proposed generation again immediately before committing it.
-    /// A caller must retain old progress on failure and record a source gap.
+    /// Check metadata and the complete-record prefix immediately before commit.
+    /// Metadata alone cannot prove unchanged content on every filesystem. This
+    /// check reads at most 16 MiB and has a cooperative one-second deadline;
+    /// failure retains old progress and cannot establish coverage. It is an
+    /// observation, not a lock against a writer changing the file afterward.
     pub fn validate(&self, path: &Path) -> Result<(), Error> {
-        let file = crate::files::open_regular(path)?;
-        if self.generation != Generation::capture(&file)? {
+        self.validate_counted(path).map(|_| ())
+    }
+
+    fn validate_counted(&self, path: &Path) -> Result<u64, Error> {
+        let mut file = crate::files::open_regular(path)?;
+        let bytes = self.validate_file(&mut file, PREFIX_DEADLINE)?;
+        // Also check the current path: an old descriptor survives replacement.
+        if self.generation != Generation::capture(&crate::files::open_regular(path)?)? {
             return Err(Error::Changed);
         }
-        Ok(())
+        Ok(bytes)
+    }
+
+    fn validate_file(&self, file: &mut File, elapsed: Duration) -> Result<u64, Error> {
+        if self.version != 1 || self.offset > self.generation.length {
+            return Err(Error::Cursor);
+        }
+        if self.generation != Generation::capture(file)? {
+            return Err(Error::Changed);
+        }
+        if self.offset > MAX_BATCH {
+            return Err(Error::ValidationIncomplete);
+        }
+        let started = Instant::now();
+        file.seek(SeekFrom::Start(0))?;
+        let mut reader = BufReader::with_capacity(8192, file.take(self.offset));
+        let mut prefix = [0; 32];
+        let mut line = Vec::new();
+        let mut covered = 0;
+        while covered < self.offset {
+            if started.elapsed() >= elapsed {
+                return Err(Error::ValidationIncomplete);
+            }
+            let available = reader.fill_buf()?;
+            if available.is_empty() {
+                return Err(Error::Changed);
+            }
+            let count = available
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(available.len(), |index| index + 1);
+            line.extend_from_slice(&available[..count]);
+            reader.consume(count);
+            covered += count as u64;
+            if line.last() == Some(&b'\n') {
+                prefix = record_digest(prefix, &line);
+                line.clear();
+            }
+        }
+        if !line.is_empty() || prefix != self.prefix_digest {
+            return Err(Error::Changed);
+        }
+        if started.elapsed() >= elapsed {
+            return Err(Error::ValidationIncomplete);
+        }
+        if self.generation != Generation::capture(reader.get_ref().get_ref())? {
+            return Err(Error::Changed);
+        }
+        Ok(covered)
     }
 }
 
@@ -154,6 +213,9 @@ pub struct Batch {
     pub samples: Vec<Sample>,
     pub gaps: Vec<Gap>,
     pub bytes_read: u64,
+    /// Complete-prefix rechecks, separate from parser reads: at most 32 MiB
+    /// total (previous prefix plus proposal). No transcript bytes are retained.
+    pub validation_bytes_read: u64,
     pub stop: Stop,
 }
 
@@ -165,6 +227,10 @@ pub enum Error {
     Changed,
     #[error("invalid usage scan budget")]
     Budget,
+    #[error(
+        "usage prefix validation exceeded its byte or time bound; retain the previous cursor and leave coverage incomplete"
+    )]
+    ValidationIncomplete,
     #[error("usage cursor is invalid or belongs to another runtime")]
     Cursor,
     #[error("usage record at byte {offset} exceeds the configured size limit")]
@@ -188,9 +254,9 @@ pub fn scan(
     {
         return Err(Error::Budget);
     }
-    let started = Instant::now();
     let mut file = crate::files::open_regular(path)?;
     let generation = Generation::capture(&file)?;
+    let mut validation_bytes_read = 0;
     let mut cursor = match previous {
         Some(prior) => {
             if prior.version != 1
@@ -202,6 +268,7 @@ pub fn scan(
             if prior.generation != generation {
                 return Err(Error::Changed);
             }
+            validation_bytes_read += prior.validate_file(&mut file, PREFIX_DEADLINE)?;
             prior.clone()
         }
         None => Cursor {
@@ -213,6 +280,7 @@ pub fn scan(
             codex: Codex::default(),
         },
     };
+    let started = Instant::now();
     // Validate the restored record boundary; charge the byte to the same pass.
     let boundary_bytes = u64::from(cursor.offset > 0);
     if cursor.offset > 0 {
@@ -286,11 +354,7 @@ pub fn scan(
                 cursor.codex = Codex::default();
             }
         }
-        let mut digest = Sha256::new();
-        digest.update(cursor.prefix_digest);
-        digest.update((line.len() as u64).to_le_bytes());
-        digest.update(&line);
-        cursor.prefix_digest = digest.finalize().into();
+        cursor.prefix_digest = record_digest(cursor.prefix_digest, &line);
         cursor.offset += line.len() as u64;
         records += 1;
     };
@@ -300,14 +364,23 @@ pub fn scan(
     if generation != Generation::capture(reader.get_ref().get_ref())? {
         return Err(Error::Changed);
     }
-    cursor.validate(path)?;
+    validation_bytes_read += cursor.validate_counted(path)?;
     Ok(Batch {
         cursor,
         samples,
         gaps,
         bytes_read,
+        validation_bytes_read,
         stop,
     })
+}
+
+fn record_digest(prefix: [u8; 32], line: &[u8]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(prefix);
+    digest.update((line.len() as u64).to_le_bytes());
+    digest.update(line);
+    digest.finalize().into()
 }
 
 #[cfg(test)]
@@ -341,6 +414,10 @@ mod tests {
         let final_cursor = loop {
             let batch = scan(&path, Runtime::Claude, prior.as_ref(), budget()).unwrap();
             assert!(batch.bytes_read <= budget().bytes);
+            assert_eq!(
+                batch.validation_bytes_read,
+                batch.cursor.offset() + prior.as_ref().map_or(0, Cursor::offset)
+            );
             assert!(batch.gaps.is_empty());
             assert!(batch.cursor.offset() > prior.as_ref().map_or(0, Cursor::offset));
             let replay = scan(&path, Runtime::Claude, prior.as_ref(), budget()).unwrap();
@@ -432,6 +509,62 @@ mod tests {
         let third = scan(&path, Runtime::Claude, None, budget()).unwrap();
         std::fs::write(&path, b"").unwrap();
         assert!(matches!(third.cursor.validate(&path), Err(Error::Changed)));
+    }
+
+    #[test]
+    fn matching_metadata_cannot_hide_a_rewritten_prefix_on_commit_or_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        std::fs::write(&path, format!("{}{}{}", row(0), row(1), row(2))).unwrap();
+        let batch = scan(&path, Runtime::Claude, None, budget()).unwrap();
+        assert_eq!(batch.stop, Stop::Budget);
+        assert!(batch.cursor.offset() < batch.cursor.captured_length());
+        let saved = serde_json::to_string(&batch.cursor).unwrap();
+        let mut restored: Cursor = serde_json::from_str(&saved).unwrap();
+        std::fs::write(&path, format!("{}{}{}", row(3), row(1), row(2))).unwrap();
+        // Reproduce a filesystem reporting indistinguishable metadata on all
+        // hosts, so this regression cannot pass just because Unix ctime moved.
+        restored.generation = Generation::capture(&File::open(&path).unwrap()).unwrap();
+        assert!(matches!(restored.validate(&path), Err(Error::Changed)));
+        assert!(matches!(
+            scan(&path, Runtime::Claude, Some(&restored), budget()),
+            Err(Error::Changed)
+        ));
+        // A fresh scan remains valid and its supported source IDs are distinct.
+        let fresh = scan(&path, Runtime::Claude, None, budget()).unwrap();
+        fresh.cursor.validate(&path).unwrap();
+        assert_ne!(fresh.samples[0].source_id, batch.samples[0].source_id);
+    }
+
+    #[test]
+    fn prefix_limits_refuse_coverage_instead_of_trusting_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        std::fs::write(&path, row(0)).unwrap();
+        let batch = scan(&path, Runtime::Claude, None, budget()).unwrap();
+        let mut file = File::open(&path).unwrap();
+        assert!(matches!(
+            batch.cursor.validate_file(&mut file, Duration::ZERO),
+            Err(Error::ValidationIncomplete)
+        ));
+        batch.cursor.validate(&path).unwrap();
+
+        // A restored cursor claiming a large prefix must fail before reading or
+        // accepting it, even if the file identity/length metadata all match.
+        let writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        writer.set_len(MAX_BATCH + 1).unwrap();
+        drop(writer);
+        let mut restored = batch.cursor;
+        restored.generation = Generation::capture(&File::open(&path).unwrap()).unwrap();
+        restored.offset = MAX_BATCH + 1;
+        assert!(matches!(
+            restored.validate(&path),
+            Err(Error::ValidationIncomplete)
+        ));
+        assert!(matches!(
+            scan(&path, Runtime::Claude, Some(&restored), budget()),
+            Err(Error::ValidationIncomplete)
+        ));
     }
 
     #[test]
