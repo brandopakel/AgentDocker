@@ -265,6 +265,20 @@ pub fn event_line(event: &Event) -> String {
             retired.short(),
             provider.process.pid
         ),
+        EventKind::SessionResumed {
+            agent,
+            retired,
+            pid,
+            ..
+        } => format!(
+            "session resumed  {} from {} (pid {pid})",
+            agent.short(),
+            retired
+                .iter()
+                .map(|id| id.short())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         EventKind::ProviderAvailabilityReported {
             agent,
             availability,

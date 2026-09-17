@@ -27,8 +27,39 @@ const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_EVERY: Duration = Duration::from_millis(250);
 
-pub(super) fn acquire(identity: &Identity) -> Result<lock::Lock> {
-    acquire_at(&dirs::home(), &identity.id)
+pub(super) struct Owner {
+    _process: lock::Lock,
+    _agent: lock::Lock,
+}
+
+pub(super) fn acquire(identity: &Identity) -> Result<Owner> {
+    acquire_for(&dirs::home(), identity)
+}
+
+fn process_key(pid: u32, started: chrono::DateTime<chrono::Utc>) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "process-{pid}-{:x}",
+        Sha256::digest(started.to_rfc3339().as_bytes())
+    )
+}
+
+fn acquire_for(home: &std::path::Path, identity: &Identity) -> Result<Owner> {
+    let pid = identity
+        .host_pid
+        .context("channel provider PID is unavailable")?;
+    let started = identity
+        .host_started_at
+        .context("channel provider generation is unavailable")?;
+    // The process lock remains the same if SessionStart canonicalizes this
+    // registration before channel initialization. An agent-ID lock alone would
+    // let a second MCP entry acquire the canonical ID while we hold its alias.
+    let process = acquire_at(home, &process_key(pid, started))?;
+    let agent = acquire_at(home, &identity.id)?;
+    Ok(Owner {
+        _process: process,
+        _agent: agent,
+    })
 }
 
 fn directory(home: &std::path::Path, id: &str) -> Result<std::path::PathBuf> {
@@ -65,6 +96,19 @@ pub(super) fn active(home: &std::path::Path, id: &str) -> Result<bool> {
         Ok(held) => Ok(held.is_none()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
+    }
+}
+
+pub(super) fn active_for(
+    home: &std::path::Path,
+    agent: &agentdocker_core::AgentRecord,
+) -> Result<bool> {
+    if active(home, agent.id.as_str())? {
+        return Ok(true);
+    }
+    match (agent.pid, agent.process_started_at) {
+        (Some(pid), Some(started)) => active(home, &process_key(pid, started)),
+        _ => Ok(false),
     }
 }
 
@@ -296,6 +340,63 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(active(home.path(), "../escape").is_err());
+    }
+
+    #[test]
+    fn channel_ownership_survives_canonical_agent_id_changes() {
+        let home = tempfile::tempdir().unwrap();
+        let birth = chrono::Utc::now();
+        let first = Identity {
+            id: "fresh".into(),
+            name: "fixture".into(),
+            host_pid: Some(1234),
+            host_started_at: Some(birth),
+            registered_here: false,
+        };
+        let owner = acquire_for(home.path(), &first).unwrap();
+        let canonical = Identity {
+            id: "canonical".into(),
+            ..first.clone()
+        };
+        assert!(
+            acquire_for(home.path(), &canonical).is_err(),
+            "a new agent ID cannot admit another channel for the same process"
+        );
+        let mut record = agentdocker_core::AgentRecord::new(Default::default(), false, birth);
+        record.id = "canonical".into();
+        record.pid = first.host_pid;
+        record.process_started_at = Some(birth);
+        assert!(
+            active_for(home.path(), &record).unwrap(),
+            "hooks find the process lock even after ID folding"
+        );
+        record.process_started_at = Some(birth + chrono::Duration::seconds(1));
+        assert!(
+            !active_for(home.path(), &record).unwrap(),
+            "a reused PID is another generation"
+        );
+        let next = Identity {
+            host_started_at: record.process_started_at,
+            ..canonical.clone()
+        };
+        let next_owner = acquire_for(home.path(), &next).unwrap();
+        drop(next_owner);
+        drop(owner);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match acquire_for(home.path(), &canonical) {
+                Ok(_) => break,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) => panic!("channel ownership did not release: {error}"),
+            }
+        }
+        let unknown = Identity {
+            host_started_at: None,
+            ..canonical
+        };
+        assert!(acquire_for(home.path(), &unknown).is_err());
     }
 
     struct Queue(RefCell<Vec<Envelope>>);

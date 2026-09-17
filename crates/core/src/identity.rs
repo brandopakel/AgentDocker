@@ -143,6 +143,72 @@ pub fn repair_pair<'a>(
     Ok(())
 }
 
+/// The ended records a fresh registration is the return of, the one to
+/// stay first: the same provider session (a non-empty `session_id`, which
+/// only a hooks adapter vouches for), the same runtime, project and
+/// physical checkout, ended rather than live, neither side managed,
+/// remote, contained or in a pane — a supervised process is its
+/// supervisor's to bring back — and not the fresh record itself. Names
+/// prove nothing and are not consulted. A live namesake is not a
+/// candidate: two live records for one session are the registration
+/// rule's problem, not this one's. A session resumed before this rule
+/// existed left an ended record each time, any of which may still hold
+/// queued messages, so every one of them is returned, the one that ended
+/// last first (`finished_at`, then the id, so the order does not depend on
+/// iteration): that one stays canonical and the others are folded into
+/// it with the fresh record. Whether a record's process is in fact gone
+/// is the host's to check.
+pub fn resumed_session<'a>(
+    records: impl IntoIterator<Item = &'a AgentRecord>,
+    fresh: &AgentRecord,
+) -> Vec<&'a AgentRecord> {
+    let Some(session) = session_id(fresh) else {
+        return Vec::new();
+    };
+    if !resumable(fresh) || !matches!(fresh.spec.runtime.as_str(), "claude-code" | "codex") {
+        return Vec::new();
+    }
+    let Some(project) = fresh.project.as_ref().map(ProjectRef::id) else {
+        return Vec::new();
+    };
+    let Some(checkout) = fresh
+        .spec
+        .workdir
+        .as_ref()
+        .filter(|path| path.is_absolute())
+    else {
+        return Vec::new();
+    };
+    let mut ended: Vec<&AgentRecord> = records
+        .into_iter()
+        .filter(|prior| prior.id != fresh.id && !prior.status.is_live())
+        .filter(|prior| session_id(prior) == Some(session))
+        .filter(|prior| prior.spec.runtime == fresh.spec.runtime)
+        .filter(|prior| prior.project.as_ref().map(ProjectRef::id) == Some(project.clone()))
+        .filter(|prior| prior.spec.workdir.as_ref() == Some(checkout))
+        .filter(|prior| resumable(prior))
+        .collect();
+    ended.sort_by(|a, b| {
+        b.finished_at
+            .cmp(&a.finished_at)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    ended
+}
+
+/// A record whose process is nobody else's to run: not supervised,
+/// restored, contained or paned, and on this host.
+fn resumable(record: &AgentRecord) -> bool {
+    record.host == "local"
+        && !record.managed
+        && record.container.is_none()
+        && !record.spec.tty
+        && !record.spec.in_pane
+        && !record.spec.restore
+        && record.spec.restart.is_no()
+        && record.input_binding.is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,5 +339,92 @@ mod tests {
             repair_pair([&a, &b], &a.id, &b.id),
             Err("physical process and checkout evidence is incomplete")
         );
+    }
+
+    /// A fresh registration of a session resumes the ended records that
+    /// held it, the one that ended last first: same session, runtime,
+    /// project and checkout, ended, nobody's to supervise. A live
+    /// namesake, another session, another project or checkout, a managed
+    /// record or a record with an input binding is not among them; the
+    /// fresh record itself never is.
+    #[test]
+    fn a_fresh_registration_resumes_the_ended_record_of_its_session() {
+        let ended = |id: &str, session: Option<&str>, minutes: i64| {
+            let mut record = record(id, session);
+            record.status = crate::AgentStatus::Exited { code: Some(0) };
+            record.finished_at = Some(record.created_at + chrono::Duration::minutes(minutes));
+            record
+        };
+        let mut fresh = record("fresh", Some("session"));
+        fresh.pid = Some(456);
+        let earlier = ended("earlier", Some("session"), 1);
+        let later = ended("later", Some("session"), 2);
+        let other = ended("other", Some("another"), 3);
+        let unnamed = ended("unnamed", None, 3);
+        let live = record("live", Some("session"));
+        let mut managed = ended("managed", Some("session"), 4);
+        managed.managed = true;
+        let mut bound = ended("bound", Some("session"), 4);
+        bound.input_binding = Some(crate::InputBinding {
+            provider: crate::ProviderGeneration {
+                process: crate::ProcessIdentity {
+                    pid: 10,
+                    started_at: bound.created_at,
+                },
+                session: "thread".into(),
+                profile: "/profiles/default".into(),
+            },
+            controller: crate::ProcessIdentity {
+                pid: 20,
+                started_at: bound.created_at,
+            },
+            controller_since: bound.created_at,
+            token_sha256: "digest".into(),
+            bound_at: bound.created_at,
+            controller_generations: 1,
+            uncertain: Vec::new(),
+            launch: None,
+            restart: Default::default(),
+        });
+        let mut elsewhere = ended("elsewhere", Some("session"), 4);
+        elsewhere.project = Some(ProjectRef::directory("/fixture/elsewhere"));
+        let mut worktree = ended("worktree", Some("session"), 4);
+        worktree.spec.workdir = Some("/fixture/worktree".into());
+        let mut codex = ended("codex", Some("session"), 4);
+        codex.spec.runtime = "codex".into();
+        let all = [
+            &fresh, &earlier, &later, &other, &unnamed, &live, &managed, &bound, &elsewhere,
+            &worktree, &codex,
+        ];
+        fn ids(found: Vec<&AgentRecord>) -> Vec<String> {
+            found.iter().map(|r| r.id.to_string()).collect()
+        }
+        assert_eq!(ids(resumed_session(all, &fresh)), ["later", "earlier"]);
+        // Order of the records does not pick the answer.
+        let mut reversed = all;
+        reversed.reverse();
+        assert_eq!(ids(resumed_session(reversed, &fresh)), ["later", "earlier"]);
+        // Two that ended together are told apart by id.
+        let mut twin = ended("aaa-twin", Some("session"), 2);
+        twin.finished_at = later.finished_at;
+        assert_eq!(
+            ids(resumed_session([&later, &twin], &fresh)),
+            ["later", "aaa-twin"]
+        );
+        assert_eq!(
+            ids(resumed_session([&twin, &later], &fresh)),
+            ["later", "aaa-twin"]
+        );
+        // Nothing to resume for a session nobody vouched for, a managed
+        // newcomer, or a runtime without session evidence.
+        let mut nameless = fresh.clone();
+        nameless.spec.labels.remove("session_id");
+        assert!(resumed_session(all, &nameless).is_empty());
+        let mut supervised = fresh.clone();
+        supervised.managed = true;
+        assert!(resumed_session(all, &supervised).is_empty());
+        let mut unknown = fresh.clone();
+        unknown.spec.runtime = "gemini-cli".into();
+        assert!(resumed_session(all, &unknown).is_empty());
     }
 }
