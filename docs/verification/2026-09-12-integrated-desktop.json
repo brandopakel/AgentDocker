@@ -3120,5 +3120,33 @@
       "cleanup_errors": [],
       "driver_sha256": "c67cdf83430d98dfb370f2f98cdca307be97b58225edd210444f5353855ca9ae"
     }
+  },
+  "installed_cold_notification_click_2026_09_17": {
+    "result": "passed",
+    "at": "2026-09-17T20:15:18.076048+00:00",
+    "candidate": "f5e298f471dfadf5925558b44fb3f6e2d5d53a0172ce2e8a708af77a4f8dd192",
+    "source": "418fbc93c86d1658ab4c5c9975eeb76e581a4915",
+    "scope": "Actual Notification Center accessibility click on installed f5e298f4 with no GUI process before posting or before the click; provider generations preserved. Separate from a physical mouse, signed release or candidate d146 acceptance.",
+    "case": "Zero-process cold launch from a notification: no GUI process existed before the daemon posted or before the click; pressing the owned Notification Center notice launched the installed app, which became visible with the exact message row revealed, with both provider process generations unchanged.",
+    "message_id": "0691fa9fd985467f",
+    "guis_before": [],
+    "guis_before_click": [],
+    "gui_after_click": 77901,
+    "click": "pressed_owned_notification",
+    "visible_and_target_found": "true, true",
+    "click_to_visible_seconds": 1.6965183750144206,
+    "processes_unchanged": {
+      "codex": 51242,
+      "claude": 18563
+    },
+    "poster_sha256": "0593959cd3162693d343d44c9b7bb7e2751685d225bb1fbe99ae1884eee92da4",
+    "driver_sha256": "75f269307a19ac03167c5ffd06c85bd018dfad8d724a3a89e88f31ddabcfeb00",
+    "evidence": "/private/tmp/agentdocker-installed-cold-notification-20260917/{run.py,result.json} (private, this Mac)",
+    "recorded_by": "codex-51242; folded into this record by claude-code-18563",
+    "remaining": [
+      "A physical mouse click rather than an accessibility press.",
+      "The same on a signed/notarized release and on candidate d14610b7.",
+      "A click whose message lies outside the loaded pages (the bounded page-back path)."
+    ]
   }
 }

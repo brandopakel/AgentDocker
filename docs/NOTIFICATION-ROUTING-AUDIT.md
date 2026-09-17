@@ -189,9 +189,13 @@ revealed, and the GUI and both provider processes were unchanged. This closes
 the person's finding that a click while the app was already open did nothing,
 for that installed revision. Recorded in the
 [integrated record](verification/2026-09-12-integrated-desktop.json) under
-`installed_notification_click_2026_09_17`. Still open: a zero-process cold
-launch, a physical mouse click, a click whose message lies outside the loaded
-pages (the bounded page-back path), and signed-release acceptance.
+`installed_notification_click_2026_09_17`. Later the same day, with no app
+process before the post or the press, the same kind of press launched the
+installed app and revealed the message (`0691fa9fd985467f`) in 1.7 s with both
+provider generations unchanged (`installed_cold_notification_click_2026_09_17`),
+closing zero-process cold launch for that revision. Still open: a physical
+mouse click, a click whose message lies outside the loaded pages (the bounded
+page-back path), and the same on a signed release and on the next candidate.
 
 ## Work and acceptance
 
