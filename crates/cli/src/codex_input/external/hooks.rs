@@ -151,7 +151,7 @@ fn verified(request: &Request, binding: &Binding) -> Result<bool> {
     Ok(false)
 }
 
-fn compact_context(input: &str) -> Result<Option<String>> {
+pub(super) fn compact_context(input: &str) -> Result<Option<String>> {
     if input.len() <= LIMIT {
         return Ok(Some(input.into()));
     }

@@ -358,6 +358,10 @@ impl Record {
                         && hook.context.len() <= 6000,
                     "invalid native hook offer"
                 );
+                ensure!(
+                    super::hooks::compact_context(&attempt.input)?.as_ref() == Some(&hook.context),
+                    "native hook context differs from the retained message"
+                );
             }
             if let Some(id) = &attempt.anchor {
                 ensure!(valid_id(id), "invalid receipt boundary");
