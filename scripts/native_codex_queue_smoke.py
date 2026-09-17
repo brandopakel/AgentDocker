@@ -67,6 +67,8 @@ parser.add_argument(
     "--scenario",
     choices=[
         "baseline",
+        "active-hook",
+        "active-hook-lost",
         "long-busy",
         "startup",
         "lifecycle",
@@ -242,12 +244,20 @@ class Handler(BaseHTTPRequestHandler):
             {"type": "response.output_item.done", "output_index": 0, "item": item},
             {"type": "response.completed", "response": response},
         ]
-        if bootstrap:
+        active_hook = (args.scenario in ("active-hook", "active-hook-lost") and users
+            and "ACTIVE_HOOK_START" in json.dumps(users[-1])
+            and not all(marker in json.dumps(body.get("input", [])) for marker in
+                        ("PEER_ACTIVE_HOOK", "HUMAN_PROJECT_PAUSE", "HUMAN_BROADCAST_PAUSE")))
+        if active_hook:
+            assert n < 40, "active hook messages did not reach the model"
+        if bootstrap or active_hook:
             code = (
                 "import os,json,subprocess; subprocess.run(["
                 + repr(str(cli))
                 + ",'hook','codex'],input=json.dumps({'hook_event_name':'PostToolUse','session_id':os.environ['CODEX_THREAD_ID'],'cwd':os.getcwd()}),text=True,check=True)"
             )
+            if active_hook:
+                code = "import time; time.sleep(3)"
             arguments = json.dumps({"cmd": "python3 -c " + shlex.quote(code), "max_output_tokens": 1000})
             item = {
                 "type": "function_call",
@@ -497,7 +507,7 @@ try:
                     + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n'
                 )
             provider_prefix = [codex, "--no-alt-screen"]
-            if args.scenario in ("startup", "lifecycle"):
+            if args.scenario in ("startup", "lifecycle", "active-hook", "active-hook-lost"):
                 # The only hook in this private profile is this reviewed fixture
                 # command. One-off trust does not change any user's saved policy.
                 hook_runner = root / "hook_capture.py"
@@ -514,22 +524,21 @@ try:
                     + "Path("
                     + repr(str(out / "hook-stderr.log"))
                     + ").write_text(p.stderr)\n"
-                    + "print(p.stdout,end='')\nsys.exit(p.returncode)\n"
+                    + ("v=json.loads(p.stdout or '{}')\n"
+                       + "marker=Path(" + repr(str(out / "discarded-hook-context")) + ")\n"
+                       + "if v.get('hookSpecificOutput',{}).get('additionalContext') and not marker.exists():\n"
+                       + " marker.write_text('one offered context discarded before provider acceptance')\n print('{}')\n"
+                       + "else: print(p.stdout,end='')\n"
+                       if args.scenario == "active-hook-lost" else "print(p.stdout,end='')\n")
+                    + "sys.exit(p.returncode)\n"
                 )
                 (profile / "hooks.json").write_text(
                     json.dumps(
                         {
                             "hooks": {
-                                "SessionStart": [
-                                    {
-                                        "hooks": [
-                                            {
-                                                "type": "command",
-                                                "command": shlex.join([sys.executable, str(hook_runner)]),
-                                            }
-                                        ]
-                                    }
-                                ]
+                                event: [{"hooks": [{"type": "command",
+                                    "command": shlex.join([sys.executable, str(hook_runner)])}]}]
+                                for event in (["PreToolUse", "PostToolUse"] if args.scenario in ("active-hook", "active-hook-lost") else ["SessionStart"])
                             }
                         }
                     )
@@ -538,7 +547,7 @@ try:
                     configfile.write("\n[features]\nhooks = true\n")
                 provider_prefix += ["--dangerously-bypass-hook-trust"]
                 report["fixture_hook_trust"] = (
-                    "one-off vetted private SessionStart command; no saved user policy changed"
+                    "one-off vetted private fixture hooks; no saved user policy changed"
                 )
             master, slave = pty.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 160, 0, 0))
@@ -1345,6 +1354,53 @@ try:
                     15,
                 )
                 report["idle_wake_after_receiver_crash"] = True
+            if args.scenario in ("active-hook", "active-hook-lost"):
+                ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
+                start = len(report["requests"])
+                os.write(master, b"ACTIVE_HOOK_START")
+                time.sleep(0.3)
+                os.write(master, b"\r")
+                wait(lambda: len(report["requests"]) > start, 15)
+                began = time.monotonic()
+                sent = []
+                for sender, destination, marker in [
+                    (peer, aid, "PEER_ACTIVE_HOOK"),
+                    ("user", "project:" + str(repo), "HUMAN_PROJECT_PAUSE"),
+                    ("user", "all", "HUMAN_BROADCAST_PAUSE"),
+                ]:
+                    result = rpc({"op":"send", "from":sender, "to":destination,
+                        "kind":"chat", "payload":{"text":marker}})
+                    sent.append(result["message"])
+                markers = ("PEER_ACTIVE_HOOK", "HUMAN_PROJECT_PAUSE", "HUMAN_BROADCAST_PAUSE")
+                if args.scenario == "active-hook-lost":
+                    wait(lambda: (out / "discarded-hook-context").exists(), 15)
+                    wait(lambda: rpc({"op":"inspect", "agent":aid})["agent"].get("input_delivery", {}).get("paused") is True, 45)
+                    retained = json.loads(ledgerpath.read_text())
+                    assert retained["attempt"]["hook"] and retained["attempt"]["receipt"] is None
+                    assert [m["id"] for m in rpc({"op":"peek_input", "agent":aid})["messages"]] == sent
+                    assert not any(m in json.dumps(q["body"].get("input", [])) for q in report["requests"][start:] for m in markers)
+                    report["lost_hook_output"] = {"retained_messages":sent, "paused":True,
+                        "no_provider_receipt":True, "no_blind_resubmission":True}
+                else:
+                    wait(lambda: all(m in json.dumps(report["requests"][-1]["body"].get("input", [])) for m in markers), 45)
+                    wait(lambda: not rpc({"op":"peek_input", "agent":aid})["messages"], 15)
+                    visible = json.dumps(report["requests"][-1]["body"].get("input", []))
+                    assert all(visible.count(marker) == 1 for marker in markers), "provider context duplicated an input"
+                    positions = [visible.index(marker) for marker in markers]
+                    assert positions == sorted(positions), "provider-visible input order changed"
+                    retained = json.loads(ledgerpath.read_text())
+                    receipts = [r for r in retained["completed"] if r["message"] in sent]
+                    assert [r["message"] for r in receipts] == sent
+                    assert len({r["receipt"]["turn"] for r in receipts}) == 1, receipts
+                    # Hook context must not create another ordinary user input turn.
+                    after = report["requests"][start:]
+                    assert all("ACTIVE_HOOK_START" in json.dumps([i for i in r["body"]["input"] if i.get("role") == "user"][-1]) for r in after)
+                    assert retained["attempt"] is None
+                    report["active_hook"] = {"messages":sent, "receipts":receipts,
+                        "seconds":time.monotonic()-began, "same_turn":True,
+                        "model_requests":len(after), "original_provider_pid":provider.pid}
+                    time.sleep(4)
+                    assert len(report["requests"]) == start + len(after), "hook input replayed as a later ordinary turn"
             report.update(
                 result="passed",
                 same_live_tui=args.scenario not in ("resume", "startup", "lifecycle"),
