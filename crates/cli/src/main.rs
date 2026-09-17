@@ -635,29 +635,9 @@ enum Command {
     },
     /// Claims waiting for a resource, oldest first.
     Waiting,
-    /// Tell every agent in a project to hold: they get the reason as a
-    /// `pause` message, and their new leases are refused until `resume`.
-    Pause {
-        /// Why; what the agents read.
-        reason: String,
-        /// Project id, root or unique prefix (default: the one this
-        /// directory is in).
-        #[arg(long, value_name = "ID|PATH")]
-        project: Option<String>,
-        /// Who is asking (defaults to you, or the session this runs in).
-        #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
-        from: Option<String>,
-    },
-    /// Lift a project's pause: its agents get a `resume` message and may
-    /// take leases again.
-    Unpause {
-        #[arg(long, value_name = "ID|PATH")]
-        project: Option<String>,
-        #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
-        from: Option<String>,
-    },
-    /// The projects that are paused, and why.
-    Pauses,
+    /// Tell every agent in a project to hold (`pause "reason"`), lift it
+    /// (`pause --lift`), or list what is paused (`pause --list`).
+    Pause(PauseArgs),
     /// The fleet, live: who is running, what they are doing, what is
     /// held and who is waiting. Redraws as the daemon reports changes.
     Top,
@@ -1021,6 +1001,27 @@ enum JournalAction {
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
     },
+}
+
+/// A project's pause: the reason holds its agents until `--lift`.
+#[derive(Args)]
+struct PauseArgs {
+    /// Why; what the agents read. Not with --lift or --list.
+    reason: Option<String>,
+    /// Lift the pause: the agents get a `resume` message and may take
+    /// leases again.
+    #[arg(long, conflicts_with_all = ["reason", "list"])]
+    lift: bool,
+    /// The projects that are paused, and why.
+    #[arg(long, conflicts_with_all = ["reason", "lift"])]
+    list: bool,
+    /// Project id, root or unique prefix (default: the one this
+    /// directory is in).
+    #[arg(long, value_name = "ID|PATH")]
+    project: Option<String>,
+    /// Who is asking (defaults to you, or the session this runs in).
+    #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
+    from: Option<String>,
 }
 
 #[derive(Args)]
@@ -2172,62 +2173,57 @@ async fn main() -> Result<()> {
             }
         }
         Command::Top => top::run(&client).await?,
-        Command::Pause {
-            reason,
-            project,
-            from,
-        } => {
-            let project = Some(match project {
+        Command::Pause(args) => {
+            let project = Some(match args.project {
                 Some(selector) => selector,
                 None => std::env::current_dir()?.display().to_string(),
             });
-            let request = Request::Pause {
-                from: sender::resolve(&client, from)
+            let from = sender::resolve(&client, args.from)
+                .await?
+                .unwrap_or_else(|| HUMAN.into());
+            if args.list {
+                if let Response::Pauses { pauses } = client.call(&Request::Pauses).await? {
+                    if pauses.is_empty() {
+                        println!("no project is paused");
+                    } else {
+                        let rows: Vec<Vec<String>> = pauses
+                            .iter()
+                            .map(|p| {
+                                vec![
+                                    p.project.short().to_owned(),
+                                    p.by.clone(),
+                                    agentdocker_core::journal::ago(chrono::Utc::now(), p.at),
+                                    p.reason.clone(),
+                                ]
+                            })
+                            .collect();
+                        format::table(&["PROJECT", "BY", "SINCE", "REASON"], &rows);
+                    }
+                }
+            } else if args.lift {
+                if let Response::Ok = client
+                    .call(&Request::ResumeProject { from, project })
                     .await?
-                    .unwrap_or_else(|| HUMAN.into()),
-                project,
-                reason,
-            };
-            if let Response::Pause { pause } = client.call(&request).await? {
-                println!(
-                    "paused {} — {}; agents there take no new leases until `agentdocker unpause`",
-                    pause.project.short(),
-                    pause.reason
-                );
-            }
-        }
-        Command::Unpause { project, from } => {
-            let project = Some(match project {
-                Some(selector) => selector,
-                None => std::env::current_dir()?.display().to_string(),
-            });
-            let request = Request::ResumeProject {
-                from: sender::resolve(&client, from)
+                {
+                    println!("resumed");
+                }
+            } else {
+                let Some(reason) = args.reason else {
+                    bail!("give a reason, or --lift or --list");
+                };
+                if let Response::Pause { pause } = client
+                    .call(&Request::Pause {
+                        from,
+                        project,
+                        reason,
+                    })
                     .await?
-                    .unwrap_or_else(|| HUMAN.into()),
-                project,
-            };
-            if let Response::Ok = client.call(&request).await? {
-                println!("unpaused");
-            }
-        }
-        Command::Pauses => {
-            if let Response::Pauses { pauses } = client.call(&Request::Pauses).await? {
-                if pauses.is_empty() {
-                    println!("no project is paused");
-                } else {
-                    let rows: Vec<Vec<String>> = pauses
-                        .iter()
-                        .map(|p| {
-                            vec![
-                                p.project.short().to_owned(),
-                                p.by.clone(),
-                                agentdocker_core::journal::ago(chrono::Utc::now(), p.at),
-                                p.reason.clone(),
-                            ]
-                        })
-                        .collect();
-                    format::table(&["PROJECT", "BY", "SINCE", "REASON"], &rows);
+                {
+                    println!(
+                        "paused {} — {}; agents there take no new leases until `agentdocker pause --lift`",
+                        pause.project.short(),
+                        pause.reason
+                    );
                 }
             }
         }
