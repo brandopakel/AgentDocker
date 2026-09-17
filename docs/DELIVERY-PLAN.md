@@ -12,22 +12,27 @@ evidence; an old “pending” entry is not by itself a current implementation g
 
 ### Current integration and installation (September 17 UTC)
 
-PRs #169/#171 are merged; their installed receiver upgrade closed bounded active
-Codex delivery. PR #170 also merged after final-head review and CI. The current
-installed desktop/daemon is release `79981beb` (source `5c461e0`, schema22),
-activated at 03:58 UTC with a backup. Four external providers survived; receiver
-20912 was replaced by 29976 with its token/binding and 97 retained receipts.
-The GUI restarted with visible fields empty; hidden-draft persistence was not
-established. The installed New DM/channel form opened successfully; physical
-Enter testing waits for the locked screen to be unlocked. See
-[installed messaging evidence](verification/2026-09-12-integrated-desktop.json).
+The current desktop and daemon are reviewed local preview `f5e298f4`
+(source `418fbc9`, schema23), activated at 17:38 UTC with a fresh state backup.
+The GUI reopened after the user confirmed no unsent drafts. Provider processes
+and registered identities remained unchanged; receiver29976 became25642 with
+its binding/token and all128 retained receipts preserved. Hidden-draft
+persistence is still unimplemented.
 
-Fresh CLI human-route, actual Claude peer and project fan-out messages entered
-the same active Codex turn with exact receipts. The
-[message audit](MESSAGE-DELIVERY-AUDIT.md#september-17-installed-codex-active-turn-delivery-verified)
-bounds this result. PR #164's session-reconnect implementation is now merged;
-its live Claude installation/idle-wake trial, project pause controls and broader
-provider/lifecycle acceptance remain in [Remaining work](REMAINING-WORK.md).
+PRs #174/#167 are merged with final review and all CI checks. The installed
+preview also includes reviewed #175/#177; their cross-platform CI and merges
+remain pending. Local verification passed 1,147 Rust tests (seven skipped),
+94 Python checks (one skipped), 171 UI tests, the full release gate and
+429 native steps/26 checks. A targeted synthetic Enter submission from the
+reopened app reached this live Codex turn with a correlated receipt; physical
+keyboard/IME and idle-wake claims remain separate.
+
+Claude's MCP entry now supports its channel, but the existing provider was not
+restarted or opted in. Retained observations in older lives block the current
+all-record resumption rule; safe handoff and actual idle receipt remain open.
+The task board in #176 is not in this preview. Current completion conditions
+are in [Remaining work](REMAINING-WORK.md), with source pins, failed trials and
+installation details in the [integrated record](verification/2026-09-12-integrated-desktop.json).
 
 ### Previous integration and installation (September 15)
 
