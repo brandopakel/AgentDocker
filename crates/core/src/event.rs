@@ -135,6 +135,14 @@ pub enum EventKind {
     InputRestartsReset {
         agent: AgentId,
     },
+    /// A person's explicit receiver upgrade committed before stopping the old
+    /// controller. The provider, binding token and queue stay unchanged.
+    InputControllerUpgraded {
+        agent: AgentId,
+        controller: crate::ProcessIdentity,
+        previous_executable: std::path::PathBuf,
+        executable: std::path::PathBuf,
+    },
     /// A provider session that came back as a new process was joined to
     /// the record that holds its thread's queue and binding; the new
     /// record's id is an alias of it from now on.

@@ -1077,6 +1077,7 @@ impl App {
             | EventKind::InputControllerLaunchFailed { .. }
             | EventKind::InputRestartsExhausted { .. }
             | EventKind::InputRestartsReset { .. }
+            | EventKind::InputControllerUpgraded { .. }
             | EventKind::InputResumed { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);

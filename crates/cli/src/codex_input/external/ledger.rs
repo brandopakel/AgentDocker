@@ -99,6 +99,42 @@ pub(super) fn input(envelope: &Envelope) -> Result<String> {
     Ok(input)
 }
 
+/// Read an atomic ledger snapshot for an explicit upgrade without taking over
+/// its lifetime lock, migrating its format, or changing the active receiver.
+/// The daemon compares the process and launch again when committing the change.
+pub(super) fn upgrade_credential(
+    home: &Path,
+    agent: &str,
+    accepted: &InputBinding,
+) -> Result<(Binding, String)> {
+    let path = directory(home, agent)?.join("delivery.json");
+    let mut data = Vec::new();
+    dirs::read_private_file(&path)?
+        .take((MAX_STATE + 1) as u64)
+        .read_to_end(&mut data)?;
+    ensure!(
+        data.len() <= MAX_STATE,
+        "native queue ledger exceeds its size limit"
+    );
+    let mut record: Record =
+        serde_json::from_slice(&data).context("invalid retained native queue ledger")?;
+    if record.version == 2 {
+        ensure!(
+            record.attempt.as_ref().is_none_or(|a| a.hook.is_none()),
+            "old native record contains a hook offer"
+        );
+        record.version = 3;
+    }
+    record.validate(&record.binding)?;
+    ensure!(
+        record.binding.agent == agent
+            && record.binding.provider == accepted.provider
+            && accepted.accepts_digest(&format!("{:x}", Sha256::digest(record.token.as_bytes()))),
+        "daemon ownership does not match the retained native input ledger"
+    );
+    Ok((record.binding, record.token))
+}
+
 impl Ledger {
     pub fn open(home: &Path, binding: Binding, accepted: Option<&InputBinding>) -> Result<Self> {
         let directory = directory(home, &binding.agent)?;
@@ -532,6 +568,43 @@ mod tests {
         assert_eq!(upgraded["version"], 3);
         upgraded["version"] = serde_json::json!(2);
         assert_eq!(upgraded, old);
+    }
+
+    #[test]
+    fn upgrade_preflight_reads_a_live_old_ledger_without_mutating_it() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
+        let mut old = serde_json::to_value(&ledger.record).unwrap();
+        old["version"] = serde_json::json!(2);
+        let bytes = serde_json::to_vec(&old).unwrap();
+        std::fs::write(&ledger.path, &bytes).unwrap();
+        let mut accepted = InputBinding {
+            provider: binding.provider.clone(),
+            controller: binding.provider.process.clone(),
+            controller_since: chrono::Utc::now(),
+            token_sha256: format!("{:x}", Sha256::digest(ledger.record.token.as_bytes())),
+            bound_at: chrono::Utc::now(),
+            controller_generations: 1,
+            uncertain: vec![],
+            launch: None,
+            restart: Default::default(),
+        };
+        let (found, token) = upgrade_credential(home.path(), "agent", &accepted).unwrap();
+        assert_eq!(found, binding);
+        assert_eq!(token, ledger.record.token);
+        assert_eq!(
+            std::fs::read(&ledger.path).unwrap(),
+            bytes,
+            "no migration while the old receiver owns the lock"
+        );
+        assert!(
+            Ledger::open(home.path(), binding, None).is_err(),
+            "preflight did not take or release ownership"
+        );
+        accepted.token_sha256 = "wrong".into();
+        assert!(upgrade_credential(home.path(), "agent", &accepted).is_err());
+        assert_eq!(std::fs::read(&ledger.path).unwrap(), bytes);
     }
 
     #[test]
