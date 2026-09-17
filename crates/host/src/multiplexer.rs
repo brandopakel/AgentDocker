@@ -451,6 +451,25 @@ pub mod tmux {
         })
     }
 
+    /// Remove only the pane this launch created, never a reused session name.
+    pub fn remove_owned_pane(pane: &Pane) -> io::Result<()> {
+        if pane_pid(&pane.id)? != pane.pid
+            || describe_pane(&pane.id, "#{session_name}")? != pane.session
+        {
+            return Err(io::Error::other("tmux pane identity changed"));
+        }
+        let output = Command::new("tmux")
+            .args(["kill-pane", "-t", &pane.id])
+            .output()?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "tmux could not remove owned pane: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
+
     /// The process tmux started in a pane. This is the agent's pid: what
     /// `ps` will show, what liveness checks, and what `stop` signals.
     pub fn pane_pid(pane: &str) -> io::Result<u32> {

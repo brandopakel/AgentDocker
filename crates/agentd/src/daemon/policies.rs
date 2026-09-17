@@ -232,7 +232,7 @@ impl Daemon {
 
 impl State {
     pub(super) fn run_refusal(&mut self, record: &AgentRecord) -> Option<Response> {
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return Some(error);
         }
         let action = format!("run:{}", record.spec.name);

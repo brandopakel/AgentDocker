@@ -164,10 +164,10 @@ impl State {
                 event
             })
             .collect();
-        self.persist("question expiration", |store| {
+        let committed = self.persist("question expiration", |store| {
             store.close_questions(&expired, &events)
         });
-        if self.storage_error.is_some() {
+        if committed != Persisted::Committed {
             return;
         }
         for question in expired {
@@ -398,15 +398,38 @@ impl Daemon {
             let project = self.project_for(Some(workdir.clone()), true).await;
             let vcs = Self::vcs_for(Some(workdir.clone())).await;
             let mut state = lock(&self.state);
-            if let Some(record) = state.registry.get_mut(&id) {
-                record.spec.workdir = Some(workdir);
+            if let Some(mut record) = state.registry.get(&id).cloned() {
+                record.spec.workdir = Some(workdir.clone());
                 record.project = project;
                 record.vcs = vcs;
-                let record = record.clone();
-                state.persist("agent", |store| store.upsert_agent(&record));
+                record.last_seen = Utc::now();
+                let mut event = Event::new(
+                    EventKind::HumanLocationChanged {
+                        agent: id.clone(),
+                        workdir,
+                        project: record.project.clone(),
+                        vcs: record.vcs.clone(),
+                    },
+                    Utc::now(),
+                );
+                event.seq = state.next_seq;
+                if state.persist("human location", |store| {
+                    store.agent_transition(&record, &event)
+                }) != Persisted::Committed
+                {
+                    return state
+                        .write_failure()
+                        .expect("refused human location has a reason");
+                }
+                *state.registry.get_mut(&id).expect("human retained") = record;
+                state.next_seq += 1;
+                let _ = state.events.send(event);
             }
         }
         let mut state = lock(&self.state);
+        if let Some(error) = state.storage_failure().or_else(|| state.transferring()) {
+            return error;
+        }
         state.registry.touch(&id, Utc::now());
         match state.registry.get(&id) {
             Some(record) => Response::Agent {
@@ -456,6 +479,9 @@ impl Daemon {
             question: message.clone(),
         };
 
+        // The question is durable; from here this request only waits for
+        // its answer, and an offer must not wait with it.
+        self.done_writing();
         let waited = tokio::time::timeout(timeout, async {
             let mut candidate: Option<Envelope> = None;
             let mut accepted: Option<MessageId> = None;
@@ -556,7 +582,7 @@ impl Daemon {
             Ok(agent) => agent,
             Err(response) => return *response,
         };
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         let Some(question) = state.questions.get(message) else {
@@ -576,10 +602,10 @@ impl Daemon {
             Utc::now(),
         );
         event.seq = state.next_seq;
-        state.persist("question cancellation", |store| {
+        let _ = state.persist("question cancellation", |store| {
             store.close_questions(std::slice::from_ref(message), std::slice::from_ref(&event))
         });
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         state.questions.remove(message);
@@ -617,7 +643,7 @@ impl Daemon {
         };
         let mut state = lock(&self.state);
         state.expire_questions(Utc::now());
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         if !state.questions.contains_key(&message) {
@@ -719,6 +745,51 @@ mod tests {
             panic!("registration failed")
         };
         agent
+    }
+
+    #[tokio::test]
+    async fn refused_human_move_preserves_location_and_heartbeat() {
+        for fenced in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let original = dir.path().join("original");
+            let moved = dir.path().join("moved");
+            std::fs::create_dir(&original).unwrap();
+            std::fs::create_dir(&moved).unwrap();
+            let daemon =
+                Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+            let Response::Agent { agent: before } = daemon.me(Some(original)).await else {
+                panic!("registration failed")
+            };
+            let (seq, mut events) = {
+                let mut state = lock(&daemon.state);
+                if fenced {
+                    state.offer_transfer(1).unwrap();
+                } else {
+                    state.store.reject_event_for_test("human_location_changed");
+                }
+                (state.next_seq, state.events.subscribe())
+            };
+            let result = daemon.me(Some(moved)).await;
+            assert!(matches!(result, Response::Error { .. }), "{result:?}");
+            let state = lock(&daemon.state);
+            assert_eq!(
+                serde_json::to_value(state.registry.get(&before.id).unwrap()).unwrap(),
+                serde_json::to_value(&before).unwrap()
+            );
+            let durable = state
+                .store
+                .load_agents()
+                .unwrap()
+                .into_iter()
+                .find(|a| a.id == before.id)
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(durable).unwrap(),
+                serde_json::to_value(&before).unwrap()
+            );
+            assert_eq!(state.next_seq, seq);
+            assert!(events.try_recv().is_err());
+        }
     }
 
     #[tokio::test]
@@ -1569,7 +1640,7 @@ mod tests {
             let mut pending = question(300);
             pending.to = Destination::Agent(recipient.id);
             assert!(!remember(&mut state, pending));
-            assert!(state.storage_failure().is_some());
+            assert!(state.write_failure().is_some());
             assert!(state.questions.is_empty());
             assert!(state.inboxes.values().all(VecDeque::is_empty));
             assert!(state.store.load_inboxes().unwrap().is_empty());
@@ -1628,7 +1699,7 @@ mod tests {
             let mut state = lock(&daemon.state);
             state.store.reject_event_for_test("question_closed");
             state.expire_questions(pending.expires_at);
-            assert!(state.storage_failure().is_some());
+            assert!(state.write_failure().is_some());
             assert!(state.questions.contains_key(&pending.id));
             assert_eq!(
                 state.store.documents::<Question>("question", None).unwrap(),

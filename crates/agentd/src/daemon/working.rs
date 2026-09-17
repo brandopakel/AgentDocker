@@ -277,6 +277,14 @@ impl State {
     /// dropped with its paths; `check_stale` reads content and hooks
     /// refuse a stale edit, whether or not a notice arrived.
     pub(super) fn flush_notices(&mut self) {
+        if self.fenced() {
+            // Nothing can be queued while fenced. What waits is in memory
+            // only: it is sent by this daemon's next tick if the transfer
+            // is aborted, and lost with this daemon if it is not; a reader
+            // of the successor finds the change by `stale`, and hooks deny
+            // a stale edit either way.
+            return;
+        }
         self.stale_outstanding.retain(|agent, message| {
             self.inboxes
                 .get(agent)
@@ -630,6 +638,29 @@ mod warning_tests {
             inbox(false).await.is_empty(),
             "nothing pending, nothing sent"
         );
+        // Fenced: the tick sends nothing and forgets nothing; the notice
+        // arrives once authority is back.
+        daemon
+            .record_fs_changes(vec![change("b", Modified)], vec![])
+            .await;
+        daemon.offer_transfer(1).unwrap();
+        daemon.flush_notices();
+        {
+            let state = lock(&daemon.state);
+            assert!(
+                state.pending_stale.values().any(|p| !p.is_empty()),
+                "still pending while fenced"
+            );
+            assert!(
+                state.stale_outstanding.is_empty(),
+                "nothing sent while fenced"
+            );
+        }
+        assert!(daemon.abort_transfer("cleanup"));
+        daemon.flush_notices();
+        let after = inbox(true).await;
+        assert_eq!(after.len(), 1, "{after:?}");
+        assert_eq!(after[0].payload["paths"], json!([canonical("b")]));
         // A change to very many paths with long names still fits one
         // notice: fewer are named, the count stays exact.
         // Names near the filesystem's limit, in nested directories.

@@ -494,6 +494,9 @@ pub fn event_line(event: &Event) -> String {
             Some(reason) => format!("channel closed   {channel}: {reason}"),
             None => format!("channel closed   {channel}"),
         },
+        EventKind::ChannelsPruned { channels } => {
+            format!("channels pruned  {}", channels.len())
+        }
         EventKind::ReviewSubmitted {
             channel,
             by,
@@ -568,6 +571,13 @@ pub fn event_line(event: &Event) -> String {
         }
         EventKind::AgentSessionBound { agent, session } => {
             format!("agent bound      {} to session {session}", agent.short())
+        }
+        EventKind::HumanLocationChanged { agent, workdir, .. } => {
+            format!(
+                "human moved      {} to {}",
+                agent.short(),
+                workdir.display()
+            )
         }
         EventKind::AgentStarted { agent, pid } => {
             let pid = pid.map(|p| format!(" pid {p}")).unwrap_or_default();
@@ -697,6 +707,12 @@ pub fn event_line(event: &Event) -> String {
         EventKind::AgentOwnerReattached { agent, owner_pid } => {
             format!("owner reattached {} (owner pid {owner_pid})", agent.short())
         }
+        EventKind::AgentRestartCleared { agent } => {
+            format!("restart cleared  {}", agent.short())
+        }
+        EventKind::AgentRestoreCleared { agent } => {
+            format!("restore cleared  {}", agent.short())
+        }
         EventKind::AgentInputDropped { agent, reason } => {
             format!("input dropped    {} {reason}", agent.short())
         }
@@ -710,6 +726,26 @@ pub fn event_line(event: &Event) -> String {
             format!("checkout moved   {} {}", agent.short(), vcs.describe())
         }
         EventKind::DaemonStopping { reason } => format!("daemon stopping  ({reason})"),
+        EventKind::DaemonTransferOffered {
+            transfer,
+            successor_pid,
+        } => format!(
+            "transfer offered {} to pid {successor_pid}",
+            short(transfer)
+        ),
+        EventKind::DaemonTransferReaddressed {
+            transfer,
+            successor_pid,
+        } => format!(
+            "transfer {} now addressed to pid {successor_pid}",
+            short(transfer)
+        ),
+        EventKind::DaemonTransferAccepted { transfer } => {
+            format!("transfer accepted {}", short(transfer))
+        }
+        EventKind::DaemonTransferAborted { transfer, reason } => {
+            format!("transfer aborted {} {reason}", short(transfer))
+        }
         // A newer daemon than this CLI. Saying so beats a blank line,
         // and beats refusing to print the rest of the stream.
         EventKind::AgentReconciled {
@@ -737,6 +773,32 @@ fn single_line(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transfer_event_ids_can_contain_multibyte_text() {
+        use agentdocker_core::{Event, EventKind};
+        let transfer = "abcdefgé🙂𐍈more".to_owned();
+        for kind in [
+            EventKind::DaemonTransferOffered {
+                transfer: transfer.clone(),
+                successor_pid: 1,
+            },
+            EventKind::DaemonTransferReaddressed {
+                transfer: transfer.clone(),
+                successor_pid: 1,
+            },
+            EventKind::DaemonTransferAccepted {
+                transfer: transfer.clone(),
+            },
+            EventKind::DaemonTransferAborted {
+                transfer: transfer.clone(),
+                reason: "fixture".into(),
+            },
+        ] {
+            let rendered = super::event_line(&Event::new(kind, chrono::Utc::now()));
+            assert!(rendered.contains(super::short(&transfer)));
+        }
+    }
+
     #[test]
     fn control_characters_cannot_inject_event_rows() {
         let event = agentdocker_core::Event::new(

@@ -84,8 +84,11 @@ checksums, signature and Gatekeeper unless `--local-preview`), must be the very
 release the feed described (version, source, state schema, target), and must be
 newer than what is installed; `--apply` pins the reviewed release and current
 IDs exactly as the desktop screen's Apply does. The report includes how many
-agents the running daemon says are live, so the person can choose when to
-restart it; the command never restarts anything. The desktop screen offers
+agents the running daemon says are live. Activation asks it to reload; the
+experimental gate permits handover, while a refusal leaves it serving. A lost
+or unexpected reply triggers a fresh status probe without replaying Reload:
+`reloaded: null` means unknown, `before` retains the prior observation, and
+`serving` contains the new observation or `null` when none answers. The desktop screen offers
 **Check for updates** and **Download and preview** on Settings → Installation,
 and the footer says when a newer version is known. A preview feed or a
 `file://` feed is accepted only with `--local-preview`; `AGENTDOCKER_UPDATE_FEED`
@@ -107,7 +110,7 @@ request may finish. `scripts/daily_update_smoke.py` exercises these controls and
 restart behavior with a controlled CLI reply; the update-consumer driver above
 provides separate feed/archive validation.
 
-Updates affect the next app/CLI launch. They do not stop a live daemon or its agents. Daemon replacement remains an explicit lifecycle operation. Rollback verifies the retained payload and requires equal daemon state schemas; it does not restore or downgrade the database. Keep a matching state backup for any manual downgrade. Retained versions are not automatically pruned.
+Updates select the release for the next app/CLI launch. Activating a different release, including with `--apply`, also requests the running daemon's gated replacement. A refusal leaves the current daemon and its agents serving. Replacement remains an explicit lifecycle operation; checking or downloading an update alone does not request it. Rollback verifies the retained payload and requires equal daemon state schemas; it does not restore or downgrade the database. Keep a matching state backup for any manual downgrade. Retained versions are not automatically pruned.
 
 `scripts/desktop_install_smoke.py --source artifacts/desktop --output artifacts/install-smoke` tests this flow under a disposable prefix, including stale-preview rejection, tampered executables, private activation metadata, retained versions and a responsive daemon across activation/rollback. CI uses two package generations of the same binaries and labels that limitation. `--previous-source` accepts a separately built older package for a trial between source revisions. Graphical acceptance and real-provider round trips are separate checks.
 

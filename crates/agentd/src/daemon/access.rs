@@ -32,10 +32,10 @@ impl State {
     ) -> Result<(), Box<Response>> {
         let mut event = Event::new(kind, Utc::now());
         event.seq = self.next_seq;
-        self.persist("access transition", |store| {
+        let _ = self.persist("access transition", |store| {
             store.put_document_with_event("access", id, grant, &event)
         });
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return Err(Box::new(error));
         }
         self.next_seq += 1;
@@ -44,10 +44,10 @@ impl State {
     }
 
     fn read_access(&mut self, id: &str) -> Result<Option<Grant>, Box<Response>> {
-        self.store_op("access read", |store| store.document("access", id))
+        self.store_read("access read", |store| store.document("access", id))
             .ok_or_else(|| {
                 Box::new(
-                    self.storage_failure()
+                    self.write_failure()
                         .expect("failed read records storage failure"),
                 )
             })
@@ -174,7 +174,7 @@ impl Daemon {
             Utc::now(),
         );
         event.seq = state.next_seq;
-        state.persist("workspace grant", |store| {
+        let _ = state.persist("workspace grant", |store| {
             store.put_document_with_event("access", &id, &grant, &event)
         });
         if let Some(error) = &state.storage_error {

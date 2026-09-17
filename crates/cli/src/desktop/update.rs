@@ -536,8 +536,12 @@ fn run_with_home(
     let schema_change = release.state_schema > minimum_schema;
     let live = live_agents(options.socket.clone());
     let guidance = match live {
-        Some(0) => "no agents are live; `agentdocker daemon restart` switches the daemon now",
-        Some(_) => "agents are live; finish their work before `agentdocker daemon restart`",
+        Some(0) => {
+            "no agents are live; applying asks the daemon to reload, and `agentdocker daemon restart` switches it otherwise"
+        }
+        Some(_) => {
+            "agents are live; applying asks the daemon to reload underneath them, and a refusal leaves it serving until `agentdocker daemon restart`"
+        }
         None => "no daemon answered; the next launch starts the installed version",
     };
     let mut update = json!({
@@ -646,6 +650,7 @@ fn run_with_home(
         options.local_preview,
         Some(candidate.id.clone()),
         expect_current,
+        options.socket.clone(),
     )?;
     report["update"] = update;
     println!("{}", serde_json::to_string_pretty(&report)?);

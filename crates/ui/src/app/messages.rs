@@ -82,6 +82,7 @@ impl App {
     }
 
     fn agent_live(&self, id: &str) -> bool {
+        let id = self.canonical_agent(id);
         self.agents
             .iter()
             .any(|a| a.id.as_str() == id && a.status.is_live())
@@ -718,6 +719,37 @@ impl App {
             .into()
     }
 
+    /// Resolve only the person's direct recipient, never a broadcast or a
+    /// read-only conversation between two agents.
+    fn direct_input_recipient(&self, conversation: &str) -> Option<&AgentRecord> {
+        let conversation = agentdocker_core::ConversationId::from(conversation.to_owned());
+        let (one, other) = conversation.dm_parties()?;
+        let recipient = if self.is_human(one) {
+            other
+        } else if self.is_human(other) {
+            one
+        } else {
+            return None;
+        };
+        // Resolve retired IDs through the current alias map, just as sends do.
+        let recipient = self.canonical_agent(recipient);
+        self.agents
+            .iter()
+            .find(|agent| agent.id.as_str() == recipient)
+    }
+
+    /// Both composers and queued submit events obey the same current state.
+    /// Retired IDs may resolve to a live session; a missing DM record cannot.
+    pub(super) fn conversation_can_send(&self, conversation: &str) -> bool {
+        let Some(destination) = self.conversation_destination(conversation) else {
+            return false;
+        };
+        agentdocker_core::ConversationId::from(conversation)
+            .dm_parties()
+            .is_none()
+            || self.agent_live(&destination)
+    }
+
     /// The composer under a conversation or a thread: the draft, its
     /// receipt or error, and Send. Enter sends.
     /// The composer of a conversation, or of a thread in it when `root` is
@@ -768,6 +800,27 @@ impl App {
         .spacing(4);
         if let Some(error) = draft.and_then(|d| d.error.as_ref()) {
             composer = composer.push(text(error.clone()).size(13).color(c.amber));
+        }
+        // Put the receiver state where a person is about to send, including
+        // thread replies. A working MCP/hook transport alone cannot wake it.
+        if let Some(agent) = self.direct_input_recipient(conversation) {
+            let status = self.input_readiness(agent);
+            let mut readiness = row![small(status, c).width(Fill)]
+                .spacing(6)
+                .align_y(Center);
+            if self
+                .runtimes
+                .iter()
+                .any(|runtime| runtime.name == agent.spec.runtime)
+            {
+                readiness = readiness.push(action(
+                    format!("input-connection-{key}"),
+                    "Connection",
+                    Some(Message::OpenConnection(agent.spec.runtime.clone())),
+                    false,
+                ));
+            }
+            composer = composer.push(readiness);
         }
         composer.into()
     }
@@ -937,13 +990,7 @@ impl App {
             }
         }
         let destination = self.conversation_destination(&key);
-        let can_send = destination.is_some()
-            && match summary.kind {
-                ConversationKind::Dm => self
-                    .counterpart(&summary)
-                    .is_some_and(|id| self.agent_live(id)),
-                _ => true,
-            };
+        let can_send = self.conversation_can_send(&key);
         let placeholder = match summary.kind {
             ConversationKind::Notices => "AgentDocker's notices; nothing to reply to".to_owned(),
             ConversationKind::Dm if destination.is_none() => {
@@ -1023,7 +1070,14 @@ impl App {
             _ => list = list.push(note("Loading…", c)),
         }
         let key = self.shell.conversation.clone().unwrap_or_default();
-        let can_send = self.conversation_destination(&key).is_some();
+        let can_send = self.conversation_can_send(&key);
+        let placeholder = if can_send {
+            "Reply in thread"
+        } else if self.conversation_destination(&key).is_some() {
+            "This session has ended"
+        } else {
+            "This conversation is read-only"
+        };
         column![
             header,
             rule(c),
@@ -1031,19 +1085,13 @@ impl App {
                 .height(Fill)
                 .padding([6, 0]),
             rule(c),
-            container(self.composer(
-                &key,
-                Some(root_id),
-                "Reply in thread".to_owned(),
-                can_send,
-                c
-            ))
-            .padding(iced::Padding {
-                top: 8.0,
-                right: 0.0,
-                bottom: 0.0,
-                left: 0.0
-            }),
+            container(self.composer(&key, Some(root_id), placeholder.to_owned(), can_send, c))
+                .padding(iced::Padding {
+                    top: 8.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0
+                }),
         ]
         .spacing(6)
         .height(Fill)
@@ -1135,6 +1183,88 @@ mod tests {
             .unwrap();
         assert!(!app.counts_for_person(contested));
         assert_eq!(app.row_unread(contested), 218);
+    }
+
+    #[test]
+    fn direct_input_status_uses_the_current_recipient_only() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, receiver) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, receiver);
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                runtime: "claude-code".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.id = "worker".into();
+        app.agents.push(agent);
+        app.aliases.insert("retired".into(), "worker".into());
+        assert!(app.agent_live("retired"));
+        assert!(!app.agent_live("missing"));
+        for conversation in ["dm:user:worker", "dm:worker:user", "dm:retired:user"] {
+            assert_eq!(
+                app.direct_input_recipient(conversation)
+                    .unwrap()
+                    .id
+                    .as_str(),
+                "worker"
+            );
+        }
+        for conversation in ["dm:worker:peer", "channel:room", "all", "dm:user:missing"] {
+            assert!(
+                app.direct_input_recipient(conversation).is_none(),
+                "{conversation}"
+            );
+        }
+        app.agents[0].status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        assert!(!app.agent_live("retired"));
+    }
+
+    #[test]
+    fn ended_direct_threads_cannot_send_and_keep_their_drafts() {
+        let (commands, requests) = queue::channel();
+        let (_messages, receiver) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, receiver);
+        app.connected = Ok(());
+        let mut agent = AgentRecord::new(Default::default(), false, Utc::now());
+        agent.id = "worker".into();
+        app.agents.push(agent);
+        app.aliases.insert("retired".into(), "worker".into());
+        let conversation = "dm:retired:user";
+        let root = MessageId::from("root".to_owned());
+        let thread = crate::app::draft_key(conversation, Some(&root));
+        let keys = [conversation.to_owned(), thread.clone()];
+        assert!(app.conversation_can_send(conversation));
+        assert!(!app.conversation_can_send("dm:missing:user"));
+        assert!(!app.conversation_can_send("dm:peer:worker"));
+        assert!(app.conversation_can_send("channel:room"));
+        app.agents[0].status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        assert!(!app.conversation_can_send(conversation));
+        for key in &keys {
+            let _ = app.update(Message::ConversationDraft(key.clone(), "kept draft".into()));
+            // A submit already queued before the status update is refused too.
+            let _ = app.update(Message::SendConversation(key.clone()));
+            let draft = &app.shell.conversation_drafts[key];
+            assert_eq!(draft.text, "kept draft");
+            assert!(draft.sending.is_none());
+        }
+        assert!(
+            !requests
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::ConversationSend { .. }))
+        );
+        app.agents[0].status = agentdocker_core::AgentStatus::Running;
+        assert!(app.conversation_can_send(conversation));
+        let _ = app.update(Message::SendConversation(thread.clone()));
+        assert!(requests.try_iter().any(|cmd| matches!(cmd,
+            Cmd::ConversationSend { draft, reply_to: Some(parent), .. }
+            if draft == thread && parent == root)));
+        assert_eq!(
+            app.shell.conversation_drafts[conversation].text,
+            "kept draft"
+        );
     }
 
     #[test]

@@ -1204,7 +1204,9 @@ fn copy_payload(source: &Path, destination: &Path) -> Result<()> {
     }
 }
 
-pub fn run(args: DesktopArgs) -> Result<()> {
+/// `socket` is the top-level `--socket`, when given: the daemon a status
+/// asks and an activation reloads is the one selected, not the default.
+pub fn run(args: DesktopArgs, socket: Option<PathBuf>) -> Result<()> {
     let prefix = args
         .prefix
         .or_else(std::env::home_dir)
@@ -1229,10 +1231,11 @@ pub fn run(args: DesktopArgs) -> Result<()> {
         }
         DesktopCommand::Status => {
             let homebrew = homebrew_owner(active.as_ref(), &homebrew_caskrooms());
+            let daemon = serving_daemon(socket);
             println!(
                 "{}",
                 serde_json::to_string_pretty(
-                    &json!({"prefix":layout.prefix,"application":layout.application,"installation":active,"homebrew":homebrew})
+                    &json!({"prefix":layout.prefix,"application":layout.application,"installation":active,"homebrew":homebrew,"daemon":daemon})
                 )?
             );
             return Ok(());
@@ -1314,6 +1317,7 @@ pub fn run(args: DesktopArgs) -> Result<()> {
         local_preview,
         expect_release,
         expect_current,
+        socket,
     )?;
     if !preview {
         layout.register_launcher();
@@ -1341,6 +1345,7 @@ fn perform(
     local_preview: bool,
     expect_release: Option<String>,
     expect_current: Option<String>,
+    socket: Option<PathBuf>,
 ) -> Result<serde_json::Value> {
     if let Some(expected) = expect_release {
         ensure!(
@@ -1363,10 +1368,10 @@ fn perform(
     );
     layout.preflight()?;
     layout.check_launcher_support(&candidate)?;
-    let report = json!({"source":source, "candidate":candidate, "previous":active.as_ref().map(|active| &active.current),
+    let mut report = json!({"source":source, "candidate":candidate, "previous":active.as_ref().map(|active| &active.current),
         "application":layout.application, "bin":layout.bin, "versions":layout.root.join("versions"),
         "preview":preview, "local_preview":local_preview,
-        "activation":"next app/CLI launch; an already-running daemon continues until explicitly restarted or reloaded"});
+        "activation":"next app/CLI launch; a running daemon is asked to reload to this release once it is activated"});
     if preview {
         return Ok(report);
     }
@@ -1401,10 +1406,10 @@ fn perform(
         std::fs::rename(stage.path(), &version)?;
         std::fs::File::open(layout.root.join("versions"))?.sync_all()?;
     }
-    if current
+    let changed = current
         .as_ref()
-        .is_none_or(|active| active.current.id != candidate.id)
-    {
+        .is_none_or(|active| active.current.id != candidate.id);
+    if changed {
         layout.activate(candidate, current.map(|active| active.current))?;
     } else if cfg!(target_os = "macos") && candidate.launcher_redirect == 1 {
         // Reinstalling the active release also repairs an older managed
@@ -1414,12 +1419,209 @@ fn perform(
         layout.repair_legacy_launcher()?;
         layout.publish_launcher_bundle(launcher)?;
     }
+    // Activated: a daemon that is running was started from an earlier
+    // release and keeps serving it until it hands over. Ask it to, and say
+    // what serves either way; the answer is the daemon's, never assumed.
+    // An unchanged activation asks nothing: there is no other release to
+    // hand over to, and a reload would only replace the daemon with the
+    // same binary.
+    let daemon = if changed {
+        daemon_after_activation(socket)
+    } else {
+        let serving = serving_daemon(socket);
+        let summary = if serving.is_null() {
+            "unchanged: this release was already active and no daemon answered".to_owned()
+        } else {
+            format!(
+                "unchanged: this release was already active; agentd {} serves from {} (pid {})",
+                serving["version"].as_str().unwrap_or("?"),
+                serving["executable"].as_str().unwrap_or("?"),
+                serving["pid"]
+            )
+        };
+        json!({"answered": !serving.is_null(), "reloaded": false, "serving": serving, "summary": summary})
+    };
+    report["activation"] = json!(daemon["summary"]);
+    report["daemon"] = daemon;
     Ok(report)
+}
+
+/// What actually serves right now, from the daemon itself: its version,
+/// pid and executable, or `null` when no daemon answers. Nothing is
+/// started.
+fn serving_daemon(socket: Option<PathBuf>) -> serde_json::Value {
+    use agentdocker_core::{Request, Response};
+    std::thread::spawn(move || {
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return serde_json::Value::Null;
+        };
+        runtime.block_on(async {
+            let client = crate::client::Client::new(socket).with_start_timeout(None);
+            match client.call(&Request::Ping).await {
+                Ok(Response::Pong {
+                    version,
+                    pid,
+                    executable,
+                    ..
+                }) => json!({"version": version, "pid": pid, "executable": executable}),
+                _ => serde_json::Value::Null,
+            }
+        })
+    })
+    .join()
+    .unwrap_or(serde_json::Value::Null)
+}
+
+/// Ask a running daemon to reload to the release just activated, and
+/// report what serves afterwards. Nothing is started here: with no daemon
+/// answering, the next launch starts the installed release. A refusal is
+/// reported with the daemon's reason, since a daemon that keeps serving
+/// the previous release is the safe outcome, not a failure of the
+/// installation.
+fn daemon_after_activation(socket: Option<PathBuf>) -> serde_json::Value {
+    use agentdocker_core::{Request, Response};
+    std::thread::spawn(move || {
+        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        else {
+            return json!({"answered": false, "summary": "next app/CLI launch; no daemon was asked"});
+        };
+        runtime.block_on(async {
+            let client = crate::client::Client::new(socket).with_start_timeout(None);
+            let serving = |response: Result<Response>| match response {
+                Ok(Response::Pong {
+                    version,
+                    pid,
+                    executable,
+                    ..
+                }) => Some(json!({"version": version, "pid": pid, "executable": executable})),
+                _ => None,
+            };
+            let Some(before) = serving(client.call(&Request::Ping).await) else {
+                return json!({
+                    "answered": false,
+                    "summary": "next app/CLI launch; no daemon answered, so none needed reloading",
+                });
+            };
+            match client.call_raw(&Request::Reload).await {
+                Ok(Response::Ok) => {
+                    let after = serving(client.call(&Request::Ping).await);
+                    let summary = match &after {
+                        Some(now) => format!(
+                            "reloaded: agentd {} serves from {} (pid {})",
+                            now["version"].as_str().unwrap_or("?"),
+                            now["executable"].as_str().unwrap_or("?"),
+                            now["pid"]
+                        ),
+                        None => "reloaded, but no daemon answered afterwards; check `agentdocker daemon status`".to_owned(),
+                    };
+                    json!({"answered": true, "reloaded": true, "before": before, "serving": after, "summary": summary})
+                }
+                Ok(Response::Error { code, message, .. }) => json!({
+                    "answered": true, "reloaded": false, "serving": before,
+                    "refusal": {"code": code, "message": message},
+                    "summary": format!(
+                        "not reloaded ({message}); agentd {} keeps serving from {} until `agentdocker daemon reload` succeeds or it is restarted",
+                        before["version"].as_str().unwrap_or("?"),
+                        before["executable"].as_str().unwrap_or("?")
+                    ),
+                }),
+                outcome => {
+                    // A lost or unexpected reply does not prove refusal. The
+                    // successor may already serve; never replay Reload or
+                    // report the predecessor as though it were still observed.
+                    let reason = match outcome {
+                        Ok(other) => format!("reload answered {other:?}"),
+                        Err(error) => format!("reload reply could not be confirmed ({error:#})"),
+                    };
+                    let after = serving(client.call(&Request::Ping).await);
+                    let observed = match &after {
+                        Some(now) => format!(
+                            "agentd {} is now observed at {} (pid {})",
+                            now["version"].as_str().unwrap_or("?"),
+                            now["executable"].as_str().unwrap_or("?"),
+                            now["pid"]
+                        ),
+                        None => "the serving daemon is unknown".to_owned(),
+                    };
+                    json!({
+                        "answered": true, "reloaded": serde_json::Value::Null,
+                        "before": before, "serving": after,
+                        "summary": format!("{reason}; {observed}; check `agentdocker daemon status`"),
+                    })
+                }
+            }
+        })
+    })
+    .join()
+    .unwrap_or_else(|_| json!({"answered": false, "summary": "next app/CLI launch; the daemon could not be asked"}))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn activation_rechecks_serving_daemon_after_a_lost_reload_reply_without_replay() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        use std::time::{Duration, Instant};
+
+        for observed_pid in [Some(202), Some(101), None] {
+            let tmp = tempfile::tempdir().unwrap();
+            let socket = tmp.path().join("reload.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let server = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                for (operation, pid) in [
+                    ("ping", Some(101)),
+                    ("reload", None),
+                    ("ping", observed_pid),
+                ] {
+                    let mut stream = loop {
+                        match listener.accept() {
+                            Ok((stream, _)) => break stream,
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(Instant::now() < deadline, "missing {operation} request");
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(error) => panic!("accept: {error}"),
+                        }
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let mut line = String::new();
+                    BufReader::new(&mut stream).read_line(&mut line).unwrap();
+                    let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                    assert_eq!(request["op"], operation, "Reload must never be replayed");
+                    if let Some(pid) = pid {
+                        let response = json!({
+                            "type": "pong", "version": "fixture", "uptime_secs": 1,
+                            "pid": pid, "executable": format!("/release-{pid}/agentd")
+                        });
+                        writeln!(stream, "{response}").unwrap();
+                    }
+                    // Reload is read, then the connection closes without a
+                    // reply; the last Ping may likewise have no answer.
+                }
+            });
+            let report = daemon_after_activation(Some(socket));
+            server.join().unwrap();
+            assert_eq!(report["before"]["pid"], 101);
+            assert!(report["reloaded"].is_null(), "{report}");
+            match observed_pid {
+                Some(pid) => assert_eq!(report["serving"]["pid"], pid),
+                None => assert!(report["serving"].is_null(), "{report}"),
+            }
+        }
+    }
 
     pub(super) fn release(layout: &Layout, marker: &str) -> Release {
         let id = format!("{:x}", Sha256::digest(marker.as_bytes()));

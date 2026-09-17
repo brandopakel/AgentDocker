@@ -1,0 +1,3660 @@
+{
+  "date": "2026-09-16",
+  "result": "passed",
+  "scope": "reload acceptance trial with a bound controller's restart episode across the handovers; release binaries built from the reload integration branch (uncommitted merge, tree recorded); private daemon under a disposable home",
+  "source": {
+    "branch": "claude/reload-stack",
+    "index_tree": "4a353327e6cfacb0cba44c5f72ed487155115517",
+    "note": "the merge of fence-bindings, main and the reload stack tip, with the store's deferred data migrations and the trial's controller scenario; committed as the next commit on the branch"
+  },
+  "build_info": {
+    "arch": "aarch64",
+    "format": 1,
+    "installation_lock": 1,
+    "os": "macos",
+    "state_schema": 20,
+    "version": "0.1.0"
+  },
+  "release_binaries": {
+    "agentd": "b7a45eb34da0a0aad4049c37cad97592dd46d276f29e1e72a0c557d789a0428d",
+    "agentdocker": "36ca354fc8e76a21b0cd4212cf7efbc888c394d9003a630a269b8e5345408982"
+  },
+  "reloads": 20,
+  "reload_seconds": [
+    1.053,
+    0.542,
+    1.055,
+    0.029,
+    0.024,
+    0.546,
+    0.027,
+    0.541,
+    0.545,
+    0.029,
+    0.026,
+    0.025,
+    1.058,
+    0.547,
+    1.058,
+    0.026,
+    0.032,
+    0.032,
+    0.028,
+    0.026
+  ],
+  "predecessor_retired_seconds": [
+    1.075,
+    0.543,
+    1.076,
+    0.05,
+    0.054,
+    0.574,
+    0.058,
+    0.571,
+    0.572,
+    0.06,
+    0.056,
+    0.08,
+    1.088,
+    0.577,
+    1.08,
+    0.055,
+    0.059,
+    0.055,
+    0.053,
+    0.057
+  ],
+  "daemon_pids": [
+    54090,
+    54319,
+    54417,
+    54567,
+    54612,
+    54703,
+    54817,
+    54864,
+    54959,
+    55051,
+    55073,
+    55118,
+    55164,
+    55381,
+    55505,
+    55661,
+    55708,
+    55745,
+    55791,
+    55817,
+    55852
+  ],
+  "scenarios": [
+    "384 messages sent through 20 reloads arrived once, in order; 0 send errors",
+    "133 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+    "both loggers' logs are contiguous across every reload",
+    "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+    "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+    "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 19 handovers accepted in between"
+  ],
+  "sends": {
+    "delivered": 384,
+    "errors": []
+  },
+  "launches": {
+    "finished": 133,
+    "errors": []
+  },
+  "log_lines": {
+    "logger-a": 738628,
+    "logger-b": 732878
+  },
+  "controller_episode": {
+    "attempts": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "launched_pids": [
+      54320,
+      54960,
+      55821,
+      56327,
+      56882
+    ],
+    "handovers_during": 19
+  },
+  "daemon_log_warnings": {},
+  "artifacts": {
+    "result": {
+      "private_path": "<session scratchpad>/reload-acc20/result.json",
+      "sha256": "48bf5d66c47fe8fbb7927887b4650e81a87c895b95216604015e27f92531c133"
+    },
+    "daemon_log": {
+      "private_path": "<session scratchpad>/reload-acc20/daemon.log",
+      "sha256": "fc822d17d4fe135afbe99b4e0f3fccdedf8db3caad9d94a14f746ffee31e53e1"
+    },
+    "ten_reload_run": {
+      "private_path": "<session scratchpad>/reload-acc1/result.json",
+      "sha256": "da7e50327baaabd66cb84309549a78ea64bb7990a5ff131b9ca11c18fa6c0f79"
+    }
+  },
+  "limits": [
+    "The launched controller ends on its own after two seconds; a controller that starts and never binds (bind grace, SIGTERM, SIGKILL) is unit-tested, not trialled here.",
+    "Replay retention limits and Windows are not covered; provider-side acceptance (live Claude/Codex conversations across a switch) is codex's."
+  ],
+  "review_rerun": {
+    "note": "After the review fixes (deferred recovery takes its sequence numbers at the flush; Terminate revalidated under the guard; the successor pins its controllers before it answers serving; the trial ends its own processes and fails on any survivor), the same trial on the rebuilt release binaries.",
+    "release_binaries": {
+      "agentd": "255ec574ab659bb6508c17b6d352e603763979aed63f1e05c5fecdc212b842b9",
+      "agentdocker": "8740365ae0c72e0ec445a39279f8aaf942d5cef24f3f1ad71c71e0ac7df347a5"
+    },
+    "reloads": 20,
+    "controller_episode": {
+      "attempts": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "launched_pids": [
+        37463,
+        38063,
+        38982,
+        40646,
+        42684
+      ],
+      "handovers_during": 20
+    },
+    "survivors": [],
+    "sends": {
+      "delivered": 900,
+      "errors": []
+    },
+    "launches": {
+      "finished": 432,
+      "errors": []
+    },
+    "log_lines": {
+      "logger-a": 2000194,
+      "logger-b": 2000696
+    },
+    "daemon_log_warnings": {
+      "agentd::supervisor: exit not recorded durably; the owner's exit report is kept": 5,
+      "agentd::daemon::restore: recovered exit not durable; owner report kept without acknowledgement": 5
+    },
+    "warnings_note": "Ten fenced-skip warnings on short agents' exits that landed during an offer; each exit was recovered after the acceptance, as the launches check requires (every launched agent reached a durable end).",
+    "artifacts": {
+      "result": {
+        "private_path": "<session scratchpad>/reload-acc20b/result.json",
+        "sha256": "2ed6517c9ece622e7d6acfcd3caf14afe14f38f5a7e03f8700a2a402214eb84f"
+      }
+    }
+  },
+  "retained_release_pin": {
+    "date": "2026-09-16",
+    "result": "passed",
+    "driver": "scripts/desktop_reload_smoke.py --pin-trial",
+    "scope": "a disposable managed prefix and private daemon; a controller (a sleep, alive throughout) bound with a launch descriptor inside the first installed release, so nothing is ever launched from that release and only a daemon's pin for the binding can hold it; two later generations installed with the gated daemon handing over each time; a prune with the first release neither current nor previous; unbind with the token, and prune",
+    "package": {
+      "source_commit": "2ee09365518dfba58780e0c4cf39ca370335faf5",
+      "version": "0.1.0",
+      "payload_id": null
+    },
+    "releases": {
+      "first": "f015d3da215eb1c3d4a68c92e86c10adea5d0cd9e7e1f5bc6eb97d44e3a6acd0",
+      "second": "326ad48a6db03ae1ec3b0b23e1761bb07e8b903dc8b842a188b4de803d663fba",
+      "third": "76d6226f5dfc47f545c58aaa5bf96f64a555f56a75624c1ed55fc3ab9118b21e",
+      "serving_pid": 37133
+    },
+    "scenarios": [
+      "a bound controller's launch descriptor in the first release pins that release, with the controller alive and nothing launched from it",
+      "with the first release neither current nor previous, a prune keeps it while a controller's binding pins it",
+      "unbinding releases the pin, and the next prune removes the release"
+    ],
+    "checks": [
+      "the pin file for the first release is held by the first daemon while the bound controller is alive and nothing has been launched",
+      "after each handover, once the predecessor process is gone, the pin is still held, and the binding records no launched process",
+      "desktop prune --keep 0 --preview does not list the first release; after the prune its versions directory is still there",
+      "no warning in any daemon's log; the bound controller is still running at the end",
+      "unbind_input with the token releases the pin within ten seconds; the next prune removes the release"
+    ],
+    "artifacts": {
+      "result": {
+        "private_path": "<session scratchpad>/pin-trial3/result.json",
+        "sha256": "64cf33ee02ab11064457554746163bd3f4f9ca49d426908fbfe86f9e2006086d"
+      },
+      "daemon_log": {
+        "private_path": "<session scratchpad>/pin-trial3/pin-daemon.log",
+        "sha256": "cfa0d5bb9299b32a637653076f56cc5ff0b62bd40309b7a059d01472fab51662"
+      },
+      "operations": {
+        "private_path": "<session scratchpad>/pin-trial3/operations.jsonl",
+        "sha256": "89960b2804e78fe3d08845af3fbbf70685aef851e1d57fc442a963f61cdffc5a"
+      }
+    },
+    "limits": [
+      "The three generations are the same binaries with distinct package metadata, as the reload smoke's second generation is."
+    ],
+    "earlier_runs": {
+      "note": "The first two runs let the daemon launch `agentdocker events` from the first release after the bound controller was killed; a binary from that release then held its own executable pin, so those runs could not tell the successor's pin from the launched process's. Retained, not counted.",
+      "pin_trial1": {
+        "private_path": "<session scratchpad>/pin-trial1/result.json",
+        "sha256": "4e79d08f7770db4e8ffc909f5da40617fab86e4616b74c589425dfe1065ca6ba"
+      },
+      "pin_trial2": {
+        "result": {
+          "private_path": "<session scratchpad>/pin-trial2/result.json",
+          "sha256": "766f739ef32a8088aca8f97d75c226df7b39f269335fefe144c96ed3cbe0322b"
+        },
+        "daemon_log": {
+          "private_path": "<session scratchpad>/pin-trial2/pin-daemon.log",
+          "sha256": "7f0e9f0d98b701cd8d5a5bdd2e841c773784c17b070510202af9594615b006cc"
+        },
+        "operations": {
+          "private_path": "<session scratchpad>/pin-trial2/operations.jsonl",
+          "sha256": "8b9ccd59e234a648aea6829720583cc3b31ce90f7eb4d48b267084d14263d4de"
+        }
+      }
+    },
+    "cleanup_rerun": {
+      "note": "Rerun after the trial's cleanup was made step-independent with survivor accounting; same source, same outcome.",
+      "pin_cleanup": {
+        "errors": [],
+        "survivors": []
+      },
+      "releases": {
+        "first": "f015d3da215eb1c3d4a68c92e86c10adea5d0cd9e7e1f5bc6eb97d44e3a6acd0",
+        "second": "326ad48a6db03ae1ec3b0b23e1761bb07e8b903dc8b842a188b4de803d663fba",
+        "third": "76d6226f5dfc47f545c58aaa5bf96f64a555f56a75624c1ed55fc3ab9118b21e",
+        "serving_pid": 60999
+      },
+      "artifacts": {
+        "result": {
+          "private_path": "<session scratchpad>/pin-trial4/result.json",
+          "sha256": "cf72fc03cd1c3334aef1ab74dc0ea39ea450f18666d942a2314a95df3576c408"
+        }
+      }
+    }
+  },
+  "review_rerun_2": {
+    "note": "After the CodeRabbit round (reads served through the fence, tick writers committing before memory, a stop refused when its restart-policy clear does not commit, a post-acceptance recovery failure kept serving with storage disabled, the readiness wait inside the trial's cleanup scope), the same 20-reload trial on the rebuilt release.",
+    "reloads": 20,
+    "controller_episode": {
+      "attempts": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "launched_pids": [
+        46193,
+        47012,
+        48140,
+        49766,
+        51971
+      ],
+      "handovers_during": 18
+    },
+    "survivors": [],
+    "cleanup_errors": [],
+    "sends": {
+      "delivered": 900,
+      "errors": []
+    },
+    "launches": {
+      "finished": 525,
+      "errors": []
+    },
+    "log_lines": {
+      "logger-a": 2566399,
+      "logger-b": 2562513
+    },
+    "daemon_log_warnings": {
+      "agentd::supervisor: exit not recorded durably; the owner's exit report is kept": 5,
+      "agentd::daemon::restore: recovered exit not durable; owner report kept without acknowledgement": 5
+    },
+    "artifacts": {
+      "result": {
+        "private_path": "<session scratchpad>/reload-acc20c/result.json",
+        "sha256": "fdf3d1452b599d45d7037ed2121e7cc42caa1731e80537d92e22d71565e7b003"
+      }
+    }
+  },
+  "integration_review_2026_09_16": {
+    "result": "passed",
+    "scope": "Private daemon with experimental reload enabled; notifications suppressed. Source055f45f integrates main50c1f9c and fixes stop durability, container transition refusal, background admission and retention fencing. No production process or provider was replaced.",
+    "build": {
+      "format": 1,
+      "source_commit": "055f45f04035586ecc522f25f7579d81ee2ccb6e",
+      "source_tree": "9966a807cbfb41f9f450e4c0f525a6b1df41befe",
+      "source_input_sha256": "7c8c1c1acefad4b2b78f5c721ddc8cb6fa0f461ba39a94c88945eacbda488200",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 20,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "30652616f42b570dad4e09458943312333d30929847e3ad2ccbcdf38897efc2f",
+        "agentd": "5b70f8b8810a65a7f13fa4c10eb2a44a4fd823702d7db0e2ce10e8067286428d",
+        "agentdocker-ui": "2d7d1ea95c9b78dd3d236e9d775528b7f326a5a647c8f626ed7885f722fc1404"
+      }
+    },
+    "provenance_after": {
+      "source": {
+        "source_commit": "055f45f04035586ecc522f25f7579d81ee2ccb6e",
+        "source_tree": "9966a807cbfb41f9f450e4c0f525a6b1df41befe",
+        "source_input_sha256": "7c8c1c1acefad4b2b78f5c721ddc8cb6fa0f461ba39a94c88945eacbda488200",
+        "source_dirty": false
+      },
+      "binary_sha256": {
+        "agentdocker": "30652616f42b570dad4e09458943312333d30929847e3ad2ccbcdf38897efc2f",
+        "agentd": "5b70f8b8810a65a7f13fa4c10eb2a44a4fd823702d7db0e2ce10e8067286428d",
+        "agentdocker-ui": "2d7d1ea95c9b78dd3d236e9d775528b7f326a5a647c8f626ed7885f722fc1404"
+      },
+      "source_unchanged": true,
+      "binaries_unchanged": true
+    },
+    "ready_gate": {
+      "command": "bash scripts/verify.sh check",
+      "rust_passed": 1017,
+      "rust_skipped": 7,
+      "python_passed": 79,
+      "other": [
+        "documentation",
+        "formatting",
+        "strict Clippy",
+        "doctests",
+        "workspace packaging",
+        "release build"
+      ]
+    },
+    "focused_regressions": {
+      "passed": 6,
+      "cases": [
+        "supervised stop refusal leaves durable/in-memory records, events and control channel unchanged",
+        "failed restore/restart-policy clearing never requests a supervised stop",
+        "offered transfer retains actual event and change rows until abort",
+        "fenced container updates refuse without state or engine effects",
+        "queued background container reconciliation holds admission and blocks an offer",
+        "failed stop commit does not signal an actual verified external process"
+      ]
+    },
+    "trial": {
+      "passed": true,
+      "reloads": 20,
+      "build_info": {
+        "arch": "aarch64",
+        "format": 1,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "os": "macos",
+        "state_schema": 20,
+        "version": "0.1.0"
+      },
+      "scenarios": [
+        "900 messages sent through 20 reloads arrived once, in order; 0 send errors",
+        "424 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+        "both loggers' logs are contiguous across every reload",
+        "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+        "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+        "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 19 handovers accepted in between"
+      ],
+      "trial_processes": {
+        "provider": 50516,
+        "controller": 50517
+      },
+      "reload_seconds": [
+        0.822,
+        0.025,
+        0.025,
+        0.027,
+        0.029,
+        0.029,
+        0.028,
+        0.03,
+        1.576,
+        0.028,
+        0.031,
+        0.04,
+        0.035,
+        0.551,
+        0.04,
+        2.093,
+        0.043,
+        0.042,
+        0.043,
+        0.043
+      ],
+      "daemon_pids": [
+        50499,
+        50805,
+        50854,
+        50900,
+        50947,
+        51755,
+        51801,
+        51846,
+        51883,
+        52185,
+        52231,
+        52277,
+        53178,
+        54382,
+        54515,
+        54579,
+        55681,
+        55717,
+        56298,
+        56332,
+        56366
+      ],
+      "predecessor_retired_seconds": [
+        0.845,
+        0.049,
+        0.05,
+        5.049,
+        0.049,
+        0.049,
+        0.05,
+        0.055,
+        1.602,
+        0.051,
+        5.042,
+        5.041,
+        0.055,
+        0.574,
+        5.048,
+        2.113,
+        5.071,
+        0.043,
+        0.044,
+        0.067
+      ],
+      "sends": {
+        "delivered": 900,
+        "errors": []
+      },
+      "launches": {
+        "finished": 424,
+        "errors": []
+      },
+      "log_lines": {
+        "logger-a": 1883743,
+        "logger-b": 1890177
+      },
+      "controller_episode": {
+        "attempts": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "launched_pids": [
+          50808,
+          51404,
+          52402,
+          54756,
+          56619
+        ],
+        "handovers_during": 19
+      },
+      "survivors": [],
+      "cleanup_errors": [],
+      "daemon_log_warnings": {
+        "agentd::supervisor: exit not recorded durably; the owner's exit report is kept": 5,
+        "agentd::daemon::restore: recovered exit not durable; owner report kept without acknowledgement": 5
+      }
+    },
+    "warnings_note": "Ten warnings retain short-agent exit reports when a transfer refuses a write; every launched agent subsequently reached a durable end. This trial was not warning-free.",
+    "artifacts": {
+      "gate": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-gate1-2026-09-15.log",
+        "sha256": "295d97f2fafbbbf16936917a9b1ec921c62f92265e9a37b806bbe2e0749e8847"
+      },
+      "targeted": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-targeted4-2026-09-15.log",
+        "sha256": "0752a8d7181e5cedd4290fcc75be7460e971ea9a91bf232dbb5077727f253d33"
+      },
+      "external_stop": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-external-stop1-2026-09-15.log",
+        "sha256": "cae6a43d66c224baf5ecbc0e88252b0a1759c38137d69c23a4af2d18cff53281"
+      },
+      "native_manifest": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-native-build1-2026-09-15.json",
+        "sha256": "5f618de0fe1e278f307d6dde1f4e984802661cd746d583987fe4d245b0bba7f4"
+      },
+      "provenance_after": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-provenance-after1-2026-09-15.json",
+        "sha256": "6c410758be1e4d95641eca03aa947f15e55a2b0ae39ee7dff7d9e7172ebd2850"
+      },
+      "result": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-trial1-2026-09-15/result.json",
+        "sha256": "1f470791a6a56ae8d4c74aaf26c4be564a3d73a2e28cf5996d2338376d1d513f"
+      },
+      "daemon_log": {
+        "private_path": "/private/tmp/agentdocker-reload-integration-trial1-2026-09-15/daemon.log",
+        "sha256": "f2884dda6ac966b141c526bac131bf00f80dff12a2cad21b88cf4ff96277a890"
+      }
+    },
+    "earlier_targeted_attempts": [
+      {
+        "attempt": 1,
+        "result": "fixture compile failure: SQLite u64 conversion",
+        "artifact": {
+          "private_path": "/private/tmp/agentdocker-reload-integration-targeted1-2026-09-15.log",
+          "sha256": "9e891e46902ea235a7fa38b7b45b84f7c2cf60e8d5ad7053441335671f340320"
+        }
+      },
+      {
+        "attempt": 2,
+        "result": "fixture compile failure: boxed response matching",
+        "artifact": {
+          "private_path": "/private/tmp/agentdocker-reload-integration-targeted2-2026-09-15.log",
+          "sha256": "9b34552ae0bf09d25346bfa6ada7156fcd06ad40fccef67cf2fa2968e2425596"
+        }
+      },
+      {
+        "attempt": 3,
+        "result": "3 passed, 2 fixture assertions failed: expected records omitted registration defaults",
+        "artifact": {
+          "private_path": "/private/tmp/agentdocker-reload-integration-targeted3-2026-09-15.log",
+          "sha256": "83fd32841a940f5a09b62c0e04d8d9c7f48ddd411fde0c3225053732396d0227"
+        }
+      }
+    ],
+    "limits": [
+      "Provider/controller processes are owned sleep fixtures, not actual Claude/Codex conversations.",
+      "Real provider polls, attached terminal drafts, uncertain-write reconciliation, replay retention and Windows acceptance remain open.",
+      "Native provenance binds055f45f; subsequent main154 merge and evidence edits change documentation only.",
+      "Experimental reload remains gated; production app and daemon were unchanged."
+    ]
+  },
+  "native_codex_handover_2026_09_16": {
+    "result": "passed",
+    "driver_commit": "e09db70c813342af0241a9529f5fb92b0046108e",
+    "binary_source_commit": "055f45f04035586ecc522f25f7579d81ee2ccb6e",
+    "provenance": "Driver e09db70 on a clean tree, using the exact CLI/daemon release hashes from the clean055f45f native build. Rust/Cargo inputs are identical; driver/source and executable hashes remained unchanged during the trial.",
+    "command": "python3 scripts/native_codex_queue_smoke.py --cli target/release/agentdocker --codex <native-codex-executable> --output <private-new-directory> --scenario question --reload",
+    "trial": {
+      "started_at": "2026-09-16T04:54:18.168301+00:00",
+      "scenario": "question",
+      "reload_enabled": true,
+      "result": "passed",
+      "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+      "driver_sha256": "2631caaff4f0ebc36112d284086b2349b7235922d655d504083db7ae2b3e5d8d",
+      "source": {
+        "commit": "e09db70c813342af0241a9529f5fb92b0046108e",
+        "dirty": false,
+        "rust_and_driver_sha256": "73bdc5df2ed8779f3e0707a1d2958c2672e4ff446fc6bd24e5c8bb2bdbd79c07"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "30652616f42b570dad4e09458943312333d30929847e3ad2ccbcdf38897efc2f",
+      "daemon_sha256": "5b70f8b8810a65a7f13fa4c10eb2a44a4fd823702d7db0e2ce10e8067286428d",
+      "pid": 76160,
+      "thread": "01a0a890-d289-79d3-bdd8-918d994a152f",
+      "agent": "c6ed92a1ca3f4eeba8dacf5511344eef",
+      "automatic_hook_bootstrap": true,
+      "handovers": [
+        {
+          "stage": "idle",
+          "predecessor": 76159,
+          "successor": 76362,
+          "seconds_until_retired": 0.036383208993356675,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        },
+        {
+          "stage": "unsubmitted-draft",
+          "predecessor": 76362,
+          "successor": 76648,
+          "seconds_until_retired": 0.13207233298453502,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        },
+        {
+          "stage": "busy-with-human-and-peer-queued",
+          "predecessor": 76648,
+          "successor": 77934,
+          "seconds_until_retired": 0.13198862498393282,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        },
+        {
+          "stage": "pending-question",
+          "predecessor": 77934,
+          "successor": 78622,
+          "seconds_until_retired": 0.13316158298403025,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        }
+      ],
+      "idle_wake_seconds": 7.615285499981837,
+      "cross_process_receipt": {
+        "thread": "01a0a890-d289-79d3-bdd8-918d994a152f",
+        "turn": "01a0a890-f996-7f72-a8b0-7217a473747b",
+        "item": "01a0a890-f9a0-7640-a9e8-30369fdceb27"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "2a48139e6e0e4419"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0a890-d289-79d3-bdd8-918d994a152f",
+          "turn": "01a0a891-6ed5-7b32-8ebc-c8495658108f",
+          "item": "01a0a891-6eea-7533-a44e-443000147452"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "answer_receipt_after_handover": {
+        "message": "150fcb35639c44e8",
+        "receipt": {
+          "thread": "01a0a890-d289-79d3-bdd8-918d994a152f",
+          "turn": "01a0a891-bd0a-7c11-bf63-1cd95d7a8b42",
+          "item": "01a0a891-bd14-77d1-a5bc-80154b0fc1e0"
+        }
+      },
+      "async_question_answer_once": true,
+      "question_id": "2569fcdc05904b15",
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 10,
+      "agentdocker_integration": true,
+      "daemon_pids": [
+        76159,
+        76362,
+        76648,
+        77934,
+        78622
+      ],
+      "daemon_survivors": [],
+      "controller_survivors": [],
+      "cleanup_errors": [],
+      "raw_result_sha256": "c55a1ca122dd1ef024ce9be8f6937739700f5dfe1a7c49a907497abcfbacb0bf"
+    },
+    "artifacts": {
+      "result": {
+        "private_path": "/private/tmp/agentdocker-native-reload-question2-2026-09-15/result.json",
+        "sha256": "5986bbbc277ce7490b3dc22b2bcff710c8b594e015a7874d016f06b3f88f0d52"
+      },
+      "private_result": {
+        "private_path": "/private/tmp/agentdocker-native-reload-question2-2026-09-15/result-private.json",
+        "sha256": "c55a1ca122dd1ef024ce9be8f6937739700f5dfe1a7c49a907497abcfbacb0bf"
+      },
+      "daemon_log": {
+        "private_path": "/private/tmp/agentdocker-native-reload-question2-2026-09-15/agentdocker-daemon.log",
+        "sha256": "714a19e5c12e3e31c9f42d11e52432a3fedd8ddf834c890828433be9f7991d61"
+      },
+      "terminal": {
+        "private_path": "/private/tmp/agentdocker-native-reload-question2-2026-09-15/terminal.bin",
+        "sha256": "9eebe6b8f75794aa59743b813abe90b23582e8668a7d3f762110bd02525e54d8"
+      },
+      "controller": {
+        "private_path": "/private/tmp/agentdocker-native-reload-question2-2026-09-15/bootstrap-controller.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "first_trial": {
+        "private_path": "/private/tmp/agentdocker-native-reload-question1-2026-09-15/result.json",
+        "sha256": "23473411d58d1e0ad9541bd8ea8a65cdda1327d9868d0dd443545a3283ceba54"
+      }
+    },
+    "earlier_trial": "Trial1 passed the same four handovers with a dirty driver draft; retained as preliminary evidence. Trial2 adds an exact answer receipt and explicit controller survivor accounting, and runs a clean committed driver.",
+    "warnings": [
+      "One expected empty fixture-repository fingerprint warning; grouping falls back to its private path."
+    ],
+    "limits": [
+      "Actual Codex CLI0.154.0 and native thread/queue APIs with a loopback model fixture, not a paid account or external model service.",
+      "Each successor used the same release binary; this is not a distinct-source upgrade trial.",
+      "The draft is in the original external Codex TUI; AgentDocker attached-terminal draft preservation is separate.",
+      "Claude, additional runtimes/platforms, uncertain writes, replay retention and removal of the experimental gate remain open."
+    ],
+    "ready_gate": {
+      "result": "passed",
+      "source_commit": "b81a1f535650b69247e0fd4fe03078f03426e920",
+      "command": "bash scripts/verify.sh check",
+      "rust_passed": 1017,
+      "rust_skipped": 7,
+      "python_passed": 79,
+      "other": [
+        "documentation",
+        "formatting",
+        "strict Clippy",
+        "doctests",
+        "packaging",
+        "release build"
+      ],
+      "artifact": {
+        "private_path": "/private/tmp/agentdocker-native-reload-gate2-2026-09-15.log",
+        "sha256": "8d3e52653f7f882340ee68fe46a1b5778228afb2af190bb99381e5090b277e7d"
+      },
+      "previous_gate": {
+        "private_path": "/private/tmp/agentdocker-native-reload-gate1-2026-09-15.log",
+        "sha256": "dad7aabd8fa868a8ee9415c7a3a7ee1da76eb490b94659105f9699be3e5000a6"
+      }
+    },
+    "cleanup_followup": {
+      "result": "passed",
+      "question_trial": {
+        "started_at": "2026-09-16T05:00:25.371961+00:00",
+        "scenario": "question",
+        "reload_enabled": true,
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "ed40a139a6e8941c03dfe2c49ca34e8a96f15f3ff82b913c20f3a643d01564ba",
+        "source": {
+          "commit": "8ba6ac9fb8b7247acb95b4b84c27ebbfcbcf42fb",
+          "dirty": false,
+          "rust_and_driver_sha256": "67ef5b1712c23fe4eda5049c6c3e91b1e2182c795f400b1aaa367e0088d1653f"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "30652616f42b570dad4e09458943312333d30929847e3ad2ccbcdf38897efc2f",
+        "daemon_sha256": "5b70f8b8810a65a7f13fa4c10eb2a44a4fd823702d7db0e2ce10e8067286428d",
+        "pid": 90518,
+        "thread": "01a0a896-6cee-7fc3-bc1e-7a477a303f40",
+        "agent": "be54b64cacac493a8c326636b819253b",
+        "automatic_hook_bootstrap": true,
+        "handovers": [
+          {
+            "stage": "idle",
+            "predecessor": 90517,
+            "successor": 90889,
+            "seconds_until_retired": 0.03506412499700673,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "unsubmitted-draft",
+            "predecessor": 90889,
+            "successor": 91110,
+            "seconds_until_retired": 0.034776832995703444,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "busy-with-human-and-peer-queued",
+            "predecessor": 91110,
+            "successor": 92054,
+            "seconds_until_retired": 0.13544649997493252,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "pending-question",
+            "predecessor": 92054,
+            "successor": 92745,
+            "seconds_until_retired": 0.13268912502098829,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          }
+        ],
+        "idle_wake_seconds": 7.620907833013916,
+        "cross_process_receipt": {
+          "thread": "01a0a896-6cee-7fc3-bc1e-7a477a303f40",
+          "turn": "01a0a896-93fa-7ac2-bd0b-70dc475cae2b",
+          "item": "01a0a896-940b-78d1-9480-666f57c076a5"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "4cbcbdd4095842c2"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0a896-6cee-7fc3-bc1e-7a477a303f40",
+            "turn": "01a0a897-0938-72e2-b400-d3a89b4f57f5",
+            "item": "01a0a897-094a-7841-b840-0cd7458274de"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "answer_receipt_after_handover": {
+          "message": "778604ef08e34f89",
+          "receipt": {
+            "thread": "01a0a896-6cee-7fc3-bc1e-7a477a303f40",
+            "turn": "01a0a897-5761-7243-b416-dbf535c24138",
+            "item": "01a0a897-5776-7533-bf90-abfd675ef259"
+          }
+        },
+        "async_question_answer_once": true,
+        "question_id": "d84813a192e54c98",
+        "same_live_tui": true,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 10,
+        "agentdocker_integration": true,
+        "daemon_pids": [
+          90517,
+          90889,
+          91110,
+          92054,
+          92745
+        ],
+        "daemon_survivors": [],
+        "controller_survivors": [],
+        "cleanup_errors": [],
+        "raw_result_sha256": "0af092bc2edbf2f683bb375c17a07df0fbfad7e9e35abb837bdf2e2719010506"
+      },
+      "startup_failure": {
+        "expected_failure": true,
+        "mechanism": "An owned fixture executable returned its version and removed its own file; provider creation then failed after the private daemon started. The daemon retired with no cleanup errors or survivors.",
+        "trial": {
+          "started_at": "2026-09-16T05:00:06.903622+00:00",
+          "scenario": "question",
+          "reload_enabled": true,
+          "result": "failed",
+          "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+          "driver_sha256": "ed40a139a6e8941c03dfe2c49ca34e8a96f15f3ff82b913c20f3a643d01564ba",
+          "source": {
+            "commit": "8ba6ac9fb8b7247acb95b4b84c27ebbfcbcf42fb",
+            "dirty": false,
+            "rust_and_driver_sha256": "67ef5b1712c23fe4eda5049c6c3e91b1e2182c795f400b1aaa367e0088d1653f"
+          },
+          "provider_version": "codex-cli fixture-missing-after-version",
+          "cli_sha256": "30652616f42b570dad4e09458943312333d30929847e3ad2ccbcdf38897efc2f",
+          "daemon_sha256": "5b70f8b8810a65a7f13fa4c10eb2a44a4fd823702d7db0e2ce10e8067286428d",
+          "daemon_pids": [
+            90086
+          ],
+          "daemon_survivors": [],
+          "controller_survivors": [],
+          "cleanup_errors": [],
+          "failure": "See the private result and terminal capture; raw exception text may include local state.",
+          "raw_result_sha256": "8ea9c8bb2ad002f90b1e7b35fd0b65400e6d7e6cb22f7f21ca6db67eef41ca62"
+        }
+      },
+      "resume_trial": {
+        "started_at": "2026-09-16T05:04:54.408254+00:00",
+        "scenario": "resume",
+        "reload_enabled": false,
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "da75a7e59a149accee7ed731867d3d8b978ba1fd532c2ec22b3298a90a2b4407",
+        "source": {
+          "commit": "b81a1f535650b69247e0fd4fe03078f03426e920",
+          "dirty": false,
+          "rust_and_driver_sha256": "a31eed158ddabd9086b4886749de711a1db8bf40103e55206641ad6fabbf37fd"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "30652616f42b570dad4e09458943312333d30929847e3ad2ccbcdf38897efc2f",
+        "daemon_sha256": "5b70f8b8810a65a7f13fa4c10eb2a44a4fd823702d7db0e2ce10e8067286428d",
+        "pid": 5724,
+        "thread": "01a0a89a-88ba-76a0-ab9d-4d05d965159d",
+        "agent": "a6d00742a3334faf8e7c60c0f120c6c6",
+        "automatic_hook_bootstrap": true,
+        "idle_wake_seconds": 7.571864416997414,
+        "cross_process_receipt": {
+          "thread": "01a0a89a-88ba-76a0-ab9d-4d05d965159d",
+          "turn": "01a0a89a-afc6-7051-b08f-56e7216f00da",
+          "item": "01a0a89a-afdb-7023-ba44-8c1c2f8248eb"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "7ad79a35097d4058"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0a89a-88ba-76a0-ab9d-4d05d965159d",
+            "turn": "01a0a89b-2504-78c0-b4c5-5dd4ca8e8e20",
+            "item": "01a0a89b-251e-7300-a343-1edd15edab63"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "during_restart_message": "edef2d25f13f4dcd",
+        "resumed_agent": "a6d00742a3334faf8e7c60c0f120c6c6",
+        "resumed_thread": "01a0a89a-88ba-76a0-ab9d-4d05d965159d",
+        "same_logical_agent_after_resume": true,
+        "old_queue_after_resume": [],
+        "reopen_without_prompt": false,
+        "restart_preserved_token_and_receipts": true,
+        "restart_delivered_retained_queue": true,
+        "same_live_tui_before_explicit_restart": true,
+        "same_live_tui": false,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 9,
+        "agentdocker_integration": true,
+        "cleanup_errors": [],
+        "raw_result_sha256": "ed414e9f230b5e86a3cdfb0502b6019ea19d990f502068f0168ee947be436e71"
+      },
+      "retained_failed_resume": {
+        "source_commit": "8ba6ac9fb8b7247acb95b4b84c27ebbfcbcf42fb",
+        "result": "failed",
+        "cause": "The native resume scenario restored its provider identity and queued input, then failed with Bad file descriptor because the reopened slave descriptor remained marked open after close. b81a1f5 clears that handle; the repeat above passed.",
+        "artifact": {
+          "private_path": "/private/tmp/agentdocker-native-resume-cleanup1-2026-09-15/result.json",
+          "sha256": "55e099933f6129502cf185e7b8f62d5dcbfeb557852d5c187e39bfc4b7727753"
+        }
+      },
+      "artifacts": {
+        "question_result": {
+          "private_path": "/private/tmp/agentdocker-native-reload-question3-2026-09-15/result.json",
+          "sha256": "479d9298fcd448488642c8dce73133dbd2e371b042f71262085e2f8cfc293d95"
+        },
+        "question_daemon_log": {
+          "private_path": "/private/tmp/agentdocker-native-reload-question3-2026-09-15/agentdocker-daemon.log",
+          "sha256": "dd60fda568085aa7cb56f4a29c082377ef22aa96f09955b594db230bb41779f8"
+        },
+        "question_terminal": {
+          "private_path": "/private/tmp/agentdocker-native-reload-question3-2026-09-15/terminal.bin",
+          "sha256": "e120812716311e151dd455127b7a36b5626aa822a9b01d759a9141cec1535612"
+        },
+        "question_controller": {
+          "private_path": "/private/tmp/agentdocker-native-reload-question3-2026-09-15/bootstrap-controller.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "startup_failure_result": {
+          "private_path": "/private/tmp/agentdocker-native-reload-startup-failure1-2026-09-15/result.json",
+          "sha256": "6dd955b3a08af963b01bd80908644da2319694d1fef2e434bd21c229ed80adcc"
+        },
+        "startup_failure_log": {
+          "private_path": "/private/tmp/agentdocker-native-reload-startup-failure1-2026-09-15.log",
+          "sha256": "89a06c4bc4aa3773eff2180602bbfa48e52008e16031bc3996ee01320feb9c24"
+        },
+        "resume_result": {
+          "private_path": "/private/tmp/agentdocker-native-resume-cleanup2-2026-09-15/result.json",
+          "sha256": "16b7092e0c17b45918874432bfdcb982b74070330f90447bafdf3866542fb6e9"
+        },
+        "resume_terminal": {
+          "private_path": "/private/tmp/agentdocker-native-resume-cleanup2-2026-09-15/terminal.bin",
+          "sha256": "2f11779db99a78571423c812e95e317dfef49b42df5d5c0c38330f060743f6cc"
+        }
+      },
+      "provenance": "Clean committed drivers 8ba6ac9 (handover/startup failure) and b81a1f5 (resume) used the same055f45f release hashes. Production Rust/Cargo inputs remain unchanged. Source/driver and executable hashes stayed unchanged in successful native trials."
+    }
+  },
+  "post_review_2026_09_16": {
+    "result": "passed",
+    "source": {
+      "arch": "aarch64",
+      "format": 1,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "os": "macos",
+      "state_schema": 20,
+      "version": "0.1.0",
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "155ff704bb2b09dccdac3faae3bfe8cb48b9ca297c7036768493dfc9d5967035",
+        "agentd": "19c6a23631577327a354650ee2faa09f257892ac20755eabb3667703de2906cb",
+        "agentdocker-ui": "fa88a7ec111b36febff40fc8cabbeefa4fa2ed1ebb957443ee6c5be0185c9de8"
+      },
+      "source_commit": "ad9d0750e41bee70ef4b66b86acd06f5f409b623",
+      "source_tree": "3c3fef4d34a50c2dbc269ffe9ea96f098569a1c9",
+      "source_input_sha256": "d8875f8b026e4220ba0531ac5873e78287019de309332819281a3fcec1c53180",
+      "source_dirty": false,
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+      "target": "aarch64-apple-darwin"
+    },
+    "review": "5218709694",
+    "scope": "Atomic channel/human/pane transitions; durable restart recovery after abort/takeover; explicit handover capability and legacy refusal; attach errors and safe successor cleanup.",
+    "gate": {
+      "rust_passed": 1023,
+      "rust_skipped": 7,
+      "python_passed": 81,
+      "focused_rust_passed": 6,
+      "cleanup_tests_passed": 4,
+      "checks": [
+        "documentation",
+        "format",
+        "strict clippy",
+        "doctests",
+        "packaging",
+        "release build"
+      ]
+    },
+    "stress": {
+      "reloads": 20,
+      "scenarios": [
+        "416 messages sent through 20 reloads arrived once, in order; 0 send errors",
+        "165 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+        "both loggers' logs are contiguous across every reload",
+        "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+        "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+        "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 20 handovers accepted in between"
+      ],
+      "sends": {
+        "delivered": 416,
+        "errors": []
+      },
+      "launches": {
+        "finished": 165,
+        "errors": []
+      },
+      "log_lines": {
+        "logger-a": 838109,
+        "logger-b": 835683
+      },
+      "controller_episode": {
+        "attempts": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "launched_pids": [
+          79549,
+          80255,
+          81255,
+          81627,
+          82130
+        ],
+        "handovers_during": 20
+      },
+      "survivors": [],
+      "cleanup_errors": [],
+      "daemon_log_warnings": {}
+    },
+    "native_codex": {
+      "result": "passed",
+      "source": {
+        "commit": "ad9d0750e41bee70ef4b66b86acd06f5f409b623",
+        "dirty": false,
+        "rust_and_driver_sha256": "9430a6da6a22788a1311a60e36218f2af14da4b9232625a852d1453759062a7c"
+      },
+      "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+      "provider_version": "codex-cli 0.154.0",
+      "driver_sha256": "da75a7e59a149accee7ed731867d3d8b978ba1fd532c2ec22b3298a90a2b4407",
+      "cli_sha256": "155ff704bb2b09dccdac3faae3bfe8cb48b9ca297c7036768493dfc9d5967035",
+      "daemon_sha256": "19c6a23631577327a354650ee2faa09f257892ac20755eabb3667703de2906cb",
+      "handovers": [
+        {
+          "stage": "idle",
+          "predecessor": 82760,
+          "successor": 83058,
+          "seconds_until_retired": 0.13448266699560918,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        },
+        {
+          "stage": "unsubmitted-draft",
+          "predecessor": 83058,
+          "successor": 83258,
+          "seconds_until_retired": 0.13629162500728853,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        },
+        {
+          "stage": "busy-with-human-and-peer-queued",
+          "predecessor": 83258,
+          "successor": 83889,
+          "seconds_until_retired": 0.12944170902483165,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        },
+        {
+          "stage": "pending-question",
+          "predecessor": 83889,
+          "successor": 84428,
+          "seconds_until_retired": 0.13254220801172778,
+          "provider_identity_preserved": true,
+          "binding_preserved": true
+        }
+      ],
+      "idle_wake_seconds": 7.524243916006526,
+      "answer_receipt_after_handover": {
+        "message": "8956dcfcbb444ce4",
+        "receipt": {
+          "thread": "01a0a8b8-ce89-7431-9cd1-7426d757cee6",
+          "turn": "01a0a8b9-b8fe-7360-a230-e209c990d641",
+          "item": "01a0a8b9-b91c-70b3-8d4d-d4bd6796811c"
+        }
+      },
+      "model_requests": 10,
+      "daemon_survivors": [],
+      "controller_survivors": [],
+      "cleanup_errors": []
+    },
+    "attach": {
+      "cli_sha256": "155ff704bb2b09dccdac3faae3bfe8cb48b9ca297c7036768493dfc9d5967035",
+      "cases": [
+        {
+          "mode": "reconnect-refused",
+          "exit": 1,
+          "requests": [
+            "attach",
+            "ping",
+            "attach"
+          ],
+          "transcript_sha256": "ab34fe6d55f35250f6bf0353930d51dfd89bbeda2215afa7670e306986cb8e7d",
+          "passed": true
+        },
+        {
+          "mode": "daemon-gone",
+          "exit": 1,
+          "requests": [
+            "attach"
+          ],
+          "transcript_sha256": "62666db5a1f593d17ec099184281d3589da8dd6cf9d544ea7a74a2b25904250b",
+          "passed": true
+        },
+        {
+          "mode": "confirmed-end",
+          "exit": 0,
+          "requests": [
+            "attach"
+          ],
+          "transcript_sha256": "1f3eef692af6091a352994a9cb6edcb3ec6f8696121ff83a043791e9dc5a32ed",
+          "passed": true
+        }
+      ],
+      "passed": true,
+      "driver_sha256": "f07af5b1fb50345294ea747f6ccb26c6099142729733c9469d0d29a734d51dc7"
+    },
+    "source_and_binaries_unchanged": true,
+    "artifacts": [
+      {
+        "path": "/private/tmp/agentdocker-reload-review-gate1-2026-09-15.log",
+        "sha256": "949f0e5a2e75f15e74399fd7fbea91d5382f0287d8183b0094acd78dd5ccd55b"
+      },
+      {
+        "path": "/private/tmp/agentdocker-reload-review-targeted1-2026-09-15.log",
+        "sha256": "2bee5ceb8123272c7b86bd24ca9f4ebccaee544175e53d71428ec630a8dd6330"
+      },
+      {
+        "path": "/private/tmp/agentdocker-reload-review-native-build1-2026-09-15.json",
+        "sha256": "cd709894db55b001455982969ae4dd4c9773c748467f3e0d499524e75dfc8694"
+      },
+      {
+        "path": "/private/tmp/agentdocker-reload-review-trial1-2026-09-15/result.json",
+        "sha256": "b13da7d77080a4f0484ef3273eff0bfeb62fc4c09f33c324f977d5ea6e3b207c"
+      },
+      {
+        "path": "/private/tmp/agentdocker-native-reload-review-question1-2026-09-15/result.json",
+        "sha256": "d72de66e38ca1c44449f439538f9148474587169468206ab0b20c2a659f0af3f"
+      },
+      {
+        "path": "/private/tmp/agentdocker-attach-refusal-trial1-2026-09-15/result.json",
+        "sha256": "802382b2400a509f897963d6fd68f2843bc192e691d2c574a398e75d848632f3"
+      },
+      {
+        "path": "/private/tmp/agentdocker-attach-refusal-trial-2026-09-15.py",
+        "sha256": "f07af5b1fb50345294ea747f6ccb26c6099142729733c9469d0d29a734d51dc7"
+      },
+      {
+        "path": "/private/tmp/agentdocker-reload-review-manifest1-2026-09-15.json",
+        "sha256": "f07f2ef81a1c9e0b1e4806c4849da21f4f9e87e2bc67db9bb04979b9e6ebd1d2"
+      },
+      {
+        "path": "/private/tmp/agentdocker-reload-review-manifest-after-native1-2026-09-15.json",
+        "sha256": "f07f2ef81a1c9e0b1e4806c4849da21f4f9e87e2bc67db9bb04979b9e6ebd1d2"
+      },
+      {
+        "path": "/private/tmp/agentdocker-tmux-fault-trial-2026-09-15.py",
+        "sha256": "0d9159391e2d03a798cf41521381740753dfe464969045eeb5dbccb54ae38b6f"
+      },
+      {
+        "path": "/private/tmp/agentdocker-tmux-fault-trial1-2026-09-15/result.json",
+        "sha256": "9249224c17c54ee599de3b8322191c458a1963e4c4f077993a85b3327779da8f"
+      },
+      {
+        "path": "/private/tmp/agentdocker-tmux-fault-trial1-2026-09-15/daemon.log",
+        "sha256": "d2303b5053e52b40ad94b6dab517410bb0d9f4d7bc578727a0759bdae0f2ee29"
+      }
+    ],
+    "limits": [
+      "Stress uses disposable owned provider/controller process fixtures; Codex uses its actual CLI with a loopback model fixture, not a remote model account.",
+      "Each native switch preserves the provider and bound controller; intentional receiver crash/restart between stages is a separate recovery check.",
+      "Legacy clients decode the established unavailable refusal and may be retried manually; automatic retry requires an updated client.",
+      "No production activation used this schema20 reload candidate; installed UI source72b1eb4 is schema21 and must be integrated before a future install.",
+      "Broader provider, cross-version, attached-terminal, uncertain-write, retention and Windows acceptance remains open."
+    ],
+    "real_tmux_event_failure": {
+      "result": "passed",
+      "daemon_sha256": "19c6a23631577327a354650ee2faa09f257892ac20755eabb3667703de2906cb",
+      "response": {
+        "type": "error",
+        "code": "storage_unavailable",
+        "message": "storage failed (pane start: injected pane event failure); coordination disabled until daemon restart"
+      },
+      "durable_status": {
+        "state": "created"
+      },
+      "durable_pid": null,
+      "remaining_private_panes": "",
+      "tmux_list_exit": 1,
+      "daemon_retired": true,
+      "driver_sha256": "0d9159391e2d03a798cf41521381740753dfe464969045eeb5dbccb54ae38b6f"
+    }
+  },
+  "schema21_integration_2026_09_16": {
+    "source_commit": "a1475a12b486b213c4ed5968e33cea4c2f439a88",
+    "source_input_sha256": "1dc5e6340186f4d039193e23b108a6d08e209cdf62b31812c703e59647a04879",
+    "standard_gate": {
+      "rust_passed": 1053,
+      "rust_skipped": 7,
+      "python_passed": 81,
+      "command": "bash scripts/verify.sh check",
+      "exit_code": 0,
+      "log": "/private/tmp/agentdocker-schema21-reload-gate2-2026-09-15.log"
+    },
+    "focused_tests": 14,
+    "retained_failure": {
+      "log": "/private/tmp/agentdocker-schema21-reload-gate1-2026-09-15.log",
+      "reason": "One old assertion required search to write an index marker. The updated contract verifies read-only fallback and atomic invalidation on the next unindexed write, followed by a correct rebuild."
+    },
+    "distinct_source_handover": {
+      "passed": true,
+      "source_commit": "a1475a12b486b213c4ed5968e33cea4c2f439a88",
+      "versions": {
+        "predecessor": {
+          "build_info": {
+            "arch": "aarch64",
+            "format": 1,
+            "installation_lock": 1,
+            "launcher_redirect": 1,
+            "os": "macos",
+            "state_schema": 20,
+            "version": "0.1.0"
+          },
+          "sha256": {
+            "agentd": "19c6a23631577327a354650ee2faa09f257892ac20755eabb3667703de2906cb",
+            "agentdocker": "155ff704bb2b09dccdac3faae3bfe8cb48b9ca297c7036768493dfc9d5967035",
+            "agentdocker-ui": "fa88a7ec111b36febff40fc8cabbeefa4fa2ed1ebb957443ee6c5be0185c9de8"
+          }
+        },
+        "successor": {
+          "build_info": {
+            "arch": "aarch64",
+            "format": 1,
+            "installation_lock": 1,
+            "launcher_redirect": 1,
+            "os": "macos",
+            "state_schema": 21,
+            "version": "0.1.0"
+          },
+          "sha256": {
+            "agentd": "887d7cea867ff32c27be03968cad71d5b5de7cf58745c1985dac4807d978b644",
+            "agentdocker": "c88c544fd64f46dbbe55922b0d2be8811ddb532ce21699c2748e0f0bdab4840f",
+            "agentdocker-ui": "c33a7ae99414702a211249be992c74ac2c4b4bee6266bcbb57cd24f608019a37"
+          }
+        }
+      },
+      "daemon_pids": [
+        39138,
+        39195
+      ],
+      "handover_seconds": 0.3072958750126418,
+      "checks": [
+        "schema 20 predecessor retired after schema 21 successor accepted",
+        "12 queued messages unchanged, archived once and immediately searchable",
+        "lease identity and expiry unchanged",
+        "batch and PTY process/birth/owner identities preserved",
+        "exact batch exit 7 and PTY exit 3 with pre/post logs"
+      ],
+      "survivors": [],
+      "cleanup_errors": [],
+      "driver_sha256": "336a780b42c0cb29ece584e82fddf68464940f8530911c39ff7d32b4b3c972b4"
+    },
+    "limitations": [
+      "Owned native batch/PTY and local queued messages; not a provider service or a production activation.",
+      "Later channel/terminal/worker-cleanup review fixes require fresh validation."
+    ]
+  },
+  "final_schema21_review_2026_09_16": {
+    "source_commit": "64d4762010be0c79cdf90fc9adcb95742b792c7d",
+    "source_input_sha256": "bc7f5032d77527cc1533b68d710ac9ce61a88c0a88631c4d9b269820080ed251",
+    "source_clean": true,
+    "source_and_binaries_unchanged_after_trials": true,
+    "binary_sha256": {
+      "agentd": "dc99c4b8de62b6eb90f2bcc483fe3c904467a9d73a4a64811bd2d3d046a83c86",
+      "agentdocker": "01d39a63f0eca08e2c9b620665a1e2e01c6642cd1a208cba171de0611309bd26",
+      "agentdocker-ui": "8d0a8398917a9a5ec53869310e34bd755d0d67d083a806023032acd69a279e18"
+    },
+    "immutable_binary_directory": "/private/tmp/agentdocker-reload-64d4762-binaries",
+    "standard_gate": {
+      "command": "bash scripts/verify.sh check",
+      "exit_code": 0,
+      "rust_passed": 1056,
+      "rust_skipped": 7,
+      "python_passed": 83,
+      "log": "/private/tmp/agentdocker-reload-schema21-final-gate1-2026-09-16.log"
+    },
+    "review_fixes": [
+      "Channel close/review commits primary state, queued/archive message, journal and ordered events in one transaction. Injected ancillary failures leave durable and live state unchanged; restart/retry commits once.",
+      "Existing terminal input/resize and new attach initial dimensions are refused during a transfer fence for current and legacy clients while existing output remains available.",
+      "Stress workers are stopped and joined after daemon cleanup, including early-failure/unstarted-thread paths."
+    ],
+    "pressure": {
+      "path": "/private/tmp/agentdocker-reload-schema21-final-pressure1-2026-09-16/result.json",
+      "sha256": "e3933a98167ec2ea036c6ec13478c6178e0bc64de80c112aa17c9dec46f00a65",
+      "result": {
+        "passed": true,
+        "reloads": 20,
+        "build_info": {
+          "arch": "aarch64",
+          "format": 1,
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "os": "macos",
+          "state_schema": 21,
+          "version": "0.1.0"
+        },
+        "scenarios": [
+          "334 messages sent through 20 reloads arrived once, in order; 0 send errors",
+          "127 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+          "both loggers' logs are contiguous across every reload",
+          "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+          "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+          "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 19 handovers accepted in between"
+        ],
+        "trial_processes": {
+          "provider": 12293,
+          "controller": 12296
+        },
+        "reload_seconds": [
+          0.545,
+          3.635,
+          0.026,
+          0.027,
+          0.024,
+          0.028,
+          0.029,
+          0.54,
+          0.026,
+          0.027,
+          0.028,
+          0.031,
+          0.028,
+          0.026,
+          0.026,
+          0.031,
+          0.035,
+          0.027,
+          0.026,
+          0.034
+        ],
+        "daemon_pids": [
+          12188,
+          12537,
+          13075,
+          13107,
+          13152,
+          13199,
+          13244,
+          13353,
+          13495,
+          13542,
+          13578,
+          13615,
+          13653,
+          13700,
+          13746,
+          13816,
+          13861,
+          13897,
+          13946,
+          13991,
+          14085
+        ],
+        "predecessor_retired_seconds": [
+          0.549,
+          3.638,
+          0.031,
+          0.03,
+          0.028,
+          0.032,
+          0.033,
+          0.543,
+          0.029,
+          0.031,
+          0.051,
+          0.055,
+          0.032,
+          0.03,
+          0.029,
+          0.034,
+          0.059,
+          0.031,
+          0.051,
+          0.038
+        ],
+        "sends": {
+          "delivered": 334,
+          "errors": []
+        },
+        "launches": {
+          "finished": 127,
+          "errors": []
+        },
+        "log_lines": {
+          "logger-a": 671298,
+          "logger-b": 665192
+        },
+        "controller_episode": {
+          "attempts": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "launched_pids": [
+            12540,
+            13247,
+            14183,
+            14549,
+            15259
+          ],
+          "handovers_during": 19
+        },
+        "survivors": [],
+        "cleanup_errors": [],
+        "daemon_log_warnings": {}
+      }
+    },
+    "native_codex": {
+      "path": "/private/tmp/agentdocker-reload-schema21-final-native1-2026-09-16/result.json",
+      "sha256": "e36c33088f6b2a5721f3d582a54b702a2cdaa2e1c3a72e3e2ae7de8059af5c6d",
+      "result": {
+        "started_at": "2026-09-16T06:53:47.742695+00:00",
+        "scenario": "question",
+        "reload_enabled": true,
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "da75a7e59a149accee7ed731867d3d8b978ba1fd532c2ec22b3298a90a2b4407",
+        "source": {
+          "commit": "64d4762010be0c79cdf90fc9adcb95742b792c7d",
+          "dirty": false,
+          "rust_and_driver_sha256": "877684bde2936541a94a95c786d8f4723b00334767f5afcc357de45516bae71e"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "01d39a63f0eca08e2c9b620665a1e2e01c6642cd1a208cba171de0611309bd26",
+        "daemon_sha256": "dc99c4b8de62b6eb90f2bcc483fe3c904467a9d73a4a64811bd2d3d046a83c86",
+        "pid": 12184,
+        "thread": "01a0a8fe-393f-76d1-9e76-2e93c6c47f42",
+        "agent": "5c07db1f98ed45aa85247efa317d9292",
+        "automatic_hook_bootstrap": true,
+        "handovers": [
+          {
+            "stage": "idle",
+            "predecessor": 12182,
+            "successor": 12775,
+            "seconds_until_retired": 0.13363891700282693,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "unsubmitted-draft",
+            "predecessor": 12775,
+            "successor": 13938,
+            "seconds_until_retired": 0.12503008299972862,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "busy-with-human-and-peer-queued",
+            "predecessor": 13938,
+            "successor": 14883,
+            "seconds_until_retired": 0.04189258301630616,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "pending-question",
+            "predecessor": 14883,
+            "successor": 15449,
+            "seconds_until_retired": 0.14107187499757856,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          }
+        ],
+        "idle_wake_seconds": 7.202466791000916,
+        "cross_process_receipt": {
+          "thread": "01a0a8fe-393f-76d1-9e76-2e93c6c47f42",
+          "turn": "01a0a8fe-604a-7e53-b7ef-4cfec7e6fe38",
+          "item": "01a0a8fe-6055-7be1-9e07-24c70c4436aa"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "d60918da5f004470"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0a8fe-393f-76d1-9e76-2e93c6c47f42",
+            "turn": "01a0a8fe-d588-7122-a372-0d8887949120",
+            "item": "01a0a8fe-d599-7d31-bc10-03ac43ad781c"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "answer_receipt_after_handover": {
+          "message": "a21baa6a2b114fc7",
+          "receipt": {
+            "thread": "01a0a8fe-393f-76d1-9e76-2e93c6c47f42",
+            "turn": "01a0a8ff-23b2-7de1-920e-0893f612404d",
+            "item": "01a0a8ff-23c3-7c40-8b2c-0129f9d3be27"
+          }
+        },
+        "async_question_answer_once": true,
+        "question_id": "94f0c17600a04386",
+        "same_live_tui": true,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 10,
+        "agentdocker_integration": true,
+        "daemon_pids": [
+          12182,
+          12775,
+          13938,
+          14883,
+          15449
+        ],
+        "daemon_survivors": [],
+        "controller_survivors": [],
+        "cleanup_errors": [],
+        "raw_result_sha256": "dbe6642f72bd013a7ec0bdcd18e4d9b601eaf3baa04098d98bfe3b4b91531edc"
+      }
+    },
+    "distinct_source_migration": {
+      "path": "/private/tmp/agentdocker-reload-schema21-final-migration1-2026-09-16/result.json",
+      "sha256": "17f9e40d05644f1b474651361c10c496786de57be78cb87a726d5b50f18e9169",
+      "result": {
+        "passed": true,
+        "source_commit": "64d4762010be0c79cdf90fc9adcb95742b792c7d",
+        "versions": {
+          "predecessor": {
+            "build_info": {
+              "arch": "aarch64",
+              "format": 1,
+              "installation_lock": 1,
+              "launcher_redirect": 1,
+              "os": "macos",
+              "state_schema": 20,
+              "version": "0.1.0"
+            },
+            "sha256": {
+              "agentd": "19c6a23631577327a354650ee2faa09f257892ac20755eabb3667703de2906cb",
+              "agentdocker": "155ff704bb2b09dccdac3faae3bfe8cb48b9ca297c7036768493dfc9d5967035",
+              "agentdocker-ui": "fa88a7ec111b36febff40fc8cabbeefa4fa2ed1ebb957443ee6c5be0185c9de8"
+            }
+          },
+          "successor": {
+            "build_info": {
+              "arch": "aarch64",
+              "format": 1,
+              "installation_lock": 1,
+              "launcher_redirect": 1,
+              "os": "macos",
+              "state_schema": 21,
+              "version": "0.1.0"
+            },
+            "sha256": {
+              "agentd": "dc99c4b8de62b6eb90f2bcc483fe3c904467a9d73a4a64811bd2d3d046a83c86",
+              "agentdocker": "01d39a63f0eca08e2c9b620665a1e2e01c6642cd1a208cba171de0611309bd26",
+              "agentdocker-ui": "8d0a8398917a9a5ec53869310e34bd755d0d67d083a806023032acd69a279e18"
+            }
+          }
+        },
+        "daemon_pids": [
+          16170,
+          16185
+        ],
+        "handover_seconds": 0.031186958018224686,
+        "checks": [
+          "schema 20 predecessor retired after schema 21 successor accepted",
+          "12 queued messages unchanged, archived once and immediately searchable",
+          "lease identity and expiry unchanged",
+          "batch and PTY process/birth/owner identities preserved",
+          "exact batch exit 7 and PTY exit 3 with pre/post logs"
+        ],
+        "survivors": [],
+        "cleanup_errors": [],
+        "driver_sha256": "336a780b42c0cb29ece584e82fddf68464940f8530911c39ff7d32b4b3c972b4"
+      }
+    },
+    "desktop_workflows": {
+      "passed": true,
+      "steps": 275,
+      "path": "/private/tmp/agentdocker-reload-schema21-final-workflows1-2026-09-16/result.json",
+      "sha256": "de81a4626e3f6004b2e2de6bcfed5407eead9270f97c67ca21795f6d6d645087",
+      "environment": {
+        "TMPDIR": "/tmp",
+        "AGENTDOCKER_NO_NOTIFICATIONS": "1"
+      },
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize"
+      ]
+    },
+    "limits": [
+      "Private fixtures only; production activation and final GitHub CI/review remain pending.",
+      "Actual Codex0.154 CLI with a loopback model fixture; no external model service or other-provider claim.",
+      "The distinct-source schema20-to21 trial covers local queues/archive and owned batch/PTY processes, not a distinct-source provider-service handover.",
+      "Terminal fence regression proves refusal and continued output, not preservation or replay of uncertain terminal writes across a completed switch.",
+      "Trial timings are observations under concurrent host workloads, not a performance guarantee; physical accessibility/IME, sleep/reboot, broader provider and Windows acceptance remain open."
+    ]
+  },
+  "review4_2026_09_16": {
+    "source_commit": "981be68f00ba49dd95d276c515f2774305f6a3c5",
+    "source_clean": true,
+    "source_input_sha256": "d0d57c1288dff30d16c65cd019d0f94f2077642a9c81a3afb62dd8cb826a19bf",
+    "binary_sha256": {
+      "agentdocker": "20740f00a379bf9f91c43fcb7143be7ae11825324ca334cbbd1909ddd58d21ac",
+      "agentd": "076cfd5b327f3e2e464d4a9ae6a54b5500330509566cffcb6407f932bb6d987e",
+      "agentdocker-ui": "f52024ad658aaece46f351d742bb8334786332d69afc791af901c16e21be1c15"
+    },
+    "source_and_binaries_unchanged_after_trials": true,
+    "standard_gate": {
+      "command": "bash scripts/verify.sh check",
+      "exit_code": 0,
+      "rust_passed": 1058,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "log": "/private/tmp/agentdocker-reload-review4-gate1-2026-09-16.log"
+    },
+    "review_fixes": [
+      "Lost/unexpected reload replies cause a fresh Ping, never a repeated Reload; reloaded remains null, and serving is the new observation or unknown. A real socket regression covers successor, predecessor and no-answer outcomes.",
+      "Binding/refusal branches explicitly require a write-failure reason; the transfer restart loop uses backoff capped at five seconds. Existing fence and abort/takeover restart regressions pass.",
+      "HumanLocationChanged accepts omitted/legacy-null optional fields and omits absent fields when serialized.",
+      "Linux retained-version trial creates generations two and three exactly once. Its new regression fails against 0ce62d7 with FileExistsError and passes against this source.",
+      "Current gate/installation docs and merged PR152 status corrected; local account paths replaced in published verification records."
+    ],
+    "old_source_regression": {
+      "result": "expected failure confirmed",
+      "log": "/private/tmp/agentdocker-pin-trial-old-source-regression-2026-09-16.log"
+    },
+    "limits": [
+      "Experimental reload remains gated; production activation and the broader provider/platform/reboot/uncertain-write matrix are not certified.",
+      "Native Codex trial uses the actual client and a loopback model fixture, not an external model service.",
+      "Pressure run logged two deferred-exit and two deferred-recovery warnings. All 211 launches reached final records and all owned processes retired; these warnings are retained.",
+      "Earlier 64d4762 UI and schema20-to21 results remain source-specific evidence; they were not rerun as part of this small review followup."
+    ],
+    "pressure": {
+      "path": "/private/tmp/agentdocker-reload-review4-pressure1-2026-09-16/result.json",
+      "sha256": "e691281d61449a241ef2f76306acb8521aa00e387dbccf45573d379fc6da62b2",
+      "result": {
+        "passed": true,
+        "reloads": 20,
+        "build_info": {
+          "arch": "aarch64",
+          "format": 1,
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "os": "macos",
+          "state_schema": 21,
+          "version": "0.1.0"
+        },
+        "scenarios": [
+          "625 messages sent through 20 reloads arrived once, in order; 0 send errors",
+          "211 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+          "both loggers' logs are contiguous across every reload",
+          "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+          "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+          "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 20 handovers accepted in between"
+        ],
+        "trial_processes": {
+          "provider": 50939,
+          "controller": 50940
+        },
+        "reload_seconds": [
+          1.351,
+          0.028,
+          0.027,
+          0.025,
+          0.026,
+          0.028,
+          0.031,
+          0.029,
+          0.027,
+          0.03,
+          0.031,
+          0.031,
+          0.549,
+          0.028,
+          0.032,
+          0.03,
+          0.547,
+          0.546,
+          0.546,
+          0.552
+        ],
+        "daemon_pids": [
+          50921,
+          51247,
+          51291,
+          51336,
+          51383,
+          51418,
+          51466,
+          51511,
+          51558,
+          51594,
+          51639,
+          52364,
+          52410,
+          52559,
+          52590,
+          52620,
+          52651,
+          52746,
+          52835,
+          52929,
+          53022
+        ],
+        "predecessor_retired_seconds": [
+          1.354,
+          0.031,
+          0.053,
+          0.029,
+          0.072,
+          0.031,
+          0.065,
+          0.033,
+          0.03,
+          5.038,
+          0.035,
+          0.034,
+          0.553,
+          0.032,
+          0.037,
+          0.034,
+          0.573,
+          0.573,
+          0.55,
+          5.591
+        ],
+        "sends": {
+          "delivered": 625,
+          "errors": []
+        },
+        "launches": {
+          "finished": 211,
+          "errors": []
+        },
+        "log_lines": {
+          "logger-a": 1078407,
+          "logger-b": 1072762
+        },
+        "controller_episode": {
+          "attempts": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "launched_pids": [
+            51231,
+            51761,
+            52748,
+            53873,
+            54196
+          ],
+          "handovers_during": 20
+        },
+        "survivors": [],
+        "cleanup_errors": [],
+        "daemon_log_warnings": {
+          "agentd::supervisor: exit not recorded durably; the owner's exit report is kept": 2,
+          "agentd::daemon::restore: recovered exit not durable; owner report kept without acknowledgement": 2
+        }
+      }
+    },
+    "native": {
+      "path": "/private/tmp/agentdocker-reload-review4-native1-2026-09-16/result.json",
+      "sha256": "a354d7285801558a831d02a2523c368d1d30e583245e9257d2d9aa3e0978c08e",
+      "result": {
+        "started_at": "2026-09-16T07:25:30.132071+00:00",
+        "scenario": "question",
+        "reload_enabled": true,
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "da75a7e59a149accee7ed731867d3d8b978ba1fd532c2ec22b3298a90a2b4407",
+        "source": {
+          "commit": "981be68f00ba49dd95d276c515f2774305f6a3c5",
+          "dirty": false,
+          "rust_and_driver_sha256": "f1af054c03a61cae51b36727054663cbc2bea7389f68bf7bc304f9da741d15b6"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "20740f00a379bf9f91c43fcb7143be7ae11825324ca334cbbd1909ddd58d21ac",
+        "daemon_sha256": "076cfd5b327f3e2e464d4a9ae6a54b5500330509566cffcb6407f932bb6d987e",
+        "pid": 55573,
+        "thread": "01a0a91b-3fe1-75d2-ab4d-747c213fb3a5",
+        "agent": "0d8b4fe718724272a7d137036d381164",
+        "automatic_hook_bootstrap": true,
+        "handovers": [
+          {
+            "stage": "idle",
+            "predecessor": 55572,
+            "successor": 55836,
+            "seconds_until_retired": 0.028287249995628372,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "unsubmitted-draft",
+            "predecessor": 55836,
+            "successor": 56030,
+            "seconds_until_retired": 0.14032587499241345,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "busy-with-human-and-peer-queued",
+            "predecessor": 56030,
+            "successor": 56572,
+            "seconds_until_retired": 0.13173695802106522,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "pending-question",
+            "predecessor": 56572,
+            "successor": 57008,
+            "seconds_until_retired": 0.13126529200235382,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          }
+        ],
+        "idle_wake_seconds": 7.580861082999036,
+        "cross_process_receipt": {
+          "thread": "01a0a91b-3fe1-75d2-ab4d-747c213fb3a5",
+          "turn": "01a0a91b-66ee-7f30-ae88-f86bff8ab11a",
+          "item": "01a0a91b-66fd-7932-870b-bf3eba4273fc"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "30365275202c4c5c"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0a91b-3fe1-75d2-ab4d-747c213fb3a5",
+            "turn": "01a0a91b-dc2e-79b1-8e80-21a7d4e2793a",
+            "item": "01a0a91b-dc3b-71c3-9601-73c42bec46f3"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "answer_receipt_after_handover": {
+          "message": "0bc6ff8f25094405",
+          "receipt": {
+            "thread": "01a0a91b-3fe1-75d2-ab4d-747c213fb3a5",
+            "turn": "01a0a91c-2a58-7cd2-81c0-b65472be21f8",
+            "item": "01a0a91c-2a68-79c2-961f-e1370c998b01"
+          }
+        },
+        "async_question_answer_once": true,
+        "question_id": "ef80532ba3664082",
+        "same_live_tui": true,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 10,
+        "agentdocker_integration": true,
+        "daemon_pids": [
+          55572,
+          55836,
+          56030,
+          56572,
+          57008
+        ],
+        "daemon_survivors": [],
+        "controller_survivors": [],
+        "cleanup_errors": [],
+        "raw_result_sha256": "cd29d44347fc2fc6b66c4ce22aab1082e69c22b0bbdb6891776342e61c9950a6"
+      }
+    },
+    "install": {
+      "path": "/private/tmp/agentdocker-reload-review4-install1-2026-09-16/result.json",
+      "sha256": "a4133d5e3ccc69eea7ed903763354f0eefdc7d4d8e26380789a66f812385bac9",
+      "result": {
+        "passed": true,
+        "scenarios": [
+          "with no daemon running, activation says so and asks nothing",
+          "installing a release reloads the running daemon to it; its agent keeps its process",
+          "rolling back reloads the daemon to the previous release; its agent keeps its process",
+          "daemon status names the serving pid and executable"
+        ],
+        "install_report_daemon": {
+          "answered": true,
+          "before": {
+            "executable": "/private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/0c779bb14e4a49b6d06b157a3d037209faa6095940f6af5b0df847e96aa90200/AgentDocker.app/Contents/MacOS/agentd",
+            "pid": 55016,
+            "version": "0.1.0"
+          },
+          "reloaded": true,
+          "serving": {
+            "executable": "/private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/216cc01ed94a5d0ad6388e10dcc97f0067265ffcff9a8662e7ca3c01dddbdbcb/AgentDocker.app/Contents/MacOS/agentd",
+            "pid": 55067,
+            "version": "0.1.0"
+          },
+          "summary": "reloaded: agentd 0.1.0 serves from /private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/216cc01ed94a5d0ad6388e10dcc97f0067265ffcff9a8662e7ca3c01dddbdbcb/AgentDocker.app/Contents/MacOS/agentd (pid 55067)"
+        },
+        "rollback_report_daemon": {
+          "answered": true,
+          "before": {
+            "executable": "/private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/216cc01ed94a5d0ad6388e10dcc97f0067265ffcff9a8662e7ca3c01dddbdbcb/AgentDocker.app/Contents/MacOS/agentd",
+            "pid": 55067,
+            "version": "0.1.0"
+          },
+          "reloaded": true,
+          "serving": {
+            "executable": "/private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/0c779bb14e4a49b6d06b157a3d037209faa6095940f6af5b0df847e96aa90200/AgentDocker.app/Contents/MacOS/agentd",
+            "pid": 55075,
+            "version": "0.1.0"
+          },
+          "summary": "reloaded: agentd 0.1.0 serves from /private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/0c779bb14e4a49b6d06b157a3d037209faa6095940f6af5b0df847e96aa90200/AgentDocker.app/Contents/MacOS/agentd (pid 55075)"
+        },
+        "daemon_status": "service   not installed (`agentdocker daemon install` adds a launchd user service)\ndaemon    agentd 0.1.0 up 0s at /private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/daemon.sock (pid 55075)\nserving   /private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/user/.local/share/agentdocker/desktop/versions/0c779bb14e4a49b6d06b157a3d037209faa6095940f6af5b0df847e96aa90200/AgentDocker.app/Contents/MacOS/agentd\ncontainer /tmp/agentdocker-62a6056f5716/container.sock\nlog       /private/var/folders/t1/3sg0ks3j4n7c2s2wlwvm1sv40000gn/T/ad-reload-install-lx1_7hf7/state/agentd.log\n"
+      }
+    },
+    "pin": {
+      "path": "/private/tmp/agentdocker-reload-review4-pin1-2026-09-16/result.json",
+      "sha256": "a7fe6a50a76a559bd18d9f0da4a06f9e92fb656b51c56cdf6bae77a23d8ee99c",
+      "result": {
+        "passed": true,
+        "scenarios": [
+          "a bound controller's launch descriptor in the first release pins that release, with the controller alive and nothing launched from it",
+          "with the first release neither current nor previous, a prune keeps it while a controller's binding pins it",
+          "unbinding releases the pin, and the next prune removes the release"
+        ],
+        "pin_trial": {
+          "first": "0c779bb14e4a49b6d06b157a3d037209faa6095940f6af5b0df847e96aa90200",
+          "second": "216cc01ed94a5d0ad6388e10dcc97f0067265ffcff9a8662e7ca3c01dddbdbcb",
+          "third": "9c2a92cc5bb1c3941f568457523b7e865b6d593acf8eab4b8b8b1091fa4b2267",
+          "serving_pid": 55383
+        },
+        "pin_cleanup": {
+          "errors": [],
+          "survivors": []
+        }
+      }
+    }
+  },
+  "review5_2026_09_16": {
+    "source_commit": "09e1559f9445469cb845fb96cda9d560393b2d4f",
+    "source_clean": true,
+    "source_input_sha256": "a4195cf2ca5bc84e0f3baa584deab415cf26b813e94e921549aa73a196c80345",
+    "binary_sha256": {
+      "agentdocker": "772c27abd9ed6d2e7a662b51cd8603a9b9e4b4f72d05f2f72303e8461b8440a1",
+      "agentd": "975d876b7bf0618f55e265e00fe2681a1295473e3c91721cf9b5cbf891d60e09",
+      "agentdocker-ui": "17b14c7f3cf106adc248ee63e3c86c86d6fd04958468110849b441abd54fadad"
+    },
+    "immutable_binary_directory": "/private/tmp/agentdocker-reload-review5-binaries-2026-09-16",
+    "standard_gate": {
+      "command": "bash scripts/verify.sh check",
+      "exit_code": 0,
+      "rust_passed": 1065,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "log": "/private/tmp/agentdocker-reload-review5-gate2-2026-09-16.log"
+    },
+    "review_fixes": [
+      "Agent creation removes the in-memory record unless its first durable write commits; a regression covers write failure and the transfer fence without rows/events/sequence advancement.",
+      "A refused pane start cleans its isolate only after successful identity-checked pane retirement. Failed retirement retains the checkout.",
+      "Every early reload failure reports whether abort restored write authority.",
+      "Empty CLI event/attach reconnects use bounded backoff; useful data resets the budget. A real socket regression proves repeated silent closes stop. A real three-daemon reload regression waits for the final subscriber before shutdown.",
+      "All four transfer event formatters use Unicode-safe shortening.",
+      "Desktop update documentation describes gated reload on explicit --apply."
+    ],
+    "retained_failures": [
+      {
+        "source_commit": "b0e21ee",
+        "log": "/private/tmp/agentdocker-reload-review5-gate1-2026-09-16.log",
+        "rust_passed": 1060,
+        "rust_failed": 1,
+        "reason": "Shutdown during reconnect backoff was incorrectly reported as connection failure. Fixed by probing service after the wait."
+      },
+      {
+        "source_commit": "101672a",
+        "log": "/private/tmp/agentdocker-reload-review5-focused2-2026-09-16.log",
+        "failed": 1,
+        "reason": "The trial shut down the final daemon before subscription, expecting an unobserved second resumption. The corrected fixture waits for marker-3; healthy streams resume immediately."
+      }
+    ],
+    "focused_correction": {
+      "source_commit": "09e1559f9445469cb845fb96cda9d560393b2d4f",
+      "log": "/private/tmp/agentdocker-reload-review5-focused3-2026-09-16.log",
+      "passed": 1
+    },
+    "limits": [
+      "Reload remains experimental and gated. Production activation, other providers, remote model services and broader platform/sleep/reboot/uncertain-write acceptance remain open.",
+      "The native Codex 0.154.0 trial uses a loopback model fixture.",
+      "The retained-version pin trial uses identical source binaries with distinct package generations, not three different source releases."
+    ],
+    "pressure": {
+      "path": "/private/tmp/agentdocker-reload-review5-pressure1-2026-09-16/result.json",
+      "report": {
+        "passed": true,
+        "reloads": 20,
+        "build_info": {
+          "arch": "aarch64",
+          "format": 1,
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "os": "macos",
+          "state_schema": 21,
+          "version": "0.1.0"
+        },
+        "scenarios": [
+          "312 messages sent through 20 reloads arrived once, in order; 0 send errors",
+          "128 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+          "both loggers' logs are contiguous across every reload",
+          "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+          "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+          "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 20 handovers accepted in between"
+        ],
+        "trial_processes": {
+          "provider": 35002,
+          "controller": 35003
+        },
+        "reload_seconds": [
+          1.33,
+          0.025,
+          4.143,
+          0.029,
+          0.029,
+          0.029,
+          0.029,
+          0.029,
+          0.029,
+          0.029,
+          0.027,
+          0.029,
+          0.026,
+          0.03,
+          0.03,
+          0.029,
+          0.028,
+          0.03,
+          0.029,
+          0.029
+        ],
+        "daemon_pids": [
+          34980,
+          35407,
+          35470,
+          36214,
+          36251,
+          36280,
+          36318,
+          36348,
+          36391,
+          36443,
+          36496,
+          36538,
+          36583,
+          36643,
+          36757,
+          36809,
+          36855,
+          36906,
+          36960,
+          37004,
+          37047
+        ],
+        "predecessor_retired_seconds": [
+          1.333,
+          0.029,
+          4.149,
+          0.033,
+          0.033,
+          0.033,
+          0.032,
+          0.033,
+          0.033,
+          0.032,
+          0.056,
+          0.032,
+          0.05,
+          0.034,
+          0.055,
+          0.032,
+          0.054,
+          0.033,
+          0.032,
+          0.033
+        ],
+        "sends": {
+          "delivered": 312,
+          "errors": []
+        },
+        "launches": {
+          "finished": 128,
+          "errors": []
+        },
+        "log_lines": {
+          "logger-a": 654186,
+          "logger-b": 654128
+        },
+        "controller_episode": {
+          "attempts": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "launched_pids": [
+            35395,
+            36109,
+            37049,
+            37696,
+            38741
+          ],
+          "handovers_during": 20
+        },
+        "survivors": [],
+        "cleanup_errors": [],
+        "daemon_log_warnings": {}
+      }
+    },
+    "native_codex": {
+      "path": "/private/tmp/agentdocker-reload-review5-native1-2026-09-16/result.json",
+      "report": {
+        "started_at": "2026-09-16T18:17:45.699594+00:00",
+        "scenario": "question",
+        "reload_enabled": true,
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "da75a7e59a149accee7ed731867d3d8b978ba1fd532c2ec22b3298a90a2b4407",
+        "source": {
+          "commit": "09e1559f9445469cb845fb96cda9d560393b2d4f",
+          "dirty": false,
+          "rust_and_driver_sha256": "935734950e88920a8b562c6391bd8c54b2d7fe776dedce3262bf616eb7ddc914"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "772c27abd9ed6d2e7a662b51cd8603a9b9e4b4f72d05f2f72303e8461b8440a1",
+        "daemon_sha256": "975d876b7bf0618f55e265e00fe2681a1295473e3c91721cf9b5cbf891d60e09",
+        "pid": 38497,
+        "thread": "01a0ab70-6951-7403-983b-a22245071142",
+        "agent": "05b03ca16b454d6c899c676da0130661",
+        "automatic_hook_bootstrap": true,
+        "handovers": [
+          {
+            "stage": "idle",
+            "predecessor": 38494,
+            "successor": 38902,
+            "seconds_until_retired": 0.1283827500010375,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "unsubmitted-draft",
+            "predecessor": 38902,
+            "successor": 39396,
+            "seconds_until_retired": 0.1358223330171313,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "busy-with-human-and-peer-queued",
+            "predecessor": 39396,
+            "successor": 40477,
+            "seconds_until_retired": 0.13753383301082067,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "pending-question",
+            "predecessor": 40477,
+            "successor": 41486,
+            "seconds_until_retired": 0.13433437500498258,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          }
+        ],
+        "idle_wake_seconds": 7.524694833002286,
+        "cross_process_receipt": {
+          "thread": "01a0ab70-6951-7403-983b-a22245071142",
+          "turn": "01a0ab70-905c-73b0-b286-5a6964281021",
+          "item": "01a0ab70-906e-7343-8d13-34d24db245bd"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "819fe79fcfc84a0b"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0ab70-6951-7403-983b-a22245071142",
+            "turn": "01a0ab71-059b-7d02-b441-6e65699626c9",
+            "item": "01a0ab71-05b9-7d12-837d-45b71f3c5fcc"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "answer_receipt_after_handover": {
+          "message": "5e75cbfc66e14da0",
+          "receipt": {
+            "thread": "01a0ab70-6951-7403-983b-a22245071142",
+            "turn": "01a0ab71-53c5-7510-9c4b-0d02c0ca126e",
+            "item": "01a0ab71-53d0-7112-a3bf-cd58c29c7b69"
+          }
+        },
+        "async_question_answer_once": true,
+        "question_id": "4f1534f440ca4b75",
+        "same_live_tui": true,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 10,
+        "agentdocker_integration": true,
+        "daemon_pids": [
+          38494,
+          38902,
+          39396,
+          40477,
+          41486
+        ],
+        "daemon_survivors": [],
+        "controller_survivors": [],
+        "cleanup_errors": [],
+        "raw_result_sha256": "cad87588c8028454f3abf096ed82fac06fb96bb278dd6a5a089b5d36aa6f7ded"
+      }
+    },
+    "retained_release_pin": {
+      "path": "/private/tmp/agentdocker-reload-review5-pin1-2026-09-16/result.json",
+      "report": {
+        "passed": true,
+        "scenarios": [
+          "a bound controller's launch descriptor in the first release pins that release, with the controller alive and nothing launched from it",
+          "with the first release neither current nor previous, a prune keeps it while a controller's binding pins it",
+          "unbinding releases the pin, and the next prune removes the release"
+        ],
+        "pin_trial": {
+          "first": "f783874bb6e4a1e5fc0291b4bb7856c57e5414287a01777e876aca28c5a1cdd9",
+          "second": "d226579bea20aa7e97d522ba928c6551e769161000bf136d7c36c44ed63c36a3",
+          "third": "3d24bf9ad585beae14cbad269f4a1f750d449060d72b2b3c1aa0d41e62fbeb0b",
+          "serving_pid": 39010
+        },
+        "pin_cleanup": {
+          "errors": [],
+          "survivors": []
+        }
+      }
+    }
+  },
+  "review6_2026_09_16": {
+    "build": {
+      "format": 1,
+      "source_commit": "0bcde3c1d56d928d53ec6cd8150f7fa6971c1ea5",
+      "source_tree": "fd9fffbce5798b960dd172622d29a7b262ab82c9",
+      "source_input_sha256": "12292150af6e672190748d87257f49d7101323e4f9e9dc2c26393d0cb374d148",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "4460171b419b70dd714d9255f6ff02e17ad1002b80768d2e04480176139d44b7",
+        "agentd": "addfe16ad8db7ed4336f092fd4fead49e449b5ff4d8f1c74698d7b2a795920e4",
+        "agentdocker-ui": "17b14c7f3cf106adc248ee63e3c86c86d6fd04958468110849b441abd54fadad"
+      }
+    },
+    "changes": [
+      "Discover/Runtimes hold mutation admission; background scans behind a transfer fence preserve cached state and events until abort or successor scan.",
+      "Checking and taking held descriptors is serialized with restricted-listener registration; starting endpoint returns Backpressure without discarding descriptors; failed endpoint returns Unavailable.",
+      "Successor readiness write runs on a blocking worker with a bounded socket write timeout."
+    ],
+    "source_gate": {
+      "source_commit": "0bcde3c1d56d928d53ec6cd8150f7fa6971c1ea5",
+      "result": "passed",
+      "rust_passed": 1068,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "log": "/private/tmp/agentdocker-reload-review6-gate1-2026-09-16.log"
+    },
+    "pressure": {
+      "path": "/private/tmp/agentdocker-reload-review6-pressure1-2026-09-16/result.json",
+      "report": {
+        "passed": true,
+        "reloads": 20,
+        "build_info": {
+          "arch": "aarch64",
+          "format": 1,
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "os": "macos",
+          "state_schema": 21,
+          "version": "0.1.0"
+        },
+        "scenarios": [
+          "900 messages sent through 20 reloads arrived once, in order; 0 send errors",
+          "563 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+          "both loggers' logs are contiguous across every reload",
+          "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+          "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+          "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 16 handovers accepted in between"
+        ],
+        "trial_processes": {
+          "provider": 73361,
+          "controller": 73362
+        },
+        "reload_seconds": [
+          0.808,
+          0.026,
+          0.025,
+          0.026,
+          0.026,
+          0.027,
+          0.03,
+          4.663,
+          2.604,
+          0.574,
+          1.093,
+          0.058,
+          0.565,
+          0.043,
+          4.162,
+          1.585,
+          0.052,
+          0.05,
+          0.558,
+          3.135
+        ],
+        "daemon_pids": [
+          73302,
+          73583,
+          73622,
+          73659,
+          73711,
+          73767,
+          73855,
+          73953,
+          75589,
+          76011,
+          76142,
+          77305,
+          77337,
+          77653,
+          78530,
+          79347,
+          80628,
+          80678,
+          81548,
+          81677,
+          82142
+        ],
+        "predecessor_retired_seconds": [
+          0.811,
+          0.029,
+          0.029,
+          0.029,
+          0.029,
+          0.031,
+          5.061,
+          4.666,
+          2.61,
+          5.596,
+          1.102,
+          0.063,
+          5.57,
+          0.047,
+          9.171,
+          1.588,
+          5.078,
+          0.053,
+          0.562,
+          3.138
+        ],
+        "sends": {
+          "delivered": 900,
+          "errors": []
+        },
+        "launches": {
+          "finished": 563,
+          "errors": []
+        },
+        "log_lines": {
+          "logger-a": 2383490,
+          "logger-b": 2382918
+        },
+        "controller_episode": {
+          "attempts": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "launched_pids": [
+            73584,
+            74513,
+            75884,
+            77933,
+            81351
+          ],
+          "handovers_during": 16
+        },
+        "survivors": [],
+        "cleanup_errors": [],
+        "daemon_log_warnings": {
+          "agentd::supervisor: exit not recorded durably; the owner's exit report is kept": 5,
+          "agentd::daemon::restore: recovered exit not durable; owner report kept without acknowledgement": 5
+        }
+      }
+    },
+    "retained_native_failure": {
+      "path": "/private/tmp/agentdocker-reload-review6-native1-2026-09-16/result.json",
+      "report": {
+        "started_at": "2026-09-16T18:53:03.178353+00:00",
+        "scenario": "question",
+        "reload_enabled": true,
+        "result": "failed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "da75a7e59a149accee7ed731867d3d8b978ba1fd532c2ec22b3298a90a2b4407",
+        "source": {
+          "commit": "0bcde3c1d56d928d53ec6cd8150f7fa6971c1ea5",
+          "dirty": false,
+          "rust_and_driver_sha256": "66ea9a35a9781680265b34b9362a1ca62b5ac66eb5617e7148dca3f61eebcb47"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "4460171b419b70dd714d9255f6ff02e17ad1002b80768d2e04480176139d44b7",
+        "daemon_sha256": "addfe16ad8db7ed4336f092fd4fead49e449b5ff4d8f1c74698d7b2a795920e4",
+        "pid": 77306,
+        "thread": "01a0ab90-b9f5-7ed3-8414-5c48440f4de4",
+        "agent": "fe607d70b9284d4a80ce003d27b1464b",
+        "automatic_hook_bootstrap": true,
+        "handovers": [
+          {
+            "stage": "idle",
+            "predecessor": 77290,
+            "successor": 77883,
+            "seconds_until_retired": 0.17182662500999868,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "unsubmitted-draft",
+            "predecessor": 77883,
+            "successor": 79522,
+            "seconds_until_retired": 0.12553799999295734,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "busy-with-human-and-peer-queued",
+            "predecessor": 79522,
+            "successor": 82541,
+            "seconds_until_retired": 0.1395297079870943,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "pending-question",
+            "predecessor": 82541,
+            "successor": 85004,
+            "seconds_until_retired": 0.1291669170022942,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          }
+        ],
+        "idle_wake_seconds": 7.285401833010837,
+        "cross_process_receipt": {
+          "thread": "01a0ab90-b9f5-7ed3-8414-5c48440f4de4",
+          "turn": "01a0ab90-e0dd-7452-9a06-321b6c3f0a60",
+          "item": "01a0ab90-e0e8-7131-92ad-c5b0ec09eca8"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "c9b0705cd60d4892"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0ab90-b9f5-7ed3-8414-5c48440f4de4",
+            "turn": "01a0ab91-5617-70e0-9054-1a3a9d4397b7",
+            "item": "01a0ab91-562e-7241-930e-b91dfc7eea20"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "daemon_pids": [
+          77290,
+          77883,
+          79522,
+          82541,
+          85004
+        ],
+        "daemon_survivors": [],
+        "controller_survivors": [],
+        "cleanup_errors": [],
+        "failure": "See the private result and terminal capture; raw exception text may include local state.",
+        "raw_result_sha256": "089ec61fdb30bfb074ae4aed25235c7f947bd73bfec9b25e664e0ce21b142d99"
+      }
+    },
+    "native_corrected_driver": {
+      "path": "/private/tmp/agentdocker-reload-review6-native2-2026-09-16/result.json",
+      "report": {
+        "started_at": "2026-09-16T18:55:40.347983+00:00",
+        "scenario": "question",
+        "reload_enabled": true,
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "2c03dde808ae80de54f30605ecc64574cf7c2625c84f83f9d026a2e334384ffc",
+        "source": {
+          "commit": "54a47f84093eda646a332309ecc1d38972177c20",
+          "dirty": false,
+          "rust_and_driver_sha256": "0dbf276fe2a84de3ba03c4bafa8273eda5a7c78046d0dacaa399661f9df0756d"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "4460171b419b70dd714d9255f6ff02e17ad1002b80768d2e04480176139d44b7",
+        "daemon_sha256": "addfe16ad8db7ed4336f092fd4fead49e449b5ff4d8f1c74698d7b2a795920e4",
+        "pid": 93684,
+        "thread": "01a0ab93-28cd-7163-afad-dc991594eab9",
+        "agent": "a7352a28aa3e464dae060e6dfe5b3841",
+        "automatic_hook_bootstrap": true,
+        "handovers": [
+          {
+            "stage": "idle",
+            "predecessor": 93681,
+            "successor": 94067,
+            "seconds_until_retired": 0.14362562500173226,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "unsubmitted-draft",
+            "predecessor": 94067,
+            "successor": 94495,
+            "seconds_until_retired": 0.1646901250060182,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "busy-with-human-and-peer-queued",
+            "predecessor": 94495,
+            "successor": 95755,
+            "seconds_until_retired": 0.12828766598249786,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "pending-question",
+            "predecessor": 95755,
+            "successor": 96735,
+            "seconds_until_retired": 0.1318282080173958,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          }
+        ],
+        "idle_wake_seconds": 7.398490249994211,
+        "cross_process_receipt": {
+          "thread": "01a0ab93-28cd-7163-afad-dc991594eab9",
+          "turn": "01a0ab93-4fd5-7262-b111-c67ab8e5b714",
+          "item": "01a0ab93-5042-7ea3-a338-448c5805242a"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "5ce19262c04a463b"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0ab93-28cd-7163-afad-dc991594eab9",
+            "turn": "01a0ab93-c553-7772-aff0-83ddcdf8652c",
+            "item": "01a0ab93-c560-7943-894f-38f151dfc660"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "answer_completed_at_queue_empty": 1,
+        "answer_receipt_after_handover": {
+          "message": "cdd27960cca64205",
+          "receipt": {
+            "thread": "01a0ab93-28cd-7163-afad-dc991594eab9",
+            "turn": "01a0ab94-137a-7320-8d9d-1178384e1b1b",
+            "item": "01a0ab94-1386-7311-9112-4b80c9119ad3"
+          }
+        },
+        "async_question_answer_once": true,
+        "question_id": "a7bdc16692be4535",
+        "same_live_tui": true,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 10,
+        "agentdocker_integration": true,
+        "daemon_pids": [
+          93681,
+          94067,
+          94495,
+          95755,
+          96735
+        ],
+        "daemon_survivors": [],
+        "controller_survivors": [],
+        "cleanup_errors": [],
+        "raw_result_sha256": "edf1883461cf85009455e7eb994a34127b2f444c35340a0c44525bbf76bc2252"
+      }
+    },
+    "pin_trial": {
+      "path": "/private/tmp/agentdocker-reload-review6-pin1-2026-09-16/result.json",
+      "report": {
+        "passed": true,
+        "scenarios": [
+          "a bound controller's launch descriptor in the first release pins that release, with the controller alive and nothing launched from it",
+          "with the first release neither current nor previous, a prune keeps it while a controller's binding pins it",
+          "unbinding releases the pin, and the next prune removes the release"
+        ],
+        "pin_trial": {
+          "first": "3947c0a5225cab836bb5e6fa1895aa736f46a51522597ed99d3e534afe2e814f",
+          "second": "501e3aa3e368d5bd426a19493e0707764ea7e1b9f174d4624ea9128cf1181e1e",
+          "third": "5cc86698edda0e286d9644b4718d53c60f243564333cfed104c1d82a925674c0",
+          "serving_pid": 88796
+        },
+        "pin_cleanup": {
+          "errors": [],
+          "survivors": []
+        }
+      }
+    },
+    "native_driver_correction": {
+      "source_commit": "54a47f8",
+      "explanation": "The first four-handover trial failed its immediate completed-history assertion after the queue emptied. Receiver source reports and persists the exact receipt, acknowledges the daemon queue, then moves the entry into local completed history. The corrected driver waits up to 10 seconds for that last transition and still requires exactly one matching thread receipt. The rerun passed. Production binaries remain the immutable 0bcde3c build; 54a47f8 changes only the driver and documentation."
+    },
+    "pressure_warning_analysis": {
+      "deferred_exit_warnings": 10,
+      "affected_agents": 5,
+      "all_eventually_recorded": true,
+      "explanation": "Each warning occurred after a transfer fence and before acceptance. The logs contain a later agent-finished record for each affected id, all 563 launched agents finished, and cleanup found no survivors. Warnings were not discarded."
+    },
+    "limits": [
+      "Experimental reload remains gated; no production handover or default activation was performed.",
+      "This Mac and local model boundary only; broader platform and sustained provider acceptance remain separate."
+    ],
+    "final_gate": {
+      "source_commit": "54a47f8",
+      "result": "passed",
+      "rust_passed": 1068,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "log": "/private/tmp/agentdocker-reload-review6-gate2-2026-09-16.log"
+    }
+  },
+  "review7_2026_09_16": {
+    "build": {
+      "format": 1,
+      "source_commit": "71033b7a929bd5d5c7c1b1f1cc899daea6448fc6",
+      "source_tree": "1b1586f07a78d2ec321ba93bf9dc0797d97a6d97",
+      "source_input_sha256": "c5d78d7de82d7f664ae0b6a7a0dfecce9759e82a68612c1a70d09fdc50f4f19e",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "006f1c9e93620d4def356a8b22724b35fbd5595719377e33a4a97fa28283c430",
+        "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce",
+        "agentdocker-ui": "add2824ad6d8e511e8e2ec3195b338fb6e87971e5937f5466bccc34d701d9a2d"
+      }
+    },
+    "changes": [
+      "Both serving and failed successor readiness outcomes use the bounded blocking-worker helper, so a predecessor that does not read cannot stall async startup.",
+      "Combined with merged owned-Codex active input and the hidden-notification/idle-connection UI changes."
+    ],
+    "retained_failed_gate": {
+      "source_commit": "b9f35ce",
+      "result": "failed",
+      "rust_passed": 1074,
+      "rust_failed": 1,
+      "rust_skipped": 7,
+      "log": "/private/tmp/agentdocker-reload-review7-gate1-2026-09-16.log",
+      "failed_test": "unread_readiness_reply_does_not_block_async_progress",
+      "cause": "The fixture filled a socket before sending its descriptor header. A separate macOS socket probe filled 8192 bytes, then SCM_RIGHTS sendmsg returned errno40 (EMSGSIZE) immediately, so the fixture did not hold the writer pending."
+    },
+    "fixture_correction": {
+      "source_commit": "71033b7a929bd5d5c7c1b1f1cc899daea6448fc6",
+      "change": "Send a 256 KiB failure body into an unread socket with a 4096-byte send buffer; require the async timer to progress while the worker is pending, then close the peer and require a bounded error.",
+      "targeted_result": "passed",
+      "log": "/private/tmp/agentdocker-reload-review7-readiness-2026-09-16.log"
+    },
+    "source_gate": {
+      "source_commit": "71033b7a929bd5d5c7c1b1f1cc899daea6448fc6",
+      "result": "passed",
+      "rust_passed": 1075,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "log": "/private/tmp/agentdocker-reload-review7-gate2-2026-09-16.log"
+    },
+    "pressure": {
+      "path": "/private/tmp/agentdocker-reload-review7-pressure-2026-09-16/result.json",
+      "sha256": "d62fe927b787d2bc3a4d10008aedee6f922c3ecd907870fca69265f28194efd4",
+      "report": {
+        "passed": true,
+        "reloads": 20,
+        "build_info": {
+          "arch": "aarch64",
+          "format": 1,
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "os": "macos",
+          "state_schema": 21,
+          "version": "0.1.0"
+        },
+        "scenarios": [
+          "900 messages sent through 20 reloads arrived once, in order; 0 send errors",
+          "461 agents launched (half stopped early) during the reloads all finished; 0 launch errors",
+          "both loggers' logs are contiguous across every reload",
+          "batch and PTY fixtures exit with exact codes under the last daemon with complete logs",
+          "a lease and a pending question kept their identity and expiry across every switch; the question was answered after the last",
+          "a bound controller's restart episode ran to exhaustion across the handovers: 5 launches, attempts [1, 2, 3, 4, 5], 17 handovers accepted in between"
+        ],
+        "trial_processes": {
+          "provider": 69579,
+          "controller": 69581
+        },
+        "reload_seconds": [
+          1.06,
+          0.027,
+          0.03,
+          0.029,
+          0.029,
+          0.026,
+          0.032,
+          0.708,
+          0.043,
+          0.045,
+          0.583,
+          0.042,
+          0.563,
+          0.556,
+          0.558,
+          1.084,
+          0.078,
+          0.571,
+          0.088,
+          0.566
+        ],
+        "daemon_pids": [
+          69554,
+          69994,
+          70050,
+          70093,
+          70148,
+          70212,
+          70263,
+          70305,
+          71156,
+          71988,
+          72843,
+          73725,
+          74591,
+          74739,
+          74841,
+          74944,
+          75172,
+          75891,
+          76010,
+          76671,
+          76754
+        ],
+        "predecessor_retired_seconds": [
+          1.065,
+          0.031,
+          0.055,
+          0.062,
+          0.057,
+          0.03,
+          5.056,
+          5.648,
+          5.062,
+          5.06,
+          5.599,
+          0.047,
+          0.567,
+          0.56,
+          0.563,
+          6.078,
+          0.09,
+          5.59,
+          0.098,
+          0.571
+        ],
+        "sends": {
+          "delivered": 900,
+          "errors": []
+        },
+        "launches": {
+          "finished": 461,
+          "errors": []
+        },
+        "log_lines": {
+          "logger-a": 1954182,
+          "logger-b": 1870785
+        },
+        "controller_episode": {
+          "attempts": [
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "launched_pids": [
+            69996,
+            70596,
+            71597,
+            73242,
+            76112
+          ],
+          "handovers_during": 17
+        },
+        "survivors": [],
+        "cleanup_errors": [],
+        "daemon_log_warnings": {
+          "agentd::supervisor: exit not recorded durably; the owner's exit report is kept": 7,
+          "agentd::daemon::restore: recovered exit not durable; owner report kept without acknowledgement": 7
+        }
+      }
+    },
+    "native": {
+      "path": "/private/tmp/agentdocker-reload-review7-native-2026-09-16/result.json",
+      "sha256": "f74547da8815fc69f2aa2cc8800ec157d14a6b3e215de45f64e65aa54d0d4cc3",
+      "report": {
+        "started_at": "2026-09-16T19:47:28.035808+00:00",
+        "scenario": "question",
+        "reload_enabled": true,
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "2c03dde808ae80de54f30605ecc64574cf7c2625c84f83f9d026a2e334384ffc",
+        "source": {
+          "commit": "71033b7a929bd5d5c7c1b1f1cc899daea6448fc6",
+          "dirty": false,
+          "rust_and_driver_sha256": "32122e04f2a961fa9bd412c23ae27496613edfb14e0bba70e6cd41cf7fa8fa00"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "006f1c9e93620d4def356a8b22724b35fbd5595719377e33a4a97fa28283c430",
+        "daemon_sha256": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce",
+        "pid": 69589,
+        "thread": "01a0abc2-8a26-7103-ada9-6aa72618ef99",
+        "agent": "1b69cce8db1746f7850caf35a7992b13",
+        "automatic_hook_bootstrap": true,
+        "handovers": [
+          {
+            "stage": "idle",
+            "predecessor": 69570,
+            "successor": 70147,
+            "seconds_until_retired": 0.1284031249815598,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "unsubmitted-draft",
+            "predecessor": 70147,
+            "successor": 71425,
+            "seconds_until_retired": 0.04779758397489786,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "busy-with-human-and-peer-queued",
+            "predecessor": 71425,
+            "successor": 74667,
+            "seconds_until_retired": 0.13304241601144895,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          },
+          {
+            "stage": "pending-question",
+            "predecessor": 74667,
+            "successor": 76955,
+            "seconds_until_retired": 0.1253904170007445,
+            "provider_identity_preserved": true,
+            "binding_preserved": true
+          }
+        ],
+        "idle_wake_seconds": 7.439959959010594,
+        "cross_process_receipt": {
+          "thread": "01a0abc2-8a26-7103-ada9-6aa72618ef99",
+          "turn": "01a0abc2-b130-7e83-8300-2e1bec380408",
+          "item": "01a0abc2-b14e-76e2-bf2f-fd9a1a45698b"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "fa26aac04bec4843"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0abc2-8a26-7103-ada9-6aa72618ef99",
+            "turn": "01a0abc3-2675-71a0-af83-c3f7eb723226",
+            "item": "01a0abc3-2685-7a60-92d0-a6093fdbf87d"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "answer_completed_at_queue_empty": 1,
+        "answer_receipt_after_handover": {
+          "message": "bc1a22e334454279",
+          "receipt": {
+            "thread": "01a0abc2-8a26-7103-ada9-6aa72618ef99",
+            "turn": "01a0abc3-749d-7693-9003-444889db641a",
+            "item": "01a0abc3-74ab-7120-ae2f-12563d13ba0a"
+          }
+        },
+        "async_question_answer_once": true,
+        "question_id": "23a48e94b2eb4069",
+        "same_live_tui": true,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 10,
+        "agentdocker_integration": true,
+        "daemon_pids": [
+          69570,
+          70147,
+          71425,
+          74667,
+          76955
+        ],
+        "daemon_survivors": [],
+        "controller_survivors": [],
+        "cleanup_errors": [],
+        "raw_result_sha256": "57fd472bedc1d305171b17ffdb448a319eb9453f35cfc2e99a12d21f1632e4c4"
+      }
+    },
+    "owned_codex_input": {
+      "busy": {
+        "path": "/private/tmp/agentdocker-reload-review7-steering-busy-2026-09-16/result.json",
+        "sha256": "8ff935de4b7188d05e93fe7e7565cea9cd088e01abc569653b6153121b59ea98",
+        "report": {
+          "result": "passed",
+          "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+          "scenario": "busy",
+          "checks": [
+            "CLI human and peer sends use owned input route",
+            "same active turn",
+            "exact per-message receipt",
+            "no duplicated provider submission"
+          ],
+          "driver_sha256": "fef6d7c3d0cdb4dc748f5a0b865b460e6b272daa5e21de6eb2cdf5c52ed9a232",
+          "source": "71033b7a929bd5d5c7c1b1f1cc899daea6448fc6",
+          "binary_sha256": {
+            "agentdocker": "006f1c9e93620d4def356a8b22724b35fbd5595719377e33a4a97fa28283c430",
+            "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+          },
+          "provider_version": "codex-cli 0.154.0",
+          "agent": "223d7967426542e59aee2929eb391c97",
+          "initial_pid": 58912,
+          "messages": [
+            {
+              "id": "cab75e2979bd46c4",
+              "text": "BUSY_START_NONCE",
+              "from": "3e27c6754f604380aa7ea9e77d66bcff"
+            },
+            {
+              "id": "aba2f5a077b544e4",
+              "text": "PEER_BUSY_NONCE",
+              "from": "1f59b20beb7e45088a3731a3615403c7"
+            },
+            {
+              "id": "1e1fb30951b04c3e",
+              "text": "HUMAN_BROADCAST_PAUSE_NONCE",
+              "from": "3e27c6754f604380aa7ea9e77d66bcff"
+            }
+          ],
+          "receipts": {
+            "aba2f5a077b544e4": {
+              "thread": "01a0abc0-8d88-75e2-88f1-3bf4565e7cd4",
+              "turn": "01a0abc0-8fb7-7fd3-96b0-5613ce26dc94",
+              "item": "01a0abc0-91d3-7290-af2c-49fb99b66781"
+            },
+            "1e1fb30951b04c3e": {
+              "thread": "01a0abc0-8d88-75e2-88f1-3bf4565e7cd4",
+              "turn": "01a0abc0-8fb7-7fd3-96b0-5613ce26dc94",
+              "item": "01a0abc0-93b6-79d0-86f3-7a9cc6e61a35"
+            },
+            "cab75e2979bd46c4": {
+              "thread": "01a0abc0-8d88-75e2-88f1-3bf4565e7cd4",
+              "turn": "01a0abc0-8fb7-7fd3-96b0-5613ce26dc94",
+              "item": "01a0abc0-8fe7-7143-85fc-90e6eba15315"
+            }
+          },
+          "final_pid": 58912,
+          "same_turn": true,
+          "production_mutations": false,
+          "exact_receipts": true,
+          "no_resubmission": true,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "elapsed_seconds": 3.0437101669958793
+        }
+      },
+      "refused": {
+        "path": "/private/tmp/agentdocker-reload-review7-steering-refused-2026-09-16/result.json",
+        "sha256": "09f3c76028f4c40ea6a45da9922a5973e64abf02eaf3cbec413b044d265fdf26",
+        "report": {
+          "result": "passed",
+          "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+          "scenario": "refused",
+          "checks": [
+            "CLI human and peer sends use owned input route",
+            "refused input starts once after completion",
+            "exact per-message receipt",
+            "no duplicated provider submission",
+            "one injected precondition refusal; no retry while the original turn remains active"
+          ],
+          "driver_sha256": "fef6d7c3d0cdb4dc748f5a0b865b460e6b272daa5e21de6eb2cdf5c52ed9a232",
+          "source": "71033b7a929bd5d5c7c1b1f1cc899daea6448fc6",
+          "binary_sha256": {
+            "agentdocker": "006f1c9e93620d4def356a8b22724b35fbd5595719377e33a4a97fa28283c430",
+            "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+          },
+          "provider_version": "codex-cli 0.154.0",
+          "agent": "085c374ab9c34148adf1f1a4a3012ea1",
+          "initial_pid": 61673,
+          "messages": [
+            {
+              "id": "fb60f8ac01dc4129",
+              "text": "BUSY_START_NONCE",
+              "from": "8c7e15172ffc444e844db737f17521a7"
+            },
+            {
+              "id": "4cb62894d54d4017",
+              "text": "PEER_BUSY_NONCE",
+              "from": "9695f734f6ce461199eacdd490e950c9"
+            }
+          ],
+          "receipts": {
+            "fb60f8ac01dc4129": {
+              "thread": "01a0abc1-1728-7510-a93b-4a893eb187df",
+              "turn": "01a0abc1-1951-76d1-83ab-79d17b8e2321",
+              "item": "01a0abc1-1981-7e00-93be-a5a2acbd2792"
+            },
+            "4cb62894d54d4017": {
+              "thread": "01a0abc1-1728-7510-a93b-4a893eb187df",
+              "turn": "01a0abc1-250a-7d30-81c3-311eb66e51cf",
+              "item": "01a0abc1-2519-7813-a302-582e69a1c02e"
+            }
+          },
+          "final_pid": 61673,
+          "same_turn": false,
+          "production_mutations": false,
+          "exact_receipts": true,
+          "no_resubmission": true,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "elapsed_seconds": 4.529353749996517
+        }
+      },
+      "lost": {
+        "path": "/private/tmp/agentdocker-reload-review7-steering-lost-2026-09-16/result.json",
+        "sha256": "0f79efcc261d0f8b4c2accc1eecebb821561a02b5ec1894c1479b93252283f56",
+        "report": {
+          "result": "passed",
+          "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+          "scenario": "lost-reply",
+          "checks": [
+            "CLI human and peer sends use owned input route",
+            "same active turn",
+            "exact per-message receipt",
+            "no duplicated provider submission",
+            "lost steering reply reconciled after supervised controller restart"
+          ],
+          "driver_sha256": "fef6d7c3d0cdb4dc748f5a0b865b460e6b272daa5e21de6eb2cdf5c52ed9a232",
+          "source": "71033b7a929bd5d5c7c1b1f1cc899daea6448fc6",
+          "binary_sha256": {
+            "agentdocker": "006f1c9e93620d4def356a8b22724b35fbd5595719377e33a4a97fa28283c430",
+            "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+          },
+          "provider_version": "codex-cli 0.154.0",
+          "agent": "7b69f657805b432e8e919f87be1cc5cd",
+          "initial_pid": 63919,
+          "messages": [
+            {
+              "id": "eb81e66b49844fda",
+              "text": "BUSY_START_NONCE",
+              "from": "b9678397e83b412b945a2c7ad906b70c"
+            },
+            {
+              "id": "9654e947471b4043",
+              "text": "PEER_BUSY_NONCE",
+              "from": "2fd25c474d8e4113bbc6548714124a03"
+            }
+          ],
+          "receipts": {
+            "9654e947471b4043": {
+              "thread": "01a0abc1-52bb-7cd2-9152-ca7b056a8b1b",
+              "turn": "01a0abc1-54e4-7fb1-aa1d-e7a8b4c75077",
+              "item": "01a0abc1-5716-74b1-9fb6-15f7db9b574b"
+            },
+            "eb81e66b49844fda": {
+              "thread": "01a0abc1-52bb-7cd2-9152-ca7b056a8b1b",
+              "turn": "01a0abc1-54e4-7fb1-aa1d-e7a8b4c75077",
+              "item": "01a0abc1-5514-76a3-b6b9-9f737c29edf8"
+            }
+          },
+          "final_pid": 66734,
+          "same_turn": true,
+          "production_mutations": false,
+          "exact_receipts": true,
+          "no_resubmission": true,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "elapsed_seconds": 32.1808418330038
+        }
+      }
+    },
+    "pressure_warning_analysis": {
+      "deferred_exit_warnings": 14,
+      "affected_agents": 7,
+      "all_eventually_recorded": true,
+      "log": "/private/tmp/agentdocker-reload-review7-pressure-2026-09-16/daemon.log",
+      "explanation": "Every affected id has a later agent-finished record. All 461 launches finished and cleanup found no survivors. The warnings remain recorded."
+    },
+    "limits": [
+      "Experimental reload remains gated; no production handover or default activation was performed.",
+      "Actual Codex0.154.0 with private profiles and a local model boundary; no hosted-provider account or LLM benchmark.",
+      "Pressure and native-TUI trials overlapped the standalone PR161 gate on this host; timings are acceptance observations under that load.",
+      "Existing review6 retained-release pin evidence remains separate; the pin trial was not rerun in review7."
+    ],
+    "thread_guard_gate": {
+      "source_commit": "4215189a2dc1d67aeedea716d25802f30ddd0f75",
+      "result": "passed",
+      "rust_passed": 1076,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "log": "/private/tmp/agentdocker-reload-review7-gate3-2026-09-16.log"
+    },
+    "thread_guard_build": {
+      "format": 1,
+      "source_commit": "4215189a2dc1d67aeedea716d25802f30ddd0f75",
+      "source_tree": "b945b7571cef2c5a4cf8c9df68e1a5b5236214ae",
+      "source_input_sha256": "7a91afb3c95ef4a732c804f1fd2503f11792da078fae976bcae197e8d8467f22",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "006f1c9e93620d4def356a8b22724b35fbd5595719377e33a4a97fa28283c430",
+        "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce",
+        "agentdocker-ui": "34797af74f267eb5bb66218fae55813858844c9737b4c2e3991a90d7e33b56b6"
+      }
+    },
+    "binary_reuse": {
+      "agentdocker_and_agentd_identical_to_trial_binaries": true,
+      "explanation": "The thread-composer guard only changed the UI executable; CLI and daemon hashes match immutable71033b7, so the recorded native reload and steering trials apply to those identical executables. The UI gate is reported separately.",
+      "final_combined_agentdocker_and_agentd_identical_to_trial_binaries": true
+    },
+    "final_combined_gate": {
+      "source_commit": "0993d1bfe254f21c817808aec92de97645d1f95a",
+      "result": "passed",
+      "rust_passed": 1077,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "format_and_strict_lint": "passed",
+      "packaging": "passed",
+      "release_build": "passed",
+      "log": "/private/tmp/agentdocker-reload-review7-gate4-2026-09-16.log"
+    },
+    "final_combined_build": {
+      "format": 1,
+      "source_commit": "0993d1bfe254f21c817808aec92de97645d1f95a",
+      "source_tree": "bfe941f30d13abe53101c43fac24626bcf267012",
+      "source_input_sha256": "3e170de15a83e3dc6f35903c5ec6e7fc5c9c9b17a3588d6f10eed564c0b439f8",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "006f1c9e93620d4def356a8b22724b35fbd5595719377e33a4a97fa28283c430",
+        "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce",
+        "agentdocker-ui": "c3225eb8b77158291a5ad7dc0ae438229fa04e113bc272b987d8b6e8ea1167c2"
+      }
+    }
+  },
+  "review8_2026_09_16": {
+    "source_commit": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+    "change": "Distinguish no-active-turn from different-active-turn steering refusal. Changed ownership pauses immediately with the original receipt intact and the refused message still queued; it cannot consume a foreign turn completion or invent acknowledgement.",
+    "review": "https://github.com/brandopakel/AgentDocker/pull/155#issuecomment-5703871673",
+    "prior_binary_reproduction": {
+      "path": "/private/tmp/agentdocker-reload-review8-changed-turn-before-2026-09-16/result.json",
+      "sha256": "8070b3110363dca94c251097c21508ebfc31689bd79e5e2ba79e999960861055",
+      "report": {
+        "result": "failed",
+        "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+        "scenario": "changed-turn",
+        "checks": [],
+        "driver_sha256": "706d61ee0489b0c9c326771e78bfbbd33aa2fab2cb46c7fa0d7f8ddfcf4f4c85",
+        "source": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+        "binary_sha256": {
+          "agentdocker": "006f1c9e93620d4def356a8b22724b35fbd5595719377e33a4a97fa28283c430",
+          "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "agent": "749925bb88c640f490744fa76cea7115",
+        "initial_pid": 64307,
+        "error": "Codex completed an unexpected turn",
+        "cleanup": {
+          "forced": false,
+          "errors": [],
+          "exit": 0,
+          "fixtures": {
+            "signals": [],
+            "remaining": [],
+            "errors": []
+          }
+        },
+        "elapsed_seconds": 2.7365662079828326
+      },
+      "binary_source_commit": "0993d1b",
+      "note": "The report source identifies the new driver. The executable came from the prior immutable review7 binaries3; its hashes are retained in this report."
+    },
+    "aborted_gate": {
+      "result": "aborted",
+      "exit_code": 143,
+      "log": "/private/tmp/agentdocker-reload-review8-gate1-2026-09-16.log",
+      "reason": "The Cargo claim conflicted with Claude, but the orchestration batch incorrectly started the gate anyway. Root immediately terminated its own verified process group. No completed test result is claimed; gate2 ran after a successful exclusive claim."
+    },
+    "gate": {
+      "source_commit": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+      "result": "passed",
+      "rust_passed": 1077,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "doctests": "passed",
+      "format_and_strict_lint": "passed",
+      "packaging": "passed",
+      "release_build": "passed",
+      "log": "/private/tmp/agentdocker-reload-review8-gate2-2026-09-16.log",
+      "junit": "/private/tmp/agentdocker-reload-review8-gate2-nextest-2026-09-16/junit.xml"
+    },
+    "build": {
+      "format": 1,
+      "source_commit": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+      "source_tree": "5868528e00c682007cc778f2611190ec24faabee",
+      "source_input_sha256": "d77c037b28e68c5f83433b561d690fd62018edf4448d05f7a9ae03c1510e12f7",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "eb6107816eff85c0c0f8fb5e572f726117e7cdfd55926001637ac06715a16820",
+        "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce",
+        "agentdocker-ui": "c3225eb8b77158291a5ad7dc0ae438229fa04e113bc272b987d8b6e8ea1167c2"
+      }
+    },
+    "immutable_binaries": "/private/tmp/agentdocker-reload-review8-binaries1-2026-09-16",
+    "owned_codex_trials": {
+      "changed-turn": {
+        "path": "/private/tmp/agentdocker-reload-review8-changed-turn-2026-09-16/result.json",
+        "sha256": "883c6ef5a282a430993507c9f2814b72980c67260cce5f325d4e1894ab322bbd",
+        "report": {
+          "result": "passed",
+          "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+          "scenario": "changed-turn",
+          "checks": [
+            "different-active-turn refusal pauses explicitly before processing that turn completion",
+            "original input receipt remains unchanged",
+            "unsubmitted peer message remains queued once",
+            "no receipt or second submission invented for the refused input"
+          ],
+          "driver_sha256": "706d61ee0489b0c9c326771e78bfbbd33aa2fab2cb46c7fa0d7f8ddfcf4f4c85",
+          "source": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+          "binary_sha256": {
+            "agentdocker": "eb6107816eff85c0c0f8fb5e572f726117e7cdfd55926001637ac06715a16820",
+            "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+          },
+          "provider_version": "codex-cli 0.154.0",
+          "agent": "fde67674c7734997ac3b2bb734267996",
+          "initial_pid": 97771,
+          "messages": [
+            {
+              "id": "1fdf0abb3c434bee",
+              "text": "BUSY_START_NONCE",
+              "from": "552d3a8a45cd47ca8ef81da0cca12e9d"
+            },
+            {
+              "id": "db39c2bafe054fd1",
+              "text": "PEER_BUSY_NONCE",
+              "from": "86e7c6f335bc452bb92c5beb91168883"
+            }
+          ],
+          "retained_messages": [
+            "db39c2bafe054fd1"
+          ],
+          "first_receipt": {
+            "thread": "01a0abe9-d7e5-7b52-8b91-7260e792d801",
+            "turn": "01a0abe9-da0c-7bd3-ab05-a84e1c21fa28",
+            "item": "01a0abe9-da39-74c0-9960-3fd657d33acb"
+          },
+          "pause_reason": "Codex has a different active turn; input delivery paused and the message remains queued until conversation recovery",
+          "changed_turn": {
+            "expected": "01a0abe9-da0c-7bd3-ab05-a84e1c21fa28",
+            "reported": "fixture-unexpected-turn",
+            "completion_emitted": true
+          },
+          "production_mutations": false,
+          "no_resubmission": true,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "elapsed_seconds": 2.5724129590089433
+        }
+      },
+      "refused": {
+        "path": "/private/tmp/agentdocker-reload-review8-refused-2026-09-16/result.json",
+        "sha256": "a664e72c5f2f0b6ddcea9a6da488e40a4f89acbdf03740a4513917f83e27f488",
+        "report": {
+          "result": "passed",
+          "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+          "scenario": "refused",
+          "checks": [
+            "CLI human and peer sends use owned input route",
+            "refused input starts once after completion",
+            "exact per-message receipt",
+            "no duplicated provider submission",
+            "one injected precondition refusal; no retry while the original turn remains active"
+          ],
+          "driver_sha256": "706d61ee0489b0c9c326771e78bfbbd33aa2fab2cb46c7fa0d7f8ddfcf4f4c85",
+          "source": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+          "binary_sha256": {
+            "agentdocker": "eb6107816eff85c0c0f8fb5e572f726117e7cdfd55926001637ac06715a16820",
+            "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+          },
+          "provider_version": "codex-cli 0.154.0",
+          "agent": "6371ebee02b643f2b5e4cd787cc1b6c9",
+          "initial_pid": 98319,
+          "messages": [
+            {
+              "id": "27c96ca627394a33",
+              "text": "BUSY_START_NONCE",
+              "from": "b1b10b5f97a540048d6363d15935c026"
+            },
+            {
+              "id": "f01dc494d8e04815",
+              "text": "PEER_BUSY_NONCE",
+              "from": "77c13863ecd0429a9686da005a6145ba"
+            }
+          ],
+          "receipts": {
+            "27c96ca627394a33": {
+              "thread": "01a0abea-0726-71f3-bf12-36bbbdff3d06",
+              "turn": "01a0abea-094f-7851-8a79-3f1d11d3bf18",
+              "item": "01a0abea-097e-7bc3-ae62-5840302f42e3"
+            },
+            "f01dc494d8e04815": {
+              "thread": "01a0abea-0726-71f3-bf12-36bbbdff3d06",
+              "turn": "01a0abea-150c-7573-acef-09c1efd79c79",
+              "item": "01a0abea-151d-7580-affd-d6f25257d1bb"
+            }
+          },
+          "final_pid": 98319,
+          "same_turn": false,
+          "production_mutations": false,
+          "exact_receipts": true,
+          "no_resubmission": true,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "elapsed_seconds": 4.553347292006947
+        }
+      },
+      "busy": {
+        "path": "/private/tmp/agentdocker-reload-review8-busy-2026-09-16/result.json",
+        "sha256": "3e191477f3c4c929f69a4fdbaeb6686e7f499c7047c09b5f93decf37243af8ca",
+        "report": {
+          "result": "passed",
+          "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+          "scenario": "busy",
+          "checks": [
+            "CLI human and peer sends use owned input route",
+            "same active turn",
+            "exact per-message receipt",
+            "no duplicated provider submission"
+          ],
+          "driver_sha256": "706d61ee0489b0c9c326771e78bfbbd33aa2fab2cb46c7fa0d7f8ddfcf4f4c85",
+          "source": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+          "binary_sha256": {
+            "agentdocker": "eb6107816eff85c0c0f8fb5e572f726117e7cdfd55926001637ac06715a16820",
+            "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+          },
+          "provider_version": "codex-cli 0.154.0",
+          "agent": "6d7005d28e0d4bc486c488b0131ee74f",
+          "initial_pid": 98986,
+          "messages": [
+            {
+              "id": "45fe123311394c2d",
+              "text": "BUSY_START_NONCE",
+              "from": "80d254398f1e4766a9fe685a46f576ad"
+            },
+            {
+              "id": "4f3206ea9eb34424",
+              "text": "PEER_BUSY_NONCE",
+              "from": "b6a9c59ecba74b07afb1cce5093d640a"
+            },
+            {
+              "id": "8dfd5e37952b4fe5",
+              "text": "HUMAN_BROADCAST_PAUSE_NONCE",
+              "from": "80d254398f1e4766a9fe685a46f576ad"
+            }
+          ],
+          "receipts": {
+            "4f3206ea9eb34424": {
+              "thread": "01a0abea-39ab-7cc1-a612-14b6fa92a869",
+              "turn": "01a0abea-3bd2-7293-9aa6-02af646b4c1c",
+              "item": "01a0abea-3dee-7231-b156-91d92f1475d6"
+            },
+            "8dfd5e37952b4fe5": {
+              "thread": "01a0abea-39ab-7cc1-a612-14b6fa92a869",
+              "turn": "01a0abea-3bd2-7293-9aa6-02af646b4c1c",
+              "item": "01a0abea-3feb-7953-a16c-f5133049d5c5"
+            },
+            "45fe123311394c2d": {
+              "thread": "01a0abea-39ab-7cc1-a612-14b6fa92a869",
+              "turn": "01a0abea-3bd2-7293-9aa6-02af646b4c1c",
+              "item": "01a0abea-3c03-71b0-b09e-4edbdcda343c"
+            }
+          },
+          "final_pid": 98986,
+          "same_turn": true,
+          "production_mutations": false,
+          "exact_receipts": true,
+          "no_resubmission": true,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "elapsed_seconds": 2.5613467500079423
+        }
+      },
+      "lost-reply": {
+        "path": "/private/tmp/agentdocker-reload-review8-lost-reply-2026-09-16/result.json",
+        "sha256": "1ec89cd6b42c5f6afbe62be790011cef47dbdc92e05b3d4c30410a8f5e8862c9",
+        "report": {
+          "result": "passed",
+          "scope": "Actual Codex owned-bridge steering with a private local model and daemon.\n\nNo authentication, saved provider configuration or production session is used.\nThe local model controls busy boundaries; its output is not an LLM benchmark.\n",
+          "scenario": "lost-reply",
+          "checks": [
+            "CLI human and peer sends use owned input route",
+            "same active turn",
+            "exact per-message receipt",
+            "no duplicated provider submission",
+            "lost steering reply reconciled after supervised controller restart"
+          ],
+          "driver_sha256": "706d61ee0489b0c9c326771e78bfbbd33aa2fab2cb46c7fa0d7f8ddfcf4f4c85",
+          "source": "36ac92b856de9cd7e231b9b19bffabb6cd1e4d16",
+          "binary_sha256": {
+            "agentdocker": "eb6107816eff85c0c0f8fb5e572f726117e7cdfd55926001637ac06715a16820",
+            "agentd": "7a88d7324b2eafc9c24650e3f4f9674bbb2be1aa7333f605d4c6a85facc73cce"
+          },
+          "provider_version": "codex-cli 0.154.0",
+          "agent": "ab217be28ba542dc8cbc42fe857cb5b2",
+          "initial_pid": 99633,
+          "messages": [
+            {
+              "id": "24028e8ea7b74387",
+              "text": "BUSY_START_NONCE",
+              "from": "e536bc8863594e14a9afa22f144e5320"
+            },
+            {
+              "id": "65476614669c4ddb",
+              "text": "PEER_BUSY_NONCE",
+              "from": "4ac1178f56964bb18f04a4dfd7b8094f"
+            }
+          ],
+          "receipts": {
+            "65476614669c4ddb": {
+              "thread": "01a0abea-739a-79f0-85dc-82bdaa5775b7",
+              "turn": "01a0abea-75c5-7e22-aee9-299aec17252d",
+              "item": "01a0abea-77e4-7563-8da9-f87132fd4070"
+            },
+            "24028e8ea7b74387": {
+              "thread": "01a0abea-739a-79f0-85dc-82bdaa5775b7",
+              "turn": "01a0abea-75c5-7e22-aee9-299aec17252d",
+              "item": "01a0abea-75f6-7ee2-b4ce-2c411f8c3359"
+            }
+          },
+          "final_pid": 2064,
+          "same_turn": true,
+          "production_mutations": false,
+          "exact_receipts": true,
+          "no_resubmission": true,
+          "cleanup": {
+            "forced": false,
+            "errors": [],
+            "exit": 0,
+            "fixtures": {
+              "signals": [],
+              "remaining": [],
+              "errors": []
+            }
+          },
+          "elapsed_seconds": 32.1277447080065
+        }
+      }
+    },
+    "limits": [
+      "Private actual Codex0.154.0 with a deterministic local model service; no production profile, configuration, daemon or provider session changed.",
+      "Changed-turn refusal and its following foreign completion are injected by the private provider wrapper. The result proves queue retention and safe pause, not provider support for taking over a foreign active turn.",
+      "Review7 pressure and native-TUI handovers were not rerun for this owned-bridge classifier change. The daemon hash is unchanged; their original source, CLI hashes, timings and warnings remain in review7.",
+      "All four trials cleaned up without forced termination, errors or surviving fixture processes. Broader provider/model-service, installed, sleep/reboot and platform acceptance remain open."
+    ]
+  },
+  "review9_2026_09_17": {
+    "result": "gate_passed_acceptance_provenance_retained",
+    "source": "f4ef6c3978bf9b4170474d2df5c1ac7d82343c48",
+    "build": {
+      "format": 1,
+      "source_commit": "f4ef6c3978bf9b4170474d2df5c1ac7d82343c48",
+      "source_tree": "6c0df14c10462aacbed54e655c773987d4043352",
+      "source_input_sha256": "bf67156c2243b55f0a4511a0e87495fdafef39878eaac876ce2202b121edaf72",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-reload-review9-binaries1-2026-09-17",
+      "binary_sha256": {
+        "agentdocker": "caa1816b787b772497074fd4a61ff004368d477873435da7e496191ad9bd6d71",
+        "agentd": "192f8698781c71142ed9c7bff86885f3634836a06d30701239fc42a8068c3496",
+        "agentdocker-ui": "a0adfe059103a6efd4e2f21ba7a9f56c826184381ee83271ee43834f5ce31d36"
+      }
+    },
+    "gate": {
+      "rust_passed": 1087,
+      "rust_skipped": 7,
+      "python_passed": 84,
+      "doctests": true,
+      "fmt": true,
+      "strict_clippy": true,
+      "packaging": true,
+      "release": true,
+      "log": "/private/tmp/agentdocker-reload-review9-gate1-2026-09-16.log"
+    },
+    "scope": "Integrated merged main including usage foundations and background smoke windows. Earlier review8 actual runtime trials retain their original source and hashes; this gate is not a rerun of those trials. Installed app unchanged.",
+    "notes": [
+      "The gate finished naturally before pause cleanup checked its exit status; the temporary assumption that it was aborted is withdrawn.",
+      "The incremental build_native call completed from cache after a Cargo claim conflict; no continuing process remained when checked. Record retained; subsequent builds require a separately confirmed claim."
+    ]
+  }
+}

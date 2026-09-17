@@ -20,12 +20,12 @@ use agentdocker_core::recovery::Validation;
 
 impl State {
     fn contest(&mut self, id: &ContestId) -> Option<Contest> {
-        self.store_op("contest", |store| store.document("contest", id.as_str()))
+        self.store_read("contest", |store| store.document("contest", id.as_str()))
             .flatten()
     }
 
     fn save_contest(&mut self, contest: &Contest) {
-        self.persist("contest", |store| {
+        let _ = self.persist("contest", |store| {
             store.put_document("contest", contest.id.as_str(), contest)
         });
     }
@@ -143,7 +143,7 @@ impl Daemon {
             measure: metric.measure.name().to_owned(),
             entrants: ids,
         });
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         let standing = contest.standing();
@@ -173,13 +173,13 @@ impl Daemon {
                 && let Some(mut room) = state.channels.get(&channel).cloned()
                 && room.admit(agent)
             {
-                state.persist("channel", |store| {
+                let _ = state.persist("channel", |store| {
                     store.put_document("channel", room.id.as_str(), &room)
                 });
                 state.channels.insert(room.id.clone(), room);
             }
         }
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         let standing = contest.standing();
@@ -203,7 +203,7 @@ impl Daemon {
             return Response::error(ErrorCode::NotFound, format!("no contest {id}"));
         };
         let evidence: Option<Validation> = state
-            .store_op("validation", |store| {
+            .store_read("validation", |store| {
                 store.document("validation", validation)
             })
             .flatten();
@@ -284,7 +284,7 @@ impl Daemon {
         {
             state.tell_channel(&room, standing_line(&contest, &standing));
         }
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         Response::Contest { contest, standing }
@@ -456,7 +456,7 @@ impl Daemon {
                 state.append_journal(entry);
             }
         }
-        if let Some(error) = state.storage_failure() {
+        if let Some(error) = state.write_failure() {
             return error;
         }
         let standing = contest.standing();

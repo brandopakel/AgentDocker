@@ -16,6 +16,7 @@ use std::time::Instant;
 
 use agentdocker_core::journal::{Reader, cursor_donor, digest as render_digest, initial_cursor};
 use agentdocker_core::paths;
+use agentdocker_core::session::{Transfer, TransferState};
 use agentdocker_core::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, Attribution, Change, ChangeKind, Claimed,
     Destination, DiscoveredProcess, Envelope, ErrorCode, Event, EventKind, JournalEntry,
@@ -114,6 +115,100 @@ const OVERLAP_PAGE: usize = 2_000;
 /// Maximum foreground wait while failed-launch supervision stops its owned group.
 const SUPERVISION_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// What became of a write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+enum Persisted {
+    Committed,
+    /// Fenced: nothing was written and nothing is wrong. Memory stays.
+    Skipped,
+    /// The store failed and the failure is latched.
+    Failed,
+}
+
+/// One admitted mutation in progress; dropping it, however the request
+/// ends, releases its place.
+pub(crate) struct InFlight(Arc<Daemon>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        let mut state = lock(&self.0.state);
+        state.in_flight = state.in_flight.saturating_sub(1);
+    }
+}
+
+tokio::task_local! {
+    /// The admitted mutation's place, kept where its handler can give it
+    /// up: a request that has written what it will write and now only
+    /// waits (an `ask` for its answer, a `claim --wait` for its lease)
+    /// must not hold an offer back for as long as it waits.
+    static ADMISSION: std::cell::RefCell<Option<InFlight>>;
+}
+
+/// A recovery write held back until this process is allowed to write.
+/// A recovery write a fenced open held back for the acceptance. It takes
+/// its event sequence numbers when it runs, from the number given, and
+/// says how many it used: assigned at open they would sit below the
+/// acceptance's, a hole in the durable head if anything stopped between.
+type DeferredWrite = Box<dyn FnOnce(&Store, u64) -> anyhow::Result<u64> + Send>;
+
+/// Who may write the database from this process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Coordination {
+    Serving,
+    /// Offered to a successor; every write here is refused until settled.
+    Quiescing {
+        transfer: String,
+    },
+    /// The successor accepted; this process is leaving without writing.
+    Transferred {
+        transfer: String,
+    },
+}
+
+/// Whether a request would write coordination state. Reads are served
+/// throughout a transfer from the projection this process still holds;
+/// everything else answers `transferring` until a coordinator owns the
+/// database again. `Shutdown` and `Reload` steer the daemon itself
+/// rather than its data: neither is fenced, and neither counts as a
+/// mutation in flight, or a reload would refuse itself.
+fn mutates(request: &Request) -> bool {
+    !matches!(
+        request,
+        Request::Shutdown
+            | Request::Reload
+            | Request::Ping
+            | Request::Images
+            | Request::Stale { .. }
+            | Request::Reads { .. }
+            | Request::Checkpoints { .. }
+            | Request::Handoffs { .. }
+            | Request::Validations { .. }
+            | Request::WorktreeDiff { .. }
+            | Request::List { .. }
+            | Request::Inspect { .. }
+            | Request::Changes { .. }
+            | Request::Overlap { .. }
+            | Request::Questions { .. }
+            | Request::Activity { .. }
+            | Request::Waiting
+            | Request::Contests { .. }
+            | Request::Journal { digest: None, .. }
+            | Request::Channels { .. }
+            | Request::Conversations { .. }
+            | Request::History { .. }
+            | Request::Thread { .. }
+            | Request::SearchMessages { .. }
+            | Request::Leases { .. }
+            | Request::Events { .. }
+            | Request::ResumeEvents { .. }
+            | Request::Logs { .. }
+            | Request::PeekInput { .. }
+            | Request::Subscribe { .. }
+            | Request::Attach { .. }
+    )
+}
+
 pub struct Daemon {
     pub home: PathBuf,
     pub socket: PathBuf,
@@ -145,6 +240,11 @@ pub struct Daemon {
     /// How session owners are run: as processes of the daemon binary, or
     /// in-process where no daemon binary is on hand (tests).
     owner_mode: supervisor::OwnerMode,
+    /// The listener and daemon lock, kept here from serving onward so a
+    /// handover can pass them to a successor. Never held across an await.
+    held: Mutex<Option<reload::Held>>,
+    /// Signalled once a successor is serving and this daemon may leave.
+    transferred_exit: Notify,
 }
 
 /// Release the scan slot and wake joiners on completion or cancellation.
@@ -202,12 +302,33 @@ struct State {
     discovered: Discovered,
     store: Store,
     storage_error: Option<String>,
+    /// Whether this process may write the database. Serving is the
+    /// ordinary case. Offering a transfer stops every writer here,
+    /// request or tick, until the successor accepts (this process exits
+    /// without touching agents) or the offer is aborted (writing resumes).
+    /// A process that opened the database while an offer was pending
+    /// starts fenced and may write only after accepting as the successor.
+    coordination: Coordination,
+    /// Startup recovery writes held back by a fenced open; the successor
+    /// runs them immediately after accepting, before serving anything.
+    deferred_recovery: Vec<DeferredWrite>,
+    /// Mutating requests admitted past the fence and still executing. An
+    /// offer waits for this to reach zero so its final write follows every
+    /// side effect it might otherwise race.
+    in_flight: usize,
+    /// The last write was skipped by the fence. Every existing "did it
+    /// land" check reads `write_failure()`, so a skip is reported there
+    /// as `transferring` until a later write lands or the offer is
+    /// aborted; unlike a storage failure it is not latched for good, and
+    /// unlike one it never refuses a read.
+    skipped_write: bool,
     registry: Registry,
     leases: LeaseTable,
     inboxes: HashMap<AgentId, VecDeque<Envelope>>,
     inbox_bytes: HashMap<AgentId, usize>,
     live_subscribers: HashMap<AgentId, usize>,
     supervised: HashMap<AgentId, tokio::sync::watch::Sender<Option<bool>>>,
+    pending_restarts: HashSet<AgentId>,
     container_busy: HashSet<AgentId>,
     transports: HashMap<AgentId, transport::Transport>,
     projects: HashMap<PathBuf, Option<String>>,
@@ -653,15 +774,25 @@ impl Daemon {
             {
                 if group_alive {
                     if candidate.status != AgentStatus::Stopping {
-                        let agent = state
-                            .registry
-                            .set_status(&candidate.id, AgentStatus::Stopping, Utc::now())
-                            .unwrap();
-                        state.persist("agent", |store| store.upsert_agent(&agent));
-                        state.emit(EventKind::AgentStopping {
-                            agent: candidate.id,
-                            force: false,
-                        });
+                        // Disk first, memory on commit: a fenced or failed
+                        // write leaves the record live, so the next look
+                        // (this daemon's after an abort, or the successor's)
+                        // finds it again.
+                        let mut agent = candidate.clone();
+                        agent.status = AgentStatus::Stopping;
+                        if state.persist("agent", |store| store.upsert_agent(&agent))
+                            == Persisted::Committed
+                        {
+                            state.registry.set_status(
+                                &candidate.id,
+                                AgentStatus::Stopping,
+                                Utc::now(),
+                            );
+                            state.emit(EventKind::AgentStopping {
+                                agent: candidate.id,
+                                force: false,
+                            });
+                        }
                     }
                 } else {
                     state.mark_exited(&candidate.id, AgentStatus::Exited { code: None });
@@ -709,6 +840,9 @@ impl Daemon {
     fn stop(&self, reference: &str, force: bool) -> Response {
         let record = {
             let mut state = lock(&self.state);
+            if let Some(error) = state.storage_failure().or_else(|| state.transferring()) {
+                return error;
+            }
             let id = match state.registry.resolve(reference) {
                 Ok(id) => id,
                 Err(e) => return registry_error(e),
@@ -717,16 +851,13 @@ impl Daemon {
             if !record.status.is_live() {
                 return Response::error(ErrorCode::Invalid, "agent has already finished");
             }
-            if let Some(control) = state.supervised.get(&id) {
-                // The supervisor still owns the Child. Route signals through
-                // that handle even when process start-time inspection fails.
+            if let Some(control) = state.supervised.get(&id).cloned() {
+                // Save the intent and event before the supervisor can signal the child.
+                let agent = match state.commit_stop(record, force) {
+                    Ok(agent) => agent,
+                    Err(error) => return *error,
+                };
                 control.send_modify(|pending| *pending = Some(force || pending.unwrap_or(false)));
-                let agent = state
-                    .registry
-                    .set_status(&id, AgentStatus::Stopping, Utc::now())
-                    .unwrap();
-                state.persist("agent", |store| store.upsert_agent(&agent));
-                state.emit(EventKind::AgentStopping { agent: id, force });
                 return Response::Agent { agent };
             }
             if record.pid.is_none() {
@@ -767,6 +898,30 @@ impl Daemon {
                     "process identity changed or is unavailable",
                 );
             }
+            let agent = {
+                let mut state = lock(&self.state);
+                let Some(current) = state.registry.get(&record.id) else {
+                    return Response::error(ErrorCode::NotFound, "agent vanished");
+                };
+                if current.pid != record.pid
+                    || current.process_started_at != record.process_started_at
+                {
+                    return Response::error(
+                        ErrorCode::Conflict,
+                        "agent identity changed during stop",
+                    );
+                }
+                if !current.status.is_live() {
+                    return Response::Agent {
+                        agent: current.clone(),
+                    };
+                }
+                let current = current.clone();
+                match state.commit_stop(current, force) {
+                    Ok(agent) => agent,
+                    Err(error) => return *error,
+                }
+            };
             let target = if record.managed && record.process_group == Some(pid) {
                 Pid::from_raw(-target.as_raw())
             } else {
@@ -787,6 +942,7 @@ impl Daemon {
                     );
                 }
             }
+            return Response::Agent { agent };
         }
         let mut state = lock(&self.state);
         let Some(current) = state.registry.get(&record.id) else {
@@ -800,23 +956,12 @@ impl Daemon {
                 agent: current.clone(),
             };
         }
-        if !alive {
-            return Response::Agent {
-                agent: state
-                    .mark_exited(&record.id, AgentStatus::Exited { code: None })
-                    .unwrap(),
-            };
+        match state.mark_exited(&record.id, AgentStatus::Exited { code: None }) {
+            Some(agent) => Response::Agent { agent },
+            None => state
+                .write_failure()
+                .unwrap_or_else(|| Response::error(ErrorCode::NotFound, "agent vanished")),
         }
-        let agent = state
-            .registry
-            .set_status(&record.id, AgentStatus::Stopping, Utc::now())
-            .unwrap();
-        state.persist("agent", |store| store.upsert_agent(&agent));
-        state.emit(EventKind::AgentStopping {
-            agent: record.id,
-            force,
-        });
-        Response::Agent { agent }
     }
     pub fn expire_leases(&self) {
         let mut state = lock(&self.state);
@@ -840,7 +985,22 @@ impl Daemon {
 
     /// Open (or create) the state database under `home` and restore state.
     pub fn open(home: PathBuf, socket: PathBuf) -> anyhow::Result<Self> {
-        agentdocker_host::dirs::secure_state_dir(&home)?;
+        Self::secure_home(&home)?;
+        let store = Store::open(&home.join("state.db"))?;
+        Self::with_store(home, socket, store)
+    }
+
+    /// Open the store as a successor that has not accepted yet: the
+    /// schema is brought forward but its recorded version is not, so an
+    /// aborted takeover leaves a database the predecessor still opens.
+    pub fn open_pending(home: PathBuf, socket: PathBuf) -> anyhow::Result<Self> {
+        Self::secure_home(&home)?;
+        let store = Store::open_pending(&home.join("state.db"))?;
+        Self::with_store(home, socket, store)
+    }
+
+    fn secure_home(home: &Path) -> anyhow::Result<()> {
+        agentdocker_host::dirs::secure_state_dir(home)?;
         let logs = home.join("logs");
         agentdocker_host::dirs::secure_state_dir(&logs)?;
         for entry in std::fs::read_dir(&logs)? {
@@ -849,16 +1009,26 @@ impl Daemon {
                 agentdocker_host::dirs::private_file(&path, false, false)?;
             }
         }
-        let daemon_log = paths::daemon_log(&home);
+        let daemon_log = paths::daemon_log(home);
         if std::fs::symlink_metadata(&daemon_log).is_ok() {
             agentdocker_host::dirs::private_file(&daemon_log, false, false)?;
         }
-        let store = Store::open(&home.join("state.db"))?;
-        Self::with_store(home, socket, store)
+        Ok(())
     }
 
     pub fn with_store(home: PathBuf, socket: PathBuf, store: Store) -> anyhow::Result<Self> {
         let now = Utc::now();
+        // Before any recovery write: is coordination already offered to
+        // someone? Then this process may not write until it has accepted
+        // that offer as the named successor. Recovery still corrects memory
+        // so the projection is right; the writes wait in `deferred` and land
+        // as the successor's first act after acceptance. A stranger never
+        // gets to run them at all.
+        let pending_transfer = store
+            .transfer()?
+            .filter(|transfer| transfer.state == TransferState::Offered);
+        let fenced = pending_transfer.is_some();
+        let mut deferred: Vec<DeferredWrite> = Vec::new();
         let records = store.load_agents()?;
         // A shared name does not prove a shared identity. Refuse before any
         // recovery writes: retiring either record can strand its inbox and
@@ -911,9 +1081,18 @@ impl Daemon {
                     },
                     now,
                 );
-                event.seq = next_seq;
-                store.agent_transition(&record, &event)?;
-                next_seq += 1;
+                if fenced {
+                    let record = record.clone();
+                    deferred.push(Box::new(move |store, seq| {
+                        event.seq = seq;
+                        store.agent_transition(&record, &event)?;
+                        Ok(1)
+                    }));
+                } else {
+                    event.seq = next_seq;
+                    store.agent_transition(&record, &event)?;
+                    next_seq += 1;
+                }
             }
             let stored = registry.get_mut(&record.id).expect("record was validated");
             *stored = record;
@@ -941,9 +1120,18 @@ impl Daemon {
                     }
                 };
                 let mut event = Event::new(kind, now);
-                event.seq = next_seq;
-                store.delete_lease_with_event(&lease.id, &event)?;
-                next_seq += 1;
+                if fenced {
+                    let id = lease.id.clone();
+                    deferred.push(Box::new(move |store, seq| {
+                        event.seq = seq;
+                        store.delete_lease_with_event(&id, &event)?;
+                        Ok(1)
+                    }));
+                } else {
+                    event.seq = next_seq;
+                    store.delete_lease_with_event(&lease.id, &event)?;
+                    next_seq += 1;
+                }
                 continue;
             }
             if lease.resource.kind() == "file" {
@@ -956,7 +1144,15 @@ impl Daemon {
                 })?;
                 lease.resource =
                     ResourceKey::new(format!("path:{}", project::try_canonical(&path)?.display()));
-                store.upsert_lease(&lease)?;
+                if fenced {
+                    let lease = lease.clone();
+                    deferred.push(Box::new(move |store, _| {
+                        store.upsert_lease(&lease)?;
+                        Ok(0)
+                    }));
+                } else {
+                    store.upsert_lease(&lease)?;
+                }
             }
             if leases.holders_of(&lease.resource).iter().any(|held| {
                 held.holder != lease.holder
@@ -1004,23 +1200,34 @@ impl Daemon {
             .map(|question| question.id.clone())
             .collect();
         expired.sort();
-        let expiration_events: Vec<_> = expired
+        let mut expiration_events: Vec<_> = expired
             .iter()
-            .enumerate()
-            .map(|(index, question)| {
-                let mut event = Event::new(
+            .map(|question| {
+                Event::new(
                     EventKind::QuestionClosed {
                         question: question.clone(),
                         answer: None,
                     },
                     now,
-                );
-                event.seq = next_seq + index as u64;
-                event
+                )
             })
             .collect();
-        store.close_questions(&expired, &expiration_events)?;
-        next_seq += expiration_events.len() as u64;
+        if fenced {
+            let expired = expired.clone();
+            deferred.push(Box::new(move |store, seq| {
+                for (index, event) in expiration_events.iter_mut().enumerate() {
+                    event.seq = seq + index as u64;
+                }
+                store.close_questions(&expired, &expiration_events)?;
+                Ok(expiration_events.len() as u64)
+            }));
+        } else {
+            for (index, event) in expiration_events.iter_mut().enumerate() {
+                event.seq = next_seq + index as u64;
+            }
+            next_seq += expiration_events.len() as u64;
+            store.close_questions(&expired, &expiration_events)?;
+        }
         for id in expired {
             questions.remove(&id);
         }
@@ -1039,12 +1246,22 @@ impl Daemon {
                 discovered: Discovered::default(),
                 store,
                 storage_error: None,
+                coordination: match pending_transfer {
+                    Some(transfer) => Coordination::Quiescing {
+                        transfer: transfer.id,
+                    },
+                    None => Coordination::Serving,
+                },
+                deferred_recovery: deferred,
+                in_flight: 0,
+                skipped_write: false,
                 registry,
                 leases,
                 inboxes,
                 inbox_bytes,
                 live_subscribers: HashMap::new(),
                 supervised: HashMap::new(),
+                pending_restarts: HashSet::new(),
                 container_busy: HashSet::new(),
                 transports: HashMap::new(),
                 projects,
@@ -1078,6 +1295,8 @@ impl Daemon {
             watcher_flush: Mutex::new(None),
             scanning: std::sync::atomic::AtomicBool::new(false),
             owner_mode: supervisor::OwnerMode::detect(),
+            held: Mutex::new(None),
+            transferred_exit: Notify::new(),
             scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
@@ -1170,6 +1389,23 @@ impl Daemon {
         if let Some(error) = lock(&self.state).storage_failure() {
             return error;
         }
+        // Admission and the in-flight count move together under the lock:
+        // an offer that finds the count at zero knows no admitted mutation
+        // is still executing, so its final write follows every side effect.
+        let admitted = mutates(&request);
+        let in_flight = if admitted {
+            let mut state = lock(&self.state);
+            if let Some(refusal) = state.transferring() {
+                return refusal;
+            }
+            state.in_flight += 1;
+            // Released on every exit, including a future dropped because
+            // the client hung up mid-request; a leaked count would refuse
+            // offers for the rest of this daemon's life.
+            Some(InFlight(self.clone()))
+        } else {
+            None
+        };
         // Boxed: `handle_healthy` is one match over every request the
         // protocol has, so the future it returns is as large as the
         // biggest arm plus everything the match holds live across an
@@ -1177,8 +1413,55 @@ impl Daemon {
         // caller that awaits a `handle` inside its own async fn pays for
         // it again — which overflows a thread stack once the protocol is
         // big enough. On the heap it costs one allocation per request.
-        let response = Box::pin(self.handle_healthy(request)).await;
-        lock(&self.state).storage_failure().unwrap_or(response)
+        let control = !admitted;
+        let response = ADMISSION
+            .scope(
+                std::cell::RefCell::new(in_flight),
+                Box::pin(self.handle_healthy(request)),
+            )
+            .await;
+        if control {
+            // Reads and control requests answer for themselves: a write the
+            // fence skipped meanwhile is not their failure.
+            return response;
+        }
+        lock(&self.state).write_failure().unwrap_or(response)
+    }
+
+    /// This request has written what it will write and is about to wait.
+    /// Give its in-flight place up, so an offer need not wait with it;
+    /// anything it writes after this is fenced like a tick writer's.
+    fn done_writing(&self) {
+        let _ = ADMISSION.try_with(|place| place.borrow_mut().take());
+    }
+
+    /// Keep background host work ahead of any transfer offer, just like an
+    /// admitted request. The guard covers its asynchronous host side effects.
+    pub(crate) fn admit_background(self: &Arc<Self>) -> Result<InFlight, Box<Response>> {
+        let mut state = lock(&self.state);
+        if let Some(error) = state.storage_failure().or_else(|| state.transferring()) {
+            return Err(Box::new(error));
+        }
+        state.in_flight += 1;
+        Ok(InFlight(self.clone()))
+    }
+
+    /// The wait is over and the request will write again: take a place
+    /// back first. Refused, with nothing applied, once coordination has
+    /// been offered meanwhile.
+    fn readmit(self: &Arc<Self>) -> Result<(), Box<Response>> {
+        let place = {
+            let mut state = lock(&self.state);
+            if let Some(refusal) = state.transferring() {
+                return Err(Box::new(refusal));
+            }
+            state.in_flight += 1;
+            InFlight(self.clone())
+        };
+        // Outside a request (a direct call in a test) the place goes
+        // straight back with the guard.
+        let _ = ADMISSION.try_with(|slot| *slot.borrow_mut() = Some(place));
+        Ok(())
     }
 
     async fn handle_healthy(self: &Arc<Self>, request: Request) -> Response {
@@ -1259,6 +1542,8 @@ impl Daemon {
                     RestrictedEndpoint::On(socket) => Some(socket),
                     _ => None,
                 },
+                pid: Some(std::process::id()),
+                executable: agentdocker_host::procinfo::executable_path().ok(),
             },
             Request::Run { spec } => self.run(spec).await,
             Request::RunContainer {
@@ -1771,10 +2056,10 @@ impl Daemon {
                             now,
                         );
                         event.seq = state.next_seq;
-                        state.persist("launch completion", |store| {
+                        let committed = state.persist("launch completion", |store| {
                             store.agent_transition(&running, &event)
                         });
-                        if state.storage_error.is_none() {
+                        if committed == Persisted::Committed {
                             *state
                                 .registry
                                 .get_mut(&record.id)
@@ -1789,7 +2074,7 @@ impl Daemon {
                         None
                     }
                 };
-                let failed = lock(&self.state).storage_failure().or(admission_error);
+                let failed = lock(&self.state).write_failure().or(admission_error);
                 let activation_error = if failed.is_none() && updated.is_some() {
                     spawned.activate("launched").await.err()
                 } else {
@@ -2190,6 +2475,11 @@ impl Daemon {
         result: Result<Vec<DiscoveredProcess>, String>,
     ) -> Result<Vec<DiscoveredProcess>, String> {
         let mut state = lock(&self.state);
+        // Background scans may finish after a transfer offer. Keep the prior
+        // snapshot so an aborted transfer's next scan still emits its changes.
+        if state.fenced() {
+            return Err("discovery is paused during coordinator transfer".into());
+        }
         let mut found = match result {
             Ok(found) => found,
             Err(reason) => {
@@ -3072,10 +3362,11 @@ impl Daemon {
     }
 
     pub fn prune_changes(&self) {
-        match lock(&self.state).store.prune_changes(CHANGE_HISTORY) {
-            Ok(0) => {}
-            Ok(removed) => info!(removed, "pruned the ledger"),
-            Err(err) => error!(%err, "failed to prune the ledger"),
+        if let Some(removed) = lock(&self.state).store_op("ledger retention", |store| {
+            store.prune_changes(CHANGE_HISTORY)
+        }) && removed > 0
+        {
+            info!(removed, "pruned the ledger");
         }
     }
 
@@ -3110,7 +3401,7 @@ impl Daemon {
                     Some(Some(seq)) => Some(seq),
                     Some(None) => return Response::Pruned { removed: 0 },
                     None => {
-                        return state.storage_failure().unwrap_or_else(|| {
+                        return state.write_failure().unwrap_or_else(|| {
                             Response::error(ErrorCode::Internal, "journal prune failed")
                         });
                     }
@@ -3192,7 +3483,7 @@ impl Daemon {
         let Some(cutoff) = window.and_then(|window| Utc::now().checked_sub_signed(window)) else {
             return;
         };
-        let projects = match state.store_op("journal", |store| store.journal_projects()) {
+        let projects = match state.store_read("journal", |store| store.journal_projects()) {
             Some(projects) => projects,
             None => return,
         };
@@ -3253,7 +3544,7 @@ impl Daemon {
         if fresh {
             match &project.fingerprint {
                 Some(fingerprint) => {
-                    state.persist("project", |store| {
+                    let _ = state.persist("project", |store| {
                         store.upsert_project(&project.root, fingerprint)
                     });
                 }
@@ -3410,7 +3701,7 @@ impl Daemon {
 
     #[allow(clippy::too_many_arguments)]
     async fn claim(
-        &self,
+        self: &Arc<Self>,
         reference: &str,
         resource: String,
         mode: LeaseMode,
@@ -3464,12 +3755,12 @@ impl Daemon {
                 {
                     return Response::error(ErrorCode::Invalid, "agent is not running");
                 }
-                if let Some(error) = state.storage_failure() {
+                if let Some(error) = state.write_failure() {
                     return error;
                 }
                 let now = Utc::now();
                 state.expire_leases_at(now);
-                if let Some(error) = state.storage_failure() {
+                if let Some(error) = state.write_failure() {
                     return error;
                 }
                 // Fairness: a waiter with somebody ahead of it on an
@@ -3487,7 +3778,7 @@ impl Daemon {
                     let committed = state.leases.committed(&resource);
                     if committed.saturating_add(want) > capacity {
                         state.touch(&holder);
-                        if let Some(error) = state.storage_failure() {
+                        if let Some(error) = state.write_failure() {
                             return error;
                         }
                         return Response::Error {
@@ -3535,7 +3826,7 @@ impl Daemon {
                 let (message, held_by) = match result {
                     Ok(Claimed::New(mut lease)) => {
                         lease.change_seq = state
-                            .store_op("lease ledger boundary", |store| store.change_watermark());
+                            .store_read("lease ledger boundary", |store| store.change_watermark());
                         if lease.resource.kind() == "quota" {
                             lease.amount = amount.unwrap_or(1);
                         }
@@ -3548,7 +3839,7 @@ impl Daemon {
                             now,
                         ) {
                             return state
-                                .storage_failure()
+                                .write_failure()
                                 .expect("failed lease commit freezes storage");
                         }
                         drop(state);
@@ -3565,7 +3856,7 @@ impl Daemon {
                             now,
                         ) {
                             return state
-                                .storage_failure()
+                                .write_failure()
                                 .expect("failed lease commit freezes storage");
                         }
                         drop(state);
@@ -3588,7 +3879,7 @@ impl Daemon {
                 });
                 if !state.commit_lease_activity(&holder, None, conflict, now) {
                     return state
-                        .storage_failure()
+                        .write_failure()
                         .expect("failed conflict commit freezes storage");
                 }
                 if !reported_conflict {
@@ -3631,6 +3922,9 @@ impl Daemon {
                     details: Some(json!({ "held_by": held_by })),
                 };
             }
+            // The conflict is recorded; from here this request only waits,
+            // and an offer must not wait with it.
+            self.done_writing();
             if !wait_for_release(&mut events, &resource, deadline).await {
                 waiting.end(agentdocker_core::WaitOutcome::Timeout);
                 return Response::Error {
@@ -3638,6 +3932,12 @@ impl Daemon {
                     message,
                     details: Some(json!({ "held_by": held_by })),
                 };
+            }
+            // Something changed; claiming again is a write, so take a
+            // place back for it, or learn the daemon is handing over.
+            if let Err(refusal) = self.readmit() {
+                waiting.end(agentdocker_core::WaitOutcome::Cancelled);
+                return *refusal;
             }
         }
     }
@@ -3722,8 +4022,65 @@ impl Daemon {
 }
 
 impl State {
+    /// Commit the stop record and event before publishing or signaling a process.
+    fn commit_stop(
+        &mut self,
+        mut agent: AgentRecord,
+        force: bool,
+    ) -> Result<AgentRecord, Box<Response>> {
+        let now = Utc::now();
+        agent.status = AgentStatus::Stopping;
+        agent.last_seen = now;
+        let mut event = Event::new(
+            EventKind::AgentStopping {
+                agent: agent.id.clone(),
+                force,
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        if self.persist("stop intent", |store| {
+            store.agent_transition(&agent, &event)
+        }) != Persisted::Committed
+        {
+            return Err(Box::new(self.write_failure().unwrap_or_else(|| {
+                Response::error(
+                    ErrorCode::StorageUnavailable,
+                    "stop intent was not committed",
+                )
+            })));
+        }
+        *self
+            .registry
+            .get_mut(&agent.id)
+            .expect("stop identity retained") = agent.clone();
+        self.next_seq += 1;
+        let _ = self.events.send(event);
+        Ok(agent)
+    }
+
     /// Execute a store operation as part of the current ordered transition.
+    /// A store write, answered `None` while fenced (and noted as skipped)
+    /// or once storage has failed; callers leave memory as it was then.
     fn store_op<T>(
+        &mut self,
+        what: &str,
+        op: impl FnOnce(&Store) -> anyhow::Result<T>,
+    ) -> Option<T> {
+        if self.storage_error.is_some() {
+            return None;
+        }
+        if self.fenced() {
+            debug!(%what, "store operation skipped: coordination is being transferred");
+            self.skipped_write = true;
+            return None;
+        }
+        self.store_read(what, op)
+    }
+
+    /// A store read: served through a fence, since a transfer stops
+    /// writes and nothing else, and refused only once storage has failed.
+    fn store_read<T>(
         &mut self,
         what: &str,
         op: impl FnOnce(&Store) -> anyhow::Result<T>,
@@ -3765,6 +4122,170 @@ impl State {
             None => Attribution::External,
         }
     }
+    /// Whether writes are fenced off because a transfer is in flight.
+    fn fenced(&self) -> bool {
+        !matches!(self.coordination, Coordination::Serving)
+    }
+
+    /// The answer a mutating request gets while fenced.
+    fn transferring(&self) -> Option<Response> {
+        self.fenced().then(|| {
+            Response::error(
+                ErrorCode::Transferring,
+                "the daemon is handing coordination to its successor; nothing was applied, retry against the daemon that answers next",
+            )
+        })
+    }
+
+    /// Stop writing and record the offer durably: the last write this
+    /// process makes until the offer settles. Refused while a storage
+    /// failure is latched (nothing here is trustworthy to hand over) or
+    /// while another offer is open.
+    fn offer_transfer(&mut self, successor_pid: u32) -> Result<Transfer, Box<Response>> {
+        if let Some(error) = self.write_failure() {
+            return Err(Box::new(error));
+        }
+        if self.fenced() {
+            return Err(Box::new(Response::error(
+                ErrorCode::Conflict,
+                "a coordination transfer is already in flight",
+            )));
+        }
+        if self.in_flight > 0 {
+            // A mutation admitted before this offer is still executing and
+            // may still write; the offer's last write must follow it.
+            return Err(Box::new(Response::error(
+                ErrorCode::Backpressure,
+                format!(
+                    "{} mutating request(s) still executing; offer again once they finish",
+                    self.in_flight
+                ),
+            )));
+        }
+        let transfer = Transfer {
+            id: AgentId::generate().to_string(),
+            predecessor_pid: std::process::id(),
+            successor_pid: Some(successor_pid),
+            state: TransferState::Offered,
+            offered_at: Utc::now(),
+            settled_at: None,
+        };
+        let mut event = Event::new(
+            EventKind::DaemonTransferOffered {
+                transfer: transfer.id.clone(),
+                successor_pid,
+            },
+            transfer.offered_at,
+        );
+        event.seq = self.next_seq;
+        let offered = self.store_op("transfer offer", |store| {
+            store.offer_transfer(&transfer, &event)
+        });
+        match offered {
+            Some(true) => {
+                self.next_seq += 1;
+                let _ = self.events.send(event);
+                self.coordination = Coordination::Quiescing {
+                    transfer: transfer.id.clone(),
+                };
+                info!(transfer = %transfer.id, successor_pid, "coordination offered; writes fenced");
+                Ok(transfer)
+            }
+            Some(false) => Err(Box::new(Response::error(
+                ErrorCode::Conflict,
+                "another coordination transfer is still offered in the database",
+            ))),
+            None => Err(Box::new(self.write_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::Internal, "cannot record the offer")
+            }))),
+        }
+    }
+
+    /// Name the successor once it exists. The offer was made under this
+    /// process's own pid as a placeholder; the row is rewritten with the
+    /// successor's, still `Offered`, so only that process can accept.
+    fn readdress_offer(&mut self, transfer: &str, successor_pid: u32) -> bool {
+        let Coordination::Quiescing { transfer: current } = &self.coordination else {
+            return false;
+        };
+        if current != transfer {
+            return false;
+        }
+        let mut event = Event::new(
+            EventKind::DaemonTransferReaddressed {
+                transfer: transfer.to_owned(),
+                successor_pid,
+            },
+            Utc::now(),
+        );
+        event.seq = self.next_seq;
+        match self
+            .store
+            .readdress_transfer(transfer, successor_pid, &event)
+        {
+            Ok(true) => {
+                self.next_seq += 1;
+                let _ = self.events.send(event);
+                true
+            }
+            Ok(false) => false,
+            Err(err) => {
+                error!(%err, "cannot readdress the transfer offer");
+                false
+            }
+        }
+    }
+
+    /// Take authority back: abort the offer if it is still ours to abort.
+    /// Returns whether writing resumed. If the successor accepted first,
+    /// this process must leave: it says so and stays fenced.
+    fn abort_transfer(&mut self, reason: &str) -> bool {
+        let Coordination::Quiescing { transfer } = self.coordination.clone() else {
+            return !self.fenced();
+        };
+        // Written past the fence on purpose: settling is the one write a
+        // fenced coordinator may make, and only as a compare-and-set.
+        let now = Utc::now();
+        let mut event = Event::new(
+            EventKind::DaemonTransferAborted {
+                transfer: transfer.clone(),
+                reason: reason.to_owned(),
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        let settled =
+            self.store
+                .settle_transfer(&transfer, None, TransferState::Aborted, now, &event);
+        match settled {
+            Ok(true) => {
+                self.coordination = Coordination::Serving;
+                self.skipped_write = false;
+                self.next_seq += 1;
+                let _ = self.events.send(event);
+                warn!(%transfer, reason, "coordination transfer aborted; writing resumed");
+                true
+            }
+            Ok(false) => {
+                // Not ours to abort any more: the successor accepted.
+                self.coordination = Coordination::Transferred { transfer };
+                false
+            }
+            Err(err) => {
+                error!(%err, "cannot settle the transfer; staying fenced");
+                false
+            }
+        }
+    }
+
+    /// What the store says about the offer, read past the fence: the
+    /// predecessor's way to learn that a silent successor did accept.
+    fn transfer_state(&self) -> Option<Transfer> {
+        self.store.transfer().ok().flatten()
+    }
+
+    /// Storage has failed for good: nothing may be served from this
+    /// projection, reads included, until a restart reloads durable state.
     fn storage_failure(&self) -> Option<Response> {
         self.storage_error.as_ref().map(|error| {
             Response::error(
@@ -3774,14 +4295,47 @@ impl State {
         })
     }
 
-    fn persist(&mut self, what: &str, write: impl FnOnce(&Store) -> anyhow::Result<()>) {
+    /// Did the last write land? A storage failure, or a write the fence
+    /// skipped: whatever the caller was about to apply in memory must not
+    /// be, and the client must retry later. A skip is not the reads'
+    /// concern: they keep being served from the projection the skip left
+    /// as it was.
+    fn write_failure(&self) -> Option<Response> {
+        if let Some(error) = self.storage_failure() {
+            return Some(error);
+        }
+        if self.skipped_write {
+            return self.transferring();
+        }
+        None
+    }
+
+    /// Write, and say what happened. Callers move memory and publish only
+    /// on `Committed`; a `Skipped` write (fenced) is not a failure and not
+    /// a success, and the caller must leave memory as it was.
+    fn persist(
+        &mut self,
+        what: &str,
+        write: impl FnOnce(&Store) -> anyhow::Result<()>,
+    ) -> Persisted {
         if self.storage_error.is_some() {
-            return;
+            return Persisted::Failed;
+        }
+        if self.fenced() {
+            // Not an error: the caller's request was refused before it got
+            // here, and a tick writer simply skips its turn. Nothing lands,
+            // and `write_failure()` says so until a write does.
+            debug!(%what, "write skipped: coordination is being transferred");
+            self.skipped_write = true;
+            return Persisted::Skipped;
         }
         if let Err(err) = write(&self.store) {
             error!(%what, %err, "storage failed; disabling coordination until restart");
             self.storage_error = Some(format!("{what}: {err}"));
+            return Persisted::Failed;
         }
+        self.skipped_write = false;
+        Persisted::Committed
     }
 
     pub fn emit(&mut self, kind: EventKind) {
@@ -3790,8 +4344,8 @@ impl State {
         }
         let mut event = Event::new(kind, Utc::now());
         event.seq = self.next_seq;
-        self.persist("event", |store| store.append_event(&event));
-        if self.storage_error.is_none() {
+        let committed = self.persist("event", |store| store.append_event(&event));
+        if committed == Persisted::Committed {
             self.next_seq += 1;
             let _ = self.events.send(event);
         }
@@ -3831,12 +4385,22 @@ impl State {
         }) {
             return;
         }
-        let Some((record, changed)) = self.registry.set_vcs(id, vcs.clone()) else {
+        // Disk first, memory on commit: a write skipped by a fence or
+        // failed leaves the old checkout in memory, so the change is
+        // noticed again rather than lost.
+        let Some(current) = self.registry.get(id).cloned() else {
             return;
         };
-        if changed {
-            info!(agent = %id.short(), checkout = %vcs.describe(), "checkout moved");
-            self.persist("agent", |store| store.upsert_agent(&record));
+        let changed = !current.vcs.as_ref().is_some_and(|old| old.same_as(&vcs));
+        if !changed {
+            let _ = self.registry.set_vcs(id, vcs);
+            return;
+        }
+        let mut record = current;
+        record.vcs = Some(vcs.clone());
+        info!(agent = %id.short(), checkout = %vcs.describe(), "checkout moved");
+        if self.persist("agent", |store| store.upsert_agent(&record)) == Persisted::Committed {
+            let _ = self.registry.set_vcs(id, vcs.clone());
             self.emit(EventKind::AgentVcsChanged {
                 agent: id.clone(),
                 vcs,
@@ -3884,8 +4448,8 @@ impl State {
         }
         let mut event = Event::new(EventKind::AgentRemoved { agent: id.clone() }, Utc::now());
         event.seq = self.next_seq;
-        self.persist("agent removal", |store| store.delete_agent(&id, &event));
-        if let Some(error) = self.storage_failure() {
+        let _ = self.persist("agent removal", |store| store.delete_agent(&id, &event));
+        if let Some(error) = self.write_failure() {
             return error;
         }
         self.registry.remove(&id);
@@ -3979,10 +4543,10 @@ impl State {
             })
             .collect();
         let leases: Vec<_> = released.iter().map(|lease| lease.id.clone()).collect();
-        self.persist("agent exit", |store| {
+        let committed = self.persist("agent exit", |store| {
             store.agent_exit(&record, &leases, &journal, &channels, &events)
         });
-        if self.storage_error.is_some() {
+        if committed != Persisted::Committed {
             self.journal_seq = previous_seq;
             return self.registry.get(id).cloned();
         }
@@ -4005,8 +4569,8 @@ impl State {
     fn touch(&mut self, id: &AgentId) {
         if let Some(mut record) = self.registry.get(id).cloned() {
             record.last_seen = Utc::now();
-            self.persist("agent", |store| store.upsert_agent(&record));
-            if self.storage_error.is_none() {
+            let committed = self.persist("agent", |store| store.upsert_agent(&record));
+            if committed == Persisted::Committed {
                 *self
                     .registry
                     .get_mut(id)
@@ -4033,10 +4597,10 @@ impl State {
             event.seq = self.next_seq;
             event
         });
-        self.persist("lease activity", |store| {
+        let committed = self.persist("lease activity", |store| {
             store.lease_activity(&record, lease, event.as_ref())
         });
-        if self.storage_error.is_some() {
+        if committed != Persisted::Committed {
             return false;
         }
         *self
@@ -4153,10 +4717,10 @@ impl State {
             Utc::now(),
         );
         event.seq = self.next_seq;
-        self.persist("inbox acknowledgement", |store| {
+        let _ = self.persist("inbox acknowledgement", |store| {
             store.ack_inbox(&id, &messages, &event)
         });
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
         }
         if let Some(queue) = self.inboxes.get_mut(&id) {
@@ -4261,7 +4825,7 @@ impl State {
         }
         let now = Utc::now();
         self.expire_leases_at(now);
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
         }
         let result = self
@@ -4279,7 +4843,7 @@ impl State {
                     now,
                 ) {
                     return self
-                        .storage_failure()
+                        .write_failure()
                         .expect("failed renewal freezes storage");
                 }
                 Response::Lease { lease }
@@ -4395,10 +4959,10 @@ impl State {
             event.seq = self.next_seq + events.len() as u64;
             events.push(event);
         }
-        self.persist("release", |store| {
+        let committed = self.persist("release", |store| {
             store.release_leases(&ids, entry.as_ref(), &events)
         });
-        if self.storage_error.is_none() {
+        if committed == Persisted::Committed {
             for lease in &released {
                 self.leases
                     .release(&lease.id, &lease.holder)
@@ -4448,7 +5012,7 @@ impl State {
                 after: lease.change_seq.is_none().then_some(lease.acquired_at),
                 before_seq: None,
             };
-            let Some(changes) = self.store_op("journal", |store| store.changes(&query)) else {
+            let Some(changes) = self.store_read("journal", |store| store.changes(&query)) else {
                 continue;
             };
             for change in changes
@@ -4536,7 +5100,7 @@ impl State {
             return seq;
         }
         let stored = self
-            .store_op("journal", |store| store.max_journal_seq(project))
+            .store_read("journal", |store| store.max_journal_seq(project))
             .unwrap_or(0);
         self.journal_seq.insert(project.clone(), stored + 2);
         stored + 1
@@ -4552,10 +5116,10 @@ impl State {
             Utc::now(),
         );
         event.seq = self.next_seq;
-        self.persist("journal", |store| {
+        let committed = self.persist("journal", |store| {
             store.append_journal_with_event(&entry, &event)
         });
-        if self.storage_error.is_none() {
+        if committed == Persisted::Committed {
             self.cache_journal(entry.clone());
             self.next_seq += 1;
             let _ = self.events.send(event);
@@ -4733,7 +5297,7 @@ impl State {
 
     /// Serve a query, from the ring when it can be.
     fn journal_query(&mut self, query: JournalQuery) -> Response {
-        let Some(head_seq) = self.store_op("journal head", |store| {
+        let Some(head_seq) = self.store_read("journal head", |store| {
             store.max_journal_seq(&query.project)
         }) else {
             return Response::error(
@@ -4769,7 +5333,7 @@ impl State {
                 };
             }
         }
-        match self.store_op("journal", |store| store.journal(&query)) {
+        match self.store_read("journal", |store| store.journal(&query)) {
             Some(entries) => Response::Journal {
                 project: query.project,
                 entries,
@@ -4808,7 +5372,7 @@ impl State {
             } else {
                 let mut query = JournalQuery::new(project.clone(), DIGEST_SCAN);
                 query.since_seq = Some(cursor);
-                self.store_op("journal", |store| store.journal(&query))
+                self.store_read("journal", |store| store.journal(&query))
                     .unwrap_or_default()
             }
         };
@@ -4836,7 +5400,7 @@ impl State {
             return Some(*seq);
         }
         let found = self
-            .store_op("journal", |store| store.journal_cursor(key, project))
+            .store_read("journal", |store| store.journal_cursor(key, project))
             .flatten();
         if let Some(seq) = found {
             self.journal_cursors.insert(cache_key, seq);
@@ -4862,10 +5426,10 @@ impl State {
             Utc::now(),
         );
         event.seq = self.next_seq;
-        self.persist("journal cursor", |store| {
+        let committed = self.persist("journal cursor", |store| {
             store.set_journal_cursor_with_event(key, project, seq, &event)
         });
-        if self.storage_error.is_none() {
+        if committed == Persisted::Committed {
             self.journal_cursors
                 .insert((key.to_owned(), project.clone()), seq);
             self.next_seq += 1;
@@ -4877,7 +5441,7 @@ impl State {
     fn ring(&mut self, project: &ProjectId) -> &mut JournalRing {
         if !self.journal_rings.contains_key(project) {
             let newest = self
-                .store_op("journal", |store| {
+                .store_read("journal", |store| {
                     store.journal(&JournalQuery::new(project.clone(), JOURNAL_RING))
                 })
                 .unwrap_or_default();
@@ -4923,7 +5487,7 @@ impl State {
                 Response::Pruned { removed }
             }
             None => self
-                .storage_failure()
+                .write_failure()
                 .unwrap_or_else(|| Response::error(ErrorCode::Internal, "journal prune failed")),
         }
     }
@@ -4944,16 +5508,22 @@ impl State {
         };
         let mut event = Event::new(kind, Utc::now());
         event.seq = self.next_seq;
-        self.persist("lease removal", |store| {
+        let committed = self.persist("lease removal", |store| {
             store.delete_lease_with_event(&lease.id, &event)
         });
-        if self.storage_error.is_none() {
+        if committed == Persisted::Committed {
             self.next_seq += 1;
             let _ = self.events.send(event);
         }
     }
 
     fn expire_leases_at(&mut self, now: DateTime<Utc>) {
+        if self.fenced() {
+            // Expiry is memory first, then the write; while fenced the
+            // write cannot land, so the tick is skipped whole rather than
+            // leaving memory without a lease the database still holds.
+            return;
+        }
         let expired = self.leases.expire(now);
         for lease in expired {
             info!(lease = %lease.id, holder = %lease.holder.short(), resource = %lease.resource, "lease expired");
@@ -4962,10 +5532,11 @@ impl State {
     }
 
     pub fn prune_events(&mut self) {
-        match self.store.prune_events(EVENT_HISTORY) {
-            Ok(0) => {}
-            Ok(removed) => info!(removed, "pruned event history"),
-            Err(err) => error!(%err, "failed to prune event history"),
+        if let Some(removed) =
+            self.store_op("event retention", |store| store.prune_events(EVENT_HISTORY))
+            && removed > 0
+        {
+            info!(removed, "pruned event history");
         }
     }
 
@@ -4992,11 +5563,26 @@ impl State {
         envelope: Envelope,
         question: Option<agentdocker_core::Question>,
     ) -> Response {
-        if let Some(error) = self.storage_failure() {
+        self.publish_with_channel(envelope, question, None)
+    }
+
+    /// Prepare channel state and ancillary effects without changing live state;
+    /// publish the complete transition only after the message transaction commits.
+    fn publish_with_channel(
+        &mut self,
+        envelope: Envelope,
+        question: Option<agentdocker_core::Question>,
+        channel: Option<(Channel, EventKind, Option<JournalEntry>)>,
+    ) -> Response {
+        let (channel, transition, mut journal) = match channel {
+            Some((channel, event, journal)) => (Some(channel), Some(event), journal),
+            None => (None, None, None),
+        };
+        if let Some(error) = self.write_failure() {
             return error;
         }
         self.expire_questions(Utc::now());
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
         }
         if question.is_some() && self.questions.len() >= humans::MAX_QUESTIONS {
@@ -5077,12 +5663,29 @@ impl State {
                 record.last_seen = Utc::now();
                 record
             });
-        let mut kinds = vec![EventKind::MessageSent {
+        if let Some(entry) = &mut journal {
+            entry.seq = match self.journal_seq.get(&entry.project) {
+                Some(seq) => *seq,
+                None => match self
+                    .store_read("journal", |store| store.max_journal_seq(&entry.project))
+                {
+                    Some(seq) => seq + 1,
+                    None => return self.write_failure().expect("failed journal read"),
+                },
+            };
+        }
+        let mut kinds: Vec<_> = transition.into_iter().collect();
+        kinds.push(EventKind::MessageSent {
             message: envelope.id.clone(),
             from: envelope.from.clone(),
             to: envelope.to.clone(),
             kind: envelope.kind.clone(),
-        }];
+        });
+        if let Some(entry) = &journal {
+            kinds.push(EventKind::JournalAppended {
+                entry: entry.clone(),
+            });
+        }
         if let Some(question) = &question {
             kinds.push(EventKind::QuestionOpened {
                 question: question.id.clone(),
@@ -5104,8 +5707,8 @@ impl State {
                 event
             })
             .collect();
-        self.persist("message", |store| {
-            store.publish_message(
+        let _ = self.persist("message", |store| {
+            store.publish_message_with_channel(
                 &envelope,
                 &recipients,
                 INBOX_CAPACITY,
@@ -5113,10 +5716,19 @@ impl State {
                 question.as_ref(),
                 closed.as_ref(),
                 &events,
+                channel.as_ref().map(|channel| (channel, journal.as_ref())),
             )
         });
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
+        }
+        if let Some(channel) = channel {
+            self.channels.insert(channel.id.clone(), channel);
+        }
+        if let Some(entry) = journal {
+            self.journal_seq
+                .insert(entry.project.clone(), entry.seq + 1);
+            self.cache_journal(entry);
         }
         for id in &recipients {
             let queue = self.inboxes.entry(id.clone()).or_default();
@@ -5173,7 +5785,7 @@ impl State {
         mut record: AgentRecord,
         announce_start: bool,
     ) -> Response {
-        if let Some(error) = self.storage_failure() {
+        if let Some(error) = self.write_failure() {
             return error;
         }
         if record.spec.name.is_empty() {
@@ -5309,10 +5921,10 @@ impl State {
                     Utc::now(),
                 );
                 event.seq = self.next_seq;
-                self.persist("session binding", |store| {
+                let _ = self.persist("session binding", |store| {
                     store.agent_transition(&updated, &event)
                 });
-                if let Some(error) = self.storage_failure() {
+                if let Some(error) = self.write_failure() {
                     return error;
                 }
                 *self.registry.get_mut(&id).expect("just found") = updated;
@@ -5325,7 +5937,10 @@ impl State {
         if let Err(err) = self.registry.insert(record.clone()) {
             return registry_error(err);
         }
-        self.persist("agent", |store| store.upsert_agent(&record));
+        if self.persist("agent", |store| store.upsert_agent(&record)) != Persisted::Committed {
+            self.registry.remove(&record.id);
+            return self.write_failure().expect("a refused write has a reason");
+        }
         self.emit(EventKind::AgentCreated {
             agent: record.id.clone(),
             name: record.spec.name.clone(),
@@ -5368,7 +5983,7 @@ impl State {
             self.move_cursor(record.id.as_str(), &project_id, seed);
             self.journal_event(&record, JournalKind::Join, what);
         }
-        self.storage_failure()
+        self.write_failure()
             .unwrap_or(Response::Agent { agent: record })
     }
 }
@@ -6714,7 +7329,7 @@ mod tests {
             let record = state.registry.get_mut(&broken.id).unwrap();
             record.spec.command = vec!["/nonexistent/agentdocker-no-such-binary".into()];
             let record = record.clone();
-            state.persist("agent", |store| store.upsert_agent(&record));
+            let _ = state.persist("agent", |store| store.upsert_agent(&record));
         }
         daemon.restore_agents().await;
 
@@ -11141,6 +11756,58 @@ deny = ["send:all"]
     }
 
     #[test]
+    fn a_fenced_scan_preserves_discovery_until_transfer_aborts() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let first = discovery_row(123456, Utc::now());
+        let replacement =
+            discovery_row(first.pid, first.started_at.unwrap() + Duration::seconds(1));
+        daemon.apply_scan(Ok(vec![first.clone()])).unwrap();
+        daemon.offer_transfer(4242).unwrap();
+        let mut events = daemon.subscribe_events();
+        let (at, next_seq) = {
+            let state = lock(&daemon.state);
+            (state.discovered.at, state.next_seq)
+        };
+        // Both a completed background scan and its error path leave the last
+        // committed projection intact while the successor takes ownership.
+        for result in [Ok(vec![replacement.clone()]), Err("ps failed".into())] {
+            assert!(daemon.apply_scan(result).is_err());
+            let state = lock(&daemon.state);
+            assert_eq!(state.discovered.processes, vec![first.clone()]);
+            assert_eq!(state.discovered.at, at);
+            assert!(state.discovered.error.is_none());
+            assert_eq!(state.next_seq, next_seq);
+            assert!(events.try_recv().is_err());
+        }
+        assert!(daemon.abort_transfer("scan fixture"));
+        while events.try_recv().is_ok() {}
+        daemon.apply_scan(Ok(vec![replacement.clone()])).unwrap();
+        assert!(matches!(events.try_recv().unwrap().kind,
+            EventKind::AgentVanished { started_at, .. } if started_at == first.started_at));
+        assert!(matches!(events.try_recv().unwrap().kind,
+            EventKind::AgentDiscovered { started_at, .. } if started_at == replacement.started_at));
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn discovery_requests_are_mutations_and_refused_during_transfer() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        daemon.offer_transfer(4242).unwrap();
+        for request in [Request::Discover, Request::Runtimes] {
+            assert!(mutates(&request));
+            assert!(matches!(
+                daemon.handle(request).await,
+                Response::Error {
+                    code: ErrorCode::Transferring,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
     fn scan_failure_retains_snapshot_and_recovery_distinguishes_pid_generations() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
@@ -13895,7 +14562,7 @@ deny = ["send:all"]
         *state.registry.get_mut(&owner.id).unwrap() = before.clone();
         state.store.reject_agent_writes_for_test();
         state.touch(&owner.id);
-        assert!(state.storage_failure().is_some());
+        assert!(state.write_failure().is_some());
         assert_eq!(state.registry.get(&owner.id).unwrap(), &before);
         assert_eq!(state.store.load_agents().unwrap(), [before]);
     }
@@ -13983,7 +14650,7 @@ deny = ["send:all"]
                 } else {
                     state.journal_add("owner", "must roll back".into());
                 }
-                assert!(state.storage_failure().is_some());
+                assert!(state.write_failure().is_some());
             }
             assert!(live.try_recv().is_err());
             drop(daemon);
