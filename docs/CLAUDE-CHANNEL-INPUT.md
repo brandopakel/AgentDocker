@@ -285,4 +285,8 @@ The board integration also migrates a card's typed assignee and creator when
 an eligible identity folds. Card text, column, timestamps and archive state stay
 unchanged; resumption never grants or renews a task lease. A still-held lease
 continues to refuse the fold, and a lapsed hold requires explicit recovery.
-This integration's validation is pending.
+Runtime `197bca4` passed the full 1,165-Rust/94-Python gate (seven/one skipped).
+The real MCP fixture preserved a completed card through resumption; a separate
+private daemon trial reproduced the old task-document refusal and passed on the
+fixed binary with its queue and card intact. No fixture processes survived.
+Source and driver pins are retained in the existing channel record.
