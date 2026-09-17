@@ -524,6 +524,27 @@ pub enum Request {
     },
     /// Who is waiting for what, oldest first.
     Waiting,
+    /// Tell every agent in a project to hold: a `pause` message from
+    /// `from` reaches each live agent there, the daemon refuses their new
+    /// leases until the project is resumed, and the reason is what they
+    /// read. A second pause replaces the reason. Answers `pause`.
+    Pause {
+        from: String,
+        /// Project id, root or unique prefix; the caller's own when absent.
+        #[serde(default)]
+        project: Option<String>,
+        reason: String,
+    },
+    /// Lift a pause: a `resume` message reaches the project's live agents
+    /// and their leases are theirs to take again. Answers `ok`, and `ok`
+    /// again for a project that is not paused.
+    ResumeProject {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+    },
+    /// The projects that are paused, and why. Answers `pauses`.
+    Pauses,
 
     /// Announce a task several agents will attempt, with the measure
     /// that ranks them. The measure is fixed here and never changes.
@@ -958,6 +979,10 @@ pub enum ErrorCode {
     /// waiting for something another member holds, so none could ever
     /// proceed. `details.cycle` says who and what.
     Deadlock,
+    /// The project is paused: the person asked its agents to hold, so a
+    /// new lease is refused until they lift it. `details.reason` is the
+    /// person's words.
+    Paused,
 }
 
 // A response is built once and serialised at once, so the size gap between
@@ -1148,6 +1173,12 @@ pub enum Response {
     },
     Waiting {
         waiting: Vec<crate::Waiter>,
+    },
+    Pause {
+        pause: crate::Pause,
+    },
+    Pauses {
+        pauses: Vec<crate::Pause>,
     },
     Contest {
         contest: crate::Contest,
