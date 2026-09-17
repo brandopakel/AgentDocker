@@ -141,8 +141,10 @@ or move cards on an event or after N idle days; "rules never run host commands"
 `--json` on every command and documented exit codes talks the same API
 ([CLI](https://docs.paprika.ai/cli/)). Web dashboard, Android app, iOS "coming
 soon"; seats are humans, agents are a plan quota (Free: 1 agent, 5 boards;
-Standard $4.99/human/month, 3 agents; Teams $10, 5 agents per human; Enterprise
-with SSO and audit) ([pricing](https://paprika.ai/pricing/)). Closed source,
+Standard $4.99/human/month and Teams $10/human/month when billed annually
+(monthly billing: $5.99 and $12 respectively); Standard allows 3 agents and
+Teams 5 agents per human; Enterprise has SSO and audit)
+([pricing](https://paprika.ai/pricing/), checked September 17, 2026 UTC). Closed source,
 hosted only; no self-hosting or data-location statement was found.
 
 ### How it differs from AgentDocker
