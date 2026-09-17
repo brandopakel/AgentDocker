@@ -2,6 +2,7 @@
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 
+use agentdocker_core::protocol::Request;
 use agentdocker_host::notify::Action;
 use serde::{Deserialize, Serialize};
 pub mod instance;
@@ -62,6 +63,59 @@ pub fn enqueue(activation: Activation) -> Result<(), String> {
     Ok(())
 }
 
+/// The most a reply from a notification carries: the field is a line
+/// or two, and a message this size is refused by the daemon anyway.
+pub const REPLY_CHARS: usize = 4_000;
+
+/// What a reply typed into a notification sends: from the person, to the
+/// notification's conversation — the channel it was in, else the agent
+/// who wrote — as a reply to that message, so an answer to a question
+/// closes it the way the composer's would. Blank is nothing to send.
+pub fn reply_request(action: &Action, text: &str) -> Result<Request, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("nothing to send".into());
+    }
+    if text.chars().count() > REPLY_CHARS {
+        return Err("the reply is too long for a notification; answer in the app".into());
+    }
+    let to = match &action.target.channel {
+        Some(channel) => format!("channel:{channel}"),
+        None => action.target.agent.to_string(),
+    };
+    Ok(Request::Send {
+        from: agentdocker_core::HUMAN.into(),
+        to,
+        kind: "chat".into(),
+        payload: serde_json::json!({ "text": text }),
+        reply_to: Some(action.target.message.clone()),
+    })
+}
+
+/// Send a reply typed into a notification through the daemon it came
+/// from, off the thread the notification centre called on. The window
+/// is not asked to open: the person answered where they were. A reply
+/// that could not be sent is said as a notification, since that is
+/// where the person is looking.
+#[cfg(target_os = "macos")]
+pub fn reply(action: Action, text: String) -> Result<(), String> {
+    let request = reply_request(&action, &text)?;
+    std::thread::Builder::new()
+        .name("notification-reply".into())
+        .spawn(move || {
+            let client = crate::client::Client::at(action.home.clone(), action.socket.clone());
+            if let Err(reason) = client.call(&request) {
+                eprintln!("reply from notification not sent: {reason}");
+                let _ = crate::notify::post(
+                    "Reply not sent",
+                    &format!("{reason}. The message is still in the app."),
+                );
+            }
+        })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 pub fn take() -> Vec<Activation> {
     queue()
         .lock()
@@ -88,7 +142,8 @@ mod native {
     use objc2_foundation::{NSObject, NSObjectProtocol, NSString, ns_string};
     use objc2_user_notifications::{
         UNNotification, UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
-        UNNotificationResponse, UNUserNotificationCenter, UNUserNotificationCenterDelegate,
+        UNNotificationResponse, UNTextInputNotificationResponse, UNUserNotificationCenter,
+        UNUserNotificationCenterDelegate,
     };
 
     define_class!(
@@ -114,6 +169,19 @@ mod native {
                     let content = response.notification().request().content();
                     if let Err(reason) = receive_content(&content) {
                         eprintln!("{reason}");
+                    }
+                } else if response.actionIdentifier().to_string() == crate::notify::REPLY_ACTION
+                    && let Some(typed) = response.downcast_ref::<UNTextInputNotificationResponse>()
+                {
+                    // A reply typed into the notification: sent, not opened.
+                    let content = response.notification().request().content();
+                    let outcome = match decode_content(&content) {
+                        Ok(Some(action)) => super::reply(action, typed.userText().to_string()),
+                        Ok(None) => Err("this notification has no conversation to reply to".into()),
+                        Err(reason) => Err(reason),
+                    };
+                    if let Err(reason) = outcome {
+                        eprintln!("reply from notification: {reason}");
                     }
                 }
                 completion.call(());
@@ -164,6 +232,7 @@ mod native {
         let delegate: Retained<Delegate> = unsafe { msg_send![Delegate::class(), new] };
         UNUserNotificationCenter::currentNotificationCenter()
             .setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        crate::notify::register_categories();
         Some(delegate)
     }
 }
@@ -191,6 +260,39 @@ mod tests {
                 channel: None,
             },
         })
+    }
+
+    /// A reply goes from the person to the notification's conversation
+    /// — the channel it was in, else the agent who wrote — as a reply to
+    /// that message; blank or oversized is refused before any socket.
+    #[test]
+    fn a_reply_answers_the_notifications_conversation_as_the_person() {
+        let Activation::Open(mut action) = activation(7) else {
+            unreachable!()
+        };
+        match reply_request(&action, "  on it  ").unwrap() {
+            Request::Send {
+                from,
+                to,
+                kind,
+                payload,
+                reply_to,
+            } => {
+                assert_eq!(from, "user");
+                assert_eq!(to, "agent");
+                assert_eq!(kind, "chat");
+                assert_eq!(payload["text"], "on it");
+                assert_eq!(reply_to, Some(MessageId::from("7".to_owned())));
+            }
+            other => panic!("{other:?}"),
+        }
+        action.target.channel = Some(agentdocker_core::ChannelId::from("reviews"));
+        assert!(matches!(
+            reply_request(&action, "seen").unwrap(),
+            Request::Send { to, .. } if to == "channel:reviews"
+        ));
+        assert!(reply_request(&action, "   ").is_err());
+        assert!(reply_request(&action, &"x".repeat(REPLY_CHARS + 1)).is_err());
     }
 
     #[test]

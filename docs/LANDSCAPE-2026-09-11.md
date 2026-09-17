@@ -224,8 +224,9 @@ session is recognised at registration and shown in `ps`); the focus/prompt
 bridge and blocked-state mirror are designed and measured in
 [HERDR-BRIDGE.md](HERDR-BRIDGE.md) and deferred; a shipped SKILL.md exists
 (the portable coordination skill). From Dax: per-project visual identity,
-**Set up** for hooks and per-tool status badges are present; reply from the
-notification and trace-file resume are not. From Paprika: the first item —
+**Set up** for hooks and per-tool status badges are present, and so is reply
+from the notification (a **Reply** field on macOS message notifications,
+sent as the person's reply to that message); trace-file resume is not. From Paprika: the first item —
 a card with acceptance text and an atomic pull over the `task:<id>` lease,
 with a Board tab in the app — is in source (PR #176); roles, typed links,
 webhooks, comment-only rules and the exit-code contract are not started, and

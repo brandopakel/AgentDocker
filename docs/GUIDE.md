@@ -434,6 +434,9 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- Reply from the notification: on macOS a message notification has a
+  **Reply** field, and what is typed there reaches the conversation — an
+  answer to a question closes it — without opening the window.
 - A project pause: `agentdocker pause "reason"` tells every agent in the
   project to hold — the reason reaches each live one as a `pause` message
   and their new leases are refused with it until `pause --lift`; `pause

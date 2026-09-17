@@ -71,6 +71,17 @@ impl Client {
         }
     }
 
+    /// A client for the daemon a notification came from, which may not
+    /// be this instance's. It starts nothing: the daemon that posted the
+    /// notification is the one to answer, or the reply has nowhere to go.
+    pub fn at(home: PathBuf, socket: PathBuf) -> Self {
+        Self {
+            socket,
+            home,
+            autostart: false,
+        }
+    }
+
     pub fn from_env() -> Self {
         let home = dirs::home();
         Self {

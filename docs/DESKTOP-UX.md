@@ -200,7 +200,12 @@ conversation whose agent is gone, says so for one between two agents, and has
 nothing to send for notices. Drafts survive navigation, a failed request and
 disconnection. A notification opens the message's conversation even after it
 has been read, and even when the sender's record or the channel is gone: the
-archive outlives both. **Enter sends** in every composer — a
+archive outlives both. A notification for a message has a **Reply** field
+(macOS): what is typed there goes from you to that conversation — the channel
+it was in, else the agent who wrote — as a reply to that message, so a typed
+answer closes the question it answers, without the window opening; a reply
+that could not be sent says so as a notification and the message stays in
+the app. **Enter sends** in every composer — a
 conversation's, a thread's, the inbox reply, the session message and an
 answer — the same action as the button beside it, and nothing while the
 draft is empty or already sending. **+** beside the search starts a
