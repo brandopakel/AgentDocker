@@ -41,6 +41,11 @@ serving until an explicit safe restart. Use `agentdocker desktop status` and
 `agentdocker daemon status` for the actual installed and serving versions. The
 current installed app is already updated; no user installation is needed for #170.
 
+The notification follow-up also cancels a prior message reveal as soon as a
+new notification for this workspace arrives, including while its destination
+is still waiting for snapshots. Focus-only and foreign-workspace activations
+preserve the current reveal. The regression checks a late page from the old click.
+
 ## Engineering and acceptance still open
 
 | Priority | Work remaining | Completion condition and evidence |

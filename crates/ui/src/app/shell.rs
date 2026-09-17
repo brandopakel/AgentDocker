@@ -564,6 +564,7 @@ impl App {
                                 .as_ref()
                                 .is_some_and(|c| c.socket() == action.socket) =>
                     {
+                        self.cancel_reveal();
                         self.shell.pending_notification = Some((action, Instant::now()));
                         for cmd in [Cmd::Agents, Cmd::Questions, Cmd::Inbox] {
                             self.send(cmd);
@@ -2870,6 +2871,76 @@ mod tests {
         let _ = app.update(Message::OpenSession(homeless.id.to_string()));
         assert!(app.shell.catalog.unassigned);
         assert_eq!(app.shell.selected.as_deref(), Some(homeless.id.as_str()));
+    }
+
+    #[test]
+    fn a_new_notification_cancels_the_previous_reveal_before_its_data_arrives() {
+        let (mut app, commands, messages, _home, mut action) = notification_app();
+        app.conversations_supported = Some(true);
+        app.screen = Screen::Questions;
+        let conversation = "channel:previous".to_owned();
+        app.shell.conversation = Some(conversation.clone());
+        let old = MessageId::from("previous-message".to_owned());
+        app.reveal_archived = Some(super::Seek {
+            conversation: conversation.clone(),
+            message: old.clone(),
+            pages: 1,
+            before: Some(801),
+            refresh_pending: false,
+        });
+        app.shell.reveal_archived_next = Some(old.clone());
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Focus,
+        ));
+        assert!(app.reveal_archived.is_some(), "focusing is not navigation");
+        let mut foreign = action.clone();
+        foreign.socket = foreign.socket.with_file_name("another-daemon.sock");
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(foreign),
+        ));
+        assert!(
+            app.reveal_archived.is_some(),
+            "a different workspace is not navigation"
+        );
+        // The new target must wait for a project snapshot. It still ends
+        // the previous click's search and deferred scroll immediately.
+        action.target.project = Some(ProjectRef::directory("/not-loaded-yet").id());
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action),
+        ));
+        assert!(app.shell.pending_notification.is_some());
+        assert!(app.reveal_archived.is_none());
+        assert!(app.shell.reveal_archived_next.is_none());
+        let mut envelope = agentdocker_core::Envelope::new(
+            "sender",
+            agentdocker_core::Destination::Broadcast,
+            "chat",
+            serde_json::json!({"text": "old page arrives late"}),
+            None,
+            Utc::now(),
+        );
+        envelope.id = old;
+        messages
+            .send(Msg::HistoryEarlier(
+                conversation.clone(),
+                app.history_epoch,
+                vec![agentdocker_core::ArchivedMessage {
+                    seq: 700,
+                    conversation: agentdocker_core::ConversationId::from(conversation),
+                    envelope,
+                    replies: 0,
+                }],
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.shell.pending_notification.is_some());
+        assert!(app.reveal_archived.is_none());
+        assert!(app.shell.reveal_archived_next.is_none());
+        assert!(
+            !commands
+                .try_iter()
+                .any(|c| matches!(c, Cmd::HistoryBefore(..)))
+        );
     }
 
     #[test]
