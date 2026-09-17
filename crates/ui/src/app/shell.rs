@@ -15,6 +15,8 @@ pub(super) struct State {
     pub review_delivery: bool,
     pub session_message: bool,
     pub session_drafts: BTreeMap<String, SessionDraft>,
+    pub drafts: crate::drafts::Persistence,
+    pub draft_home: PathBuf,
     pub connection_details: Option<String>,
     pub other_tools: bool,
     pub width: f32,
@@ -174,10 +176,71 @@ impl State {
                 false,
             ),
         };
+        // Different daemon sockets can have independent desktop windows even
+        // under one state root. Never restore or overwrite another's drafts.
+        let draft_home = home
+            .join("drafts")
+            .join(agentdocker_host::notify::instance_key(
+                home,
+                &agentdocker_host::dirs::socket_path(home),
+            ));
+        let (saved, drafts) = match crate::drafts::Snapshot::load(&draft_home) {
+            Ok(saved) => (saved, crate::drafts::Persistence::loaded()),
+            Err(error) => (
+                crate::drafts::Snapshot::default(),
+                crate::drafts::Persistence::unavailable(format!(
+                    "Saved drafts could not be opened: {error}. The file is preserved; new text cannot be saved until it is recovered."
+                )),
+            ),
+        };
         Self {
             catalog,
             error,
             save_enabled,
+            drafts,
+            draft_home,
+            session_drafts: saved
+                .sessions
+                .into_iter()
+                .map(|(key, text)| {
+                    (
+                        key,
+                        SessionDraft {
+                            draft: ChannelDraft {
+                                text,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
+            conversation_drafts: saved
+                .conversations
+                .into_iter()
+                .map(|(key, text)| {
+                    (
+                        key,
+                        ChannelDraft {
+                            text,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
+            channel_drafts: saved
+                .channels
+                .into_iter()
+                .map(|(key, text)| {
+                    (
+                        key,
+                        ChannelDraft {
+                            text,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
             dpi: 1.0,
             width: 1180.0,
             height: 760.0,
@@ -189,9 +252,117 @@ impl State {
     }
 }
 
+#[derive(Clone, Copy)]
+enum DraftKind {
+    Session,
+    Conversation,
+    Channel,
+}
+
+impl State {
+    fn draft_snapshot(&self) -> crate::drafts::Snapshot {
+        crate::drafts::Snapshot {
+            sessions: self
+                .session_drafts
+                .iter()
+                .filter(|(_, d)| !d.draft.text.is_empty())
+                .map(|(k, d)| (k.clone(), d.draft.text.clone()))
+                .collect(),
+            conversations: self
+                .conversation_drafts
+                .iter()
+                .filter(|(_, d)| !d.text.is_empty())
+                .map(|(k, d)| (k.clone(), d.text.clone()))
+                .collect(),
+            channels: self
+                .channel_drafts
+                .iter()
+                .filter(|(_, d)| !d.text.is_empty())
+                .map(|(k, d)| (k.clone(), d.text.clone()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn edit_draft(&mut self, kind: DraftKind, id: String, text: String) {
+        let old = match kind {
+            DraftKind::Session => self.session_drafts.get(&id).map(|d| &d.draft.text),
+            DraftKind::Conversation => self.conversation_drafts.get(&id).map(|d| &d.text),
+            DraftKind::Channel => self.channel_drafts.get(&id).map(|d| &d.text),
+        };
+        let total: usize = self
+            .session_drafts
+            .values()
+            .map(|d| d.draft.text.len())
+            .chain(self.conversation_drafts.values().map(|d| d.text.len()))
+            .chain(self.channel_drafts.values().map(|d| d.text.len()))
+            .sum();
+        let error = if id.is_empty() || id.len() > 1024 {
+            Some("This draft destination is too long.")
+        } else if text.chars().count() > crate::drafts::MAX_TEXT_CHARS {
+            Some("Messages can contain up to 16,000 characters. Your earlier text was kept.")
+        } else if total - old.map_or(0, String::len) + text.len() > crate::drafts::MAX_TOTAL_BYTES {
+            Some(
+                "Draft storage is full. Finish or clear an earlier draft first; your earlier text was kept.",
+            )
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            self.error = Some(error.into());
+            return;
+        }
+        let edited = match kind {
+            DraftKind::Session => {
+                self.session_drafts.retain(|key, d| {
+                    key == &id || !d.draft.text.is_empty() || d.draft.sending.is_some()
+                });
+                if self.session_drafts.contains_key(&id) || self.session_drafts.len() < 128 {
+                    self.session_drafts.entry(id).or_default().draft.edit(text);
+                    true
+                } else {
+                    false
+                }
+            }
+            DraftKind::Conversation => {
+                self.conversation_drafts
+                    .retain(|key, d| key == &id || !d.text.is_empty() || d.sending.is_some());
+                if self.conversation_drafts.contains_key(&id)
+                    || self.conversation_drafts.len() < 128
+                {
+                    self.conversation_drafts.entry(id).or_default().edit(text);
+                    true
+                } else {
+                    false
+                }
+            }
+            DraftKind::Channel => {
+                self.channel_drafts
+                    .retain(|key, d| key == &id || !d.text.is_empty() || d.sending.is_some());
+                if self.channel_drafts.contains_key(&id) || self.channel_drafts.len() < 128 {
+                    self.channel_drafts.entry(id).or_default().edit(text);
+                    true
+                } else {
+                    false
+                }
+            }
+        };
+        if edited {
+            self.drafts.changed();
+        } else {
+            self.error = Some(
+                "Finish or clear an earlier message draft first. Existing drafts were kept.".into(),
+            );
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum Message {
     Tick,
+    DraftsSaved(u64, Result<(), String>),
+    RetryDraftSave,
+    CloseWithoutDraftSave,
     Notification(crate::notification_route::Activation),
     Navigate(Screen),
     SelectProject(PathBuf),
@@ -714,21 +885,7 @@ impl App {
                         || entry.draft.sending.is_some()
                 });
             }
-            Message::SessionDraft(id, text) => {
-                if self.shell.session_drafts.contains_key(&id)
-                    || self.shell.session_drafts.len() < 128
-                {
-                    self.shell
-                        .session_drafts
-                        .entry(id)
-                        .or_default()
-                        .draft
-                        .edit(text);
-                } else {
-                    self.shell.error =
-                        Some("Finish or clear an earlier message draft first.".into());
-                }
-            }
+            Message::SessionDraft(id, text) => self.shell.edit_draft(DraftKind::Session, id, text),
             Message::SelectConversation(id) => {
                 if self.shell.conversation.as_deref() != Some(id.as_str()) {
                     self.shell.thread = None;
@@ -742,18 +899,7 @@ impl App {
                 }
             }
             Message::ConversationDraft(id, text) => {
-                if self.shell.conversation_drafts.contains_key(&id)
-                    || self.shell.conversation_drafts.len() < 128
-                {
-                    self.shell
-                        .conversation_drafts
-                        .entry(id)
-                        .or_default()
-                        .edit(text);
-                } else {
-                    self.shell.error =
-                        Some("Finish or clear an earlier message draft first.".into());
-                }
+                self.shell.edit_draft(DraftKind::Conversation, id, text)
             }
             Message::SendConversation(key) => {
                 // The key says where the words were typed: the conversation's
@@ -1214,6 +1360,21 @@ impl App {
                     }
                 }
             }
+            Message::DraftsSaved(generation, result) => {
+                self.shell.drafts.complete(generation, result);
+            }
+            Message::RetryDraftSave => {
+                if self.shell.drafts.readable {
+                    self.shell.drafts.error = None;
+                    self.shell.drafts.close_blocked = false;
+                }
+            }
+            Message::CloseWithoutDraftSave => {
+                if self.shell.drafts.close_blocked && self.shell.drafts.error.is_some() {
+                    self.shell.drafts.discard_on_close = true;
+                    self.shell.closing = true;
+                }
+            }
             Message::CatalogSaved(generation, result) => {
                 self.shell.saving = false;
                 match result {
@@ -1425,16 +1586,7 @@ impl App {
             }
             Message::ChannelDraft(text) => {
                 if let Some(id) = self.shell.channel_target.clone() {
-                    if self.shell.channel_drafts.len() < 128
-                        || self.shell.channel_drafts.contains_key(&id)
-                    {
-                        self.shell.channel_drafts.entry(id).or_default().edit(text);
-                    } else {
-                        self.shell.error = Some(
-                            "Finish or clear an earlier channel draft before writing another."
-                                .into(),
-                        );
-                    }
+                    self.shell.edit_draft(DraftKind::Channel, id, text);
                 }
             }
             Message::SendChannel => {
@@ -1663,7 +1815,17 @@ impl App {
                 ));
             }
         }
+        // A failed draft write must not turn a normal close into silent loss.
         if self.shell.closing
+            && !self.shell.drafts.clean()
+            && !self.shell.drafts.discard_on_close
+            && (!self.shell.drafts.readable || self.shell.drafts.error.is_some())
+        {
+            self.shell.drafts.close_blocked = true;
+            self.shell.closing = false;
+        }
+        if self.shell.closing
+            && (self.shell.drafts.clean() || self.shell.drafts.discard_on_close)
             && (!self.shell.save_enabled
                 || (!self.shell.saving && self.shell.generation == self.shell.saved_generation))
         {
@@ -1688,6 +1850,20 @@ impl App {
                     .unwrap_or_else(|e| Err(e.to_string()))
                 },
                 move |result| Message::CatalogSaved(generation, result),
+            ));
+        }
+        if let Some(generation) = self.shell.drafts.begin(self.shell.closing) {
+            let home = self.shell.draft_home.clone();
+            let saved = self.shell.draft_snapshot();
+            tasks.push(Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        saved.save(&home).map_err(|e| e.to_string())
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+                },
+                move |result| Message::DraftsSaved(generation, result),
             ));
         }
         // The thread column follows the thread, whichever message opened or
@@ -2182,6 +2358,169 @@ mod tests {
         app.shell.catalog.updates.enabled = false;
         app.schedule_update_check(186_401);
         assert!(app.shell.pending_update.is_none());
+    }
+
+    #[test]
+    fn saved_message_drafts_reopen_as_text_without_delivery_state() {
+        let home = tempfile::tempdir().unwrap();
+        let mut state = State::load(home.path());
+        state.edit_draft(
+            DraftKind::Session,
+            "agent-a".into(),
+            "next session input".into(),
+        );
+        state.edit_draft(
+            DraftKind::Conversation,
+            "dm:a:b".into(),
+            "你好\nconversation".into(),
+        );
+        state.edit_draft(
+            DraftKind::Conversation,
+            "dm:a:b/thread".into(),
+            "thread input".into(),
+        );
+        state.edit_draft(DraftKind::Channel, "room".into(), "channel input".into());
+        state
+            .session_drafts
+            .get_mut("agent-a")
+            .unwrap()
+            .draft
+            .begin();
+        state.session_drafts.get_mut("agent-a").unwrap().queued =
+            Some(MessageId::from("old-receipt".to_owned()));
+        state.conversation_drafts.get_mut("dm:a:b").unwrap().begin();
+        state.channel_drafts.get_mut("room").unwrap().error = Some("old failure".into());
+        let saved = state.draft_snapshot();
+        saved.save(&state.draft_home).unwrap();
+        let reopened = State::load(home.path());
+        assert_eq!(reopened.draft_snapshot(), saved);
+        assert!(reopened.session_drafts["agent-a"].draft.sending.is_none());
+        assert!(reopened.session_drafts["agent-a"].queued.is_none());
+        assert!(reopened.conversation_drafts["dm:a:b"].sending.is_none());
+        assert!(reopened.channel_drafts["room"].error.is_none());
+        assert!(reopened.drafts.clean());
+        assert!(reopened.drafts.error.is_none());
+    }
+
+    #[test]
+    fn late_send_results_and_save_completions_preserve_newer_persisted_text() {
+        let (mut app, _requests, messages) = app();
+        let home = tempfile::tempdir().unwrap();
+        app.home = home.path().to_owned();
+        app.shell = State::load(home.path());
+        app.shell
+            .edit_draft(DraftKind::Session, "recipient".into(), "submitted".into());
+        app.shell
+            .session_drafts
+            .get_mut("recipient")
+            .unwrap()
+            .draft
+            .begin();
+        let old_generation = app.shell.drafts.begin(true).unwrap();
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        app.shell
+            .edit_draft(DraftKind::Session, "recipient".into(), "next draft".into());
+        messages
+            .send(Msg::SessionSent(
+                "recipient".into(),
+                Ok(MessageId::from("receipt".to_owned())),
+            ))
+            .unwrap();
+        app.drain();
+        app.shell.drafts.complete(old_generation, Ok(()));
+        assert!(
+            !app.shell.drafts.clean(),
+            "the saved old submission is not the newer draft"
+        );
+        let latest = app.shell.drafts.begin(true).unwrap();
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        app.shell.drafts.complete(latest, Ok(()));
+        assert_eq!(
+            State::load(home.path()).session_drafts["recipient"]
+                .draft
+                .text,
+            "next draft"
+        );
+        // Only success for the unchanged next submission clears it on disk.
+        app.shell
+            .session_drafts
+            .get_mut("recipient")
+            .unwrap()
+            .draft
+            .begin();
+        messages
+            .send(Msg::SessionSent(
+                "recipient".into(),
+                Ok(MessageId::from("next-receipt".to_owned())),
+            ))
+            .unwrap();
+        app.drain();
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        assert!(
+            !State::load(home.path())
+                .session_drafts
+                .contains_key("recipient")
+        );
+    }
+
+    #[test]
+    fn draft_admission_keeps_nonempty_text_and_corrupt_storage_is_not_overwritten() {
+        let home = tempfile::tempdir().unwrap();
+        let mut state = State::load(home.path());
+        for index in 0..128 {
+            state.edit_draft(
+                DraftKind::Conversation,
+                index.to_string(),
+                format!("draft {index}"),
+            );
+        }
+        let before = state.draft_snapshot();
+        state.edit_draft(DraftKind::Conversation, "extra".into(), "cannot fit".into());
+        assert_eq!(state.draft_snapshot(), before);
+        assert!(
+            state
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("Existing drafts were kept")
+        );
+        state.edit_draft(DraftKind::Conversation, "0".into(), "x".repeat(16_001));
+        assert_eq!(state.draft_snapshot(), before);
+        state.edit_draft(DraftKind::Conversation, "0".into(), String::new());
+        state.edit_draft(
+            DraftKind::Conversation,
+            "extra".into(),
+            "fits after clearing an empty draft".into(),
+        );
+        assert_eq!(state.conversation_drafts.len(), 128);
+        assert_eq!(state.conversation_drafts["1"].text, "draft 1");
+        state.draft_snapshot().save(&state.draft_home).unwrap();
+        std::fs::write(state.draft_home.join("drafts.json"), b"corrupt").unwrap();
+        let mut reopened = State::load(home.path());
+        assert!(!reopened.drafts.readable);
+        assert!(
+            reopened
+                .drafts
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("preserved")
+        );
+        reopened.edit_draft(DraftKind::Session, "agent".into(), "still editable".into());
+        assert!(reopened.drafts.begin(true).is_none());
+        assert_eq!(
+            std::fs::read(state.draft_home.join("drafts.json")).unwrap(),
+            b"corrupt"
+        );
     }
 
     #[test]

@@ -208,6 +208,15 @@ database remains a manual step.
 - Questions preserve drafts across navigation and failed sends. Duplicate sends
   are disabled while waiting. A successful reply means delivery, not proof that
   an agent consumed it or resumed work.
+- Conversation/thread, channel and session text persists under the desktop's
+  state-root/daemon-socket identity. Only text is restored, never send state or
+  queued receipts. Serialized atomic saves preserve the newest generation;
+  close waits for it or reports failure with retry/explicit unsaved-close controls.
+  Saves debounce for 250 ms with a one-second maximum typing delay. Admission
+  keeps at most 128 drafts per kind, 16,000 characters per draft and 4 MiB of
+  aggregate UTF-8 text; only empty drafts can be pruned. Files are private,
+  versioned and bounded to 32 MiB; invalid loads disable writes and preserve the
+  file. Question answers and other forms are not included in this persistence.
 - Each channel has its own draft and pending send. A late acknowledgement clears
   only the text it sent. Channels show membership, reviews, resolution and queued
   human messages, plus confirmed sends from this window. Reading never drains

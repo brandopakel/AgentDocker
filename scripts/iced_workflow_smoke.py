@@ -532,6 +532,9 @@ def smoke(binary_dir, output):
                         step("wait_text", text="Keep this conversation draft"),
                         step("wait_text", text="Keep this thread draft"),
                         step("capture", name="expanded-columns"),
+                        step("click", id="projects"), step("click", id=f"project-{project}"),
+                        step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
+                        step("fill", id="session-message-text", text="Keep this session across reopen"),
                     ]
                     report["constrained_panes_window"] = launch("constrained-panes", pane_steps)
                     kept = json.loads(catalog_path.read_text())["panes"]
@@ -539,6 +542,32 @@ def smoke(binary_dir, output):
                     checks.append("maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences")
                 finally:
                     catalog_path.write_text(saved_catalog)
+                # The prior window closes normally immediately after its last edit.
+                # Its close must flush all three kinds, including a hidden thread.
+                draft_paths = list((state / "drafts").glob("*/drafts.json"))
+                assert len(draft_paths) == 1, draft_paths
+                saved_drafts = json.loads(draft_paths[0].read_text())
+                assert saved_drafts["sessions"][narrow["id"]] == "Keep this session across reopen", saved_drafts
+                assert "Keep this conversation draft" in saved_drafts["conversations"].values(), saved_drafts
+                assert "Keep this thread draft" in saved_drafts["conversations"].values(), saved_drafts
+                restored_steps = [
+                    step("resize", width=1800, height=900),
+                    step("click", id=f"project-{project}"), step("click", id="inbox"),
+                    step("click", id=f"thread-{narrow['id']}"),
+                    step("wait_text", text="Keep this conversation draft"),
+                    step("click", id=f"thread-{routed}"),
+                    step("wait_text", text="Keep this thread draft"),
+                    step("capture", name="restored-conversation-and-thread"),
+                    step("click", id="projects"), step("click", id=f"project-{project}"),
+                    step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
+                    step("wait_text", text="Keep this session across reopen"),
+                    step("capture", name="restored-session"),
+                ]
+                report["restored_drafts_window"] = launch("restored-drafts", restored_steps)
+                retained_input = rpc(endpoint, {"op": "peek_input", "agent": narrow["id"]})["messages"]
+                for marker in ("Keep this conversation draft", "Keep this thread draft", "Keep this session across reopen"):
+                    assert not any(marker in json.dumps(m.get("payload")) for m in retained_input), marker
+                checks.append("normal_close_flushes_hidden_conversation_thread_and_session_drafts_and_reopen_never_sends_them")
                 rpc(endpoint, {"op": "stop", "agent": narrow["id"], "force": False})
                 until(lambda: rpc(endpoint, {"op": "inspect", "agent": narrow["id"]})["agent"]["status"]["state"] == "exited")
 

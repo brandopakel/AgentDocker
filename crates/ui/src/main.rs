@@ -12,6 +12,7 @@ mod client;
 mod color;
 mod controls;
 mod desktop;
+mod drafts;
 mod notification_route;
 mod notify;
 mod smoke;

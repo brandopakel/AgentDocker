@@ -560,6 +560,30 @@ impl App {
                 c,
             ));
         }
+        if let Some(error) = &self.shell.drafts.error {
+            let mut controls = row![].spacing(8);
+            if self.shell.drafts.readable {
+                controls = controls.push(action(
+                    "retry-draft-save",
+                    "Retry saving",
+                    Some(Message::RetryDraftSave),
+                    false,
+                ));
+            }
+            if self.shell.drafts.close_blocked {
+                controls = controls.push(action(
+                    "close-without-drafts",
+                    "Close without saving",
+                    Some(Message::CloseWithoutDraftSave),
+                    false,
+                ));
+            }
+            content = content.push(attention(
+                column![text(error.clone()).size(14).color(c.amber), controls].spacing(8),
+                c.amber,
+                c,
+            ));
+        }
         if let Some(error) = &self.shell.error {
             content = content.push(attention(
                 column![
