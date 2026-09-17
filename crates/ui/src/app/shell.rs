@@ -233,6 +233,14 @@ pub enum Message {
     PaneResized(super::panes::Grid, iced::widget::pane_grid::ResizeEvent),
     /// Every conversation the person owes a read is read through its head.
     MarkAllRead,
+    /// Tell the selected project's agents to hold: open the reason, or
+    /// send it, or lift the pause.
+    PauseStart,
+    PauseDraft(String),
+    PauseSubmit,
+    PauseCancel,
+    ResumeProject,
+
     /// Open or close the menu under a project row.
     ProjectMenu(PathBuf),
     ProjectRenameStart(PathBuf),
@@ -780,6 +788,31 @@ impl App {
                 if self.panes.resized(grid, event) {
                     self.shell.catalog.panes = self.panes.widths;
                     self.shell.changed();
+                }
+            }
+            Message::PauseStart => {
+                self.pause_draft = Some(String::new());
+            }
+            Message::PauseDraft(reason) => {
+                if self.pause_draft.is_some() {
+                    self.pause_draft = Some(reason);
+                }
+            }
+            Message::PauseCancel => self.pause_draft = None,
+            Message::PauseSubmit => {
+                if let (Some(reason), Some(project)) =
+                    (self.pause_draft.clone(), self.selected_project_root())
+                    && !reason.trim().is_empty()
+                {
+                    self.send(Cmd::Pause {
+                        project,
+                        reason: reason.trim().to_owned(),
+                    });
+                }
+            }
+            Message::ResumeProject => {
+                if let Some(project) = self.selected_project_root() {
+                    self.send(Cmd::ResumeProject { project });
                 }
             }
             Message::MarkAllRead => {

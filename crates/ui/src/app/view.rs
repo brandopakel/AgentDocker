@@ -522,6 +522,12 @@ impl App {
         let mut header = row![header_left].spacing(16).align_y(Center);
         if self.screen == Screen::Agents
             && !narrow
+            && let Some(pause) = self.pause_controls(c)
+        {
+            header = header.push(pause);
+        }
+        if self.screen == Screen::Agents
+            && !narrow
             && let Some(launch) = self.launch_button()
         {
             header = header.push(launch);
@@ -1256,6 +1262,79 @@ impl App {
             ));
         }
         Some(attention(list, if guidance { c.cyan } else { c.amber }, c))
+    }
+
+    /// The selected project's root as the daemon's selector, when one is.
+    pub(super) fn selected_project_root(&self) -> Option<String> {
+        self.shell
+            .catalog
+            .selected
+            .as_ref()
+            .map(|root| root.display().to_string())
+    }
+
+    /// The pause on the selected project, when it is paused.
+    fn selected_pause(&self) -> Option<&agentdocker_core::Pause> {
+        let entry = self.shell.catalog.selected()?;
+        let id = entry.project.id();
+        self.pauses.iter().find(|p| p.project == id)
+    }
+
+    /// Hold or release the project's agents: a quiet Pause… that opens a
+    /// reason, and while paused the reason on the header with Resume.
+    fn pause_controls(&self, c: Colors) -> Option<Element<'_, Message>> {
+        self.shell.catalog.selected()?;
+        let connected = self.connected.is_ok();
+        if let Some(pause) = self.selected_pause() {
+            return Some(
+                row![
+                    pill(
+                        format!("Paused · {}", pause.reason),
+                        c.amber,
+                        iced::Color::WHITE,
+                        c
+                    ),
+                    action(
+                        "resume-project",
+                        "Resume",
+                        connected.then_some(Message::ResumeProject),
+                        false,
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Center)
+                .into(),
+            );
+        }
+        if let Some(reason) = &self.pause_draft {
+            let ready = connected && !reason.trim().is_empty();
+            return Some(
+                row![
+                    input_enabled(
+                        "pause-reason",
+                        "Why: what the agents will read",
+                        reason,
+                        Message::PauseDraft,
+                        true,
+                    ),
+                    primary(
+                        "pause-submit",
+                        "Pause agents",
+                        ready.then_some(Message::PauseSubmit),
+                    ),
+                    action("pause-cancel", "Cancel", Some(Message::PauseCancel), false),
+                ]
+                .spacing(8)
+                .align_y(Center)
+                .into(),
+            );
+        }
+        Some(action(
+            "pause-project",
+            "Pause…",
+            connected.then_some(Message::PauseStart),
+            false,
+        ))
     }
 
     /// The project's one primary action, when there is a project to act in.

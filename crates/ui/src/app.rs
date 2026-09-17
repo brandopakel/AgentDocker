@@ -94,6 +94,17 @@ enum Cmd {
     Channels(String, String),
     Inbox,
     Activity,
+    /// The projects that are paused, and why.
+    Pauses,
+    /// The person tells a project's agents to hold, with the reason.
+    Pause {
+        project: String,
+        reason: String,
+    },
+    /// The person lifts a project's pause.
+    ResumeProject {
+        project: String,
+    },
     SessionLog(String),
     /// Register the person at the keyboard, so agents can address them.
     Me,
@@ -215,6 +226,9 @@ enum Msg {
     Channels(String, Vec<agentdocker_core::Channel>),
     Inbox(Vec<agentdocker_core::Envelope>),
     Activity(Vec<AgentActivity>),
+    Pauses(Vec<agentdocker_core::Pause>),
+    /// The pause or resume the person asked for, done or refused.
+    Paused(Result<(), String>),
     SessionLog(String, Result<String, String>),
     Questions(Vec<Question>),
     /// An answer came back: `Ok` means it was delivered, `Err` carries
@@ -345,6 +359,10 @@ pub struct App {
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
+    /// The projects told to hold, and why.
+    pauses: Vec<agentdocker_core::Pause>,
+    /// The reason being typed for a pause, while the form is open.
+    pause_draft: Option<String>,
     queued_inputs: BTreeMap<String, usize>,
     /// Per agent, the queued inputs no current receipt covers.
     awaiting_receipt: BTreeMap<String, usize>,
@@ -456,6 +474,8 @@ impl App {
             sending: std::collections::BTreeSet::new(),
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            pauses: Vec::new(),
+            pause_draft: None,
             queued_inputs: BTreeMap::new(),
             awaiting_receipt: BTreeMap::new(),
             session_log: None,
@@ -517,6 +537,8 @@ impl App {
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            pauses: Vec::new(),
+            pause_draft: None,
             queued_inputs: BTreeMap::new(),
             awaiting_receipt: BTreeMap::new(),
             session_log: None,
@@ -694,6 +716,14 @@ impl App {
                         self.session_log = Some((agent, result));
                     }
                 }
+                Msg::Pauses(pauses) => self.pauses = pauses,
+                Msg::Paused(result) => {
+                    self.pause_draft = None;
+                    match result {
+                        Ok(()) => self.send(Cmd::Pauses),
+                        Err(error) => self.shell.error = Some(error),
+                    }
+                }
                 Msg::Activity(activity) => {
                     self.queued_inputs = activity
                         .iter()
@@ -769,6 +799,7 @@ impl App {
                             Cmd::Questions,
                             Cmd::Activity,
                             Cmd::Inbox,
+                            Cmd::Pauses,
                         ] {
                             self.send(cmd);
                         }
@@ -1049,6 +1080,9 @@ impl App {
             | EventKind::InputResumed { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
+            }
+            EventKind::ProjectPaused { .. } | EventKind::ProjectResumed { .. } => {
+                self.send(Cmd::Pauses);
             }
             EventKind::ProviderAvailabilityReported {
                 agent,
@@ -1810,6 +1844,35 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
         Cmd::SessionLog(agent) => {
             let result = read_session_log(client, &agent).map_err(|error| format!("{error:#}"));
             Some(Msg::SessionLog(agent, result))
+        }
+        Cmd::Pauses => match client.call(&Request::Pauses)? {
+            Response::Pauses { pauses } => Some(Msg::Pauses(pauses)),
+            _ => None,
+        },
+        Cmd::Pause { project, reason } => {
+            let result = match client.call(&Request::Pause {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project),
+                reason,
+            }) {
+                Ok(Response::Pause { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Paused(result))
+        }
+        Cmd::ResumeProject { project } => {
+            let result = match client.call(&Request::ResumeProject {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project),
+            }) {
+                Ok(Response::Ok) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Paused(result))
         }
         Cmd::Activity => match client.call(&Request::Activity {
             agent: None,

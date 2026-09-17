@@ -50,6 +50,7 @@ mod handoff;
 pub mod humans;
 mod images;
 mod panes;
+mod pause;
 pub mod policies;
 mod provider;
 mod recovery;
@@ -400,6 +401,8 @@ struct State {
     /// Questions somebody is blocked on, by message id: an answer names
     /// one and only the question knows who is waiting for it.
     questions: HashMap<MessageId, agentdocker_core::Question>,
+    /// The projects told to hold, and why; kept as documents.
+    pauses: HashMap<ProjectId, agentdocker_core::Pause>,
     /// Claims waiting for a resource, in arrival order. Connection-scoped
     /// and never persisted: a restart drops every waiting client, which
     /// reconnects and takes a new place.
@@ -1189,6 +1192,11 @@ impl Daemon {
             "state restored"
         );
 
+        let pauses: HashMap<ProjectId, agentdocker_core::Pause> = store
+            .documents::<agentdocker_core::Pause>("pause", None)?
+            .into_iter()
+            .map(|pause| (pause.project.clone(), pause))
+            .collect();
         let mut questions: HashMap<_, _> = store
             .documents::<agentdocker_core::Question>("question", None)?
             .into_iter()
@@ -1286,6 +1294,7 @@ impl Daemon {
                 channels,
                 contested: HashMap::new(),
                 questions,
+                pauses,
                 waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
                 host_policy: policies::Loaded::default(),
@@ -1716,6 +1725,13 @@ impl Daemon {
                 all,
             } => self.activity(agent, project, all).await,
             Request::Waiting => self.waiting(),
+            Request::Pause {
+                from,
+                project,
+                reason,
+            } => self.pause(from, project, reason).await,
+            Request::ResumeProject { from, project } => self.resume_project(from, project).await,
+            Request::Pauses => self.pauses(),
             Request::ContestOpen {
                 agent,
                 project,
@@ -3731,6 +3747,23 @@ impl Daemon {
             let ruling = state.permits(&holder, &action);
             if !ruling.is_allowed() {
                 return state.refuse(&holder, &action, ruling);
+            }
+            // A paused project's agents take nothing new until the person
+            // lifts it; what they hold, they keep.
+            if let Some(pause) = state.pause_holding(&holder) {
+                return Response::Error {
+                    code: ErrorCode::Paused,
+                    message: format!(
+                        "the project is paused: {}; finish the step in hand and take nothing new until it is resumed",
+                        pause.reason
+                    ),
+                    details: Some(serde_json::json!({
+                        "project": pause.project,
+                        "reason": pause.reason,
+                        "by": pause.by,
+                        "at": pause.at,
+                    })),
+                };
             }
         }
         let deadline = tokio::time::Instant::now()

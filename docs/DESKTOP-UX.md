@@ -59,7 +59,11 @@ input appear first within each project. Select a row for terminal access, reply,
 window, the session replaces the list; **Back to sessions** returns to it. On a
 wide window, it opens beside the list. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
-**Launch agent…** chooses an installed CLI and starts it at the project root shown
+**Pause…** beside it asks for a reason and tells every agent in the project
+to hold: they read the reason as a `pause` message, the daemon refuses their
+new leases until **Resume**, and the header shows **Paused · reason** while
+it holds (what an agent already holds, it keeps; your own actions are not
+held). **Launch agent…** chooses an installed CLI and starts it at the project root shown
 in the header. Claude and Codex launches default to **Idle messages: On**;
 turning it off visibly warns that messages may wait. Claude still requires its
 channel consent. Other tools disclose that automatic idle delivery is unavailable.

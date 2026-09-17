@@ -333,6 +333,14 @@ pub fn event_line(event: &Event) -> String {
             action,
             rule,
         } => format!("policy denied    {} {action} ({rule})", agent.short()),
+        EventKind::ProjectPaused {
+            project,
+            by,
+            reason,
+        } => format!("project paused   {} by {by}: {reason}", project.short()),
+        EventKind::ProjectResumed { project, by } => {
+            format!("project resumed  {} by {by}", project.short())
+        }
         EventKind::AgentRestarted {
             agent,
             pid,

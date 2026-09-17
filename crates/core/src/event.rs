@@ -372,6 +372,17 @@ pub enum EventKind {
     LeaseDeadlock {
         cycle: Vec<crate::Blocked>,
     },
+    /// The person told a project's agents to hold, and why.
+    ProjectPaused {
+        project: ProjectId,
+        by: String,
+        reason: String,
+    },
+    /// The person lifted a project's pause.
+    ProjectResumed {
+        project: ProjectId,
+        by: String,
+    },
     /// The policy refused something. Carries what was asked and which
     /// rule said no, so a refusal is explainable from the event stream
     /// alone.
