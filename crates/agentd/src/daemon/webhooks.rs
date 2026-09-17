@@ -1022,7 +1022,7 @@ mod tests {
         }
         let delivered = seen.lock().unwrap().len();
         assert!(
-            delivered >= QUEUE_EVENTS + 1 && delivered < burst,
+            delivered > QUEUE_EVENTS && delivered < burst,
             "{delivered} delivered of {burst}"
         );
         let mut lost = None;
