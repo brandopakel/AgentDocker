@@ -309,3 +309,9 @@ Messages review (September 17): mentioning an agent does not change recipients
 or grant channel membership. Suggestions only name current recipients. A late
 channel-creation reply may update only its originating form, preserving a newer
 form and its draft. These corrections are awaiting source and native validation.
+
+For an open named channel the person belongs to, **Add members** opens a list
+of available agents who are not members yet. Adding one shows progress and
+keeps failures in the form; confirmed members disappear from the available list.
+Closing/replacing the form prevents a late reply from changing the new form.
+A refused local queue submission releases the busy state and preserves the form.

@@ -1929,6 +1929,11 @@ impl Daemon {
                 self.channel_open(&agent, task, members, name, project)
                     .await
             }
+            Request::ChannelInvite {
+                agent,
+                channel,
+                member,
+            } => self.channel_invite(&agent, &channel, &member),
             Request::ChannelClose {
                 agent,
                 channel,

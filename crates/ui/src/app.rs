@@ -138,6 +138,11 @@ enum Cmd {
         members: Vec<String>,
         project: Option<String>,
     },
+    ChannelInvite {
+        request: MessageId,
+        channel: String,
+        member: String,
+    },
     /// Text from the person into a conversation: `draft` is the composer it
     /// came from (the conversation, or `<conversation>#<root>` in a thread,
     /// which is where the receipt goes), `to` the destination the
@@ -242,6 +247,7 @@ enum Msg {
     ChannelSent(String, Result<MessageId, String>),
     /// The room the person asked for, by id, or why not.
     ChannelOpened(MessageId, Result<agentdocker_core::ChannelId, String>),
+    ChannelInvited(MessageId, String, Result<agentdocker_core::Channel, String>),
     SessionSent(String, Result<MessageId, String>),
     /// `Err` when the daemon does not know conversations at all.
     Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
@@ -563,6 +569,14 @@ impl App {
                 }
                 Cmd::DismissMessages(ids) => {
                     self.dismissing.retain(|id| !ids.contains(id));
+                }
+                Cmd::ChannelOpen { request, .. } | Cmd::ChannelInvite { request, .. } => {
+                    if let Some(form) = &mut self.new_conversation
+                        && form.request == request
+                    {
+                        form.creating = false;
+                        form.error = Some(reason.into());
+                    }
                 }
                 Cmd::Setup(_) => self.setup_busy = false,
                 Cmd::Desktop(_) => self.desktop.receive(Err(reason.into())),
@@ -972,6 +986,23 @@ impl App {
                         }
                     }
                 }
+                Msg::ChannelInvited(request, member, result) => {
+                    if let Some(form) = &mut self.new_conversation
+                        && form.request == request
+                    {
+                        form.creating = false;
+                        match result {
+                            Ok(channel) => {
+                                form.members.insert(member.into());
+                                form.error = None;
+                                self.channels.retain(|c| c.id != channel.id);
+                                self.channels.push(channel);
+                                self.send(Cmd::Conversations(self.conversation_scope()));
+                            }
+                            Err(error) => form.error = Some(error),
+                        }
+                    }
+                }
                 Msg::ChannelOpened(request, result) => {
                     if self
                         .new_conversation
@@ -1136,6 +1167,7 @@ impl App {
             }
             EventKind::MessageSent { .. }
             | EventKind::ConversationRead { .. }
+            | EventKind::ChannelInvited { .. }
             | EventKind::ChannelOpened { .. }
             | EventKind::ChannelJoined { .. }
             | EventKind::ChannelClosed { .. } => self.on_conversation_activity(),
@@ -2093,6 +2125,23 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::ChannelOpened(request, result))
         }
+        Cmd::ChannelInvite {
+            request,
+            channel,
+            member,
+        } => {
+            let result = match client.call(&Request::ChannelInvite {
+                agent: agentdocker_core::HUMAN.into(),
+                channel,
+                member: member.clone(),
+            }) {
+                Ok(Response::Channel { channel }) => Ok(channel),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::ChannelInvited(request, member, result))
+        }
         Cmd::ConversationSend {
             draft,
             to,
@@ -2353,6 +2402,7 @@ pub enum NewKind {
 #[derive(Clone, Debug)]
 pub(crate) struct NewConversation {
     pub request: MessageId,
+    pub invite: Option<String>,
     pub kind: NewKind,
     pub name: String,
     pub purpose: String,
@@ -2365,6 +2415,7 @@ impl NewConversation {
     pub(crate) fn new() -> Self {
         Self {
             request: MessageId::generate(),
+            invite: None,
             kind: NewKind::Direct,
             name: String::new(),
             purpose: String::new(),

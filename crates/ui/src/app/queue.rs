@@ -25,6 +25,28 @@ fn bytes(command: &Cmd) -> usize {
         Cmd::ChannelSend(id, text) | Cmd::SessionSend(id, text) => {
             id.capacity().saturating_add(text.capacity())
         }
+        Cmd::ChannelOpen {
+            request,
+            name,
+            task,
+            members,
+            project,
+        } => members.iter().fold(
+            request.as_str().len()
+                + name.capacity()
+                + task.capacity()
+                + project.as_ref().map_or(0, |p| p.capacity()),
+            |sum, member| sum.saturating_add(member.capacity()),
+        ),
+        Cmd::ChannelInvite {
+            request,
+            channel,
+            member,
+        } => request
+            .as_str()
+            .len()
+            .saturating_add(channel.capacity())
+            .saturating_add(member.capacity()),
         Cmd::Launch(spec) => {
             serde_json::to_vec(spec).map_or(COMMAND_BYTES + 1, |bytes| bytes.len())
         }

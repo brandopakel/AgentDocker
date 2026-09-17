@@ -384,6 +384,8 @@ def smoke(binary_dir, output):
                                 step("fill", id=f"reply-{narrow['id']}", text="Sent with Enter"), step("click", id=f"reply-{narrow['id']}"),
                                 step("wait_text", text="Sent with Enter"),
                                 # `@` offers who is here; a pick finishes the name.
+                                step("fill", id=f"reply-{narrow['id']}", text="ask @term"),
+                                step("wait_control", id=f"mention-{agent['id']}", present=False),
                                 step("fill", id=f"reply-{narrow['id']}", text="ask @narr"),
                                 step("wait_control", id=f"mention-{narrow['id']}", present=True), step("click", id=f"mention-{narrow['id']}"),
                                 step("wait_text", text="ask @narrow-fixture "), step("wait_control", id=f"mention-{narrow['id']}", present=False),
@@ -395,6 +397,12 @@ def smoke(binary_dir, output):
                                 step("click", id=f"new-member-{narrow['id']}"), step("capture", name="new-channel-form"),
                                 step("click", id="new-channel-create"), step("wait_text", text="#planning-room"),
                                 step("wait_control", id="new-channel-create", present=False),
+                                step("wait_control", id="invite-channel", present=True), step("click", id="invite-channel"),
+                                step("wait_control", id=f"invite-member-{agent['id']}", present=True),
+                                step("wait_control", id=f"invite-member-{narrow['id']}", present=False),
+                                step("click", id=f"invite-member-{agent['id']}"),
+                                step("wait_control", id=f"invite-member-{agent['id']}", present=False),
+                                step("capture", name="channel-member-added"), step("click", id="new-conversation"),
                                 # A new direct message is one pick.
                                 step("click", id="new-conversation"), step("click", id="new-kind-direct"),
                                 step("wait_control", id=f"new-direct-{agent['id']}", present=True), step("capture", name="new-direct-form"),

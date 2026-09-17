@@ -243,6 +243,8 @@ pub enum Message {
     NewChannelMember(agentdocker_core::AgentId),
     /// Open the channel the form describes.
     CreateChannel,
+    InviteChannel(String),
+    InviteMember(String),
     /// The person picked who to message: open that direct conversation.
     NewDirect(String),
     /// Open or close the menu under a project row.
@@ -799,6 +801,26 @@ impl App {
                     Some(_) => None,
                     None => Some(super::NewConversation::new()),
                 };
+            }
+            Message::InviteChannel(channel) => {
+                let mut form = super::NewConversation::new();
+                form.invite = Some(channel);
+                self.new_conversation = Some(form);
+            }
+            Message::InviteMember(member) => {
+                if let Some(form) = &mut self.new_conversation
+                    && !form.creating
+                    && let Some(channel) = &form.invite
+                {
+                    form.creating = true;
+                    form.error = None;
+                    let cmd = Cmd::ChannelInvite {
+                        request: form.request.clone(),
+                        channel: channel.clone(),
+                        member,
+                    };
+                    self.send(cmd);
+                }
             }
             Message::NewConversationKind(kind) => {
                 if let Some(form) = &mut self.new_conversation {

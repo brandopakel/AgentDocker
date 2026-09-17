@@ -982,6 +982,9 @@ impl App {
         c: Colors,
     ) -> Element<'_, Message> {
         use super::NewKind;
+        if let Some(channel) = &form.invite {
+            return self.invite_members_form(form, channel, c);
+        }
         let agents = self.agents_to_talk_to();
         let human = self
             .agents
@@ -1103,6 +1106,59 @@ impl App {
         panel(body, c)
     }
 
+    fn invite_members_form(
+        &self,
+        form: &super::NewConversation,
+        channel: &str,
+        c: Colors,
+    ) -> Element<'_, Message> {
+        let summary = self.conversations.iter().find(|s| {
+            s.conversation
+                .channel_id()
+                .is_some_and(|id| id.as_str() == channel)
+        });
+        let Some(summary) =
+            summary.filter(|s| s.open && s.members.iter().any(|id| self.is_human(id.as_str())))
+        else {
+            return panel(
+                note("This channel is no longer available to add members.", c),
+                c,
+            );
+        };
+        let agents: Vec<_> = self
+            .agents_to_talk_to()
+            .into_iter()
+            .filter(|agent| {
+                !summary.members.contains(&agent.id) && !form.members.contains(&agent.id)
+            })
+            .collect();
+        let mut body = column![
+            text(format!("Add to {}", self.conversation_label(summary)))
+                .size(15)
+                .color(c.text)
+        ]
+        .spacing(8);
+        if agents.is_empty() {
+            body = body.push(note("All available agents are already members.", c));
+        }
+        for agent in agents {
+            body = body.push(action(
+                format!("invite-member-{}", agent.id),
+                format!("Add {}", self.name_of(agent.id.as_str())),
+                (!form.creating && self.connected.is_ok())
+                    .then(|| Message::InviteMember(agent.id.to_string())),
+                false,
+            ));
+        }
+        if form.creating {
+            body = body.push(note("Adding member…", c));
+        }
+        if let Some(error) = &form.error {
+            body = body.push(text(error.clone()).size(13).color(c.amber));
+        }
+        panel(body, c)
+    }
+
     fn messages_pane(&self, c: Colors) -> Element<'_, Message> {
         let mention_names = self.mention_names();
         let Some(summary) = self.open_summary() else {
@@ -1176,6 +1232,18 @@ impl App {
                 "open-channel-tools",
                 "Reviews",
                 Some(Message::Navigate(Screen::Channels)),
+                false,
+            ));
+        }
+        if summary.kind == ConversationKind::Channel
+            && summary.open
+            && summary.members.iter().any(|id| self.is_human(id.as_str()))
+            && let Some(channel) = summary.conversation.channel_id()
+        {
+            title_row = title_row.push(action(
+                "invite-channel",
+                "Add members",
+                Some(Message::InviteChannel(channel.to_string())),
                 false,
             ));
         }

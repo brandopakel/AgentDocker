@@ -489,6 +489,11 @@ pub enum EventKind {
         removed: usize,
     },
     /// Somebody was added to an open channel.
+    ChannelInvited {
+        channel: ChannelId,
+        by: AgentId,
+        agent: AgentId,
+    },
     ChannelJoined {
         channel: crate::ChannelId,
         agent: AgentId,

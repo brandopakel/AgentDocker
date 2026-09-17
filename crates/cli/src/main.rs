@@ -871,6 +871,13 @@ enum ChannelAction {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Add a live agent to a channel you belong to.
+    Invite {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        channel: String,
+        member: String,
+    },
     /// The work is final: close it and tell the members.
     Close {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -1708,6 +1715,24 @@ async fn main() -> Result<()> {
                     if let Some(name) = &channel.name {
                         eprintln!("#{name}");
                     }
+                }
+            }
+            ChannelAction::Invite {
+                agent,
+                channel,
+                member,
+            } => {
+                match client
+                    .call(&Request::ChannelInvite {
+                        agent,
+                        channel,
+                        member,
+                    })
+                    .await?
+                {
+                    Response::Channel { channel } => println!("{}", channel.id),
+                    Response::Error { message, .. } => anyhow::bail!("{message}"),
+                    other => anyhow::bail!("unexpected invitation reply: {other:?}"),
                 }
             }
             ChannelAction::Close {

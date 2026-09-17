@@ -476,3 +476,10 @@ The first release: registry, supervision, messaging, leases, the project
 watcher, the change journal, worktrees and validated integration,
 handoffs, containers, policy and quotas, restart policies, channels,
 contests, PTY sessions, the desktop app, and the descriptor handoff.
+
+In Messages, **+** starts a direct message or named channel. Press Enter to send;
+mention suggestions only include the current conversation's recipients. In an
+open channel you belong to, **Add members** adds another available agent. The
+CLI equivalent is `agentdocker channel invite --as <member> <channel> <agent>`.
+These Messages additions are in the current review candidate, pending native
+and installed acceptance; they do not change an older running app.

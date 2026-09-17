@@ -360,4 +360,6 @@ carry their originating form identity, purposes are bounded, and relative CLI
 project selectors are normalized. Unicode lowercase mention matching and
 per-pane mention-name collection are included. Regression tests are written;
 compilation and native workflow acceptance remain pending. Existing-channel
-invitations remain the next part of this same user request.
+invitations are now written: Add members uses the same bounded UI worker and
+ordinary daemon queue. Membership, event and notice commit together; repeated
+invites are no-ops. Source tests and rendered workflow acceptance are pending.

@@ -472,6 +472,63 @@ impl Daemon {
         Response::Channel { channel }
     }
 
+    /// Add a member and the invitation notice in one durable publication.
+    pub(super) fn channel_invite(&self, reference: &str, channel: &str, member: &str) -> Response {
+        let (id, inviter) = match self.channel_of(channel, reference) {
+            Ok(pair) => pair,
+            Err(error) => return *error,
+        };
+        let mut state = lock(&self.state);
+        let member = match state.resolve(member) {
+            Ok(id) => id,
+            Err(error) => return *error,
+        };
+        let Some(mut channel) = state.channels.get(&id).cloned() else {
+            return Response::error(ErrorCode::NotFound, "channel vanished");
+        };
+        if !channel.is_open() || !matches!(channel.subject, ChannelSubject::Task { .. }) {
+            return Response::error(
+                ErrorCode::Invalid,
+                "members can only be added to an open named channel",
+            );
+        }
+        if !channel.has(&inviter) {
+            return Response::error(ErrorCode::Forbidden, "you are not in that channel");
+        }
+        if channel.has(&member) {
+            return Response::Channel { channel };
+        }
+        let Some(record) = state.registry.get(&member).filter(|r| r.status.is_live()) else {
+            return Response::error(ErrorCode::Invalid, "the invited agent is no longer live");
+        };
+        let name = record.spec.name.clone();
+        channel.admit(member.clone());
+        let event = EventKind::ChannelInvited {
+            channel: id.clone(),
+            by: inviter.clone(),
+            agent: member,
+        };
+        let inviter_name = state
+            .registry
+            .get(&inviter)
+            .map(|r| r.spec.name.as_str())
+            .unwrap_or("A member");
+        let envelope = Envelope::new(
+            "agentd",
+            Destination::Channel(id),
+            "channel",
+            json!({"channel":channel.id.as_str(), "title":channel.title(), "text":format!("{inviter_name} added {name} to this channel.")}),
+            None,
+            Utc::now(),
+        );
+        let response =
+            state.publish_with_channel(envelope, None, Some((channel.clone(), event, None)));
+        if !matches!(response, Response::Sent { .. }) {
+            return response;
+        }
+        Response::Channel { channel }
+    }
+
     /// The work is final.
     pub(super) fn channel_close(
         &self,
@@ -979,6 +1036,118 @@ mod tests {
         {
             Response::Messages { messages } => messages,
             other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn invitations_require_membership_and_publish_members_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _) = fixture(&tmp).await;
+        let Response::Channel { channel } = daemon
+            .channel_open("writer", "plan".into(), vec!["reviewer".into()], None, None)
+            .await
+        else {
+            panic!("open failed")
+        };
+        assert!(matches!(
+            daemon.channel_invite("bystander", channel.id.as_str(), "bystander"),
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
+        let member = daemon.resolve("bystander").unwrap();
+        let Response::Channel { channel } =
+            daemon.channel_invite("writer", channel.id.as_str(), "bystander")
+        else {
+            panic!("invite failed")
+        };
+        assert!(channel.has(&member));
+        let seq = lock(&daemon.state).next_seq;
+        assert!(matches!(
+            daemon.channel_invite("writer", channel.id.as_str(), "bystander"),
+            Response::Channel { .. }
+        ));
+        assert_eq!(
+            lock(&daemon.state).next_seq,
+            seq,
+            "repeating an invite writes nothing"
+        );
+        assert_eq!(
+            inbox(&daemon, "bystander").await.len(),
+            1,
+            "one invitation notice"
+        );
+        drop(daemon);
+        let daemon =
+            Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+        assert!(lock(&daemon.state).channels[&channel.id].has(&member));
+        let sent = daemon
+            .handle(Request::Send {
+                from: "writer".into(),
+                to: format!("channel:{}", channel.id),
+                kind: "chat".into(),
+                payload: json!({"text":"hello new member"}),
+                reply_to: None,
+            })
+            .await;
+        assert!(matches!(sent, Response::Sent { .. }));
+        assert_eq!(inbox(&daemon, "bystander").await.len(), 1);
+        daemon.channel_close("writer", channel.id.as_str(), None);
+        assert!(matches!(
+            daemon.channel_invite("writer", channel.id.as_str(), "reviewer"),
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn refused_invitations_leave_members_queues_and_events_unchanged() {
+        for failed_event in ["channel_invited", "message_sent"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (daemon, _) = fixture(&tmp).await;
+            let Response::Channel { channel } = daemon
+                .channel_open("writer", "plan".into(), vec!["reviewer".into()], None, None)
+                .await
+            else {
+                panic!("open failed")
+            };
+            let (queues, seq, mut events) = {
+                let state = lock(&daemon.state);
+                state.store.reject_event_for_test(failed_event);
+                (
+                    serde_json::to_value(&state.inboxes).unwrap(),
+                    state.next_seq,
+                    state.events.subscribe(),
+                )
+            };
+            assert!(matches!(
+                daemon.channel_invite("writer", channel.id.as_str(), "bystander"),
+                Response::Error {
+                    code: ErrorCode::StorageUnavailable,
+                    ..
+                }
+            ));
+            let state = lock(&daemon.state);
+            let durable: Channel = state
+                .store
+                .document("channel", channel.id.as_str())
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(&state.channels[&channel.id]).unwrap(),
+                serde_json::to_value(&channel).unwrap()
+            );
+            assert_eq!(durable.members, channel.members);
+            assert_eq!(serde_json::to_value(&state.inboxes).unwrap(), queues);
+            assert_eq!(
+                serde_json::to_value(state.store.load_inboxes().unwrap()).unwrap(),
+                queues
+            );
+            assert_eq!(state.next_seq, seq);
+            assert!(events.try_recv().is_err());
         }
     }
 
