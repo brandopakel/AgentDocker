@@ -156,27 +156,7 @@ enum Command {
     /// Revoke container access without prematurely releasing a live writer's leases.
     RevokeAccess { grant: String },
     /// Persist task context and content identity before an optional lease release.
-    Checkpoint {
-        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
-        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
-        agent: String,
-        key: String,
-        #[arg(long)]
-        #[arg(help = "Task the replacement session should continue.")]
-        task: String,
-        #[arg(long = "assumption")]
-        #[arg(help = "Assumption to review during recovery (repeatable).")]
-        assumptions: Vec<String>,
-        #[arg(long = "next")]
-        #[arg(help = "Next action for the replacement (repeatable).")]
-        next_steps: Vec<String>,
-        /// A typed reference for the replacement to open first, `kind:target` (repeatable).
-        #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
-        links: Vec<agentdocker_core::Link>,
-        #[arg(long)]
-        #[arg(help = "Release this agent’s leases only after saving the checkpoint.")]
-        release_leases: bool,
-    },
+    Checkpoint(CheckpointArgs),
     /// Inspect or explicitly accept a verified session handoff.
     Resume {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -196,28 +176,7 @@ enum Command {
         action: Option<CheckpointAction>,
     },
     /// Hand this agent's work to another: a checkpoint addressed to it, with leases, reads, changes, diff, unread messages and journal bundled around it.
-    Handoff {
-        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
-        /// Agent id, name or unique prefix (defaults to this session).
-        agent: String,
-        /// The recipient: id, name or unique prefix.
-        to: String,
-        #[arg(long)]
-        /// What the recipient should continue.
-        task: Option<String>,
-        #[arg(long)]
-        /// Anything the daemon does not already know.
-        note: Option<String>,
-        /// A typed reference for the recipient to open first, `kind:target` (repeatable).
-        #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
-        links: Vec<agentdocker_core::Link>,
-        #[arg(long)]
-        /// Move this agent's leases to the recipient when it accepts, instead of releasing them now.
-        transfer_leases: bool,
-        #[arg(long)]
-        /// Retries with the same key return the same bundle.
-        key: Option<String>,
-    },
+    Handoff(HandoffArgs),
     /// List handoffs for --as or AGENTDOCKER_AGENT_ID; all when neither is set.
     Handoffs {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -1169,6 +1128,56 @@ struct SendArgs {
     links: Vec<agentdocker_core::Link>,
 }
 
+/// Its own struct, like `SendArgs`: the top-level command enum is parsed
+/// on a test thread's small stack, and every field added there in place
+/// brings the derived parser nearer to overflowing it.
+#[derive(Args)]
+struct CheckpointArgs {
+    #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+    #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
+    agent: String,
+    key: String,
+    #[arg(long)]
+    #[arg(help = "Task the replacement session should continue.")]
+    task: String,
+    #[arg(long = "assumption")]
+    #[arg(help = "Assumption to review during recovery (repeatable).")]
+    assumptions: Vec<String>,
+    #[arg(long = "next")]
+    #[arg(help = "Next action for the replacement (repeatable).")]
+    next_steps: Vec<String>,
+    /// A typed reference for the replacement to open first, `kind:target` (repeatable).
+    #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
+    links: Vec<agentdocker_core::Link>,
+    #[arg(long)]
+    #[arg(help = "Release this agent’s leases only after saving the checkpoint.")]
+    release_leases: bool,
+}
+
+#[derive(Args)]
+struct HandoffArgs {
+    #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+    /// Agent id, name or unique prefix (defaults to this session).
+    agent: String,
+    /// The recipient: id, name or unique prefix.
+    to: String,
+    #[arg(long)]
+    /// What the recipient should continue.
+    task: Option<String>,
+    #[arg(long)]
+    /// Anything the daemon does not already know.
+    note: Option<String>,
+    /// A typed reference for the recipient to open first, `kind:target` (repeatable).
+    #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
+    links: Vec<agentdocker_core::Link>,
+    #[arg(long)]
+    /// Move this agent's leases to the recipient when it accepts, instead of releasing them now.
+    transfer_leases: bool,
+    #[arg(long)]
+    /// Retries with the same key return the same bundle.
+    key: Option<String>,
+}
+
 /// `kind:target` from the command line, checked for its kind's shape.
 fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
     agentdocker_core::Link::parse(text).map_err(str::to_owned)
@@ -1336,7 +1345,7 @@ async fn main() -> Result<()> {
         Command::Reads { agent } => {
             print_json(&client.call(&Request::Reads { agent }).await?)?;
         }
-        Command::Checkpoint {
+        Command::Checkpoint(CheckpointArgs {
             agent,
             key,
             task,
@@ -1344,7 +1353,7 @@ async fn main() -> Result<()> {
             next_steps,
             links,
             release_leases,
-        } => {
+        }) => {
             let response = client
                 .call(&Request::Checkpoint {
                     agent,
@@ -1390,7 +1399,7 @@ async fn main() -> Result<()> {
                 }
             }
         },
-        Command::Handoff {
+        Command::Handoff(HandoffArgs {
             agent,
             to,
             task,
@@ -1398,7 +1407,7 @@ async fn main() -> Result<()> {
             links,
             transfer_leases,
             key,
-        } => {
+        }) => {
             let request = Request::Handoff {
                 agent,
                 to: Some(to),
