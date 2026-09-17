@@ -213,6 +213,10 @@ receiver, and delivered three messages exactly once in FIFO order during the
 same active turn in 14.85 seconds including the handover. Cleanup found no
 surviving controllers. See the receiver-upgrade section of the existing
 [native queue evidence](verification/2026-09-15-native-codex-queue.json).
+A second actual trial used two installed packages in a disposable prefix: pins
+were held while the receivers ran, released at cleanup, and the retired release
+was pruned after activating a third package. The provider and six old receipts
+survived; the three new messages arrived in order in 14.86 seconds.
 Final review, CI and installed-session acceptance remain open. This command has
 not been run against the user's session.
 

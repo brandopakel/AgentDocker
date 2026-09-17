@@ -2682,10 +2682,114 @@
       "earlier_targeted_failure": "targeted1 retained: assertion took its event boundary before offer/abort events; corrected in 5b3d688 before passing targeted2 and full gate. No runtime correction claimed from that failure."
     },
     "limitations": [
-      "This trial used copied immutable binaries; release pin preservation is covered by source inspection and earlier separate managed-prefix trials, not a new managed-prefix upgrade trial.",
+      "Managed-prefix actual receiver replacement and post-exit pruning now pass; pruning during a held pin remains covered by the earlier separate managed-prefix trials.",
       "No installed session upgraded yet; schema 22 needs a matching daemon and retains a pre-migration backup for rollback.",
       "Tool-boundary input does not promise arbitrary interruption while a provider has no tool boundary.",
       "No broader provider/session-limit/startup/overnight acceptance claimed."
-    ]
+    ],
+    "managed_prefix_trial": {
+      "result": {
+        "passed": true,
+        "scope": "Disposable managed desktop prefix; actual Codex TUI/local model and old/new immutable receivers; production untouched.",
+        "old_release": "7349323078e4bff13b995f052e00bd9c25f3bf43a8d35d929b410cdccbd87277",
+        "new_release": "f74107689b33314520b8584bfb8aa2b505e64af5c72e05acd135fde3f4486779",
+        "pin_transitions": [
+          {
+            "old_pin": false,
+            "new_pin": false,
+            "at": 1789609508.717124
+          },
+          {
+            "old_pin": false,
+            "new_pin": true,
+            "at": 1789609509.25346
+          },
+          {
+            "old_pin": true,
+            "new_pin": true,
+            "at": 1789609511.0646951
+          },
+          {
+            "old_pin": false,
+            "new_pin": true,
+            "at": 1789609564.2399302
+          },
+          {
+            "old_pin": false,
+            "new_pin": false,
+            "at": 1789609580.8719978
+          }
+        ],
+        "third_release": "83a1b372cb5c1ed87bab9c23fc7276a5e502a81207e99b133fe8f17de5b7d801",
+        "old_pin_released_and_release_pruned": true,
+        "new_previous_release_retained": true,
+        "receiver_upgrade": {
+          "before": {
+            "pid": 13882,
+            "started_at": "2026-09-17T01:45:53.235481Z"
+          },
+          "after": {
+            "pid": 14727,
+            "started_at": "2026-09-17T01:46:06.234573Z"
+          },
+          "provider_preserved": true,
+          "token_and_binding_preserved": true,
+          "prior_completed_receipts": 6,
+          "pending_native_queue_id": "01a0ad0a-d4e0-7b91-8e76-9f62951b2953",
+          "initial_cli_sha256": "44d04e41695b70c9a0234cd0f78fda542ccf887616369e6ec176447a12af7c32"
+        },
+        "active_hook": {
+          "messages": [
+            "bea82bb506a64c30",
+            "f3f57e72cd8d43fd",
+            "4c7229e818334c15"
+          ],
+          "receipts": [
+            {
+              "message": "bea82bb506a64c30",
+              "receipt": {
+                "thread": "01a0ad0a-0646-7c90-9b74-d8fd4b9236ce",
+                "turn": "01a0ad0a-ce87-7573-8287-403372099236",
+                "item": "msg_01a0ad0a-e79d-7470-98cf-661636749322"
+              }
+            },
+            {
+              "message": "f3f57e72cd8d43fd",
+              "receipt": {
+                "thread": "01a0ad0a-0646-7c90-9b74-d8fd4b9236ce",
+                "turn": "01a0ad0a-ce87-7573-8287-403372099236",
+                "item": "msg_01a0ad0a-f454-7ca2-997b-ce992cc0cd81"
+              }
+            },
+            {
+              "message": "4c7229e818334c15",
+              "receipt": {
+                "thread": "01a0ad0a-0646-7c90-9b74-d8fd4b9236ce",
+                "turn": "01a0ad0a-ce87-7573-8287-403372099236",
+                "item": "msg_01a0ad0b-011b-7dd3-b9cb-cbdc90e1af53"
+              }
+            }
+          ],
+          "seconds": 14.8617712080013,
+          "same_turn": true,
+          "model_requests": 5,
+          "original_provider_pid": 11705
+        },
+        "cleanup_errors": [],
+        "source": {
+          "commit": "253fc6bdaa3d4754f6dbc07cfeb203a091b659db",
+          "dirty": false,
+          "rust_and_driver_sha256": "c42a6287820ccd9cdb6237479d165855b11549b5fc68b1dd982ca03852eb771e"
+        },
+        "driver_sha256": "21536515518ad8520810c1b5dab1476273dfa4b8b0b4f5ac2bc7cec406216510",
+        "wrapper_sha256": "c2045a2d29e90b22d4cdd348134764292ba5c6664d2caad10a8ad54a40a6e914"
+      },
+      "packaged_source": "5b3d68817afc3322673e6d030698ace2f2baa818",
+      "packaged_cli_sha256": "952f0304c493d68e8130e6fb2f1c31ce915c42696821b8537447ade9af013237",
+      "packaged_daemon_sha256": "66b3d1555f8a64a96bcdf3c6203a2e7e3b6f5572892b191167e78bc427c66923",
+      "artifacts": "/private/tmp/agentdocker-managed-controller-upgrade-trial2-2026-09-17",
+      "initial_refusal": "Trial1 used the schema22 installer to install the old schema21 package; it refused before runtime startup. Trial2 installs the old release with its matching old CLI before installing the new release. Both logs retained.",
+      "scope_limit": "Pin observations span actual receiver replacement and all process cleanup. Prune was checked after old processes ended; prior independent pin trials cover pruning while pins remain held."
+    }
   }
 }

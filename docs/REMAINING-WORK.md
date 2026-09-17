@@ -23,6 +23,8 @@ gate (seven skipped), and actual Codex 0.154.0/local-model replacement of an old
 receiver with a pending offer. The provider, token, binding time and six prior
 receipts survived; three messages arrived exactly once in order during the same
 active turn (14.85 seconds including handover), with clean retirement and cleanup.
+The disposable installed-package repeat also passed, observing lifetime pins
+and successful pruning of the retired release after cleanup.
 Final review, CI and installed-session acceptance remain open. Evidence is in the
 existing [native queue record](verification/2026-09-15-native-codex-queue.json).
 
