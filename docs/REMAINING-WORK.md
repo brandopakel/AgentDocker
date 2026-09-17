@@ -227,3 +227,12 @@ The connected Claude and Codex sessions exchanged this audit's ownership and
 findings through AgentDocker on September 14. The peer acknowledged the message
 and returned its findings. This verifies active-session routing and model
 consumption; it does not replace an idle-wake or sustained-load trial.
+
+Usage reader review follow-up (September 17 UTC): complete oversized records now
+advance as explicit gaps when their newline fits in the byte budget, allowing
+later supported records to be collected. A missing newline within that budget
+still preserves the prior cursor. The same bounded buffered reader counts
+prefetched bytes; skipped records reset Codex context and contribute once to the
+prefix digest. A regression covers a record larger than the maximum parser
+limit, subsequent supported usage, resumed digest equivalence and insufficient
+budget. Validation of this follow-up is pending.

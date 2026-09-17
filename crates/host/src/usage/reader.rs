@@ -241,10 +241,19 @@ pub fn scan(
         (&mut reader)
             .take(budget.record_bytes as u64 + 1)
             .read_until(b'\n', &mut line)?;
-        if line.len() > budget.record_bytes {
-            return Err(Error::Oversized {
-                offset: cursor.offset,
-            });
+        let oversized = line.len() > budget.record_bytes;
+        if oversized {
+            // Drain through this same bounded reader, including prefetched
+            // bytes. A complete oversized record is an explicit gap; an
+            // unfinished record cannot authorize moving the durable cursor.
+            if line.last() != Some(&b'\n') {
+                reader.read_until(b'\n', &mut line)?;
+            }
+            if line.last() != Some(&b'\n') {
+                return Err(Error::Oversized {
+                    offset: cursor.offset,
+                });
+            }
         }
         if line.last() != Some(&b'\n') {
             break if cursor.offset + line.len() as u64 == generation.length {
@@ -253,12 +262,16 @@ pub fn scan(
                 Stop::Budget
             };
         }
-        let parsed = serde_json::from_slice(&line)
-            .map_err(|_| "invalid JSON record".to_owned())
-            .and_then(|record| match runtime {
-                Runtime::Codex => cursor.codex.feed(&record, cursor.offset == 0),
-                Runtime::Claude => super::claude(&record),
-            });
+        let parsed = if oversized {
+            Err("record exceeds the configured size limit".to_owned())
+        } else {
+            serde_json::from_slice(&line)
+                .map_err(|_| "invalid JSON record".to_owned())
+                .and_then(|record| match runtime {
+                    Runtime::Codex => cursor.codex.feed(&record, cursor.offset == 0),
+                    Runtime::Claude => super::claude(&record),
+                })
+        };
         match parsed {
             Ok(Some(sample)) => samples.push(sample),
             Ok(None) => {}
@@ -451,6 +464,63 @@ mod tests {
                 }
             ),
             Err(Error::Budget)
+        ));
+    }
+
+    #[test]
+    fn complete_oversized_records_are_bounded_gaps_with_resumable_following_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        let mut content = vec![b'x'; MAX_RECORD + 1];
+        content.push(b'\n');
+        let gap_len = content.len();
+        content.extend_from_slice(row(1).as_bytes());
+        std::fs::write(&path, &content).unwrap();
+        let all = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
+        assert_eq!(all.stop, Stop::Complete);
+        assert_eq!(all.samples.len(), 1);
+        assert_eq!(all.gaps.len(), 1);
+        assert_eq!(all.gaps[0].bytes, gap_len as u64);
+        assert_eq!(all.cursor.offset, content.len() as u64);
+        assert!(all.bytes_read <= Budget::default().bytes);
+        assert!(
+            !serde_json::to_string(&all.gaps)
+                .unwrap()
+                .contains(&"x".repeat(20))
+        );
+        let first = scan(
+            &path,
+            Runtime::Claude,
+            None,
+            Budget {
+                bytes: gap_len as u64,
+                ..Budget::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(first.cursor.offset, gap_len as u64);
+        assert!(first.samples.is_empty());
+        let second = scan(
+            &path,
+            Runtime::Claude,
+            Some(&first.cursor),
+            Budget::default(),
+        )
+        .unwrap();
+        assert_eq!(second.samples, all.samples);
+        assert!(second.gaps.is_empty());
+        assert_eq!(second.cursor.prefix_digest, all.cursor.prefix_digest);
+        assert!(matches!(
+            scan(
+                &path,
+                Runtime::Claude,
+                None,
+                Budget {
+                    bytes: (gap_len - 1) as u64,
+                    ..Budget::default()
+                }
+            ),
+            Err(Error::Oversized { offset: 0 })
         ));
     }
 

@@ -1199,3 +1199,12 @@ Provider questions hold ordinary messages until resolved. This contract does
 not give the external native-queue sidecar control of a standalone TUI turn.
 Bounded source and actual-Codex/local-model busy and lost-reply trials passed at
 `13c3e40`; hosted-model and existing-session acceptance remain open.
+
+Usage reader review follow-up (September 17 UTC): complete oversized records now
+advance as explicit gaps when their newline fits in the byte budget, allowing
+later supported records to be collected. A missing newline within that budget
+still preserves the prior cursor. The same bounded buffered reader counts
+prefetched bytes; skipped records reset Codex context and contribute once to the
+prefix digest. A regression covers a record larger than the maximum parser
+limit, subsequent supported usage, resumed digest equivalence and insufficient
+budget. Validation of this follow-up is pending.
