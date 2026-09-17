@@ -2411,5 +2411,191 @@
       "Active Codex tool turn, not an idle-wake trial.",
       "No drafts were overwritten; hidden drafts were not inspected and the GUI was not restarted."
     ]
+  },
+  "resumed_channel_setup_2026_09_17": {
+    "source": {
+      "format": 1,
+      "source_commit": "57c2612c408d72756e45f96f0e1df69dcc707044",
+      "source_tree": "ac236add3d7f0ce0dbd61df9c99115a2e3a7593e",
+      "source_input_sha256": "2559499734998e124c181ec6615d50ee2ac3a0e3ffff1e56deb4d5b2d0d8015e",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 23,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "1874c66870742d7908eba86e9e5f9a442e46d8cd3ef81e96330999e716a0ba57",
+        "agentd": "be800d1db07fa247345094f8d6ec17a06df131d4d956412b7ffaf3e28864d745",
+        "agentdocker-ui": "2e8c05575fa2c9622c94b9b54786c77bbf565995da90d3ee303f470808c036ea"
+      }
+    },
+    "standard_gate": {
+      "result": "passed",
+      "rust_passed": 1144,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_passed": 93,
+      "python_skipped": 1,
+      "log": "/private/tmp/agentdocker-resumed-channel-gate-20260917.log",
+      "checks": [
+        "format",
+        "strict clippy",
+        "nextest",
+        "doctests",
+        "Python checks",
+        "workspace packages",
+        "release build"
+      ]
+    },
+    "focused_setup_tests": {
+      "passed": 39,
+      "filtered_out": 382,
+      "log": "/private/tmp/agentdocker-channel-setup-targeted-20260917.log"
+    },
+    "actual_provider_cli_setup": {
+      "scope": "Actual binary preview/apply/health/undo with installed Claude MCP configuration CLI; no model session",
+      "source_commit": "57c2612c408d72756e45f96f0e1df69dcc707044",
+      "source_tree": "ac236add3d7f0ce0dbd61df9c99115a2e3a7593e",
+      "binary_sha256": "1874c66870742d7908eba86e9e5f9a442e46d8cd3ef81e96330999e716a0ba57",
+      "driver_sha256": "36716d4c3f16410738253c7fbb48d88b3e0248e2551191b25614abd86f97caa6",
+      "checks": [
+        "preview selects profile A for hooks and MCP",
+        "actual provider add uses saved profile A while caller selects B; exact entry and unrelated MCP preserved",
+        "health agrees on selected-profile MCP and hooks; isolated absent daemon remains disconnected",
+        "actual provider removal uses saved profile A, preserves unrelated MCP and restores original hooks",
+        "changed environment refuses undo before hooks or provider entry are changed",
+        "malformed provider state refuses apply before hook edits"
+      ],
+      "calls": [
+        {
+          "name": "preview-a",
+          "exit": 0,
+          "elapsed_seconds": 0.33856075000949204
+        },
+        {
+          "name": "apply-from-b",
+          "exit": 0,
+          "elapsed_seconds": 0.17807837500004098
+        },
+        {
+          "name": "health-a",
+          "exit": 0,
+          "elapsed_seconds": 0.005786249996162951
+        },
+        {
+          "name": "undo-from-b",
+          "exit": 0,
+          "elapsed_seconds": 0.15675754100084305
+        },
+        {
+          "name": "preview-changed-entry",
+          "exit": 0,
+          "elapsed_seconds": 0.012920791981741786
+        },
+        {
+          "name": "apply-changed-entry",
+          "exit": 0,
+          "elapsed_seconds": 0.1741632920166012
+        },
+        {
+          "name": "refuse-changed-entry",
+          "exit": 1,
+          "elapsed_seconds": 0.008314874983625486
+        },
+        {
+          "name": "undo-restored-entry",
+          "exit": 0,
+          "elapsed_seconds": 0.1593845000024885
+        },
+        {
+          "name": "preview-malformed-state",
+          "exit": 0,
+          "elapsed_seconds": 0.012928207986988127
+        },
+        {
+          "name": "refuse-malformed-state",
+          "exit": 1,
+          "elapsed_seconds": 0.008771249995334074
+        },
+        {
+          "name": "close-unused-plan",
+          "exit": 0,
+          "elapsed_seconds": 0.014696500002173707
+        }
+      ],
+      "result": "passed",
+      "provider_version": "2.1.274 (Claude Code)",
+      "elapsed_seconds": 1.0839144159981515,
+      "cleanup": {
+        "scratch_removed": true,
+        "user_configuration_hashes_unchanged": true,
+        "model_invoked": false
+      }
+    },
+    "mcp_channel_resume_fixture": {
+      "result": "passed",
+      "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+      "steps": [
+        "idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption",
+        "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+        "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+        "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+        "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+        "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+        "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+        "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+        "pre-initialization session fold preserved one channel owner across different agent IDs and delivered the older queue through its alias",
+        "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+      ],
+      "binary_sha256": {
+        "agentd": "be800d1db07fa247345094f8d6ec17a06df131d4d956412b7ffaf3e28864d745",
+        "agentdocker": "1874c66870742d7908eba86e9e5f9a442e46d8cd3ef81e96330999e716a0ba57"
+      },
+      "driver_sha256": {
+        "claude_channel_smoke.py": "1c3d58b2c5f77cbfab6e4e45e7f3a9ee98a483580d49143ac8ef87f937dd0959",
+        "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+        "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+      },
+      "remaining_owned_processes": 0,
+      "duration_seconds": 38.82145041701733
+    },
+    "package": {
+      "candidate": {
+        "id": "28f4f1f34d260dc7e560ec968e483f600f94e9f360b39d5eb4557d6d1300d9fd",
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "payload": "AgentDocker.app",
+        "source_commit": "57c2612c408d72756e45f96f0e1df69dcc707044",
+        "state_schema": 23,
+        "target": "aarch64-apple-darwin",
+        "tree_sha256": "28f4f1f34d260dc7e560ec968e483f600f94e9f360b39d5eb4557d6d1300d9fd",
+        "version": "0.1.0"
+      },
+      "previous": {
+        "id": "79981bebcc3f66b5d848a63f26b0b894698b73c9872c5c91c38dd2cc0159214f",
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "payload": "AgentDocker.app",
+        "source_commit": "5c461e0df33be607ffd98b4b78b0f26f54f2dfda",
+        "state_schema": 22,
+        "target": "aarch64-apple-darwin",
+        "tree_sha256": "79981bebcc3f66b5d848a63f26b0b894698b73c9872c5c91c38dd2cc0159214f",
+        "version": "0.1.0"
+      },
+      "preview_passed": true,
+      "first_attempt": "Rejected abbreviated source57c2612 before packaging; rerun used full SHA.",
+      "first_log": "/private/tmp/agentdocker-resumed-channel-package-20260917.log",
+      "corrected_log": "/private/tmp/agentdocker-resumed-channel-package-corrected-20260917.log",
+      "path": "/private/tmp/agentdocker-resumed-channel-package-20260917/AgentDocker.app",
+      "signing": "ad-hoc local preview"
+    },
+    "limits": [
+      "No production activation in this campaign yet.",
+      "Actual model idle wake remains open; the reconnect fixture speaks MCP.",
+      "No hands-on IME/accessibility or external release certification."
+    ]
   }
 }
