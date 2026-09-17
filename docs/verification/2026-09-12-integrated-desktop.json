@@ -1060,6 +1060,44 @@
         "/private/tmp/agentdocker-pr168-linux-x86-final-job-2026-09-17.log",
         "/private/tmp/agentdocker-pr168-linux-arm-final-job-2026-09-17.log"
       ]
+    },
+    "combined_messaging_validation": {
+      "build": {
+        "format": 1,
+        "source_commit": "c75717765e5626826be7496c400dcf1410c34c5e",
+        "source_tree": "029af4ba0b0a97c8c21f148e720e1391e738ad20",
+        "source_input_sha256": "bd15869a1f14107701d01c05ec53647eb0ad1253df6df68ea46e7659514b76e8",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 22,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "86ab84ce6289a8a97683d974b0e8771b8fcbd1d1714a1b243def45b855f3bc44",
+          "agentd": "f04b1063158e1809b17866232cca5d7668ff58b8e45d711ed1218dddcc528f7f",
+          "agentdocker-ui": "def2e65634eac88203045c7293a0f0888cab9ac0ead32d6de3b12501a4143fab"
+        }
+      },
+      "gate": {
+        "result": "passed",
+        "rust_passed": 1110,
+        "rust_skipped": 7,
+        "python_checks": 84,
+        "log": "/private/tmp/agentdocker-hook-matcher-gate5-2026-09-17.log",
+        "junit": "/private/tmp/agentdocker-hook-matcher-gate5-nextest-2026-09-17/junit.xml"
+      },
+      "native": {
+        "result": "passed",
+        "scenario_steps": 415,
+        "outer_checks": 26,
+        "elapsed_seconds": 131.71476429101313,
+        "artifact_directory": "/private/tmp/agentdocker-hook-matcher-native2-2026-09-17"
+      },
+      "scope": "Actual isolated native windows and rendered workflow actions; no live provider hook configuration changed, no physical keyboard/IME trial claimed. Combined source includes messaging controls and installed receiver upgrade implementation.",
+      "status": "passed; final CI, review and installation pending"
     }
   },
   "messaging_controls_review_2026_09_17": {
