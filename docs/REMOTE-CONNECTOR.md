@@ -64,7 +64,7 @@ kept as small as the requirement allows and as far from the daemon as possible.
 | `GET /authorize` | Validates the request. A bad client or callback is a page (nothing is sent to an untrusted callback); any other problem goes back to the callback as an OAuth error. Otherwise the consent page. |
 | `POST /authorize` | The consent form: pairing code (case, spaces and the dash are forgiven), agent name, and the request's fields. Five wrong codes close consent until the process restarts. A name that is a live agent's is refused on the page. |
 | `POST /token` | `authorization_code` (code, `code_verifier`, client and callback must match; single use; five-minute lifetime) registers the agent and issues tokens; `refresh_token` rotates. Errors are RFC 6749 codes: a rotated or revoked refresh token is `invalid_grant`. |
-| `POST /mcp` | Streamable HTTP, JSON-RPC in `application/json`, plain JSON out (`202` for a notification). No bearer, an expired or revoked token, or an agent the daemon no longer holds live: `401` with `WWW-Authenticate: Bearer resource_metadata="…"`. `GET`/`DELETE` are `405`: the server opens no stream. |
+| `POST /mcp` | Streamable HTTP, JSON-RPC in `application/json`, plain JSON out (`202` for a notification). No bearer, an expired or revoked token, or an agent the daemon answers is no longer live: `401` with `WWW-Authenticate: Bearer resource_metadata="…"`, and the grant ends. A daemon that is not answering: `503` with `Retry-After`, and the grant stands. `GET`/`DELETE` are `405`: the server opens no stream. |
 
 Access tokens last one hour; the vendor refreshes on the `401`. Refresh tokens
 rotate on every use. Clients and grants persist in

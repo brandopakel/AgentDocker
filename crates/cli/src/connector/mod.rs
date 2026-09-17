@@ -584,7 +584,13 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             .await
         {
             Ok(Response::Agent { agent }) if agent.status.is_live() => {}
-            Ok(_) | Err(_) => {
+            // The daemon answered: the agent is over. Only its answer ends
+            // a grant; a daemon that is not answering ends nothing.
+            Ok(Response::Agent { .. })
+            | Ok(Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }) => {
                 {
                     let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
                     store.revoke(&grant_id, Utc::now());
@@ -595,6 +601,22 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&grant.agent_id);
                 return self.unauthorized("this browser agent was ended; connect again");
+            }
+            Ok(other) => {
+                eprintln!("agentdocker connector: unexpected reply to inspect: {other:?}");
+                return HttpResponse::json(
+                    503,
+                    &json!({"error": "daemon_unavailable", "error_description": "the daemon gave an unexpected answer; try again"}),
+                )
+                .header("Retry-After", "5");
+            }
+            Err(error) => {
+                eprintln!("agentdocker connector: the daemon is not answering: {error:#}");
+                return HttpResponse::json(
+                    503,
+                    &json!({"error": "daemon_unavailable", "error_description": "the daemon is not answering; the grant stands, try again"}),
+                )
+                .header("Retry-After", "5");
             }
         }
         if request.content_type() != Some("application/json") {
@@ -706,7 +728,16 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
     );
     let limit = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
-        let (stream, _) = listener.accept().await?;
+        // One refused connection (descriptors exhausted, a reset) is not
+        // a reason to stop serving the rest.
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(error) => {
+                eprintln!("agentdocker connector: accept failed: {error}");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let Ok(permit) = limit.clone().acquire_owned().await else {
             break;
         };
@@ -816,14 +847,21 @@ mod tests {
     use agentdocker_core::{AgentRecord, AgentStatus};
 
     /// The mock behind an `Arc`, so the connector can clone its backend
-    /// for each browser agent's MCP server.
+    /// for each browser agent's MCP server; `down` makes every call fail
+    /// the way a stopped daemon's socket does.
     #[derive(Clone)]
-    struct Shared(Arc<Mock>);
+    struct Shared(Arc<Mock>, Arc<std::sync::atomic::AtomicBool>);
 
     impl Backend for Shared {
         fn call(&self, request: Request) -> impl std::future::Future<Output = Result<Response>> {
             let inner = self.0.clone();
-            async move { inner.call(request).await }
+            let down = self.1.load(Ordering::Relaxed);
+            async move {
+                if down {
+                    anyhow::bail!("connection refused");
+                }
+                inner.call(request).await
+            }
         }
     }
 
@@ -842,9 +880,21 @@ mod tests {
     }
 
     fn connector(responses: Vec<Response>) -> (Connector<Shared>, Arc<Mock>) {
+        let (connector, mock, _) = connector_with_switch(responses);
+        (connector, mock)
+    }
+
+    fn connector_with_switch(
+        responses: Vec<Response>,
+    ) -> (
+        Connector<Shared>,
+        Arc<Mock>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
         let mock = Arc::new(Mock::with(responses));
+        let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let connector = Connector::new(
-            Shared(mock.clone()),
+            Shared(mock.clone(), down.clone()),
             "https://x.trycloudflare.com".into(),
             agentdocker_core::ProjectRef {
                 root: "/p/keel".into(),
@@ -857,7 +907,105 @@ mod tests {
             Store::default(),
             None,
         );
-        (connector, mock)
+        (connector, mock, down)
+    }
+
+    /// Consent and redeem a code for a generated name, as a vendor would,
+    /// and return the access token.
+    async fn connected(connector: &Connector<Shared>, callback: &str) -> String {
+        let registered = json_body(
+            &connector
+                .handle(post(
+                    "/register",
+                    "application/json",
+                    &format!(r#"{{"redirect_uris":["{callback}"]}}"#),
+                    None,
+                ))
+                .await,
+        );
+        let client_id = registered["client_id"].as_str().unwrap().to_owned();
+        let verifier = "v".repeat(60);
+        let consent = connector
+            .handle(post(
+                "/authorize",
+                "application/x-www-form-urlencoded",
+                &format!(
+                    "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256&pairing_code=ABCD-EFGH",
+                    oauth::s256(&verifier)
+                ),
+                None,
+            ))
+            .await;
+        assert_eq!(
+            consent.status,
+            302,
+            "{}",
+            String::from_utf8_lossy(&consent.body)
+        );
+        let location = consent
+            .headers
+            .iter()
+            .find(|(n, _)| n == "Location")
+            .unwrap()
+            .1
+            .clone();
+        let code = location.split("code=").nth(1).unwrap().to_owned();
+        let issued = json_body(
+            &connector
+                .handle(post(
+                    "/token",
+                    "application/x-www-form-urlencoded",
+                    &format!("grant_type=authorization_code&code={code}&code_verifier={verifier}"),
+                    None,
+                ))
+                .await,
+        );
+        issued["access_token"].as_str().unwrap().to_owned()
+    }
+
+    /// A daemon that is not answering is a `503` and nothing more: the
+    /// grant stands, and the same token works once the daemon is back.
+    #[tokio::test]
+    async fn a_silent_daemon_does_not_end_a_grant() {
+        let (connector, mock, down) = connector_with_switch(vec![
+            live_agent("b"), // Register
+            live_agent("b"), // Inspect, once the daemon is back
+            Response::Ok,    // Heartbeat
+        ]);
+        let access = connected(&connector, "https://claude.ai/api/mcp/auth_callback").await;
+        down.store(true, Ordering::Relaxed);
+        let outage = connector
+            .handle(post(
+                "/mcp",
+                "application/json",
+                r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+                Some(&access),
+            ))
+            .await;
+        assert_eq!(outage.status, 503);
+        assert!(
+            outage
+                .headers
+                .iter()
+                .any(|(n, v)| n == "Retry-After" && v == "5")
+        );
+        assert_eq!(json_body(&outage)["error"], "daemon_unavailable");
+        down.store(false, Ordering::Relaxed);
+        let back = connector
+            .handle(post(
+                "/mcp",
+                "application/json",
+                r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#,
+                Some(&access),
+            ))
+            .await;
+        assert_eq!(back.status, 200, "{}", String::from_utf8_lossy(&back.body));
+        assert!(
+            mock.requests()
+                .iter()
+                .any(|r| matches!(r, Request::Heartbeat { .. })),
+            "the daemon saw the agent again"
+        );
     }
 
     fn get(path: &str) -> HttpRequest {
