@@ -33,7 +33,13 @@ pub(super) async fn find(
     provider: &mut Provider,
     thread: &str,
     attempt: &Attempt,
+    binding: &super::ledger::Binding,
 ) -> Result<Option<Receipt>> {
+    if let Some(hook) = &attempt.hook
+        && let Some(receipt) = super::hook_receipts::find(binding, hook)?
+    {
+        return Ok(Some(receipt));
+    }
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
         let mut cursor: Option<String> = None;
         let mut cursors = HashSet::new();
@@ -196,6 +202,7 @@ mod tests {
             hook: Some(super::super::ledger::HookOffer {
                 request: "request".into(),
                 context: "exact context".into(),
+                transcript: None,
             }),
         };
         let mut item = json!({"type":"hookPrompt","id":"hook-item","fragments":[{"hookRunId":"actual-provider-run","text":"exact context"}]});

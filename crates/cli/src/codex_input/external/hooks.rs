@@ -229,8 +229,25 @@ async fn offer(
         return Ok(None);
     };
     let thread = ledger.record().binding.provider.session.clone();
+    let metadata = provider
+        .request(
+            "thread/read",
+            json!({"threadId":thread,"includeTurns":false}),
+        )
+        .await?;
+    ensure!(
+        metadata["thread"]["id"].as_str() == Some(&thread),
+        "hook transcript thread changed"
+    );
+    let path = metadata["thread"]["path"]
+        .as_str()
+        .context("Codex does not expose its hook transcript")?;
+    let transcript =
+        super::hook_receipts::Snapshot::capture(Path::new(path), &ledger.record().binding)?;
     if let Some(attempt) = ledger.record().attempt.clone() {
-        if let Some(receipt) = receipts::find(provider, &thread, &attempt).await? {
+        if let Some(receipt) =
+            receipts::find(provider, &thread, &attempt, &ledger.record().binding).await?
+        {
             ledger.received(receipt)?;
             return Ok(None);
         }
@@ -241,7 +258,7 @@ async fn offer(
             verified(request, &ledger.record().binding)?,
             "hook ended before native handoff"
         );
-        ledger.offer_hook(&request.nonce, context.clone())?;
+        ledger.offer_hook(&request.nonce, context.clone(), Some(transcript))?;
         let result = provider
             .request(
                 "thread/queue/delete",
@@ -261,7 +278,7 @@ async fn offer(
             "hook ended before native offer"
         );
         ledger.prepare(envelope, anchor)?;
-        ledger.offer_hook(&request.nonce, context.clone())?;
+        ledger.offer_hook(&request.nonce, context.clone(), Some(transcript))?;
     }
     Ok(Some(context))
 }

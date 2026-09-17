@@ -2,6 +2,7 @@
 mod answers;
 mod availability;
 mod bootstrap;
+mod hook_receipts;
 pub mod hooks;
 mod ledger;
 mod receipts;
@@ -234,7 +235,9 @@ async fn service(
                 unseen_since = None;
                 continue;
             }
-            if let Some(receipt) = receipts::find(provider, &thread, &attempt).await? {
+            if let Some(receipt) =
+                receipts::find(provider, &thread, &attempt, &ledger.record().binding).await?
+            {
                 ledger.received(receipt)?;
                 continue;
             }

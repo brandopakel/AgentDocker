@@ -127,9 +127,14 @@ only daemon queue consumer; the hook never acknowledges messages itself.
 A private version-3 ledger reserves the exact hook context before removing its
 own native queue entry and returning output. A false or lost removal response,
 a lost hook response, or missing exact history keeps the original input for
-reconciliation without automatic resubmission. The receiver accepts only the
-matching complete `hookPrompt` fragment with provider run, thread, turn and item
-identities. Native `userMessage` receipts remain valid if the original queue entry
+reconciliation without automatic resubmission. The receiver accepts the matching complete provider context receipt. Actual
+Codex 0.154 records Pre/PostToolUse context as a developer message tagged
+`hooks.additional_context`, with a provider item ID and turn ID, but omits it
+from `thread/items/list`. A bounded reader therefore verifies the provider's
+reported transcript path, profile/session/checkout, opened file identity and
+complete records after the pre-offer byte boundary. It reads at most 4 MiB and
+never accepts plain text, untagged messages or an incomplete last record.
+The older `hookPrompt` representation remains supported when the API exposes it. Native `userMessage` receipts remain valid if the original queue entry
 won the race. Older version-2 ledgers migrate without changing the token, queue
 ID, original input or receipts. An older receiver refuses the new ledger version.
 

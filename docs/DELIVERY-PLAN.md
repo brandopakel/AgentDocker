@@ -132,7 +132,7 @@ and older native-queue entries drained. The September 17 UTC resume
 00:25:09 UTC, seven seconds after submission. Idle wake therefore does not close
 active delivery. A native hook handoff is being implemented in the existing
 receiver: verified PreToolUse/PostToolUse calls receive the same FIFO input,
-with one owner, a durable offer, exact hookPrompt receipt, and no competing hook
+with one owner, a durable offer, exact provider context receipt, and no competing hook
 ACK. An uncertain deletion/output retains the original message. Acceptance must
 cover the live busy TUI, project and global human sends, peer sends, retained
 drafts/questions, crash recovery and no later replay. This remains open until

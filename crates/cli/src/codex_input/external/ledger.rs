@@ -31,6 +31,8 @@ pub(super) struct Binding {
 pub(super) struct HookOffer {
     pub request: String,
     pub context: String,
+    #[serde(default)]
+    pub transcript: Option<super::hook_receipts::Snapshot>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -231,7 +233,12 @@ impl Ledger {
 
     /// Reserve a single hook offer before removing native input or writing output.
     /// Even a lost response is retained for receipt lookup, never blindly repeated.
-    pub fn offer_hook(&mut self, request: &str, context: String) -> Result<()> {
+    pub fn offer_hook(
+        &mut self,
+        request: &str,
+        context: String,
+        transcript: Option<super::hook_receipts::Snapshot>,
+    ) -> Result<()> {
         let mut next = self.record.clone();
         let attempt = next
             .attempt
@@ -244,6 +251,7 @@ impl Ledger {
         attempt.hook = Some(HookOffer {
             request: request.into(),
             context,
+            transcript,
         });
         self.save(next)
     }
@@ -463,7 +471,7 @@ mod tests {
             .unwrap();
         ledger.queued("old-native-entry").unwrap();
         ledger
-            .offer_hook("hook-request", input(&message).unwrap())
+            .offer_hook("hook-request", input(&message).unwrap(), None)
             .unwrap();
         assert!(ledger.acknowledge().is_err());
         drop(ledger);
@@ -474,7 +482,7 @@ mod tests {
         assert_eq!(attempt.hook.as_ref().unwrap().request, "hook-request");
         assert!(
             ledger
-                .offer_hook("retry", input(&message).unwrap())
+                .offer_hook("retry", input(&message).unwrap(), None)
                 .is_err()
         );
         assert!(ledger.prepare(&message, None).is_err());

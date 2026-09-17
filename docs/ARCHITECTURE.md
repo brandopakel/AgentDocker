@@ -1206,8 +1206,9 @@ Bounded source and actual-Codex/local-model busy and lost-reply trials passed at
 The experimental existing-Codex receiver also offers bounded input at verified
 PreToolUse/PostToolUse boundaries through its private hook socket. The same
 controller reserves the offer in private ledger version 3 before removing its
-own native-queue entry. It uses an exact persisted hookPrompt fragment as the
-Codex thread/turn/item receipt; writing hook stdout is not an acknowledgment.
+own native-queue entry. It uses an exact persisted provider hook context as the
+Codex thread/turn/item receipt (bounded tagged transcript records on CLI 0.154,
+or hookPrompt fragments when exposed by history); writing hook stdout is not an acknowledgment.
 Lost removal/output confirmation keeps the original message for reconciliation.
 The daemon protocol and database schema are unchanged. See
 [Codex input](CODEX-INPUT.md#active-input-in-an-existing-terminal-candidate-september-17-utc)
