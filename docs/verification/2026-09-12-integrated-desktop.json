@@ -2739,5 +2739,137 @@
       }
     ],
     "finding": "The existing all-ended-lives fold refuses earlier lives with retained read observations. A channel-capable MCP entry does not prove safe existing-session queue handover."
+  },
+  "installed_reviewed_preview_2026_09_17": {
+    "installation": {
+      "result": "passed",
+      "candidate": "f5e298f471dfadf5925558b44fb3f6e2d5d53a0172ce2e8a708af77a4f8dd192",
+      "source": "418fbc93c86d1658ab4c5c9975eeb76e581a4915",
+      "release_scope": "reviewed local preview; PR175/177 cross-platform CI and merges may remain pending",
+      "independent_review_message": "a930d7ae47a24d39",
+      "providers_preserved": true,
+      "old_gui": [
+        [
+          22755,
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/79981bebcc3f66b5d848a63f26b0b894698b73c9872c5c91c38dd2cc0159214f/AgentDocker.app/Contents/MacOS/agentdocker-ui",
+          "Wed Sep 16 23:07:48 2026"
+        ]
+      ],
+      "new_gui": [
+        [
+          25649,
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/f5e298f471dfadf5925558b44fb3f6e2d5d53a0172ce2e8a708af77a4f8dd192/AgentDocker.app/Contents/MacOS/agentdocker-ui",
+          "Thu Sep 17 10:38:18 2026"
+        ]
+      ],
+      "gui_scope": "User confirmed no unsent drafts and authorized reopening; visible inputs checked empty. Hidden draft persistence is not claimed",
+      "old_controller": {
+        "pid": 29976,
+        "started_at": "2026-09-17T03:58:23.432374Z"
+      },
+      "new_controller": {
+        "pid": 25642,
+        "started_at": "2026-09-17T17:38:18.755944Z"
+      },
+      "token_and_binding_preserved": true,
+      "retained_old_receipts_confirmed": 128,
+      "bounded_oldest_receipt_evictions": 0,
+      "schema": 23,
+      "backup": "/private/tmp/agentdocker-installed-coordinator-20260917T173813Z/state.db"
+    },
+    "manifest": {
+      "format": 1,
+      "source_commit": "418fbc93c86d1658ab4c5c9975eeb76e581a4915",
+      "source_tree": "2cc886088ea45900275db72ba5602595c021f88d",
+      "source_input_sha256": "f4f61fd218aa74b985f8eb8f0052dec2aa3e76699c4ea5923187d4862646b9d8",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 23,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "1874c66870742d7908eba86e9e5f9a442e46d8cd3ef81e96330999e716a0ba57",
+        "agentd": "be800d1db07fa247345094f8d6ec17a06df131d4d956412b7ffaf3e28864d745",
+        "agentdocker-ui": "a5fa496e76ffc2249ec4cc42cc8b4d2e33b9ac882159e0d4396b2faaa4a4598c"
+      }
+    },
+    "local_validation": {
+      "rust_passed": 1147,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_passed": 93,
+      "python_skipped": 1,
+      "ui_passed": 171,
+      "full_gate_log": "/private/tmp/agentdocker-notification-supersession-gate-20260917.log",
+      "independent_review_messages": [
+        "2b71b0276e554c7b",
+        "a930d7ae47a24d39"
+      ]
+    },
+    "native_workflow": {
+      "result": "passed",
+      "elapsed_seconds": 135.47713941699476,
+      "rendered_steps": 429,
+      "windows": 10,
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences"
+      ],
+      "cleanup_errors": [],
+      "report": "/private/tmp/agentdocker-notification-supersession-workflow-20260917/result.json",
+      "report_sha256": "ce99612a9999106ac1f3c276dbdadc375c98eeb8af3205b9bc2e950be49435dd"
+    },
+    "claude_configuration": {
+      "result": "passed",
+      "only_changed_field": "AgentDocker MCP entry args gains --claude-channel",
+      "unrelated_servers_preserved": true,
+      "startup_opt_in_added": false,
+      "provider_restarted": false,
+      "candidate": "f5e298f471dfadf5925558b44fb3f6e2d5d53a0172ce2e8a708af77a4f8dd192"
+    },
+    "installed_enter": {
+      "marker": "ENTER-20260917-1740",
+      "message": "fa000c4edd7f45a7",
+      "sent_at": "2026-09-17T17:39:59.232726Z",
+      "method": "Fill empty project composer through AXValue and post Return down/up to the installed GUI PID25649; no Send callback used",
+      "composer_empty_after": true,
+      "codex_received_live_during_tool_turn": true,
+      "codex_receipt_sha256": "9c2a42bb0a4abff1b06897631c197eb12f61527fc83419fd9bb453d7b3c59e3d",
+      "claude_correlated_reply_confirmed": false,
+      "scope": "Synthetic native key events exercise submit wiring after the receiver upgrade; they do not establish physical keyboard/IME behavior or idle wake."
+    },
+    "limits": [
+      "PR174 and167 were merged with all final checks. PR175 and177 were reviewed and locally validated but their cross-platform CI/merges remained pending at activation.",
+      "Old previews28f4f1f3 and6d168e4d were superseded without installation.",
+      "Claude parent process18563 was not restarted or opted into channels. Its retained-history handoff and provider startup consent remain open.",
+      "This ad-hoc signed local preview is not notarized or an externally certified release."
+    ]
   }
 }
