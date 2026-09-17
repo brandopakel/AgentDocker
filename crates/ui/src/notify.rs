@@ -25,8 +25,10 @@ const ACCEPT_WITHIN: std::time::Duration = std::time::Duration::from_secs(1);
 /// **Reply** field. Registered by whichever of our processes talks to the
 /// notification centre — the poster before it posts, the window when it
 /// opens — so the field is there whichever came first.
+#[cfg(target_os = "macos")]
 pub(crate) const REPLY_CATEGORY: &str = "dev.agentdocker.message";
 /// The action the typed reply comes back under.
+#[cfg(target_os = "macos")]
 pub(crate) const REPLY_ACTION: &str = "dev.agentdocker.reply";
 
 /// Register the message category with its **Reply** field.

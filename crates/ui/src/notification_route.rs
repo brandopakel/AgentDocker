@@ -2,7 +2,8 @@
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 
-use agentdocker_core::protocol::Request;
+#[cfg(target_os = "macos")]
+use agentdocker_core::Request;
 use agentdocker_host::notify::Action;
 use serde::{Deserialize, Serialize};
 pub mod instance;
@@ -65,12 +66,14 @@ pub fn enqueue(activation: Activation) -> Result<(), String> {
 
 /// The most a reply from a notification carries: the field is a line
 /// or two, and a message this size is refused by the daemon anyway.
+#[cfg(target_os = "macos")]
 pub const REPLY_CHARS: usize = 4_000;
 
 /// What a reply typed into a notification sends: from the person, to the
 /// notification's conversation — the channel it was in, else the agent
 /// who wrote — as a reply to that message, so an answer to a question
 /// closes it the way the composer's would. Blank is nothing to send.
+#[cfg(target_os = "macos")]
 pub fn reply_request(action: &Action, text: &str) -> Result<Request, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -265,6 +268,7 @@ mod tests {
     /// A reply goes from the person to the notification's conversation
     /// — the channel it was in, else the agent who wrote — as a reply to
     /// that message; blank or oversized is refused before any socket.
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_reply_answers_the_notifications_conversation_as_the_person() {
         let Activation::Open(mut action) = activation(7) else {
