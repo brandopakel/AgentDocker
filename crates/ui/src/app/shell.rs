@@ -2569,6 +2569,7 @@ mod tests {
                 config_dir: None,
                 mcp: agentdocker_core::runtime::Wiring::Missing,
                 hooks: agentdocker_core::runtime::Wiring::Missing,
+                hooks_missing: vec![],
                 running: 0,
             }];
             app.shell.launch_runtime = Some(runtime.into());

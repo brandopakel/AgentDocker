@@ -106,3 +106,121 @@ socket versus TUI), which permissions Dax requests (accessibility and screen
 recording are undocumented), and how it updates; reply-from-toast reliability
 across terminals; herdr's idle CPU with several clients; and whether a herdr
 plugin can be driven from an AgentDocker hook (plugins receive the socket path).
+
+## Paprika (added 17 September 2026)
+
+Read-only web research from [paprika.ai](https://paprika.ai/) and
+[docs.paprika.ai](https://docs.paprika.ai/); nothing was installed or signed up
+for. "Kanban for people and agents": a hosted board where humans and agents are
+both actors. An agent is an owned bot identity with a `papagt_` bearer token.
+By default it follows its creator across workspaces and inherits the creator's
+current workspace memberships and project access; explicit restrictions can
+only reduce that access. Any future bridge identity must restrict both its
+workspaces and projects explicitly. Agents are reached over streamable-HTTP MCP
+at `mcp.paprika.ai`
+([MCP](https://docs.paprika.ai/mcp/), [agents](https://docs.paprika.ai/agents/));
+Claude Code, Codex, Cursor, Copilot, Grok Build and Antigravity are the named
+hosts. The *agent workflow* board template has nine columns — Backlog, Approved,
+Analyst, In progress, Testing, UAT, Done, Blocked, Cancelled — each with an owner
+hint of `user`, `agent` or `any` ([boards](https://docs.paprika.ai/boards/)).
+Approved is the pull source: `kanban_pull` moves a card to the pull target and
+assigns it to the caller, and fails if another actor already holds it — "two
+agents cannot take the same card; that is the whole point"
+([cards](https://docs.paprika.ai/cards/)). A card carries acceptance text
+("what done means; agents should read this before moving the card"), typed
+links (URL, PR, File — a path the agent opens on its own machine, Memory — a
+note for the next agent), blockers on other cards, a parent, a plan and files;
+history is one event log (create, move, comment, assign, pull, …) that agents
+and humans read alike. Plans are spec documents next to the cards that implement
+them (`plan_list/get/create/update/archive`); Files are project artifacts
+(`artifact_list/get/put/complete/delete/link_card`)
+([plans](https://docs.paprika.ai/plans/), [files](https://docs.paprika.ai/artifacts/)).
+Automations are webhooks (generic or Slack-shaped, signed) and rules that comment
+or move cards on an event or after N idle days; "rules never run host commands"
+([automations](https://docs.paprika.ai/automations/)). A `paprika` CLI with
+`--json` on every command and documented exit codes talks the same API
+([CLI](https://docs.paprika.ai/cli/)). Web dashboard, Android app, iOS "coming
+soon"; seats are humans, agents are a plan quota (Free: 1 agent, 5 boards;
+Standard $4.99/human/month, 3 agents; Teams $10, 5 agents per human; Enterprise
+with SSO and audit) ([pricing](https://paprika.ai/pricing/)). Closed source,
+hosted only; no self-hosting or data-location statement was found.
+
+### How it differs from AgentDocker
+
+Paprika is the **board**: what the work is, who holds it, what done means, the
+spec and the artifacts, in the cloud, for a team. AgentDocker is the **floor**:
+the processes on one machine, their terminals and supervision, leases on the
+files they touch, typed messages between them and the person, questions that
+block, a journal attributed to commits, review and hand-off, and the daemon's
+own idea of who is live. Paprika does not know what an agent is doing to a
+checkout, cannot stop two agents editing one file, runs nothing on the machine
+and reaches an agent only when the agent calls in; AgentDocker has no board, no
+cards, no acceptance text, no spec documents beside the work, no roles, no
+webhooks and no mobile client. The overlap is coordination vocabulary: Paprika's
+pull is our `claim` on a `task:<name>` lease (both atomic, both refuse a second
+taker), its hand-off is a column move where ours is a bundle to a named agent,
+its comments are our channel, its Memory link is our `journal_note`.
+
+### Worth taking
+
+1. **A card with acceptance text and an atomic pull**, as a first-class shape
+   over the `task:` lease we already have: title, what done means, a column,
+   an assignee; `task pull` claims it or refuses. A Board tab per project in
+   the app (Backlog · Ready · In progress · Review · Done) would put the work
+   beside the sessions doing it, and the person could file work without
+   opening a terminal. Local, journaled, no cloud.
+2. **Owner hints and roles** (`Analyst`, `Implementer`, `Reviewer`) as agent
+   labels a hand-off can name, so "send this to the reviewer" resolves.
+3. **Typed links on a message or hand-off**: PR, path, memory-for-the-next-agent.
+   The journal note and commit attribution are the data; the link type is the
+   affordance.
+4. **Webhooks on the event stream** (generic and Slack-shaped, signed) so a
+   team channel hears `question_asked`, `agent_exited`, `lease_deadlock`.
+   `agentdocker events` already streams; a sink is small.
+5. **Rules that only comment or move**, never run commands — the same line we
+   draw around policies.
+6. **`--json` everywhere with documented exit codes** for agents driving the
+   CLI; ours has `--json` on most commands and no exit-code contract yet.
+
+### Combining rather than competing
+
+An agent can sit on both: Paprika tells it what to do next, AgentDocker helps it
+coordinate overlapping work with the others. An optional bridge, like the
+proposed herdr one, would work as follows: when an agent pulls Paprika card `T-7`, take the
+`task:paprika/T-7` lease here with the card's title as the note (so `agentdocker
+leases` shows who holds which card); when the card moves to Review, open a
+channel with the reviewer; post `agentdocker` journal commits back as card
+comments through Paprika's MCP. Nothing in that needs Paprika's cooperation
+beyond its public tools. Not started.
+
+A task lease has a TTL. The holder must renew it during long-running work;
+without renewal it expires and no longer excludes another local claimant.
+Exclusion applies only while a valid exclusive lease is held, and the agents
+must honor that coordination contract. It does not prevent arbitrary filesystem
+writes or make a remote card update atomic with a local lease.
+
+The proposed bridge needs explicit reconciliation before work or renewal: read
+both the card's current assignee/state and the local lease. If they disagree,
+stop new work and report the mismatch instead of claiming ownership from either
+one alone. A card still assigned to an ended agent after its lease expires is
+stale; require confirmed card reassignment (or the person's explicit recovery)
+and a fresh successful lease claim before another agent starts. If the card was
+reassigned or closed while a local lease survives, release the old claim and
+report the transition. A lost reply enters an explicit uncertain state: stop work and automatic retries.
+Reading both states is diagnostic, not sufficient authority to replay a write.
+Recovery must use an idempotent or conditional operation tied to the original
+assignment, or a confirmed compensating action, before obtaining a fresh lease.
+Only then may work resume; recovery cannot duplicate assignment or renew an
+expired claim. These are acceptance requirements for the optional proposal,
+not delivered integration behavior.
+
+### Adoption status of the September 11 notes
+
+From herdr: multiplexer adapters ship (row 25: a herdr, tmux, screen or zellij
+session is recognised at registration and shown in `ps`); the focus/prompt
+bridge and blocked-state mirror are designed and measured in
+[HERDR-BRIDGE.md](HERDR-BRIDGE.md) and deferred; a shipped SKILL.md exists
+(the portable coordination skill). From Dax: per-project visual identity,
+**Set up** for hooks and per-tool status badges are present; reply from the
+notification and trace-file resume are not.
+

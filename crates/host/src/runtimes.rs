@@ -130,8 +130,36 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Resu
         config_dir,
         mcp: mcp_wiring(spec, roots, marker),
         hooks: hooks_wiring_file(spec, &hook_config_path(spec, roots), marker),
+        hooks_missing: hooks_missing_file(spec, &hook_config_path(spec, roots), marker),
         running: 0,
     })
+}
+
+/// The hook events our command is not wired for, by name: empty when
+/// the file is wired, unreadable or not a hooks configuration at all —
+/// those are `hooks_wiring_file`'s to describe — and every required
+/// event when the file does not exist.
+fn hooks_missing_file(spec: &RuntimeSpec, file: &Path, marker: &str) -> Vec<String> {
+    if !spec.hooks {
+        return Vec::new();
+    }
+    let value = match health::read_configuration(file) {
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(value) if value.is_object() => value,
+            _ => return Vec::new(),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            serde_json::Value::Object(Default::default())
+        }
+        Err(_) => return Vec::new(),
+    };
+    if !hook_configuration_shape_valid(&value) {
+        return Vec::new();
+    }
+    missing_hook_events(&value, marker, spec.name)
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
@@ -382,7 +410,7 @@ fn hooks_wiring_file(spec: &RuntimeSpec, file: &Path, marker: &str) -> Wiring {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return Wiring::Unverified;
     };
-    if !value.is_object() || value.get("hooks").is_some_and(|hooks| !hooks.is_object()) {
+    if !hook_configuration_shape_valid(&value) {
         return Wiring::Unverified;
     }
     if hooks_configuration_matches_for(&value, marker, spec.name) {
@@ -398,44 +426,94 @@ fn hooks_wiring_file(spec: &RuntimeSpec, file: &Path, marker: &str) -> Wiring {
 
 /// Every required event must include our command with the full matcher.
 fn hooks_configuration_matches_for(value: &serde_json::Value, marker: &str, runtime: &str) -> bool {
-    if value["disableAllHooks"] == true {
+    if !hook_configuration_shape_valid(value) || value["disableAllHooks"] == true {
         return false;
     }
-    value
-        .get("hooks")
-        .and_then(|h| h.as_object())
-        .is_some_and(|events| {
-            hook_events(runtime).iter().all(|(event, matcher)| {
-                events
-                    .get(*event)
-                    .and_then(|v| v.as_array())
-                    .is_some_and(|entries| {
-                        entries.iter().any(|entry| {
-                            let actual = entry.get("matcher").and_then(|v| v.as_str());
-                            let covers = actual == Some("*")
-                                || match matcher {
-                                    Some(expected) => actual == Some(*expected),
-                                    None => actual.is_none() || actual == Some(""),
-                                };
-                            covers
-                                && entry.get("hooks").and_then(|h| h.as_array()).is_some_and(
-                                    |hooks| {
-                                        hooks.iter().any(|hook| {
-                                            hook.get("type").and_then(|v| v.as_str())
-                                                == Some("command")
-                                                && hook
-                                                    .get("command")
-                                                    .and_then(|v| v.as_str())
-                                                    .is_some_and(|c| {
-                                                        hook_command_matches_for(c, marker, runtime)
-                                                    })
-                                        })
-                                    },
-                                )
+    value.get("hooks").is_some_and(|h| h.is_object())
+        && missing_hook_events(value, marker, runtime).is_empty()
+}
+
+// Missing configuration is actionable. Malformed configuration is unknown:
+// notably a non-string matcher must not be treated as an absent matcher.
+fn hook_configuration_shape_valid(value: &serde_json::Value) -> bool {
+    value.is_object()
+        && value
+            .get("disableAllHooks")
+            .is_none_or(|disabled| disabled.is_boolean())
+        && value.get("hooks").is_none_or(|hooks| {
+            hooks.as_object().is_some_and(|events| {
+                events.values().all(|entries| {
+                    entries.as_array().is_some_and(|entries| {
+                        entries.iter().all(|entry| {
+                            entry.is_object()
+                                && entry
+                                    .get("matcher")
+                                    .is_none_or(|matcher| matcher.is_string())
+                                && entry
+                                    .get("hooks")
+                                    .and_then(|hooks| hooks.as_array())
+                                    .is_some_and(|hooks| hooks.iter().all(|hook| hook.is_object()))
                         })
                     })
+                })
             })
         })
+}
+
+/// The required events that do not include our command with the full
+/// matcher, in the order the runtime's list gives them. Every event when
+/// hooks are disabled wholesale or there are none. Malformed configurations
+/// return no names: their wiring is unknown, rather than missing.
+pub fn missing_hook_events<'a>(
+    value: &serde_json::Value,
+    marker: &str,
+    runtime: &'a str,
+) -> Vec<&'a str> {
+    if !hook_configuration_shape_valid(value) {
+        return Vec::new();
+    }
+    let disabled = value["disableAllHooks"] == true;
+    let events = value.get("hooks").and_then(|h| h.as_object());
+    let wired = |event: &str, matcher: Option<&str>| -> bool {
+        let Some(entries) = events
+            .and_then(|events| events.get(event))
+            .and_then(|v| v.as_array())
+        else {
+            return false;
+        };
+        entries.iter().any(|entry| {
+            if entry
+                .get("matcher")
+                .is_some_and(|matcher| !matcher.is_string())
+            {
+                return false;
+            }
+            let actual = entry.get("matcher").and_then(|v| v.as_str());
+            let covers = actual == Some("*")
+                || match matcher {
+                    Some(expected) => actual == Some(expected),
+                    None => actual.is_none() || actual == Some(""),
+                };
+            covers
+                && entry
+                    .get("hooks")
+                    .and_then(|h| h.as_array())
+                    .is_some_and(|hooks| {
+                        hooks.iter().any(|hook| {
+                            hook.get("type").and_then(|v| v.as_str()) == Some("command")
+                                && hook
+                                    .get("command")
+                                    .and_then(|v| v.as_str())
+                                    .is_some_and(|c| hook_command_matches_for(c, marker, runtime))
+                        })
+                    })
+        })
+    };
+    hook_events(runtime)
+        .iter()
+        .filter(|(event, matcher)| disabled || !wired(event, *matcher))
+        .map(|(event, _)| *event)
+        .collect()
 }
 
 #[cfg(test)]
@@ -466,6 +544,122 @@ mod tests {
             hooks_wiring_file(spec, &file, "agentdocker"),
             Wiring::Unverified
         );
+    }
+
+    /// A settings file wired for every event but the one a release began
+    /// to require is Missing, and says which event; a file wired for all
+    /// of them is Wired with nothing missing; no file at all misses every
+    /// event; a broken file is Unverified and names none, since there is
+    /// nothing to add to it.
+    #[test]
+    fn missing_hooks_are_named() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("settings.json");
+        let spec = agentdocker_core::runtime::spec("claude-code").unwrap();
+        let every: Vec<&str> = hook_events("claude-code").iter().map(|(e, _)| *e).collect();
+        assert_eq!(hooks_missing_file(spec, &file, "agentdocker"), every);
+        let entry = |event: &str| {
+            let matcher = hook_events("claude-code")
+                .iter()
+                .find(|(e, _)| *e == event)
+                .and_then(|(_, m)| *m);
+            let mut entry = serde_json::json!({
+                "hooks": [{"type": "command", "command": "/opt/agentdocker hook claude-code"}]
+            });
+            if let Some(matcher) = matcher {
+                entry["matcher"] = serde_json::Value::String(matcher.to_owned());
+            }
+            entry
+        };
+        let mut hooks = serde_json::Map::new();
+        for event in every.iter().filter(|e| **e != "StopFailure") {
+            hooks.insert(event.to_string(), serde_json::json!([entry(event)]));
+        }
+        let mut settings = serde_json::json!({"model": "opus", "hooks": hooks});
+        std::fs::write(&file, settings.to_string()).unwrap();
+        assert_eq!(
+            hooks_wiring_file(spec, &file, "agentdocker"),
+            Wiring::Missing
+        );
+        assert_eq!(
+            hooks_missing_file(spec, &file, "agentdocker"),
+            vec!["StopFailure"],
+            "the one event the file lacks"
+        );
+        settings["hooks"]["StopFailure"] = serde_json::json!([entry("StopFailure")]);
+        std::fs::write(&file, settings.to_string()).unwrap();
+        assert_eq!(hooks_wiring_file(spec, &file, "agentdocker"), Wiring::Wired);
+        assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
+        for malformed in [
+            serde_json::json!(42),
+            serde_json::Value::Null,
+            serde_json::json!([]),
+        ] {
+            let mut invalid = settings.clone();
+            invalid["hooks"]["StopFailure"][0]["matcher"] = malformed;
+            std::fs::write(&file, invalid.to_string()).unwrap();
+            assert_eq!(
+                hooks_wiring_file(spec, &file, "agentdocker"),
+                Wiring::Unverified
+            );
+            assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
+            assert!(!hooks_configuration_matches_for(
+                &invalid,
+                "agentdocker",
+                "claude-code"
+            ));
+            assert!(missing_hook_events(&invalid, "agentdocker", "claude-code").is_empty());
+        }
+        for malformed in [
+            serde_json::json!("bad"),
+            serde_json::Value::Null,
+            serde_json::json!([42]),
+        ] {
+            let mut invalid = settings.clone();
+            invalid["hooks"]["StopFailure"][0]["hooks"] = malformed;
+            std::fs::write(&file, invalid.to_string()).unwrap();
+            assert_eq!(
+                hooks_wiring_file(spec, &file, "agentdocker"),
+                Wiring::Unverified
+            );
+            assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
+            assert!(missing_hook_events(&invalid, "agentdocker", "claude-code").is_empty());
+        }
+        for malformed in [
+            serde_json::json!("false"),
+            serde_json::json!(0),
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let mut invalid = settings.clone();
+            invalid["disableAllHooks"] = malformed;
+            std::fs::write(&file, invalid.to_string()).unwrap();
+            assert_eq!(
+                hooks_wiring_file(spec, &file, "agentdocker"),
+                Wiring::Unverified
+            );
+            assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
+            assert!(!hooks_configuration_matches_for(
+                &invalid,
+                "agentdocker",
+                "claude-code"
+            ));
+            assert!(missing_hook_events(&invalid, "agentdocker", "claude-code").is_empty());
+        }
+        settings["disableAllHooks"] = serde_json::Value::Bool(false);
+        std::fs::write(&file, settings.to_string()).unwrap();
+        assert_eq!(hooks_wiring_file(spec, &file, "agentdocker"), Wiring::Wired);
+        assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
+        settings["disableAllHooks"] = serde_json::Value::Bool(true);
+        std::fs::write(&file, settings.to_string()).unwrap();
+        assert_eq!(hooks_missing_file(spec, &file, "agentdocker"), every);
+        std::fs::write(&file, "{broken").unwrap();
+        assert_eq!(
+            hooks_wiring_file(spec, &file, "agentdocker"),
+            Wiring::Unverified
+        );
+        assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
     }
 
     pub(super) fn machine() -> (tempfile::TempDir, Roots) {

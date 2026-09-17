@@ -3281,7 +3281,17 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
                     apps
                 },
                 r.mcp.symbol().to_owned(),
-                r.hooks.symbol().to_owned(),
+                // Missing hooks say which, so a release that began to
+                // require an event reads as that event, not as never
+                // having been set up.
+                if r.hooks_missing.is_empty()
+                    || r.hooks_missing.len()
+                        == agentdocker_host::runtimes::hook_events(&r.name).len()
+                {
+                    r.hooks.symbol().to_owned()
+                } else {
+                    format!("{} ({})", r.hooks.symbol(), r.hooks_missing.join(", "))
+                },
                 r.running.to_string(),
             ]
         })
