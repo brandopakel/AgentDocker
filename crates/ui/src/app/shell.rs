@@ -60,6 +60,8 @@ pub(super) struct State {
     pub needs_you_expanded: bool,
     pub pending_answer_reveal: Option<MessageId>,
     pub reveal_next_question: bool,
+    /// An archived message now on view that the next tick scrolls to.
+    pub reveal_archived_next: Option<MessageId>,
     pub channel_drafts: BTreeMap<String, ChannelDraft>,
     pub channel_target: Option<String>,
     pub generation: u64,
@@ -484,6 +486,10 @@ impl App {
         ) {
             self.shell.pending_notification = None;
             self.shell.notification_message = None;
+            // The search for a notification's archived message, and the
+            // scroll to it, are its conversation's: the person moving on
+            // ends them, so a late page moves nothing.
+            self.cancel_reveal();
         }
         if matches!(
             &message,
@@ -506,6 +512,16 @@ impl App {
                 if let Some(id) = self.take_answer_reveal() {
                     tasks.push(crate::controls::reveal(format!(
                         "notification-question-{id}"
+                    )));
+                }
+                // The scroll is for the Messages screen the page arrived
+                // on; anywhere else the row is not on view.
+                if let Some(id) = self.shell.reveal_archived_next.take()
+                    && self.screen == Screen::Questions
+                    && self.shell.conversation.is_some()
+                {
+                    tasks.push(crate::controls::reveal(format!(
+                        "notification-message-{id}"
                     )));
                 }
                 self.schedule_update_check(chrono::Utc::now().timestamp());
@@ -548,6 +564,7 @@ impl App {
                                 .as_ref()
                                 .is_some_and(|c| c.socket() == action.socket) =>
                     {
+                        self.cancel_reveal();
                         self.shell.pending_notification = Some((action, Instant::now()));
                         for cmd in [Cmd::Agents, Cmd::Questions, Cmd::Inbox] {
                             self.send(cmd);
@@ -716,6 +733,7 @@ impl App {
                 if self.shell.conversation.as_deref() != Some(id.as_str()) {
                     self.shell.thread = None;
                     self.thread = None;
+                    self.cancel_reveal();
                 }
                 self.shell.conversation = Some(id.clone());
                 self.shell.inbox_open = true;
@@ -1819,6 +1837,7 @@ impl App {
         self.shell.pending_notification = None;
         self.shell.notification_message = Some(target.message.clone());
         self.shell.message_detail = Some(target.message.clone());
+        self.cancel_reveal();
         self.shell.selected = Some(self.canonical_agent(target.agent.as_str()).to_owned());
         self.shell.more = false;
         self.confirm_stop = None;
@@ -1852,6 +1871,17 @@ impl App {
                 self.shell.inbox_open = true;
                 self.send(Cmd::History(conversation, self.history_epoch));
             }
+        }
+        // On the Messages screen the message is a row of the archive, not
+        // of the inbox: it is scrolled to once its page is here, paging
+        // back for it if the conversation was already open at its newest
+        // — a click on a notification must always show its message.
+        if self.has_conversations()
+            && !is_question
+            && self.screen == Screen::Questions
+            && let Some(conversation) = self.shell.conversation.clone()
+        {
+            self.start_archive_reveal(conversation, target.message.clone());
         }
         // Revealing the card expands its retained text and scrolls to it. Existing answer/channel
         // drafts and their keyboard focus are not submitted or rewritten.
@@ -2412,6 +2442,10 @@ mod tests {
         ));
         assert!(app.shell.pending_notification.is_some());
         assert_eq!(app.screen, Screen::Agents);
+        app.conversations_supported = Some(true);
+        let conversation = agentdocker_core::ConversationId::dm("user", "sender-1").to_string();
+        app.history.insert(conversation.clone(), Vec::new());
+        app.history_complete.insert(conversation);
         messages
             .send(Msg::Questions(vec![question.clone()]))
             .unwrap();
@@ -2427,9 +2461,18 @@ mod tests {
             "unfinished channel message"
         );
         assert!(app.sending.is_empty());
+        assert!(
+            app.reveal_archived.is_none(),
+            "a live question is not an archive lookup"
+        );
+        assert!(app.status.is_empty(), "no false missing-archive warning");
         assert!(commands.try_iter().all(|cmd| !matches!(
             cmd,
-            Cmd::Answer(..) | Cmd::ChannelSend(..) | Cmd::Launch(..) | Cmd::Stop(..)
+            Cmd::Answer(..)
+                | Cmd::ChannelSend(..)
+                | Cmd::Launch(..)
+                | Cmd::Stop(..)
+                | Cmd::HistoryBefore(..)
         )));
     }
 
@@ -2828,6 +2871,76 @@ mod tests {
         let _ = app.update(Message::OpenSession(homeless.id.to_string()));
         assert!(app.shell.catalog.unassigned);
         assert_eq!(app.shell.selected.as_deref(), Some(homeless.id.as_str()));
+    }
+
+    #[test]
+    fn a_new_notification_cancels_the_previous_reveal_before_its_data_arrives() {
+        let (mut app, commands, messages, _home, mut action) = notification_app();
+        app.conversations_supported = Some(true);
+        app.screen = Screen::Questions;
+        let conversation = "channel:previous".to_owned();
+        app.shell.conversation = Some(conversation.clone());
+        let old = MessageId::from("previous-message".to_owned());
+        app.reveal_archived = Some(super::Seek {
+            conversation: conversation.clone(),
+            message: old.clone(),
+            pages: 1,
+            before: Some(801),
+            refresh_pending: false,
+        });
+        app.shell.reveal_archived_next = Some(old.clone());
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Focus,
+        ));
+        assert!(app.reveal_archived.is_some(), "focusing is not navigation");
+        let mut foreign = action.clone();
+        foreign.socket = foreign.socket.with_file_name("another-daemon.sock");
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(foreign),
+        ));
+        assert!(
+            app.reveal_archived.is_some(),
+            "a different workspace is not navigation"
+        );
+        // The new target must wait for a project snapshot. It still ends
+        // the previous click's search and deferred scroll immediately.
+        action.target.project = Some(ProjectRef::directory("/not-loaded-yet").id());
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action),
+        ));
+        assert!(app.shell.pending_notification.is_some());
+        assert!(app.reveal_archived.is_none());
+        assert!(app.shell.reveal_archived_next.is_none());
+        let mut envelope = agentdocker_core::Envelope::new(
+            "sender",
+            agentdocker_core::Destination::Broadcast,
+            "chat",
+            serde_json::json!({"text": "old page arrives late"}),
+            None,
+            Utc::now(),
+        );
+        envelope.id = old;
+        messages
+            .send(Msg::HistoryEarlier(
+                conversation.clone(),
+                app.history_epoch,
+                vec![agentdocker_core::ArchivedMessage {
+                    seq: 700,
+                    conversation: agentdocker_core::ConversationId::from(conversation),
+                    envelope,
+                    replies: 0,
+                }],
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.shell.pending_notification.is_some());
+        assert!(app.reveal_archived.is_none());
+        assert!(app.shell.reveal_archived_next.is_none());
+        assert!(
+            !commands
+                .try_iter()
+                .any(|c| matches!(c, Cmd::HistoryBefore(..)))
+        );
     }
 
     #[test]

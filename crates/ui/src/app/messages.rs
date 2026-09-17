@@ -773,9 +773,22 @@ impl App {
         } else {
             Space::new().width(28.0).height(1.0).into()
         };
+        // The row a notification led to is marked, so a click shows its
+        // message even in a conversation that was already open; the id is
+        // what the route scrolls to.
+        let routed = self.shell.notification_message.as_ref() == Some(&id);
         container(row![mark, body].spacing(10))
             .padding([4, 6])
             .width(Fill)
+            .style(move |_| iced::widget::container::Style {
+                background: routed.then_some(c.accent_soft.into()),
+                border: iced::Border {
+                    radius: 8.0.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .id(format!("notification-message-{id}"))
             .into()
     }
 
