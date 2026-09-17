@@ -796,5 +796,270 @@
       "review": "No actionable comments, Minimal risk; exact head covered.",
       "branch_retained": "Claude still has it checked out; remove after it moves off."
     }
+  },
+  "hook_status_review_2026_09_17": {
+    "build": {
+      "format": 1,
+      "source_commit": "c40332b5c1688cbfe2616fd75541947a77bb3a0b",
+      "source_tree": "e91416a1606c4e7229b6cf4219fa95b474054073",
+      "source_input_sha256": "c71c7c51d7f380adc6e84a5350b4f87d5ece6f7351a9ab821bf6427ac91f7926",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 21,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "baf175a0bd511848a5daf6abad2c45ef1e4b7d0620d0449a70dfee3a989db218",
+        "agentd": "761f3a4ae52d1e682467655686df0417e79f755ffb9da64d1049662e6099b970",
+        "agentdocker-ui": "fcc61773359f4f92c2f08b2cbfb5d60ef1f32fdb78297356e702a526b6f25389"
+      }
+    },
+    "gate": {
+      "result": "passed",
+      "rust_passed": 1096,
+      "rust_skipped": 7,
+      "python_checks": 84,
+      "log": "/private/tmp/agentdocker-hook-matcher-gate4-2026-09-17.log",
+      "junit": "/private/tmp/agentdocker-hook-matcher-gate4-nextest-2026-09-17/junit.xml"
+    },
+    "native": {
+      "result": "passed",
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences"
+      ],
+      "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+      "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+      "architecture": "arm64",
+      "binary_sha256": {
+        "agentd": "761f3a4ae52d1e682467655686df0417e79f755ffb9da64d1049662e6099b970",
+        "agentdocker": "baf175a0bd511848a5daf6abad2c45ef1e4b7d0620d0449a70dfee3a989db218",
+        "agentdocker-ui": "fcc61773359f4f92c2f08b2cbfb5d60ef1f32fdb78297356e702a526b6f25389"
+      },
+      "first_window": {
+        "samples": 334,
+        "elapsed_seconds": 48.03278766700532,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "restored_window": {
+        "samples": 18,
+        "elapsed_seconds": 2.58186254100292,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "activity_only_window": {
+        "samples": 45,
+        "elapsed_seconds": 6.4917722920072265,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "contact_window": {
+        "samples": 32,
+        "elapsed_seconds": 4.963189375004731,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "ready_window": {
+        "samples": 31,
+        "elapsed_seconds": 4.803272374992957,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "received_window": {
+        "samples": 31,
+        "elapsed_seconds": 5.061503500008257,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "paused_window": {
+        "samples": 32,
+        "elapsed_seconds": 4.823426582996035,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "provider_limit_window": {
+        "samples": 31,
+        "elapsed_seconds": 4.342019458999857,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "narrow_inbox_window": {
+        "samples": 99,
+        "elapsed_seconds": 14.102595042000758,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "constrained_panes_window": {
+        "samples": 70,
+        "elapsed_seconds": 10.003991125005996,
+        "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+      },
+      "idle_resources": {
+        "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+        "samples": [
+          {
+            "window": {
+              "rss_bytes": 178995200,
+              "ps_cpu_percent": 0.8
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178995200,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.1
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178995200,
+              "ps_cpu_percent": 0.8
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178896896,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178896896,
+              "ps_cpu_percent": 0.3
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178896896,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178847744,
+              "ps_cpu_percent": 1.1
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.1
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178847744,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178782208,
+              "ps_cpu_percent": 0.6
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 180633600,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178831360,
+              "ps_cpu_percent": 1.2
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.0
+            }
+          },
+          {
+            "window": {
+              "rss_bytes": 178831360,
+              "ps_cpu_percent": 0.0
+            },
+            "daemon": {
+              "rss_bytes": 18792448,
+              "ps_cpu_percent": 0.1
+            }
+          }
+        ],
+        "summary": {
+          "window": {
+            "median_rss_bytes": 178896896.0,
+            "maximum_rss_bytes": 180633600,
+            "median_ps_cpu_percent": 0.15
+          },
+          "daemon": {
+            "median_rss_bytes": 18792448.0,
+            "maximum_rss_bytes": 18792448,
+            "median_ps_cpu_percent": 0.0
+          }
+        }
+      },
+      "elapsed_seconds": 121.06428062502528
+    },
+    "rendered_steps": 375,
+    "scope": "Malformed config remains unverified in inventory and direct missing-event queries; corrected contact-only heading passes actual Iced workflow. Provider configuration unchanged; hands-on keyboard/screen-reader acceptance remains separate.",
+    "previous_ci_failure": {
+      "head": "2d12b8a694c1fa6038ba6801d1e19544c857cf43",
+      "reason": "Both Linux architectures waited for obsolete contact-only heading; remaining jobs cancelled after the deterministic failure.",
+      "logs": [
+        "/private/tmp/agentdocker-pr168-linux-x86-final-job-2026-09-17.log",
+        "/private/tmp/agentdocker-pr168-linux-arm-final-job-2026-09-17.log"
+      ]
+    }
   }
 }
