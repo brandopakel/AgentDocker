@@ -370,6 +370,13 @@ impl State {
             }
         }
         let human = self.is_human_id(reader);
+        // Current and retained retirement names reach this reader; legacy
+        // aliases without a saved name cannot reconstruct historical mentions.
+        let mut mention_names = self.registry.identity_names(reader);
+        if human {
+            mention_names.push(agentdocker_core::HUMAN.to_owned());
+            mention_names.push("you".to_owned());
+        }
         // Which conversations to list at all.
         let mut candidates: BTreeSet<ConversationId> = match project {
             Some(project) => self
@@ -463,6 +470,13 @@ impl State {
                 .store
                 .unread_after(&id, after, &identities)
                 .map_err(storage)?;
+            let mentions = if unread == 0 {
+                0
+            } else {
+                self.store
+                    .mentions_after(&id, after, &identities, &mention_names)
+                    .map_err(storage)?
+            };
             let head = heads.get(&id);
             summaries.push(ConversationSummary {
                 conversation: id,
@@ -471,6 +485,7 @@ impl State {
                 title,
                 members,
                 unread,
+                mentions,
                 last_seq: head.map(|m| m.seq),
                 last_at: head.map(|m| m.envelope.sent_at),
                 last_from: head.map(|m| m.envelope.from.clone()),
@@ -1163,6 +1178,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unread_mentions_keep_retired_names_after_reopen() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let alice = register(&daemon, "alice", &work).await;
+        let early = register(&daemon, "early", &work).await;
+        let later = register(&daemon, "later", &work).await;
+        send(&daemon, "alice", "early", "@early please review", None).await;
+        let room = ConversationId::dm(alice.id.as_str(), early.id.as_str());
+        {
+            let mut state = lock(&daemon.state);
+            let alias = agentdocker_core::identity::AgentAlias {
+                retired: early.id.clone(),
+                canonical: later.id.clone(),
+                retired_name: Some(early.spec.name.clone()),
+                reconciled_at: Utc::now(),
+            };
+            let mut event = Event::new(
+                EventKind::AgentReconciled {
+                    canonical: later.id.clone(),
+                    retired: early.id.clone(),
+                    plan_sha256: "fixture".into(),
+                },
+                Utc::now(),
+            );
+            event.seq = state.next_seq;
+            state.store.resume_input(&later, &alias, &event).unwrap();
+            state.next_seq += 1;
+            state.registry.retire_into(&early.id, &later.id).unwrap();
+        }
+        let list = conversations(&daemon, later.id.as_str()).await;
+        let summary = list.iter().find(|c| c.conversation == room).unwrap();
+        assert_eq!((summary.unread, summary.mentions), (1, 1));
+        drop(daemon);
+        let daemon = open(&dir);
+        let list = conversations(&daemon, later.id.as_str()).await;
+        let summary = list.iter().find(|c| c.conversation == room).unwrap();
+        assert_eq!((summary.unread, summary.mentions), (1, 1));
+    }
+
+    /// `@name` in a room counts as a mention of that reader: by the name
+    /// it has, by `@user` or `@you` for the person, unread only, and not
+    /// its own words; reading the room clears it with the unread.
+    #[tokio::test]
+    async fn mentions_are_counted_for_the_reader_named() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let alice = register(&daemon, "alice", &work).await;
+        let bob = register(&daemon, "bob", &work).await;
+        let project = alice.project.clone().unwrap().id();
+        let everyone = format!("project:{project}");
+        send(&daemon, "alice", &everyone, "@bob can you look?", None).await;
+        send(&daemon, "alice", &everyone, "@bobby is somebody else", None).await;
+        send(&daemon, "alice", &everyone, "and @user, @you too", None).await;
+        send(&daemon, "bob", &everyone, "@bob talking about myself", None).await;
+        let room = ConversationId::everyone(&project);
+        let bobs = conversations(&daemon, "bob").await;
+        let summary = bobs.iter().find(|c| c.conversation == room).unwrap();
+        assert_eq!(summary.unread, 3, "alice's three");
+        assert_eq!(
+            summary.mentions, 1,
+            "@bob once; @bobby and his own do not count"
+        );
+        let me = daemon
+            .handle(Request::Me {
+                workdir: Some(work.clone()),
+            })
+            .await;
+        let Response::Agent { agent: person } = me else {
+            panic!("{me:?}")
+        };
+        let persons = conversations(&daemon, person.id.as_str()).await;
+        let summary = persons.iter().find(|c| c.conversation == room).unwrap();
+        assert_eq!(
+            summary.mentions, 1,
+            "@user and @you on one row are one mention"
+        );
+        // Read through, nothing is owed and nothing mentioned.
+        let head = history(&daemon, &room).await.last().unwrap().seq;
+        assert!(matches!(
+            daemon
+                .handle(Request::MarkRead {
+                    conversation: room.clone(),
+                    through: head,
+                    reader: Some(bob.id.to_string()),
+                })
+                .await,
+            Response::Ok
+        ));
+        let bobs = conversations(&daemon, "bob").await;
+        let summary = bobs.iter().find(|c| c.conversation == room).unwrap();
+        assert_eq!((summary.unread, summary.mentions), (0, 0));
+    }
+
+    #[tokio::test]
     async fn read_cursors_count_unread_per_conversation_and_never_regress() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
@@ -1322,6 +1435,7 @@ mod tests {
                 task: "Plan the release".into(),
                 members: vec!["bob".into()],
                 name: None,
+                project: None,
             })
             .await
         else {
@@ -1339,6 +1453,7 @@ mod tests {
                     task: "Another".into(),
                     members: vec!["bob".into()],
                     name: Some("plan-the-release".into()),
+                    project: None,
                 })
                 .await,
             Response::Error {
@@ -1353,6 +1468,7 @@ mod tests {
                     task: "Another".into(),
                     members: vec!["bob".into()],
                     name: Some("Not A Slug".into()),
+                    project: None,
                 })
                 .await,
             Response::Error {

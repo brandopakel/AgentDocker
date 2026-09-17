@@ -139,7 +139,13 @@ system, which is drawn from the mark:
   keyed `<conversation>#<message>`, apart from the conversation's), thread
   links `thread-<message>`, the back controls `thread-back` (to the list) and
   `close-thread` (the thread's one close, a header action when wide and the
-  way back when narrow, never both), earlier pages `earlier-<conversation>`. The screen takes an explicit height from the window (the
+  way back when narrow, never both), earlier pages `earlier-<conversation>`;
+  starting a conversation `new-conversation` (the + beside the search),
+  `new-kind-direct`/`new-kind-channel`, `new-direct-<agent>`,
+  `new-channel-name`, `new-channel-purpose`, `new-member-<agent>`,
+  `new-channel-create`; a mention offer `mention-<agent>`. A composer's
+  accessibility node carries its send as the input's action, which is what
+  Enter does, so the smoke drives Enter as a click on the input's id. The screen takes an explicit height from the window (the
   window less the chrome, at least 320) because it sits inside the workspace's
   own scroll, where `Fill` has nothing to fill; `scripts/iced_workflow_smoke.py`
   asserts that reading a conversation acknowledges its rows and clears its
@@ -298,3 +304,16 @@ core/host foundations. Full Windows daemon/ConPTY/service packaging remains
 separate platform work. Equivalent package size, launch time, memory and CPU
 measurements must accompany release decisions, using exact binary provenance.
 See [distribution and signing](DESKTOP-DISTRIBUTION.md) for public release gates.
+
+Messages review (September 17): mentioning an agent does not change recipients
+or grant channel membership. Suggestions only name current recipients. A late
+channel-creation reply may update only its originating form, preserving a newer
+form and its draft. These corrections are awaiting source and native validation.
+
+For an open named channel the person belongs to, **Add members** opens a list
+of available agents who are not members yet. Adding one shows progress and
+keeps failures in the form; confirmed members disappear from the available list.
+Closing/replacing the form prevents a late reply from changing the new form.
+A refused local queue submission releases the busy state and preserves the form.
+
+The new-conversation button keeps a compact width beside search; opening its form does not divide the search row into two equally wide controls. Its accessible name remains “New message or channel” (or “Close” for the open form).

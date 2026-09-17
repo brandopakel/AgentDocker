@@ -60,6 +60,24 @@ the owned app-server bridge; the existing standalone-terminal pause failure
 and Claude sessions without channel input remain open. See the
 [recorded Codex acceptance](CODEX-INPUT.md#active-turn-steering-acceptance-september-16).
 
+## September 17: installed Codex active-turn delivery verified
+
+PRs #169 and #171 are merged after review and CI. The backed-up installed
+schema22 upgrade retained the existing provider sessions and 58 prior receipts,
+replacing only the Codex receiver. A fresh self-canary, a clearly labeled test
+sent through CLI `--from user`, and a fresh ping from the actual Claude session
+entered the same active Codex model turn through its hook route. No new human
+prompt, turn restart or manual queue acknowledgement was needed. The single CLI
+sample took 0.176 seconds from send to persisted provider context. Exact IDs and
+receipts are in the [native queue record](verification/2026-09-15-native-codex-queue.json).
+
+This closes the installed bounded active-input path implicated by the missed
+pause. It does not certify every provider or an all-recipient pause: the hook
+budget is 6,000 bytes, delivery requires a tool boundary, plain Claude still
+needs a channel-enabled relaunch for idle wake, and broadcast/long-wait/oversized
+and lifecycle acceptance remains in the current tracker. Historical failure
+reports above retain the facts known when they were recorded.
+
 ## Required behavior
 
 An agent-to-agent message must enter the same provider input workflow and queue

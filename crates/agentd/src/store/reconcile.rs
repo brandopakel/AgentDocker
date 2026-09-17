@@ -469,6 +469,15 @@ impl Store {
         let alias = AgentAlias {
             retired: retired.clone(),
             canonical: kept.clone(),
+            retired_name: Some(
+                plan.records
+                    .iter()
+                    .find(|r| r.id == *retired)
+                    .context("repair plan lacks retired record")?
+                    .spec
+                    .name
+                    .clone(),
+            ),
             reconciled_at: now,
         };
         self.put_document("identity_alias", retired.as_str(), &alias)?;
