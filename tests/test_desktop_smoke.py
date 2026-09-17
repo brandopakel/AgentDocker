@@ -80,10 +80,16 @@ class LinuxProcTransport(unittest.TestCase):
         (self.process / "ns/net").symlink_to("net:[123]")
         (self.process / "fd/5").symlink_to("socket:[700]")
         (self.process / "net/tcp").write_text("sl local_address rem_address st queues times uid timeout inode\n")
+        (self.process / "net/tcp6").write_text("sl local_address rem_address st queues times uid timeout inode\n")
         (self.process / "net/unix").write_text("Num RefCount Protocol Flags Type St Inode Path\n0: 2 0 0 1 1 700 /tmp/雪.sock\n")
 
     def test_unix_socket_is_classified_without_reading_filesystem_mounts(self):
         self.assertEqual(self.proc.inspect(42, self.root), {"tcp": False, "socket_count": 1})
+
+    def test_missing_tcp6_evidence_refuses_even_with_only_unix_descriptors(self):
+        (self.process / "net/tcp6").unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.proc.inspect(42, self.root)
 
     def test_tcp4_and_tcp6_are_rejected_even_when_other_sockets_are_unclassified(self):
         (self.process / "fd/6").symlink_to("socket:[999]")
@@ -140,11 +146,17 @@ class LinuxProcTransport(unittest.TestCase):
         process = SimpleNamespace(pid=42, poll=lambda: None)
         for output in ["{}", "null", '{"tcp": "false"}', "not JSON", '{"tcp": false}',
                        '{"tcp": false, "socket_count": true}', '{"tcp": false, "socket_count": -1}',
-                       '{"tcp": false, "socket_count": 8193}']:
+                       '{"tcp": false, "socket_count": 4097}']:
             with self.subTest(output=output), patch.object(SMOKE.sys, "platform", "linux"), patch.object(SMOKE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output, "")):
                 with self.assertRaises(SMOKE.TransportCheckFailed) as caught:
                     SMOKE.check_no_tcp([process], time.monotonic() + 5)
                 self.assertEqual(caught.exception.observation["reason"], "transport could not be checked")
+
+    def test_linux_reply_accepts_the_exact_descriptor_budget(self):
+        process = SimpleNamespace(pid=42, poll=lambda: None)
+        report = subprocess.CompletedProcess([], 0, '{"tcp": false, "socket_count": 4096}', "")
+        with patch.object(SMOKE.sys, "platform", "linux"), patch.object(SMOKE.subprocess, "run", return_value=report):
+            SMOKE.check_no_tcp([process], time.monotonic() + 5)
 
     def test_linux_inspector_timeout_refuses_with_evidence(self):
         process = SimpleNamespace(pid=42, poll=lambda: None)

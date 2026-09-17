@@ -66,7 +66,7 @@ def socket_descriptors(root_fd):
 
 def socket_tables(root_fd):
     tcp = read_table(root_fd, "tcp", 9)
-    tcp |= read_table(root_fd, "tcp6", 9, optional=True)
+    tcp |= read_table(root_fd, "tcp6", 9)
     other = read_table(root_fd, "unix", 6)
     for name, index in [("udp", 9), ("udp6", 9), ("raw", 9),
                         ("raw6", 9), ("netlink", 9), ("packet", 8)]:

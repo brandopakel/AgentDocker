@@ -2191,6 +2191,21 @@
         "scripts/desktop_smoke.py": "ef9ea0284dd36b31870bc25d5629b379d8cb4101a4ae37c068d6509c5a9c7289",
         "tests/test_desktop_smoke.py": "1db27c6b315ee274c54d170ee23be234507ebaaa1ac68d8491c18132a294ef16"
       }
+    },
+    "review_followup_2026_09_17": {
+      "changes": [
+        "Reject socket_count above4096, matching the descriptor budget.",
+        "Require a readable TCP6 table; absence refuses the observation."
+      ],
+      "validation": {
+        "command": "python3 -m unittest discover -s tests",
+        "run": 94,
+        "passed": 93,
+        "skipped": 1,
+        "skip_reason": "actual Linux proc observation on macOS",
+        "log": "/private/tmp/agentdocker-linux-observer-review-tests-20260917.log"
+      },
+      "acceptance": "Final Linux graphical CI remains required; prior attempts and failures are retained."
     }
   },
   "pause_rollback_refusal_2026_09_17": {

@@ -77,7 +77,7 @@ def check_no_tcp(processes, deadline, capture=None):
                 if (result.returncode == 0 and not result.stderr and isinstance(report, dict)
                         and type(report.get("tcp")) is bool
                         and type(report.get("socket_count")) is int
-                        and 0 <= report["socket_count"] <= 8192):
+                        and 0 <= report["socket_count"] <= 4096):
                     if not report["tcp"]:
                         continue
                     tcp_reported = True

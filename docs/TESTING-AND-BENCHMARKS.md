@@ -192,7 +192,8 @@ executables. Build caches and compiler dependencies are never download inputs.
 Linux native-window smoke tests classify the owned process's socket inodes from
 its open `/proc/<pid>` directory. This avoids unrelated mount-stat failures from
 `lsof` (captured in the September 17 Linux x86 graphical job). Both TCP tables
-are checked; remaining socket inodes must be present in known non-TCP tables.
+are required and checked; a kernel without a readable TCP6 table cannot pass
+this observer. Remaining socket inodes must be present in known non-TCP tables.
 Kernel tables bracket each descriptor sample so normal Unix RPC descriptor
 churn does not require an idle process. Every sampled inode must be classified
 on at least one side; TCP evidence from either side fails. Unknown sockets,
