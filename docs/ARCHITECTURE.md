@@ -1108,8 +1108,15 @@ new cursor or coverage claim. Larger-prefix incremental validation remains
 open; a caller must not silently trust metadata to bypass this refusal. These
 are bounded observations, not a filesystem snapshot or a lock against writes
 after validation. The original failed Windows log is retained at
-`/private/tmp/agentdocker-167-failure-105082608981.log`; the follow-up still needs
-its local gate and Windows CI before it can be marked verified.
+`/private/tmp/agentdocker-167-failure-105082608981.log`. Follow-up runtime
+`d643275` passed all ten focused reader tests plus strict host/daemon Clippy on
+combined validation source `c833fb0`; the same campaign passed the deterministic
+terminal-fence regression. Windows run `35185667187` on head `63ea3ca` passed
+238 tests (two skipped), including the original restored-mtime failure and the
+new forced-equal-metadata and validation-budget regressions. Logs are
+`/private/tmp/agentdocker-prefix-fence-targeted1-20260917.log` and
+`/private/tmp/agentdocker-167-windows-prefix-success-20260917.log`. Full final
+review and the remaining CI checks are still required.
 
 This primitive conservatively rejects any changed generation, including append,
 so a caller must retain the old cursor, record the generation gap and start a
