@@ -177,10 +177,11 @@ Do not expose this endpoint as a boundary between mutually untrusted local
 processes. Restricted agents need OS isolation and the scoped container endpoint;
 an invocation secret readable by the same user would not supply that isolation.
 
-The installed receiver still runs an older pinned release: installing the app
-alone does not change its immutable launch descriptor. A safe receiver upgrade
-and installed acceptance are required before closing this bug. Broader provider
-parity remains open. The provider's [hook contract](https://learn.chatgpt.com/docs/hooks)
+The backed-up September 17 installation explicitly replaced the older pinned
+receiver after PR #171 merged. The existing Codex provider stayed alive; fresh
+CLI human-route and Claude peer messages reached its active turn with exact
+receipts. Installing an app alone still does not change an immutable receiver
+launch descriptor. Broader provider parity remains open. The provider's [hook contract](https://learn.chatgpt.com/docs/hooks)
 supports additional context without replacing the tool result.
 
 ### Receiver upgrade candidate
@@ -218,8 +219,14 @@ were held while the receivers ran, released at cleanup, and the retired release
 was pruned after activating a third package. The provider and six old receipts
 survived; the three new messages arrived in order in 14.86 seconds.
 Final review follow-up `8d42db5` defaults the upgrade identity from the environment and documents the request table. The full 1,097-Rust/84-Python gate passed again (seven skipped), as did a repeat with the actual older receiver: the same provider, token and six prior receipts survived, and three messages entered the same active turn in order in 14.84 seconds with clean cleanup.
-Final review, CI and installed-session acceptance remain open. This command has
-not been run against the user's session.
+PR #171 merged as `df3b758` after final review and all CI checks. The actual
+installed upgrade to release `9bc0f0fc` (source `8d42db5`, schema22) retained the
+live provider identities, token/binding and 58 prior receipts, replacing receiver
+94744 with 20912. A fresh CLI test through the human-input route reached provider
+context in 0.176 seconds; a fresh Claude peer ping also entered the same active
+Codex turn. These are real installed/model-session observations, not a universal
+latency or provider guarantee. The original native-queue record stores exact
+message IDs, thread/turn/item receipts and backup provenance.
 
 ## New managed conversations
 
@@ -581,9 +588,9 @@ Run `python3 scripts/codex_steering_smoke.py --binary-dir target/release
 --output /tmp/steering-trial` (add `--scenario lost-reply` for recovery or
 `--scenario refused` for an injected no-active-turn failure, or
 `--scenario changed-turn` for a refusal followed by that other turn's completion).
-Hosted-model and broader provider acceptance remain open. Native TUI
-queue delivery still waits for idle; this change does not establish active-input
-parity for that existing-session route.
+Hosted-model and broader provider acceptance remain open. The native TUI queue alone still waits for idle; the separate bounded
+[hook route](#active-input-in-an-existing-terminal-candidate-september-17-utc)
+now supplies active-turn input for the installed existing-session receiver.
 
 A no-active-turn precondition refusal suppresses further steering for the
 retained turn. Its completion clears the suppression and the still-queued input

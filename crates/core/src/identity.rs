@@ -12,6 +12,9 @@ use thiserror::Error;
 pub struct AgentAlias {
     pub retired: AgentId,
     pub canonical: AgentId,
+    /// Name at retirement. Older aliases did not retain it; do not guess it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retired_name: Option<String>,
     pub reconciled_at: DateTime<Utc>,
 }
 
