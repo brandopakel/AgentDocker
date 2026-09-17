@@ -268,12 +268,15 @@ transport regression; the older binary admits a second channel and fails. See
 [existing channel evidence](verification/2026-09-11-claude-channel-input.json).
 Actual Claude relaunch and model idle wake still need separate acceptance.
 
-September 17 observation-preserving resumption: PR #179 keeps the latest capture
-per path across eligible ended records and the fresh registration in the same
-transaction as their queue and aliases. Runtime `ef369d8` passed the full gate
-(1,149 Rust tests, seven skipped; 94 Python checks, one skipped). The real MCP
-transport fixture also passed with observations recorded through the daemon in
-both lives, preserved queue order and no surviving fixture processes. This is
-source/transport evidence, not installed Claude model acceptance. The startup
-ordering guard above remains. Results are in the
+September 17 resumption follow-up: PR #179 keeps the latest capture per path
+and eligible open channel memberships in the same transaction as the queue and
+aliases. Runtime `3b21d64` passed the full gate (1,149 Rust tests, seven skipped;
+94 Python checks, one skipped). The real MCP transport fixture passed with
+observations in both lives, preserved room membership, ordered older backlog
+and a new room message delivered once through the canonical alias; no fixture
+processes survived. Daemon tests also cover storage reopen, newly created
+self-review refusal and transaction rollback. The earlier observation-only
+fixture failed against the preceding runtime and passed with that fix.
+This is source/transport evidence, not installed Claude model acceptance.
+The startup ordering guard above remains. Results are in the
 [existing channel record](verification/2026-09-11-claude-channel-input.json).
