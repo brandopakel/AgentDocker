@@ -378,6 +378,37 @@ def smoke(binary_dir, output):
                                 step("wait_control", id=f"thread-{agent['id']}", present=True),
                                 step("wait_control", id=f"reply-{agent['id']}", present=True), step("wait_text", text="Keep this narrow draft"),
                                 step("capture", name="wide-inbox-both-columns"),
+                                # Enter sends: the composer's own action is the send, driven here
+                                # as a click on the input, and the words arrive in the pane.
+                                step("click", id=f"thread-{narrow['id']}"), step("wait_control", id=f"reply-{narrow['id']}", present=True),
+                                step("fill", id=f"reply-{narrow['id']}", text="Sent with Enter"), step("click", id=f"reply-{narrow['id']}"),
+                                step("wait_text", text="Sent with Enter"),
+                                # `@` offers who is here; a pick finishes the name.
+                                step("fill", id=f"reply-{narrow['id']}", text="ask @term"),
+                                step("wait_control", id=f"mention-{agent['id']}", present=False),
+                                step("fill", id=f"reply-{narrow['id']}", text="ask @narr"),
+                                step("wait_control", id=f"mention-{narrow['id']}", present=True), step("click", id=f"mention-{narrow['id']}"),
+                                step("wait_text", text="ask @narrow-fixture "), step("wait_control", id=f"mention-{narrow['id']}", present=False),
+                                step("fill", id=f"reply-{narrow['id']}", text=""),
+                                # A new channel from the sidebar: name, purpose, members, and it opens.
+                                step("click", id="new-conversation"), step("wait_control", id="new-kind-channel", present=True),
+                                step("click", id="new-kind-channel"), step("wait_control", id="new-channel-name", present=True),
+                                step("fill", id="new-channel-name", text="Planning Room"), step("fill", id="new-channel-purpose", text="Plan the fixture"),
+                                step("click", id=f"new-member-{narrow['id']}"), step("capture", name="new-channel-form"),
+                                step("click", id="new-channel-create"), step("wait_text", text="#planning-room"),
+                                step("wait_control", id="new-channel-create", present=False),
+                                step("wait_control", id="invite-channel", present=True), step("click", id="invite-channel"),
+                                step("wait_control", id=f"invite-member-{agent['id']}", present=True),
+                                step("wait_control", id=f"invite-member-{narrow['id']}", present=False),
+                                step("click", id=f"invite-member-{agent['id']}"),
+                                step("wait_control", id=f"invite-member-{agent['id']}", present=False),
+                                step("capture", name="channel-member-added"), step("click", id="new-conversation"),
+                                # A new direct message is one pick.
+                                step("click", id="new-conversation"), step("click", id="new-kind-direct"),
+                                step("wait_control", id=f"new-direct-{agent['id']}", present=True), step("capture", name="new-direct-form"),
+                                step("click", id=f"new-direct-{agent['id']}"), step("wait_control", id=f"reply-{agent['id']}", present=True),
+                                step("wait_control", id=f"new-direct-{agent['id']}", present=False),
+                                step("wait_text", text="Keep this narrow draft"),
                                 step("resize", width=720, height=540), step("wait_control", id="thread-back", present=True),
                                 step("wait_text", text="Keep this narrow draft"), step("click", id="thread-back"),
                                 step("wait_control", id="thread-back", present=False), step("click", id="projects")]
@@ -432,6 +463,19 @@ def smoke(binary_dir, output):
                     return observation
                 report["narrow_inbox_window"] = launch_routed("narrow-inbox", narrow_steps, narrow_gate)
                 checks.append("narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize")
+                # What the window did reached the daemon: the words sent with
+                # Enter are archived, and the room opened from the sidebar has
+                # the person, the picked member and the later invited agent.
+                sent = rpc(endpoint, {"op": "history", "conversation": f"dm:{min(human['id'], narrow['id'])}:{max(human['id'], narrow['id'])}",
+                                      "limit": 50})["messages"]
+                assert any("Sent with Enter" in json.dumps(m) for m in sent), sent
+                opened = [c for c in rpc(endpoint, {"op": "channels", "project": str(project)})["channels"] if c.get("name") == "planning-room"]
+                assert len(opened) == 1 and set(opened[0]["members"]) == {human["id"], narrow["id"], agent["id"]}, opened
+                invited = rpc(endpoint, {"op": "peek_input", "agent": agent["id"]})["messages"]
+                notices = [m for m in invited if m.get("to") == {"kind": "channel", "value": opened[0]["id"]}
+                           and "added terminal-fixture to this channel" in json.dumps(m.get("payload"))]
+                assert len(notices) == 1, notices
+                checks.append("enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members")
                 # The largest saved columns must not crush the conversation.
                 # Change only this private profile while its window is closed.
                 catalog_path = state / "workspace.json"

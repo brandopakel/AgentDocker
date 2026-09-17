@@ -128,6 +128,16 @@ fn repaired_hook_and_mcp_duplicates_preserve_both_provenance_records() {
         serde_json::to_value(retired).unwrap()
     );
     assert_eq!(store.identity_aliases().unwrap()[0].canonical, a);
+    assert_eq!(
+        store.identity_aliases().unwrap()[0].retired_name.as_deref(),
+        Some("retired")
+    );
+    drop(store);
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    assert_eq!(
+        store.identity_aliases().unwrap()[0].retired_name.as_deref(),
+        Some("retired")
+    );
 }
 
 #[test]
@@ -511,6 +521,7 @@ fn invalid_alias_aborts_before_recovery_and_removal_cleans_valid_routes() {
             &AgentAlias {
                 retired: b,
                 canonical: a,
+                retired_name: None,
                 reconciled_at: now(),
             },
         )

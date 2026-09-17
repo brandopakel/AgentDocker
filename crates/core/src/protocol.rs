@@ -746,6 +746,19 @@ pub enum Request {
         /// The `#name` people will use; made from the task when absent.
         #[serde(default)]
         name: Option<String>,
+        /// The project the channel belongs to, for an opener that is in
+        /// none or in another: a person opening a room from the app names
+        /// the project they are looking at. An agent's own project when
+        /// absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
+    /// A current member adds one live agent to an open named channel.
+    /// Repeating an invitation for a member is a no-op.
+    ChannelInvite {
+        agent: String,
+        channel: String,
+        member: String,
     },
     /// The work is final: close the channel and tell its members. Closed
     /// channels are pruned by `channel_prune`.
