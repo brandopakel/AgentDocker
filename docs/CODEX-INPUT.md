@@ -1,6 +1,6 @@
 # Codex input delivery (experimental)
 
-## Existing Codex terminals: native queue candidate (September 15)
+## Existing Codex terminals: native queue
 
 The current implementation connects an existing Codex CLI conversation to
 AgentDocker's ordinary human/peer queue. A verified Codex hook starts one detached
@@ -9,9 +9,11 @@ checkout and daemon endpoint; it neither types into the terminal nor starts or
 resumes a conversation. Codex's native `thread/queue/add` route schedules the next
 ordinary input and preserves the terminal's unfinished draft and permission UI.
 
-This candidate requires the schema-20 controller binding and answer migration and Codex's experimental
-native queue API (tested with CLI 0.154.0). It is under integration and acceptance
-test. The verified `cf64ca3` package is now installed with a schema-20 daemon;
+The receiver requires the schema-20 controller binding and answer migration and
+Codex's experimental native queue API (tested with CLI 0.154.0). The current
+installed `79981beb` package (source `5c461e0`, schema22) includes the reviewed
+active-hook and receiver-upgrade fixes. Broader lifecycle acceptance remains.
+At the earlier September 15 `cf64ca3` installation (schema20),
 the existing Codex session auto-started its receiver and offered a queued peer
 message. That message automatically started the next ordinary turn without
 another human prompt, with its exact provider receipt and queue acknowledgement.

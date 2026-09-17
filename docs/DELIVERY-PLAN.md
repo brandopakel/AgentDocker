@@ -12,13 +12,22 @@ evidence; an old “pending” entry is not by itself a current implementation g
 
 ### Current integration and installation (September 17 UTC)
 
-PRs #169/#171 are merged and the installed release `9bc0f0fc` (source `8d42db5`,
-schema22) now serves the desktop and daemon. The backed-up receiver replacement
-retained live provider sessions, binding/token and 58 prior receipts. Fresh CLI
-human-route and actual Claude peer messages entered this same active Codex turn
-with exact receipts. [The message audit](MESSAGE-DELIVERY-AUDIT.md#september-17-installed-codex-active-turn-delivery-verified)
-bounds this result; other-provider/lifecycle acceptance and the final messaging
-controls remain open.
+PRs #169/#171 are merged; their installed receiver upgrade closed bounded active
+Codex delivery. PR #170 also merged after final-head review and CI. The current
+installed desktop/daemon is release `79981beb` (source `5c461e0`, schema22),
+activated at 03:58 UTC with a backup. Four external providers survived; receiver
+20912 was replaced by 29976 with its token/binding and 97 retained receipts.
+The GUI restarted with visible fields empty; hidden-draft persistence was not
+established. The installed New DM/channel form opened successfully; physical
+Enter testing waits for the locked screen to be unlocked. See
+[installed messaging evidence](verification/2026-09-12-integrated-desktop.json).
+
+Fresh CLI human-route, actual Claude peer and project fan-out messages entered
+the same active Codex turn with exact receipts. The
+[message audit](MESSAGE-DELIVERY-AUDIT.md#september-17-installed-codex-active-turn-delivery-verified)
+bounds this result. PR #164's session-reconnect implementation is now merged;
+its live Claude installation/idle-wake trial, project pause controls and broader
+provider/lifecycle acceptance remain in [Remaining work](REMAINING-WORK.md).
 
 ### Previous integration and installation (September 15)
 
