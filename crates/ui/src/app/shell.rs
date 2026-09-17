@@ -2415,10 +2415,6 @@ mod tests {
     fn notification_waits_for_data_then_opens_the_question_without_submitting_drafts() {
         let (mut app, commands, messages, home, mut action) = notification_app();
         app.shell.inbox_thread = Some("another-agent".into());
-        app.conversations_supported = Some(true);
-        let conversation = agentdocker_core::ConversationId::dm("user", "sender-1").to_string();
-        app.history.insert(conversation.clone(), Vec::new());
-        app.history_complete.insert(conversation);
         let project = crate::catalog::resolve(home.path()).unwrap();
         app.shell.catalog.remember(project.clone(), false);
         action.target.project = Some(project.id());
@@ -2445,6 +2441,10 @@ mod tests {
         ));
         assert!(app.shell.pending_notification.is_some());
         assert_eq!(app.screen, Screen::Agents);
+        app.conversations_supported = Some(true);
+        let conversation = agentdocker_core::ConversationId::dm("user", "sender-1").to_string();
+        app.history.insert(conversation.clone(), Vec::new());
+        app.history_complete.insert(conversation);
         messages
             .send(Msg::Questions(vec![question.clone()]))
             .unwrap();
