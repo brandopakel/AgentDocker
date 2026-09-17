@@ -54,6 +54,13 @@ pub fn private_file(path: &Path, create: bool, append: bool) -> io::Result<std::
     Ok(file)
 }
 
+/// This process's effective user, for ownership checks elsewhere.
+#[cfg(unix)]
+pub fn current_uid() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
 #[cfg(unix)]
 fn validate_owner(meta: &std::fs::Metadata, path: &Path) -> io::Result<()> {
     // SAFETY: geteuid has no preconditions.

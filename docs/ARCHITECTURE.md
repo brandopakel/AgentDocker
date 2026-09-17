@@ -374,6 +374,20 @@ Several agents attempt one task, and the evidence decides. A channel is what hap
 
 The complete variant definitions and payloads are in [`EventKind`](../crates/core/src/event.rs). They cover discovery availability and PID/start-time changes; watcher and restricted-endpoint readiness; agent/process/restore transitions; messages/inbox acknowledgements; lease acquisition, waiting/deadlock and release; journal/read observations; worktrees and integration; channels/reviews/contests; credentials, images and containers; validation and handoff. Each event carries a timestamp. Persisted events can be replayed; readiness and lag handling must follow the stream contract above. `agent_id` and `project_ref` are record types, not event variants.
 
+**Webhooks.** A signed copy of chosen events can be posted to an address the person writes in `agentd.toml` — nothing is posted anywhere otherwise:
+
+```toml
+[[webhooks]]
+name = "team-slack"                       # 1–40 lowercase letters, digits, hyphens; what logs and events call it
+url = "https://hooks.slack.com/…"         # https; plain http only to 127.0.0.1, ::1 or localhost; no credentials or fragment in it
+secret_file = "/Users/me/.config/agentdocker/slack.secret"  # a regular file of this user, mode 0600, at least 16 bytes
+events = ["question_asked", "agent_exited", "lease_deadlock"]  # wire names; empty posts nothing; a webhook's own events are never posted
+project = "…"                             # optional: only this project's events
+format = "json"                           # or "slack": {"text": "agentdocker: …"}
+```
+
+At most eight sinks, each listening to at most 64 kinds. The file is read at start and every five seconds; a changed file stops every running sink and starts anew under the next generation — nothing queued is carried over, so an event queued under one address and secret can never go to another — and an unreadable file keeps the last good sinks and is said once. Each sink is a task off the state lock with a bounded queue (256 events, 1 MiB; the oldest is dropped and counted), one request at a time under a 10-second deadline for connecting and sending together, no redirects, TLS verified against the platform's roots. What is posted is a projection, never the raw record: `{delivery, event, seq, at, text, ids}` — the kind, the sequence, the time, one line built from identifiers, and the identifier fields the kind carries (`agent`, `project`, `by`, `from`, `to`, `resource`, `message`, `task`, `question`, `requester`, `held_by`, `channel`; a lease's holder and resource); no payload, answer, reason, environment or free text of anyone's. A body over 64 KiB is dropped as `too_large`. Headers: `X-AgentDocker-Event` (kind), `X-AgentDocker-Delivery` (one id for a delivery across its retries), `X-AgentDocker-Timestamp` (Unix seconds) and `X-AgentDocker-Signature: sha256=<hex>` of HMAC-SHA256 over `"{timestamp}.{body}"` with the file's secret, so a receiver can refuse both a stranger and a replay. A 2xx is delivered; a 429, a 5xx or a network failure is tried three times in all (after 1 s, then 5 s, or a `Retry-After` of at most 60 s when longer); any other 4xx is dropped at once. What could not be delivered is counted and announced as `webhook_failed {name, kind, reason, dropped}` at most once a minute per sink, committed through the ordinary event path, never posted to any sink, with the sink named by its configured name — the address and the receiver's words never appear in logs or events. This is best effort by design: there is no outbox, so a sink that is down longer than its retries, a daemon restart or a handover loses deliveries. The record stays in the event log and the journal; a webhook is a way to hear about the floor, never the record of it.
+
 `file_changed` and `agent_stale` are also emitted on the live event stream with `seq:0`; they are not persisted in ordered event history. `changes` reads retained ledger observations, and `stale` checks current content directly after a missed live notification.
 
 Schema 15 adds `codex_files` question presentations: directory, reason and an
