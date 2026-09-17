@@ -1811,6 +1811,7 @@ impl App {
             // is not open on this.
             self.tasks = None;
             self.task_open = None;
+            self.board_asks.clear();
             if self.screen == Screen::Board {
                 self.request_tasks();
             }
@@ -2070,6 +2071,22 @@ mod tests {
         (App::bare(tx, rx), commands, messages)
     }
 
+    /// The board asks sent so far, newest last: `(request, offset, limit)`.
+    fn board_asks(requests: &CommandReceiver) -> Vec<(u64, usize, usize)> {
+        requests
+            .try_iter()
+            .filter_map(|c| match c {
+                Cmd::Tasks {
+                    request,
+                    offset,
+                    limit,
+                    ..
+                } => Some((request, offset, limit)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// A card's draft is the project's: text typed for one board waits
     /// while another is on view, a move or hand of some other card does
     /// not clear it, a late reply to an earlier filing does not take
@@ -2100,10 +2117,12 @@ mod tests {
             updated_at: Utc::now(),
             archived_at: None,
         };
+        app.request_tasks();
+        let (ask, _, _) = board_asks(&requests).pop().expect("asked");
         messages
             .send(Msg::Tasks(
                 alpha_root.clone(),
-                0,
+                ask,
                 Ok((
                     vec![card("aaaaaaaaaaaa", agentdocker_core::Column::Ready)],
                     false,
@@ -2127,10 +2146,12 @@ mod tests {
             "a move of some other card is not a filing"
         );
         // A board that cannot be read is said so, and the last board stays.
+        app.request_tasks();
+        let (ask, _, _) = board_asks(&requests).pop().expect("asked");
         messages
             .send(Msg::Tasks(
                 alpha_root.clone(),
-                0,
+                ask,
                 Err("storage failed".into()),
             ))
             .unwrap();
@@ -2191,17 +2212,21 @@ mod tests {
     }
 
     /// The board goes on past a page: Show more asks for the next page
-    /// where the board ends and appends it once; a reply to some other
-    /// ask is not appended; a refresh asks for as many cards as are on
-    /// view, so the board stays expanded; the window keeps five pages
-    /// and then says so rather than ask for more.
+    /// where the board ends and appends it only when that very ask is
+    /// answered; a reply to no standing ask moves nothing; a refresh
+    /// asks for as many cards as are on view and supersedes a page still
+    /// on its way, whichever order the replies come in, so the board
+    /// never folds back; choosing another project and back forgets the
+    /// old asks; the window keeps five pages and then asks for no more.
     #[test]
     fn the_board_shows_more_a_page_at_a_time_and_stays_expanded_through_a_refresh() {
         let (mut app, requests, messages) = app();
         app.connected = Ok(());
         let dir = tempfile::tempdir().unwrap();
         let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
+        let beta = agentdocker_core::ProjectRef::directory(dir.path().join("beta"));
         app.shell.catalog.remember(alpha.clone(), true);
+        app.shell.catalog.remember(beta.clone(), true);
         app.shell.catalog.selected = Some(alpha.root.clone());
         let root = alpha.root.display().to_string();
         let page = |from: usize, count: usize| {
@@ -2221,52 +2246,139 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let limit = agentdocker_core::protocol::TASKS_LIMIT;
+        let cards = |app: &App| app.tasks.as_ref().map_or(0, |b| b.cards.len());
+
+        // A reply to no ask moves nothing.
         messages
-            .send(Msg::Tasks(root.clone(), 0, Ok((page(0, limit), true))))
+            .send(Msg::Tasks(root.clone(), 999, Ok((page(0, 3), false))))
             .unwrap();
         app.drain();
-        let _ = app.update(Message::TasksMore);
-        assert!(app.tasks.as_ref().unwrap().loading_more);
-        assert!(requests.try_iter().any(|c| matches!(
-            c,
-            Cmd::Tasks(ref p, offset, l) if *p == root && offset == limit && l == limit
-        )));
-        // A second click while a page is on its way asks for nothing.
-        let _ = app.update(Message::TasksMore);
-        assert_eq!(requests.try_iter().count(), 0);
-        // A reply to some other ask is not appended.
+        assert!(app.tasks.is_none());
+
+        app.request_tasks();
+        let (first, _, _) = board_asks(&requests).pop().expect("asked");
         messages
-            .send(Msg::Tasks(root.clone(), 7, Ok((page(7, 3), true))))
+            .send(Msg::Tasks(root.clone(), first, Ok((page(0, limit), true))))
             .unwrap();
         app.drain();
-        assert_eq!(app.tasks.as_ref().unwrap().cards.len(), limit);
+        assert_eq!(cards(&app), limit);
+        let _ = app.update(Message::TasksMore);
+        assert!(app.tasks.as_ref().unwrap().loading_more());
+        let (more_ask, offset, asked) = board_asks(&requests).pop().expect("asked for more");
+        assert_eq!((offset, asked), (limit, limit));
+        // A second click while a page is on its way asks for nothing;
+        // a reply to an ask already answered is not appended.
+        let _ = app.update(Message::TasksMore);
+        assert!(board_asks(&requests).is_empty());
+        messages
+            .send(Msg::Tasks(root.clone(), first, Ok((page(7, 3), true))))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), limit);
         messages
             .send(Msg::Tasks(
                 root.clone(),
-                limit,
+                more_ask,
                 Ok((page(limit, limit), true)),
             ))
             .unwrap();
         app.drain();
         let board = app.tasks.as_ref().unwrap();
         assert_eq!(
-            (board.cards.len(), board.more, board.loading_more),
+            (board.cards.len(), board.more, board.loading_more()),
             (2 * limit, true, false)
         );
-        // A refresh asks for everything on view.
+
+        // Order one: a refresh is asked while a page is on its way. The
+        // refresh supersedes the page — whichever reply lands first the
+        // board is what the refresh says, and never folds back.
+        let _ = app.update(Message::TasksMore);
+        let (superseded, _, _) = board_asks(&requests).pop().unwrap();
         app.request_tasks();
-        assert!(requests.try_iter().any(|c| matches!(
-            c,
-            Cmd::Tasks(ref p, 0, l) if *p == root && l == 2 * limit
-        )));
-        // Filled to what the window keeps: no more is asked for.
+        let (refresh, _, asked) = board_asks(&requests).pop().unwrap();
+        assert_eq!(asked, 2 * limit, "a refresh asks for what is on view");
+        assert!(!app.tasks.as_ref().unwrap().loading_more(), "superseded");
         messages
-            .send(Msg::Tasks(root.clone(), 0, Ok((page(0, BOARD_KEEP), true))))
+            .send(Msg::Tasks(
+                root.clone(),
+                superseded,
+                Ok((page(2 * limit, limit), true)),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), 2 * limit, "a superseded page is not appended");
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                refresh,
+                Ok((page(0, 2 * limit), true)),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), 2 * limit);
+
+        // Order two: a refresh asked before a page arrives first, then
+        // the page: the page still lands where it was asked for.
+        app.request_tasks();
+        let (refresh, _, _) = board_asks(&requests).pop().unwrap();
+        let _ = app.update(Message::TasksMore);
+        let (more_ask, _, _) = board_asks(&requests).pop().unwrap();
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                refresh,
+                Ok((page(0, 2 * limit), true)),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(
+            app.tasks.as_ref().unwrap().loading_more(),
+            "a refresh keeps the page on its way"
+        );
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                more_ask,
+                Ok((page(2 * limit, limit), true)),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), 3 * limit);
+
+        // Another project and back: the old asks are forgotten, so a
+        // late page for alpha moves nothing, and alpha is read anew.
+        let _ = app.update(Message::TasksMore);
+        let (late, _, _) = board_asks(&requests).pop().unwrap();
+        let _ = app.update(Message::SelectProject(beta.root.clone()));
+        assert!(app.tasks.is_none());
+        let _ = app.update(Message::SelectProject(alpha.root.clone()));
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                late,
+                Ok((page(3 * limit, limit), true)),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(
+            app.tasks.is_none(),
+            "a page for an ask made before the switch"
+        );
+
+        // Filled to what the window keeps: no more is asked for.
+        app.request_tasks();
+        let (fill, _, _) = board_asks(&requests).pop().unwrap();
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                fill,
+                Ok((page(0, BOARD_KEEP), true)),
+            ))
             .unwrap();
         app.drain();
         let _ = app.update(Message::TasksMore);
-        assert_eq!(requests.try_iter().count(), 0);
-        assert_eq!(app.tasks.as_ref().unwrap().cards.len(), BOARD_KEEP);
+        assert!(board_asks(&requests).is_empty());
+        assert_eq!(cards(&app), BOARD_KEEP);
     }
 
     /// The menu under a project row renames the entry here, pins it, or

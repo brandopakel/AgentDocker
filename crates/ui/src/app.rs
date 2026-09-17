@@ -98,8 +98,14 @@ enum Cmd {
     Activity,
     /// The selected project's board.
     /// The selected project's board: a page from `offset`, `limit`
-    /// cards at most (a refresh asks for as many as are on view).
-    Tasks(String, usize, usize),
+    /// cards at most (a refresh asks for as many as are on view), for
+    /// the ask numbered `request`, which is what its reply answers to.
+    Tasks {
+        project: String,
+        request: u64,
+        offset: usize,
+        limit: usize,
+    },
     /// The person files a card.
     TaskCreate {
         project: String,
@@ -269,7 +275,7 @@ enum Msg {
     /// cut the board short, or why it could not be read.
     Tasks(
         String,
-        usize,
+        u64,
         Result<(Vec<agentdocker_core::Task>, bool), String>,
     ),
     /// A filing's outcome, for the draft that made it.
@@ -421,6 +427,11 @@ pub struct App {
     activity: BTreeMap<String, Activity>,
     /// The board on view.
     tasks: Option<Board>,
+    /// Board asks on their way, by number: which project's, and from
+    /// what offset. A reply answers one ask; a reply to none — an ask
+    /// cancelled by a later refresh, or made for a project no longer on
+    /// view — moves nothing.
+    board_asks: BTreeMap<u64, (String, usize)>,
     /// A card being filed, per project: its title and what done means.
     /// Text typed for one project's board waits there while another's
     /// is on view.
@@ -551,6 +562,7 @@ impl App {
             tasks: None,
             task_drafts: BTreeMap::new(),
             task_requests: 0,
+            board_asks: BTreeMap::new(),
             task_open: None,
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
@@ -620,6 +632,7 @@ impl App {
             tasks: None,
             task_drafts: BTreeMap::new(),
             task_requests: 0,
+            board_asks: BTreeMap::new(),
             task_open: None,
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
@@ -717,9 +730,20 @@ impl App {
                 }
                 // A page asked for by hand that could not be queued is
                 // told so; a refresh is not.
-                Cmd::Tasks(project, offset, _) if offset > 0 => {
-                    if let Some(board) = self.tasks.as_mut().filter(|b| b.project == project) {
-                        board.loading_more = false;
+                Cmd::Tasks {
+                    project,
+                    request,
+                    offset,
+                    ..
+                } => {
+                    self.board_asks.remove(&request);
+                    if offset == 0 {
+                        return;
+                    }
+                    if let Some(board) = self.tasks.as_mut().filter(|b| b.project == project)
+                        && board.pending_more == Some(request)
+                    {
+                        board.pending_more = None;
                     }
                 }
                 Cmd::TaskMove { .. }
@@ -903,39 +927,51 @@ impl App {
                         self.session_log = Some((agent, result));
                     }
                 }
-                Msg::Tasks(project, offset, result) => {
-                    if self.selected_project_root().as_deref() != Some(project.as_str()) {
+                Msg::Tasks(project, request, result) => {
+                    // Only a reply to an ask still standing, for the
+                    // project on view, moves the board.
+                    let Some((asked_for, offset)) = self.board_asks.remove(&request) else {
+                        continue;
+                    };
+                    if let Some(board) = self.tasks.as_mut().filter(|b| b.project == project)
+                        && board.pending_more == Some(request)
+                    {
+                        board.pending_more = None;
+                    }
+                    if asked_for != project
+                        || self.selected_project_root().as_deref() != Some(project.as_str())
+                    {
                         continue;
                     }
                     match result {
-                        // A first page is the board anew; a later page is
-                        // appended only where it was asked for, so a
-                        // reply to an earlier ask cannot double cards.
-                        Ok((tasks, more)) => {
-                            let board = self.tasks.take().filter(|b| b.project == project);
-                            self.tasks = Some(match board {
-                                Some(mut board) if offset > 0 => {
-                                    if board.cards.len() == offset && board.loading_more {
-                                        board.cards.extend(tasks);
-                                        board.more = more;
-                                        board.loading_more = false;
-                                    }
-                                    board
-                                }
-                                _ => Board {
-                                    project,
-                                    cards: tasks,
-                                    more,
-                                    loading_more: false,
-                                },
+                        // A first page is the board anew, keeping a later
+                        // page still on its way; a later page is appended
+                        // only where it was asked for.
+                        Ok((tasks, more)) if offset == 0 => {
+                            let pending_more = self
+                                .tasks
+                                .as_ref()
+                                .filter(|b| b.project == project)
+                                .and_then(|b| b.pending_more);
+                            self.tasks = Some(Board {
+                                project,
+                                cards: tasks,
+                                more,
+                                pending_more,
                             });
+                        }
+                        Ok((tasks, more)) => {
+                            if let Some(board) =
+                                self.tasks.as_mut().filter(|b| b.project == project)
+                                && board.cards.len() == offset
+                            {
+                                board.cards.extend(tasks);
+                                board.more = more;
+                            }
                         }
                         // The board as last read stays on view; the
                         // person is told why it is not newer.
                         Err(error) => {
-                            if let Some(board) = &mut self.tasks {
-                                board.loading_more = false;
-                            }
                             self.say(format!("The board could not be read: {error}"));
                         }
                     }
@@ -1641,13 +1677,26 @@ impl App {
         if self.connected.is_ok()
             && let Some(project) = self.selected_project_root()
         {
-            let on_view = self
-                .tasks
-                .as_ref()
-                .filter(|b| b.project == project)
-                .map_or(0, |b| b.cards.len());
+            // A refresh supersedes a page still on its way: were that
+            // page to land first, the refresh — sized to what was on
+            // view when it was asked — would fold the board back.
+            let on_view = match self.tasks.as_mut().filter(|b| b.project == project) {
+                Some(board) => {
+                    if let Some(pending) = board.pending_more.take() {
+                        self.board_asks.remove(&pending);
+                    }
+                    board.cards.len()
+                }
+                None => 0,
+            };
             let limit = on_view.clamp(agentdocker_core::protocol::TASKS_LIMIT, BOARD_KEEP);
-            self.send(Cmd::Tasks(project, 0, limit));
+            let request = self.next_board_ask(&project, 0);
+            self.send(Cmd::Tasks {
+                project,
+                request,
+                offset: 0,
+                limit,
+            });
         }
     }
 
@@ -1656,16 +1705,37 @@ impl App {
     pub(crate) fn request_more_tasks(&mut self) {
         if self.connected.is_ok()
             && let Some(project) = self.selected_project_root()
-            && let Some(board) = self.tasks.as_mut().filter(|b| b.project == project)
-            && board.more
-            && !board.loading_more
-            && board.cards.len() < BOARD_KEEP
+            && self.tasks.as_ref().is_some_and(|b| {
+                b.project == project
+                    && b.more
+                    && b.pending_more.is_none()
+                    && b.cards.len() < BOARD_KEEP
+            })
         {
-            board.loading_more = true;
-            let offset = board.cards.len();
+            let offset = self.tasks.as_ref().map_or(0, |b| b.cards.len());
             let limit = agentdocker_core::protocol::TASKS_LIMIT.min(BOARD_KEEP - offset);
-            self.send(Cmd::Tasks(project, offset, limit));
+            let request = self.next_board_ask(&project, offset);
+            if let Some(board) = self.tasks.as_mut() {
+                board.pending_more = Some(request);
+            }
+            self.send(Cmd::Tasks {
+                project,
+                request,
+                offset,
+                limit,
+            });
         }
+    }
+
+    /// Number a board ask and remember what it was for. Asks are few
+    /// and answered or refused in order; the map stays small, and is
+    /// cleared with the board when another project is chosen.
+    fn next_board_ask(&mut self, project: &str, offset: usize) -> u64 {
+        self.task_requests += 1;
+        let request = self.task_requests;
+        self.board_asks
+            .insert(request, (project.to_owned(), offset));
+        request
     }
 
     fn request_channels(&mut self, id: String) {
@@ -2367,7 +2437,12 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             let result = read_session_log(client, &agent).map_err(|error| format!("{error:#}"));
             Some(Msg::SessionLog(agent, result))
         }
-        Cmd::Tasks(project, offset, limit) => {
+        Cmd::Tasks {
+            project,
+            request,
+            offset,
+            limit,
+        } => {
             let result = match client.call(&Request::Tasks {
                 project: Some(project.clone()),
                 column: None,
@@ -2380,7 +2455,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Ok(other) => Err(format!("Unexpected reply: {other:?}")),
                 Err(error) => Err(format!("{error:#}")),
             };
-            Some(Msg::Tasks(project, offset, result))
+            Some(Msg::Tasks(project, request, result))
         }
         Cmd::TaskCreate {
             project,
@@ -2975,8 +3050,15 @@ pub(crate) struct Board {
     pub project: String,
     pub cards: Vec<agentdocker_core::Task>,
     pub more: bool,
-    /// A page is on its way; the control says so and asks for no other.
-    pub loading_more: bool,
+    /// The page on its way, by ask; the control says so and asks for no
+    /// other until it is answered, refused or superseded.
+    pub pending_more: Option<u64>,
+}
+
+impl Board {
+    pub fn loading_more(&self) -> bool {
+        self.pending_more.is_some()
+    }
 }
 
 /// A card being filed from the board.

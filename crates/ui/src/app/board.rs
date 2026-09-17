@@ -27,7 +27,7 @@ impl App {
         let board = self.tasks.as_ref().filter(|b| b.project == root);
         let tasks: &[Task] = board.map_or(&[], |b| &b.cards);
         let more = board.is_some_and(|b| b.more);
-        let loading = board.is_some_and(|b| b.loading_more);
+        let loading = board.is_some_and(Board::loading_more);
         let mut page = column![self.file_card(&root, c)].spacing(14).width(Fill);
         if tasks.is_empty() && self.tasks.is_some() {
             page = page.push(note(
