@@ -145,6 +145,8 @@ Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human
 project and human global input during one busy TUI turn and requires exact
 receipts, FIFO order and no later replay after baseline idle/draft/crash tests.
+`--scenario active-hook-lost` discards one offered hook output and requires the
+original queued IDs to remain paused without receipt or automatic resubmission.
 Implementation is under test; installed acceptance and broader provider parity
 remain open. The provider's [hook contract](https://learn.chatgpt.com/docs/hooks)
 supports additional context without replacing the tool result.
