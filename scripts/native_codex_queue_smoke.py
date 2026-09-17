@@ -1420,6 +1420,10 @@ try:
                 else:
                     wait(lambda: all(m in json.dumps(report["requests"][-1]["body"].get("input", [])) for m in markers), 45)
                     wait(lambda: not rpc({"op":"peek_input", "agent":aid})["messages"], 15)
+                    visible = json.dumps(report["requests"][-1]["body"].get("input", []))
+                    assert all(visible.count(marker) == 1 for marker in markers), "provider context duplicated an input"
+                    positions = [visible.index(marker) for marker in markers]
+                    assert positions == sorted(positions), "provider-visible input order changed"
                     retained = json.loads(ledgerpath.read_text())
                     receipts = [r for r in retained["completed"] if r["message"] in sent]
                     assert [r["message"] for r in receipts] == sent
