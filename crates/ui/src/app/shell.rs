@@ -1497,11 +1497,14 @@ impl App {
                                 .as_ref()
                                 .is_some_and(|p| p.valid_for(&q.text) && p.permits_choice(&value))
                     })
-                    && self
-                        .shell
-                        .edit_draft(DraftKind::Answer, id.to_string(), value)
                 {
-                    return self.update(Message::Answer(id));
+                    // A choice is an explicit submission, not a draft edit.
+                    // Full draft storage must not block Allow/Deny, nor may
+                    // clicking a choice overwrite earlier typed text on failure.
+                    self.shell.answer_errors.remove(&id);
+                    self.sending.insert(id.clone());
+                    self.shell.pending_answer_reveal = Some(id.clone());
+                    self.send(Cmd::Answer(id, value));
                 }
             }
             Message::Answer(id) => {
@@ -2701,8 +2704,8 @@ mod tests {
         let _ = app.update(Message::Tick);
         assert!(app.shell.file_review.is_none());
         assert_eq!(
-            app.shell.answers[&id], "Allow",
-            "an in-flight answer stays retained"
+            app.shell.answers[&id], " Allow ",
+            "the typed draft stays retained while the explicit choice is in flight"
         );
     }
 
@@ -2738,7 +2741,7 @@ mod tests {
         assert!(
             matches!(commands.try_iter().collect::<Vec<_>>().as_slice(), [Cmd::Answer(message, answer)] if message == &id && answer == "Allow")
         );
-        assert_eq!(app.shell.answers[&id], "Allow");
+        assert_eq!(app.shell.answers[&id], "earlier draft");
         app.sending.clear();
         app.questions.clear();
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
@@ -2747,7 +2750,71 @@ mod tests {
         app.questions.push(expired);
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
         assert_eq!(commands.try_iter().count(), 0);
-        assert_eq!(app.shell.answers[&id], "Allow");
+        assert_eq!(app.shell.answers[&id], "earlier draft");
+    }
+
+    #[test]
+    fn explicit_choices_bypass_full_draft_storage_and_failed_delivery_keeps_text() {
+        let (mut app, commands, messages) = app();
+        app.connected = Ok(());
+        for index in 0..128 {
+            assert!(
+                app.shell
+                    .edit_draft(DraftKind::Answer, index.to_string(), "x".into())
+            );
+            assert!(app.shell.edit_draft(
+                DraftKind::Session,
+                index.to_string(),
+                "s".repeat(16_000)
+            ));
+            assert!(app.shell.edit_draft(
+                DraftKind::Conversation,
+                index.to_string(),
+                "c".repeat(16_000)
+            ));
+        }
+        let remaining = crate::drafts::MAX_TOTAL_BYTES - 128 * (1 + 16_000 * 2);
+        for (index, chunk) in vec![b'z'; remaining].chunks(16_000).enumerate() {
+            assert!(app.shell.edit_draft(
+                DraftKind::Channel,
+                index.to_string(),
+                String::from_utf8(chunk.to_vec()).unwrap()
+            ));
+        }
+        app.shell.drafts = crate::drafts::Persistence::loaded();
+        let before = app.shell.draft_snapshot();
+        before.validate().unwrap();
+        for key in ["0", "without-a-draft"] {
+            let id = MessageId::from(key.to_owned());
+            let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
+                command: "printf hello".into(),
+                cwd: "/owned".into(),
+                reason: "Fixture".into(),
+            };
+            app.questions.push(Question {
+                id: id.clone(),
+                from: "asker".into(),
+                to: agentdocker_core::Destination::Agent("human".into()),
+                text: presentation.text(),
+                presentation: Some(presentation),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            });
+            let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
+            assert!(matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),
+                [Cmd::Answer(question, answer)] if question == &id && answer == "Allow"));
+            assert!(app.sending.contains(&id));
+            assert_eq!(app.shell.draft_snapshot(), before);
+            assert!(app.shell.drafts.clean());
+            messages
+                .send(Msg::Answered(id.clone(), Err("offline".into())))
+                .unwrap();
+            app.drain();
+            assert!(!app.sending.contains(&id));
+            assert_eq!(app.shell.answer_errors[&id], "offline");
+            assert_eq!(app.shell.draft_snapshot(), before);
+            assert!(app.shell.drafts.clean());
+        }
     }
 
     #[test]

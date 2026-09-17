@@ -221,7 +221,9 @@ database remains a manual step.
   keeps at most 128 drafts per kind, 16,000 characters per draft and 4 MiB of
   aggregate UTF-8 text; only empty drafts can be pruned. Files are private,
   versioned and bounded to 32 MiB; invalid loads disable writes and preserve the
-  file. Answer drafts retain their original question IDs; confirmed completion
+  file. Explicit structured choices use the answer queue directly even when draft
+  storage is full; failed delivery preserves earlier typed text. They still require
+  a current question and any applicable file review. Answer drafts retain their original question IDs; confirmed completion
   removes them, while failed delivery keeps them. No approval, review or send
   state is restored. Version 2 accepts existing version-1 message drafts without
   rewriting the file until the next edit. Other forms remain window-local.
