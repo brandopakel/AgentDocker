@@ -2667,5 +2667,77 @@
       "Final review/CI and installed activation remain required. Candidate28f4f1f3 is superseded by6d168e4d and was not installed.",
       "No actual Claude idle-model turn, provider startup consent, hands-on IME/accessibility or external release certification is claimed."
     ]
+  },
+  "claude_existing_session_preflight_2026_09_17": {
+    "session": "218845eb-ba1e-4457-bb5a-e1829f5652dd",
+    "read_only": true,
+    "records": [
+      {
+        "id": "0042a5aabada4cf190ff80560cb1389d",
+        "pid": 51180,
+        "status": {
+          "state": "exited",
+          "code": 0
+        },
+        "retained_reads": 23,
+        "has_input_delivery": false,
+        "has_input_binding": false
+      },
+      {
+        "id": "92bb1ec8ac8a4c359460cf08b2c23ba8",
+        "pid": 73599,
+        "status": {
+          "state": "exited",
+          "code": 0
+        },
+        "retained_reads": 0,
+        "has_input_delivery": false,
+        "has_input_binding": false
+      },
+      {
+        "id": "573d2472438f49f99fda26c1e7e93929",
+        "pid": 74107,
+        "status": {
+          "state": "exited",
+          "code": 0
+        },
+        "retained_reads": 3,
+        "has_input_delivery": false,
+        "has_input_binding": false
+      },
+      {
+        "id": "80a84b8f71a2431cad387975c0c4848a",
+        "pid": 70116,
+        "status": {
+          "state": "exited",
+          "code": 0
+        },
+        "retained_reads": 0,
+        "has_input_delivery": false,
+        "has_input_binding": false
+      },
+      {
+        "id": "ac5c138c2b3f4d8f90c5924988419055",
+        "pid": 74231,
+        "status": {
+          "state": "exited",
+          "code": 0
+        },
+        "retained_reads": 0,
+        "has_input_delivery": false,
+        "has_input_binding": false
+      },
+      {
+        "id": "33ad0f953dd64507b19d8b6b79ae7eb0",
+        "pid": 18563,
+        "status": {
+          "state": "running"
+        },
+        "retained_reads": 0,
+        "has_input_delivery": false,
+        "has_input_binding": false
+      }
+    ],
+    "finding": "The existing all-ended-lives fold refuses earlier lives with retained read observations. A channel-capable MCP entry does not prove safe existing-session queue handover."
   }
 }
