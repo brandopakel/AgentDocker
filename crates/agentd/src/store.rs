@@ -36,7 +36,7 @@ pub(crate) use event_replay::EventReplay;
 // daemon would not know a queue is a bound controller's and would drain it.
 // Schema 22 adds a durable receiver-upgrade intent to bound-controller state.
 // Older readers reject that field, so a downgrade must not open this database.
-pub(crate) const SCHEMA_VERSION: i64 = 22;
+pub(crate) const SCHEMA_VERSION: i64 = 23;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS documents (
@@ -629,6 +629,10 @@ impl Store {
             // and the schema bump, so an aborted successor leaves no history.
             Self::backfill_archive(conn)?;
         }
+        // v22 adds the receiver upgrade intent on a binding; v23 adds the
+        // `pause` document, a person's hold on a project's agents. Neither
+        // rewrites a row: the bump is so an older daemon refuses the
+        // database rather than open it and quietly not hold anyone.
         Ok(())
     }
 
@@ -2562,6 +2566,56 @@ mod tests {
         )
         .unwrap();
         assert!(Store::init(conn, true).is_err());
+    }
+
+    /// A database one version newer than this build — the next daemon
+    /// wrote something this one would not honour, a project's pause among
+    /// them — is refused, with both numbers in the reason, rather than
+    /// opened and read as if the newer meaning were not there; the
+    /// version this build writes opens, and a pause document in it is
+    /// read back whole.
+    #[test]
+    fn a_newer_database_is_refused_and_this_versions_pause_is_kept() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
+            params![(SCHEMA_VERSION + 1).to_string()],
+        )
+        .unwrap();
+        let error = match Store::init(conn, true) {
+            Ok(_) => panic!("a newer database opened"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains(&(SCHEMA_VERSION + 1).to_string())
+                && error.contains(&SCHEMA_VERSION.to_string()),
+            "{error}"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("state.db")).unwrap();
+        let pause = agentdocker_core::Pause {
+            project: ProjectId::from("p"),
+            by: "user".into(),
+            reason: "sleeping the laptop".into(),
+            at: Utc::now(),
+        };
+        store.put_document("pause", "p", &pause).unwrap();
+        drop(store);
+        let store = Store::open(&dir.path().join("state.db")).unwrap();
+        let kept: Vec<agentdocker_core::Pause> = store.documents("pause", None).unwrap();
+        assert_eq!(kept, vec![pause]);
+        assert_eq!(
+            store
+                .conn
+                .query_row(
+                    "SELECT value FROM meta WHERE key='schema_version'",
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+            SCHEMA_VERSION.to_string()
+        );
     }
 
     /// A successor that opens pending brings the schema forward but not
