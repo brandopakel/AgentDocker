@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentStatus, Change, Destination, JournalEntry, Lease, MessageId, ProjectId,
-    ProjectRef, ResourceKey, VcsState,
+    AgentId, AgentStatus, Change, ChannelId, Destination, JournalEntry, Lease, MessageId,
+    ProjectId, ProjectRef, ResourceKey, VcsState,
 };
 
 /// An opaque position in one durable event log. Retain the complete cursor:
@@ -507,6 +507,11 @@ pub enum EventKind {
         removed: usize,
     },
     /// Somebody was added to an open channel.
+    ChannelInvited {
+        channel: ChannelId,
+        by: AgentId,
+        agent: AgentId,
+    },
     ChannelJoined {
         channel: crate::ChannelId,
         agent: AgentId,

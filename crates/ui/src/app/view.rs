@@ -8,8 +8,8 @@ use super::icons::{Icon, icon};
 use super::style::{Colors, alpha, weight};
 use super::*;
 use crate::controls::{
-    Kind, block_button, button as action, custom, danger, input, input_enabled, primary, segment,
-    tab,
+    Kind, block_button, button as action, custom, danger, input, input_submitting, primary,
+    segment, tab,
 };
 use iced::{
     Center, Element, Fill, Font,
@@ -1726,12 +1726,16 @@ impl App {
                 let sending = draft.is_some_and(|draft| draft.sending.is_some());
                 let value = draft.map_or("", |draft| draft.text.as_str());
                 let target = draft_key.clone();
+                let send = (!sending && !value.trim().is_empty() && self.connected.is_ok())
+                    .then_some(Message::SendSession(draft_key));
                 body = body
-                    .push(input(
+                    .push(input_submitting(
                         "session-message-text",
                         "Message this agent…",
                         value,
                         move |text| Message::SessionDraft(target.clone(), text),
+                        true,
+                        send.clone(),
                     ))
                     .push(primary(
                         "send-session-message",
@@ -1740,8 +1744,7 @@ impl App {
                         } else {
                             "Send message"
                         },
-                        (!sending && !value.trim().is_empty() && self.connected.is_ok())
-                            .then_some(Message::SendSession(draft_key)),
+                        send,
                     ));
                 if let Some(error) = draft.and_then(|draft| draft.error.as_deref()) {
                     body = body.push(text(error).size(13).color(c.amber));
@@ -2129,12 +2132,13 @@ impl App {
             let owner = id.to_owned();
             let mut composer = column![
                 row![
-                    input_enabled(
+                    input_submitting(
                         format!("reply-{id}"),
                         "Message…",
                         &draft,
                         move |t| Message::SessionDraft(owner.clone(), t),
                         live && !sending,
+                        ready.then_some(Message::SendSession(id.to_owned())),
                     ),
                     primary(
                         format!("send-reply-{id}"),
@@ -2466,8 +2470,10 @@ impl App {
                             .push(heading(question.text.clone(), 18))
                             .push(self.answer_window(question, c));
                     }
+                    let send = (enabled && !answer.trim().is_empty())
+                        .then_some(Message::Answer(id.clone()));
                     body = body
-                        .push(input_enabled(
+                        .push(input_submitting(
                             format!("answer-{id}"),
                             if presentation.is_some() {
                                 "Or write an answer"
@@ -2477,12 +2483,12 @@ impl App {
                             &answer,
                             move |text| Message::Draft(draft_id.clone(), text),
                             enabled,
+                            send.clone(),
                         ))
                         .push(primary(
                             format!("send-answer-{id}"),
                             if busy { "Sending…" } else { "Send answer" },
-                            (enabled && !answer.trim().is_empty())
-                                .then_some(Message::Answer(id.clone())),
+                            send,
                         ));
                 }
             }

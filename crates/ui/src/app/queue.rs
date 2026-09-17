@@ -25,6 +25,31 @@ fn bytes(command: &Cmd) -> usize {
         Cmd::ChannelSend(id, text) | Cmd::SessionSend(id, text) => {
             id.capacity().saturating_add(text.capacity())
         }
+        Cmd::ChannelOpen {
+            request,
+            name,
+            task,
+            members,
+            project,
+        } => members.iter().fold(
+            members
+                .capacity()
+                .saturating_mul(size_of::<String>())
+                .saturating_add(request.as_str().len())
+                .saturating_add(name.capacity())
+                .saturating_add(task.capacity())
+                .saturating_add(project.as_ref().map_or(0, |p| p.capacity())),
+            |sum, member| sum.saturating_add(member.capacity()),
+        ),
+        Cmd::ChannelInvite {
+            request,
+            channel,
+            member,
+        } => request
+            .as_str()
+            .len()
+            .saturating_add(channel.capacity())
+            .saturating_add(member.capacity()),
         Cmd::Launch(spec) => {
             serde_json::to_vec(spec).map_or(COMMAND_BYTES + 1, |bytes| bytes.len())
         }
@@ -81,7 +106,7 @@ pub(super) struct Receiver {
 
 #[derive(Debug)]
 pub(super) struct Rejected {
-    pub command: Cmd,
+    pub command: Box<Cmd>,
     pub reason: &'static str,
 }
 
@@ -102,7 +127,7 @@ impl Sender {
     pub(super) fn send(&self, command: Cmd) -> Result<(), Rejected> {
         if bytes(&command) > COMMAND_BYTES {
             return Err(Rejected {
-                command,
+                command: Box::new(command),
                 reason: "It exceeds the 64 KiB command limit.",
             });
         }
@@ -119,11 +144,11 @@ impl Sender {
         let error = match self.inner.try_send(command) {
             Ok(()) => return Ok(()),
             Err(mpsc::TrySendError::Full(command)) => Rejected {
-                command,
+                command: Box::new(command),
                 reason: "The daemon request queue is full; try again when it catches up.",
             },
             Err(mpsc::TrySendError::Disconnected(command)) => Rejected {
-                command,
+                command: Box::new(command),
                 reason: "The window's request worker stopped; reopen agentdocker.",
             },
         };

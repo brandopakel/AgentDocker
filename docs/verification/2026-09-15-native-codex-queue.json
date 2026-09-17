@@ -2936,5 +2936,99 @@
       "artifacts": "/private/tmp/agentdocker-controller-upgrade-native2-2026-09-17",
       "status": "passed; final review, CI and production acceptance pending"
     }
+  },
+  "installed_receiver_upgrade_2026_09_17": {
+    "result": "passed",
+    "candidate": "9bc0f0fc1045ebb25c5b68641142bb4f6954440ba44cdf03613eeb964b5a627d",
+    "source": "8d42db5f3599ec8105286bdea78afa112ae5ddf8",
+    "providers_preserved": true,
+    "gui_processes_preserved": [],
+    "old_controller": {
+      "pid": 94744,
+      "started_at": "2026-09-16T02:32:58.433259Z"
+    },
+    "new_controller": {
+      "pid": 20912,
+      "started_at": "2026-09-17T02:57:52.717071Z"
+    },
+    "token_and_binding_preserved": true,
+    "retained_old_receipts_confirmed": 58,
+    "bounded_oldest_receipt_evictions": 0,
+    "schema": 22,
+    "backup": "/private/tmp/agentdocker-installed-upgrade-20260917T025744Z/state.db",
+    "provider_processes": [
+      {
+        "id": "50fd100f4310452fae0435fd4b6a1981",
+        "pid": 51242,
+        "birth": "2026-09-12T23:36:03.055103Z",
+        "pid_after": 51242,
+        "birth_after": "2026-09-12T23:36:03.055103Z"
+      },
+      {
+        "id": "ac5c138c2b3f4d8f90c5924988419055",
+        "pid": 74231,
+        "birth": "2026-09-17T02:43:55.823075Z",
+        "pid_after": 74231,
+        "birth_after": "2026-09-17T02:43:55.823075Z"
+      }
+    ],
+    "merge": "df3b758",
+    "artifact_directory": "/private/tmp/agentdocker-installed-upgrade-20260917T025744Z",
+    "scope": "Actual installed daemon and receiver replacement; existing Codex and Claude sessions retained. No GUI was open during the switch, so this episode does not prove preservation of an open GUI draft. Earlier private acceptance covers drafts.",
+    "fresh_active_message_acceptance": {
+      "result": "passed",
+      "same_live_model_turn": true,
+      "self_canary": "05f74b8c1c3246e8",
+      "cli_human_route_canary": "eefa2d12e90841ac",
+      "cli_canary_author": "Codex-authored clearly labeled test sent through CLI --from user",
+      "cli_canary_sent_at": "2026-09-17T03:02:31.749940Z",
+      "cli_provider_context_at": "2026-09-17T03:02:31.926Z",
+      "cli_context_latency_seconds": 0.17606,
+      "peer_canary": "ad06cd79e7244c62",
+      "peer": "ac5c138c2b3f4d8f90c5924988419055",
+      "peer_marker": "pause-peer-proof-030357",
+      "receipts": [
+        {
+          "message": "05f74b8c1c3246e8",
+          "receipt": {
+            "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+            "turn": "01a0acc0-bb93-7a82-9c6f-b7e89f1595d9",
+            "item": "msg_01a0ad4e-3f6c-7d21-bdea-f1ba89dd2d58"
+          }
+        },
+        {
+          "message": "eefa2d12e90841ac",
+          "receipt": {
+            "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+            "turn": "01a0acc0-bb93-7a82-9c6f-b7e89f1595d9",
+            "item": "msg_01a0ad50-d8f6-7ac0-9365-c8a59d78d6e2"
+          }
+        },
+        {
+          "message": "ad06cd79e7244c62",
+          "receipt": {
+            "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+            "turn": "01a0acc0-bb93-7a82-9c6f-b7e89f1595d9",
+            "item": "msg_01a0ad52-2b61-7ef1-a21a-cd384c3761b0"
+          }
+        }
+      ],
+      "scope": "Actual installed bounded-message delivery at tool boundaries, using existing live model sessions. No end of Codex turn, new human prompt, manual acknowledgment or manual queue mutation; the receiver automatically acknowledges queue entries after provider receipts. Self-canary followed retained backlog. Single CLI latency sample is not a general bound. Does not establish idle wake for the plain Claude receiver or arbitrary interruption/oversized input."
+    },
+    "project_fanout_acceptance": {
+      "project_message": "2cbd0272cad64ceb",
+      "codex_reply": "ee96ccb69eaa4089",
+      "claude_reply": "1abeb4349b634673",
+      "claude_scope": "74231 confirmed hook context during a running tool turn; explicitly not idle-wake evidence",
+      "result": "passed",
+      "sent_at": "2026-09-17T03:14:17.034805Z",
+      "codex_provider_context_at": "2026-09-17T03:14:17.351Z",
+      "codex_receipt": {
+        "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+        "turn": "01a0acc0-bb93-7a82-9c6f-b7e89f1595d9",
+        "item": "msg_01a0ad5b-9c87-7802-b266-0da20763ce67"
+      },
+      "scope": "Clearly labeled Codex-authored CLI test through --from user to project. Both existing model sessions consumed and replied during active tool turns, without a new human prompt. No idle-wake inference."
+    }
   }
 }

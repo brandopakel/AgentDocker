@@ -248,7 +248,7 @@ the flags.
 
 | Command | What it does |
 |---|---|
-| `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise) |
+| `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
 | `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first |
 
@@ -476,3 +476,10 @@ The first release: registry, supervision, messaging, leases, the project
 watcher, the change journal, worktrees and validated integration,
 handoffs, containers, policy and quotas, restart policies, channels,
 contests, PTY sessions, the desktop app, and the descriptor handoff.
+
+In Messages, **+** starts a direct message or named channel. Press Enter to send;
+mention suggestions only include the current conversation's recipients. In an
+open channel you belong to, **Add members** adds another available agent. The
+CLI equivalent is `agentdocker channel invite --as <member> <channel> <agent>`.
+These Messages additions are in the current review candidate, pending native
+and installed acceptance; they do not change an older running app.

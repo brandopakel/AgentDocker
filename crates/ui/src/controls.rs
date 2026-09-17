@@ -565,6 +565,22 @@ pub fn input_enabled<'a>(
     change: impl Fn(String) -> Message + Send + Sync + 'static,
     enabled: bool,
 ) -> Element<'a, Message> {
+    input_submitting(id, label, value, change, enabled, None)
+}
+
+/// A one-line input that also sends on Enter: a composer. `submit` is
+/// what Enter does when the words are ready to go — the same message the
+/// button beside it sends — and nothing while they are not, so an empty
+/// or already-sending draft is not sent twice by a second keystroke. The
+/// accessibility node carries it as the input's action.
+pub fn input_submitting<'a>(
+    id: impl Into<String>,
+    label: &str,
+    value: &str,
+    change: impl Fn(String) -> Message + Send + Sync + 'static,
+    enabled: bool,
+    submit: Option<Message>,
+) -> Element<'a, Message> {
     let id = id.into();
     let change = std::sync::Arc::new(change);
     let on_input = change.clone();
@@ -599,11 +615,13 @@ pub fn input_enabled<'a>(
                 selection: alpha(c.accent, 0.35),
             }
         })
-        .on_input_maybe(enabled.then_some(move |v| on_input(v)));
+        .on_input_maybe(enabled.then_some(move |v| on_input(v)))
+        .on_submit_maybe(submit.clone());
     let mut semantic = Semantic::input(id, label.into(), value.into(), change);
     if !enabled {
         semantic.change = None;
     }
+    semantic.action = submit;
     Control {
         content: content.into(),
         semantic,

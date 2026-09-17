@@ -128,6 +128,16 @@ fn repaired_hook_and_mcp_duplicates_preserve_both_provenance_records() {
         serde_json::to_value(retired).unwrap()
     );
     assert_eq!(store.identity_aliases().unwrap()[0].canonical, a);
+    assert_eq!(
+        store.identity_aliases().unwrap()[0].retired_name.as_deref(),
+        Some("retired")
+    );
+    drop(store);
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    assert_eq!(
+        store.identity_aliases().unwrap()[0].retired_name.as_deref(),
+        Some("retired")
+    );
 }
 
 #[test]
@@ -511,6 +521,7 @@ fn invalid_alias_aborts_before_recovery_and_removal_cleans_valid_routes() {
             &AgentAlias {
                 retired: b,
                 canonical: a,
+                retired_name: None,
                 reconciled_at: now(),
             },
         )
@@ -718,6 +729,7 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
             &AgentAlias {
                 retired: oldest.id.clone(),
                 canonical: earlier.id.clone(),
+                retired_name: Some(oldest.spec.name.clone()),
                 reconciled_at: now(),
             },
         )
@@ -830,6 +842,15 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
         registry.insert(r.clone()).unwrap();
     }
     registry.restore_aliases(&aliases).unwrap();
+    let mut names = vec![
+        oldest.spec.name.clone(),
+        earlier.spec.name.clone(),
+        fresh.spec.name.clone(),
+        last.spec.name.clone(),
+    ];
+    names.sort();
+    names.dedup();
+    assert_eq!(registry.identity_names(&last.id), names);
     assert!(store.recent_events(5).unwrap().iter().any(
         |e| matches!(&e.kind, EventKind::SessionResumed { retired, .. } if retired.len() == 2)
     ));

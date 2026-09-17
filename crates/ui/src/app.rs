@@ -129,6 +129,20 @@ enum Cmd {
     Thread(MessageId, u64),
     /// The person read a conversation through an archive seq.
     MarkRead(String, u64),
+    /// The person opens a room in the project they are looking at, with
+    /// the members they picked (everyone else in it when none).
+    ChannelOpen {
+        request: MessageId,
+        name: String,
+        task: String,
+        members: Vec<String>,
+        project: Option<String>,
+    },
+    ChannelInvite {
+        request: MessageId,
+        channel: String,
+        member: String,
+    },
     /// Text from the person into a conversation: `draft` is the composer it
     /// came from (the conversation, or `<conversation>#<root>` in a thread,
     /// which is where the receipt goes), `to` the destination the
@@ -231,6 +245,9 @@ enum Msg {
     Console(String),
     Launched(Result<String, String>),
     ChannelSent(String, Result<MessageId, String>),
+    /// The room the person asked for, by id, or why not.
+    ChannelOpened(MessageId, Result<agentdocker_core::ChannelId, String>),
+    ChannelInvited(MessageId, String, Result<agentdocker_core::Channel, String>),
     SessionSent(String, Result<MessageId, String>),
     /// `Err` when the daemon does not know conversations at all.
     Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
@@ -301,6 +318,9 @@ pub struct App {
     /// daemon has answered, `Some(false)` from a daemon without it.
     conversations: Vec<agentdocker_core::ConversationSummary>,
     conversations_supported: Option<bool>,
+    /// The form for a conversation the person is starting — a direct
+    /// message or a channel — while it is open.
+    new_conversation: Option<NewConversation>,
     /// Archived history per conversation, oldest first, as last fetched.
     history: BTreeMap<String, Vec<agentdocker_core::ArchivedMessage>>,
     /// Conversations whose earliest archived message is on view.
@@ -423,6 +443,7 @@ impl App {
             inbox: Vec::new(),
             conversations: Vec::new(),
             conversations_supported: None,
+            new_conversation: None,
             history: BTreeMap::new(),
             history_complete: BTreeSet::new(),
             history_epoch: 0,
@@ -485,6 +506,7 @@ impl App {
             inbox: Vec::new(),
             conversations: Vec::new(),
             conversations_supported: None,
+            new_conversation: None,
             history: BTreeMap::new(),
             history_complete: BTreeSet::new(),
             history_epoch: 0,
@@ -538,7 +560,7 @@ impl App {
 
     fn send(&mut self, cmd: Cmd) {
         if let Err(queue::Rejected { command, reason }) = self.tx.send(cmd) {
-            match command {
+            match *command {
                 Cmd::Answer(id, _) => {
                     self.sending.remove(&id);
                     if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
@@ -547,6 +569,14 @@ impl App {
                 }
                 Cmd::DismissMessages(ids) => {
                     self.dismissing.retain(|id| !ids.contains(id));
+                }
+                Cmd::ChannelOpen { request, .. } | Cmd::ChannelInvite { request, .. } => {
+                    if let Some(form) = &mut self.new_conversation
+                        && form.request == request
+                    {
+                        form.creating = false;
+                        form.error = Some(reason.into());
+                    }
                 }
                 Cmd::Setup(_) => self.setup_busy = false,
                 Cmd::Desktop(_) => self.desktop.receive(Err(reason.into())),
@@ -956,6 +986,54 @@ impl App {
                         }
                     }
                 }
+                Msg::ChannelInvited(request, member, result) => {
+                    if let Some(form) = &mut self.new_conversation
+                        && form.request == request
+                    {
+                        form.creating = false;
+                        match result {
+                            Ok(channel) => {
+                                form.members.insert(member.into());
+                                form.error = None;
+                                self.channels.retain(|c| c.id != channel.id);
+                                self.channels.push(channel);
+                                self.send(Cmd::Conversations(self.conversation_scope()));
+                            }
+                            Err(error) => form.error = Some(error),
+                        }
+                    }
+                }
+                Msg::ChannelOpened(request, result) => {
+                    if self
+                        .new_conversation
+                        .as_ref()
+                        .is_none_or(|form| form.request != request)
+                    {
+                        continue;
+                    }
+                    match result {
+                        Ok(id) => {
+                            self.new_conversation = None;
+                            let conversation = agentdocker_core::ConversationId::channel(&id)
+                                .as_str()
+                                .to_owned();
+                            if let Some(project) = self.selected_project_id() {
+                                self.request_channels(project);
+                            }
+                            self.send(Cmd::Conversations(self.conversation_scope()));
+                            // The form's message, not a Task: drain has none
+                            // to return, and selecting needs no effect of
+                            // its own beyond the history request it sends.
+                            let _ = self.update(Message::SelectConversation(conversation));
+                        }
+                        Err(error) => {
+                            if let Some(form) = &mut self.new_conversation {
+                                form.creating = false;
+                                form.error = Some(error);
+                            }
+                        }
+                    }
+                }
                 Msg::ChannelSent(id, result) => {
                     let draft = self.shell.channel_drafts.entry(id.clone()).or_default();
                     match result {
@@ -1091,6 +1169,7 @@ impl App {
             }
             EventKind::MessageSent { .. }
             | EventKind::ConversationRead { .. }
+            | EventKind::ChannelInvited { .. }
             | EventKind::ChannelOpened { .. }
             | EventKind::ChannelJoined { .. }
             | EventKind::ChannelClosed { .. } => self.on_conversation_activity(),
@@ -1276,6 +1355,18 @@ impl App {
     fn request_channels(&mut self, id: String) {
         let selector = self.project_selector(&id);
         self.send(Cmd::Channels(id, selector));
+    }
+    /// The id of the project the sidebar is scoped to, when one is.
+    pub(crate) fn selected_project_id(&self) -> Option<String> {
+        let root = self.shell.catalog.selected.as_deref()?;
+        self.shell
+            .catalog
+            .projects
+            .iter()
+            .map(|e| &e.project)
+            .chain(self.agents.iter().filter_map(|a| a.project.as_ref()))
+            .find(|p| p.root == root)
+            .map(|p| p.id().as_str().to_owned())
     }
     /// The project the sidebar is scoped to, as a selector, or none for
     /// everywhere.
@@ -2015,6 +2106,44 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             })?;
             None
         }
+        Cmd::ChannelOpen {
+            request,
+            name,
+            task,
+            members,
+            project,
+        } => {
+            let result = match client.call(&Request::ChannelOpen {
+                agent: agentdocker_core::HUMAN.into(),
+                task,
+                members,
+                name: Some(name),
+                project,
+            }) {
+                Ok(Response::Channel { channel }) => Ok(channel.id),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::ChannelOpened(request, result))
+        }
+        Cmd::ChannelInvite {
+            request,
+            channel,
+            member,
+        } => {
+            let result = match client.call(&Request::ChannelInvite {
+                agent: agentdocker_core::HUMAN.into(),
+                channel,
+                member: member.clone(),
+            }) {
+                Ok(Response::Channel { channel }) => Ok(channel),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::ChannelInvited(request, member, result))
+        }
         Cmd::ConversationSend {
             draft,
             to,
@@ -2263,9 +2392,135 @@ pub(crate) fn runtime_label(runtime: &str) -> String {
         .unwrap_or_else(|| runtime.to_owned())
 }
 
+/// Which kind of conversation the person is starting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewKind {
+    Direct,
+    Channel,
+}
+
+/// The form for a conversation the person is starting: a direct message
+/// is one pick, a channel is a name, what it is for and who is in it.
+#[derive(Clone, Debug)]
+pub(crate) struct NewConversation {
+    pub request: MessageId,
+    pub invite: Option<String>,
+    pub kind: NewKind,
+    pub name: String,
+    pub purpose: String,
+    pub members: BTreeSet<agentdocker_core::AgentId>,
+    pub creating: bool,
+    pub error: Option<String>,
+}
+
+impl NewConversation {
+    pub(crate) fn new() -> Self {
+        Self {
+            request: MessageId::generate(),
+            invite: None,
+            kind: NewKind::Direct,
+            name: String::new(),
+            purpose: String::new(),
+            members: BTreeSet::new(),
+            creating: false,
+            error: None,
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn channel_creation_replies_belong_to_the_submitted_form() {
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let first = NewConversation::new();
+        let mut second = NewConversation::new();
+        second.creating = true;
+        second.name = "second".into();
+        let expected = second.request.clone();
+        app.new_conversation = Some(second);
+        for result in [Ok("first-room".into()), Err("first failure".into())] {
+            messages
+                .send(Msg::ChannelOpened(first.request.clone(), result))
+                .unwrap();
+            app.drain();
+            let current = app.new_conversation.as_ref().unwrap();
+            assert_eq!(current.request, expected);
+            assert_eq!(current.name, "second");
+            assert!(current.creating);
+            assert!(current.error.is_none());
+            assert!(app.shell.conversation.is_none());
+        }
+        messages
+            .send(Msg::ChannelOpened(expected, Err("second failure".into())))
+            .unwrap();
+        app.drain();
+        let current = app.new_conversation.as_ref().unwrap();
+        assert!(!current.creating);
+        assert_eq!(current.error.as_deref(), Some("second failure"));
+    }
+
+    #[test]
+    fn channel_invitation_replies_belong_to_the_submitted_form() {
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let first = NewConversation::new();
+        let mut second = NewConversation::new();
+        second.invite = Some("second-room".into());
+        second.creating = true;
+        second.name = "second".into();
+        second.members.insert("existing-member".into());
+        let expected = second.request.clone();
+        app.new_conversation = Some(second);
+        let channel = agentdocker_core::Channel {
+            id: "first-room".into(),
+            project: "project".into(),
+            name: Some("first".into()),
+            subject: agentdocker_core::ChannelSubject::Task {
+                task: "first".into(),
+            },
+            members: vec!["new-member".into()],
+            opened_by: None,
+            opened_at: chrono::Utc::now(),
+            reviews: vec![],
+            closed_at: None,
+            resolution: None,
+        };
+        for result in [Ok(channel), Err("first failure".into())] {
+            messages
+                .send(Msg::ChannelInvited(
+                    first.request.clone(),
+                    "new-member".into(),
+                    result,
+                ))
+                .unwrap();
+            app.drain();
+            let current = app.new_conversation.as_ref().unwrap();
+            assert_eq!(current.request, expected);
+            assert_eq!(current.name, "second");
+            assert_eq!(current.invite.as_deref(), Some("second-room"));
+            assert_eq!(current.members, BTreeSet::from(["existing-member".into()]));
+            assert!(current.creating);
+            assert!(current.error.is_none());
+            assert!(app.channels.is_empty());
+        }
+        messages
+            .send(Msg::ChannelInvited(
+                expected,
+                "new-member".into(),
+                Err("second failure".into()),
+            ))
+            .unwrap();
+        app.drain();
+        let current = app.new_conversation.as_ref().unwrap();
+        assert!(!current.creating);
+        assert_eq!(current.error.as_deref(), Some("second failure"));
+    }
 
     #[test]
     fn text_zoom_reflows_messages_without_a_window_resize() {
@@ -3928,6 +4183,7 @@ pub(crate) mod tests {
                 title: "room".into(),
                 members: Vec::new(),
                 unread: 1,
+                mentions: 0,
                 last_seq: Some(7),
                 last_at: None,
                 last_from: None,
@@ -4011,6 +4267,7 @@ pub(crate) mod tests {
             title: "room".into(),
             members: Vec::new(),
             unread: 3,
+            mentions: 0,
             last_seq: Some(3),
             last_at: None,
             last_from: None,

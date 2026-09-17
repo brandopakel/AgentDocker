@@ -40,6 +40,7 @@ struct Document {
 pub(crate) struct ResumePlan {
     pub canonical: AgentRecord,
     pub retired: Vec<AgentId>,
+    retired_names: BTreeMap<AgentId, String>,
     /// Every alias the store holds, with those that pointed at a retired
     /// record pointed at the canonical one.
     pub aliases: Vec<AgentAlias>,
@@ -485,6 +486,16 @@ impl Store {
         // that together exceed what one record may hold, refuse rather
         // than stall the daemon or overfill the queue.
         self.check_repair_size()?;
+        let retired_names: BTreeMap<_, _> = self
+            .load_agents()?
+            .into_iter()
+            .filter(|r| retired.contains(&r.id))
+            .map(|r| (r.id, r.spec.name))
+            .collect();
+        anyhow::ensure!(
+            retired_names.len() == retired.len(),
+            "a retired record is missing or named twice"
+        );
         for lease in self.load_leases()? {
             anyhow::ensure!(
                 !retired.contains(&lease.holder),
@@ -581,6 +592,7 @@ impl Store {
         Ok(ResumePlan {
             canonical: canonical.clone(),
             retired: retired.to_vec(),
+            retired_names,
             aliases,
             documents,
             duplicate_inbox_rows,
@@ -622,6 +634,7 @@ impl Store {
             let alias = AgentAlias {
                 retired: old.clone(),
                 canonical: kept.clone(),
+                retired_name: Some(plan.retired_names[old].clone()),
                 reconciled_at: now,
             };
             self.put_document("identity_alias", old.as_str(), &alias)?;
@@ -668,6 +681,15 @@ impl Store {
         let alias = AgentAlias {
             retired: retired.clone(),
             canonical: kept.clone(),
+            retired_name: Some(
+                plan.records
+                    .iter()
+                    .find(|r| r.id == *retired)
+                    .context("repair plan lacks retired record")?
+                    .spec
+                    .name
+                    .clone(),
+            ),
             reconciled_at: now,
         };
         self.put_document("identity_alias", retired.as_str(), &alias)?;
