@@ -280,6 +280,7 @@ pub fn scan(
             if prior.generation != generation {
                 return Err(Error::Changed);
             }
+            validation_bytes_read += prior.validate_file(&mut file, PREFIX_DEADLINE)?;
             if prior
                 .quarantined_at_budget
                 .is_some_and(|bytes| budget.bytes <= bytes)
@@ -288,7 +289,6 @@ pub fn scan(
                     offset: prior.offset,
                 });
             }
-            validation_bytes_read += prior.validate_file(&mut file, PREFIX_DEADLINE)?;
             let mut next = prior.clone();
             next.quarantined_at_budget = None;
             next
@@ -748,8 +748,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("log");
         let first = row(0);
+        let limits = Budget {
+            bytes: first.len() as u64 + 750,
+            ..budget()
+        };
         std::fs::write(&path, format!("{first}{}\n{}", "x".repeat(1000), row(1))).unwrap();
-        let blocked = scan(&path, Runtime::Claude, None, budget()).unwrap();
+        let blocked = scan(&path, Runtime::Claude, None, limits).unwrap();
         assert_eq!(blocked.stop, Stop::Quarantined);
         assert_eq!(blocked.samples.len(), 1);
         assert_eq!(blocked.cursor.offset(), first.len() as u64);
@@ -758,7 +762,7 @@ mod tests {
         assert!(!saved.contains("PRIVATE_TRANSCRIPT"));
         let restored: Cursor = serde_json::from_str(&saved).unwrap();
         assert!(
-            matches!(scan(&path, Runtime::Claude, Some(&restored), budget()),
+            matches!(scan(&path, Runtime::Claude, Some(&restored), limits),
             Err(Error::Oversized { offset }) if offset == first.len() as u64)
         );
         let larger = Budget {
@@ -775,6 +779,27 @@ mod tests {
         let whole = scan(&path, Runtime::Claude, None, larger).unwrap();
         assert_eq!(whole.samples, [blocked.samples, recovered.samples].concat());
         assert_eq!(whole.cursor.prefix_digest, recovered.cursor.prefix_digest);
+    }
+
+    #[test]
+    fn quarantine_retry_still_detects_a_rewritten_complete_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        let first = row(0);
+        let limits = Budget {
+            bytes: first.len() as u64 + 750,
+            ..budget()
+        };
+        std::fs::write(&path, format!("{first}{}\n", "x".repeat(1000))).unwrap();
+        let blocked = scan(&path, Runtime::Claude, None, limits).unwrap();
+        assert_eq!(blocked.stop, Stop::Quarantined);
+        std::fs::write(&path, format!("{}{}\n", row(1), "x".repeat(1000))).unwrap();
+        let mut restored = blocked.cursor;
+        restored.generation = Generation::capture(&File::open(&path).unwrap()).unwrap();
+        assert!(matches!(
+            scan(&path, Runtime::Claude, Some(&restored), limits),
+            Err(Error::Changed)
+        ));
     }
 
     #[test]
