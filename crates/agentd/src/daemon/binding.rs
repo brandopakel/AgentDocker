@@ -3127,4 +3127,56 @@ mod tests {
         );
         assert!(is_running(&me()), "provider retained");
     }
+    #[tokio::test]
+    async fn receiver_upgrade_never_targets_the_provider_process() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let receiver = provider(&daemon, "receiver", "same-process").await;
+        let previous = ControllerLaunch {
+            executable: agentdocker_host::procinfo::executable_path()
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            args: vec![],
+            cwd: dir.path().canonicalize().unwrap(),
+            env: Default::default(),
+        };
+        let provider = generation(&receiver, "same-process");
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: receiver.id.to_string(),
+                    provider: provider.clone(),
+                    controller: me(),
+                    token: TOKEN.into(),
+                    launch: Some(previous.clone()),
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        let mut launch = previous.clone();
+        launch.executable = dir.path().join("unused-new-receiver");
+        let seq = lock(&daemon.state).next_seq;
+        let binding = binding_of(&daemon, &receiver.id);
+        assert!(matches!(
+            daemon
+                .handle(Request::UpgradeController {
+                    agent: receiver.id.to_string(),
+                    provider,
+                    controller: me(),
+                    previous,
+                    launch,
+                    token: TOKEN.into(),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        assert_eq!(lock(&daemon.state).next_seq, seq);
+        assert_eq!(binding_of(&daemon, &receiver.id), binding);
+        daemon.tend_controllers();
+        assert!(is_running(&me()));
+    }
 }
