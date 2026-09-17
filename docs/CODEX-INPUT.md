@@ -116,6 +116,39 @@ Use the existing driver's `--scenario long-busy` to hold a direct user turn for
 65 seconds, require both human/peer inputs to remain queued without a receipt or
 pause, then verify their ordered consumption and receiver crash recovery.
 
+## Active input in an existing terminal (candidate, September 17 UTC)
+
+The native queue starts new turns only at idle. Its binding used to suppress
+all hook context, so an app pause could wait behind hours-old messages throughout
+an active turn. A verified PreToolUse/PostToolUse hook now asks that same receiver
+for the next FIFO input over a private local socket. The receiver remains the
+only daemon queue consumer; the hook never acknowledges messages itself.
+
+A private version-3 ledger reserves the exact hook context before removing its
+own native queue entry and returning output. A false or lost removal response,
+a lost hook response, or missing exact history keeps the original input for
+reconciliation without automatic resubmission. The receiver accepts only the
+matching complete `hookPrompt` fragment with provider run, thread, turn and item
+identities. Native `userMessage` receipts remain valid if the original queue entry
+won the race. Older version-2 ledgers migrate without changing the token, queue
+ID, original input or receipts. An older receiver refuses the new ledger version.
+
+The hook waits at most four seconds including coordination and output. Human and
+peer text exceeding the 6,000-byte hook context budget stays on the native route;
+generated stale notices may omit repeated metadata while retaining the original
+ID and complete paths, with an explicit summary label. Permission answers keep
+their existing route. Hooks do not type into the terminal, resume another thread,
+or choose permission decisions. This is delivery at tool boundaries; a provider
+that performs no tool call still controls when the next input is consumed.
+
+Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
+Codex executable and immutable candidate binaries. The trial adds peer, human
+project and human global input during one busy TUI turn and requires exact
+receipts, FIFO order and no later replay after baseline idle/draft/crash tests.
+Implementation is under test; installed acceptance and broader provider parity
+remain open. The provider's [hook contract](https://learn.chatgpt.com/docs/hooks)
+supports additional context without replacing the tool result.
+
 ## New managed conversations
 
 New Codex sessions can receive human and peer messages while idle. In New session,

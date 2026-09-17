@@ -53,11 +53,11 @@ pub(super) async fn find(
                 {
                     return Ok(found);
                 }
-                if let Some(receipt) = recovery::receipt(
+                if let Some(receipt) = input_receipt(
                     thread,
                     entry["turnId"].as_str().unwrap_or_default(),
                     &entry["item"],
-                    &attempt.input,
+                    attempt,
                 )? {
                     ensure!(
                         found.is_none(),
@@ -75,6 +75,50 @@ pub(super) async fn find(
     })
     .await
     .context("native queue receipt lookup exceeded one minute")?
+}
+
+fn input_receipt(
+    thread: &str,
+    turn: &str,
+    item: &Value,
+    attempt: &Attempt,
+) -> Result<Option<Receipt>> {
+    if let Some(receipt) = recovery::receipt(thread, turn, item, &attempt.input)? {
+        return Ok(Some(receipt));
+    }
+    let Some(hook) = &attempt.hook else {
+        return Ok(None);
+    };
+    if item["type"] != "hookPrompt" {
+        return Ok(None);
+    }
+    let fragments = item["fragments"]
+        .as_array()
+        .context("hook receipt has no fragments")?;
+    let matching: Vec<_> = fragments
+        .iter()
+        .filter(|f| f["text"].as_str() == Some(&hook.context))
+        .collect();
+    ensure!(matching.len() <= 1, "repeated native hook receipt");
+    let Some(fragment) = matching.first() else {
+        return Ok(None);
+    };
+    ensure!(
+        fragment["hookRunId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+            && !turn.is_empty(),
+        "hook receipt lacks provider identity"
+    );
+    Ok(Some(Receipt {
+        thread: thread.into(),
+        turn: turn.into(),
+        item: item["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .context("hook receipt lacks item ID")?
+            .into(),
+    }))
 }
 
 pub(super) fn queued_id(value: &Value, attempt: &Attempt) -> Result<Option<String>> {
@@ -142,6 +186,51 @@ pub(super) async fn queued(
 mod tests {
     use super::*;
     #[test]
+    fn hook_receipt_requires_exact_context_and_provider_ids() {
+        let mut attempt = Attempt {
+            message: "message".into(),
+            input: "native input".into(),
+            queued: None,
+            receipt: None,
+            anchor: None,
+            hook: Some(super::super::ledger::HookOffer {
+                request: "request".into(),
+                context: "exact context".into(),
+            }),
+        };
+        let mut item = json!({"type":"hookPrompt","id":"hook-item","fragments":[{"hookRunId":"actual-provider-run","text":"exact context"}]});
+        assert_eq!(
+            input_receipt("thread", "turn", &item, &attempt)
+                .unwrap()
+                .unwrap()
+                .item,
+            "hook-item"
+        );
+        item["fragments"][0]["text"] = json!("truncated context");
+        assert!(
+            input_receipt("thread", "turn", &item, &attempt)
+                .unwrap()
+                .is_none()
+        );
+        item["fragments"][0]["text"] = json!("exact context");
+        item["fragments"][0]["hookRunId"] = json!("");
+        assert!(input_receipt("thread", "turn", &item, &attempt).is_err());
+        item["fragments"][0]["hookRunId"] = json!("run");
+        assert!(input_receipt("thread", "", &item, &attempt).is_err());
+        item["fragments"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"hookRunId":"run2","text":"exact context"}));
+        assert!(input_receipt("thread", "turn", &item, &attempt).is_err());
+        attempt.hook = None;
+        assert!(
+            input_receipt("thread", "turn", &item, &attempt)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn queue_acceptance_matches_the_entire_input_and_client_id() {
         let attempt = Attempt {
             message: "original".into(),
@@ -149,6 +238,7 @@ mod tests {
             queued: None,
             receipt: None,
             anchor: None,
+            hook: None,
         };
         let mut value = json!({"id":"provider-queue","clientUserMessageId":"original","input":[{"type":"text","text":"full input","text_elements":[]}]});
         assert_eq!(

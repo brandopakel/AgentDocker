@@ -28,12 +28,21 @@ pub(super) struct Binding {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(super) struct HookOffer {
+    pub request: String,
+    pub context: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Attempt {
     pub message: String,
     pub input: String,
     pub queued: Option<String>,
     pub anchor: Option<String>,
     pub receipt: Option<Receipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook: Option<HookOffer>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -113,7 +122,7 @@ impl Ledger {
                     "bound native input ledger is missing; retained input needs reconciliation"
                 );
                 Record {
-                    version: 2,
+                    version: 3,
                     binding: binding.clone(),
                     token: uuid::Uuid::new_v4().simple().to_string(),
                     attempt: None,
@@ -123,6 +132,13 @@ impl Ledger {
             }
             Err(e) => return Err(e.into()),
         };
+        if record.version == 2 {
+            ensure!(
+                record.attempt.as_ref().is_none_or(|a| a.hook.is_none()),
+                "old native record contains a hook offer"
+            );
+            record.version = 3;
+        }
         record.validate(&record.binding)?;
         if let Some(accepted) = accepted {
             ensure!(
@@ -196,6 +212,7 @@ impl Ledger {
             input: input(envelope)?,
             queued: None,
             receipt: None,
+            hook: None,
             anchor,
         });
         self.save(next)
@@ -209,6 +226,25 @@ impl Ledger {
             "native input has conflicting queue IDs"
         );
         attempt.queued = Some(id.into());
+        self.save(next)
+    }
+
+    /// Reserve a single hook offer before removing native input or writing output.
+    /// Even a lost response is retained for receipt lookup, never blindly repeated.
+    pub fn offer_hook(&mut self, request: &str, context: String) -> Result<()> {
+        let mut next = self.record.clone();
+        let attempt = next
+            .attempt
+            .as_mut()
+            .context("no native input to hand off")?;
+        ensure!(
+            attempt.hook.is_none() && attempt.receipt.is_none(),
+            "native input was already offered"
+        );
+        attempt.hook = Some(HookOffer {
+            request: request.into(),
+            context,
+        });
         self.save(next)
     }
 
@@ -278,7 +314,7 @@ fn valid_id(value: &str) -> bool {
 impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
-            self.version == 2 && &self.binding == binding,
+            self.version == 3 && &self.binding == binding,
             "native queue provider binding changed; reconcile retained input before reconnecting"
         );
         ensure!(
@@ -315,6 +351,14 @@ impl Record {
                 envelope["agentdocker_message"]["id"].as_str() == Some(&attempt.message),
                 "native input does not match its message ID"
             );
+            if let Some(hook) = &attempt.hook {
+                ensure!(
+                    valid_id(&hook.request)
+                        && !hook.context.is_empty()
+                        && hook.context.len() <= 6000,
+                    "invalid native hook offer"
+                );
+            }
             if let Some(id) = &attempt.anchor {
                 ensure!(valid_id(id), "invalid receipt boundary");
             }
@@ -394,6 +438,88 @@ mod tests {
             "acknowledged message bodies must not accumulate"
         );
         assert!(!String::from_utf8(bytes).unwrap().contains(&"x".repeat(100)));
+    }
+
+    #[test]
+    fn hook_handoff_survives_reopen_without_an_ack_or_second_offer() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let message = Envelope::new(
+            "peer",
+            Destination::parse("agent"),
+            "chat",
+            serde_json::json!({"text":"pause fixture"}),
+            None,
+            chrono::Utc::now(),
+        );
+        let mut ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
+        let token = ledger.record.token.clone();
+        ledger
+            .prepare(&message, Some("history-boundary".into()))
+            .unwrap();
+        ledger.queued("old-native-entry").unwrap();
+        ledger
+            .offer_hook("hook-request", input(&message).unwrap())
+            .unwrap();
+        assert!(ledger.acknowledge().is_err());
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
+        assert_eq!(ledger.record.token, token);
+        let attempt = ledger.record.attempt.as_ref().unwrap();
+        assert_eq!(attempt.queued.as_deref(), Some("old-native-entry"));
+        assert_eq!(attempt.hook.as_ref().unwrap().request, "hook-request");
+        assert!(
+            ledger
+                .offer_hook("retry", input(&message).unwrap())
+                .is_err()
+        );
+        assert!(ledger.prepare(&message, None).is_err());
+        assert!(ledger.acknowledge().is_err());
+        ledger
+            .received(Receipt {
+                thread: "thread".into(),
+                turn: "active-turn".into(),
+                item: "actual-hook-prompt".into(),
+            })
+            .unwrap();
+        ledger.acknowledge().unwrap();
+        assert!(ledger.record.attempt.is_none());
+        assert_eq!(
+            ledger.record.completed.back().unwrap().message,
+            message.id.as_str()
+        );
+        assert!(
+            !std::fs::read_to_string(&ledger.path)
+                .unwrap()
+                .contains("pause fixture")
+        );
+    }
+
+    #[test]
+    fn version_two_upgrade_keeps_pending_queue_and_receipts() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let message = Envelope::new(
+            "peer",
+            Destination::parse("agent"),
+            "chat",
+            serde_json::json!({"text":"retained"}),
+            None,
+            chrono::Utc::now(),
+        );
+        let mut ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
+        ledger.prepare(&message, None).unwrap();
+        ledger.queued("native-id").unwrap();
+        let path = ledger.path.clone();
+        let mut old = serde_json::to_value(&ledger.record).unwrap();
+        old["version"] = serde_json::json!(2);
+        drop(ledger);
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let ledger = Ledger::open(home.path(), binding, None).unwrap();
+        let mut upgraded = serde_json::to_value(&ledger.record).unwrap();
+        assert_eq!(upgraded["version"], 3);
+        upgraded["version"] = serde_json::json!(2);
+        assert_eq!(upgraded, old);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 mod answers;
 mod availability;
 mod bootstrap;
+pub mod hooks;
 mod ledger;
 mod receipts;
 mod resume;
@@ -209,7 +210,12 @@ async fn preflight(binding: &Binding) -> Result<()> {
     checked.and(stopped)
 }
 
-async fn service(client: &Client, provider: &mut Provider, ledger: &mut Ledger) -> Result<()> {
+async fn service(
+    client: &Client,
+    provider: &mut Provider,
+    ledger: &mut Ledger,
+    hooks: &hooks::Listener,
+) -> Result<()> {
     let thread = ledger.record().binding.provider.session.clone();
     let human = match call(client, Request::Me { workdir: None }).await? {
         Response::Agent { agent } => agent.id.to_string(),
@@ -232,7 +238,14 @@ async fn service(client: &Client, provider: &mut Provider, ledger: &mut Ledger) 
                 ledger.received(receipt)?;
                 continue;
             }
-            if let Some(id) = receipts::queued(provider, &thread, &attempt).await? {
+            if attempt.hook.is_some() {
+                healthy = false;
+                let since = unseen_since.get_or_insert_with(tokio::time::Instant::now);
+                ensure!(
+                    since.elapsed() < Duration::from_secs(30),
+                    "native hook offer lacks an exact provider receipt; retained without resubmission"
+                );
+            } else if let Some(id) = receipts::queued(provider, &thread, &attempt).await? {
                 if attempt.queued.as_deref() != Some(&id) {
                     ledger.queued(&id)?;
                 }
@@ -253,7 +266,7 @@ async fn service(client: &Client, provider: &mut Provider, ledger: &mut Ledger) 
         } else {
             if !availability::check(client, provider, ledger, &agent).await? {
                 refresh(client, ledger, &mut last_refresh).await?;
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                wait_for_hook(hooks, client, provider, ledger).await?;
                 continue;
             }
             let (messages, uncertain, answers_routed) = queue(client, ledger, Vec::new()).await?;
@@ -310,8 +323,28 @@ async fn service(client: &Client, provider: &mut Provider, ledger: &mut Ledger) 
         if healthy {
             refresh(client, ledger, &mut last_refresh).await?;
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        wait_for_hook(hooks, client, provider, ledger).await?;
     }
+}
+
+async fn wait_for_hook(
+    hooks: &hooks::Listener,
+    client: &Client,
+    provider: &mut Provider,
+    ledger: &mut Ledger,
+) -> Result<()> {
+    tokio::select! {
+        stream = hooks.accept() => {
+            match stream {
+                Ok(stream) => if let Err(error) = hooks::serve(stream, client, provider, ledger).await {
+                    eprintln!("Native hook delivery retained: {error:#}");
+                },
+                Err(error) => return Err(error.into()),
+            }
+        }
+        _ = tokio::time::sleep(Duration::from_secs(2)) => (),
+    }
+    Ok(())
 }
 
 async fn refresh(
@@ -364,6 +397,7 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
     }
     let agent = identity(&client, &binding).await?;
     let mut ledger = Ledger::open(&home, binding.clone(), agent.input_binding.as_ref())?;
+    let hooks = hooks::Listener::bind(&home, &binding.agent)?;
     // Prove the read-only native queue/history APIs before suppressing legacy
     // delivery. A missing API on an unbound session leaves hooks working. An
     // already bound session retains its queue and reports the incompatibility.
@@ -421,7 +455,7 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
             )?;
             let result = async {
                 verify_provider(&mut provider, &binding).await?;
-                service(&client, &mut provider, &mut ledger).await
+                service(&client, &mut provider, &mut ledger, &hooks).await
             }
             .await;
             let shutdown = provider.shutdown().await;

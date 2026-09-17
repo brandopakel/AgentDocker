@@ -124,6 +124,25 @@ and busy-session interruption/queue behavior, including a broadcast pause, with
 per-recipient evidence, retained drafts and no duplicate execution. Preserve
 unavailable recipients' input and show why delivery is waiting. This remains open.
 
+**September 16, 13:59 PDT — the app repeated this failure:** project message
+`b8f2cb39f7f44b4c` asked both agents to pause. Claude received it during a tool
+turn; existing Codex did not see it until after the human repeated the request
+and older native-queue entries drained. The September 17 UTC resume
+`ca2087509f184dd9` woke the idle Codex session, with a provider receipt at
+00:25:09 UTC, seven seconds after submission. Idle wake therefore does not close
+active delivery. A native hook handoff is being implemented in the existing
+receiver: verified PreToolUse/PostToolUse calls receive the same FIFO input,
+with one owner, a durable offer, exact hookPrompt receipt, and no competing hook
+ACK. An uncertain deletion/output retains the original message. Acceptance must
+cover the live busy TUI, project and global human sends, peer sends, retained
+drafts/questions, crash recovery and no later replay. This remains open until
+actual-provider and installed acceptance pass.
+
+The same resume requested @mentions, New DM/New channel, inviting agents/members,
+and Enter to send. Claude owns those interaction changes in the existing
+[design document](ICED-DESIGN.md); they are implementation/acceptance work, not
+completed merely by this plan entry.
+
 **September 16 live regression:** Claude confirmed twelve peer messages waited at
 its idle prompt until a human supplied input. The process had hooks/MCP but no
 channel receiver. Finish safe existing-session input connection and per-provider
