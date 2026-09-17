@@ -2212,9 +2212,15 @@ async fn main() -> Result<()> {
                 Some(selector) => selector,
                 None => std::env::current_dir()?.display().to_string(),
             });
-            let from = sender::resolve(&client, args.from)
-                .await?
-                .unwrap_or_else(|| HUMAN.into());
+            // Listing names nobody; a sender is resolved only for a hold
+            // or its lifting, so `pause --list` works from any shell.
+            let from = if args.list {
+                HUMAN.to_owned()
+            } else {
+                sender::resolve(&client, args.from)
+                    .await?
+                    .unwrap_or_else(|| HUMAN.into())
+            };
             if args.list {
                 if let Response::Pauses { pauses } = client.call(&Request::Pauses).await? {
                     if pauses.is_empty() {
