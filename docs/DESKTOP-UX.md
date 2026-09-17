@@ -185,6 +185,15 @@ reaches); a row whose unread rows name the person shows an **@n** pill beside
 its count, and such a message carries **mentions you** in its header.
 The selected project also scopes archived direct conversations. Project message search retains finished sessions' direct messages and AgentDocker notices after restart.
 
+Conversation, thread, channel and session message text is saved locally for
+its daemon and restored after a normal window close. Text that was in flight
+returns as an editable draft and is never sent automatically; check the history
+before retrying an uncertain submission. Newer edits survive older send replies.
+A failed save keeps the window open with **Retry saving** and an explicit
+**Close without saving** choice. An unreadable saved file is preserved. Storage
+limits refuse new text visibly while keeping existing nonempty drafts. Question
+answers, command input and other forms still remain window-local.
+
 Inbox reads like a messenger. The left column lists one conversation per agent
 with its mark, the latest line and how many items wait; **Everyone** shows all
 of them. The conversation on the right starts with that agent's open questions
