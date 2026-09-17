@@ -10,9 +10,11 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 
 MAX_BYTES = 1024 * 1024
 MAX_FDS = 4096
+MAX_SNAPSHOTS = 8
 SOCKET = re.compile(r"socket:\[(\d+)\]")
 
 
@@ -62,33 +64,43 @@ def socket_descriptors(root_fd):
         os.close(fd)
 
 
+def socket_tables(root_fd):
+    tcp = read_table(root_fd, "tcp", 9)
+    tcp |= read_table(root_fd, "tcp6", 9, optional=True)
+    other = read_table(root_fd, "unix", 6)
+    for name, index in [("udp", 9), ("udp6", 9), ("raw", 9),
+                        ("raw6", 9), ("netlink", 9), ("packet", 8)]:
+        other |= read_table(root_fd, name, index, optional=True)
+    return tcp, other
+
+
 def inspect(pid, proc=Path("/proc")):
-    """Classify a stable owned-process socket snapshot, refusing unknowns.
+    """Bracket observed descriptors with kernel tables, refusing unknowns.
 
     The open proc directory anchors all reads to one process generation. See
     https://docs.kernel.org/filesystems/proc.html#process-specific-subdirectories
     A dead process's open proc descriptors cannot refer to a reused PID.
+    Descriptor churn is expected during RPCs: classify every inode we observed,
+    rather than requiring the process to keep an identical descriptor set.
     """
     root_fd = os.open(proc / str(pid), os.O_RDONLY | os.O_DIRECTORY)
     try:
-        for _ in range(3):
+        unknown_count = 0
+        for attempt in range(MAX_SNAPSHOTS):
             namespace = os.readlink("ns/net", dir_fd=root_fd)
-            before = socket_descriptors(root_fd)
-            tcp = read_table(root_fd, "tcp", 9)
-            tcp |= read_table(root_fd, "tcp6", 9, optional=True)
-            other = read_table(root_fd, "unix", 6)
-            for name, index in [("udp", 9), ("udp6", 9), ("raw", 9),
-                                ("raw6", 9), ("netlink", 9), ("packet", 8)]:
-                other |= read_table(root_fd, name, index, optional=True)
-            after = socket_descriptors(root_fd)
-            seen = {inode for _, inode in before | after}
-            if seen & tcp:
+            before_tcp, before_other = socket_tables(root_fd)
+            seen = {inode for _, inode in socket_descriptors(root_fd)}
+            after_tcp, after_other = socket_tables(root_fd)
+            if seen & (before_tcp | after_tcp):
                 return {"tcp": True, "socket_count": len(seen)}
             if namespace != os.readlink("ns/net", dir_fd=root_fd):
                 raise ValueError("network namespace changed during observation")
-            if before == after and seen <= other:
+            unknown_count = len(seen - (before_other | after_other))
+            if not unknown_count:
                 return {"tcp": False, "socket_count": len(seen)}
-        raise ValueError("socket descriptors changed or could not be classified")
+            if attempt + 1 < MAX_SNAPSHOTS:
+                time.sleep(0.001)
+        raise ValueError(f"socket inodes could not be classified: {unknown_count} unknown after {MAX_SNAPSHOTS} samples")
     finally:
         os.close(root_fd)
 

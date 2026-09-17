@@ -193,7 +193,10 @@ Linux native-window smoke tests classify the owned process's socket inodes from
 its open `/proc/<pid>` directory. This avoids unrelated mount-stat failures from
 `lsof` (captured in the September 17 Linux x86 graphical job). Both TCP tables
 are checked; remaining socket inodes must be present in known non-TCP tables.
-Unknown sockets, unstable descriptor/namespace snapshots, unreadable or malformed
+Kernel tables bracket each descriptor sample so normal Unix RPC descriptor
+churn does not require an idle process. Every sampled inode must be classified
+on at least one side; TCP evidence from either side fails. Unknown sockets,
+changed network namespaces, unreadable or malformed
 tables and budget exhaustion refuse the observation. The helper is bounded to
 4,096 descriptors, 1 MiB per table, three snapshots and an outer five-second
 subprocess deadline. A process generation is anchored by its open proc directory.
@@ -207,3 +210,11 @@ ARM refusal did not retain the same diagnostic and is not explained by this
 later captured mount-stat warning. Kernel-table fixtures and actual owned UNIX
 and delayed-TCP child checks exercise the Linux observer; final graphical CI
 is still required.
+
+The Linux observer makes at most eight bracketed samples with a 1 ms yield
+between unclassified samples, within the existing 5 s helper deadline. A local
+concurrent-RPC reproduction reduced refusals from 23/100 with identical-FD
+requirements to 1/100 with three bracketed samples; the eight-sample version
+then completed 100/100. These are recorded trials, not a guarantee of detecting
+transient sockets or succeeding at arbitrary load. Persistent unknown sockets
+still refuse, and a successful helper report includes a bounded socket count.

@@ -109,10 +109,18 @@ class LinuxProcTransport(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "could not be classified"):
             self.proc.inspect(42, self.root)
 
-    def test_changing_socket_snapshot_and_descriptor_budget_refuse(self):
-        changed = [{("5", "700")}, set()] * 3
-        with patch.object(self.proc, "socket_descriptors", side_effect=changed):
-            with self.assertRaisesRegex(ValueError, "descriptors changed"):
+    def test_socket_table_bracketing_classifies_closing_unix_but_retains_tcp_evidence(self):
+        # The observed descriptor can close before the second kernel table read.
+        # A TCP observation on either side still defeats a non-TCP classification.
+        for before, after, expected in [
+                ((set(), {"700"}), (set(), set()), False),
+                ((set(), set()), (set(), {"700"}), False),
+                (({"700"}, set()), (set(), {"700"}), True),
+                ((set(), {"700"}), ({"700"}, set()), True)]:
+            with self.subTest(before=before, after=after), patch.object(self.proc, "socket_tables", side_effect=[before, after]):
+                self.assertEqual(self.proc.inspect(42, self.root)["tcp"], expected)
+        with patch.object(self.proc, "socket_tables", return_value=(set(), set())):
+            with self.assertRaisesRegex(ValueError, "1 unknown after 8 samples"):
                 self.proc.inspect(42, self.root)
         with patch.object(self.proc, "MAX_FDS", 0):
             with self.assertRaisesRegex(ValueError, "descriptor count"):
@@ -130,7 +138,9 @@ class LinuxProcTransport(unittest.TestCase):
 
     def test_malformed_linux_reply_never_claims_tcp_or_a_clean_observation(self):
         process = SimpleNamespace(pid=42, poll=lambda: None)
-        for output in ["{}", "null", '{"tcp": "false"}', "not JSON"]:
+        for output in ["{}", "null", '{"tcp": "false"}', "not JSON", '{"tcp": false}',
+                       '{"tcp": false, "socket_count": true}', '{"tcp": false, "socket_count": -1}',
+                       '{"tcp": false, "socket_count": 8193}']:
             with self.subTest(output=output), patch.object(SMOKE.sys, "platform", "linux"), patch.object(SMOKE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output, "")):
                 with self.assertRaises(SMOKE.TransportCheckFailed) as caught:
                     SMOKE.check_no_tcp([process], time.monotonic() + 5)
