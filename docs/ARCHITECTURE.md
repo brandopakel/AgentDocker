@@ -100,7 +100,7 @@ preserve its pending work or enable daemon replacement; see
 
 ### `agentdocker` (`crates/cli`)
 
-A thin client. Each invocation opens one connection, sends one request, and prints the response(s). It exists so humans and shell hooks can participate; it is not the only way in.
+A thin client. Each invocation opens one connection, sends one request, and prints the response(s). It exists so humans and shell hooks can participate; it is not the only way in. An error answer ends the command with an exit status by the answer's class — 2 invalid, 3 not found or ambiguous, 4 held (conflict, name taken, deadlock), 5 refused (forbidden, paused), 6 unavailable (storage, engine, build, backpressure, timeout, cancelled, transferring, lost history), 1 internal or anything that is not the daemon's answer — with the words and details on stderr; see the [guide](GUIDE.md#exit-status).
 
 ### Starting the daemon
 

@@ -163,6 +163,22 @@ they said. Run those in a real terminal.
 Every command, by what you are trying to do. `--help` on any of them for
 the flags.
 
+### Exit status
+
+A command ends with a status that says what class of thing went wrong, so
+a script or an agent driving the command line can branch without parsing
+text; the words and any details still go to stderr as `Error: … (Code)`.
+
+| Status | Meaning | Daemon answers |
+| --- | --- | --- |
+| 0 | done | — |
+| 1 | something unexpected: an internal error, or a failure that is not the daemon's answer (no daemon, a broken connection) | `internal` |
+| 2 | a usage error, the argument parser's own; also an invalid request | `invalid` |
+| 3 | nothing by that name, or too many | `not_found`, `ambiguous` |
+| 4 | held or taken by somebody else | `conflict`, `name_taken`, `deadlock` |
+| 5 | refused: not the caller's to do, or the project is paused | `forbidden`, `paused` |
+| 6 | not now: the daemon, its storage, an engine or a build is unavailable, busy, handing over, timed out or cancelled | `storage_unavailable`, `unavailable`, `engine_unavailable`, `build_failed`, `backpressure`, `timeout`, `cancelled`, `transferring`, `event_history_lost` |
+
 ### Look at the fleet
 
 | Command | What it does |

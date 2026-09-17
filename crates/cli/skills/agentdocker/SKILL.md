@@ -38,6 +38,12 @@ depending on a reply. Hooks alone cannot wake an idle provider. Report actual
 limits through `report_provider_status`; do not guess reset times or report
 recovery from a heartbeat. Continue independent work while a peer is unavailable.
 
+When you drive the `agentdocker` command line rather than the tools, branch
+on its exit status rather than its text: 0 done, 2 invalid, 3 nothing by that
+name, 4 held by somebody else, 5 refused (not yours, or the project is
+paused), 6 not now (daemon, storage, engine or build unavailable), 1 anything
+unexpected. The words and details are on stderr.
+
 ## Manual inbox delivery
 
 Follow the connected adapter's delivery mode. If an input controller delivers

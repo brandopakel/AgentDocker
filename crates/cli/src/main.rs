@@ -1161,8 +1161,18 @@ struct ClaimArgs {
     amount: Option<u64>,
 }
 
+/// A command ends with a status a script can branch on: the daemon's
+/// answer by its class (see [`client::exit_code`]), anything else as
+/// unexpected. The words go to stderr as they always did.
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!("Error: {error:#}");
+        std::process::exit(client::exit_code_for(&error));
+    }
+}
+
+async fn run() -> Result<()> {
     agentdocker_host::installation::redirect_managed_launcher()?;
     let _installation_pin = agentdocker_host::installation::pin_current_executable()?;
     let cli = Cli::parse();
