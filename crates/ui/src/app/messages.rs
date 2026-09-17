@@ -1117,9 +1117,12 @@ impl App {
                 .channel_id()
                 .is_some_and(|id| id.as_str() == channel)
         });
-        let Some(summary) =
-            summary.filter(|s| s.open && s.members.iter().any(|id| self.is_human(id.as_str())))
-        else {
+        let Some(summary) = summary.filter(|s| {
+            self.channels
+                .iter()
+                .any(|item| item.id.as_str() == channel && item.is_open())
+                && s.members.iter().any(|id| self.is_human(id.as_str()))
+        }) else {
             return panel(
                 note("This channel is no longer available to add members.", c),
                 c,
@@ -1236,9 +1239,12 @@ impl App {
             ));
         }
         if summary.kind == ConversationKind::Channel
-            && summary.open
             && summary.members.iter().any(|id| self.is_human(id.as_str()))
             && let Some(channel) = summary.conversation.channel_id()
+            && self
+                .channels
+                .iter()
+                .any(|item| &item.id == channel && item.is_open())
         {
             title_row = title_row.push(action(
                 "invite-channel",
