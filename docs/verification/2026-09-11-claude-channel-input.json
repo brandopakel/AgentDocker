@@ -754,5 +754,115 @@
       "The installed Claude process and production database were not restarted or rewritten.",
       "Initialized-before-SessionStart remains a guarded refusal; provider startup ordering, consent and actual idle model receipt remain open."
     ]
+  },
+  "board_identity_resume_2026_09_17": {
+    "runtime_source": "197bca46c174a571e2e2bd20dd08862ae8e6c899",
+    "build": {
+      "format": 1,
+      "source_commit": "0bd8331cd12262fed22161de4141fcfd6d8632b1",
+      "source_tree": "4433090326159e4d109c2b8615f7a8d4e0d08047",
+      "source_input_sha256": "085fc63502f96c762f54d01a94c24d25d8c71637b445a767435b3ad51203e2bc",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 23,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "ef4112a1f032a48d366f97f4f47f440853f6d82d443cd26c899bf25567db0f18",
+        "agentd": "6379c85ed4926f13eb0cd59183d4bb4ce949c4d43b78428107b3c5fad84bea75",
+        "agentdocker-ui": "13529d1f0d92be391f7688b8dc8e4d79cf86a435173665814c1cfeccb0859740"
+      }
+    },
+    "installed": false,
+    "pr": 179,
+    "gate": {
+      "result": "passed",
+      "rust_passed": 1165,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "format_clippy_doctest_package_release": "passed",
+      "log": "/private/tmp/agentdocker-resume-cards-gate-20260917.log",
+      "log_sha256": "3579731f22e907db6b95b603366e4678930bbcbdf277ac1c09acaafe3b56c837"
+    },
+    "transport": {
+      "result": "passed",
+      "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+      "steps": [
+        "idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption",
+        "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+        "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+        "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+        "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+        "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+        "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+        "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+        "pre-initialization session fold preserved observations, open memberships and completed card identity references without changing their text or state, retained one channel owner across different agent IDs, and delivered the older queue plus a new room message through the canonical alias",
+        "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+      ],
+      "binary_sha256": {
+        "agentd": "6379c85ed4926f13eb0cd59183d4bb4ce949c4d43b78428107b3c5fad84bea75",
+        "agentdocker": "ef4112a1f032a48d366f97f4f47f440853f6d82d443cd26c899bf25567db0f18"
+      },
+      "driver_sha256": {
+        "claude_channel_smoke.py": "5e8c091e4cd87b30eddecfa83008dd01581c4efa9fa316c458b4a38712ce8401",
+        "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+        "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+      },
+      "remaining_owned_processes": 0,
+      "duration_seconds": 38.77594962500734
+    },
+    "transport_artifacts": "/private/tmp/agentdocker-resume-cards-channel-20260917",
+    "card_regression": {
+      "before": {
+        "result": "passed",
+        "scope": "Private actual-daemon completed-card session-resume regression; owned fixture processes, not provider/model acceptance",
+        "binary_sha256": "df02594a41d29487781708928e13b7ced595c574df98e77e6764134c8624195e",
+        "driver_sha256": "ab54bcef5d3975c841e786214d4582246914077d9c9ff8e3552962ef90974784",
+        "observed": "refused",
+        "expected": "refused",
+        "card_text_column_timestamps_preserved": true,
+        "older_queue_id_preserved": true,
+        "remaining_owned_processes": 0,
+        "duration_seconds": 0.1460913330083713
+      },
+      "after": {
+        "result": "passed",
+        "scope": "Private actual-daemon completed-card session-resume regression; owned fixture processes, not provider/model acceptance",
+        "binary_sha256": "6379c85ed4926f13eb0cd59183d4bb4ce949c4d43b78428107b3c5fad84bea75",
+        "driver_sha256": "ab54bcef5d3975c841e786214d4582246914077d9c9ff8e3552962ef90974784",
+        "observed": "preserved",
+        "expected": "preserved",
+        "card_text_column_timestamps_preserved": true,
+        "older_queue_id_preserved": true,
+        "remaining_owned_processes": 0,
+        "duration_seconds": 0.3339037080295384
+      },
+      "driver": "/private/tmp/agentdocker-task-resume-trial-20260917/run.py",
+      "before_refusal": "document kind task contains the retired identity and requires explicit migration support",
+      "initial_driver_failure": {
+        "result": "failed",
+        "scope": "Private actual-daemon completed-card session-resume regression; owned fixture processes, not provider/model acceptance",
+        "binary_sha256": "df02594a41d29487781708928e13b7ced595c574df98e77e6764134c8624195e",
+        "driver_sha256": "8f7933e9abc64552fb20079c097214f228840f5843c22a2d3c249e38039b7bb7",
+        "error": "TypeError: string indices must be integers, not 'str'",
+        "remaining_owned_processes": 0,
+        "duration_seconds": 0.0707944999448955
+      },
+      "initial_driver_correction": "Read the Send response message field as an ID string, not as an envelope; the failed setup left no owned processes."
+    },
+    "targeted_tests": {
+      "selected": 2,
+      "passed": 2,
+      "scope": "Typed task migration during offline repair and session resumption, held-lease refusal, injected transaction rollback, reopen/listing and no synthetic lease. The repair audit keeps the original card."
+    },
+    "limits": [
+      "The transport fixture speaks MCP with owned fixture processes, not a provider model.",
+      "Production state and existing provider sessions were unchanged.",
+      "The startup-order adapter in PR #180 and actual provider consent/idle receipt need separate integration acceptance."
+    ]
   }
 }
