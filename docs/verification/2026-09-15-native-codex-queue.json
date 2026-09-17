@@ -3104,7 +3104,7 @@
         "threadId"
       ],
       "managed_control_socket": "Read-only daemon version check found no app-server-control socket for this profile; no daemon was started.",
-      "limit": "The documented active-turn steering API requires an owned active turn. It is not proof that an independent sidecar can steer this existing standalone TUI."
+      "limit": "The documented turn/steer API requires an active turn on the target thread and a matching expectedTurnId. This independent-terminal bridge has not established a compatible route to steer the terminal active turn through its separate connection; this is a local compatibility limitation, not an additional API ownership requirement."
     },
     "tool_boundary_timing": {
       "previous_tool_completed_at": "2026-09-17T20:20:08.578Z",
