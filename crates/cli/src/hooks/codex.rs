@@ -233,13 +233,18 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     }
     let started_at =
         agentdocker_host::procinfo::start_time(pid).context("cannot verify Codex process birth")?;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
     let delivery = tokio::time::timeout_at(deadline, async {
         let agent = report(client, &input, pid, started_at, observed_at).await?;
         match agent {
             Some(agent) => match crate::codex_input::external::ensure_started(client, &agent).await
             {
-                Ok(true) => Ok(Delivery::empty()),
+                Ok(true) => {
+                    let context = crate::codex_input::external::hooks::context(&agent, &input.hook_event_name, &input.session_id).await?;
+                    Ok(Delivery { output: context.map_or_else(|| json!({}), |text| json!({"hookSpecificOutput": {
+                        "hookEventName": input.hook_event_name, "additionalContext": text
+                    }})), acknowledgement: None, continuation: None })
+                },
                 Ok(false) => prepare(client, &input, agent.id.to_string()).await,
                 Err(error) => {
                     eprintln!("Native Codex input could not start: {error}");
@@ -250,7 +255,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
         }
     })
     .await
-    .context("coordination exceeded the one-second hook budget")??;
+    .context("coordination exceeded the four-second hook budget")??;
     deliver(client, delivery, 1, deadline).await
 }
 
