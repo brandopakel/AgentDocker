@@ -241,9 +241,10 @@ pub fn mentions_in(text: &str) -> Vec<&str> {
 /// Whether a text mentions any of these names, as [`mentions_in`] reads
 /// them, case-insensitively.
 pub fn mentions_any(text: &str, names: &[String]) -> bool {
-    mentions_in(text)
-        .iter()
-        .any(|found| names.iter().any(|name| name.eq_ignore_ascii_case(found)))
+    mentions_in(text).iter().any(|found| {
+        let found = found.to_lowercase();
+        names.iter().any(|name| name.to_lowercase() == found)
+    })
 }
 
 /// Whether `reply_to` threads under a root in the same conversation. A
@@ -306,6 +307,7 @@ mod tests {
         assert_eq!(mentions_in("@here.").as_slice(), ["here"]);
         assert!(mentions_in("nothing here").is_empty());
         assert!(mentions_any("ping @USER now", &["user".into()]));
+        assert!(mentions_any("ping @Élodie now", &["élodie".into()]));
         assert!(!mentions_any("ping @users now", &["user".into()]));
     }
     use serde_json::json;

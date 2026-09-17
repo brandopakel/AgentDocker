@@ -304,3 +304,8 @@ core/host foundations. Full Windows daemon/ConPTY/service packaging remains
 separate platform work. Equivalent package size, launch time, memory and CPU
 measurements must accompany release decisions, using exact binary provenance.
 See [distribution and signing](DESKTOP-DISTRIBUTION.md) for public release gates.
+
+Messages review (September 17): mentioning an agent does not change recipients
+or grant channel membership. Suggestions only name current recipients. A late
+channel-creation reply may update only its originating form, preserving a newer
+form and its draft. These corrections are awaiting source and native validation.

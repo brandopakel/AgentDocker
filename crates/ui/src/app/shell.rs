@@ -822,7 +822,7 @@ impl App {
             }
             Message::NewChannelPurpose(purpose) => {
                 if let Some(form) = &mut self.new_conversation {
-                    form.purpose = purpose;
+                    form.purpose = purpose.chars().take(400).collect();
                     form.error = None;
                 }
             }
@@ -856,6 +856,7 @@ impl App {
                         form.purpose.trim().to_owned()
                     };
                     let cmd = Cmd::ChannelOpen {
+                        request: form.request.clone(),
                         name: form.name.clone(),
                         task,
                         members: form.members.iter().map(|id| id.to_string()).collect(),

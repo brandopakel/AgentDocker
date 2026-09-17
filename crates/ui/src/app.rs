@@ -132,6 +132,7 @@ enum Cmd {
     /// The person opens a room in the project they are looking at, with
     /// the members they picked (everyone else in it when none).
     ChannelOpen {
+        request: MessageId,
         name: String,
         task: String,
         members: Vec<String>,
@@ -240,7 +241,7 @@ enum Msg {
     Launched(Result<String, String>),
     ChannelSent(String, Result<MessageId, String>),
     /// The room the person asked for, by id, or why not.
-    ChannelOpened(Result<agentdocker_core::ChannelId, String>),
+    ChannelOpened(MessageId, Result<agentdocker_core::ChannelId, String>),
     SessionSent(String, Result<MessageId, String>),
     /// `Err` when the daemon does not know conversations at all.
     Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
@@ -971,28 +972,37 @@ impl App {
                         }
                     }
                 }
-                Msg::ChannelOpened(result) => match result {
-                    Ok(id) => {
-                        self.new_conversation = None;
-                        let conversation = agentdocker_core::ConversationId::channel(&id)
-                            .as_str()
-                            .to_owned();
-                        if let Some(project) = self.selected_project_id() {
-                            self.request_channels(project);
-                        }
-                        self.send(Cmd::Conversations(self.conversation_scope()));
-                        // The form's message, not a Task: drain has none
-                        // to return, and selecting needs no effect of
-                        // its own beyond the history request it sends.
-                        let _ = self.update(Message::SelectConversation(conversation));
+                Msg::ChannelOpened(request, result) => {
+                    if self
+                        .new_conversation
+                        .as_ref()
+                        .is_none_or(|form| form.request != request)
+                    {
+                        continue;
                     }
-                    Err(error) => {
-                        if let Some(form) = &mut self.new_conversation {
-                            form.creating = false;
-                            form.error = Some(error);
+                    match result {
+                        Ok(id) => {
+                            self.new_conversation = None;
+                            let conversation = agentdocker_core::ConversationId::channel(&id)
+                                .as_str()
+                                .to_owned();
+                            if let Some(project) = self.selected_project_id() {
+                                self.request_channels(project);
+                            }
+                            self.send(Cmd::Conversations(self.conversation_scope()));
+                            // The form's message, not a Task: drain has none
+                            // to return, and selecting needs no effect of
+                            // its own beyond the history request it sends.
+                            let _ = self.update(Message::SelectConversation(conversation));
+                        }
+                        Err(error) => {
+                            if let Some(form) = &mut self.new_conversation {
+                                form.creating = false;
+                                form.error = Some(error);
+                            }
                         }
                     }
-                },
+                }
                 Msg::ChannelSent(id, result) => {
                     let draft = self.shell.channel_drafts.entry(id.clone()).or_default();
                     match result {
@@ -2063,6 +2073,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             None
         }
         Cmd::ChannelOpen {
+            request,
             name,
             task,
             members,
@@ -2080,7 +2091,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Ok(other) => Err(format!("Unexpected reply: {other:?}")),
                 Err(error) => Err(format!("{error:#}")),
             };
-            Some(Msg::ChannelOpened(result))
+            Some(Msg::ChannelOpened(request, result))
         }
         Cmd::ConversationSend {
             draft,
@@ -2341,6 +2352,7 @@ pub enum NewKind {
 /// is one pick, a channel is a name, what it is for and who is in it.
 #[derive(Clone, Debug)]
 pub(crate) struct NewConversation {
+    pub request: MessageId,
     pub kind: NewKind,
     pub name: String,
     pub purpose: String,
@@ -2352,6 +2364,7 @@ pub(crate) struct NewConversation {
 impl NewConversation {
     pub(crate) fn new() -> Self {
         Self {
+            request: MessageId::new(),
             kind: NewKind::Direct,
             name: String::new(),
             purpose: String::new(),
@@ -2365,6 +2378,38 @@ impl NewConversation {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn channel_creation_replies_belong_to_the_submitted_form() {
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let first = NewConversation::new();
+        let mut second = NewConversation::new();
+        second.creating = true;
+        second.name = "second".into();
+        let expected = second.request.clone();
+        app.new_conversation = Some(second);
+        for result in [Ok("first-room".into()), Err("first failure".into())] {
+            messages
+                .send(Msg::ChannelOpened(first.request.clone(), result))
+                .unwrap();
+            app.drain();
+            let current = app.new_conversation.as_ref().unwrap();
+            assert_eq!(current.request, expected);
+            assert_eq!(current.name, "second");
+            assert!(current.creating);
+            assert!(current.error.is_none());
+            assert!(app.shell.conversation.is_none());
+        }
+        messages
+            .send(Msg::ChannelOpened(expected, Err("second failure".into())))
+            .unwrap();
+        app.drain();
+        let current = app.new_conversation.as_ref().unwrap();
+        assert!(!current.creating);
+        assert_eq!(current.error.as_deref(), Some("second failure"));
+    }
 
     #[test]
     fn text_zoom_reflows_messages_without_a_window_resize() {

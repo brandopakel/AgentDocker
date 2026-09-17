@@ -1699,7 +1699,7 @@ async fn main() -> Result<()> {
                     task,
                     members,
                     name,
-                    project,
+                    project: project.as_deref().map(project_selector),
                 };
                 if let Response::Channel { channel } = client.call(&request).await? {
                     // The id alone on stdout, as every creating command;

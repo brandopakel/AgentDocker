@@ -684,6 +684,7 @@ impl App {
         message: &ArchivedMessage,
         show_sender: bool,
         in_thread: bool,
+        mention_names: &[String],
         c: Colors,
     ) -> Element<'_, Message> {
         let from = message.envelope.from.as_str();
@@ -695,8 +696,7 @@ impl App {
             self.name_of(from)
         };
         let body_text = line_of(&message.envelope);
-        let mentions_me =
-            agentdocker_core::conversation::mentions_any(&body_text, &self.mention_names());
+        let mentions_me = agentdocker_core::conversation::mentions_any(&body_text, mention_names);
         let id = message.envelope.id.clone();
         let expanded = self.shell.message_detail.as_ref() == Some(&id);
         let long = body_text.chars().count() > 600 || body_text.lines().count() > 10;
@@ -860,12 +860,11 @@ impl App {
             .align_y(Center)
         ]
         .spacing(4);
-        // `@` and the start of a name offers who is here: a pick finishes
-        // the name in the draft. The names are the records' own — what
-        // `agentdocker send --to` takes — so a mention reaches its agent.
+        // Mention suggestions include only the conversation's recipients.
+        // Inserting a name does not change the Send destination or membership.
         if let Some(prefix) = mention_prefix(&text_now) {
             let matches: Vec<&AgentRecord> = self
-                .agents_to_talk_to()
+                .mention_recipients(conversation)
                 .into_iter()
                 .filter(|a| {
                     a.spec
@@ -944,6 +943,33 @@ impl App {
             .collect();
         agents.sort_by_key(|a| self.name_of(a.id.as_str()).to_lowercase());
         agents
+    }
+
+    fn mention_recipients(&self, conversation: &str) -> Vec<&AgentRecord> {
+        if let Some(agent) = self.direct_input_recipient(conversation) {
+            return agent
+                .status
+                .is_live()
+                .then_some(agent)
+                .into_iter()
+                .collect();
+        }
+        let Some(summary) = self
+            .conversations
+            .iter()
+            .find(|s| s.conversation.as_str() == conversation)
+        else {
+            return Vec::new();
+        };
+        self.agents_to_talk_to()
+            .into_iter()
+            .filter(|agent| {
+                summary
+                    .members
+                    .iter()
+                    .any(|id| self.canonical_agent(id.as_str()) == agent.id.as_str())
+            })
+            .collect()
     }
 
     /// Starting a conversation, the way Slack's New message does: a direct
@@ -1078,6 +1104,7 @@ impl App {
     }
 
     fn messages_pane(&self, c: Colors) -> Element<'_, Message> {
+        let mention_names = self.mention_names();
         let Some(summary) = self.open_summary() else {
             return empty(
                 "Pick a conversation",
@@ -1237,7 +1264,13 @@ impl App {
                         list = list.push(self.question_card(question, c));
                         continue;
                     }
-                    list = list.push(self.archived_message(message, show_sender, false, c));
+                    list = list.push(self.archived_message(
+                        message,
+                        show_sender,
+                        false,
+                        &mention_names,
+                        c,
+                    ));
                 }
             }
         }
@@ -1279,6 +1312,7 @@ impl App {
     }
 
     fn thread_pane(&self, c: Colors) -> Element<'_, Message> {
+        let mention_names = self.mention_names();
         let Some(root_id) = self.shell.thread.as_ref() else {
             return Space::new().into();
         };
@@ -1302,7 +1336,7 @@ impl App {
         let mut list = column![].spacing(4).width(Fill);
         match &self.thread {
             Some((root, replies)) if root.envelope.id == *root_id => {
-                list = list.push(self.archived_message(root, true, true, c));
+                list = list.push(self.archived_message(root, true, true, &mention_names, c));
                 list = list.push(Self::divider(
                     match replies.len() {
                         0 => "No replies yet".to_owned(),
@@ -1316,7 +1350,7 @@ impl App {
                 for reply in replies {
                     let show = last_from != Some(reply.envelope.from.as_str());
                     last_from = Some(reply.envelope.from.as_str());
-                    list = list.push(self.archived_message(reply, show, true, c));
+                    list = list.push(self.archived_message(reply, show, true, &mention_names, c));
                 }
             }
             _ => list = list.push(note("Loading…", c)),
@@ -1468,6 +1502,38 @@ mod tests {
             .unwrap();
         assert!(!app.counts_for_person(contested));
         assert_eq!(app.row_unread(contested), 218);
+    }
+
+    #[test]
+    fn mention_suggestions_include_only_live_conversation_recipients() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, receiver) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, receiver);
+        for id in ["member", "outsider"] {
+            let mut agent =
+                AgentRecord::new(agentdocker_core::AgentSpec::default(), false, Utc::now());
+            agent.id = id.into();
+            app.agents.push(agent);
+        }
+        let summary = serde_json::from_value(serde_json::json!({
+            "conversation":"channel:room", "kind":"channel", "title":"room", "members":["member"],
+            "unread":0, "mentions":0, "open":true
+        }))
+        .unwrap();
+        app.conversations.push(summary);
+        app.aliases.insert("retired".into(), "member".into());
+        for conversation in ["channel:room", "dm:user:member", "dm:user:retired"] {
+            let ids: Vec<&str> = app
+                .mention_recipients(conversation)
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect();
+            assert_eq!(ids, ["member"], "{conversation}");
+        }
+        assert!(app.mention_recipients("channel:missing").is_empty());
+        app.agents[0].status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        assert!(app.mention_recipients("channel:room").is_empty());
+        assert!(app.mention_recipients("dm:user:member").is_empty());
     }
 
     #[test]

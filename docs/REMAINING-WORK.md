@@ -353,3 +353,11 @@ The connected Claude and Codex sessions exchanged this audit's ownership and
 findings through AgentDocker on September 14. The peer acknowledged the message
 and returned its findings. This verifies active-session routing and model
 consumption; it does not replace an idle-wake or sustained-load trial.
+
+September 17 Messages review correction in progress: mention suggestions are
+limited to the selected conversation's live recipients, channel-creation replies
+carry their originating form identity, purposes are bounded, and relative CLI
+project selectors are normalized. Unicode lowercase mention matching and
+per-pane mention-name collection are included. Regression tests are written;
+compilation and native workflow acceptance remain pending. Existing-channel
+invitations remain the next part of this same user request.
