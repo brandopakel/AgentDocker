@@ -156,9 +156,10 @@ files they touch, typed messages between them and the person, questions that
 block, a journal attributed to commits, review and hand-off, and the daemon's
 own idea of who is live. Paprika does not know what an agent is doing to a
 checkout, cannot stop two agents editing one file, runs nothing on the machine
-and reaches an agent only when the agent calls in; AgentDocker has no board, no
-cards, no acceptance text, no spec documents beside the work, no roles, no
-webhooks and no mobile client. The overlap is coordination vocabulary: Paprika's
+and reaches an agent only when the agent calls in; AgentDocker had no board
+when this was written (it has one now — the first item below, in source), and
+still has no spec documents beside the work, no roles, no webhooks and no
+mobile client. The overlap is coordination vocabulary: Paprika's
 pull is our `claim` on a `task:<name>` lease (both atomic, both refuse a second
 taker), its hand-off is a column move where ours is a bundle to a named agent,
 its comments are our channel, its Memory link is our `journal_note`.
@@ -224,4 +225,21 @@ bridge and blocked-state mirror are designed and measured in
 [HERDR-BRIDGE.md](HERDR-BRIDGE.md) and deferred; a shipped SKILL.md exists
 (the portable coordination skill). From Dax: per-project visual identity,
 **Set up** for hooks and per-tool status badges are present; reply from the
-notification and trace-file resume are not.
+notification and trace-file resume are not. From Paprika: the first item —
+a card with acceptance text and an atomic pull over the `task:<id>` lease,
+with a Board tab in the app — is in source (PR #176); roles, typed links,
+webhooks, comment-only rules and the exit-code contract are not started, and
+the card-to-lease bridge to Paprika itself remains a proposal.
+
+Assessed September 17, against the [product direction](PRODUCT-DIRECTION.md):
+what is still worth taking is small and agent-facing — an exit-code contract
+for `--json` commands (agents drive the CLI), typed links on a card, message
+or hand-off (a path, a PR, a memory note; the data already exists), webhooks
+as a signed sink on the event stream (a team channel hears `question_asked`
+and `lease_deadlock`), and roles as agent labels a hand-off can name. Reply
+from the notification (Dax) is worth it once the routing acceptance above is
+closed. Not worth taking: herdr's focus/prompt bridge and blocked-state
+mirror (measured and deferred in [HERDR-BRIDGE.md](HERDR-BRIDGE.md); the
+pane identity we show is the useful part), trace-file resume (a provider's
+own concern), Paprika's spec documents, mobile client and hosted rules (the
+floor is local), and the card-to-lease bridge until somebody runs both.
