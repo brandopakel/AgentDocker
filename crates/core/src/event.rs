@@ -390,6 +390,46 @@ pub enum EventKind {
     LeaseDeadlock {
         cycle: Vec<crate::Blocked>,
     },
+    /// A card was filed on a project's board.
+    TaskCreated {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+        title: String,
+    },
+    /// An agent took a Ready card: theirs, in progress.
+    TaskPulled {
+        task: crate::TaskId,
+        project: ProjectId,
+        agent: AgentId,
+        /// Whom the card was taken over from, when the pull was an
+        /// explicit recovery of a hold that had lapsed (the lease
+        /// expired, was released, or its agent exited); the holder
+        /// itself, re-taking its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<AgentId>,
+        /// The `task:<id>` lease the pull took; it is the holding.
+        lease: crate::LeaseId,
+    },
+    /// A card moved columns, by its assignee or the person.
+    TaskMoved {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+        column: crate::Column,
+    },
+    /// A card's words or holder changed.
+    TaskUpdated {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+    },
+    /// A card left the board.
+    TaskArchived {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+    },
     /// The person told a project's agents to hold, and why.
     ProjectPaused {
         project: ProjectId,

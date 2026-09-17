@@ -54,6 +54,8 @@ pub enum Icon {
     Channels,
     /// Three dots: more.
     More,
+    /// Three columns: the board.
+    Board,
 }
 
 /// An icon inked in one colour.
@@ -152,6 +154,13 @@ impl Glyph {
                     let bar =
                         Path::rounded_rectangle(p(2.5, y), iced::Size::new(11.0, 4.0), 1.5.into());
                     frame.stroke(&bar, stroke);
+                }
+            }
+            Icon::Board => {
+                for x in [2.5, 6.5, 10.5] {
+                    let column =
+                        Path::rounded_rectangle(p(x, 3.0), iced::Size::new(3.0, 10.0), 1.0.into());
+                    frame.stroke(&column, stroke);
                 }
             }
             Icon::Activity => {

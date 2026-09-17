@@ -356,6 +356,26 @@ pub fn event_line(event: &Event) -> String {
             action,
             rule,
         } => format!("policy denied    {} {action} ({rule})", agent.short()),
+        EventKind::TaskCreated {
+            task, by, title, ..
+        } => {
+            format!("card filed       {task} by {by}: {title}")
+        }
+        EventKind::TaskPulled {
+            task, agent, from, ..
+        } => match from {
+            Some(from) => format!(
+                "card taken over  {task} by {} from {}, whose hold had lapsed",
+                agent.short(),
+                from.short()
+            ),
+            None => format!("card pulled      {task} by {}", agent.short()),
+        },
+        EventKind::TaskMoved {
+            task, by, column, ..
+        } => format!("card moved       {task} to {column} by {by}"),
+        EventKind::TaskUpdated { task, by, .. } => format!("card edited      {task} by {by}"),
+        EventKind::TaskArchived { task, by, .. } => format!("card archived    {task} by {by}"),
         EventKind::ProjectPaused {
             project,
             by,

@@ -408,6 +408,8 @@ enum Command {
     },
     /// Open, close, or prune a channel.
     Channel(ChannelArgs),
+    /// The board of work: cards in columns, pulled by agents one at a time.
+    Task(TaskArgs),
     /// Ask the other members of a channel to review this agent's work.
     ReviewRequest {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -854,6 +856,92 @@ struct RegisterArgs {
 struct ChannelArgs {
     #[command(subcommand)]
     action: ChannelAction,
+}
+
+#[derive(Args)]
+struct TaskArgs {
+    #[command(subcommand)]
+    action: TaskAction,
+}
+
+#[derive(Subcommand)]
+enum TaskAction {
+    /// File a card: a title, what done means, and the column (Backlog
+    /// unless said).
+    Create {
+        title: String,
+        /// What done means; an agent reads it before moving the card.
+        #[arg(long, default_value = "")]
+        acceptance: String,
+        /// backlog, ready, in-progress, review or done.
+        #[arg(long)]
+        column: Option<String>,
+        /// Project id, root or unique prefix (default: this directory's).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        /// Who files it (defaults to you, or the session this runs in).
+        from: Option<String>,
+    },
+    /// Take a Ready card nobody holds: yours, in progress. Refused if it
+    /// is held or not ready.
+    Pull {
+        /// Card id or unique prefix.
+        task: String,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// Take over a card whose holder's lease lapsed, naming that
+        /// holder (yourself, for your own lapsed hold); refused if the
+        /// card names somebody else or the hold is live.
+        #[arg(long, value_name = "AGENT")]
+        take_over_from: Option<String>,
+    },
+    /// Move a card to a column: its holder may, the person always may.
+    Move {
+        task: String,
+        /// backlog, ready, in-progress, review or done.
+        column: String,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+    },
+    /// Edit a card's words, or hand it to somebody (`--assignee ""` takes
+    /// it away).
+    Update {
+        task: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        acceptance: Option<String>,
+        #[arg(long)]
+        assignee: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+    },
+    /// Take a card off the board, kept for the record.
+    Archive {
+        task: String,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+    },
+    /// The board, Backlog to Done.
+    List {
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        /// One column only.
+        #[arg(long)]
+        column: Option<String>,
+        /// Include archived cards.
+        #[arg(long)]
+        archived: bool,
+        /// At most this many cards (1-500; 100 by default), within a
+        /// page's byte budget.
+        #[arg(long, default_value_t = agentdocker_core::protocol::TASKS_LIMIT)]
+        limit: usize,
+        /// Skip this many cards first: the next page starts where the
+        /// last one said it went on.
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1718,6 +1806,172 @@ async fn main() -> Result<()> {
             if let Response::History { messages } = client.call(&request).await? {
                 for m in &messages {
                     println!("{}", format::archived_line(m));
+                }
+            }
+        }
+        Command::Task(args) => {
+            let column_of = |text: Option<String>| -> Result<Option<agentdocker_core::Column>> {
+                text.map(|t| {
+                    agentdocker_core::Column::parse(&t).with_context(|| {
+                        format!("no column called {t}; backlog, ready, in-progress, review or done")
+                    })
+                })
+                .transpose()
+            };
+            let here = || -> Result<String> { Ok(std::env::current_dir()?.display().to_string()) };
+            let card_line = |task: &agentdocker_core::Task| {
+                format!(
+                    "{}  {:<12} {}{}",
+                    task.id,
+                    task.column.label(),
+                    task.title,
+                    task.assignee
+                        .as_ref()
+                        .map(|a| format!("  ({})", a.short()))
+                        .unwrap_or_default()
+                )
+            };
+            match args.action {
+                TaskAction::Create {
+                    title,
+                    acceptance,
+                    column,
+                    project,
+                    from,
+                } => {
+                    let request = Request::TaskCreate {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        project: Some(project.map_or_else(here, Ok)?),
+                        title,
+                        acceptance,
+                        column: column_of(column)?,
+                    };
+                    if let Response::Task { task } = client.call(&request).await? {
+                        println!("{}", task.id);
+                        eprintln!("{}", card_line(&task));
+                    }
+                }
+                TaskAction::Pull {
+                    task,
+                    agent,
+                    take_over_from,
+                } => {
+                    let agent = sender::resolve(&client, agent)
+                        .await?
+                        .context("pull as an agent: give --as")?;
+                    if let Response::Task { task } = client
+                        .call(&Request::TaskPull {
+                            agent,
+                            task,
+                            take_over_from,
+                        })
+                        .await?
+                    {
+                        println!("{}", card_line(&task));
+                    }
+                }
+                TaskAction::Move {
+                    task,
+                    column,
+                    agent,
+                } => {
+                    let column = column_of(Some(column))?.expect("given");
+                    let request = Request::TaskMove {
+                        agent: sender::resolve(&client, agent)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        task,
+                        column,
+                    };
+                    if let Response::Task { task } = client.call(&request).await? {
+                        println!("{}", card_line(&task));
+                    }
+                }
+                TaskAction::Update {
+                    task,
+                    title,
+                    acceptance,
+                    assignee,
+                    agent,
+                } => {
+                    let request = Request::TaskUpdate {
+                        agent: sender::resolve(&client, agent)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        task,
+                        title,
+                        acceptance,
+                        assignee,
+                    };
+                    if let Response::Task { task } = client.call(&request).await? {
+                        println!("{}", card_line(&task));
+                    }
+                }
+                TaskAction::Archive { task, agent } => {
+                    let request = Request::TaskArchive {
+                        agent: sender::resolve(&client, agent)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        task,
+                    };
+                    if let Response::Ok = client.call(&request).await? {
+                        println!("archived");
+                    }
+                }
+                TaskAction::List {
+                    project,
+                    column,
+                    archived,
+                    limit,
+                    offset,
+                } => {
+                    let request = Request::Tasks {
+                        project: Some(project.map_or_else(here, Ok)?),
+                        column: column_of(column)?,
+                        archived,
+                        offset,
+                        limit,
+                    };
+                    if let Response::Tasks { tasks, more } = client.call(&request).await? {
+                        if tasks.is_empty() {
+                            println!("no cards on the board");
+                        } else {
+                            let names = agent_names(&client).await;
+                            let rows: Vec<Vec<String>> = tasks
+                                .iter()
+                                .map(|t| {
+                                    vec![
+                                        t.id.to_string(),
+                                        t.column.label().to_owned(),
+                                        t.title.clone(),
+                                        t.assignee
+                                            .as_ref()
+                                            .map(|a| {
+                                                names
+                                                    .get(a.as_str())
+                                                    .cloned()
+                                                    .unwrap_or_else(|| a.short().to_owned())
+                                            })
+                                            .unwrap_or_else(|| "-".to_owned()),
+                                        if t.archived_at.is_some() {
+                                            "archived".to_owned()
+                                        } else {
+                                            String::new()
+                                        },
+                                    ]
+                                })
+                                .collect();
+                            format::table(&["CARD", "COLUMN", "TITLE", "HOLDER", ""], &rows);
+                            if more {
+                                println!(
+                                    "and more: the board goes on; --offset {} shows the next page",
+                                    offset + tasks.len()
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }

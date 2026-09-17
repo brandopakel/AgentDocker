@@ -179,6 +179,20 @@ build. Both failed visibility trials and the initial fixture-expression failure
 remain in the [launcher evidence](verification/2026-09-12-launcher-hook-repair.json).
 Zero-process OS launch and broader release acceptance remain open.
 
+## Installed already-open-app click (September 17)
+
+On installed `f5e298f4` (source `418fbc9`, carrying PR #175), with the
+production app explicitly hidden, the daemon posted an ordinary message and
+its owned Notification Center notification was pressed through accessibility:
+the app became visible with the exact message row (`26beba01be15456f`)
+revealed, and the GUI and both provider processes were unchanged. This closes
+the person's finding that a click while the app was already open did nothing,
+for that installed revision. Recorded in the
+[integrated record](verification/2026-09-12-integrated-desktop.json) under
+`installed_notification_click_2026_09_17`. Still open: a zero-process cold
+launch, a physical mouse click, a click whose message lies outside the loaded
+pages (the bounded page-back path), and signed-release acceptance.
+
 ## Work and acceptance
 
 1. (Partial: installed app/daemon identity verified; original notification poster not captured.) Identify the actual daemon, app bundle, notification sender and source version

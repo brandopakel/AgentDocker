@@ -19,9 +19,8 @@ and registered identities remained unchanged; receiver 29976 became 25642 with
 its binding/token and all 128 retained receipts preserved. Hidden-draft
 persistence is still unimplemented.
 
-PRs #174/#167/#175 are merged with final review and all CI checks. The installed
-preview also includes reviewed #177; its cross-platform CI and merge
-remain pending. Local verification passed 1,147 Rust tests (seven skipped),
+PRs #174/#167/#175/#177 are merged with final review and all CI checks; the
+installed preview includes #175 and #177. Local verification passed 1,147 Rust tests (seven skipped),
 94 Python checks (one skipped), 171 UI tests, the full release gate and
 429 native steps/26 checks. A targeted synthetic Enter submission from the
 reopened app reached this live Codex turn with a correlated receipt; physical
