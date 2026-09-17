@@ -635,6 +635,9 @@ enum Command {
     },
     /// Claims waiting for a resource, oldest first.
     Waiting,
+    /// Tell every agent in a project to hold (`pause "reason"`), lift it
+    /// (`pause --lift`), or list what is paused (`pause --list`).
+    Pause(PauseArgs),
     /// The fleet, live: who is running, what they are doing, what is
     /// held and who is waiting. Redraws as the daemon reports changes.
     Top,
@@ -1013,6 +1016,27 @@ enum JournalAction {
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
     },
+}
+
+/// A project's pause: the reason holds its agents until `--lift`.
+#[derive(Args)]
+struct PauseArgs {
+    /// Why; what the agents read. Not with --lift or --list.
+    reason: Option<String>,
+    /// Lift the pause: the agents get a `resume` message and may take
+    /// leases again.
+    #[arg(long, conflicts_with_all = ["reason", "list"])]
+    lift: bool,
+    /// The projects that are paused, and why.
+    #[arg(long, conflicts_with_all = ["reason", "lift", "project"])]
+    list: bool,
+    /// Project id, root or unique prefix (default: the one this
+    /// directory is in).
+    #[arg(long, value_name = "ID|PATH")]
+    project: Option<String>,
+    /// Who is asking (defaults to you, or the session this runs in).
+    #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
+    from: Option<String>,
 }
 
 #[derive(Args)]
@@ -2184,6 +2208,67 @@ async fn main() -> Result<()> {
             }
         }
         Command::Top => top::run(&client).await?,
+        Command::Pause(args) => {
+            let project = match args.project {
+                Some(selector) => Some(project_selector(&selector)),
+                None if args.list => None,
+                None => Some(std::env::current_dir()?.display().to_string()),
+            };
+            // Listing names nobody; a sender is resolved only for a hold
+            // or its lifting, so `pause --list` works from any shell.
+            let from = if args.list {
+                HUMAN.to_owned()
+            } else {
+                sender::resolve(&client, args.from)
+                    .await?
+                    .unwrap_or_else(|| HUMAN.into())
+            };
+            if args.list {
+                if let Response::Pauses { pauses } = client.call(&Request::Pauses).await? {
+                    if pauses.is_empty() {
+                        println!("no project is paused");
+                    } else {
+                        let rows: Vec<Vec<String>> = pauses
+                            .iter()
+                            .map(|p| {
+                                vec![
+                                    p.project.short().to_owned(),
+                                    p.by.clone(),
+                                    agentdocker_core::journal::ago(chrono::Utc::now(), p.at),
+                                    p.reason.clone(),
+                                ]
+                            })
+                            .collect();
+                        format::table(&["PROJECT", "BY", "SINCE", "REASON"], &rows);
+                    }
+                }
+            } else if args.lift {
+                if let Response::Ok = client
+                    .call(&Request::ResumeProject { from, project })
+                    .await?
+                {
+                    println!("resumed");
+                }
+            } else {
+                let Some(reason) = args.reason else {
+                    bail!("give a reason, or --lift or --list");
+                };
+                if let Response::Pause { pause } = client
+                    .call(&Request::Pause {
+                        from,
+                        project,
+                        reason,
+                    })
+                    .await?
+                {
+                    println!("{}", pause.project);
+                    eprintln!(
+                        "Paused: {}. Agents take no new leases until `agentdocker pause --project {} --lift`.",
+                        pause.reason, pause.project
+                    );
+                }
+            }
+        }
         Command::Waiting => {
             if let Response::Waiting { waiting } = client.call(&Request::Waiting).await? {
                 if waiting.is_empty() {
@@ -3406,6 +3491,19 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn pause_list_rejects_an_ignored_project_selector() {
+        use super::*;
+        for selector in [".", "another-project"] {
+            let error =
+                Cli::try_parse_from(["agentdocker", "pause", "--list", "--project", selector])
+                    .err()
+                    .expect("conflicting selector must fail before connecting");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+        assert!(Cli::try_parse_from(["agentdocker", "pause", "--list"]).is_ok());
+    }
 
     /// `history --read` moves the cursor of whoever runs it: an agent's
     /// shell names itself through AGENTDOCKER_AGENT_ID, so its read never
