@@ -618,3 +618,28 @@ Busy, no-active-turn and lost-reply scenarios also passed. The prior binary
 failed the changed-turn trial as expected; both results and the full
 1,077-Rust/84-Python gate are retained in the existing
 [reload evidence](verification/2026-09-16-reload-controller-episode.json).
+
+### September 17 active peer burst
+
+One actual Claude-to-Codex burst delivered all three original messages once, in
+order, into the same active model turn without a human prompt or manual queue
+acknowledgement. Exact retained receipts match provider context records. Those
+records appeared **104.19–119.36 seconds after sending**, so this is an ordering
+pass and an open latency finding, not immediate-delivery acceptance. Two earlier
+system notices were acknowledged before the first peer message. The external
+service retains one attempt and the active hook offers one head per tool
+boundary. The first tool completed at 20:20:08.578 UTC; the next tool began at
+20:20:58.985 and was a 45-second coordinator sleep. The first peer input arrived
+when that wait ended at 20:21:44.314; the next tool at 20:21:59.161 delivered the
+other two. These are end-to-end context delays including gaps between tools
+and an explicit coordinator wait, not 104–119 seconds of daemon or RPC work.
+The trace does not isolate every native queue/API wait.
+
+The [existing queue record](verification/2026-09-15-native-codex-queue.json) retains
+all three IDs, timestamps and receipt hashes. Bounded batching and scheduling
+need further engineering/measurement with exact recovery and no duplicate
+execution preserved. The [documented active-turn steering API](https://learn.chatgpt.com/docs/app-server#steer-an-active-turn)
+requires an active turn on the target thread and a matching `expectedTurnId`.
+The current independent-terminal bridge has a local compatibility limitation:
+its separate connection has not established a route to steer that terminal's
+active turn. This is not an additional ownership requirement in the API contract.

@@ -2896,9 +2896,36 @@
       ]
     }
   },
+  "installed_notification_click_2026_09_17": {
+    "result": "passed",
+    "at": "2026-09-17T18:48:58.890990+00:00",
+    "candidate": "f5e298f471dfadf5925558b44fb3f6e2d5d53a0172ce2e8a708af77a4f8dd192",
+    "source": "418fbc93c86d1658ab4c5c9975eeb76e581a4915",
+    "scope": "Actual Notification Center accessibility click on installed f5e298f4 while explicitly hidden; existing production window and provider generations preserved. No app restart, physical mouse/IME or zero-process launch tested.",
+    "case": "The person's September 17 finding (a click on a notification while the app was already open did nothing visible) on the installed revision that carries PR #175: the production app was explicitly hidden, the daemon posted an ordinary message, Notification Center's owned notification was pressed through accessibility, and the app became visible with the exact message row revealed.",
+    "message_id": "26beba01be15456f",
+    "hidden_before_click": true,
+    "click": "pressed_owned_notification",
+    "visible_and_target_found": "true, true",
+    "processes_unchanged": {
+      "gui": 25649,
+      "codex": 51242,
+      "claude": 18563
+    },
+    "poster_sha256": "0593959cd3162693d343d44c9b7bb7e2751685d225bb1fbe99ae1884eee92da4",
+    "driver_sha256": "ca6a485618c9fc08e8b6f5fdcc4453b3fa135b35a6f29a0fe503555456261769",
+    "evidence": "/private/tmp/agentdocker-installed-notification-click-20260917/result.json (private, this Mac)",
+    "recorded_by": "codex-51242; folded into this record by claude-code-18563",
+    "remaining": [
+      "Zero-process OS cold launch from a notification.",
+      "A physical mouse click rather than an accessibility press.",
+      "A click while the same conversation is open with the message outside the loaded pages (the bounded page-back path).",
+      "Signed/notarized release acceptance."
+    ]
+  },
   "draft_persistence_2026_09_17": {
     "source": "017ef68a0f9c19f9dfd02198057c56c98a697045",
-    "installed": false,
+    "installed": true,
     "pr": 178,
     "behavior": "Conversation/thread, channel and session text persists per desktop state-root/socket identity. Restore is editable and does not submit input. Failed saves preserve text; close waits for the latest save or an explicit unsaved-close choice.",
     "validation": {
@@ -3092,34 +3119,45 @@
       },
       "cleanup_errors": [],
       "driver_sha256": "c67cdf83430d98dfb370f2f98cdca307be97b58225edd210444f5353855ca9ae"
-    }
+    },
+    "installation_evidence": "installed_board_drafts_resume_2026_09_17"
   },
-  "installed_notification_click_2026_09_17": {
+  "installed_cold_notification_click_2026_09_17": {
     "result": "passed",
-    "at": "2026-09-17T18:48:58.890990+00:00",
+    "at": "2026-09-17T20:15:18.076048+00:00",
     "candidate": "f5e298f471dfadf5925558b44fb3f6e2d5d53a0172ce2e8a708af77a4f8dd192",
     "source": "418fbc93c86d1658ab4c5c9975eeb76e581a4915",
-    "scope": "Actual Notification Center accessibility click on installed f5e298f4 while explicitly hidden; existing production window and provider generations preserved. No app restart, physical mouse/IME or zero-process launch tested.",
-    "case": "The person's September 17 finding (a click on a notification while the app was already open did nothing visible) on the installed revision that carries PR #175: the production app was explicitly hidden, the daemon posted an ordinary message, Notification Center's owned notification was pressed through accessibility, and the app became visible with the exact message row revealed.",
-    "message_id": "26beba01be15456f",
-    "hidden_before_click": true,
+    "scope": "Actual Notification Center accessibility click on installed f5e298f4 with no GUI process before posting or before the click; provider generations preserved. Separate from a physical mouse, signed release or candidate d146 acceptance.",
+    "case": "Zero-process cold launch from a notification: no GUI process existed before the daemon posted or before the click; pressing the owned Notification Center notice launched the installed app, which became visible with the exact message row revealed, with both provider process generations unchanged.",
+    "message_id": "0691fa9fd985467f",
+    "guis_before": [],
+    "guis_before_click": [],
+    "gui_after_click": 77901,
     "click": "pressed_owned_notification",
     "visible_and_target_found": "true, true",
+    "click_to_visible_seconds": 1.6965183750144206,
     "processes_unchanged": {
-      "gui": 25649,
       "codex": 51242,
       "claude": 18563
     },
     "poster_sha256": "0593959cd3162693d343d44c9b7bb7e2751685d225bb1fbe99ae1884eee92da4",
-    "driver_sha256": "ca6a485618c9fc08e8b6f5fdcc4453b3fa135b35a6f29a0fe503555456261769",
-    "evidence": "/private/tmp/agentdocker-installed-notification-click-20260917/result.json (private, this Mac)",
+    "driver_sha256": "75f269307a19ac03167c5ffd06c85bd018dfad8d724a3a89e88f31ddabcfeb00",
+    "evidence": "/private/tmp/agentdocker-installed-cold-notification-20260917/{run.py,result.json} (private, this Mac)",
     "recorded_by": "codex-51242; folded into this record by claude-code-18563",
     "remaining": [
-      "Zero-process OS cold launch from a notification.",
       "A physical mouse click rather than an accessibility press.",
-      "A click while the same conversation is open with the message outside the loaded pages (the bounded page-back path).",
-      "Signed/notarized release acceptance."
-    ]
+      "The same on a signed/notarized release and on candidate d14610b7.",
+      "A click whose message lies outside the loaded pages (the bounded page-back path)."
+    ],
+    "visual_followup": {
+      "at": "2026-09-17T20:43:04.216477+00:00",
+      "result": "passed",
+      "pid": 77901,
+      "window_id": 42373,
+      "screenshot_sha256": "ab6fc2a96913b9ef9fbf00c3d5be79ad9cb246e32f1c5497442c374c19c3461b",
+      "visual_finding": "Exact cold-notification marker AD-INSTALLED-COLD-20260917-2016 is visible and highlighted in the current conversation viewport. No scrolling or app input used before capture. Captured the owned window, independently of desktop occlusion.",
+      "scope": "Follow-up visual inspection of the same installed GUI launched by the 20:15 cold click; not a second click or timing measurement."
+    }
   },
   "combined_board_drafts_resume_2026_09_17": {
     "source": "4647c2e37002ae34259ae6a851ea868fe8d4d978",
@@ -3215,12 +3253,13 @@
       "Private combined source, not installed; final PR review and platform CI still required.",
       "This snapshot predates the open-channel membership extension in #179 and the separate startup-order change.",
       "Native controls are rendered-callback acceptance, not physical keyboard or screen-reader trials."
-    ]
+    ],
+    "installation_evidence": "installed_board_drafts_resume_2026_09_17"
   },
   "reviewed_batch_candidate_2026_09_17": {
     "source": "3785e810cb923097f55060e1940fc45eb2ae3766",
     "candidate": "d14610b7d5f5c3d338032666ba9d774c6696fa926f74499d0ecd69fc4d1ffa85",
-    "installed": false,
+    "installed": true,
     "includes": {
       "board_pr": 176,
       "drafts_pr": 178,
@@ -3384,6 +3423,76 @@
       "null_objects": "These paths are absent from both commits.",
       "candidate_and_reviewed_input_objects_match": true,
       "full_gate_scope": "The local 1167-test gate preceded only the procinfo option-separator patch. That patch passed the 1149-test standalone full gate plus targeted integrated regression, strict Clippy and release build. The candidate native/MCP trials used the post-patch binaries; final PR180 CI tests the equivalent merged runtime. This is not a claim that the pre-patch gate ran on the candidate commit."
+    },
+    "installation_evidence": "installed_board_drafts_resume_2026_09_17"
+  },
+  "installed_board_drafts_resume_2026_09_17": {
+    "at": "2026-09-17T20:55:18Z",
+    "result": "passed within stated installation and draft scopes",
+    "candidate": "d14610b7d5f5c3d338032666ba9d774c6696fa926f74499d0ecd69fc4d1ffa85",
+    "source_commit": "3785e810cb923097f55060e1940fc45eb2ae3766",
+    "merged_runtime_commit": "e9c4ab2e4eacebe2b1fb11925be1653f7e21627d",
+    "source_relationship": "Runtime/packaging/scripts/config match merged main e9c4ab2; final #180 contains the candidate and gate commits as ancestors. See reviewed_batch_candidate_2026_09_17.source_relationship.",
+    "schema": 23,
+    "previous_candidate": "f5e298f471dfadf5925558b44fb3f6e2d5d53a0172ce2e8a708af77a4f8dd192",
+    "reviewed_heads": {
+      "176": "bc0a040601996bc844842713d0273511f183ac8c",
+      "179": "e455f8dfdd8f029253b852768ce6a2c7749b42aa",
+      "180": "4ca9b629dd7be85c0fcfed07d1fb212bb56274b8"
+    },
+    "review_and_ci": "PR176/178/179/180 merged after final-head review and all five CI workflows. PR180 merged as e9c4ab2.",
+    "backup": "Fresh SQLite backup passed integrity_check before activation; private configuration and receiver snapshots retained outside the repository.",
+    "providers_preserved": true,
+    "registered_live_identities_preserved": true,
+    "provider_pids": [
+      51242,
+      18563
+    ],
+    "old_controller": {
+      "pid": 25642,
+      "started_at": "2026-09-17T17:38:18.755944Z"
+    },
+    "new_controller": {
+      "pid": 18735,
+      "started_at": "2026-09-17T20:55:18.720427Z"
+    },
+    "token_and_binding_preserved": true,
+    "retained_old_receipts_confirmed": 128,
+    "bounded_oldest_receipt_evictions": 0,
+    "activation_gui_pid": 18743,
+    "final_gui_pid": 22436,
+    "driver_sha256": "245f7fdb34e57bd688031da09f72b02fe99a02d2c8a74f4c7336ade26f129d61",
+    "draft_trial": {
+      "at": "2026-09-17T20:56:31.804845+00:00",
+      "candidate": "d14610b7d5f5c3d338032666ba9d774c6696fa926f74499d0ecd69fc4d1ffa85",
+      "result": "passed",
+      "scope": "One actual installed conversation composer; targeted accessibility edit, graceful GUI close/reopen and returning to the same conversation. No Enter/Send, no daemon or provider restart. Other forms, automatic navigation restoration and physical keyboard/IME are outside this trial.",
+      "saved_before_close": true,
+      "restored_same_text": true,
+      "new_gui": 22436,
+      "providers_preserved": true,
+      "archive_matches": 0,
+      "owned_draft_removed": true,
+      "driver_sha256": "abc529685247e52ed6cc1a9a606ed1cf834be8978e22871bbc02a134081b7db9"
+    },
+    "trial_preflight_correction": "First draft-driver preflight assumed the Applications launcher itself resolved to an immutable package. It refused before any edit; the corrected trial verified the stable CLI and actual GUI executable paths instead.",
+    "scope": "Actual installed local preview. Explicit coordinator restart and supported receiver upgrade; no provider relaunch, no notarization or universal idle-delivery claim. One unsent conversation draft survived GUI close/reopen and returning to that conversation; no auto-send, and only owned test text was cleared. Question/board/other form drafts and automatic view restoration remain separate.",
+    "remaining": [
+      "Actual Claude provider consent and same-session channel relaunch, followed by peer-only idle input acceptance",
+      "Busy/interruption latency and broader provider adapters",
+      "Remaining form persistence and physical keyboard/IME",
+      "Signed distribution, Windows completion and sustained independent acceptance"
+    ],
+    "actual_board_use": {
+      "at": "2026-09-17T21:03:07.451530+00:00",
+      "result": "passed",
+      "candidate": "d14610b7",
+      "pid": 22436,
+      "task_id": "027e77502b68",
+      "task_project": "6db5832c6f2848762c807a3800d85f65a9b37c31",
+      "durable_title_and_acceptance_verified": true,
+      "purpose": "Track the existing throughput defect on the actual installed Board, not a fixture or a new project requirement.",
+      "scope": "Filed the existing throughput defect through installed Board controls; CLI listing and durable task record confirmed exact title/acceptance and project. The card remains Backlog; no claim that its engineering is complete."
     }
   }
 }
