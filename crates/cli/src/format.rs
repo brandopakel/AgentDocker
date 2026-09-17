@@ -265,6 +265,20 @@ pub fn event_line(event: &Event) -> String {
             retired.short(),
             provider.process.pid
         ),
+        EventKind::SessionResumed {
+            agent,
+            retired,
+            pid,
+            ..
+        } => format!(
+            "session resumed  {} from {} (pid {pid})",
+            agent.short(),
+            retired
+                .iter()
+                .map(|id| id.short())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         EventKind::ProviderAvailabilityReported {
             agent,
             availability,
@@ -489,6 +503,14 @@ pub fn event_line(event: &Event) -> String {
             "channel opened   {channel} on {title} ({} members)",
             members.len()
         ),
+        EventKind::ChannelInvited { channel, by, agent } => {
+            format!(
+                "{} invited {} to channel {}",
+                by.short(),
+                agent.short(),
+                channel.as_str()
+            )
+        }
         EventKind::ChannelJoined { channel, agent } => {
             format!("channel joined   {channel} by {}", agent.short())
         }

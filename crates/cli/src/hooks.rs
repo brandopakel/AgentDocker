@@ -244,14 +244,26 @@ struct HookDelivery<'a, B> {
 impl<B: Backend> Backend for HookDelivery<'_, B> {
     async fn call(&self, request: Request) -> Result<Response> {
         if let Request::Inbox { agent, .. } = request {
-            if self.channel_input
-                || self
-                    .channel_home
-                    .as_ref()
-                    .map(|home| crate::mcp::channel_input_active(home, &agent))
-                    .transpose()?
-                    .unwrap_or(false)
-            {
+            let held_channel = if self.channel_input {
+                true
+            } else if let Some(home) = &self.channel_home {
+                // The channel may hold the registration's pre-resumption ID.
+                // Check the canonical record's process generation as well so
+                // hooks cannot race that still-live adapter after folding.
+                match self
+                    .backend
+                    .call(Request::Inspect {
+                        agent: agent.clone(),
+                    })
+                    .await?
+                {
+                    Response::Agent { agent } => crate::mcp::channel_input_active(home, &agent)?,
+                    other => bail!("cannot verify channel ownership: {other:?}"),
+                }
+            } else {
+                false
+            };
+            if held_channel {
                 return Ok(Response::Messages {
                     messages: Vec::new(),
                 });

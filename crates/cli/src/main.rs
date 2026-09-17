@@ -872,6 +872,17 @@ enum ChannelAction {
         /// from the task when absent.
         #[arg(long)]
         name: Option<String>,
+        /// The project the channel belongs to (id or path), when the
+        /// opener is in none or in another; your own project otherwise.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Add a live agent to a channel you belong to.
+    Invite {
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: String,
+        channel: String,
+        member: String,
     },
     /// The work is final: close it and tell the members.
     Close {
@@ -1715,12 +1726,14 @@ async fn main() -> Result<()> {
                 task,
                 members,
                 name,
+                project,
             } => {
                 let request = Request::ChannelOpen {
                     agent,
                     task,
                     members,
                     name,
+                    project: project.as_deref().map(project_selector),
                 };
                 if let Response::Channel { channel } = client.call(&request).await? {
                     // The id alone on stdout, as every creating command;
@@ -1729,6 +1742,24 @@ async fn main() -> Result<()> {
                     if let Some(name) = &channel.name {
                         eprintln!("#{name}");
                     }
+                }
+            }
+            ChannelAction::Invite {
+                agent,
+                channel,
+                member,
+            } => {
+                match client
+                    .call(&Request::ChannelInvite {
+                        agent,
+                        channel,
+                        member,
+                    })
+                    .await?
+                {
+                    Response::Channel { channel } => println!("{}", channel.id),
+                    Response::Error { message, .. } => anyhow::bail!("{message}"),
+                    other => anyhow::bail!("unexpected invitation reply: {other:?}"),
                 }
             }
             ChannelAction::Close {

@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, AgentStatus, Change, Destination, JournalEntry, Lease, MessageId, ProjectId,
-    ProjectRef, ResourceKey, VcsState,
+    AgentId, AgentStatus, Change, ChannelId, Destination, JournalEntry, Lease, MessageId,
+    ProjectId, ProjectRef, ResourceKey, VcsState,
 };
 
 /// An opaque position in one durable event log. Retain the complete cursor:
@@ -150,6 +150,16 @@ pub enum EventKind {
         agent: AgentId,
         retired: AgentId,
         provider: crate::ProviderGeneration,
+    },
+    /// A provider session that came back as a new process, without an input
+    /// binding, was joined to the record that ended with it: the new
+    /// process's registration is retired into the old record, which keeps
+    /// its id, its conversations and its queue, and takes the new pid.
+    SessionResumed {
+        agent: AgentId,
+        retired: Vec<AgentId>,
+        session: String,
+        pid: u32,
     },
     ProviderAvailabilityReported {
         agent: AgentId,
@@ -508,6 +518,11 @@ pub enum EventKind {
         removed: usize,
     },
     /// Somebody was added to an open channel.
+    ChannelInvited {
+        channel: ChannelId,
+        by: AgentId,
+        agent: AgentId,
+    },
     ChannelJoined {
         channel: crate::ChannelId,
         agent: AgentId,

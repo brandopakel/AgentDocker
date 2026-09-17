@@ -1983,7 +1983,16 @@ impl Daemon {
                 task,
                 members,
                 name,
-            } => self.channel_open(&agent, task, members, name),
+                project,
+            } => {
+                self.channel_open(&agent, task, members, name, project)
+                    .await
+            }
+            Request::ChannelInvite {
+                agent,
+                channel,
+                member,
+            } => self.channel_invite(&agent, &channel, &member),
             Request::ChannelClose {
                 agent,
                 channel,
@@ -5679,8 +5688,11 @@ impl State {
                 .filter(|a| a.project.as_ref().is_some_and(|p| p.id() == *project))
                 .map(|a| a.id.clone())
                 .collect(),
-            Destination::Channel(channel) => self
-                .channel_members(channel)
+            Destination::Channel(id) => channel
+                .as_ref()
+                .filter(|staged| staged.id == *id)
+                .map(|staged| staged.members.clone())
+                .unwrap_or_else(|| self.channel_members(id))
                 .into_iter()
                 .filter(|id| id.as_str() != envelope.from)
                 .collect(),
@@ -6011,7 +6023,9 @@ impl State {
                 let _ = self.events.send(event);
             }
             let agent = self.registry.get(&id).cloned().expect("just found");
-            return Response::Agent { agent };
+            return Response::Agent {
+                agent: self.resume_session(agent),
+            };
         }
         if let Err(err) = self.registry.insert(record.clone()) {
             return registry_error(err);
@@ -6062,8 +6076,223 @@ impl State {
             self.move_cursor(record.id.as_str(), &project_id, seed);
             self.journal_event(&record, JournalKind::Join, what);
         }
-        self.write_failure()
-            .unwrap_or(Response::Agent { agent: record })
+        if let Some(error) = self.write_failure() {
+            return error;
+        }
+        Response::Agent {
+            agent: self.resume_session(record),
+        }
+    }
+
+    /// A session that came back as a new process takes up the record it
+    /// ended with. The hooks adapter vouches for the session (its
+    /// `session_id` label), the rule in core says which ended records held
+    /// it, and then — as `resume_input` does for a bound provider — the
+    /// one that ended last stays canonical and takes the new process: its
+    /// id, its conversations, its cursor and what was still queued for it
+    /// carry on; the fresh record and any earlier ended record of the
+    /// session are retired into it, their queues joining in durable sequence
+    /// order with each message once, the documents that named them
+    /// rewritten, aliases that pointed at them flattened, and their ids
+    /// becoming aliases. The store plans and writes it as one transaction
+    /// with the event; memory follows. Anything that does not qualify — a
+    /// record whose process is still there, one that holds leases, sits
+    /// in a channel, is waiting on something, has stale changes owed to
+    /// it, has a live subscriber or recorded observations of its own, or a
+    /// store that cannot say or refuses the rewrite — leaves the fresh
+    /// record as it is.
+    fn resume_session(&mut self, fresh: AgentRecord) -> AgentRecord {
+        // An initialized receiver may already have offered its queue head.
+        // Folding older backlog ahead of that offer would reorder delivery.
+        // Before initialization, channel ownership is also locked by provider
+        // process generation so changing an agent ID cannot admit a second MCP.
+        if fresh.input_delivery.is_some() {
+            return fresh;
+        }
+        let Some(session) = fresh
+            .spec
+            .labels
+            .get("session_id")
+            .filter(|id| !id.is_empty())
+            .cloned()
+        else {
+            return fresh;
+        };
+        let ended: Vec<AgentRecord> =
+            agentdocker_core::identity::resumed_session(self.registry.all(), &fresh)
+                .into_iter()
+                .cloned()
+                .collect();
+        let Some((prior, earlier)) = ended.split_first() else {
+            return fresh;
+        };
+        let Some(pid) = fresh.pid else {
+            return fresh;
+        };
+        // Ended on a record is not enough: the process it named must be
+        // gone, or this is two lives of one session at once.
+        for record in earlier.iter().chain(std::iter::once(prior)) {
+            if record.pid.is_some_and(|old| {
+                process_exists(old) && same_process(old, record.process_started_at)
+            }) {
+                return fresh;
+            }
+        }
+        // Nothing any folded record did is lost: one that holds leases,
+        // sits in an open channel, waits on a lease, has stale changes
+        // owed to it, has somebody subscribed to it or observed something
+        // keeps its own record. The fresh one has done none of that by the
+        // time its hooks half registers. Fail closed: a store that cannot
+        // say whether a record observed anything must not authorise
+        // retiring it.
+        let mut folded: Vec<&AgentRecord> = vec![&fresh];
+        folded.extend(earlier);
+        for record in &folded {
+            let unobserved = self
+                .store_read("reads", |store| {
+                    store.document::<Vec<agentdocker_core::ReadMark>>("reads", record.id.as_str())
+                })
+                .is_some_and(|reads| reads.is_none_or(|reads| reads.is_empty()));
+            if !unobserved
+                || !self.leases.by_holder(&record.id).is_empty()
+                || self
+                    .channels
+                    .values()
+                    .any(|c| c.is_open() && c.has(&record.id))
+                || self.waiting.waiting_for(&record.id).is_some()
+                || self.pending_stale.contains_key(&record.id)
+                || self.stale_outstanding.contains_key(&record.id)
+                || self
+                    .live_subscribers
+                    .get(&record.id)
+                    .is_some_and(|n| *n > 0)
+            {
+                return fresh;
+            }
+        }
+        let now = Utc::now();
+        let mut canonical = prior.clone();
+        canonical.pid = Some(pid);
+        canonical.process_started_at = fresh.process_started_at;
+        canonical.process_group = fresh.process_group;
+        canonical.status = fresh.status.clone();
+        canonical.started_at = fresh.started_at;
+        canonical.finished_at = None;
+        canonical.last_seen = now;
+        canonical.session = fresh.session.clone();
+        canonical.vcs = fresh.vcs.clone();
+        canonical.reported_activity = fresh.reported_activity.clone();
+        canonical.adapter_contacts = fresh.adapter_contacts.clone();
+        canonical.provider_availability = None;
+        for record in &folded {
+            for (key, value) in &record.spec.labels {
+                canonical
+                    .spec
+                    .labels
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
+            }
+            for (message, at) in &record.legacy_offers {
+                canonical
+                    .legacy_offers
+                    .entry(message.clone())
+                    .or_insert(*at);
+            }
+        }
+        let retired: Vec<AgentId> = folded.iter().map(|record| record.id.clone()).collect();
+        let plan = match self.store.plan_resume(&canonical, &retired) {
+            Ok(plan) => plan,
+            Err(error) => {
+                info!(agent = %prior.id, %error, "a session's return was not folded");
+                return fresh;
+            }
+        };
+        // The one queue is the store's: durable order, each message once
+        // (the same broadcast reached more than one life), so a reopen
+        // delivers exactly what memory does now.
+        let merged = plan.queue.clone();
+        let mut event = Event::new(
+            EventKind::SessionResumed {
+                agent: prior.id.clone(),
+                retired: retired.clone(),
+                session,
+                pid,
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        // Memory moves only on a committed write: a fenced daemon skips
+        // the write and leaves the session as it was, and the fresh record
+        // stands until a registration after the transfer folds it.
+        if self.persist("session resume", |store| store.write_resume(&plan, &event))
+            != Persisted::Committed
+        {
+            return fresh;
+        }
+        match self.registry.fold_into(&retired, &prior.id) {
+            Ok(_) => {}
+            Err(error) => {
+                // Checked by the plan; the store has the aliases, memory
+                // must follow them.
+                error!(%error, "folding a resumed session's records");
+            }
+        }
+        *self.registry.get_mut(&prior.id).expect("prior record") = canonical.clone();
+        let project = prior.project.as_ref().map(ProjectRef::id);
+        for id in &retired {
+            self.inboxes.remove(id);
+            self.inbox_bytes.remove(id);
+            self.live_subscribers.remove(id);
+            if let Some(project) = &project {
+                // A retired record's cursor goes with it — the fresh one's
+                // freshly seeded, an earlier life's long passed; the
+                // canonical record's own continues where it left off.
+                self.journal_cursors
+                    .remove(&(id.as_str().to_owned(), project.clone()));
+            }
+        }
+        // What the store rewrote, memory rewrites the same way: a question
+        // an earlier life asked is the canonical record's to cancel now,
+        // and a closed channel's history names the record that is.
+        for question in self.questions.values_mut() {
+            if retired.iter().any(|id| id.as_str() == question.from) {
+                question.from = prior.id.to_string();
+            }
+            if let agentdocker_core::Destination::Agent(to) = &mut question.to
+                && retired.contains(to)
+            {
+                *to = prior.id.clone();
+            }
+        }
+        for channel in self.channels.values_mut() {
+            for member in &mut channel.members {
+                if retired.contains(member) {
+                    *member = prior.id.clone();
+                }
+            }
+            let mut seen = HashSet::new();
+            channel.members.retain(|id| seen.insert(id.clone()));
+            if let Some(opened_by) = &mut channel.opened_by
+                && retired.contains(opened_by)
+            {
+                *opened_by = prior.id.clone();
+            }
+            for review in &mut channel.reviews {
+                if retired.contains(&review.by) {
+                    review.by = prior.id.clone();
+                }
+                if retired.contains(&review.of) {
+                    review.of = prior.id.clone();
+                }
+            }
+        }
+        let moved: usize = merged.iter().map(message_bytes).sum();
+        self.inboxes
+            .insert(prior.id.clone(), merged.into_iter().collect());
+        self.inbox_bytes.insert(prior.id.clone(), moved);
+        self.next_seq += 1;
+        let _ = self.events.send(event);
+        canonical
     }
 }
 
@@ -6570,6 +6799,441 @@ mod tests {
                     if session == "session-a")
                 ),
             "binding a session is a state change and says so"
+        );
+    }
+
+    /// A session that comes back as a new process is the record it ended
+    /// with: same id, the new pid on it, every queue the session left —
+    /// the record that ended last stays, an earlier life's and the
+    /// newcomer's fold into it, in order, a broadcast that reached two
+    /// lives once — a question an earlier life asked now its own to
+    /// cancel, an alias that pointed at an earlier life pointed at it,
+    /// its cursor where it was, all of it durable across a reopen. A
+    /// record whose process is still there is not resumed.
+    #[tokio::test]
+    async fn a_session_that_comes_back_takes_up_its_ended_record() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let sleeper = || {
+            std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap()
+        };
+        let (mut p0, mut p1, mut p2, mut p3) = (sleeper(), sleeper(), sleeper(), sleeper());
+        let register = async |daemon: &Arc<Daemon>, name: &str, session: Option<&str>, pid: u32| {
+            let mut spec = spec_here(name);
+            spec.runtime = "claude-code".to_owned();
+            if let Some(session) = session {
+                spec.labels
+                    .insert("session_id".to_owned(), session.to_owned());
+            }
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(pid),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("{other:?}"),
+            }
+        };
+        let queue = async |daemon: &Arc<Daemon>, to: &str| match send(daemon, "peer", to).await {
+            Response::Sent { message, .. } => message,
+            other => panic!("{other:?}"),
+        };
+        let ended = |daemon: &Arc<Daemon>, id: &AgentId, minutes_ago: i64| {
+            let mut state = lock(&daemon.state);
+            state.mark_exited(id, AgentStatus::Exited { code: Some(0) });
+            let record = state.registry.get_mut(id).unwrap();
+            record.finished_at = Some(Utc::now() - chrono::Duration::minutes(minutes_ago));
+        };
+        let human = me(&daemon).await;
+        let _peer = register_here(&daemon, "peer", None).await;
+
+        // The oldest life ends for good; the next life takes up its
+        // record, so the newcomer's own id becomes an alias of it.
+        let oldest = register(&daemon, "claude-aaaa", Some("session-a"), p0.id()).await;
+        p0.kill().unwrap();
+        p0.wait().unwrap();
+        ended(&daemon, &oldest.id, 120);
+        let earlier = register(&daemon, "claude-aaaa", Some("session-a"), p1.id()).await;
+        assert_eq!(earlier.id, oldest.id, "the oldest life's record, taken up");
+        let alias_of_earlier = lock(&daemon.state)
+            .registry
+            .aliases()
+            .iter()
+            .find(|(_, target)| **target == earlier.id)
+            .map(|(retired, _)| retired.clone())
+            .expect("the newcomer's id is an alias");
+        // While that life runs, another process names the session (under
+        // a name of its own — a live name is taken): it is not the return
+        // of anything and gets a record of its own. A broadcast then
+        // reaches both lives, each life gets words of its own, and the
+        // earlier one asks the person something.
+        let first = register(&daemon, "claude-bbbb", Some("session-a"), p2.id()).await;
+        assert_ne!(first.id, earlier.id, "the other process is still there");
+        assert_eq!(
+            register(&daemon, "claude-code-1", None, p2.id()).await.id,
+            first.id,
+            "the MCP half joins its hooks half as ever"
+        );
+        let broadcast = queue(&daemon, "all").await;
+        let m0 = queue(&daemon, earlier.id.as_str()).await;
+        let m1 = queue(&daemon, first.id.as_str()).await;
+        let Response::Sent {
+            message: question, ..
+        } = daemon
+            .handle(Request::PostQuestion {
+                from: earlier.id.to_string(),
+                to: human.id.to_string(),
+                question: "still there?".to_owned(),
+                presentation: None,
+                timeout_secs: 600,
+            })
+            .await
+        else {
+            panic!("the earlier life asks")
+        };
+        {
+            let state = lock(&daemon.state);
+            for id in [&earlier.id, &first.id] {
+                assert!(
+                    state.inboxes[id].iter().any(|m| m.id == broadcast),
+                    "the broadcast reached {id}"
+                );
+            }
+        }
+        // Both lives end, the earlier one first, and their processes go.
+        ended(&daemon, &earlier.id, 60);
+        p1.kill().unwrap();
+        p1.wait().unwrap();
+        ended(&daemon, &first.id, 1);
+        p2.kill().unwrap();
+        p2.wait().unwrap();
+
+        // The session's next life takes up the record that ended last;
+        // the earlier life and the newcomer fold into it.
+        let resumed = register(&daemon, "claude-aaaa", Some("session-a"), p3.id()).await;
+        assert_eq!(resumed.id, first.id, "the record it ended with");
+        assert_eq!(resumed.pid, Some(p3.id()));
+        assert!(resumed.status.is_live());
+        assert_eq!(resumed.finished_at, None);
+        let m2 = queue(&daemon, first.id.as_str()).await;
+        let fresh_id = {
+            let state = lock(&daemon.state);
+            let retired: Vec<AgentId> = state
+                .registry
+                .aliases()
+                .iter()
+                .filter(|(_, target)| **target == first.id)
+                .map(|(retired, _)| retired.clone())
+                .collect();
+            assert_eq!(
+                retired.len(),
+                3,
+                "the earlier life, its own alias, the newcomer: {retired:?}"
+            );
+            assert!(retired.contains(&earlier.id));
+            assert!(
+                retired.contains(&alias_of_earlier),
+                "flat: the old alias points here now"
+            );
+            let fresh_id = retired
+                .iter()
+                .find(|id| **id != earlier.id && **id != alias_of_earlier)
+                .unwrap()
+                .clone();
+            assert!(
+                !state
+                    .registry
+                    .all()
+                    .any(|r| r.id == earlier.id || r.id == fresh_id),
+                "the folded records are gone"
+            );
+            assert_eq!(
+                state.registry.get(&earlier.id).map(|r| &r.id),
+                Some(&first.id)
+            );
+            let queued: Vec<_> = state.inboxes[&first.id]
+                .iter()
+                .map(|m| m.id.clone())
+                .collect();
+            assert_eq!(
+                queued,
+                vec![broadcast.clone(), m0.clone(), m1.clone(), m2.clone()],
+                "every queue, in the order the store holds, the broadcast once"
+            );
+            assert!(!state.inboxes.contains_key(&earlier.id));
+            assert_eq!(state.questions[&question].from, first.id.to_string());
+            fresh_id
+        };
+        assert!(
+            daemon.recent_events(20).iter().any(|e| matches!(&e.kind,
+                EventKind::SessionResumed { agent, retired, session, pid }
+                if *agent == first.id && retired.len() == 2 && retired.contains(&fresh_id)
+                    && retired.contains(&earlier.id) && session == "session-a" && *pid == p3.id())),
+            "announced, naming every retired record"
+        );
+        // Durable: reopened, the record has the new process, every alias
+        // resolves, the queue is whole and the question is the record's
+        // own to cancel.
+        drop(daemon);
+        let daemon = open(&dir);
+        {
+            let state = lock(&daemon.state);
+            let record = state.registry.get(&first.id).unwrap();
+            assert_eq!(record.pid, Some(p3.id()));
+            for id in [&earlier.id, &alias_of_earlier, &fresh_id] {
+                assert_eq!(
+                    state.registry.get(id).map(|r| &r.id),
+                    Some(&first.id),
+                    "{id}"
+                );
+            }
+            let queued: Vec<_> = state.inboxes[&first.id]
+                .iter()
+                .map(|m| m.id.clone())
+                .collect();
+            assert_eq!(
+                queued,
+                vec![broadcast.clone(), m0.clone(), m1.clone(), m2.clone()],
+                "the same queue in the same order after a reopen"
+            );
+        }
+        assert!(matches!(
+            daemon
+                .handle(Request::CancelQuestion {
+                    agent: first.id.to_string(),
+                    message: question.clone(),
+                })
+                .await,
+            Response::Ok
+        ));
+        assert!(!lock(&daemon.state).questions.contains_key(&question));
+        // The MCP half of the live session joins it as before.
+        assert_eq!(
+            register(&daemon, "claude-code-2", None, p3.id()).await.id,
+            first.id
+        );
+        p3.kill().unwrap();
+        p3.wait().unwrap();
+    }
+
+    #[test]
+    fn returning_session_read_errors_disable_coordination() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let now = Utc::now();
+        let mut old = AgentRecord::new(spec_here("old"), false, now);
+        old.spec.runtime = "claude-code".into();
+        old.spec.labels.insert("session_id".into(), "same".into());
+        old.project = Some(ProjectRef::directory(std::env::temp_dir()));
+        old.status = AgentStatus::Exited { code: Some(0) };
+        old.finished_at = Some(now);
+        let mut fresh = old.clone();
+        fresh.id = AgentId::generate();
+        fresh.pid = Some(std::process::id());
+        fresh.status = AgentStatus::Running;
+        fresh.finished_at = None;
+        let mut state = lock(&daemon.state);
+        for record in [&old, &fresh] {
+            state.registry.insert(record.clone()).unwrap();
+            state.store.upsert_agent(record).unwrap();
+        }
+        state
+            .store
+            .put_document("reads", fresh.id.as_str(), &json!("malformed"))
+            .unwrap();
+        let seq = state.next_seq;
+        assert_eq!(state.resume_session(fresh.clone()).id, fresh.id);
+        assert!(
+            state.storage_failure().is_some(),
+            "the read error disables further coordination"
+        );
+        assert_eq!(state.registry.all().count(), 2);
+        assert!(state.registry.aliases().is_empty());
+        assert!(state.store.identity_aliases().unwrap().is_empty());
+        assert_eq!(state.next_seq, seq);
+    }
+
+    /// While coordination is being handed over, a session's return is not
+    /// folded: the write is skipped, memory stays as it was, no event is
+    /// recorded, and the fresh record stands. Once authority is back, the
+    /// same return folds.
+    #[tokio::test]
+    async fn a_fenced_daemon_leaves_a_returning_session_unfolded() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut old_life = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut new_life = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let register = async |name: &str, session: Option<&str>, pid: u32| {
+            let mut spec = spec_here(name);
+            spec.runtime = "claude-code".to_owned();
+            if let Some(session) = session {
+                spec.labels
+                    .insert("session_id".to_owned(), session.to_owned());
+            }
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(pid),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("{other:?}"),
+            }
+        };
+        let old = register("claude-aaaa", Some("session-a"), old_life.id()).await;
+        old_life.kill().unwrap();
+        old_life.wait().unwrap();
+        lock(&daemon.state).mark_exited(&old.id, AgentStatus::Exited { code: Some(0) });
+        // The new life's MCP half registers before the handover starts.
+        let fresh = register("claude-code-9", None, new_life.id()).await;
+        assert_ne!(fresh.id, old.id);
+        daemon.offer_transfer(1).unwrap();
+        let seq = lock(&daemon.state).next_seq;
+        let mut named = fresh.clone();
+        named
+            .spec
+            .labels
+            .insert("session_id".to_owned(), "session-a".to_owned());
+        {
+            let mut state = lock(&daemon.state);
+            let answered = state.resume_session(named.clone());
+            assert_eq!(
+                answered.id, fresh.id,
+                "the fresh record stands while fenced"
+            );
+            assert!(
+                state.registry.all().any(|r| r.id == old.id),
+                "nothing folded"
+            );
+            assert!(state.registry.aliases().is_empty());
+            assert_eq!(state.next_seq, seq, "no event while fenced");
+            assert!(state.registry.get(&old.id).unwrap().finished_at.is_some());
+        }
+        assert!(daemon.abort_transfer("cleanup"));
+        {
+            let mut state = lock(&daemon.state);
+            let seq = state.next_seq;
+            let answered = state.resume_session(named);
+            assert_eq!(answered.id, old.id, "folded once authority is back");
+            assert_eq!(answered.pid, Some(new_life.id()));
+            assert_eq!(state.registry.get(&fresh.id).map(|r| &r.id), Some(&old.id));
+            assert_eq!(state.next_seq, seq + 1, "the fold's one event");
+        }
+        new_life.kill().unwrap();
+        new_life.wait().unwrap();
+    }
+
+    /// A channel can initialize before SessionStart gives its registration a
+    /// session ID. Its already-offered head must not jump ahead of old backlog
+    /// when that later hook arrives. Keep both queues and their IDs intact.
+    #[tokio::test]
+    async fn an_initialized_receiver_is_not_folded_ahead_of_old_backlog() {
+        use agentdocker_core::InputReport;
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut old_life = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut new_life = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let register = async |name: &str, session: Option<&str>, pid: u32| {
+            let mut spec = spec_here(name);
+            spec.runtime = "claude-code".into();
+            if let Some(session) = session {
+                spec.labels.insert("session_id".into(), session.into());
+            }
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: Some(pid),
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("{other:?}"),
+            }
+        };
+        let old = register("old-session", Some("session-a"), old_life.id()).await;
+        let Response::Sent {
+            message: old_message,
+            ..
+        } = send(&daemon, "peer", old.id.as_str()).await
+        else {
+            panic!("old queue")
+        };
+        old_life.kill().unwrap();
+        old_life.wait().unwrap();
+        lock(&daemon.state).mark_exited(&old.id, AgentStatus::Exited { code: Some(0) });
+        let fresh = register("fresh-channel", None, new_life.id()).await;
+        let Response::Sent {
+            message: fresh_message,
+            ..
+        } = send(&daemon, "peer", fresh.id.as_str()).await
+        else {
+            panic!("fresh queue")
+        };
+        assert!(matches!(
+            daemon
+                .handle(Request::ReportInput {
+                    agent: fresh.id.to_string(),
+                    process_started_at: fresh.process_started_at.unwrap(),
+                    observed_at: Utc::now(),
+                    report: InputReport::Ready,
+                    token: None,
+                })
+                .await,
+            Response::Ok
+        ));
+        let returned = register("session-hook", Some("session-a"), new_life.id()).await;
+        // Retire fixtures before the assertions, including on a regression.
+        new_life.kill().unwrap();
+        new_life.wait().unwrap();
+        assert_eq!(
+            returned.id, fresh.id,
+            "the initialized receiver keeps its identity"
+        );
+        assert!(returned.input_delivery.is_some());
+        let state = lock(&daemon.state);
+        assert!(state.registry.aliases().is_empty());
+        assert_eq!(
+            state.inboxes[&old.id]
+                .iter()
+                .map(|m| &m.id)
+                .collect::<Vec<_>>(),
+            [&old_message]
+        );
+        assert_eq!(
+            state.inboxes[&fresh.id]
+                .iter()
+                .map(|m| &m.id)
+                .collect::<Vec<_>>(),
+            [&fresh_message]
+        );
+        assert!(
+            !state
+                .store
+                .recent_events(10)
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::SessionResumed { .. }))
         );
     }
 
@@ -10777,6 +11441,7 @@ deny = ["send:all"]
                 task: "legacy membership".into(),
                 members: vec!["receiver".into()],
                 name: None,
+                project: None,
             })
             .await
         else {

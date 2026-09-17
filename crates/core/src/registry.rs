@@ -27,6 +27,7 @@ pub enum RegistryError {
 pub struct Registry {
     agents: HashMap<AgentId, AgentRecord>,
     aliases: BTreeMap<AgentId, AgentId>,
+    retired_names: BTreeMap<AgentId, String>,
 }
 
 impl Registry {
@@ -88,6 +89,15 @@ impl Registry {
         }
         // A flat map is bounded to one lookup on every request. Because every
         // target is a real record and no key is one, chains cannot be admitted.
+        self.retired_names = aliases
+            .iter()
+            .filter_map(|alias| {
+                alias
+                    .retired_name
+                    .clone()
+                    .map(|name| (alias.retired.clone(), name))
+            })
+            .collect();
         self.aliases = checked;
         Ok(())
     }
@@ -118,8 +128,64 @@ impl Registry {
             });
         }
         let record = self.agents.remove(retired).expect("checked");
+        self.retired_names
+            .insert(retired.clone(), record.spec.name.clone());
         self.aliases.insert(retired.clone(), canonical.clone());
         Ok(record)
+    }
+
+    /// Retire several records into one at once, the way a session come
+    /// back folds every life it left: each retired record leaves and its
+    /// id resolves to the canonical one, and an alias that pointed at any
+    /// of them is pointed at the canonical record instead, so the map
+    /// stays flat. Checked whole before anything moves: the canonical
+    /// record must exist and not be among the retired, and every retired
+    /// id must own a record of its own. The retired records are returned
+    /// in the order given.
+    pub fn fold_into(
+        &mut self,
+        retired: &[AgentId],
+        canonical: &AgentId,
+    ) -> Result<Vec<AgentRecord>, crate::identity::AliasError> {
+        if !self.agents.contains_key(canonical) {
+            return Err(crate::identity::AliasError {
+                retired: canonical.clone(),
+                reason: "canonical record is missing",
+            });
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for id in retired {
+            let reason = if id == canonical {
+                Some("self reference")
+            } else if !self.agents.contains_key(id) {
+                Some("retired ID owns no record")
+            } else if !seen.insert(id.clone()) {
+                Some("duplicate retired ID")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Err(crate::identity::AliasError {
+                    retired: id.clone(),
+                    reason,
+                });
+            }
+        }
+        for target in self.aliases.values_mut() {
+            if retired.contains(target) {
+                *target = canonical.clone();
+            }
+        }
+        Ok(retired
+            .iter()
+            .map(|id| {
+                let record = self.agents.remove(id).expect("checked");
+                self.retired_names
+                    .insert(id.clone(), record.spec.name.clone());
+                self.aliases.insert(id.clone(), canonical.clone());
+                record
+            })
+            .collect())
     }
 
     pub fn canonical_id<'a>(&'a self, id: &'a AgentId) -> &'a AgentId {
@@ -141,6 +207,26 @@ impl Registry {
                 .map(|(old, _)| old.clone()),
         );
         ids
+    }
+
+    /// Current name plus names retained when identities were retired.
+    /// Legacy aliases with no saved name contribute no guessed historical name.
+    pub fn identity_names(&self, id: &AgentId) -> Vec<String> {
+        let canonical = self.canonical_id(id);
+        let mut names: Vec<_> = self
+            .get(canonical)
+            .map(|r| r.spec.name.clone())
+            .into_iter()
+            .collect();
+        names.extend(
+            self.aliases
+                .iter()
+                .filter(|(_, target)| *target == canonical)
+                .filter_map(|(retired, _)| self.retired_names.get(retired).cloned()),
+        );
+        names.sort();
+        names.dedup();
+        names
     }
 
     /// Turn what a user typed into an id. Tries, in order: exact id, the name
@@ -308,6 +394,8 @@ impl Registry {
     pub fn remove(&mut self, id: &AgentId) -> Option<AgentRecord> {
         let canonical = self.canonical_id(id).clone();
         self.aliases.retain(|_, target| *target != canonical);
+        self.retired_names
+            .retain(|id, _| self.aliases.contains_key(id));
         self.agents.remove(&canonical)
     }
 
@@ -350,6 +438,69 @@ mod tests {
         assert_eq!(registry.aliases().len(), 1);
     }
 
+    /// Folding several records into one leaves a flat map: an alias that
+    /// pointed at a folded record points at the canonical one, every
+    /// folded id resolves there, and nothing moves when the set is wrong.
+    #[test]
+    fn folding_several_records_into_one_keeps_the_alias_map_flat() {
+        let mut registry = Registry::new();
+        let oldest = record("oldest");
+        let earlier = record("earlier");
+        let last = record("last");
+        let fresh = record("fresh");
+        for record in [&oldest, &earlier, &last, &fresh] {
+            registry.insert(record.clone()).unwrap();
+        }
+        // A life before this: oldest was retired into earlier.
+        registry.retire_into(&oldest.id, &earlier.id).unwrap();
+        // Refused whole: a retired id without a record, the canonical
+        // among the retired, or a duplicate.
+        for retired in [
+            vec![fresh.id.clone(), AgentId::from("nobody")],
+            vec![fresh.id.clone(), last.id.clone()],
+            vec![fresh.id.clone(), fresh.id.clone()],
+        ] {
+            assert!(registry.fold_into(&retired, &last.id).is_err());
+            assert_eq!(registry.len(), 3, "nothing moved");
+            assert_eq!(registry.resolve(oldest.id.as_str()).unwrap(), earlier.id);
+        }
+        let folded = registry
+            .fold_into(&[fresh.id.clone(), earlier.id.clone()], &last.id)
+            .unwrap();
+        assert_eq!(
+            folded.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+            vec![fresh.id.clone(), earlier.id.clone()]
+        );
+        assert_eq!(registry.len(), 1);
+        for id in [&oldest.id, &earlier.id, &fresh.id] {
+            assert_eq!(registry.resolve(id.as_str()).unwrap(), last.id, "{id}");
+            assert_eq!(registry.aliases()[id], last.id, "flat, not a chain");
+        }
+        // What the map holds now restores as it is.
+        let aliases: Vec<_> = registry
+            .aliases()
+            .iter()
+            .map(|(retired, canonical)| crate::identity::AgentAlias {
+                retired: retired.clone(),
+                canonical: canonical.clone(),
+                retired_name: registry.retired_names.get(retired).cloned(),
+                reconciled_at: Utc::now(),
+            })
+            .collect();
+        let mut again = Registry::new();
+        again.insert(last.clone()).unwrap();
+        again.restore_aliases(&aliases).unwrap();
+        assert_eq!(again.aliases().len(), 3);
+        assert_eq!(
+            registry.identity_names(&last.id),
+            ["earlier", "fresh", "last", "oldest"]
+        );
+        assert_eq!(
+            again.identity_names(&last.id),
+            registry.identity_names(&last.id)
+        );
+    }
+
     #[test]
     fn durable_aliases_route_exact_ids_and_reject_partial_or_cyclic_restore() {
         use crate::identity::AgentAlias;
@@ -361,6 +512,7 @@ mod tests {
         let alias = AgentAlias {
             retired: old.clone(),
             canonical: canonical.id.clone(),
+            retired_name: Some("early".into()),
             reconciled_at: canonical.created_at,
         };
         registry
@@ -377,6 +529,7 @@ mod tests {
             "aliases are exact, never guessed prefixes"
         );
         assert_eq!(registry.list(true).len(), 1);
+        assert_eq!(registry.identity_names(&old), ["current", "early"]);
         let mut invalid = alias.clone();
         invalid.retired = "second-old".into();
         invalid.canonical = old.clone();
@@ -386,6 +539,12 @@ mod tests {
             canonical.id,
             "failed restore leaves the previous routing intact"
         );
+        assert_eq!(registry.identity_names(&old), ["current", "early"]);
+        let mut legacy = serde_json::to_value(&alias).unwrap();
+        legacy.as_object_mut().unwrap().remove("retired_name");
+        let legacy = serde_json::from_value(legacy).unwrap();
+        registry.restore_aliases(&[legacy]).unwrap();
+        assert_eq!(registry.identity_names(&old), ["current"]);
         assert!(registry.restore_aliases(&[alias.clone(), alias]).is_err());
         let mut reused = record("reused");
         reused.id = old.clone();

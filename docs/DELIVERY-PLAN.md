@@ -10,7 +10,17 @@ evidence; an old “pending” entry is not by itself a current implementation g
 ## Product and engineering requirements
 
 
-### Current integration and installation (September 15)
+### Current integration and installation (September 17 UTC)
+
+PRs #169/#171 are merged and the installed release `9bc0f0fc` (source `8d42db5`,
+schema22) now serves the desktop and daemon. The backed-up receiver replacement
+retained live provider sessions, binding/token and 58 prior receipts. Fresh CLI
+human-route and actual Claude peer messages entered this same active Codex turn
+with exact receipts. [The message audit](MESSAGE-DELIVERY-AUDIT.md#september-17-installed-codex-active-turn-delivery-verified)
+bounds this result; other-provider/lifecycle acceptance and the final messaging
+controls remain open.
+
+### Previous integration and installation (September 15)
 
 Merged source now includes PRs #148/#149 (existing-terminal native Codex input
 and the shared coordination skill), #151 (managed-network review) and #153

@@ -170,7 +170,19 @@ conversation whose agent is gone, says so for one between two agents, and has
 nothing to send for notices. Drafts survive navigation, a failed request and
 disconnection. A notification opens the message's conversation even after it
 has been read, and even when the sender's record or the channel is gone: the
-archive outlives both.
+archive outlives both. **Enter sends** in every composer — a
+conversation's, a thread's, the inbox reply, the session message and an
+answer — the same action as the button beside it, and nothing while the
+draft is empty or already sending. **+** beside the search starts a
+conversation the way Slack's New message does: **Direct message** is one
+pick from the agents running here (in the selected project when one is);
+**Channel** is a name (kept to lowercase letters, digits and hyphens as it
+is typed), what it is for, and who is in it — everyone here when nobody is
+picked — and the person is in it as its opener; the room opens as soon as
+the daemon has it. `@` in a composer offers who is here and a pick finishes
+the name (`@codex-51242`, the record's own name, which is what a mention
+reaches); a row whose unread rows name the person shows an **@n** pill beside
+its count, and such a message carries **mentions you** in its header.
 The selected project also scopes archived direct conversations. Project message search retains finished sessions' direct messages and AgentDocker notices after restart.
 
 Inbox reads like a messenger. The left column lists one conversation per agent

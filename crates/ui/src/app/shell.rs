@@ -241,6 +241,20 @@ pub enum Message {
     PauseCancel,
     ResumeProject,
 
+    /// Start a conversation: open or close the form.
+    NewConversation,
+    /// A direct message or a channel.
+    NewConversationKind(super::NewKind),
+    NewChannelName(String),
+    NewChannelPurpose(String),
+    /// Put an agent in the new channel, or take it out.
+    NewChannelMember(agentdocker_core::AgentId),
+    /// Open the channel the form describes.
+    CreateChannel,
+    InviteChannel(String),
+    InviteMember(String),
+    /// The person picked who to message: open that direct conversation.
+    NewDirect(String),
     /// Open or close the menu under a project row.
     ProjectMenu(PathBuf),
     ProjectRenameStart(PathBuf),
@@ -791,28 +805,138 @@ impl App {
                 }
             }
             Message::PauseStart => {
-                self.pause_draft = Some(String::new());
-            }
-            Message::PauseDraft(reason) => {
-                if self.pause_draft.is_some() {
-                    self.pause_draft = Some(reason);
+                // The form is the selected project's from here on, whatever
+                // is selected by the time it is sent.
+                if let Some(project) = self.selected_project_root()
+                    && self.pause_form.as_ref().is_none_or(|form| !form.sending)
+                {
+                    self.pause_form = Some(super::PauseForm {
+                        project,
+                        reason: String::new(),
+                        sending: false,
+                        error: None,
+                    });
                 }
             }
-            Message::PauseCancel => self.pause_draft = None,
-            Message::PauseSubmit => {
-                if let (Some(reason), Some(project)) =
-                    (self.pause_draft.clone(), self.selected_project_root())
-                    && !reason.trim().is_empty()
+            Message::PauseDraft(reason) => {
+                if let Some(form) = &mut self.pause_form
+                    && !form.sending
                 {
-                    self.send(Cmd::Pause {
-                        project,
-                        reason: reason.trim().to_owned(),
-                    });
+                    form.reason = reason;
+                    form.error = None;
+                }
+            }
+            Message::PauseCancel => {
+                if self.pause_form.as_ref().is_some_and(|form| !form.sending) {
+                    self.pause_form = None;
+                }
+            }
+            Message::PauseSubmit => {
+                if let Some(form) = &mut self.pause_form
+                    && !form.sending
+                    && !form.reason.trim().is_empty()
+                {
+                    form.sending = true;
+                    form.error = None;
+                    let cmd = Cmd::Pause {
+                        project: form.project.clone(),
+                        reason: form.reason.trim().to_owned(),
+                    };
+                    self.send(cmd);
                 }
             }
             Message::ResumeProject => {
                 if let Some(project) = self.selected_project_root() {
                     self.send(Cmd::ResumeProject { project });
+            Message::NewConversation => {
+                self.new_conversation = match self.new_conversation {
+                    Some(_) => None,
+                    None => Some(super::NewConversation::new()),
+                };
+            }
+            Message::InviteChannel(channel) => {
+                let mut form = super::NewConversation::new();
+                form.invite = Some(channel);
+                self.new_conversation = Some(form);
+            }
+            Message::InviteMember(member) => {
+                if let Some(form) = &mut self.new_conversation
+                    && !form.creating
+                    && let Some(channel) = &form.invite
+                {
+                    form.creating = true;
+                    form.error = None;
+                    let cmd = Cmd::ChannelInvite {
+                        request: form.request.clone(),
+                        channel: channel.clone(),
+                        member,
+                    };
+                    self.send(cmd);
+                }
+            }
+            Message::NewConversationKind(kind) => {
+                if let Some(form) = &mut self.new_conversation {
+                    form.kind = kind;
+                    form.error = None;
+                }
+            }
+            Message::NewChannelName(name) => {
+                if let Some(form) = &mut self.new_conversation {
+                    // What a channel name is: lowercase letters, digits and
+                    // hyphens, so what is typed is kept to that.
+                    form.name = name
+                        .to_lowercase()
+                        .chars()
+                        .map(|ch| if ch.is_whitespace() { '-' } else { ch })
+                        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+                        .take(40)
+                        .collect();
+                    form.error = None;
+                }
+            }
+            Message::NewChannelPurpose(purpose) => {
+                if let Some(form) = &mut self.new_conversation {
+                    form.purpose = purpose.chars().take(400).collect();
+                    form.error = None;
+                }
+            }
+            Message::NewChannelMember(agent) => {
+                if let Some(form) = &mut self.new_conversation
+                    && !form.members.remove(&agent)
+                {
+                    form.members.insert(agent);
+                }
+            }
+            Message::NewDirect(conversation) => {
+                self.new_conversation = None;
+                return self.update(Message::SelectConversation(conversation));
+            }
+            Message::CreateChannel => {
+                let project = self
+                    .shell
+                    .catalog
+                    .selected
+                    .as_ref()
+                    .map(|root| root.display().to_string());
+                if let Some(form) = &mut self.new_conversation
+                    && !form.creating
+                    && !form.name.is_empty()
+                {
+                    form.creating = true;
+                    form.error = None;
+                    let task = if form.purpose.trim().is_empty() {
+                        form.name.replace('-', " ")
+                    } else {
+                        form.purpose.trim().to_owned()
+                    };
+                    let cmd = Cmd::ChannelOpen {
+                        request: form.request.clone(),
+                        name: form.name.clone(),
+                        task,
+                        members: form.members.iter().map(|id| id.to_string()).collect(),
+                        project,
+                    };
+                    self.send(cmd);
                 }
             }
             Message::MarkAllRead => {

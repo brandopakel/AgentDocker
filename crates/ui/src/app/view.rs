@@ -8,8 +8,8 @@ use super::icons::{Icon, icon};
 use super::style::{Colors, alpha, weight};
 use super::*;
 use crate::controls::{
-    Kind, block_button, button as action, custom, danger, input, input_enabled, primary, segment,
-    tab,
+    Kind, block_button, button as action, custom, danger, input, input_submitting, primary,
+    segment, tab,
 };
 use iced::{
     Center, Element, Fill, Font,
@@ -533,6 +533,14 @@ impl App {
             header = header.push(launch);
         }
         let mut content = column![header].spacing(18).width(Fill);
+        // Narrow, the hold has its own line under the header rather than
+        // none: a pause is not a thing to lose with the width.
+        if self.screen == Screen::Agents
+            && narrow
+            && let Some(pause) = self.pause_controls(c)
+        {
+            content = content.push(pause);
+        }
         if let Err(error) = &self.connected {
             content = content.push(attention(
                 column![
@@ -1282,18 +1290,18 @@ impl App {
 
     /// Hold or release the project's agents: a quiet Pause… that opens a
     /// reason, and while paused the reason on the header with Resume.
-    fn pause_controls(&self, c: Colors) -> Option<Element<'_, Message>> {
-        self.shell.catalog.selected()?;
+    /// The form belongs to the project it was opened for; on another
+    /// project the header shows that project's own state.
+    pub(super) fn pause_controls(&self, c: Colors) -> Option<Element<'_, Message>> {
+        let root = self.selected_project_root()?;
         let connected = self.connected.is_ok();
         if let Some(pause) = self.selected_pause() {
+            // The reason on one line, cut short: the whole of it is in
+            // #everyone, where the agents read it.
+            let shown = first_line(&pause.reason, 48);
             return Some(
                 row![
-                    pill(
-                        format!("Paused · {}", pause.reason),
-                        c.amber,
-                        iced::Color::WHITE,
-                        c
-                    ),
+                    pill(format!("Paused · {shown}"), c.amber, iced::Color::WHITE, c),
                     action(
                         "resume-project",
                         "Resume",
@@ -1306,33 +1314,43 @@ impl App {
                 .into(),
             );
         }
-        if let Some(reason) = &self.pause_draft {
-            let ready = connected && !reason.trim().is_empty();
-            return Some(
+        if let Some(form) = self.pause_form.as_ref().filter(|form| form.project == root) {
+            let ready = connected && !form.sending && !form.reason.trim().is_empty();
+            let mut controls = column![
                 row![
                     input_enabled(
                         "pause-reason",
                         "Why: what the agents will read",
-                        reason,
+                        &form.reason,
                         Message::PauseDraft,
-                        true,
+                        !form.sending,
                     ),
                     primary(
                         "pause-submit",
-                        "Pause agents",
+                        if form.sending { "Pausing…" } else { "Pause agents" },
                         ready.then_some(Message::PauseSubmit),
                     ),
-                    action("pause-cancel", "Cancel", Some(Message::PauseCancel), false),
+                    action(
+                        "pause-cancel",
+                        "Cancel",
+                        (!form.sending).then_some(Message::PauseCancel),
+                        false,
+                    ),
                 ]
                 .spacing(8)
                 .align_y(Center)
-                .into(),
-            );
+            ]
+            .spacing(4);
+            if let Some(error) = &form.error {
+                controls = controls.push(text(error.clone()).size(13).color(c.amber));
+            }
+            return Some(controls.into());
         }
         Some(action(
             "pause-project",
             "Pause…",
-            connected.then_some(Message::PauseStart),
+            (connected && self.pause_form.as_ref().is_none_or(|form| !form.sending))
+                .then_some(Message::PauseStart),
             false,
         ))
     }
@@ -1805,12 +1823,16 @@ impl App {
                 let sending = draft.is_some_and(|draft| draft.sending.is_some());
                 let value = draft.map_or("", |draft| draft.text.as_str());
                 let target = draft_key.clone();
+                let send = (!sending && !value.trim().is_empty() && self.connected.is_ok())
+                    .then_some(Message::SendSession(draft_key));
                 body = body
-                    .push(input(
+                    .push(input_submitting(
                         "session-message-text",
                         "Message this agent…",
                         value,
                         move |text| Message::SessionDraft(target.clone(), text),
+                        true,
+                        send.clone(),
                     ))
                     .push(primary(
                         "send-session-message",
@@ -1819,8 +1841,7 @@ impl App {
                         } else {
                             "Send message"
                         },
-                        (!sending && !value.trim().is_empty() && self.connected.is_ok())
-                            .then_some(Message::SendSession(draft_key)),
+                        send,
                     ));
                 if let Some(error) = draft.and_then(|draft| draft.error.as_deref()) {
                     body = body.push(text(error).size(13).color(c.amber));
@@ -2208,12 +2229,13 @@ impl App {
             let owner = id.to_owned();
             let mut composer = column![
                 row![
-                    input_enabled(
+                    input_submitting(
                         format!("reply-{id}"),
                         "Message…",
                         &draft,
                         move |t| Message::SessionDraft(owner.clone(), t),
                         live && !sending,
+                        ready.then_some(Message::SendSession(id.to_owned())),
                     ),
                     primary(
                         format!("send-reply-{id}"),
@@ -2545,8 +2567,10 @@ impl App {
                             .push(heading(question.text.clone(), 18))
                             .push(self.answer_window(question, c));
                     }
+                    let send = (enabled && !answer.trim().is_empty())
+                        .then_some(Message::Answer(id.clone()));
                     body = body
-                        .push(input_enabled(
+                        .push(input_submitting(
                             format!("answer-{id}"),
                             if presentation.is_some() {
                                 "Or write an answer"
@@ -2556,12 +2580,12 @@ impl App {
                             &answer,
                             move |text| Message::Draft(draft_id.clone(), text),
                             enabled,
+                            send.clone(),
                         ))
                         .push(primary(
                             format!("send-answer-{id}"),
                             if busy { "Sending…" } else { "Send answer" },
-                            (enabled && !answer.trim().is_empty())
-                                .then_some(Message::Answer(id.clone())),
+                            send,
                         ));
                 }
             }
