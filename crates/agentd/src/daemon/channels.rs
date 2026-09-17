@@ -362,14 +362,25 @@ impl Daemon {
     }
 
     /// Open a channel for a task, rather than wait for a collision.
-    pub(super) fn channel_open(
+    pub(super) async fn channel_open(
         &self,
         reference: &str,
         task: String,
         members: Vec<String>,
         name: Option<String>,
+        project: Option<String>,
     ) -> Response {
         use agentdocker_core::conversation::{channel_name_from, valid_channel_name};
+        // A project named by the caller — a person opening a room from
+        // the app, who is in no project or another — is resolved before
+        // the lock, as every project selector is.
+        let named_project = match project {
+            Some(selector) => match self.resolve_project(&selector).await {
+                Ok(id) => Some(id),
+                Err(response) => return *response,
+            },
+            None => None,
+        };
         let task = task.trim().to_owned();
         if task.is_empty() {
             return Response::error(ErrorCode::Invalid, "a channel needs a task");
@@ -395,8 +406,12 @@ impl Daemon {
         let Some(record) = state.registry.get(&opener).cloned() else {
             return Response::error(ErrorCode::NotFound, "agent vanished");
         };
-        let Some(project) = record.project.as_ref().map(ProjectRef::id) else {
-            return Response::error(ErrorCode::Invalid, "the agent is in no project");
+        let Some(project) = named_project.or_else(|| record.project.as_ref().map(ProjectRef::id))
+        else {
+            return Response::error(
+                ErrorCode::Invalid,
+                "the agent is in no project; name one with `project`",
+            );
         };
         let mut ids = vec![opener.clone()];
         if members.is_empty() {
@@ -752,8 +767,9 @@ mod tests {
                 let (daemon, _) = fixture(&tmp).await;
                 let mut channels = Vec::new();
                 for task in ["first", "second"] {
-                    let Response::Channel { channel } =
-                        daemon.channel_open("writer", task.into(), vec!["reviewer".into()], None)
+                    let Response::Channel { channel } = daemon
+                        .channel_open("writer", task.into(), vec!["reviewer".into()], None, None)
+                        .await
                     else {
                         panic!("open failed")
                     };
@@ -824,8 +840,9 @@ mod tests {
             for failed_event in ["message_sent", "journal_appended"] {
                 let tmp = tempfile::tempdir().unwrap();
                 let (daemon, _) = fixture(&tmp).await;
-                let Response::Channel { channel } =
-                    daemon.channel_open("writer", "task".into(), vec!["reviewer".into()], None)
+                let Response::Channel { channel } = daemon
+                    .channel_open("writer", "task".into(), vec!["reviewer".into()], None, None)
+                    .await
                 else {
                     panic!("open failed")
                 };
@@ -976,6 +993,7 @@ mod tests {
                 task: "settle the parser".into(),
                 members: vec!["reviewer".into()],
                 name: None,
+                project: None,
             })
             .await
         else {
@@ -1150,6 +1168,7 @@ mod tests {
                 task: "second round".into(),
                 members: vec![],
                 name: None,
+                project: None,
             })
             .await
         else {

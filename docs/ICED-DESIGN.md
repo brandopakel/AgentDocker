@@ -139,7 +139,13 @@ system, which is drawn from the mark:
   keyed `<conversation>#<message>`, apart from the conversation's), thread
   links `thread-<message>`, the back controls `thread-back` (to the list) and
   `close-thread` (the thread's one close, a header action when wide and the
-  way back when narrow, never both), earlier pages `earlier-<conversation>`. The screen takes an explicit height from the window (the
+  way back when narrow, never both), earlier pages `earlier-<conversation>`;
+  starting a conversation `new-conversation` (the + beside the search),
+  `new-kind-direct`/`new-kind-channel`, `new-direct-<agent>`,
+  `new-channel-name`, `new-channel-purpose`, `new-member-<agent>`,
+  `new-channel-create`; a mention offer `mention-<agent>`. A composer's
+  accessibility node carries its send as the input's action, which is what
+  Enter does, so the smoke drives Enter as a click on the input's id. The screen takes an explicit height from the window (the
   window less the chrome, at least 320) because it sits inside the workspace's
   own scroll, where `Fill` has nothing to fill; `scripts/iced_workflow_smoke.py`
   asserts that reading a conversation acknowledges its rows and clears its

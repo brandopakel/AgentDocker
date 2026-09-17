@@ -866,6 +866,10 @@ enum ChannelAction {
         /// from the task when absent.
         #[arg(long)]
         name: Option<String>,
+        /// The project the channel belongs to (id or path), when the
+        /// opener is in none or in another; your own project otherwise.
+        #[arg(long)]
+        project: Option<String>,
     },
     /// The work is final: close it and tell the members.
     Close {
@@ -1688,12 +1692,14 @@ async fn main() -> Result<()> {
                 task,
                 members,
                 name,
+                project,
             } => {
                 let request = Request::ChannelOpen {
                     agent,
                     task,
                     members,
                     name,
+                    project,
                 };
                 if let Response::Channel { channel } = client.call(&request).await? {
                     // The id alone on stdout, as every creating command;

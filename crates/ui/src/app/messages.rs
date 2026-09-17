@@ -9,11 +9,13 @@ use super::view::{
     dot, empty, eyebrow, first_line, monogram, note, panel, pill, rule, small, split_style,
 };
 use super::*;
-use crate::controls::{Kind, button as action, custom, input_enabled, primary};
+use crate::controls::{
+    Kind, button as action, custom, input_enabled, input_submitting, primary, segment,
+};
 use agentdocker_core::conversation::line_of;
 use agentdocker_core::journal::ago;
 use agentdocker_core::{
-    AgentId, ArchivedMessage, ConversationKind, ConversationSummary, MessageId,
+    AgentId, AgentRecord, ArchivedMessage, ConversationKind, ConversationSummary, MessageId,
 };
 use iced::{
     Center, Element, Fill,
@@ -59,6 +61,19 @@ impl App {
             ConversationKind::Notices | ConversationKind::Collision => false,
             _ => true,
         }
+    }
+
+    /// What `@name` means the person: the person's record name, `user`
+    /// and `you`.
+    fn mention_names(&self) -> Vec<String> {
+        let mut names = vec![agentdocker_core::HUMAN.to_owned(), "you".to_owned()];
+        names.extend(
+            self.agents
+                .iter()
+                .filter(|a| self.is_human(a.id.as_str()))
+                .map(|a| a.spec.name.clone()),
+        );
+        names
     }
 
     /// The tool an agent is, without the branch: `Codex`, `Claude Code`.
@@ -201,6 +216,7 @@ impl App {
             title,
             members,
             unread: 0,
+            mentions: 0,
             last_seq: None,
             last_at: None,
             last_from: None,
@@ -380,6 +396,16 @@ impl App {
             );
         }
         let mut content = row![mark, body].spacing(10).align_y(Center);
+        // Unread, and how many of those name the person: the @ pill is
+        // the one that asks for an answer.
+        if unread > 0 && summary.mentions > 0 {
+            content = content.push(pill(
+                format!("@{}", summary.mentions),
+                c.accent,
+                iced::Color::WHITE,
+                c,
+            ));
+        }
         if unread > 0 {
             content = content.push(pill(unread.to_string(), c.accent_soft, c.accent_ink, c));
         }
@@ -469,16 +495,43 @@ impl App {
             )
         });
         let mut list = column![].spacing(2);
+        // Find one, or start one: the search and, beside it, the way to a
+        // conversation that does not exist yet.
+        let form_open = self.new_conversation.is_some();
         list = list.push(
-            container(input_enabled(
-                "messages-search",
-                "Find a conversation…",
-                &self.shell.messages_search,
-                Message::MessagesSearch,
-                true,
-            ))
+            container(
+                row![
+                    input_enabled(
+                        "messages-search",
+                        "Find a conversation…",
+                        &self.shell.messages_search,
+                        Message::MessagesSearch,
+                        true,
+                    ),
+                    custom(
+                        "new-conversation",
+                        if form_open {
+                            "Close"
+                        } else {
+                            "New message or channel"
+                        },
+                        text(if form_open { "×" } else { "+" })
+                            .size(18)
+                            .color(if form_open { c.muted } else { c.accent }),
+                        Some(Message::NewConversation),
+                        form_open,
+                        Kind::Quiet,
+                        [4, 10],
+                    ),
+                ]
+                .spacing(4)
+                .align_y(Center),
+            )
             .padding([2, 4]),
         );
+        if let Some(form) = &self.new_conversation {
+            list = list.push(container(self.new_conversation_form(form, c)).padding([4, 6]));
+        }
         let unread_total = self.unread_total();
         if unread_total > 0 {
             let owed = self
@@ -642,6 +695,8 @@ impl App {
             self.name_of(from)
         };
         let body_text = line_of(&message.envelope);
+        let mentions_me =
+            agentdocker_core::conversation::mentions_any(&body_text, &self.mention_names());
         let id = message.envelope.id.clone();
         let expanded = self.shell.message_detail.as_ref() == Some(&id);
         let long = body_text.chars().count() > 600 || body_text.lines().count() > 10;
@@ -663,6 +718,10 @@ impl App {
         let kind = message.envelope.kind.as_str();
         if kind != "chat" && kind != "message" {
             head = head.push(pill(kind.to_owned(), c.raised, c.muted, c));
+        }
+        // A message that names the person says so where the eye lands.
+        if mentions_me {
+            head = head.push(pill("mentions you", c.accent, iced::Color::WHITE, c));
         }
         head = head.push(small(
             message
@@ -779,14 +838,17 @@ impl App {
                 .map(|agent| format!("reply-{agent}"))
                 .unwrap_or_else(|| format!("compose-{conversation}")),
         };
+        // Enter sends, as it does everywhere people type to each other;
+        // the button beside it is the same action for the pointer.
         let mut composer = column![
             row![
-                input_enabled(
+                input_submitting(
                     input_id,
                     &placeholder,
                     &text_now,
                     move |t| Message::ConversationDraft(owner.clone(), t),
                     can_send && !sending,
+                    submit.clone(),
                 ),
                 primary(
                     format!("send-{key}"),
@@ -798,6 +860,51 @@ impl App {
             .align_y(Center)
         ]
         .spacing(4);
+        // `@` and the start of a name offers who is here: a pick finishes
+        // the name in the draft. The names are the records' own — what
+        // `agentdocker send --to` takes — so a mention reaches its agent.
+        if let Some(prefix) = mention_prefix(&text_now) {
+            let matches: Vec<&AgentRecord> = self
+                .agents_to_talk_to()
+                .into_iter()
+                .filter(|a| {
+                    a.spec
+                        .name
+                        .to_lowercase()
+                        .starts_with(&prefix.to_lowercase())
+                        || self
+                            .name_of(a.id.as_str())
+                            .to_lowercase()
+                            .starts_with(&prefix.to_lowercase())
+                })
+                .take(6)
+                .collect();
+            if !matches.is_empty() {
+                let mut strip = row![small("Mention", c)].spacing(6).align_y(Center);
+                for agent in matches {
+                    let id = agent.id.as_str();
+                    let completed = complete_mention(&text_now, &agent.spec.name);
+                    let owner = key.clone();
+                    strip = strip.push(custom(
+                        format!("mention-{id}"),
+                        format!("@{}", agent.spec.name),
+                        row![
+                            text(format!("@{}", agent.spec.name))
+                                .size(13)
+                                .color(c.accent),
+                            small(self.name_of(id), c),
+                        ]
+                        .spacing(6)
+                        .align_y(Center),
+                        Some(Message::ConversationDraft(owner, completed)),
+                        false,
+                        Kind::Quiet,
+                        [3, 8],
+                    ));
+                }
+                composer = composer.push(strip);
+            }
+        }
         if let Some(error) = draft.and_then(|d| d.error.as_ref()) {
             composer = composer.push(text(error.clone()).size(13).color(c.amber));
         }
@@ -823,6 +930,151 @@ impl App {
             composer = composer.push(readiness);
         }
         composer.into()
+    }
+
+    /// The live agents the person can talk to, in the project the sidebar
+    /// is scoped to when it is: who a direct message can go to, who a
+    /// channel can hold.
+    fn agents_to_talk_to(&self) -> Vec<&AgentRecord> {
+        let mut agents: Vec<&AgentRecord> = self
+            .agents
+            .iter()
+            .filter(|a| a.status.is_live() && !self.is_human(a.id.as_str()))
+            .filter(|a| self.has_project(a.project.as_ref()))
+            .collect();
+        agents.sort_by_key(|a| self.name_of(a.id.as_str()).to_lowercase());
+        agents
+    }
+
+    /// Starting a conversation, the way Slack's New message does: a direct
+    /// message is one pick from the agents here; a channel is a name,
+    /// what it is for, and who is in it — everyone here when nobody is
+    /// picked — and the person is in it as its opener.
+    fn new_conversation_form(
+        &self,
+        form: &super::NewConversation,
+        c: Colors,
+    ) -> Element<'_, Message> {
+        use super::NewKind;
+        let agents = self.agents_to_talk_to();
+        let human = self
+            .agents
+            .iter()
+            .find(|a| self.is_human(a.id.as_str()))
+            .map(|a| a.id.as_str().to_owned());
+        let mut body = column![
+            row![
+                segment(
+                    "new-kind-direct",
+                    "Direct message",
+                    Some(Message::NewConversationKind(NewKind::Direct)),
+                    form.kind == NewKind::Direct,
+                ),
+                segment(
+                    "new-kind-channel",
+                    "Channel",
+                    Some(Message::NewConversationKind(NewKind::Channel)),
+                    form.kind == NewKind::Channel,
+                ),
+            ]
+            .spacing(4)
+        ]
+        .spacing(8);
+        match form.kind {
+            NewKind::Direct => {
+                if agents.is_empty() {
+                    body = body.push(note("No agent is running here to message.", c));
+                }
+                for agent in agents {
+                    let id = agent.id.as_str();
+                    let conversation = human.as_deref().map(|me| {
+                        agentdocker_core::ConversationId::dm(me, id)
+                            .as_str()
+                            .to_owned()
+                    });
+                    body = body.push(custom(
+                        format!("new-direct-{id}"),
+                        self.name_of(id),
+                        row![
+                            monogram(&self.name_of(id), id, 24.0, c),
+                            column![
+                                text(self.name_of(id)).size(14).color(c.text),
+                                small(self.tool_of(id), c),
+                            ]
+                            .spacing(1),
+                        ]
+                        .spacing(10)
+                        .align_y(Center),
+                        conversation.map(Message::NewDirect),
+                        false,
+                        Kind::Quiet,
+                        [6, 8],
+                    ));
+                }
+            }
+            NewKind::Channel => {
+                let ready = self.connected.is_ok() && !form.creating && !form.name.is_empty();
+                let create = ready.then_some(Message::CreateChannel);
+                body = body.push(input_submitting(
+                    "new-channel-name",
+                    "Name, like planning",
+                    &form.name,
+                    Message::NewChannelName,
+                    !form.creating,
+                    create.clone(),
+                ));
+                body = body.push(input_submitting(
+                    "new-channel-purpose",
+                    "What it is for",
+                    &form.purpose,
+                    Message::NewChannelPurpose,
+                    !form.creating,
+                    create.clone(),
+                ));
+                body = body.push(small(
+                    if form.members.is_empty() {
+                        "Members: everyone here. Pick some to narrow it.".to_owned()
+                    } else {
+                        format!("Members: you and {}", form.members.len())
+                    },
+                    c,
+                ));
+                for agent in agents {
+                    let id = agent.id.as_str();
+                    let picked = form.members.contains(&agent.id);
+                    body = body.push(custom(
+                        format!("new-member-{id}"),
+                        self.name_of(id),
+                        row![
+                            text(if picked { "☑" } else { "☐" })
+                                .size(14)
+                                .color(if picked { c.accent } else { c.muted }),
+                            text(self.name_of(id)).size(14).color(c.text),
+                            small(self.tool_of(id), c),
+                        ]
+                        .spacing(8)
+                        .align_y(Center),
+                        (!form.creating).then_some(Message::NewChannelMember(agent.id.clone())),
+                        picked,
+                        Kind::Quiet,
+                        [4, 8],
+                    ));
+                }
+                body = body.push(primary(
+                    "new-channel-create",
+                    if form.creating {
+                        "Opening…"
+                    } else {
+                        "Create channel"
+                    },
+                    create,
+                ));
+            }
+        }
+        if let Some(error) = &form.error {
+            body = body.push(text(error.clone()).size(13).color(c.amber));
+        }
+        panel(body, c)
     }
 
     fn messages_pane(&self, c: Colors) -> Element<'_, Message> {
@@ -1112,10 +1364,43 @@ impl App {
     }
 }
 
+/// The name being typed after a trailing `@`, when the draft ends in one:
+/// `ask @co` gives `co`, `ask @` gives an empty prefix (everyone), and a
+/// draft whose last word is not a mention gives nothing.
+fn mention_prefix(draft: &str) -> Option<&str> {
+    let last = draft.rsplit(char::is_whitespace).next().unwrap_or("");
+    let name = last.strip_prefix('@')?;
+    name.chars()
+        .all(|ch| ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        .then_some(name)
+}
+
+/// The draft with the mention being typed finished as `@name `.
+fn complete_mention(draft: &str, name: &str) -> String {
+    let cut = draft.rfind('@').expect("a prefix was found");
+    format!("{}@{name} ", &draft[..cut])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::{MESSAGE_CAPACITY, queue, tests::record};
+
+    /// `@` at the end of a word being typed offers names; a pick finishes
+    /// it with a space after, leaving the words before it as they were.
+    #[test]
+    fn a_mention_is_offered_while_typed_and_finished_when_picked() {
+        assert_eq!(mention_prefix("ask @co"), Some("co"));
+        assert_eq!(mention_prefix("ask @"), Some(""));
+        assert_eq!(mention_prefix("ask @codex-51242 to"), None);
+        assert_eq!(mention_prefix("mail a@b"), None);
+        assert_eq!(mention_prefix(""), None);
+        assert_eq!(
+            complete_mention("ask @co", "codex-51242"),
+            "ask @codex-51242 "
+        );
+        assert_eq!(complete_mention("@", "user"), "@user ");
+    }
     use std::sync::mpsc::sync_channel;
 
     /// The badge counts what the person owes: a channel, a broadcast and

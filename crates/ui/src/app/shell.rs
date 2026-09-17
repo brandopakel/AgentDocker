@@ -233,6 +233,18 @@ pub enum Message {
     PaneResized(super::panes::Grid, iced::widget::pane_grid::ResizeEvent),
     /// Every conversation the person owes a read is read through its head.
     MarkAllRead,
+    /// Start a conversation: open or close the form.
+    NewConversation,
+    /// A direct message or a channel.
+    NewConversationKind(super::NewKind),
+    NewChannelName(String),
+    NewChannelPurpose(String),
+    /// Put an agent in the new channel, or take it out.
+    NewChannelMember(agentdocker_core::AgentId),
+    /// Open the channel the form describes.
+    CreateChannel,
+    /// The person picked who to message: open that direct conversation.
+    NewDirect(String),
     /// Open or close the menu under a project row.
     ProjectMenu(PathBuf),
     ProjectRenameStart(PathBuf),
@@ -780,6 +792,76 @@ impl App {
                 if self.panes.resized(grid, event) {
                     self.shell.catalog.panes = self.panes.widths;
                     self.shell.changed();
+                }
+            }
+            Message::NewConversation => {
+                self.new_conversation = match self.new_conversation {
+                    Some(_) => None,
+                    None => Some(super::NewConversation::new()),
+                };
+            }
+            Message::NewConversationKind(kind) => {
+                if let Some(form) = &mut self.new_conversation {
+                    form.kind = kind;
+                    form.error = None;
+                }
+            }
+            Message::NewChannelName(name) => {
+                if let Some(form) = &mut self.new_conversation {
+                    // What a channel name is: lowercase letters, digits and
+                    // hyphens, so what is typed is kept to that.
+                    form.name = name
+                        .to_lowercase()
+                        .chars()
+                        .map(|ch| if ch.is_whitespace() { '-' } else { ch })
+                        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+                        .take(40)
+                        .collect();
+                    form.error = None;
+                }
+            }
+            Message::NewChannelPurpose(purpose) => {
+                if let Some(form) = &mut self.new_conversation {
+                    form.purpose = purpose;
+                    form.error = None;
+                }
+            }
+            Message::NewChannelMember(agent) => {
+                if let Some(form) = &mut self.new_conversation
+                    && !form.members.remove(&agent)
+                {
+                    form.members.insert(agent);
+                }
+            }
+            Message::NewDirect(conversation) => {
+                self.new_conversation = None;
+                return self.update(Message::SelectConversation(conversation));
+            }
+            Message::CreateChannel => {
+                let project = self
+                    .shell
+                    .catalog
+                    .selected
+                    .as_ref()
+                    .map(|root| root.display().to_string());
+                if let Some(form) = &mut self.new_conversation
+                    && !form.creating
+                    && !form.name.is_empty()
+                {
+                    form.creating = true;
+                    form.error = None;
+                    let task = if form.purpose.trim().is_empty() {
+                        form.name.replace('-', " ")
+                    } else {
+                        form.purpose.trim().to_owned()
+                    };
+                    let cmd = Cmd::ChannelOpen {
+                        name: form.name.clone(),
+                        task,
+                        members: form.members.iter().map(|id| id.to_string()).collect(),
+                        project,
+                    };
+                    self.send(cmd);
                 }
             }
             Message::MarkAllRead => {

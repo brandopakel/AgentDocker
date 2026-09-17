@@ -178,6 +178,10 @@ pub struct ConversationSummary {
     pub members: Vec<AgentId>,
     /// Archived messages past the reader's cursor.
     pub unread: u64,
+    /// How many of those mention the reader by `@name` — any name the
+    /// reader has had, and `@user` or `@you` for the person.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub mentions: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -206,6 +210,40 @@ pub fn line_of(envelope: &Envelope) -> String {
             None => payload.to_string(),
         },
     }
+}
+
+/// The names a text mentions with `@`: `@codex-51242` is a mention of
+/// `codex-51242`, and a name ends where the text stops being a name
+/// character (letters, digits, `-`, `_`, `.`), so `@codex-51242,` and
+/// `(@user)` mention as written. An `@` inside a word (`a@b.c`) is not a
+/// mention. Case is the text's own; callers compare as they see fit.
+pub fn mentions_in(text: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find('@') {
+        let before = rest[..at].chars().next_back();
+        let after = &rest[at + 1..];
+        let end = after
+            .find(|ch: char| !(ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.')))
+            .unwrap_or(after.len());
+        let name = &after[..end].trim_end_matches('.');
+        if before.is_none_or(|ch| !(ch.is_alphanumeric() || ch == '_')) && !name.is_empty() {
+            found.push(*name);
+        }
+        rest = &after[end.min(after.len())..];
+        if rest.is_empty() {
+            break;
+        }
+    }
+    found
+}
+
+/// Whether a text mentions any of these names, as [`mentions_in`] reads
+/// them, case-insensitively.
+pub fn mentions_any(text: &str, names: &[String]) -> bool {
+    mentions_in(text)
+        .iter()
+        .any(|found| names.iter().any(|name| name.eq_ignore_ascii_case(found)))
 }
 
 /// Whether `reply_to` threads under a root in the same conversation. A
@@ -255,6 +293,21 @@ pub fn channel_name_from(task: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `@name` is a mention where it stands on its own; punctuation after
+    /// it is not part of the name, an address is not a mention, and the
+    /// comparison is case-insensitive.
+    #[test]
+    fn mentions_are_names_after_an_at_sign() {
+        assert_eq!(
+            mentions_in("@codex-51242, can @Claude-Code look? (@user) mail a@b.c; done@"),
+            ["codex-51242", "Claude-Code", "user"]
+        );
+        assert_eq!(mentions_in("@here.").as_slice(), ["here"]);
+        assert!(mentions_in("nothing here").is_empty());
+        assert!(mentions_any("ping @USER now", &["user".into()]));
+        assert!(!mentions_any("ping @users now", &["user".into()]));
+    }
     use serde_json::json;
 
     fn envelope(from: &str, to: Destination) -> Envelope {

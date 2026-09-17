@@ -1924,7 +1924,11 @@ impl Daemon {
                 task,
                 members,
                 name,
-            } => self.channel_open(&agent, task, members, name),
+                project,
+            } => {
+                self.channel_open(&agent, task, members, name, project)
+                    .await
+            }
             Request::ChannelClose {
                 agent,
                 channel,
@@ -10698,6 +10702,7 @@ deny = ["send:all"]
                 task: "legacy membership".into(),
                 members: vec!["receiver".into()],
                 name: None,
+                project: None,
             })
             .await
         else {

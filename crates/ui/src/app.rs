@@ -129,6 +129,14 @@ enum Cmd {
     Thread(MessageId, u64),
     /// The person read a conversation through an archive seq.
     MarkRead(String, u64),
+    /// The person opens a room in the project they are looking at, with
+    /// the members they picked (everyone else in it when none).
+    ChannelOpen {
+        name: String,
+        task: String,
+        members: Vec<String>,
+        project: Option<String>,
+    },
     /// Text from the person into a conversation: `draft` is the composer it
     /// came from (the conversation, or `<conversation>#<root>` in a thread,
     /// which is where the receipt goes), `to` the destination the
@@ -231,6 +239,8 @@ enum Msg {
     Console(String),
     Launched(Result<String, String>),
     ChannelSent(String, Result<MessageId, String>),
+    /// The room the person asked for, by id, or why not.
+    ChannelOpened(Result<agentdocker_core::ChannelId, String>),
     SessionSent(String, Result<MessageId, String>),
     /// `Err` when the daemon does not know conversations at all.
     Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
@@ -301,6 +311,9 @@ pub struct App {
     /// daemon has answered, `Some(false)` from a daemon without it.
     conversations: Vec<agentdocker_core::ConversationSummary>,
     conversations_supported: Option<bool>,
+    /// The form for a conversation the person is starting — a direct
+    /// message or a channel — while it is open.
+    new_conversation: Option<NewConversation>,
     /// Archived history per conversation, oldest first, as last fetched.
     history: BTreeMap<String, Vec<agentdocker_core::ArchivedMessage>>,
     /// Conversations whose earliest archived message is on view.
@@ -423,6 +436,7 @@ impl App {
             inbox: Vec::new(),
             conversations: Vec::new(),
             conversations_supported: None,
+            new_conversation: None,
             history: BTreeMap::new(),
             history_complete: BTreeSet::new(),
             history_epoch: 0,
@@ -485,6 +499,7 @@ impl App {
             inbox: Vec::new(),
             conversations: Vec::new(),
             conversations_supported: None,
+            new_conversation: None,
             history: BTreeMap::new(),
             history_complete: BTreeSet::new(),
             history_epoch: 0,
@@ -956,6 +971,28 @@ impl App {
                         }
                     }
                 }
+                Msg::ChannelOpened(result) => match result {
+                    Ok(id) => {
+                        self.new_conversation = None;
+                        let conversation = agentdocker_core::ConversationId::channel(&id)
+                            .as_str()
+                            .to_owned();
+                        if let Some(project) = self.selected_project_id() {
+                            self.request_channels(project);
+                        }
+                        self.send(Cmd::Conversations(self.conversation_scope()));
+                        // The form's message, not a Task: drain has none
+                        // to return, and selecting needs no effect of
+                        // its own beyond the history request it sends.
+                        let _ = self.update(Message::SelectConversation(conversation));
+                    }
+                    Err(error) => {
+                        if let Some(form) = &mut self.new_conversation {
+                            form.creating = false;
+                            form.error = Some(error);
+                        }
+                    }
+                },
                 Msg::ChannelSent(id, result) => {
                     let draft = self.shell.channel_drafts.entry(id.clone()).or_default();
                     match result {
@@ -1274,6 +1311,18 @@ impl App {
     fn request_channels(&mut self, id: String) {
         let selector = self.project_selector(&id);
         self.send(Cmd::Channels(id, selector));
+    }
+    /// The id of the project the sidebar is scoped to, when one is.
+    pub(crate) fn selected_project_id(&self) -> Option<String> {
+        let root = self.shell.catalog.selected.as_deref()?;
+        self.shell
+            .catalog
+            .projects
+            .iter()
+            .map(|e| &e.project)
+            .chain(self.agents.iter().filter_map(|a| a.project.as_ref()))
+            .find(|p| p.root == root)
+            .map(|p| p.id().as_str().to_owned())
     }
     /// The project the sidebar is scoped to, as a selector, or none for
     /// everywhere.
@@ -2013,6 +2062,26 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             })?;
             None
         }
+        Cmd::ChannelOpen {
+            name,
+            task,
+            members,
+            project,
+        } => {
+            let result = match client.call(&Request::ChannelOpen {
+                agent: agentdocker_core::HUMAN.into(),
+                task,
+                members,
+                name: Some(name),
+                project,
+            }) {
+                Ok(Response::Channel { channel }) => Ok(channel.id),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::ChannelOpened(result))
+        }
         Cmd::ConversationSend {
             draft,
             to,
@@ -2259,6 +2328,38 @@ pub(crate) fn runtime_label(runtime: &str) -> String {
     agentdocker_core::runtime::spec(runtime)
         .map(|spec| spec.label.to_owned())
         .unwrap_or_else(|| runtime.to_owned())
+}
+
+/// Which kind of conversation the person is starting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewKind {
+    Direct,
+    Channel,
+}
+
+/// The form for a conversation the person is starting: a direct message
+/// is one pick, a channel is a name, what it is for and who is in it.
+#[derive(Clone, Debug)]
+pub(crate) struct NewConversation {
+    pub kind: NewKind,
+    pub name: String,
+    pub purpose: String,
+    pub members: BTreeSet<agentdocker_core::AgentId>,
+    pub creating: bool,
+    pub error: Option<String>,
+}
+
+impl NewConversation {
+    pub(crate) fn new() -> Self {
+        Self {
+            kind: NewKind::Direct,
+            name: String::new(),
+            purpose: String::new(),
+            members: BTreeSet::new(),
+            creating: false,
+            error: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3926,6 +4027,7 @@ pub(crate) mod tests {
                 title: "room".into(),
                 members: Vec::new(),
                 unread: 1,
+                mentions: 0,
                 last_seq: Some(7),
                 last_at: None,
                 last_from: None,
@@ -4009,6 +4111,7 @@ pub(crate) mod tests {
             title: "room".into(),
             members: Vec::new(),
             unread: 3,
+            mentions: 0,
             last_seq: Some(3),
             last_at: None,
             last_from: None,
