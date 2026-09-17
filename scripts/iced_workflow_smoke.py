@@ -116,7 +116,7 @@ def measure_idle(binary_dir, env, cwd, daemon, output):
                         for name in ("window", "daemon")}}
 
 
-def smoke(binary_dir, output):
+def smoke(binary_dir, output, *, skip_idle_measurement=False):
     binary_dir = binary_dir.resolve(strict=True)
     output = output.absolute()
     output.mkdir(mode=0o700)
@@ -660,7 +660,10 @@ def smoke(binary_dir, output):
             checks.append("provider_limit_resume_preserves_draft_receipts_and_retained_queue")
             rpc(endpoint, {"op": "deregister", "agent": receiver["id"]})
             narrow_inbox()
-            report["idle_resources"] = measure_idle(binary_dir, env, project, daemon, output)
+            report["idle_resources"] = (
+                {"result": "not_run", "reason": "Explicit --skip-idle-measurement: foreground CPU/RSS sample omitted; no idle performance claim."}
+                if skip_idle_measurement else measure_idle(binary_dir, env, project, daemon, output)
+            )
             report["result"] = "passed"
         except Exception as error:
             report["error"] = str(error)
@@ -674,5 +677,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--skip-idle-measurement", action="store_true",
+                        help="omit the foreground idle CPU/RSS sample while retaining graphical workflow checks")
     args = parser.parse_args()
-    print(json.dumps(smoke(args.binary_dir, args.output), indent=2))
+    print(json.dumps(smoke(args.binary_dir, args.output,
+                           skip_idle_measurement=args.skip_idle_measurement), indent=2))
