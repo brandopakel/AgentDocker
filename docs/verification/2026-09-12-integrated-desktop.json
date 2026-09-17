@@ -1098,6 +1098,44 @@
       },
       "scope": "Actual isolated native windows and rendered workflow actions; no live provider hook configuration changed, no physical keyboard/IME trial claimed. Combined source includes messaging controls and installed receiver upgrade implementation.",
       "status": "passed; final CI, review and installation pending"
+    },
+    "disable_flag_type_followup": {
+      "build": {
+        "format": 1,
+        "source_commit": "1cdec50471829d9d463cfa7410e71b5e3d12c14a",
+        "source_tree": "a500edd5bb75610486986df970af58c39cbee75d",
+        "source_input_sha256": "56605d7c87c7fa6b5a1589ef1148e35c49bd518b6c768b495d9a46fff3bb442a",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 22,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "554d6ed5acf209f36056aecbcbfba5c302e8c995780bf57a8efa18529a2fc3e2",
+          "agentd": "fdc6a847a7d0199ecaf817df6f8f665e4d16995e48e4821de85d0cd202d87d38",
+          "agentdocker-ui": "7c4a24b2a99b16efc4a63fa2c962f812faf078cfadc9ab0360d5a9aa5ada583a"
+        }
+      },
+      "gate": {
+        "result": "passed",
+        "rust_passed": 1118,
+        "rust_skipped": 7,
+        "python_checks": 84,
+        "checks": [
+          "formatting",
+          "strict Clippy",
+          "doctests",
+          "packaging",
+          "release build"
+        ],
+        "log": "/private/tmp/agentdocker-hook-disable-gate6-2026-09-17.log",
+        "junit": "/private/tmp/agentdocker-hook-disable-gate6-nextest-2026-09-17/junit.xml"
+      },
+      "scope": "Non-Boolean disableAllHooks stays Unverified, including direct missing-events helper; string, numeric, null, array and object cases plus valid false/true. Guide lists StopFailure. Includes merged164 session reconnect. No new native workflow or physical keyboard trial: changed behavior is host configuration validation; prior415-step workflow covers unchanged controls.",
+      "status": "local source gate passed; final review/CI and installed diagnostics acceptance pending"
     }
   },
   "messaging_controls_review_2026_09_17": {
