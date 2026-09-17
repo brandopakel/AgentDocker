@@ -524,6 +524,54 @@ pub enum Request {
     },
     /// Who is waiting for what, oldest first.
     Waiting,
+    /// File a card on a project's board. Answers `task`.
+    TaskCreate {
+        from: String,
+        /// Project id, root or unique prefix; the caller's own when absent.
+        #[serde(default)]
+        project: Option<String>,
+        title: String,
+        #[serde(default)]
+        acceptance: String,
+        /// Backlog when absent.
+        #[serde(default)]
+        column: Option<crate::Column>,
+    },
+    /// An agent takes a Ready card nobody holds: it becomes theirs, in
+    /// progress. Answers `task`, or `conflict` when it is held or not
+    /// ready, `paused` while its project is paused.
+    TaskPull { agent: String, task: String },
+    /// Move a card: its assignee may, the person always may. Answers
+    /// `task`, or `forbidden`.
+    TaskMove {
+        agent: String,
+        task: String,
+        column: crate::Column,
+    },
+    /// Edit a card's words, or (the person only) who holds it:
+    /// `assignee: ""` takes it away. Answers `task`.
+    TaskUpdate {
+        agent: String,
+        task: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        acceptance: Option<String>,
+        #[serde(default)]
+        assignee: Option<String>,
+    },
+    /// Off the board, kept for the record. Answers `ok`.
+    TaskArchive { agent: String, task: String },
+    /// A project's cards, Backlog to Done, newest last within a column;
+    /// archived ones only when asked. Answers `tasks`.
+    Tasks {
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        column: Option<crate::Column>,
+        #[serde(default)]
+        archived: bool,
+    },
 
     /// Announce a task several agents will attempt, with the measure
     /// that ranks them. The measure is fixed here and never changes.
@@ -1148,6 +1196,12 @@ pub enum Response {
     },
     Waiting {
         waiting: Vec<crate::Waiter>,
+    },
+    Task {
+        task: crate::Task,
+    },
+    Tasks {
+        tasks: Vec<crate::Task>,
     },
     Contest {
         contest: crate::Contest,

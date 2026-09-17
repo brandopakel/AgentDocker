@@ -50,6 +50,7 @@ mod handoff;
 pub mod humans;
 mod images;
 mod panes;
+mod tasks;
 pub mod policies;
 mod provider;
 mod recovery;
@@ -1730,6 +1731,35 @@ impl Daemon {
                 all,
             } => self.activity(agent, project, all).await,
             Request::Waiting => self.waiting(),
+            Request::TaskCreate {
+                from,
+                project,
+                title,
+                acceptance,
+                column,
+            } => {
+                self.task_create(from, project, title, acceptance, column)
+                    .await
+            }
+            Request::TaskPull { agent, task } => self.task_pull(&agent, &task),
+            Request::TaskMove {
+                agent,
+                task,
+                column,
+            } => self.task_move(&agent, &task, column),
+            Request::TaskUpdate {
+                agent,
+                task,
+                title,
+                acceptance,
+                assignee,
+            } => self.task_update(&agent, &task, title, acceptance, assignee),
+            Request::TaskArchive { agent, task } => self.task_archive(&agent, &task),
+            Request::Tasks {
+                project,
+                column,
+                archived,
+            } => self.tasks(project, column, archived).await,
             Request::ContestOpen {
                 agent,
                 project,

@@ -647,6 +647,42 @@ impl<B: Backend> McpServer<B> {
                 };
                 self.forward(tagged_request(arguments, op, &me)?).await
             }
+            "list_tasks" => {
+                // The board is read for anyone; the caller's project is
+                // the default.
+                let mut object = arguments
+                    .as_object()
+                    .cloned()
+                    .ok_or((INVALID_PARAMS, "arguments must be an object".to_owned()))?;
+                object.insert("op".into(), json!("tasks"));
+                if !object.contains_key("project") {
+                    let project = match self.backend.call(Request::Inspect { agent: me.clone() }).await {
+                        Ok(Response::Agent { agent }) => agent.project.as_ref().map(|p| p.id().as_str().to_owned()),
+                        _ => None,
+                    };
+                    if let Some(project) = project {
+                        object.insert("project".into(), json!(project));
+                    }
+                }
+                let request = serde_json::from_value(Value::Object(object))
+                    .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+                self.forward(request).await
+            }
+            "pull_task" | "move_task" => {
+                let op = if name == "pull_task" { "task_pull" } else { "task_move" };
+                self.forward(tagged_request(arguments, op, &me)?).await
+            }
+            "create_task" => {
+                let mut object = arguments
+                    .as_object()
+                    .cloned()
+                    .ok_or((INVALID_PARAMS, "arguments must be an object".to_owned()))?;
+                object.insert("op".into(), json!("task_create"));
+                object.insert("from".into(), json!(me));
+                let request = serde_json::from_value(Value::Object(object))
+                    .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+                self.forward(request).await
+            }
             "handoff" | "list_handoffs" => {
                 let op = if name == "handoff" {
                     "handoff"
@@ -1704,6 +1740,59 @@ fn tool_definitions() -> Vec<Value> {
                 "additionalProperties": false
             }
         }),
+        json!({
+            "name": "list_tasks",
+            "description": "The project's board of work: cards in columns (backlog, ready, in_progress, review, done), each with a title and what done means. Ready cards are there to be pulled.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Project id or path; your own when absent." },
+                    "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done"] },
+                    "archived": { "type": "boolean", "description": "Include cards taken off the board." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "pull_task",
+            "description": "Take a Ready card nobody holds: it becomes yours, in progress. Refused if somebody already holds it or it is not ready, so two agents never work the same card. Read its acceptance text before you start.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string", "description": "Card id or unique prefix." }
+                },
+                "required": ["task"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "move_task",
+            "description": "Move a card you hold to another column — review when it is ready for eyes, done when its acceptance text is met. Only the card's holder or the person moves it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task": { "type": "string" },
+                    "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done"] }
+                },
+                "required": ["task", "column"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "create_task",
+            "description": "File a card on the board: a title, what done means, and the column (backlog unless said; ready when it is for anyone to pull).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "acceptance": { "type": "string", "description": "What done means." },
+                    "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done"] },
+                    "project": { "type": "string", "description": "Project id or path; your own when absent." }
+                },
+                "required": ["title"],
+                "additionalProperties": false
+            }
+        }),
     ]
 }
 
@@ -1967,7 +2056,11 @@ mod tests {
                 "release",
                 "journal_note",
                 "read_journal",
-                "list_leases"
+                "list_leases",
+                "list_tasks",
+                "pull_task",
+                "move_task",
+                "create_task"
             ]
         );
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object"));

@@ -390,6 +390,38 @@ pub enum EventKind {
     LeaseDeadlock {
         cycle: Vec<crate::Blocked>,
     },
+    /// A card was filed on a project's board.
+    TaskCreated {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+        title: String,
+    },
+    /// An agent took a Ready card: theirs, in progress.
+    TaskPulled {
+        task: crate::TaskId,
+        project: ProjectId,
+        agent: AgentId,
+    },
+    /// A card moved columns, by its assignee or the person.
+    TaskMoved {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+        column: crate::Column,
+    },
+    /// A card's words or holder changed.
+    TaskUpdated {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+    },
+    /// A card left the board.
+    TaskArchived {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+    },
     /// The policy refused something. Carries what was asked and which
     /// rule said no, so a refusal is explainable from the event stream
     /// alone.
