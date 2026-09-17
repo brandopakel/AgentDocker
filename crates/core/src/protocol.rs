@@ -281,6 +281,14 @@ pub enum Request {
         #[serde(default)]
         vcs: Option<VcsState>,
     },
+    /// Give a live agent a role (`reviewer`, `implementer`…) or take it
+    /// away, so a message or a hand-off can name it as `role:<name>`.
+    /// Kept as the `role` label. Answers `agent`.
+    Role {
+        agent: String,
+        #[serde(default)]
+        role: Option<String>,
+    },
     /// A provider lifecycle observation, separate from process liveness.
     /// Older observations are ignored; observations expire after five minutes.
     ReportActivity {

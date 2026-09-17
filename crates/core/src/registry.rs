@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
+use crate::agent::{ROLE_LABEL, ROLE_PREFIX};
 use crate::{AgentId, AgentRecord, AgentStatus, ProjectId, ProjectRef, VcsState};
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -21,6 +22,10 @@ pub enum RegistryError {
     ProjectNotFound(String),
     #[error("`{0}` matches several projects; use a longer id prefix")]
     ProjectAmbiguous(String),
+    #[error("no live agent holds the role `{0}`")]
+    RoleNotFound(String),
+    #[error("several live agents hold the role `{0}`; name one")]
+    RoleAmbiguous(String),
 }
 
 #[derive(Debug, Default)]
@@ -231,10 +236,14 @@ impl Registry {
 
     /// Turn what a user typed into an id. Tries, in order: exact id, the name
     /// of a live agent, the name of the most recent finished agent, then a
-    /// unique id prefix.
+    /// unique id prefix. `role:<name>` is the one live agent holding that
+    /// role anywhere; [`Registry::resolve_role`] scopes it to a project.
     pub fn resolve(&self, reference: &str) -> Result<AgentId, RegistryError> {
         if reference.is_empty() {
             return Err(RegistryError::NotFound(reference.to_owned()));
+        }
+        if let Some(role) = reference.strip_prefix(ROLE_PREFIX) {
+            return self.resolve_role(role, None);
         }
         let exact = AgentId::from(reference);
         if let Some(canonical) = self.aliases.get(&exact) {
@@ -273,6 +282,30 @@ impl Registry {
             [one] => Ok((*one).clone()),
             [] => Err(RegistryError::NotFound(reference.to_owned())),
             _ => Err(RegistryError::Ambiguous(reference.to_owned())),
+        }
+    }
+
+    /// The one live agent holding `role` — in `project` when one is
+    /// given, anywhere otherwise. None is not found; several are
+    /// ambiguous: a role is an address only while one agent answers to it.
+    pub fn resolve_role(
+        &self,
+        role: &str,
+        project: Option<&ProjectId>,
+    ) -> Result<AgentId, RegistryError> {
+        let holders: Vec<&AgentRecord> = self
+            .live()
+            .filter(|a| a.role() == Some(role))
+            .filter(|a| {
+                project.is_none_or(|wanted| {
+                    a.project.as_ref().is_some_and(|mine| mine.id() == *wanted)
+                })
+            })
+            .collect();
+        match holders.as_slice() {
+            [one] => Ok(one.id.clone()),
+            [] => Err(RegistryError::RoleNotFound(role.to_owned())),
+            _ => Err(RegistryError::RoleAmbiguous(role.to_owned())),
         }
     }
 
@@ -411,6 +444,7 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::check_role;
     use crate::{AgentSpec, ProjectRef};
 
     fn record(name: &str) -> AgentRecord {
@@ -601,6 +635,49 @@ mod tests {
             Err(RegistryError::NotFound("nope".into()))
         );
         assert_eq!(reg.resolve(""), Err(RegistryError::NotFound(String::new())));
+    }
+
+    /// A role names the one live agent holding it: in a project when the
+    /// lookup is scoped, anywhere otherwise; a finished holder does not
+    /// count, and two holders are an ambiguity, not a choice.
+    #[test]
+    fn a_role_names_the_one_live_holder_in_a_project() {
+        let mut reg = Registry::new();
+        let mut reviewer = record("rev");
+        reviewer
+            .spec
+            .labels
+            .insert(ROLE_LABEL.to_owned(), "reviewer".to_owned());
+        reviewer.project = Some(ProjectRef::directory("/work/one"));
+        let mut elsewhere = record("rev-2");
+        elsewhere
+            .spec
+            .labels
+            .insert(ROLE_LABEL.to_owned(), "reviewer".to_owned());
+        elsewhere.project = Some(ProjectRef::directory("/work/two"));
+        let one = reviewer.project.as_ref().unwrap().id();
+        let two = elsewhere.project.as_ref().unwrap().id();
+        let (reviewer_id, elsewhere_id) = (reviewer.id.clone(), elsewhere.id.clone());
+        reg.insert(reviewer).unwrap();
+        reg.insert(elsewhere).unwrap();
+        assert_eq!(reg.resolve_role("reviewer", Some(&one)), Ok(reviewer_id.clone()));
+        assert_eq!(reg.resolve_role("reviewer", Some(&two)), Ok(elsewhere_id.clone()));
+        assert_eq!(
+            reg.resolve("role:reviewer"),
+            Err(RegistryError::RoleAmbiguous("reviewer".into())),
+            "unscoped, two hold it"
+        );
+        assert_eq!(
+            reg.resolve_role("implementer", Some(&one)),
+            Err(RegistryError::RoleNotFound("implementer".into()))
+        );
+        reg.set_status(&elsewhere_id, AgentStatus::Exited { code: Some(0) }, Utc::now());
+        assert_eq!(reg.resolve("role:reviewer"), Ok(reviewer_id), "one live holder");
+        assert!(check_role("reviewer").is_ok());
+        assert!(check_role("code-reviewer-2").is_ok());
+        for bad in ["", "Reviewer", "re viewer", "-rev", "rev-", &"r".repeat(41)] {
+            assert!(check_role(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

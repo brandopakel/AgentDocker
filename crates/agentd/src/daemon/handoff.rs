@@ -58,7 +58,7 @@ impl Daemon {
         let recipient = match to {
             Some(reference) => {
                 let mut state = lock(&self.state);
-                let id = match state.resolve(reference) {
+                let id = match state.resolve_from(Some(&from), reference) {
                     Ok(id) => id,
                     Err(e) => return *e,
                 };

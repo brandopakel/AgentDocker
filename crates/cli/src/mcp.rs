@@ -1470,7 +1470,7 @@ fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "The recipient: agent id, name, or unique prefix." },
+                    "to": { "type": "string", "description": "The recipient: agent id, name, or unique prefix, or `role:<name>` for the one agent holding that role in this project." },
                     "task": { "type": "string", "description": "What the recipient should continue." },
                     "note": { "type": "string", "description": "Anything the daemon does not already know." },
                     "transfer_leases": { "type": "boolean", "default": false },
@@ -1596,7 +1596,7 @@ fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "Agent id/name, `project` (this project) or `project:<id|path>`, `topic:<name>`, or `all`." },
+                    "to": { "type": "string", "description": "Agent id/name or `role:<name>` (the one agent holding that role in this project), `project` (this project) or `project:<id|path>`, `topic:<name>`, or `all`." },
                     "text": { "type": "string" },
                     "payload": { "type": "object", "description": "Structured payload instead of text." },
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },

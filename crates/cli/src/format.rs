@@ -196,6 +196,14 @@ pub fn event_line(event: &Event) -> String {
                 observation.activity
             )
         }
+        EventKind::RoleSet {
+            agent,
+            role: Some(role),
+            ..
+        } => format!("role set   {} {role}", agent.short()),
+        EventKind::RoleSet {
+            agent, role: None, ..
+        } => format!("role cleared   {}", agent.short()),
         EventKind::AdapterContactReported { agent, adapter, .. } => {
             format!("adapter contact   {} {:?}", agent.short(), adapter)
         }
