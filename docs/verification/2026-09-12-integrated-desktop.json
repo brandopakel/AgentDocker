@@ -2198,7 +2198,7 @@
     "result": "passed",
     "scope": "A pause survives a rollback attempt: the schema-23 daemon records a hold,\nan installed schema-22 daemon refuses to open that state, and the hold is\nstill there for the 23 daemon. Private home; never the production state.",
     "steps": [
-      "schema-23 daemon paused the project: paused aef60cbc5ffb — rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
+      "schema-23 daemon paused the project: paused aef60cbc5ffb \u2014 rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
       "pause --list shows the hold",
       "state.db at schema 23 with one pause document",
       "schema-22 daemon refused to start (exit 1); state.db unchanged (sha256 e352e94e548a), pause document retained",
@@ -2596,6 +2596,76 @@
       "No production activation in this campaign yet.",
       "Actual model idle wake remains open; the reconnect fixture speaks MCP.",
       "No hands-on IME/accessibility or external release certification."
+    ]
+  },
+  "notification_reveal_followup_2026_09_17": {
+    "source": "5a8cc685e010897428efefed0dde3a734f2d687c",
+    "source_tree": "5d5ebc5109166e3d8e7f1e6d420ac49d73e5f8bf",
+    "source_dirty": false,
+    "changes": [
+      "Initial and earlier history requests must be accepted before a notification lookup waits for their responses. Queue refusal ends the lookup with its reason.",
+      "A fresh history epoch rejects pre-click replies and cached completeness cannot prematurely report a missing message.",
+      "Live questions do not enter archive search; pruning restarts through the same request-admission path."
+    ],
+    "validation": {
+      "ui_tests": {
+        "passed": 170,
+        "log": "/private/tmp/agentdocker-notification-refusal-tests-final-20260917.log"
+      },
+      "full_gate": {
+        "rust_passed": 1146,
+        "rust_skipped": 7,
+        "python_run": 94,
+        "python_passed": 93,
+        "python_skipped": 1,
+        "other": [
+          "format",
+          "strict clippy",
+          "doctests",
+          "cargo package",
+          "release build"
+        ],
+        "log": "/private/tmp/agentdocker-notification-final-gate-20260917.log"
+      }
+    },
+    "earlier_attempts": [
+      "The first targeted build started before a documentation merge had completed and was stopped; no result from it is counted.",
+      "The initial live-question fixture enabled archive routing before its awaited question snapshot; it failed the pre-existing pending assertion. Moving that fixture setup after the awaited state restored the intended live-question regression. The subsequent complete UI suite passed."
+    ],
+    "build_manifest": {
+      "format": 1,
+      "source_commit": "5a8cc685e010897428efefed0dde3a734f2d687c",
+      "source_tree": "5d5ebc5109166e3d8e7f1e6d420ac49d73e5f8bf",
+      "source_input_sha256": "7b5d4e9955e5c284aa5eecb3df162fb748546d12221d023a13528c7dba3a902f",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 23,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "1874c66870742d7908eba86e9e5f9a442e46d8cd3ef81e96330999e716a0ba57",
+        "agentd": "be800d1db07fa247345094f8d6ec17a06df131d4d956412b7ffaf3e28864d745",
+        "agentdocker-ui": "e66e63b62f17e73325522b063aa13070e3d1be699d60879c01954ea144be0cf6"
+      }
+    },
+    "package": {
+      "candidate": "6d168e4d040c96909b423cb7989d485be4e63269145b06d8394962cee2cd0672",
+      "previous": "79981bebcc3f66b5d848a63f26b0b894698b73c9872c5c91c38dd2cc0159214f",
+      "preview_passed": true,
+      "directory": "/private/tmp/agentdocker-notification-final-package-20260917",
+      "signing": "local-preview",
+      "notarized": false
+    },
+    "reuse_of_prior_trials": {
+      "cli_and_daemon_hashes_identical_to": "resumed_channel_setup_2026_09_17",
+      "scope": "The private actual-Claude configuration CLI trial and real MCP resume fixture exercise unchanged CLI/daemon binaries. The UI binary changed and has the additional regression coverage above."
+    },
+    "limits": [
+      "Final review/CI and installed activation remain required. Candidate28f4f1f3 is superseded by6d168e4d and was not installed.",
+      "No actual Claude idle-model turn, provider startup consent, hands-on IME/accessibility or external release certification is claimed."
     ]
   }
 }
