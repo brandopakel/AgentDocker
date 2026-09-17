@@ -1222,5 +1222,7 @@ tick stops the old receiver. Schema 22 excludes older readers of that intent.
 A fenced or failed write cannot signal; a persisted intent survives daemon loss.
 The normal restart path takes the existing ledger lock and keeps queued IDs,
 token and provider receipts. The hidden CLI command preflights the existing
-provider and waits for the successor's fresh readiness. Acceptance remains
-pending in [Codex input](CODEX-INPUT.md#receiver-upgrade-candidate).
+provider and waits for the successor's fresh readiness. Bounded actual-client
+replacement with a pending offer passes at `5b3d688`; final review, CI and
+installed-session acceptance remain open in
+[Codex input](CODEX-INPUT.md#receiver-upgrade-candidate).

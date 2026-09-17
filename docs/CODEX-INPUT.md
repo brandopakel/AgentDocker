@@ -190,8 +190,17 @@ regressions and an actual-client `controller-upgrade` scenario with
 `--initial-receiver-cli` pointing to immutable older binaries. It deliberately
 keeps a native queue offer pending through replacement and requires the same
 provider and token, old receipts, new exact FIFO receipts and clean retirement.
-Implementation and driver are written; compilation, acceptance and installation
-remain pending. This command has not been run against the user's session.
+Source `5b3d688` passed three focused regressions and the full 1,097-Rust/84-Python
+gate (seven skipped), including formatting, strict lint, doctests, packaging and
+release. The actual Codex 0.154.0/local-model trial passed using an older
+`f4ef6c3` receiver with a version-2 ledger and a pending native offer. It retained
+the live provider, token, binding time and six prior receipts, retired the old
+receiver, and delivered three messages exactly once in FIFO order during the
+same active turn in 14.85 seconds including the handover. Cleanup found no
+surviving controllers. See the receiver-upgrade section of the existing
+[native queue evidence](verification/2026-09-15-native-codex-queue.json).
+Final review, CI and installed-session acceptance remain open. This command has
+not been run against the user's session.
 
 ## New managed conversations
 

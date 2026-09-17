@@ -13,7 +13,13 @@ and explicit provider-visible order/exactly-once assertions.
 The installed receiver upgrade remains open; see the priority row below.
 A separate candidate now implements an explicit same-provider receiver upgrade,
 with schema-22 durable replacement intent and retained ledger reconciliation.
-Its tests and distinct-version actual-client driver are written but not yet run.
+Source `5b3d688` passed three focused regressions, the full 1,097-Rust/84-Python
+gate (seven skipped), and actual Codex 0.154.0/local-model replacement of an older
+receiver with a pending offer. The provider, token, binding time and six prior
+receipts survived; three messages arrived exactly once in order during the same
+active turn (14.85 seconds including handover), with clean retirement and cleanup.
+Final review, CI and installed-session acceptance remain open. Evidence is in the
+existing [native queue record](verification/2026-09-15-native-codex-queue.json).
 
 
 Audited September 14 against `aaa1b61`, with merged PRs #150/#152/#154, the September 15

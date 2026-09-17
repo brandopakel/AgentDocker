@@ -2563,5 +2563,129 @@
         }
       ]
     }
+  },
+  "receiver_upgrade_acceptance_2026_09_17": {
+    "status": "bounded actual-client acceptance passed; final review, CI and production installation pending",
+    "source_commit": "5b3d68817afc3322673e6d030698ace2f2baa818",
+    "build": {
+      "format": 1,
+      "source_commit": "5b3d68817afc3322673e6d030698ace2f2baa818",
+      "source_tree": "da2a85d3461e55c0fc0efb488ae43e1654c5b7a7",
+      "source_input_sha256": "1f212fce7baa00c690a3d7fb8bfff27513f073c3d73cf2a338c04e53d6feb475",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 22,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+      "binary_sha256": {
+        "agentdocker": "07de46856c455bc5bbac860132eb1568b3bae98589503d51920369c72407ef1a",
+        "agentd": "ea8e089e4b4a44f226c87d4eacb4866996dfda7a12bb40552dee2c51885da67a",
+        "agentdocker-ui": "e559090fdf57542e55b0d3e750567733e93192ec7b401e10e17678d99e67fd17"
+      }
+    },
+    "scope": "Actual Codex 0.154.0 TUI with a local model server, private profile, private daemon and immutable old/new CLI binaries. No production provider, queue or settings changes.",
+    "trial": {
+      "started_at": "2026-09-17T01:31:01.836018+00:00",
+      "scenario": "controller-upgrade",
+      "result": "passed",
+      "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+      "driver_sha256": "21536515518ad8520810c1b5dab1476273dfa4b8b0b4f5ac2bc7cec406216510",
+      "source": {
+        "commit": "5b3d68817afc3322673e6d030698ace2f2baa818",
+        "dirty": false,
+        "rust_and_driver_sha256": "c42a6287820ccd9cdb6237479d165855b11549b5fc68b1dd982ca03852eb771e"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "07de46856c455bc5bbac860132eb1568b3bae98589503d51920369c72407ef1a",
+      "daemon_sha256": "ea8e089e4b4a44f226c87d4eacb4866996dfda7a12bb40552dee2c51885da67a",
+      "idle_wake_seconds": 7.247473499999614,
+      "cross_process_receipt": {
+        "thread": "01a0acfd-158c-7972-bf96-20f58316ec08",
+        "turn": "01a0acfd-3c97-7261-be7b-8290f4a000bc",
+        "item": "01a0acfd-3ca9-71f3-bfa3-2ce871cffb61"
+      },
+      "no_conversation_resume": true,
+      "automatic_receiver_restart_no_replay": true,
+      "idle_wake_after_receiver_crash": true,
+      "receiver_upgrade": {
+        "before": {
+          "pid": 73706,
+          "started_at": "2026-09-17T01:31:45.146408Z"
+        },
+        "after": {
+          "pid": 74424,
+          "started_at": "2026-09-17T01:31:58.147103Z"
+        },
+        "provider_preserved": true,
+        "token_and_binding_preserved": true,
+        "prior_completed_receipts": 6,
+        "pending_native_queue_id": "01a0acfd-e415-7d53-bf61-d98bfec47e02",
+        "initial_cli_sha256": "caa1816b787b772497074fd4a61ff004368d477873435da7e496191ad9bd6d71"
+      },
+      "active_hook": {
+        "messages": [
+          "39e828ec63e54664",
+          "c61112e7c3dd4adc",
+          "835a17994595486d"
+        ],
+        "receipts": [
+          {
+            "message": "39e828ec63e54664",
+            "receipt": {
+              "thread": "01a0acfd-158c-7972-bf96-20f58316ec08",
+              "turn": "01a0acfd-dd9b-7b63-bdba-57b7c84a300a",
+              "item": "msg_01a0acfd-f6a1-7950-b3d5-51fee6f2857a"
+            }
+          },
+          {
+            "message": "c61112e7c3dd4adc",
+            "receipt": {
+              "thread": "01a0acfd-158c-7972-bf96-20f58316ec08",
+              "turn": "01a0acfd-dd9b-7b63-bdba-57b7c84a300a",
+              "item": "msg_01a0acfe-0353-7ec1-8b45-496de345955f"
+            }
+          },
+          {
+            "message": "835a17994595486d",
+            "receipt": {
+              "thread": "01a0acfd-158c-7972-bf96-20f58316ec08",
+              "turn": "01a0acfd-dd9b-7b63-bdba-57b7c84a300a",
+              "item": "msg_01a0acfe-1006-7522-8af8-5d4f57ca1786"
+            }
+          }
+        ],
+        "seconds": 14.849946708010975,
+        "same_turn": true,
+        "model_requests": 5,
+        "original_provider_pid": 71536
+      },
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 13,
+      "controller_survivors": [],
+      "cleanup_errors": []
+    },
+    "artifacts": "/private/tmp/agentdocker-controller-upgrade-native1-2026-09-17",
+    "validation": {
+      "focused_tests": 3,
+      "rust_tests_passed": 1097,
+      "rust_tests_skipped": 7,
+      "python_checks": 84,
+      "format_strict_clippy_doctests_packaging_release": "passed",
+      "gate_log": "/private/tmp/agentdocker-controller-upgrade-gate1-2026-09-17.log",
+      "junit": "/private/tmp/agentdocker-controller-upgrade-gate1-nextest-2026-09-17/junit.xml",
+      "targeted_log": "/private/tmp/agentdocker-controller-upgrade-targeted2-2026-09-17.log",
+      "earlier_targeted_failure": "targeted1 retained: assertion took its event boundary before offer/abort events; corrected in 5b3d688 before passing targeted2 and full gate. No runtime correction claimed from that failure."
+    },
+    "limitations": [
+      "This trial used copied immutable binaries; release pin preservation is covered by source inspection and earlier separate managed-prefix trials, not a new managed-prefix upgrade trial.",
+      "No installed session upgraded yet; schema 22 needs a matching daemon and retains a pre-migration backup for rollback.",
+      "Tool-boundary input does not promise arbitrary interruption while a provider has no tool boundary.",
+      "No broader provider/session-limit/startup/overnight acceptance claimed."
+    ]
   }
 }
