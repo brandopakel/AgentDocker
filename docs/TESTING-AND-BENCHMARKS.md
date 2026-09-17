@@ -186,3 +186,24 @@ manifest records logical payload and archive bytes. The release workflow also
 limits the combined CLI/daemon payload to 30 MiB. CLI tarballs contain just those
 two commands; desktop ZIPs contain one self-contained app with all three
 executables. Build caches and compiler dependencies are never download inputs.
+
+### Linux graphical transport observation
+
+Linux native-window smoke tests classify the owned process's socket inodes from
+its open `/proc/<pid>` directory. This avoids unrelated mount-stat failures from
+`lsof` (captured in the September 17 Linux x86 graphical job). Both TCP tables
+are checked; remaining socket inodes must be present in known non-TCP tables.
+Unknown sockets, unstable descriptor/namespace snapshots, unreadable or malformed
+tables and budget exhaustion refuse the observation. The helper is bounded to
+4,096 descriptors, 1 MiB per table, three snapshots and an outer five-second
+subprocess deadline. A process generation is anchored by its open proc directory.
+The [kernel proc contract](https://docs.kernel.org/filesystems/proc.html#process-specific-subdirectories)
+describes those process-specific descriptors.
+
+macOS retains the strict `lsof` observer. Both methods poll; a socket opened and
+closed between samples can be missed. An exited child is checked by its exit
+status, not counted as a successful live socket observation. The earlier Linux
+ARM refusal did not retain the same diagnostic and is not explained by this
+later captured mount-stat warning. Kernel-table fixtures and actual owned UNIX
+and delayed-TCP child checks exercise the Linux observer; final graphical CI
+is still required.

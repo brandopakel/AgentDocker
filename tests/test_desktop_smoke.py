@@ -23,6 +23,11 @@ with patch.dict(sys.modules, {"desktop_smoke": SMOKE}):
 
 
 class TransportFailureEvidence(unittest.TestCase):
+    def setUp(self):
+        platform = patch.object(SMOKE.sys, "platform", "darwin")
+        platform.start()
+        self.addCleanup(platform.stop)
+
     def test_capture_write_failure_preserves_the_transport_refusal(self):
         process = SimpleNamespace(pid=42, poll=lambda: None)
         failed = subprocess.CompletedProcess([], 2, "", "inspection refused")
@@ -59,6 +64,97 @@ class TransportFailureEvidence(unittest.TestCase):
         self.assertIn("partial", caught.exception.observation["stdout"])
         self.assertEqual(caught.exception.observation["stderr"], "inspection stalled")
         self.assertIsNone(caught.exception.observation["process_status"])
+
+
+class LinuxProcTransport(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("proc_tcp", ROOT / "scripts/proc_tcp.py")
+        self.proc = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.proc)
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.process = self.root / "42"
+        for name in ["fd", "net", "ns"]:
+            (self.process / name).mkdir(parents=True)
+        (self.process / "ns/net").symlink_to("net:[123]")
+        (self.process / "fd/5").symlink_to("socket:[700]")
+        (self.process / "net/tcp").write_text("sl local_address rem_address st queues times uid timeout inode\n")
+        (self.process / "net/unix").write_text("Num RefCount Protocol Flags Type St Inode Path\n0: 2 0 0 1 1 700 /tmp/雪.sock\n")
+
+    def test_unix_socket_is_classified_without_reading_filesystem_mounts(self):
+        self.assertEqual(self.proc.inspect(42, self.root), {"tcp": False, "socket_count": 1})
+
+    def test_tcp4_and_tcp6_are_rejected_even_when_other_sockets_are_unclassified(self):
+        (self.process / "fd/6").symlink_to("socket:[999]")
+        for table in ["tcp", "tcp6"]:
+            with self.subTest(table=table):
+                path = self.process / "net" / table
+                path.write_text("sl local_address rem_address st queues times uid timeout inode\n0: 00000000:0001 00000000:0000 0A 0:0 0:0 0 501 0 700\n")
+                self.assertTrue(self.proc.inspect(42, self.root)["tcp"])
+                path.write_text("sl inode\n")
+
+    def test_missing_malformed_oversized_and_unclassified_evidence_refuses(self):
+        table = self.process / "net/tcp"
+        for data in [b"", b"unexpected header\n", b"sl inode\ntruncated\n", b"x" * (self.proc.MAX_BYTES + 1)]:
+            with self.subTest(data_length=len(data)):
+                table.write_bytes(data)
+                with self.assertRaises(ValueError):
+                    self.proc.inspect(42, self.root)
+        table.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.proc.inspect(42, self.root)
+        table.write_text("sl inode\n")
+        (self.process / "net/unix").write_text("Num RefCount Protocol Flags Type St Inode Path\n")
+        with self.assertRaisesRegex(ValueError, "could not be classified"):
+            self.proc.inspect(42, self.root)
+
+    def test_changing_socket_snapshot_and_descriptor_budget_refuse(self):
+        changed = [{("5", "700")}, set()] * 3
+        with patch.object(self.proc, "socket_descriptors", side_effect=changed):
+            with self.assertRaisesRegex(ValueError, "descriptors changed"):
+                self.proc.inspect(42, self.root)
+        with patch.object(self.proc, "MAX_FDS", 0):
+            with self.assertRaisesRegex(ValueError, "descriptor count"):
+                self.proc.inspect(42, self.root)
+
+    def test_linux_inspector_failure_is_not_converted_into_no_tcp(self):
+        process = SimpleNamespace(pid=42, poll=lambda: None)
+        failed = subprocess.CompletedProcess([], 2, "", "unclassified")
+        with patch.object(SMOKE.sys, "platform", "linux"), patch.object(SMOKE.subprocess, "run", return_value=failed), tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(SMOKE.TransportCheckFailed) as caught:
+                SMOKE.check_no_tcp([process], time.monotonic() + 5, Path(directory))
+            self.assertEqual(caught.exception.observation["method"], "linux-proc")
+            self.assertEqual(caught.exception.observation["reason"], "transport could not be checked")
+            self.assertEqual(caught.exception.observation["stderr"], "unclassified")
+
+    def test_malformed_linux_reply_never_claims_tcp_or_a_clean_observation(self):
+        process = SimpleNamespace(pid=42, poll=lambda: None)
+        for output in ["{}", "null", '{"tcp": "false"}', "not JSON"]:
+            with self.subTest(output=output), patch.object(SMOKE.sys, "platform", "linux"), patch.object(SMOKE.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output, "")):
+                with self.assertRaises(SMOKE.TransportCheckFailed) as caught:
+                    SMOKE.check_no_tcp([process], time.monotonic() + 5)
+                self.assertEqual(caught.exception.observation["reason"], "transport could not be checked")
+
+    def test_linux_inspector_timeout_refuses_with_evidence(self):
+        process = SimpleNamespace(pid=42, poll=lambda: None)
+        with patch.object(SMOKE.sys, "platform", "linux"), patch.object(SMOKE.subprocess, "run", side_effect=subprocess.TimeoutExpired("proc_tcp", 5)):
+            with self.assertRaises(SMOKE.TransportCheckFailed) as caught:
+                SMOKE.check_no_tcp([process], time.monotonic() + 5)
+        self.assertEqual(caught.exception.observation["reason"], "linux-proc timed out")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "actual Linux proc observation")
+    def test_actual_owned_unix_socket_process_passes(self):
+        child = subprocess.Popen([sys.executable, "-c", "import socket,time; s=socket.socket(socket.AF_UNIX); s.bind('\\0agentdocker-transport-fixture-'+str(__import__('os').getpid())); print('ready',flush=True); time.sleep(15)"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        try:
+            import select
+            self.assertTrue(select.select([child.stdout], [], [], 5)[0])
+            self.assertEqual(child.stdout.readline().strip(), "ready")
+            SMOKE.check_no_tcp([child], time.monotonic() + 5)
+        finally:
+            SMOKE.stop(child)
+            child.stdout.close()
+        self.assertIsNotNone(child.poll())
 
 
 class WorkflowFailureEvidence(unittest.TestCase):
@@ -104,7 +200,7 @@ class WorkflowFailureEvidence(unittest.TestCase):
         self.assertEqual(recorded["cleanup_errors"][0]["stage"], "window cleanup")
 
 
-@unittest.skipUnless(shutil.which("lsof"), "native transport acceptance requires lsof")
+@unittest.skipUnless(sys.platform.startswith("linux") or shutil.which("lsof"), "native transport acceptance requires Linux proc or lsof")
 class DesktopTransport(unittest.TestCase):
     def test_delayed_tcp_listener_is_rejected_and_owned_children_are_stopped(self):
         children = []
