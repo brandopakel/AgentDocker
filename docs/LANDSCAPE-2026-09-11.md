@@ -112,8 +112,12 @@ plugin can be driven from an AgentDocker hook (plugins receive the socket path).
 Read-only web research from [paprika.ai](https://paprika.ai/) and
 [docs.paprika.ai](https://docs.paprika.ai/); nothing was installed or signed up
 for. "Kanban for people and agents": a hosted board where humans and agents are
-both actors. An agent is a workspace-scoped identity of its own with a
-`papagt_` bearer token, reached over streamable-HTTP MCP at `mcp.paprika.ai`
+both actors. An agent is an owned bot identity with a `papagt_` bearer token.
+By default it follows its creator across workspaces and inherits the creator's
+current workspace memberships and project access; explicit restrictions can
+only reduce that access. Any future bridge identity must restrict both its
+workspaces and projects explicitly. Agents are reached over streamable-HTTP MCP
+at `mcp.paprika.ai`
 ([MCP](https://docs.paprika.ai/mcp/), [agents](https://docs.paprika.ai/agents/));
 Claude Code, Codex, Cursor, Copilot, Grok Build and Antigravity are the named
 hosts. The *agent workflow* board template has nine columns — Backlog, Approved,

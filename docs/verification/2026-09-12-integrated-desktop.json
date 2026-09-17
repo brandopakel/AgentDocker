@@ -1713,7 +1713,7 @@
         ]
       },
       "native_scope": "Prior e6981a7 rendered workflow covers the unchanged composer controls. This follow-up changes retired-name accounting and adds an invitation reply regression; final-head graphical CI remains required. No physical Enter-key trial is claimed.",
-      "status": "source passed; final review, CI and install pending",
+      "status": "merged as7df165e after final-head review and all CI; installed79981beb passed the recorded backed-up switch and form-opening scope. Physical Enter/IME and hidden-draft persistence remain unverified.",
       "integration": {
         "pr": 170,
         "final_head": "4721b34971d303c89293e9ecea56041f8e6223be",
