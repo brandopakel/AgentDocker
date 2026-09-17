@@ -201,6 +201,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Thread { .. }
             | Request::SearchMessages { .. }
             | Request::Leases { .. }
+            | Request::Tasks { .. }
             | Request::Events { .. }
             | Request::ResumeEvents { .. }
             | Request::Logs { .. }
@@ -1759,7 +1760,8 @@ impl Daemon {
                 project,
                 column,
                 archived,
-            } => self.tasks(project, column, archived).await,
+                limit,
+            } => self.tasks(project, column, archived, limit).await,
             Request::ContestOpen {
                 agent,
                 project,

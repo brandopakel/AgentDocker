@@ -3,10 +3,24 @@
 //! to hold every card under its one mutex — which is what makes a pull
 //! atomic — to keep them as documents, and to say what changed.
 use super::*;
+use agentdocker_core::protocol::{TASKS_LIMIT, TASKS_LIMIT_MAX};
 use agentdocker_core::task::{Task, TaskError};
-use agentdocker_core::{Column, HUMAN};
+use agentdocker_core::{Column, HUMAN, LeaseMode, ResourceKey};
 
 const DOCUMENT: &str = "task";
+
+/// How long a pull holds a card without a word from its holder. Long
+/// enough for a working session, short enough that a card whose agent
+/// silently went away comes back to the board the same day; `renew`
+/// extends it, and an exit releases it at once.
+const TASK_LEASE_SECS: u64 = 4 * 60 * 60;
+
+/// The lease a pull takes: the holding itself, so `leases` shows who
+/// has which card and every lease rule — expiry, release on exit,
+/// refusal of a second claimant — applies to cards too.
+fn task_resource(task: &Task) -> ResourceKey {
+    ResourceKey::new(format!("task:{}", task.id))
+}
 
 /// Who is acting on a card: an agent by its record, or the person — by
 /// their record, or as the bare `user` a shell speaks as.
@@ -26,12 +40,22 @@ impl State {
                 "name a card by its id",
             )));
         }
-        let all: Vec<Task> = self
-            .store_read("tasks", |store| store.documents::<Task>(DOCUMENT, None))
-            .unwrap_or_default();
-        let mut matching = all
-            .into_iter()
-            .filter(|t| t.id.as_str().starts_with(reference));
+        if !reference.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return Err(Box::new(Response::error(
+                ErrorCode::NotFound,
+                format!("no card matches {reference}"),
+            )));
+        }
+        // Two is enough to tell one match from several, and no more of
+        // the board is read for a lookup.
+        let Some(matching) = self.store_read("task lookup", |store| {
+            store.documents_with_prefix::<Task>(DOCUMENT, reference, 2)
+        }) else {
+            return Err(Box::new(self.storage_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::StorageUnavailable, "the board could not be read")
+            })));
+        };
+        let mut matching = matching.into_iter();
         match (matching.next(), matching.next()) {
             (Some(task), None) => Ok(task),
             (None, _) => Err(Box::new(Response::error(
@@ -144,37 +168,131 @@ impl Daemon {
         Response::Task { task }
     }
 
+    /// A pull takes the card and the `task:<id>` lease in one commit.
+    /// The lease is the holding: while the holder's lease lives nobody
+    /// else may take the card; once it is gone — expired, released, or
+    /// its agent exited — the card passes to the next taker where it
+    /// sits, and the event says from whom.
     pub(super) fn task_pull(self: &Arc<Self>, reference: &str, task: &str) -> Response {
         let mut state = lock(&self.state);
         let agent = match state.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
-        if !state
+        let Some(record) = state
             .registry
             .get(&agent)
-            .is_some_and(|a| a.status.is_live() && !super::humans::is_human(a))
-        {
+            .filter(|a| a.status.is_live() && !super::humans::is_human(a))
+            .cloned()
+        else {
             return Response::error(
                 ErrorCode::Invalid,
                 "a running agent pulls a card; the person assigns one with task_update",
             );
+        };
+        if let Some(error) = state.write_failure() {
+            return error;
+        }
+        let now = Utc::now();
+        state.expire_leases_at(now);
+        if let Some(error) = state.write_failure() {
+            return error;
         }
         let mut task = match state.resolve_task(task) {
             Ok(task) => task,
             Err(response) => return *response,
         };
-        if let Err(error) = task.pull(&agent, Utc::now()) {
-            return refused(error);
+        let resource = task_resource(&task);
+        let holders: Vec<Lease> = state
+            .leases
+            .holders_of(&resource)
+            .into_iter()
+            .cloned()
+            .collect();
+        // The holder is whoever the card names, while they hold its lease.
+        let holder_gone = !task
+            .assignee
+            .as_ref()
+            .is_some_and(|a| holders.iter().any(|l| &l.holder == a));
+        // A lease held by somebody the card does not name — a claim made
+        // by hand — keeps it as any lease keeps a resource; the card's
+        // own holder is answered by the card's rule, with its column.
+        let held_by: Vec<Lease> = holders
+            .iter()
+            .filter(|l| l.holder != agent && Some(&l.holder) != task.assignee.as_ref())
+            .cloned()
+            .collect();
+        if !held_by.is_empty() {
+            let error = LeaseError::Conflict {
+                resource: resource.clone(),
+                held_by: held_by.clone(),
+            };
+            return Response::Error {
+                code: ErrorCode::Conflict,
+                message: error.to_string(),
+                details: Some(serde_json::json!({ "resource": resource, "held_by": held_by })),
+            };
         }
-        let kind = EventKind::TaskPulled {
-            task: task.id.clone(),
-            project: task.project.clone(),
-            agent,
+        let from = match task.pull(&agent, holder_gone, now) {
+            Ok(from) => from,
+            Err(error) => return refused(error),
         };
-        if let Some(error) = state.commit_task(&task, kind) {
-            return error;
+        let mut lease = match state.leases.clone().claim(
+            resource.clone(),
+            agent.clone(),
+            LeaseMode::Exclusive,
+            ttl(TASK_LEASE_SECS),
+            Some(task.title.clone()),
+            now,
+        ) {
+            Ok(Claimed::New(lease) | Claimed::Renewed(lease)) => lease,
+            Err(error) => return lease_error(error),
+        };
+        lease.change_seq =
+            state.store_read("lease ledger boundary", |store| store.change_watermark());
+        let mut record = record;
+        record.last_seen = now;
+        let mut claimed = Event::new(
+            EventKind::LeaseClaimed {
+                lease: lease.clone(),
+            },
+            now,
+        );
+        claimed.seq = state.next_seq;
+        let mut pulled = Event::new(
+            EventKind::TaskPulled {
+                task: task.id.clone(),
+                project: task.project.clone(),
+                agent: agent.clone(),
+                from,
+                lease: lease.id.clone(),
+            },
+            now,
+        );
+        pulled.seq = state.next_seq + 1;
+        let committed = state.persist("task pull", |store| {
+            store.lease_with_document(
+                &record,
+                &lease,
+                DOCUMENT,
+                task.id.as_str(),
+                &task,
+                &[claimed.clone(), pulled.clone()],
+            )
+        });
+        if committed != Persisted::Committed {
+            return state.write_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::Internal, "the pull was not recorded")
+            });
         }
+        *state
+            .registry
+            .get_mut(&agent)
+            .expect("pull identity retained") = record;
+        state.leases.restore(lease);
+        state.next_seq += 2;
+        let _ = state.events.send(claimed);
+        let _ = state.events.send(pulled);
         Response::Task { task }
     }
 
@@ -289,6 +407,7 @@ impl Daemon {
         project: Option<String>,
         column: Option<Column>,
         archived: bool,
+        limit: usize,
     ) -> Response {
         let project = match project {
             Some(selector) => match self.resolve_project(&selector).await {
@@ -297,24 +416,26 @@ impl Daemon {
             },
             None => None,
         };
+        let limit = if limit == 0 {
+            TASKS_LIMIT
+        } else {
+            limit.min(TASKS_LIMIT_MAX)
+        };
         let mut state = lock(&self.state);
-        let mut tasks: Vec<Task> = state
-            .store_read("tasks", |store| store.documents::<Task>(DOCUMENT, None))
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|t| project.as_ref().is_none_or(|p| &t.project == p))
-            .filter(|t| column.is_none_or(|c| t.column == c))
-            .filter(|t| archived || t.archived_at.is_none())
-            .collect();
-        // Backlog to Done, the oldest first within a column: what was
-        // filed first is at the top.
-        tasks.sort_by(|a, b| {
-            a.column
-                .cmp(&b.column)
-                .then(a.created_at.cmp(&b.created_at))
-                .then(a.id.cmp(&b.id))
+        let page = state.store_read("tasks", |store| {
+            store.tasks_page(
+                project.as_ref().map(ProjectId::as_str),
+                column.map(|c| c.as_str()),
+                archived,
+                limit,
+            )
         });
-        Response::Tasks { tasks }
+        match page {
+            Some((tasks, more)) => Response::Tasks { tasks, more },
+            None => state.storage_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::StorageUnavailable, "the board could not be read")
+            }),
+        }
     }
 }
 
@@ -426,6 +547,24 @@ mod tests {
             (pulled.assignee.as_ref(), pulled.column),
             (Some(&alice.id), Column::InProgress)
         );
+        // The pull is a lease on the card, with its title as the note:
+        // `leases` shows who holds which card.
+        let Response::Leases { leases } = daemon
+            .handle(Request::Leases {
+                agent: None,
+                resource: Some(format!("task:{}", first.id)),
+            })
+            .await
+        else {
+            panic!("leases")
+        };
+        assert_eq!(
+            leases
+                .iter()
+                .map(|l| (l.holder.clone(), l.note.clone()))
+                .collect::<Vec<_>>(),
+            vec![(alice.id.clone(), Some("Fix login".to_owned()))]
+        );
         match daemon
             .handle(Request::TaskPull {
                 agent: "bob".to_owned(),
@@ -529,10 +668,11 @@ mod tests {
                         project: Some(work.display().to_string()),
                         column: None,
                         archived,
+                        limit: 0,
                     })
                     .await
                 {
-                    Response::Tasks { tasks } => tasks,
+                    Response::Tasks { tasks, more: false } => tasks,
                     other => panic!("{other:?}"),
                 }
             }
@@ -608,5 +748,236 @@ mod tests {
             ]
         );
         let _ = project;
+    }
+
+    /// The holding is the lease. While alice holds `task:<id>` bob is
+    /// refused; once her lease is gone — released here, as an exit or
+    /// expiry would — bob's pull takes the card over where it sits, the
+    /// event says from whom, and alice can no longer move it. A hand
+    /// claim on the card by somebody else keeps it like any lease.
+    #[tokio::test]
+    async fn a_card_whose_holders_lease_lapsed_passes_to_the_next_puller() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let alice = register(&daemon, "alice", &work).await;
+        let bob = register(&daemon, "bob", &work).await;
+        let carol = register(&daemon, "carol", &work).await;
+        let Response::Task { task } = daemon
+            .handle(Request::TaskCreate {
+                from: HUMAN.to_owned(),
+                project: Some(work.display().to_string()),
+                title: "Port the parser".to_owned(),
+                acceptance: "tests pass".to_owned(),
+                column: Some(Column::Ready),
+            })
+            .await
+        else {
+            panic!("filed")
+        };
+        let pull = |daemon: &Arc<Daemon>, who: &str| {
+            let daemon = daemon.clone();
+            let who = who.to_owned();
+            let id = task.id.to_string();
+            async move {
+                daemon
+                    .handle(Request::TaskPull {
+                        agent: who,
+                        task: id,
+                    })
+                    .await
+            }
+        };
+        assert!(matches!(
+            pull(&daemon, "alice").await,
+            Response::Task { .. }
+        ));
+        assert!(matches!(
+            pull(&daemon, "bob").await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        // Alice moves it to review, then her lease goes.
+        assert!(matches!(
+            daemon
+                .handle(Request::TaskMove {
+                    agent: "alice".to_owned(),
+                    task: task.id.to_string(),
+                    column: Column::Review,
+                })
+                .await,
+            Response::Task { .. }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::ReleaseAll {
+                    agent: "alice".to_owned(),
+                    summary: Some("stepping away".to_owned()),
+                    summary_source: Default::default(),
+                })
+                .await,
+            Response::Leases { .. }
+        ));
+        // A pull by hand of the card's lease by carol keeps it from bob.
+        let Response::Lease { lease: by_hand } = daemon
+            .handle(Request::Claim {
+                agent: "carol".to_owned(),
+                resource: format!("task:{}", task.id),
+                mode: LeaseMode::Exclusive,
+                amount: None,
+                ttl_secs: 60,
+                note: None,
+                wait_secs: 0,
+            })
+            .await
+        else {
+            panic!("carol claims by hand")
+        };
+        match pull(&daemon, "bob").await {
+            Response::Error {
+                code: ErrorCode::Conflict,
+                details,
+                ..
+            } => assert_eq!(details.unwrap()["held_by"][0]["holder"], carol.id.as_str()),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            daemon
+                .handle(Request::Release {
+                    agent: "carol".to_owned(),
+                    lease: by_hand.id,
+                    summary: None,
+                    summary_source: Default::default(),
+                })
+                .await,
+            Response::Lease { .. } | Response::Ok | Response::Leases { .. }
+        ));
+        // Now bob takes it over, where it sits.
+        let Response::Task { task: taken } = pull(&daemon, "bob").await else {
+            panic!("bob takes over")
+        };
+        assert_eq!(
+            (taken.assignee.as_ref(), taken.column),
+            (Some(&bob.id), Column::Review)
+        );
+        assert!(
+            daemon.recent_events(10).iter().any(|e| matches!(
+                &e.kind,
+                EventKind::TaskPulled { agent, from: Some(from), .. }
+                    if agent == &bob.id && from == &alice.id
+            )),
+            "the event says from whom"
+        );
+        assert!(matches!(
+            daemon
+                .handle(Request::TaskMove {
+                    agent: "alice".to_owned(),
+                    task: task.id.to_string(),
+                    column: Column::Done,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
+        // Bob pulling his own card again gains nothing and is told so.
+        assert!(matches!(
+            pull(&daemon, "bob").await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+    }
+
+    /// The board is read a page at a time and says when it goes on; a
+    /// lookup by prefix reads two cards, not the board; and when storage
+    /// has failed neither pretends the board is empty.
+    #[tokio::test]
+    async fn the_board_is_paged_and_a_failed_store_is_not_an_empty_board() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let alice = register(&daemon, "alice", &work).await;
+        for (i, column) in [Column::Done, Column::Backlog, Column::Ready]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(matches!(
+                daemon
+                    .handle(Request::TaskCreate {
+                        from: HUMAN.to_owned(),
+                        project: Some(work.display().to_string()),
+                        title: format!("card {i}"),
+                        acceptance: "x".repeat(agentdocker_core::task::ACCEPTANCE_CHARS),
+                        column: Some(column),
+                    })
+                    .await,
+                Response::Task { .. }
+            ));
+        }
+        let list = |limit: usize, column: Option<Column>| {
+            let daemon = daemon.clone();
+            let work = work.clone();
+            async move {
+                daemon
+                    .handle(Request::Tasks {
+                        project: Some(work.display().to_string()),
+                        column,
+                        archived: false,
+                        limit,
+                    })
+                    .await
+            }
+        };
+        match list(2, None).await {
+            Response::Tasks { tasks, more } => {
+                assert!(more, "the board goes on");
+                assert_eq!(
+                    tasks.iter().map(|t| t.column).collect::<Vec<_>>(),
+                    [Column::Backlog, Column::Ready],
+                    "Backlog to Done, so Done is what a short page leaves out"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        match list(2, Some(Column::Done)).await {
+            Response::Tasks { tasks, more } => {
+                assert_eq!((tasks.len(), more), (1, false));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            list(0, None).await,
+            Response::Tasks { more: false, .. }
+        ));
+        {
+            let mut state = lock(&daemon.state);
+            state.storage_error = Some("disk gone".to_owned());
+        }
+        assert!(matches!(
+            list(0, None).await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::TaskPull {
+                    agent: alice.id.to_string(),
+                    task: "abc".to_owned(),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
     }
 }

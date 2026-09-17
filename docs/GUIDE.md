@@ -214,7 +214,7 @@ the flags.
 | `renew` / `release` | Extend or give up a lease you hold |
 | `leases` | Every lease held right now |
 | `waiting` | Claims waiting for a resource, oldest first |
-| `task` | The board of work: `task create "Fix login" --acceptance "SSO works" --column ready` files a card; `task pull <id> --as <agent>` takes a Ready card once; `task move <id> review`, `task update <id> --assignee bob`, `task archive <id>`, `task list [--column ready] [--archived]` |
+| `task` | The board of work: `task create "Fix login" --acceptance "SSO works" --column ready` files a card; `task pull <id> --as <agent>` takes a Ready card once and holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it, and a card whose hold lapsed passes to the next puller); `task move <id> review`, `task update <id> --assignee bob`, `task archive <id>`, `task list [--column ready] [--archived] [--limit 200]` (a page; it says when the board goes on) |
 
 ### Know what changed
 

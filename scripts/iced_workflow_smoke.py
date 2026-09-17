@@ -462,8 +462,16 @@ def smoke(binary_dir, output):
                     assert cards[card["id"]]["column"] == "ready", cards
                     pulled = rpc(endpoint, {"op": "task_pull", "agent": narrow["id"], "task": card["id"]})
                     assert pulled["type"] == "task" and pulled["task"]["assignee"] == narrow["id"] and pulled["task"]["column"] == "in_progress", pulled
-                    again = rpc(endpoint, {"op": "task_pull", "agent": agent["id"], "task": card["id"]})
-                    assert again["type"] == "error" and again["code"] == "conflict", again
+                    # The pull holds the card as a task:<id> lease with its title as the note.
+                    held = rpc(endpoint, {"op": "leases", "resource": f"task:{card['id']}"})["leases"]
+                    assert [(l["holder"], l["note"]) for l in held] == [(narrow["id"], card["title"])], held
+                    try:
+                        rpc(endpoint, {"op": "task_pull", "agent": agent["id"], "task": card["id"]})
+                    except RuntimeError as refused:
+                        again = refused.args[0]
+                        assert again["code"] == "conflict" and again["details"]["assignee"] == narrow["id"], again
+                    else:
+                        raise AssertionError("a second pull of a held card was accepted")
                     return card["id"]
                 def forward_route(name, gate):
                     def progressed():

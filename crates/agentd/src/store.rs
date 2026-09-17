@@ -424,6 +424,89 @@ impl Store {
             .collect())
     }
 
+    /// The documents of one kind whose id starts with `prefix`, at most
+    /// `limit`: a lookup by a unique prefix asks for two, to tell one
+    /// match from several without reading every card.
+    pub fn documents_with_prefix<T: serde::de::DeserializeOwned>(
+        &self,
+        kind: &str,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<T>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT json FROM documents WHERE kind=?1 AND substr(id, 1, ?2) = ?3 ORDER BY id LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                kind,
+                i64::try_from(prefix.chars().count()).unwrap_or(i64::MAX),
+                prefix,
+                i64::try_from(limit).unwrap_or(i64::MAX)
+            ],
+            |row| row.get::<_, String>(0),
+        )?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    }
+
+    /// One page of the board: `task` documents for a project (or every
+    /// project), in a column (or every column), without the archived
+    /// ones unless asked — Backlog to Done, oldest first within a
+    /// column — at most `limit`, and whether more follow. Read as a page
+    /// so a board of long cards never fills a frame or holds the lock.
+    pub fn tasks_page(
+        &self,
+        project: Option<&str>,
+        column: Option<&str>,
+        archived: bool,
+        limit: usize,
+    ) -> Result<(Vec<agentdocker_core::Task>, bool)> {
+        let mut stmt = self.conn.prepare(
+            "SELECT json FROM documents WHERE kind='task'
+             AND (?1 IS NULL OR json_extract(json, '$.project') = ?1)
+             AND (?2 IS NULL OR json_extract(json, '$.column') = ?2)
+             AND (?3 OR json_extract(json, '$.archived_at') IS NULL)
+             ORDER BY CASE json_extract(json, '$.column')
+                 WHEN 'backlog' THEN 0 WHEN 'ready' THEN 1 WHEN 'in_progress' THEN 2
+                 WHEN 'review' THEN 3 ELSE 4 END,
+               json_extract(json, '$.created_at'), id
+             LIMIT ?4",
+        )?;
+        let page = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
+        let rows = stmt.query_map(params![project, column, archived, page], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut tasks: Vec<agentdocker_core::Task> = rows
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect::<Result<_>>()?;
+        let more = tasks.len() > limit;
+        tasks.truncate(limit);
+        Ok((tasks, more))
+    }
+
+    /// A pull: the agent's liveness, the `task:<id>` lease it took, the
+    /// card as it now reads and the events for both, as one commit — a
+    /// lease without its card, or a card without its lease, is what
+    /// two commits could leave behind.
+    pub fn lease_with_document<T: serde::Serialize + ?Sized>(
+        &self,
+        agent: &AgentRecord,
+        lease: &Lease,
+        kind: &str,
+        id: &str,
+        value: &T,
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        self.upsert_agent(agent)?;
+        self.upsert_lease(lease)?;
+        self.put_document(kind, id, value)?;
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Atomically persist a typed recovery document before publishing its event.
     pub fn put_document<T: serde::Serialize + ?Sized>(
         &self,

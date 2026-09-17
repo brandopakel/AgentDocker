@@ -3,7 +3,7 @@
 //! with a click; an agent pulls a Ready card and the column says who has
 //! it. No dragging: a card moves by the arrows on it, which is also what
 //! the smoke and the accessibility tree can drive.
-use super::style::{Colors, weight};
+use super::style::{Colors, alpha, weight};
 use super::view::{dot, empty, eyebrow, first_line, note, panel, pill, small};
 use super::*;
 use crate::controls::{Kind, button as action, custom, input_enabled, primary};
@@ -24,14 +24,23 @@ impl App {
             );
         };
         let root = entry.project.root.display().to_string();
-        let tasks: &[Task] = match &self.tasks {
-            Some((project, tasks)) if *project == root => tasks,
-            _ => &[],
+        let (tasks, more): (&[Task], bool) = match &self.tasks {
+            Some((project, tasks, more)) if *project == root => (tasks, *more),
+            _ => (&[], false),
         };
-        let mut page = column![self.file_card(c)].spacing(14).width(Fill);
+        let mut page = column![self.file_card(&root, c)].spacing(14).width(Fill);
         if tasks.is_empty() && self.tasks.is_some() {
             page = page.push(note(
                 "Nothing on the board yet. File a card above; agents pull from Ready.",
+                c,
+            ));
+        }
+        if more {
+            page = page.push(note(
+                format!(
+                    "The first {} cards, Backlog to Done; the board goes on past them. Archive what is done, or read a column at a time with agentdocker task list --column.",
+                    tasks.len()
+                ),
                 c,
             ));
         }
@@ -67,9 +76,10 @@ impl App {
 
     /// A title, what done means, and where it goes: Backlog to think
     /// about, or Ready for the next agent to pull.
-    fn file_card(&self, c: Colors) -> Element<'_, Message> {
-        let draft = &self.task_draft;
-        let ready = self.connected.is_ok() && !draft.sending && !draft.title.trim().is_empty();
+    fn file_card(&self, project: &str, c: Colors) -> Element<'_, Message> {
+        let blank = TaskDraft::default();
+        let draft = self.task_drafts.get(project).unwrap_or(&blank);
+        let ready = self.connected.is_ok() && !draft.sending() && !draft.title.trim().is_empty();
         let mut form = column![
             eyebrow("File a card", c),
             input_enabled(
@@ -77,19 +87,19 @@ impl App {
                 "What needs doing",
                 &draft.title,
                 Message::TaskTitle,
-                !draft.sending,
+                !draft.sending(),
             ),
             input_enabled(
                 "task-acceptance",
                 "What done means — an agent reads this before it starts",
                 &draft.acceptance,
                 Message::TaskAcceptance,
-                !draft.sending,
+                !draft.sending(),
             ),
             row![
                 primary(
                     "task-file-ready",
-                    if draft.sending {
+                    if draft.sending() {
                         "Filing…"
                     } else {
                         "File as Ready"
@@ -146,9 +156,18 @@ impl App {
     fn card(&self, task: &Task, c: Colors) -> Element<'_, Message> {
         let id = task.id.clone();
         let open = self.task_open.as_ref() == Some(&id);
+        // The holding is the task:<id> lease: while the assignee holds it
+        // the card is theirs; once it has lapsed — expired, released, or
+        // the agent exited — the card is still theirs by name but the
+        // next agent to pull it takes it over, and the board says so.
+        let resource = format!("task:{id}");
         let holder = task.assignee.as_ref().map(|a| {
             let live = self.agents.iter().any(|r| &r.id == a && r.status.is_live());
-            (self.name_of(a.as_str()), live)
+            let held = self
+                .leases
+                .iter()
+                .any(|l| l.resource.as_str() == resource && &l.holder == a);
+            (self.name_of(a.as_str()), live, held)
         });
         let mut head = column![
             text(first_line(&task.title, 80))
@@ -158,22 +177,30 @@ impl App {
         ]
         .spacing(4)
         .width(Fill);
-        if let Some((name, live)) = &holder {
-            head = head.push(
-                row![
-                    dot(if *live { c.green } else { c.faint }, 7.0, c),
-                    small(name.clone(), c),
-                ]
-                .spacing(6)
-                .align_y(Center),
-            );
+        if let Some((name, live, held)) = &holder {
+            let mut who = row![
+                dot(if *live { c.green } else { c.faint }, 7.0, c),
+                small(name.clone(), c),
+            ]
+            .spacing(6)
+            .align_y(Center);
+            if !held && matches!(task.column, Column::InProgress | Column::Review) {
+                who = who.push(pill("hold lapsed", alpha(c.amber, 0.2), c.amber, c));
+            }
+            head = head.push(who);
         } else if task.column == Column::Ready {
             head = head.push(pill("for the taking", c.accent_soft, c.accent_ink, c));
         }
         // The control's name says the state too, so a screen reader — and
         // the smoke — hear who holds the card without opening it.
         let label = match &holder {
-            Some((name, _)) => format!("{} — held by {name}", task.title),
+            Some((name, _, held)) => {
+                if !held && matches!(task.column, Column::InProgress | Column::Review) {
+                    format!("{} — {name}'s, hold lapsed", task.title)
+                } else {
+                    format!("{} — held by {name}", task.title)
+                }
+            }
             None if task.column == Column::Ready => format!("{} — for the taking", task.title),
             None => task.title.clone(),
         };

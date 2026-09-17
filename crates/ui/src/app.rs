@@ -101,6 +101,9 @@ enum Cmd {
     /// The person files a card.
     TaskCreate {
         project: String,
+        /// Which filing this is, so a late reply cannot clear a newer
+        /// draft or be taken for it.
+        request: u64,
         title: String,
         acceptance: String,
         column: agentdocker_core::Column,
@@ -251,7 +254,11 @@ enum Msg {
     Inbox(Vec<agentdocker_core::Envelope>),
     Activity(Vec<AgentActivity>),
     /// The board of the project asked for.
-    Tasks(String, Vec<agentdocker_core::Task>),
+    /// The board read for a project: its cards and whether the page
+    /// cut the board short, or why it could not be read.
+    Tasks(String, Result<(Vec<agentdocker_core::Task>, bool), String>),
+    /// A filing's outcome, for the draft that made it.
+    TaskCreated(String, u64, Result<(), String>),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
     SessionLog(String, Result<String, String>),
@@ -390,10 +397,15 @@ pub struct App {
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
-    /// The board on view: which project's, and its cards.
-    tasks: Option<(String, Vec<agentdocker_core::Task>)>,
-    /// A card being filed: its title and what done means.
-    task_draft: TaskDraft,
+    /// The board on view: which project's, its cards, and whether the
+    /// page cut the board short.
+    tasks: Option<(String, Vec<agentdocker_core::Task>, bool)>,
+    /// A card being filed, per project: its title and what done means.
+    /// Text typed for one project's board waits there while another's
+    /// is on view.
+    task_drafts: BTreeMap<String, TaskDraft>,
+    /// Filings so far, numbering each so its reply is told apart.
+    task_requests: u64,
     /// A card whose acceptance text is open.
     task_open: Option<agentdocker_core::TaskId>,
     queued_inputs: BTreeMap<String, usize>,
@@ -509,7 +521,8 @@ impl App {
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             tasks: None,
-            task_draft: TaskDraft::default(),
+            task_drafts: BTreeMap::new(),
+            task_requests: 0,
             task_open: None,
             queued_inputs: BTreeMap::new(),
             awaiting_receipt: BTreeMap::new(),
@@ -574,7 +587,8 @@ impl App {
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             tasks: None,
-            task_draft: TaskDraft::default(),
+            task_drafts: BTreeMap::new(),
+            task_requests: 0,
             task_open: None,
             queued_inputs: BTreeMap::new(),
             awaiting_receipt: BTreeMap::new(),
@@ -597,7 +611,16 @@ impl App {
 
     fn send(&mut self, cmd: Cmd) {
         if let Err(queue::Rejected { command, reason }) = self.tx.send(cmd) {
-            match *command {
+            self.rejected(*command, reason);
+        }
+    }
+
+    /// A command the worker queue would not take: whatever the person
+    /// started with it is told so, or it would wait for a reply that
+    /// never comes.
+    fn rejected(&mut self, command: Cmd, reason: &'static str) {
+        {
+            match command {
                 Cmd::Answer(id, _) => {
                     self.sending.remove(&id);
                     if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
@@ -643,7 +666,23 @@ impl App {
                         .or_default()
                         .complete(Err(reason.into()));
                 }
-                Cmd::Adopt(_)
+                // A filing that could not be queued is told so, or it
+                // would stay "Filing…" for good; a move, a hand or an
+                // archive says so in the status.
+                Cmd::TaskCreate {
+                    project, request, ..
+                } => {
+                    if let Some(draft) = self.task_drafts.get_mut(&project)
+                        && draft.sending == Some(request)
+                    {
+                        draft.sending = None;
+                        draft.error = Some(reason.into());
+                    }
+                }
+                Cmd::TaskMove { .. }
+                | Cmd::TaskAssign { .. }
+                | Cmd::TaskArchive(_)
+                | Cmd::Adopt(_)
                 | Cmd::AdoptAll
                 | Cmd::Stop(_)
                 | Cmd::ResumeProvider(..)
@@ -761,21 +800,38 @@ impl App {
                         self.session_log = Some((agent, result));
                     }
                 }
-                Msg::Tasks(project, tasks) => {
+                Msg::Tasks(project, result) => {
                     if self.selected_project_root().as_deref() == Some(project.as_str()) {
-                        self.tasks = Some((project, tasks));
-                    }
-                }
-                Msg::TaskChanged(result) => {
-                    self.task_draft.sending = false;
-                    match result {
-                        Ok(()) => {
-                            self.task_draft = TaskDraft::default();
-                            self.request_tasks();
+                        match result {
+                            Ok((tasks, more)) => self.tasks = Some((project, tasks, more)),
+                            // The board as last read stays on view; the
+                            // person is told why it is not newer.
+                            Err(error) => self.say(format!("The board could not be read: {error}")),
                         }
-                        Err(error) => self.task_draft.error = Some(error),
                     }
                 }
+                Msg::TaskCreated(project, request, result) => {
+                    // Only the filing this reply answers: a draft typed
+                    // since, after a refusal, keeps its text.
+                    if let Some(draft) = self.task_drafts.get_mut(&project)
+                        && draft.sending == Some(request)
+                    {
+                        draft.sending = None;
+                        match result {
+                            Ok(()) => {
+                                draft.title.clear();
+                                draft.acceptance.clear();
+                                draft.error = None;
+                            }
+                            Err(error) => draft.error = Some(error),
+                        }
+                    }
+                    self.request_tasks();
+                }
+                Msg::TaskChanged(result) => match result {
+                    Ok(()) => self.request_tasks(),
+                    Err(error) => self.say(error),
+                },
                 Msg::Activity(activity) => {
                     self.queued_inputs = activity
                         .iter()
@@ -1409,6 +1465,22 @@ impl App {
             .find(|p| p.id().as_str() == id)
             .map_or_else(|| id.to_owned(), |p| p.root.to_string_lossy().into_owned())
     }
+    /// The selected project's card draft, made on first use; bounded
+    /// like the other drafts so a long life of switching projects does
+    /// not keep text for every one of them.
+    pub(crate) fn task_draft_mut(&mut self) -> Option<&mut TaskDraft> {
+        let project = self.selected_project_root()?;
+        if !self.task_drafts.contains_key(&project) && self.task_drafts.len() >= 128 {
+            let stale = self
+                .task_drafts
+                .iter()
+                .find(|(_, d)| !d.sending() && d.title.is_empty() && d.acceptance.is_empty())
+                .map(|(k, _)| k.clone())?;
+            self.task_drafts.remove(&stale);
+        }
+        Some(self.task_drafts.entry(project).or_default())
+    }
+
     /// Read the selected project's board, when there is one and the
     /// daemon is there.
     pub(crate) fn request_tasks(&mut self) {
@@ -1971,23 +2043,30 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             let result = read_session_log(client, &agent).map_err(|error| format!("{error:#}"));
             Some(Msg::SessionLog(agent, result))
         }
-        Cmd::Tasks(project) => match client.call(&Request::Tasks {
-            project: Some(project.clone()),
-            column: None,
-            archived: false,
-        })? {
-            Response::Tasks { tasks } => Some(Msg::Tasks(project, tasks)),
-            _ => None,
-        },
+        Cmd::Tasks(project) => {
+            let result = match client.call(&Request::Tasks {
+                project: Some(project.clone()),
+                column: None,
+                archived: false,
+                limit: agentdocker_core::protocol::TASKS_LIMIT,
+            }) {
+                Ok(Response::Tasks { tasks, more }) => Ok((tasks, more)),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Tasks(project, result))
+        }
         Cmd::TaskCreate {
             project,
+            request,
             title,
             acceptance,
             column,
         } => {
             let result = match client.call(&Request::TaskCreate {
                 from: agentdocker_core::HUMAN.into(),
-                project: Some(project),
+                project: Some(project.clone()),
                 title,
                 acceptance,
                 column: Some(column),
@@ -1997,7 +2076,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Ok(other) => Err(format!("Unexpected reply: {other:?}")),
                 Err(error) => Err(format!("{error:#}")),
             };
-            Some(Msg::TaskChanged(result))
+            Some(Msg::TaskCreated(project, request, result))
         }
         Cmd::TaskMove { task, column } => {
             let result = match client.call(&Request::TaskMove {
@@ -2532,8 +2611,15 @@ pub(crate) fn runtime_label(runtime: &str) -> String {
 pub(crate) struct TaskDraft {
     pub title: String,
     pub acceptance: String,
-    pub sending: bool,
+    /// The filing on its way, by number; typing waits for its reply.
+    pub sending: Option<u64>,
     pub error: Option<String>,
+}
+
+impl TaskDraft {
+    pub fn sending(&self) -> bool {
+        self.sending.is_some()
+    }
 }
 
 /// What "needs setup" is missing, for the Tools row: the MCP entry, the

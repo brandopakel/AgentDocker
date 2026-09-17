@@ -402,6 +402,12 @@ pub enum EventKind {
         task: crate::TaskId,
         project: ProjectId,
         agent: AgentId,
+        /// Whom the card was taken over from: its holder had gone (the
+        /// lease expired, was released, or its agent exited).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<AgentId>,
+        /// The `task:<id>` lease the pull took; it is the holding.
+        lease: crate::LeaseId,
     },
     /// A card moved columns, by its assignee or the person.
     TaskMoved {

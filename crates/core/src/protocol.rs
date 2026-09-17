@@ -568,8 +568,10 @@ pub enum Request {
         agent: String,
         task: String,
     },
-    /// A project's cards, Backlog to Done, newest last within a column;
-    /// archived ones only when asked. Answers `tasks`.
+    /// A project's cards, Backlog to Done, oldest first within a column;
+    /// archived ones only when asked; at most `limit` (1–1,000, 200 by
+    /// default), and `more` says whether the board goes on past them.
+    /// Answers `tasks`.
     Tasks {
         #[serde(default)]
         project: Option<String>,
@@ -577,6 +579,8 @@ pub enum Request {
         column: Option<crate::Column>,
         #[serde(default)]
         archived: bool,
+        #[serde(default = "default_tasks_limit")]
+        limit: usize,
     },
 
     /// Announce a task several agents will attempt, with the measure
@@ -927,6 +931,15 @@ pub enum Request {
     },
 }
 
+/// A board page: enough for any real board at once, small enough for one
+/// frame with every card's full acceptance text.
+pub const TASKS_LIMIT: usize = 200;
+pub const TASKS_LIMIT_MAX: usize = 1_000;
+
+fn default_tasks_limit() -> usize {
+    TASKS_LIMIT
+}
+
 fn default_history_limit() -> usize {
     100
 }
@@ -1208,6 +1221,10 @@ pub enum Response {
     },
     Tasks {
         tasks: Vec<crate::Task>,
+        /// The board holds more cards than `limit` allowed; archive or
+        /// filter by column to see the rest.
+        #[serde(default)]
+        more: bool,
     },
     Contest {
         contest: crate::Contest,

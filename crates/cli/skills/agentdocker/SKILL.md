@@ -26,10 +26,12 @@ The project may have a board of work: `list_tasks` shows cards in columns
 (backlog, ready, in_progress, review, done), each with a title and what done
 means. Take work with `pull_task` on a Ready card — it becomes yours, in
 progress, and nobody else can take it; if it is refused, somebody holds it, so
-pull another. Read the card's acceptance text before starting. Move it with
-`move_task` to review when it is ready for eyes and to done when the
-acceptance text is met; file follow-up work with `create_task`. Do not move
-cards you do not hold.
+pull another. The pull holds the card as a `task:<id>` lease for four hours:
+`renew` it during longer work, or the card passes to the next agent that pulls
+it; your exit releases it. Read the card's acceptance text before starting.
+Move it with `move_task` to review when it is ready for eyes and to done when
+the acceptance text is met; file follow-up work with `create_task`. Do not
+move cards you do not hold.
 
 A successful send confirms routing, not that a model woke or consumed it.
 Inspect the recipient's `input_readiness` and `provider_availability` before

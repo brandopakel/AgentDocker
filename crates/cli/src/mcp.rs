@@ -1758,14 +1758,15 @@ fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "project": { "type": "string", "description": "Project id or path; your own when absent." },
                     "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done"] },
-                    "archived": { "type": "boolean", "description": "Include cards taken off the board." }
+                    "archived": { "type": "boolean", "description": "Include cards taken off the board." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "At most this many cards (200 by default); the reply's `more` says whether the board goes on." }
                 },
                 "additionalProperties": false
             }
         }),
         json!({
             "name": "pull_task",
-            "description": "Take a Ready card nobody holds: it becomes yours, in progress. Refused if somebody already holds it or it is not ready, so two agents never work the same card. Read its acceptance text before you start.",
+            "description": "Take a Ready card nobody holds: it becomes yours, in progress, and you hold its task:<id> lease (four hours; renew it during long work — an exit releases it). Refused if somebody holds it or it is not ready, so two agents never work the same card; a card whose holder's lease lapsed passes to you where it sits. Read its acceptance text before you start.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

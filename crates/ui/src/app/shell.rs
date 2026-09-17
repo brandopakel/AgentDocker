@@ -901,28 +901,36 @@ impl App {
                 }
             }
             Message::TaskTitle(title) => {
-                if !self.task_draft.sending {
-                    self.task_draft.title = title;
-                    self.task_draft.error = None;
+                if let Some(draft) = self.task_draft_mut()
+                    && !draft.sending()
+                {
+                    draft.title = title;
+                    draft.error = None;
                 }
             }
             Message::TaskAcceptance(acceptance) => {
-                if !self.task_draft.sending {
-                    self.task_draft.acceptance = acceptance;
-                    self.task_draft.error = None;
+                if let Some(draft) = self.task_draft_mut()
+                    && !draft.sending()
+                {
+                    draft.acceptance = acceptance;
+                    draft.error = None;
                 }
             }
             Message::TaskFile(column) => {
-                if !self.task_draft.sending
-                    && !self.task_draft.title.trim().is_empty()
-                    && let Some(project) = self.selected_project_root()
+                if let Some(project) = self.selected_project_root()
+                    && let Some(draft) = self.task_drafts.get_mut(&project)
+                    && !draft.sending()
+                    && !draft.title.trim().is_empty()
                 {
-                    self.task_draft.sending = true;
-                    self.task_draft.error = None;
+                    self.task_requests += 1;
+                    let request = self.task_requests;
+                    draft.sending = Some(request);
+                    draft.error = None;
                     let cmd = Cmd::TaskCreate {
                         project,
-                        title: self.task_draft.title.trim().to_owned(),
-                        acceptance: self.task_draft.acceptance.trim().to_owned(),
+                        request,
+                        title: draft.title.trim().to_owned(),
+                        acceptance: draft.acceptance.trim().to_owned(),
                         column,
                     };
                     self.send(cmd);
@@ -1981,6 +1989,121 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    /// A card's draft is the project's: text typed for one board waits
+    /// while another is on view, a move or hand of some other card does
+    /// not clear it, a late reply to an earlier filing does not take
+    /// newer text, a filing that cannot be queued says so instead of
+    /// staying "Filing…", and a board that cannot be read stays as last
+    /// read.
+    #[test]
+    fn a_card_draft_survives_other_board_actions_late_replies_and_refused_queues() {
+        let (mut app, requests, messages) = app();
+        app.connected = Ok(());
+        let dir = tempfile::tempdir().unwrap();
+        let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
+        let beta = agentdocker_core::ProjectRef::directory(dir.path().join("beta"));
+        app.shell.catalog.remember(alpha.clone(), true);
+        app.shell.catalog.remember(beta.clone(), true);
+        app.shell.catalog.selected = Some(alpha.root.clone());
+        let alpha_root = alpha.root.display().to_string();
+        let beta_root = beta.root.display().to_string();
+        let card = |id: &str, column: agentdocker_core::Column| agentdocker_core::Task {
+            id: agentdocker_core::TaskId::from(id.to_owned()),
+            project: alpha.id(),
+            title: format!("card {id}"),
+            acceptance: String::new(),
+            column,
+            assignee: None,
+            created_by: "user".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            archived_at: None,
+        };
+        messages
+            .send(Msg::Tasks(
+                alpha_root.clone(),
+                Ok((
+                    vec![card("aaaaaaaaaaaa", agentdocker_core::Column::Ready)],
+                    false,
+                )),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.tasks.as_ref().map(|(_, t, _)| t.len()), Some(1));
+
+        let _ = app.update(Message::TaskTitle("Port the parser".into()));
+        let _ = app.update(Message::TaskAcceptance("tests pass".into()));
+        // Another card is moved and the reply comes: the draft stays.
+        let _ = app.update(Message::TaskMove(
+            agentdocker_core::TaskId::from("aaaaaaaaaaaa".to_owned()),
+            agentdocker_core::Column::Review,
+        ));
+        messages.send(Msg::TaskChanged(Ok(()))).unwrap();
+        app.drain();
+        assert_eq!(
+            app.task_drafts[&alpha_root].title, "Port the parser",
+            "a move of some other card is not a filing"
+        );
+        // A board that cannot be read is said so, and the last board stays.
+        messages
+            .send(Msg::Tasks(alpha_root.clone(), Err("storage failed".into())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.tasks.as_ref().map(|(_, t, _)| t.len()), Some(1));
+        assert!(app.status.contains("storage failed"), "{}", app.status);
+
+        // Filed: typing waits; a reply to an *earlier* filing changes
+        // nothing; the reply to this one clears the text.
+        let _ = app.update(Message::TaskFile(agentdocker_core::Column::Ready));
+        let request = app.task_drafts[&alpha_root].sending.expect("filing");
+        assert!(requests.try_iter().any(|c| matches!(
+            c,
+            Cmd::TaskCreate { ref project, request: r, .. } if *project == alpha_root && r == request
+        )));
+        let _ = app.update(Message::TaskTitle("typed while filing".into()));
+        assert_eq!(app.task_drafts[&alpha_root].title, "Port the parser");
+        messages
+            .send(Msg::TaskCreated(alpha_root.clone(), request - 1, Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.task_drafts[&alpha_root].sending,
+            Some(request),
+            "a late reply to an earlier filing is not this one's"
+        );
+        messages
+            .send(Msg::TaskCreated(alpha_root.clone(), request, Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.task_drafts[&alpha_root].title, "");
+        assert!(app.task_drafts[&alpha_root].sending.is_none());
+
+        // Beta's draft is beta's: alpha's text waits while beta is on view.
+        let _ = app.update(Message::TaskTitle("alpha again".into()));
+        app.shell.catalog.selected = Some(beta.root.clone());
+        let _ = app.update(Message::TaskTitle("beta's card".into()));
+        assert_eq!(app.task_drafts[&alpha_root].title, "alpha again");
+        assert_eq!(app.task_drafts[&beta_root].title, "beta's card");
+
+        // A filing the command queue refuses is told so at once.
+        let _ = app.update(Message::TaskFile(agentdocker_core::Column::Backlog));
+        let request = app.task_drafts[&beta_root].sending.expect("filing");
+        app.rejected(
+            Cmd::TaskCreate {
+                project: beta_root.clone(),
+                request,
+                title: "beta's card".into(),
+                acceptance: String::new(),
+                column: agentdocker_core::Column::Backlog,
+            },
+            "the command queue is full",
+        );
+        let draft = &app.task_drafts[&beta_root];
+        assert!(draft.sending.is_none(), "not left filing for good");
+        assert!(draft.error.is_some());
+        assert_eq!(draft.title, "beta's card", "the text is kept to retry");
     }
 
     /// The menu under a project row renames the entry here, pins it, or

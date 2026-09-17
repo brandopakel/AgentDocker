@@ -925,6 +925,9 @@ enum TaskAction {
         /// Include archived cards.
         #[arg(long)]
         archived: bool,
+        /// At most this many cards (1-1000; 200 by default).
+        #[arg(long, default_value_t = agentdocker_core::protocol::TASKS_LIMIT)]
+        limit: usize,
     },
 }
 
@@ -1877,13 +1880,15 @@ async fn main() -> Result<()> {
                     project,
                     column,
                     archived,
+                    limit,
                 } => {
                     let request = Request::Tasks {
                         project: Some(project.map_or_else(here, Ok)?),
                         column: column_of(column)?,
                         archived,
+                        limit,
                     };
-                    if let Response::Tasks { tasks } = client.call(&request).await? {
+                    if let Response::Tasks { tasks, more } = client.call(&request).await? {
                         if tasks.is_empty() {
                             println!("no cards on the board");
                         } else {
@@ -1913,6 +1918,12 @@ async fn main() -> Result<()> {
                                 })
                                 .collect();
                             format::table(&["CARD", "COLUMN", "TITLE", "HOLDER", ""], &rows);
+                            if more {
+                                println!(
+                                    "and more: the first {} shown; --column or --limit narrows or widens the page",
+                                    tasks.len()
+                                );
+                            }
                         }
                     }
                 }
