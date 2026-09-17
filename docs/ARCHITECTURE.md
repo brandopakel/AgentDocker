@@ -1227,6 +1227,7 @@ A fenced or failed write cannot signal; a persisted intent survives daemon loss.
 The normal restart path takes the existing ledger lock and keeps queued IDs,
 token and provider receipts. The hidden CLI command preflights the existing
 provider and waits for the successor's fresh readiness. Bounded actual-client
-replacement with a pending offer passes at `5b3d688`; final review, CI and
-installed-session acceptance remain open in
+replacement with a pending offer passes at `5b3d688`; PR #171 is merged after
+review and CI, and installed source `8d42db5` passed same-provider replacement
+and fresh active-turn CLI/peer input. Exact receipts and limits are recorded in
 [Codex input](CODEX-INPUT.md#receiver-upgrade-candidate).

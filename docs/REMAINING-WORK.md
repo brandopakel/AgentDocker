@@ -15,8 +15,8 @@ not authenticate mutually untrusted same-user subprocesses. This limit and the
 possibility of a fabricated call stalling an offer are explicit in
 [Codex input](CODEX-INPUT.md).
 
-The installed receiver upgrade remains open; see the priority row below.
-A separate candidate now implements an explicit same-provider receiver upgrade,
+The installed receiver upgrade passed on September 17 UTC after PR #171 merged
+as `df3b758` with final review and all CI checks. It implements same-provider replacement,
 with schema-22 durable replacement intent and retained ledger reconciliation.
 Source `5b3d688` passed three focused regressions, the full 1,097-Rust/84-Python
 gate (seven skipped), and actual Codex 0.154.0/local-model replacement of an older
@@ -26,7 +26,10 @@ active turn (14.85 seconds including handover), with clean retirement and cleanu
 The disposable installed-package repeat also passed, observing lifetime pins
 and successful pruning of the retired release after cleanup.
 Final review follow-up `8d42db5` defaults the upgrade identity from the environment and documents the request table. The full 1,097-Rust/84-Python gate passed again (seven skipped), as did a repeat with the actual older receiver: the same provider, token and six prior receipts survived, and three messages entered the same active turn in order in 14.84 seconds with clean cleanup.
-Final review, CI and installed-session acceptance remain open. Evidence is in the
+The backed-up installation retained live provider identities, the token/binding
+and all 58 earlier receipts. A fresh CLI test through the human-input route and
+a fresh Claude peer ping entered this active Codex turn without a new prompt.
+Other-provider and broader lifecycle acceptance remain open. Evidence is in the
 existing [native queue record](verification/2026-09-15-native-codex-queue.json).
 
 
@@ -41,11 +44,16 @@ source-specific results and failed trials.
 
 ## Delivered source and current desktop
 
-Latest read-only check on September 16 confirms installed UI source `1e90f83`
-(schema21, release `3add4bea`), with daemon PID 3366 and GUI PID 4519 running
-from that release. The existing Codex provider PID 51242 and receiver PID 94744
-remain alive; this observation does not establish all queued-message receipts.
-PR #160 merged as `37725fe` after final review and CI.
+The current installed app and serving daemon use source `8d42db5`, schema22,
+release `9bc0f0fc`, activated with a fresh backup on September 17 UTC. The
+existing Codex PID 51242 and Claude PID 74231 survived the switch. Receiver
+94744 was replaced by 20912 with its original binding and 58 receipts retained.
+The app was closed during the switch and reopened afterward. Fresh active-turn
+CLI and peer inputs have exact provider receipts in the unchanged Codex turn.
+The later messaging controls in PR #170 still await final review and installation.
+
+Historical September 16 installation: UI `1e90f83` / release `3add4bea`,
+schema21. PR #160 merged as `37725fe` after final review and CI.
 
 Previous observed installation: Claude installed UI source `72b1eb4` (schema21)
 on September 15. Read-only verification confirms that release serving as daemon
@@ -294,7 +302,7 @@ claimed. See [Codex input](CODEX-INPUT.md#active-turn-steering-acceptance-septem
 
 | Priority | Work remaining | Completion condition and evidence |
 | --- | --- | --- |
-| Top, reproduced September 16 | CLI broadcast input priority and pause delivery | Human `send --to all` message `5d0f2b149aa44cb6` is archived, but Codex kept working until the user repeated the pause directly. The app project pause `b8f2cb39f7f44b4c` reproduced it at 13:59 PDT: the idle-only receiver suppressed hook delivery during the active turn. PR #169 source `5545697` passed actual Codex 0.154.0/local-model busy input: peer, human project and global messages entered the same active turn within 8.7 seconds with exact receipts. Dropped hook output retained all queued IDs without false receipt or replay. The full 1,093-Rust/84-Python gate passed (seven skipped). Installed receiver replacement remains open: its fixed launch descriptor pins the older binary, so app installation alone does not upgrade delivery. The resume also requests @mentions, New DM/channel with invitations, and Enter to send; Claude owns those UI changes and acceptance. Trace fan-out, queue position, active-turn input/steering, controller offers and exact receipts. CLI input must match directly typed human input priority; peer messages share the provider route with their attribution intact. Test an idle and a busy recipient, provider waits, per-recipient pause receipt, draft preservation and duplicate prevention. PR #162 merged as `7c6e779`: the owned Codex bridge now uses the same active-turn input route for human CLI, broadcast and peer messages. Actual Codex 0.154.0 trials passed same-turn exact receipts, refusal fallback and lost-reply recovery without resubmission; combined reload binaries also passed those trials. The installed standalone Codex receiver remains idle-only until upgraded; the candidate adds tool-boundary delivery with a 6,000-byte context limit. Existing Claude sessions require a supported channel relaunch. Broad provider parity and a per-recipient pause control remain open; queue acceptance alone does not establish delivery. |
+| Top, reproduced September 16 | CLI broadcast input priority and pause delivery | Human `send --to all` message `5d0f2b149aa44cb6` is archived, but Codex kept working until the user repeated the pause directly. The app project pause `b8f2cb39f7f44b4c` reproduced it at 13:59 PDT: the idle-only receiver suppressed hook delivery during the active turn. PR #169 source `5545697` passed actual Codex 0.154.0/local-model busy input: peer, human project and global messages entered the same active turn within 8.7 seconds with exact receipts. Dropped hook output retained all queued IDs without false receipt or replay. The full 1,093-Rust/84-Python gate passed (seven skipped). Installed receiver replacement passed after PR #171 merged: the explicit backed-up upgrade retained provider identities and receipts. Fresh CLI human-route and actual Claude peer messages reached this active Codex turn with exact receipts; one CLI sample took 0.176 seconds to provider context. The resume also requests @mentions, New DM/channel with invitations, and Enter to send; Claude owns those UI changes and acceptance. Trace fan-out, queue position, active-turn input/steering, controller offers and exact receipts. CLI input must match directly typed human input priority; peer messages share the provider route with their attribution intact. Test an idle and a busy recipient, provider waits, per-recipient pause receipt, draft preservation and duplicate prevention. PR #162 merged as `7c6e779`: the owned Codex bridge now uses the same active-turn input route for human CLI, broadcast and peer messages. Actual Codex 0.154.0 trials passed same-turn exact receipts, refusal fallback and lost-reply recovery without resubmission; combined reload binaries also passed those trials. The installed standalone Codex receiver now adds tool-boundary delivery with a 6,000-byte context limit. Existing Claude sessions require a supported channel relaunch. Broad provider parity and a per-recipient pause control remain open; queue acceptance alone does not establish delivery. |
 | Top, reproduced September 16 | Connect existing idle sessions and close provider gaps | Live Claude confirmed twelve peer messages waited for a human prompt (`835523c328494b82`); hooks/MCP had no channel receiver. New Claude/Codex UI launches now default to idle input and direct/thread composers show recipient readiness with connection guidance; provider consent remains required. The pre-sleep gate was interrupted at the user’s request; the resumed source e417ca5 passed 1,009 Rust tests, 77 Python checks and 338 native workflow steps. Final review adds fresh runtime discovery on Connection and canonical-recipient liveness for retired DM aliases; their follow-up source `1e1654a` passed 1,013 Rust tests, 77 Python checks and 375 rendered native workflow steps. This does not repair the existing session: safe resume must retain old queued IDs, receipts and drafts, then pass a peer-only idle turn. Other runtimes still need supported input adapters and their own acceptance. See [message audit](MESSAGE-DELIVERY-AUDIT.md). |
 | User request, September 15 | Portable coordination instructions | One bundled SKILL.md supplies MCP onboarding and preview/apply/undo setup; `agentdocker skill` exports it without a daemon. Combined source `4eb92a7` passed 969 Rust tests (six skipped), 70 Python checks and the full release gate. Actual Codex and Claude skill discovery passed on the recorded earlier release; actual Claude setup/undo also passed; the unchanged skill plus the native queue fix passed a 65-second direct-user busy trial at `528e4e0`, including idle wake, drafts, FIFO and receiver recovery. PR #149 merged after final CI and review; installation, implicit model activation and additional runtime loader acceptance remain. See [guided setup](GUIDED-SETUP.md#shared-coordination-skill). |
 | Top | Complete native input lifecycle and throughput | The receiver connects the human/peer queue to Codex 0.154.0 native input with exact receipts and supervised recovery. The long-busy fix at `5aeb651` passed 967 Rust tests, 70 Python checks and actual 65-second busy/idle/draft/FIFO acceptance; rate-limit recovery passed. Corrected recovery trial 34 at `bc0ea04` passed lost-reply and uncertain-input handling under daemon supervision. Failed trials remain recorded. PR #148 merged after final CI and review. Installed `cf64ca3` auto-bound the existing Codex session; a peer input held during its busy turn automatically started the next ordinary turn, produced the exact thread/turn/item receipt and was acknowledged without another human prompt. No-prompt startup/reopen, burst latency and other providers need further work. See [Codex input](CODEX-INPUT.md) and [evidence](verification/2026-09-15-native-codex-queue.json). |
@@ -391,9 +399,11 @@ formatting, strict lint, doctests, packaging and release, followed by the native
 workflow. Earlier source `c3bceb3` passed 415 rendered steps and 26 outer checks;
 the initial driver's obsolete two-member assertion is retained as a failed
 trial alongside its correction. Build provenance and reports are in the
-existing integrated-desktop verification record. The combined build with the
-compact create button and schema22 receiver upgrade still awaits its gate,
-native acceptance, final review, CI and installation.
+existing integrated-desktop verification record. The combined build `e6981a7` with the
+compact create button and schema22 receiver upgrade passed 1,106 Rust tests
+(seven skipped), 84 Python checks and the standard lint/doctest/package/release
+gate, then 415 rendered steps and 26 outer checks in 129 seconds. Final review,
+CI and installation remain open.
 
 Receiver-upgrade review follow-up: the hidden CLI accepts the standard
 `AGENTDOCKER_AGENT_ID` default, and the architecture request table now spells out
