@@ -15,6 +15,8 @@ pub(super) struct State {
     pub review_delivery: bool,
     pub session_message: bool,
     pub session_drafts: BTreeMap<String, SessionDraft>,
+    /// Text only, keyed by the original question ID. Never restores approval or sending state.
+    pub answers: BTreeMap<MessageId, String>,
     pub drafts: crate::drafts::Persistence,
     pub draft_home: PathBuf,
     pub connection_details: Option<String>,
@@ -241,6 +243,11 @@ impl State {
                     )
                 })
                 .collect(),
+            answers: saved
+                .answers
+                .into_iter()
+                .map(|(id, text)| (id.into(), text))
+                .collect(),
             dpi: 1.0,
             width: 1180.0,
             height: 760.0,
@@ -257,6 +264,7 @@ enum DraftKind {
     Session,
     Conversation,
     Channel,
+    Answer,
 }
 
 impl State {
@@ -280,15 +288,23 @@ impl State {
                 .filter(|(_, d)| !d.text.is_empty())
                 .map(|(k, d)| (k.clone(), d.text.clone()))
                 .collect(),
+            answers: self
+                .answers
+                .iter()
+                .filter(|(_, text)| !text.is_empty())
+                .map(|(id, text)| (id.to_string(), text.clone()))
+                .collect(),
             ..Default::default()
         }
     }
 
-    fn edit_draft(&mut self, kind: DraftKind, id: String, text: String) {
+    fn edit_draft(&mut self, kind: DraftKind, id: String, text: String) -> bool {
+        let question = MessageId::from(id.clone());
         let old = match kind {
             DraftKind::Session => self.session_drafts.get(&id).map(|d| &d.draft.text),
             DraftKind::Conversation => self.conversation_drafts.get(&id).map(|d| &d.text),
             DraftKind::Channel => self.channel_drafts.get(&id).map(|d| &d.text),
+            DraftKind::Answer => self.answers.get(&question),
         };
         let total: usize = self
             .session_drafts
@@ -296,11 +312,12 @@ impl State {
             .map(|d| d.draft.text.len())
             .chain(self.conversation_drafts.values().map(|d| d.text.len()))
             .chain(self.channel_drafts.values().map(|d| d.text.len()))
+            .chain(self.answers.values().map(String::len))
             .sum();
         let error = if id.is_empty() || id.len() > 1024 {
             Some("This draft destination is too long.")
         } else if text.chars().count() > crate::drafts::MAX_TEXT_CHARS {
-            Some("Messages can contain up to 16,000 characters. Your earlier text was kept.")
+            Some("Drafts can contain up to 16,000 characters. Your earlier text was kept.")
         } else if total - old.map_or(0, String::len) + text.len() > crate::drafts::MAX_TOTAL_BYTES {
             Some(
                 "Draft storage is full. Finish or clear an earlier draft first; your earlier text was kept.",
@@ -310,9 +327,19 @@ impl State {
         };
         if let Some(error) = error {
             self.error = Some(error.into());
-            return;
+            return false;
         }
         let edited = match kind {
+            DraftKind::Answer => {
+                self.answers
+                    .retain(|key, text| key == &question || !text.is_empty());
+                if self.answers.contains_key(&question) || self.answers.len() < 128 {
+                    self.answers.insert(question, text);
+                    true
+                } else {
+                    false
+                }
+            }
             DraftKind::Session => {
                 self.session_drafts.retain(|key, d| {
                     key == &id || !d.draft.text.is_empty() || d.draft.sending.is_some()
@@ -350,10 +377,10 @@ impl State {
         if edited {
             self.drafts.changed();
         } else {
-            self.error = Some(
-                "Finish or clear an earlier message draft first. Existing drafts were kept.".into(),
-            );
+            self.error =
+                Some("Finish or clear an earlier draft first. Existing drafts were kept.".into());
         }
+        edited
     }
 }
 
@@ -900,7 +927,9 @@ impl App {
                         || entry.draft.sending.is_some()
                 });
             }
-            Message::SessionDraft(id, text) => self.shell.edit_draft(DraftKind::Session, id, text),
+            Message::SessionDraft(id, text) => {
+                self.shell.edit_draft(DraftKind::Session, id, text);
+            }
             Message::SelectConversation(id) => {
                 if self.shell.conversation.as_deref() != Some(id.as_str()) {
                     self.shell.thread = None;
@@ -914,7 +943,7 @@ impl App {
                 }
             }
             Message::ConversationDraft(id, text) => {
-                self.shell.edit_draft(DraftKind::Conversation, id, text)
+                self.shell.edit_draft(DraftKind::Conversation, id, text);
             }
             Message::SendConversation(key) => {
                 // The key says where the words were typed: the conversation's
@@ -1449,8 +1478,8 @@ impl App {
             }
             Message::Draft(id, value) => {
                 if !self.sending.contains(&id) {
-                    self.answers
-                        .insert(id, value.chars().take(16_000).collect());
+                    self.shell
+                        .edit_draft(DraftKind::Answer, id.to_string(), value);
                 }
             }
             Message::AnswerChoice(id, value) => {
@@ -1469,8 +1498,12 @@ impl App {
                                 .is_some_and(|p| p.valid_for(&q.text) && p.permits_choice(&value))
                     })
                 {
-                    self.answers.insert(id.clone(), value);
-                    return self.update(Message::Answer(id));
+                    if self
+                        .shell
+                        .edit_draft(DraftKind::Answer, id.to_string(), value)
+                    {
+                        return self.update(Message::Answer(id));
+                    }
                 }
             }
             Message::Answer(id) => {
@@ -1483,12 +1516,14 @@ impl App {
                                 q.presentation,
                                 Some(agentdocker_core::QuestionPresentation::CodexFiles { .. })
                             ) || self
+                                .shell
                                 .answers
                                 .get(&id)
                                 .is_none_or(|answer| !answer.trim().eq_ignore_ascii_case("allow"))
                                 || self.shell.file_review.as_ref() == Some(&id))
                     })
                     && let Some(answer) = self
+                        .shell
                         .answers
                         .get(&id)
                         .filter(|s| !s.trim().is_empty())
@@ -2645,11 +2680,13 @@ mod tests {
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
         });
-        app.answers.insert(id.clone(), "original draft".into());
+        app.shell
+            .answers
+            .insert(id.clone(), "original draft".into());
         let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
-        assert_eq!(app.answers[&id], "original draft");
+        assert_eq!(app.shell.answers[&id], "original draft");
         assert_eq!(commands.try_iter().count(), 0);
-        app.answers.insert(id.clone(), " Allow ".into());
+        app.shell.answers.insert(id.clone(), " Allow ".into());
         let _ = app.update(Message::Answer(id.clone()));
         assert_eq!(
             commands.try_iter().count(),
@@ -2666,7 +2703,7 @@ mod tests {
         let _ = app.update(Message::Tick);
         assert!(app.shell.file_review.is_none());
         assert_eq!(
-            app.answers[&id], "Allow",
+            app.shell.answers[&id], "Allow",
             "an in-flight answer stays retained"
         );
     }
@@ -2691,19 +2728,19 @@ mod tests {
             expires_at: Utc::now() + chrono::Duration::minutes(5),
         };
         app.questions.push(question.clone());
-        app.answers.insert(id.clone(), "earlier draft".into());
+        app.shell.answers.insert(id.clone(), "earlier draft".into());
         let _ = app.update(Message::AnswerChoice(
             id.clone(),
             "Allow for this session".into(),
         ));
         assert_eq!(commands.try_iter().count(), 0);
-        assert_eq!(app.answers[&id], "earlier draft");
+        assert_eq!(app.shell.answers[&id], "earlier draft");
         let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
         assert!(
             matches!(commands.try_iter().collect::<Vec<_>>().as_slice(), [Cmd::Answer(message, answer)] if message == &id && answer == "Allow")
         );
-        assert_eq!(app.answers[&id], "Allow");
+        assert_eq!(app.shell.answers[&id], "Allow");
         app.sending.clear();
         app.questions.clear();
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
@@ -2712,7 +2749,7 @@ mod tests {
         app.questions.push(expired);
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
         assert_eq!(commands.try_iter().count(), 0);
-        assert_eq!(app.answers[&id], "Allow");
+        assert_eq!(app.shell.answers[&id], "Allow");
     }
 
     #[test]
@@ -2760,6 +2797,137 @@ mod tests {
         app.shell.catalog.updates.enabled = false;
         app.schedule_update_check(186_401);
         assert!(app.shell.pending_update.is_none());
+    }
+
+    #[test]
+    fn answer_drafts_restore_unsent_and_follow_confirmed_question_lifecycle() {
+        let home = tempfile::tempdir().unwrap();
+        let (mut app, commands, messages) = app();
+        app.shell = State::load(home.path());
+        app.connected = Ok(());
+        let id = MessageId::from("question-one".to_owned());
+        let other = MessageId::from("question-two".to_owned());
+        let question = Question {
+            presentation: None,
+            id: id.clone(),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Agent("human".into()),
+            text: "Continue?".into(),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        };
+        app.questions = vec![
+            question.clone(),
+            Question {
+                id: other.clone(),
+                ..question.clone()
+            },
+        ];
+        let _ = app.update(Message::Draft(id.clone(), "café 日本語\nnot yet".into()));
+        let _ = app.update(Message::Draft(other.clone(), "keep this one".into()));
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        app.shell = State::load(home.path());
+        assert_eq!(app.shell.answers[&id], "café 日本語\nnot yet");
+        assert!(app.sending.is_empty());
+        assert!(app.shell.file_review.is_none());
+        assert!(
+            commands
+                .try_iter()
+                .all(|cmd| !matches!(cmd, Cmd::Answer(..))),
+            "restoration is not consent or submission"
+        );
+        let _ = app.update(Message::Answer(id.clone()));
+        assert!(
+            commands
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::Answer(ref key, _) if key == &id))
+        );
+        messages
+            .send(Msg::Answered(id.clone(), Err("offline".into())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.shell.answers[&id], "café 日本語\nnot yet");
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        assert_eq!(
+            State::load(home.path()).answers[&id],
+            "café 日本語\nnot yet"
+        );
+        messages.send(Msg::Answered(id.clone(), Ok(()))).unwrap();
+        app.drain();
+        assert!(!app.shell.drafts.clean());
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        let reopened = State::load(home.path());
+        assert!(!reopened.answers.contains_key(&id));
+        assert_eq!(reopened.answers[&other], "keep this one");
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        app.drain();
+        assert!(
+            app.shell.answers.is_empty(),
+            "a completed question no longer has a draft"
+        );
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        assert!(State::load(home.path()).answers.is_empty());
+    }
+
+    #[test]
+    fn answer_edits_share_the_total_budget_and_never_truncate_or_evict_text() {
+        let mut state = State::default();
+        for index in 0..128 {
+            assert!(state.edit_draft(DraftKind::Answer, index.to_string(), "keep".into()));
+        }
+        let before = state.draft_snapshot();
+        assert!(!state.edit_draft(DraftKind::Answer, "overflow".into(), "new".into()));
+        assert_eq!(state.draft_snapshot(), before);
+        assert!(!state.edit_draft(DraftKind::Answer, "0".into(), "界".repeat(16_001)));
+        assert_eq!(state.draft_snapshot(), before);
+        assert!(state.edit_draft(DraftKind::Answer, "0".into(), String::new()));
+        assert!(state.edit_draft(DraftKind::Answer, "overflow".into(), "new".into()));
+        for index in 0..128 {
+            assert!(state.edit_draft(DraftKind::Session, index.to_string(), "x".repeat(16_000)));
+        }
+        for index in 0..127 {
+            assert!(state.edit_draft(
+                DraftKind::Conversation,
+                index.to_string(),
+                "x".repeat(16_000)
+            ));
+        }
+        assert!(state.edit_draft(DraftKind::Conversation, "last".into(), "x".repeat(16_000)));
+        let snapshot = state.draft_snapshot();
+        let used = [
+            &snapshot.sessions,
+            &snapshot.conversations,
+            &snapshot.channels,
+            &snapshot.answers,
+        ]
+        .into_iter()
+        .flat_map(|drafts| drafts.values())
+        .map(String::len)
+        .sum::<usize>();
+        let left = crate::drafts::MAX_TOTAL_BYTES - used;
+        // Fill the remaining shared space without changing any answer.
+        for (index, chunk) in "z".repeat(left).as_bytes().chunks(16_000).enumerate() {
+            assert!(state.edit_draft(
+                DraftKind::Channel,
+                index.to_string(),
+                String::from_utf8(chunk.to_vec()).unwrap()
+            ));
+        }
+        let before = state.draft_snapshot();
+        assert!(!state.edit_draft(DraftKind::Answer, "1".into(), "longer than keep".into()));
+        assert_eq!(state.draft_snapshot(), before);
     }
 
     #[test]
@@ -3057,8 +3225,10 @@ mod tests {
                 ..question.clone()
             },
         ];
-        app.answers.insert(first.clone(), "Yes".into());
-        app.answers.insert(second.clone(), "Keep my draft".into());
+        app.shell.answers.insert(first.clone(), "Yes".into());
+        app.shell
+            .answers
+            .insert(second.clone(), "Keep my draft".into());
         let _ = app.update(Message::Answer(first.clone()));
         assert!(
             matches!(commands.try_iter().collect::<Vec<_>>().as_slice(), [Cmd::Answer(id, _)] if id == &first)
@@ -3068,15 +3238,15 @@ mod tests {
         assert_eq!(app.take_answer_reveal(), Some(second.clone()));
         assert_eq!(app.shell.inbox_thread.as_deref(), Some("next-asker"));
         assert!(app.take_answer_reveal().is_none());
-        assert_eq!(app.answers[&second], "Keep my draft");
+        assert_eq!(app.shell.answers[&second], "Keep my draft");
         app.questions.insert(0, question);
-        app.answers.insert(first.clone(), "Yes".into());
+        app.shell.answers.insert(first.clone(), "Yes".into());
         let _ = app.update(Message::Answer(first.clone()));
         let _ = app.update(Message::Draft(second.clone(), "Newer draft".into()));
         messages.send(Msg::Answered(first, Ok(()))).unwrap();
         app.drain();
         assert!(app.take_answer_reveal().is_none());
-        assert_eq!(app.answers[&second], "Newer draft");
+        assert_eq!(app.shell.answers[&second], "Newer draft");
     }
 
     #[test]
@@ -3106,8 +3276,10 @@ mod tests {
                     ..question
                 },
             ];
-            app.answers.insert(first.clone(), "Yes".into());
-            app.answers.insert(second.clone(), "Keep this draft".into());
+            app.shell.answers.insert(first.clone(), "Yes".into());
+            app.shell
+                .answers
+                .insert(second.clone(), "Keep this draft".into());
             let _ = app.update(Message::Answer(first.clone()));
             assert!(matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),
                 [Cmd::Answer(id, _)] if id == &first));
@@ -3124,7 +3296,7 @@ mod tests {
             assert_eq!(app.shell.inbox_thread.as_deref(), Some("first-asker"));
             assert!(app.shell.pending_answer_reveal.is_none());
             assert!(!app.shell.reveal_next_question);
-            assert_eq!(app.answers[&second], "Keep this draft");
+            assert_eq!(app.shell.answers[&second], "Keep this draft");
         }
     }
 
@@ -3169,7 +3341,8 @@ mod tests {
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
         };
-        app.answers
+        app.shell
+            .answers
             .insert(question.id.clone(), "unfinished answer".into());
         app.shell.channel_drafts.insert(
             "another-room".into(),
@@ -3196,7 +3369,7 @@ mod tests {
         assert_eq!(app.shell.catalog.selected.as_ref(), Some(&project.root));
         assert_eq!(app.shell.notification_message.as_ref(), Some(&question.id));
         assert!(app.shell.pending_notification.is_none());
-        assert_eq!(app.answers[&question.id], "unfinished answer");
+        assert_eq!(app.shell.answers[&question.id], "unfinished answer");
         assert_eq!(
             app.shell.channel_drafts["another-room"].text,
             "unfinished channel message"
@@ -3318,7 +3491,8 @@ mod tests {
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
             }]))
             .unwrap();
-        app.answers
+        app.shell
+            .answers
             .insert(action.target.message.clone(), "unfinished".into());
         let _ = app.update(Message::Notification(
             crate::notification_route::Activation::Open(action.clone()),
@@ -3331,7 +3505,7 @@ mod tests {
             app.shell.notification_message.as_ref(),
             Some(&action.target.message)
         );
-        assert_eq!(app.answers[&action.target.message], "unfinished");
+        assert_eq!(app.shell.answers[&action.target.message], "unfinished");
         assert!(app.sending.is_empty());
     }
 
@@ -3501,8 +3675,10 @@ mod tests {
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
         });
-        app.answers.insert(id.clone(), "target draft".into());
-        app.answers.insert(other.clone(), "other draft".into());
+        app.shell.answers.insert(id.clone(), "target draft".into());
+        app.shell
+            .answers
+            .insert(other.clone(), "other draft".into());
         app.shell.pending_answer_reveal = Some(other.clone());
         app.shell.reveal_next_question = true;
         app.shell.inbox_thread = Some("another-agent".into());
@@ -3516,8 +3692,8 @@ mod tests {
         );
         assert!(app.shell.pending_answer_reveal.is_none());
         assert!(!app.shell.reveal_next_question);
-        assert_eq!(app.answers[&id], "target draft");
-        assert_eq!(app.answers[&other], "other draft");
+        assert_eq!(app.shell.answers[&id], "target draft");
+        assert_eq!(app.shell.answers[&other], "other draft");
         assert_eq!(
             commands.try_iter().count(),
             0,
@@ -3534,7 +3710,7 @@ mod tests {
         assert_eq!(app.screen, Screen::Agents);
         app.questions.clear();
         let _ = app.update(Message::OpenQuestion(id.clone()));
-        assert_eq!(app.answers[&id], "target draft");
+        assert_eq!(app.shell.answers[&id], "target draft");
         assert_eq!(app.screen, Screen::Questions);
     }
 

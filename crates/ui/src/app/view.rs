@@ -2417,7 +2417,7 @@ impl App {
             let draft_id = id.clone();
             let busy = self.sending.contains(&id);
             let expired = question.expired(Utc::now());
-            let answer = self.answers.get(&id).cloned().unwrap_or_default();
+            let answer = self.shell.answers.get(&id).cloned().unwrap_or_default();
             let mut body = column![
                 row![
                     dot(if expired { c.faint } else { c.amber }, 8.0, c),

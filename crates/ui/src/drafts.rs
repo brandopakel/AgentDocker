@@ -21,24 +21,35 @@ pub struct Snapshot {
     pub sessions: BTreeMap<String, String>,
     pub conversations: BTreeMap<String, String>,
     pub channels: BTreeMap<String, String>,
+    #[serde(default)]
+    pub answers: BTreeMap<String, String>,
 }
 
 impl Default for Snapshot {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             sessions: BTreeMap::new(),
             conversations: BTreeMap::new(),
             channels: BTreeMap::new(),
+            answers: BTreeMap::new(),
         }
     }
 }
 
 impl Snapshot {
     pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(self.version == 1, "Unsupported saved-draft version");
+        anyhow::ensure!(
+            self.version == 2 || (self.version == 1 && self.answers.is_empty()),
+            "Unsupported saved-draft version"
+        );
         let mut total = 0usize;
-        for entries in [&self.sessions, &self.conversations, &self.channels] {
+        for entries in [
+            &self.sessions,
+            &self.conversations,
+            &self.channels,
+            &self.answers,
+        ] {
             anyhow::ensure!(entries.len() <= MAX_PER_KIND, "Too many saved drafts");
             for (key, text) in entries {
                 anyhow::ensure!(
@@ -77,8 +88,9 @@ impl Snapshot {
             bytes.len() as u64 <= MAX_FILE_BYTES,
             "Saved drafts exceed 32 MiB"
         );
-        let saved: Self = serde_json::from_slice(&bytes)?;
+        let mut saved: Self = serde_json::from_slice(&bytes)?;
         saved.validate()?;
+        saved.version = 2;
         Ok(saved)
     }
 
@@ -228,6 +240,31 @@ mod tests {
             std::fs::read(home.path().join("drafts.json")).unwrap(),
             b"not json"
         );
+    }
+
+    #[test]
+    fn version_one_text_is_loaded_without_rewriting_and_unknown_versions_are_preserved() {
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join("drafts.json");
+        let original = br#"{"version":1,"sessions":{"a":"keep"},"conversations":{},"channels":{}}"#;
+        std::fs::write(&file, original).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let mut saved = Snapshot::load(home.path()).unwrap();
+        assert_eq!(saved.sessions["a"], "keep");
+        assert!(saved.answers.is_empty());
+        assert_eq!(std::fs::read(&file).unwrap(), original);
+        saved.answers.insert("question".into(), "not sent".into());
+        saved.save(home.path()).unwrap();
+        assert_eq!(Snapshot::load(home.path()).unwrap(), saved);
+        let unknown =
+            br#"{"version":99,"sessions":{},"conversations":{},"channels":{},"answers":{}}"#;
+        std::fs::write(&file, unknown).unwrap();
+        assert!(Snapshot::load(home.path()).is_err());
+        assert_eq!(std::fs::read(file).unwrap(), unknown);
     }
 
     #[test]

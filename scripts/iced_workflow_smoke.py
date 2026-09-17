@@ -545,6 +545,9 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                            and "added terminal-fixture to this channel" in json.dumps(m.get("payload"))]
                 assert len(notices) == 1, notices
                 checks.append("enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members")
+                draft_question = rpc(endpoint, {"op": "post_question", "from": narrow["id"], "to": human["id"],
+                                                "question": "Keep this answer until explicitly submitted?", "timeout_secs": 300})["message"]
+                answer_marker = "Unsent answer café 日本語"
                 # The largest saved columns must not crush the conversation.
                 # Change only this private profile while its window is closed.
                 catalog_path = state / "workspace.json"
@@ -558,6 +561,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("resize", width=1200, height=760),
                         step("click", id=f"project-{project}"), step("click", id="inbox"),
                         step("click", id=f"thread-{narrow['id']}"),
+                        step("fill", id=f"answer-{draft_question}", text=answer_marker),
                         step("fill", id=f"reply-{narrow['id']}", text="Keep this conversation draft"),
                         step("click", id=f"thread-{routed}"),
                         step("wait_control", id=f"reply-{narrow['id']}", present=True),
@@ -603,7 +607,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 finally:
                     catalog_path.write_text(saved_catalog)
                 # The prior window closes normally immediately after its last edit.
-                # Its close must flush all three kinds, including a hidden thread.
+                # Its close must flush every saved kind, including a hidden thread and answer.
                 draft_paths = list((state / "drafts").glob("*/drafts.json"))
                 assert len(draft_paths) == 1, draft_paths
                 saved_drafts = json.loads(draft_paths[0].read_text())
@@ -611,10 +615,12 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 assert "Keep this conversation draft" in saved_drafts["conversations"].values(), saved_drafts
                 assert "Keep this thread draft" in saved_drafts["conversations"].values(), saved_drafts
                 assert saved_drafts["channels"][room["id"]] == "Keep this channel across reopen", saved_drafts
+                assert saved_drafts["answers"][draft_question] == answer_marker, saved_drafts
                 restored_steps = [
                     step("resize", width=1800, height=900),
                     step("click", id=f"project-{project}"), step("click", id="inbox"),
                     step("click", id=f"thread-{narrow['id']}"),
+                    step("wait_text", text=answer_marker),
                     step("wait_text", text="Keep this conversation draft"),
                     step("click", id=f"thread-{routed}"),
                     step("wait_text", text="Keep this thread draft"),
@@ -631,13 +637,15 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 ]
                 report["restored_drafts_window"] = launch("restored-drafts", restored_steps)
                 retained_input = rpc(endpoint, {"op": "peek_input", "agent": narrow["id"]})["messages"]
-                for marker in ("Keep this conversation draft", "Keep this thread draft", "Keep this session across reopen"):
+                assert any(q["id"] == draft_question for q in rpc(endpoint, {"op": "questions", "agent": human["id"]})["questions"])
+                assert not any(m.get("reply_to") == draft_question and m.get("kind") == "answer" for m in retained_input)
+                for marker in ("Keep this conversation draft", "Keep this thread draft", "Keep this session across reopen", answer_marker):
                     assert not any(marker in json.dumps(m.get("payload")) for m in retained_input), marker
                 channel_inputs = rpc(endpoint, {"op": "peek_input", "agent": agent["id"]})["messages"]
                 assert not any("Keep this channel across reopen" in json.dumps(m.get("payload")) for m in channel_inputs)
                 channel_history = rpc(endpoint, {"op": "history", "conversation": f"channel:{room['id']}", "limit": 100})["messages"]
                 assert not any("Keep this channel across reopen" in json.dumps(m) for m in channel_history)
-                checks.append("normal_close_flushes_hidden_conversation_thread_session_and_channel_drafts_and_reopen_never_sends_them")
+                checks.append("normal_close_flushes_hidden_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them")
                 rpc(endpoint, {"op": "stop", "agent": narrow["id"], "force": False})
                 until(lambda: rpc(endpoint, {"op": "inspect", "agent": narrow["id"]})["agent"]["status"]["state"] == "exited")
 

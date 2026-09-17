@@ -417,11 +417,8 @@ pub struct App {
     /// kept between runs.
     settings: crate::theme::Settings,
     home: std::path::PathBuf,
-    /// Questions put to the human, and what is being typed in reply to
-    /// each. The draft is keyed by message id so answering one question
-    /// does not disturb another half-written answer.
+    /// Open questions put to the human; saved answer text lives in the shell.
     questions: Vec<Question>,
-    answers: BTreeMap<MessageId, String>,
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
@@ -555,7 +552,6 @@ impl App {
             settings,
             home,
             questions: Vec::new(),
-            answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
@@ -626,7 +622,6 @@ impl App {
             settings: crate::theme::Settings::default(),
             home: std::path::PathBuf::new(),
             questions: Vec::new(),
-            answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             tasks: None,
@@ -1031,16 +1026,22 @@ impl App {
                     // more, so the map does not grow with the session — but
                     // not one still in flight, whose question the daemon
                     // has already forgotten.
-                    self.answers.retain(|id, _| {
+                    let before = self.shell.answers.len();
+                    self.shell.answers.retain(|id, _| {
                         self.sending.contains(id) || questions.iter().any(|q| q.id == *id)
                     });
+                    if self.shell.answers.len() != before {
+                        self.shell.drafts.changed();
+                    }
                     self.questions = questions;
                 }
                 Msg::Answered(id, result) => {
                     self.sending.remove(&id);
                     match result {
                         Ok(()) => {
-                            self.answers.remove(&id);
+                            if self.shell.answers.remove(&id).is_some() {
+                                self.shell.drafts.changed();
+                            }
                             if self.shell.file_review.as_ref() == Some(&id) {
                                 self.shell.file_review = None;
                             }
@@ -3566,7 +3567,7 @@ pub(crate) mod tests {
         );
         envelope.id = id.clone();
         app.inbox.push(envelope.clone());
-        app.answers.insert(id.clone(), "unfinished".into());
+        app.shell.answers.insert(id.clone(), "unfinished".into());
         app.dismissing.insert(id.clone());
         messages
             .send(Msg::MessagesDismissed(
@@ -3576,7 +3577,7 @@ pub(crate) mod tests {
             .unwrap();
         app.drain();
         assert_eq!(app.inbox, vec![envelope]);
-        assert_eq!(app.answers[&id], "unfinished");
+        assert_eq!(app.shell.answers[&id], "unfinished");
         assert!(app.dismissing.is_empty());
     }
 
@@ -3603,7 +3604,8 @@ pub(crate) mod tests {
         );
         app.inbox.push(first.clone());
         let question = MessageId::from("pending-question".to_owned());
-        app.answers
+        app.shell
+            .answers
             .insert(question.clone(), "unfinished answer".into());
         let _ = app.update(shell::Message::DismissInbox(vec![first.id.clone()]));
         let _ = app.update(shell::Message::DismissInbox(vec![first.id.clone()]));
@@ -3632,7 +3634,7 @@ pub(crate) mod tests {
             .unwrap();
         app.drain();
         assert_eq!(app.inbox, [second]);
-        assert_eq!(app.answers[&question], "unfinished answer");
+        assert_eq!(app.shell.answers[&question], "unfinished answer");
         assert!(!app.dismissing.contains(&first.id));
     }
 
@@ -3664,7 +3666,8 @@ pub(crate) mod tests {
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(1),
         });
-        app.answers
+        app.shell
+            .answers
             .insert(question.clone(), "unfinished answer".into());
         let _ = app.update(shell::Message::DismissInbox(vec![
             received[1].id.clone(),
@@ -3698,7 +3701,7 @@ pub(crate) mod tests {
                 received[4].clone()
             ]
         );
-        assert_eq!(app.answers[&question], "unfinished answer");
+        assert_eq!(app.shell.answers[&question], "unfinished answer");
         assert!(app.dismissing.is_empty());
     }
 
@@ -3711,10 +3714,10 @@ pub(crate) mod tests {
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         let id = MessageId::from("fixture-question".to_owned());
-        app.answers.insert(id.clone(), "draft".into());
+        app.shell.answers.insert(id.clone(), "draft".into());
         app.sending.insert(id.clone());
         app.send(Cmd::Answer(id.clone(), "draft".into()));
-        assert_eq!(app.answers[&id], "draft");
+        assert_eq!(app.shell.answers[&id], "draft");
         assert!(!app.sending.contains(&id));
         assert!(app.status.contains("queue is full"));
         app.dismissing.insert(id.clone());
@@ -3745,10 +3748,10 @@ pub(crate) mod tests {
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         let id = MessageId::from("fixture-question".to_owned());
-        app.answers.insert(id.clone(), "draft".into());
+        app.shell.answers.insert(id.clone(), "draft".into());
         app.sending.insert(id.clone());
         app.send(Cmd::Answer(id.clone(), "draft".into()));
-        assert_eq!(app.answers[&id], "draft");
+        assert_eq!(app.shell.answers[&id], "draft");
         assert!(!app.sending.contains(&id));
         assert!(app.status.contains("worker stopped"));
     }
@@ -4147,13 +4150,13 @@ pub(crate) mod tests {
         let (commands, _requests) = queue::channel();
         let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.answers.insert(id.clone(), "draft".into());
+        app.shell.answers.insert(id.clone(), "draft".into());
         app.sending.insert(id.clone());
         for message in replies {
             messages.send(message).unwrap();
         }
         app.drain();
-        assert_eq!(app.answers[&id], "draft");
+        assert_eq!(app.shell.answers[&id], "draft");
         assert!(!app.sending.contains(&id));
         assert!(app.connected.is_ok());
         assert!(app.status.contains("question expired"));
@@ -4427,13 +4430,13 @@ pub(crate) mod tests {
         let (commands, _) = queue::channel();
         let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.answers.insert(id.clone(), "draft answer".into());
+        app.shell.answers.insert(id.clone(), "draft answer".into());
         app.sending.insert(id.clone());
         for message in result {
             messages.send(message).unwrap();
         }
         app.drain();
-        assert_eq!(app.answers[&id], "draft answer");
+        assert_eq!(app.shell.answers[&id], "draft answer");
         assert!(!app.sending.contains(&id));
         assert!(app.connected.is_err());
     }
@@ -4584,10 +4587,10 @@ pub(crate) mod tests {
         let mut app = App::bare(commands, results);
         let id = MessageId::from("owned-question".to_owned());
         let answer = "x".repeat(queue::COMMAND_BYTES + 1);
-        app.answers.insert(id.clone(), answer.clone());
+        app.shell.answers.insert(id.clone(), answer.clone());
         app.sending.insert(id.clone());
         app.send(Cmd::Answer(id.clone(), answer.clone()));
-        assert_eq!(app.answers[&id], answer);
+        assert_eq!(app.shell.answers[&id], answer);
         assert!(!app.sending.contains(&id));
         app.console_running = 1;
         app.send(Cmd::Console(answer, None));
