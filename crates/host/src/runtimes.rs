@@ -153,7 +153,7 @@ fn hooks_missing_file(spec: &RuntimeSpec, file: &Path, marker: &str) -> Vec<Stri
         }
         Err(_) => return Vec::new(),
     };
-    if value.get("hooks").is_some_and(|hooks| !hooks.is_object()) {
+    if !hook_configuration_shape_valid(&value) {
         return Vec::new();
     }
     missing_hook_events(&value, marker, spec.name)
@@ -410,7 +410,7 @@ fn hooks_wiring_file(spec: &RuntimeSpec, file: &Path, marker: &str) -> Wiring {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return Wiring::Unverified;
     };
-    if !value.is_object() || value.get("hooks").is_some_and(|hooks| !hooks.is_object()) {
+    if !hook_configuration_shape_valid(&value) {
         return Wiring::Unverified;
     }
     if hooks_configuration_matches_for(&value, marker, spec.name) {
@@ -426,11 +426,31 @@ fn hooks_wiring_file(spec: &RuntimeSpec, file: &Path, marker: &str) -> Wiring {
 
 /// Every required event must include our command with the full matcher.
 fn hooks_configuration_matches_for(value: &serde_json::Value, marker: &str, runtime: &str) -> bool {
-    if value["disableAllHooks"] == true {
+    if !hook_configuration_shape_valid(value) || value["disableAllHooks"] == true {
         return false;
     }
     value.get("hooks").is_some_and(|h| h.is_object())
         && missing_hook_events(value, marker, runtime).is_empty()
+}
+
+// Missing configuration is actionable. Malformed configuration is unknown:
+// notably a non-string matcher must not be treated as an absent matcher.
+fn hook_configuration_shape_valid(value: &serde_json::Value) -> bool {
+    value.is_object()
+        && value.get("hooks").is_none_or(|hooks| {
+            hooks.as_object().is_some_and(|events| {
+                events.values().all(|entries| {
+                    entries.as_array().is_some_and(|entries| {
+                        entries.iter().all(|entry| {
+                            entry.is_object()
+                                && entry
+                                    .get("matcher")
+                                    .is_none_or(|matcher| matcher.is_string())
+                        })
+                    })
+                })
+            })
+        })
 }
 
 /// The required events that do not include our command with the full
@@ -451,6 +471,12 @@ pub fn missing_hook_events<'a>(
             return false;
         };
         entries.iter().any(|entry| {
+            if entry
+                .get("matcher")
+                .is_some_and(|matcher| !matcher.is_string())
+            {
+                return false;
+            }
             let actual = entry.get("matcher").and_then(|v| v.as_str());
             let covers = actual == Some("*")
                 || match matcher {
@@ -553,6 +579,29 @@ mod tests {
         std::fs::write(&file, settings.to_string()).unwrap();
         assert_eq!(hooks_wiring_file(spec, &file, "agentdocker"), Wiring::Wired);
         assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
+        for malformed in [
+            serde_json::json!(42),
+            serde_json::Value::Null,
+            serde_json::json!([]),
+        ] {
+            let mut invalid = settings.clone();
+            invalid["hooks"]["StopFailure"][0]["matcher"] = malformed;
+            std::fs::write(&file, invalid.to_string()).unwrap();
+            assert_eq!(
+                hooks_wiring_file(spec, &file, "agentdocker"),
+                Wiring::Unverified
+            );
+            assert!(hooks_missing_file(spec, &file, "agentdocker").is_empty());
+            assert!(!hooks_configuration_matches_for(
+                &invalid,
+                "agentdocker",
+                "claude-code"
+            ));
+            assert_eq!(
+                missing_hook_events(&invalid, "agentdocker", "claude-code"),
+                vec!["StopFailure"]
+            );
+        }
         settings["disableAllHooks"] = serde_json::Value::Bool(true);
         std::fs::write(&file, settings.to_string()).unwrap();
         assert_eq!(hooks_missing_file(spec, &file, "agentdocker"), every);
