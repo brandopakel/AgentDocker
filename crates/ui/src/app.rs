@@ -10,6 +10,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 mod icons;
 mod messages;
 pub(crate) mod panes;
+mod board;
 pub(crate) mod queue;
 mod sessions;
 mod shell;
@@ -72,6 +73,7 @@ const STATUS_FOR: Duration = Duration::from_secs(20);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Agents,
+    Board,
     Questions,
     Channels,
     Terminal,
@@ -94,6 +96,25 @@ enum Cmd {
     Channels(String, String),
     Inbox,
     Activity,
+    /// The selected project's board.
+    Tasks(String),
+    /// The person files a card.
+    TaskCreate {
+        project: String,
+        title: String,
+        acceptance: String,
+        column: agentdocker_core::Column,
+    },
+    /// The person moves a card, or an agent it is handed to does.
+    TaskMove {
+        task: agentdocker_core::TaskId,
+        column: agentdocker_core::Column,
+    },
+    TaskAssign {
+        task: agentdocker_core::TaskId,
+        assignee: Option<agentdocker_core::AgentId>,
+    },
+    TaskArchive(agentdocker_core::TaskId),
     SessionLog(String),
     /// Register the person at the keyboard, so agents can address them.
     Me,
@@ -229,6 +250,10 @@ enum Msg {
     Channels(String, Vec<agentdocker_core::Channel>),
     Inbox(Vec<agentdocker_core::Envelope>),
     Activity(Vec<AgentActivity>),
+    /// The board of the project asked for.
+    Tasks(String, Vec<agentdocker_core::Task>),
+    /// A change to the board, done (the board is read again) or refused.
+    TaskChanged(Result<(), String>),
     SessionLog(String, Result<String, String>),
     Questions(Vec<Question>),
     /// An answer came back: `Ok` means it was delivered, `Err` carries
@@ -365,6 +390,12 @@ pub struct App {
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
+    /// The board on view: which project's, and its cards.
+    tasks: Option<(String, Vec<agentdocker_core::Task>)>,
+    /// A card being filed: its title and what done means.
+    task_draft: TaskDraft,
+    /// A card whose acceptance text is open.
+    task_open: Option<agentdocker_core::TaskId>,
     queued_inputs: BTreeMap<String, usize>,
     /// Per agent, the queued inputs no current receipt covers.
     awaiting_receipt: BTreeMap<String, usize>,
@@ -477,6 +508,9 @@ impl App {
             sending: std::collections::BTreeSet::new(),
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            tasks: None,
+            task_draft: TaskDraft::default(),
+            task_open: None,
             queued_inputs: BTreeMap::new(),
             awaiting_receipt: BTreeMap::new(),
             session_log: None,
@@ -539,6 +573,9 @@ impl App {
             answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            tasks: None,
+            task_draft: TaskDraft::default(),
+            task_open: None,
             queued_inputs: BTreeMap::new(),
             awaiting_receipt: BTreeMap::new(),
             session_log: None,
@@ -722,6 +759,21 @@ impl App {
                 Msg::SessionLog(agent, result) => {
                     if self.shell.selected.as_deref() == Some(agent.as_str()) {
                         self.session_log = Some((agent, result));
+                    }
+                }
+                Msg::Tasks(project, tasks) => {
+                    if self.selected_project_root().as_deref() == Some(project.as_str()) {
+                        self.tasks = Some((project, tasks));
+                    }
+                }
+                Msg::TaskChanged(result) => {
+                    self.task_draft.sending = false;
+                    match result {
+                        Ok(()) => {
+                            self.task_draft = TaskDraft::default();
+                            self.request_tasks();
+                        }
+                        Err(error) => self.task_draft.error = Some(error),
                     }
                 }
                 Msg::Activity(activity) => {
@@ -1130,6 +1182,11 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
+            EventKind::TaskCreated { .. }
+            | EventKind::TaskPulled { .. }
+            | EventKind::TaskMoved { .. }
+            | EventKind::TaskUpdated { .. }
+            | EventKind::TaskArchived { .. } => self.request_tasks(),
             EventKind::ProviderAvailabilityReported {
                 agent,
                 availability,
@@ -1352,6 +1409,16 @@ impl App {
             .find(|p| p.id().as_str() == id)
             .map_or_else(|| id.to_owned(), |p| p.root.to_string_lossy().into_owned())
     }
+    /// Read the selected project's board, when there is one and the
+    /// daemon is there.
+    pub(crate) fn request_tasks(&mut self) {
+        if self.connected.is_ok()
+            && let Some(project) = self.selected_project_root()
+        {
+            self.send(Cmd::Tasks(project));
+        }
+    }
+
     fn request_channels(&mut self, id: String) {
         let selector = self.project_selector(&id);
         self.send(Cmd::Channels(id, selector));
@@ -1904,6 +1971,74 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             let result = read_session_log(client, &agent).map_err(|error| format!("{error:#}"));
             Some(Msg::SessionLog(agent, result))
         }
+        Cmd::Tasks(project) => match client.call(&Request::Tasks {
+            project: Some(project.clone()),
+            column: None,
+            archived: false,
+        })? {
+            Response::Tasks { tasks } => Some(Msg::Tasks(project, tasks)),
+            _ => None,
+        },
+        Cmd::TaskCreate {
+            project,
+            title,
+            acceptance,
+            column,
+        } => {
+            let result = match client.call(&Request::TaskCreate {
+                from: agentdocker_core::HUMAN.into(),
+                project: Some(project),
+                title,
+                acceptance,
+                column: Some(column),
+            }) {
+                Ok(Response::Task { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
+        Cmd::TaskMove { task, column } => {
+            let result = match client.call(&Request::TaskMove {
+                agent: agentdocker_core::HUMAN.into(),
+                task: task.to_string(),
+                column,
+            }) {
+                Ok(Response::Task { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
+        Cmd::TaskAssign { task, assignee } => {
+            let result = match client.call(&Request::TaskUpdate {
+                agent: agentdocker_core::HUMAN.into(),
+                task: task.to_string(),
+                title: None,
+                acceptance: None,
+                assignee: Some(assignee.map(|a| a.to_string()).unwrap_or_default()),
+            }) {
+                Ok(Response::Task { .. }) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
+        Cmd::TaskArchive(task) => {
+            let result = match client.call(&Request::TaskArchive {
+                agent: agentdocker_core::HUMAN.into(),
+                task: task.to_string(),
+            }) {
+                Ok(Response::Ok) => Ok(()),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::TaskChanged(result))
+        }
         Cmd::Activity => match client.call(&Request::Activity {
             agent: None,
             project: None,
@@ -2390,6 +2525,15 @@ pub(crate) fn runtime_label(runtime: &str) -> String {
     agentdocker_core::runtime::spec(runtime)
         .map(|spec| spec.label.to_owned())
         .unwrap_or_else(|| runtime.to_owned())
+}
+
+/// A card being filed from the board.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TaskDraft {
+    pub title: String,
+    pub acceptance: String,
+    pub sending: bool,
+    pub error: Option<String>,
 }
 
 /// Which kind of conversation the person is starting.

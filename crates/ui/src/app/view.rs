@@ -576,6 +576,7 @@ impl App {
             let mut tabs = row![].spacing(14);
             for (screen, label, glyph) in [
                 (Screen::Agents, "Sessions", Icon::Sessions),
+                (Screen::Board, "Board", Icon::Board),
                 (Screen::Journal, "Activity", Icon::Activity),
             ] {
                 let selected = self.screen == screen
@@ -708,6 +709,7 @@ impl App {
         }
         let body = match self.screen {
             Screen::Agents => self.sessions(c),
+            Screen::Board => self.board_view(c),
             Screen::Questions if self.has_conversations() => self.messages_view(c),
             Screen::Questions => self.questions(c),
             Screen::Runtimes => self.connections(c),
@@ -1256,6 +1258,15 @@ impl App {
             ));
         }
         Some(attention(list, if guidance { c.cyan } else { c.amber }, c))
+    }
+
+    /// The selected project's root as the daemon's selector, when one is.
+    pub(super) fn selected_project_root(&self) -> Option<String> {
+        self.shell
+            .catalog
+            .selected
+            .as_ref()
+            .map(|root| root.display().to_string())
     }
 
     /// The project's one primary action, when there is a project to act in.

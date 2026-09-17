@@ -59,6 +59,17 @@ input appear first within each project. Select a row for terminal access, reply,
 window, the session replaces the list; **Back to sessions** returns to it. On a
 wide window, it opens beside the list. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
+**Board**, between Sessions and Activity, is the project's work: five
+columns — Backlog, Ready, In progress, Review, Done — of cards with a title
+and what done means. **File a card** at the top takes a title and the
+acceptance text and files it **as Ready** (for the next agent to pull) or
+**in Backlog** (yours to think about). A card shows who holds it with a
+presence dot, or *for the taking* in Ready; opening a card shows its
+acceptance text and its moves: one column back or forward, **Hand to** an
+agent running here (or *nobody*), and **Archive**. An agent pulls a Ready
+card with the `pull_task` tool and the board shows it in progress under that
+agent at once; two agents never get one card. The board reads again on
+every board event. Narrow, the columns stack.
 **Launch agent…** chooses an installed CLI and starts it at the project root shown
 in the header. Claude and Codex launches default to **Idle messages: On**;
 turning it off visibly warns that messages may wait. Claude still requires its

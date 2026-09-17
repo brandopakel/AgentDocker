@@ -233,6 +233,16 @@ pub enum Message {
     PaneResized(super::panes::Grid, iced::widget::pane_grid::ResizeEvent),
     /// Every conversation the person owes a read is read through its head.
     MarkAllRead,
+    /// The board: a card being filed, filed to Backlog or straight to
+    /// Ready, moved, opened to read what done means, handed to an agent,
+    /// or taken off the board.
+    TaskTitle(String),
+    TaskAcceptance(String),
+    TaskFile(agentdocker_core::Column),
+    TaskMove(agentdocker_core::TaskId, agentdocker_core::Column),
+    TaskOpen(agentdocker_core::TaskId),
+    TaskAssign(agentdocker_core::TaskId, Option<agentdocker_core::AgentId>),
+    TaskArchive(agentdocker_core::TaskId),
     /// Start a conversation: open or close the form.
     NewConversation,
     /// A direct message or a channel.
@@ -576,6 +586,9 @@ impl App {
                 self.shell.notification_message = None;
                 self.screen = screen;
                 self.shell.more = false;
+                if screen == Screen::Board {
+                    self.request_tasks();
+                }
                 if screen == Screen::Runtimes {
                     self.send(Cmd::Runtimes);
                 }
@@ -887,6 +900,44 @@ impl App {
                     self.send(cmd);
                 }
             }
+            Message::TaskTitle(title) => {
+                if !self.task_draft.sending {
+                    self.task_draft.title = title;
+                    self.task_draft.error = None;
+                }
+            }
+            Message::TaskAcceptance(acceptance) => {
+                if !self.task_draft.sending {
+                    self.task_draft.acceptance = acceptance;
+                    self.task_draft.error = None;
+                }
+            }
+            Message::TaskFile(column) => {
+                if !self.task_draft.sending
+                    && !self.task_draft.title.trim().is_empty()
+                    && let Some(project) = self.selected_project_root()
+                {
+                    self.task_draft.sending = true;
+                    self.task_draft.error = None;
+                    let cmd = Cmd::TaskCreate {
+                        project,
+                        title: self.task_draft.title.trim().to_owned(),
+                        acceptance: self.task_draft.acceptance.trim().to_owned(),
+                        column,
+                    };
+                    self.send(cmd);
+                }
+            }
+            Message::TaskMove(task, column) => self.send(Cmd::TaskMove { task, column }),
+            Message::TaskOpen(task) => {
+                self.task_open = if self.task_open.as_ref() == Some(&task) {
+                    None
+                } else {
+                    Some(task)
+                };
+            }
+            Message::TaskAssign(task, assignee) => self.send(Cmd::TaskAssign { task, assignee }),
+            Message::TaskArchive(task) => self.send(Cmd::TaskArchive(task)),
             Message::MarkAllRead => {
                 if self.connected.is_ok() {
                     let heads: Vec<(String, u64)> = self
@@ -1680,6 +1731,13 @@ impl App {
                 if let Some(entry) = self.shell.catalog.selected() {
                     self.request_channels(entry.project.id().to_string());
                 }
+            }
+            // Another project's board, and a card open on the old one
+            // is not open on this.
+            self.tasks = None;
+            self.task_open = None;
+            if self.screen == Screen::Board {
+                self.request_tasks();
             }
         }
     }
