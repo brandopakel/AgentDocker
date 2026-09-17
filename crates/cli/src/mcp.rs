@@ -108,6 +108,43 @@ pub struct McpServer<B> {
     claude_channel: bool,
     codex_input: bool,
     last_contact: std::sync::Mutex<Option<Instant>>,
+    /// The parent session asked to resume an earlier one: the channel
+    /// waits, for a bounded time, for the hooks adapter to say which
+    /// session is actually running before it binds input delivery, so
+    /// the daemon can fold this process into that session's record with
+    /// its backlog in order. What was asked for is a claim; only the
+    /// hook's word is identity.
+    resume_vouch: Option<ResumeVouch>,
+}
+
+/// How long the channel waits for the hooks adapter to vouch for a
+/// resumed session before binding input delivery anyway.
+#[derive(Clone, Debug)]
+pub struct ResumeVouch {
+    pub requested: Option<String>,
+    pub wait: std::time::Duration,
+}
+
+impl ResumeVouch {
+    pub const DEFAULT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+}
+
+/// What the parent Claude session asked for on its command line, found
+/// by walking up from this process to the session that started it.
+fn parent_resume_request(start: u32) -> Option<agentdocker_host::procinfo::ResumeRequest> {
+    let table = agentdocker_host::procinfo::processes().ok()?;
+    let mut pid = start;
+    for _ in 0..16 {
+        let process = table.iter().find(|p| p.pid == pid)?;
+        if let Some(request) = agentdocker_host::procinfo::resume_request(&process.argv) {
+            return Some(request);
+        }
+        if agentdocker_host::procinfo::runtime_of(&process.argv).is_some() || process.ppid == pid {
+            return None;
+        }
+        pid = process.ppid;
+    }
+    None
 }
 
 /// Run the server on stdin/stdout until the host closes stdin.
@@ -132,6 +169,19 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
     server.claude_channel = claude_channel;
     server.codex_input =
         std::env::var(agentdocker_host::provider_input::CODEX_INPUT_ENV).as_deref() == Ok("1");
+    if claude_channel
+        && let Some(request) = server.identity.host_pid.and_then(parent_resume_request)
+    {
+        eprintln!(
+            "agentdocker mcp: the session asked to resume {}; waiting up to {}s for its hooks to say which session runs before binding input",
+            request.session.as_deref().unwrap_or("an earlier session"),
+            ResumeVouch::DEFAULT_WAIT.as_secs()
+        );
+        server.resume_vouch = Some(ResumeVouch {
+            requested: request.session,
+            wait: ResumeVouch::DEFAULT_WAIT,
+        });
+    }
     // Transport shutdown preserves a live provider identity; cleanup below
     // only retires a registration whose owning process has ended.
     // Hold ownership through the final status write so a successor adapter's
@@ -339,6 +389,7 @@ impl<B: Backend> McpServer<B> {
             claude_channel: false,
             codex_input: false,
             last_contact: std::sync::Mutex::new(None),
+            resume_vouch: None,
         }
     }
 

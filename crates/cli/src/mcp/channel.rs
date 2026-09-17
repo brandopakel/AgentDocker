@@ -124,6 +124,13 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
     let mut pending: Vec<Pending<'_>> = Vec::new();
     let mut frame = Vec::new();
     let mut initialized = false;
+    // Input delivery is bound — readiness reported — once the handshake
+    // is done and, for a session that asked to resume an earlier one,
+    // once its hooks have said which session runs (or the wait expired).
+    let mut ready = false;
+    let mut vouch_deadline: Option<tokio::time::Instant> = None;
+    let mut vouch_tick = tokio::time::interval(POLL_EVERY);
+    vouch_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut tick = tokio::time::interval(POLL_EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut offered: Option<(MessageId, tokio::time::Instant, bool)> = None;
@@ -145,8 +152,16 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 };
                 if value["method"] == "notifications/initialized" && value.get("id").is_none() {
                     if !initialized {
-                        crate::input_status::report(&server.backend, &server.identity.id, server.identity.host_started_at,
-                            agentdocker_core::InputReport::Ready).await?;
+                        match &server.resume_vouch {
+                            None => {
+                                crate::input_status::report(&server.backend, &server.identity.id, server.identity.host_started_at,
+                                    agentdocker_core::InputReport::Ready).await?;
+                                ready = true;
+                            }
+                            // The handshake completes now; readiness waits
+                            // for the hooks' word, below, or the deadline.
+                            Some(vouch) => vouch_deadline = Some(tokio::time::Instant::now() + vouch.wait),
+                        }
                     }
                     initialized = true;
                     last_ready = tokio::time::Instant::now();
@@ -184,7 +199,50 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 drop(pending.swap_remove(index));
                 if let Some(response) = response { write(&mut output, &response).await?; }
             }
-            _ = tick.tick(), if initialized => {
+            // Waiting for the hooks adapter to vouch for a resumed session:
+            // the record this process is must carry a session id and be
+            // this very process (pid and birth). Which session the hook
+            // names is accepted as it is, even when it differs from what
+            // the command line asked for; a record for some other process
+            // generation vouches for nothing. Past the deadline, input is
+            // bound unvouched and the daemon's own guard keeps an earlier
+            // record separate — said so, not hidden.
+            _ = vouch_tick.tick(), if initialized && !ready => {
+                let vouch = server.resume_vouch.as_ref().expect("waiting only for a resume");
+                let record = tokio::time::timeout(IO_TIMEOUT, server.backend.call(Request::Inspect {
+                    agent: server.identity.id.clone(),
+                })).await;
+                let vouched = match record {
+                    Ok(Ok(Response::Agent { agent }))
+                        if agent.pid == server.identity.host_pid
+                            && agent.process_started_at == server.identity.host_started_at =>
+                    {
+                        agent.spec.labels.get("session_id").filter(|id| !id.is_empty()).cloned()
+                    }
+                    _ => None,
+                };
+                let expired = vouch_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline);
+                if let Some(session) = vouched {
+                    match &vouch.requested {
+                        Some(requested) if requested != &session => eprintln!(
+                            "agentdocker channel: hooks name session {session}, not the {requested} the command line asked for; following the hooks"
+                        ),
+                        _ => eprintln!("agentdocker channel: hooks vouched for session {session}; binding input"),
+                    }
+                } else if expired {
+                    eprintln!(
+                        "agentdocker channel: no hooks vouched for the resumed session within {}s; binding input unverified — an earlier record of this session stays separate",
+                        vouch.wait.as_secs()
+                    );
+                } else {
+                    continue;
+                }
+                crate::input_status::report(&server.backend, &server.identity.id, server.identity.host_started_at,
+                    agentdocker_core::InputReport::Ready).await?;
+                ready = true;
+                last_ready = tokio::time::Instant::now();
+            }
+            _ = tick.tick(), if ready => {
                 let reply = tokio::time::timeout(IO_TIMEOUT, server.backend.call(Request::DeliveryQueue {
                     agent: server.identity.id.clone(),
                 })).await;
@@ -570,6 +628,198 @@ mod tests {
             trial
         );
         result.unwrap();
+    }
+
+    /// A session that asked to resume an earlier one binds input only once
+    /// its hooks have named the session actually running — at once when the
+    /// hook registered first, later when the channel initialized first —
+    /// following the hook's word even when it differs from the command
+    /// line, ignoring a record for another process generation, and past
+    /// the wait binding anyway (absent hooks) and saying so. Until then the
+    /// handshake, control calls and receipts are served and no message is
+    /// offered.
+    #[tokio::test(start_paused = true)]
+    async fn readiness_waits_for_the_hooks_to_vouch_for_a_resumed_session() {
+        use std::cell::{Cell, RefCell};
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        enum Vouch {
+            Immediate,
+            AfterPolls(usize),
+            Other,
+            WrongGeneration,
+            Never,
+        }
+        struct Hooks {
+            queue: Queue,
+            vouch: Vouch,
+            inspects: Cell<usize>,
+            ready_reports: Cell<usize>,
+            queue_polls_before_ready: Cell<usize>,
+            started: chrono::DateTime<chrono::Utc>,
+            log: RefCell<Vec<&'static str>>,
+        }
+        impl Backend for Hooks {
+            async fn call(&self, request: Request) -> Result<Response> {
+                match request {
+                    Request::Inspect { .. } => {
+                        let n = self.inspects.get() + 1;
+                        self.inspects.set(n);
+                        let mut record = agentdocker_core::AgentRecord::new(
+                            agentdocker_core::AgentSpec {
+                                name: "fixture".into(),
+                                runtime: "claude-code".into(),
+                                ..Default::default()
+                            },
+                            false,
+                            self.started,
+                        );
+                        record.pid = Some(4242);
+                        record.process_started_at = Some(self.started);
+                        let session = match self.vouch {
+                            Vouch::Immediate => Some("requested-session"),
+                            Vouch::AfterPolls(k) if n > k => Some("requested-session"),
+                            Vouch::AfterPolls(_) => None,
+                            Vouch::Other => Some("the-session-the-hook-saw"),
+                            Vouch::WrongGeneration => {
+                                record.process_started_at =
+                                    Some(self.started - chrono::Duration::hours(1));
+                                Some("requested-session")
+                            }
+                            Vouch::Never => None,
+                        };
+                        if let Some(session) = session {
+                            record
+                                .spec
+                                .labels
+                                .insert("session_id".into(), session.into());
+                        }
+                        Ok(Response::Agent { agent: record })
+                    }
+                    Request::ReportInput {
+                        report: agentdocker_core::InputReport::Ready,
+                        ..
+                    } => {
+                        self.ready_reports.set(self.ready_reports.get() + 1);
+                        self.log.borrow_mut().push("ready");
+                        Ok(Response::Ok)
+                    }
+                    Request::DeliveryQueue { .. } => {
+                        if self.ready_reports.get() == 0 {
+                            self.queue_polls_before_ready
+                                .set(self.queue_polls_before_ready.get() + 1);
+                        }
+                        self.log.borrow_mut().push("queue");
+                        self.queue
+                            .call(Request::DeliveryQueue {
+                                agent: "receiver".into(),
+                            })
+                            .await
+                    }
+                    other => self.queue.call(other).await,
+                }
+            }
+        }
+        for vouch in [
+            Vouch::Immediate,
+            Vouch::AfterPolls(3),
+            Vouch::Other,
+            Vouch::WrongGeneration,
+            Vouch::Never,
+        ] {
+            let started = chrono::Utc::now();
+            let old = server();
+            let mut server = McpServer::new(
+                Hooks {
+                    queue: old.backend,
+                    vouch,
+                    inspects: Cell::new(0),
+                    ready_reports: Cell::new(0),
+                    queue_polls_before_ready: Cell::new(0),
+                    started,
+                    log: RefCell::new(Vec::new()),
+                },
+                Identity {
+                    host_pid: Some(4242),
+                    host_started_at: Some(started),
+                    ..old.identity
+                },
+            );
+            server.claude_channel = true;
+            server.resume_vouch = Some(crate::mcp::ResumeVouch {
+                requested: Some("requested-session".into()),
+                wait: Duration::from_secs(10),
+            });
+            let (transport, client) = tokio::io::duplex(8192);
+            let (input, output) = tokio::io::split(transport);
+            let trial = async {
+                let (reader, mut writer) = tokio::io::split(client);
+                let mut reader = BufReader::new(reader);
+                write_line(
+                    &mut writer,
+                    &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+                )
+                .await
+                .unwrap();
+                // Control keeps working while the vouch is awaited.
+                write_line(
+                    &mut writer,
+                    &json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+                )
+                .await
+                .unwrap();
+                // The ping is answered and, once input is bound — after the
+                // full wait, for a vouch that never comes — the first
+                // message offered, in whichever order the two land.
+                let mut frames = Vec::new();
+                for _ in 0..2 {
+                    let mut frame = Vec::new();
+                    let bytes = tokio::time::timeout(
+                        Duration::from_secs(30),
+                        read_frame(&mut reader, &mut frame),
+                    )
+                    .await
+                    .expect("missing channel frame")
+                    .unwrap()
+                    .unwrap();
+                    frames.push(serde_json::from_slice::<Value>(&bytes).unwrap());
+                }
+                assert!(frames.iter().any(|f| f["id"] == 1), "{vouch:?}: {frames:?}");
+                assert!(
+                    frames
+                        .iter()
+                        .any(|f| f["params"]["meta"]["message_id"].is_string()),
+                    "{vouch:?}: {frames:?}"
+                );
+                writer.shutdown().await.unwrap();
+            };
+            let (result, ()) = tokio::join!(
+                pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+                trial
+            );
+            result.unwrap();
+            let backend = &server.backend;
+            assert_eq!(backend.ready_reports.get(), 1, "{vouch:?}: one binding");
+            assert_eq!(
+                backend.queue_polls_before_ready.get(),
+                0,
+                "{vouch:?}: nothing offered before input is bound"
+            );
+            assert_eq!(backend.log.borrow().first(), Some(&"ready"), "{vouch:?}");
+            let inspects = backend.inspects.get();
+            match vouch {
+                Vouch::Immediate | Vouch::Other => {
+                    assert_eq!(inspects, 1, "{vouch:?}: vouched on the first look")
+                }
+                Vouch::AfterPolls(k) => assert_eq!(inspects, k + 1, "{vouch:?}"),
+                // Never vouched: looked until the ten-second wait, then bound.
+                Vouch::WrongGeneration | Vouch::Never => {
+                    assert!(
+                        inspects >= 30,
+                        "{vouch:?}: waited the full deadline ({inspects} looks)"
+                    )
+                }
+            }
+        }
     }
 
     #[tokio::test(start_paused = true)]
