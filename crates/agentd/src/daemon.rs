@@ -6931,10 +6931,6 @@ mod tests {
         p3.wait().unwrap();
     }
 
-    /// While coordination is being handed over, a session's return is not
-    /// folded: the write is skipped, memory stays as it was, no event is
-    /// recorded, and the fresh record stands. Once authority is back, the
-    /// same return folds.
     #[test]
     fn returning_session_read_errors_disable_coordination() {
         let dir = TempDir::new().unwrap();
@@ -6972,6 +6968,10 @@ mod tests {
         assert_eq!(state.next_seq, seq);
     }
 
+    /// While coordination is being handed over, a session's return is not
+    /// folded: the write is skipped, memory stays as it was, no event is
+    /// recorded, and the fresh record stands. Once authority is back, the
+    /// same return folds.
     #[tokio::test]
     async fn a_fenced_daemon_leaves_a_returning_session_unfolded() {
         let dir = TempDir::new().unwrap();
