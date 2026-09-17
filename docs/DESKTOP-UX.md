@@ -66,7 +66,8 @@ acceptance text and files it **as Ready** (for the next agent to pull) or
 **in Backlog** (yours to think about). A card shows who holds it with a
 presence dot, or *for the taking* in Ready; opening a card shows its
 acceptance text, its typed links (a kind — path, pr, commit, url, task, message,
-memory — and the target as text to select; the app opens nothing) and its
+memory — and the target, shown as text; the app neither opens nor copies
+them, that is the person's tools' work) and its
 moves: one column back or forward, **Hand to** an agent running here (or
 *nobody*), and **Archive**. An agent pulls a Ready
 card with the `pull_task` tool and the board shows it in progress under that

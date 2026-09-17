@@ -292,6 +292,11 @@ impl Daemon {
         if bundle.id.is_empty() || bundle.id.len() > 256 || bundle.task.is_empty() {
             return Response::error(ErrorCode::Invalid, "bundle needs an id and a task");
         }
+        // Links in a bundle from elsewhere are held to the same shape and
+        // count as links made here, before anything is written.
+        if let Err(reason) = agentdocker_core::link::check(&bundle.links) {
+            return Response::error(ErrorCode::Invalid, format!("bundle links: {reason}"));
+        }
         // The bounds this daemon's own bundles and checkpoints keep, before
         // anything is written.
         if bundle.from_name.len() > 256 || bundle.version.len() > 256 || !bundle.fits_import_limit()
@@ -897,6 +902,30 @@ mod tests {
         escaping.read_set = vec![mark(bundle.checkout.join("../../etc/passwd"))];
         assert!(matches!(
             elsewhere.import("recipient", escaping).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        // A bundle's links are held to the shape and count of links made
+        // here, whatever daemon wrote them.
+        let mut mislinked = bundle.clone();
+        mislinked.links = vec![agentdocker_core::Link {
+            kind: agentdocker_core::LinkKind::Url,
+            target: "not a url".into(),
+            note: None,
+        }];
+        assert!(matches!(
+            elsewhere.import("recipient", mislinked).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        let mut overlinked = bundle.clone();
+        overlinked.links = vec![agentdocker_core::Link::parse("pr:#1").unwrap(); 17];
+        assert!(matches!(
+            elsewhere.import("recipient", overlinked).await,
             Response::Error {
                 code: ErrorCode::Invalid,
                 ..

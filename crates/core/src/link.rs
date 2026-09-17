@@ -99,11 +99,17 @@ impl Link {
         Ok(link)
     }
 
-    /// The shape a link of its kind must have.
+    /// The shape a link of its kind must have. The target is checked as
+    /// it is stored, not trimmed: a link that arrives as JSON with a
+    /// line break or a page of blanks around its target is refused, not
+    /// quietly measured as something shorter.
     pub fn check(&self) -> Result<(), &'static str> {
-        let target = self.target.trim();
-        if target.is_empty() {
+        let target = self.target.as_str();
+        if target.is_empty() || target.trim().is_empty() {
             return Err("a link needs a target");
+        }
+        if target != target.trim() {
+            return Err("a link's target has no leading or trailing blanks");
         }
         if target.chars().count() > TARGET_CHARS || target.contains(['\0', '\n', '\r']) {
             return Err("a link's target is one line of at most 2,048 characters");
@@ -208,6 +214,25 @@ mod tests {
         }
         let long = format!("url:https://x/{}", "a".repeat(TARGET_CHARS));
         assert!(Link::parse(&long).is_err());
+        // Straight from JSON, the stored target is what is checked: a
+        // page of blanks or a line break around it is refused, and a
+        // kind that is not one is refused by serde itself.
+        let padded: Link = serde_json::from_value(serde_json::json!({
+            "kind": "memory",
+            "target": format!("{}x", " ".repeat(TARGET_CHARS + 10)),
+        }))
+        .unwrap();
+        assert!(padded.check().is_err(), "padding is not measured away");
+        let broken: Link = serde_json::from_value(serde_json::json!({
+            "kind": "path",
+            "target": "src/a.rs\n",
+        }))
+        .unwrap();
+        assert!(broken.check().is_err(), "a trailing line break");
+        assert!(
+            serde_json::from_value::<Link>(serde_json::json!({"kind": "sticker", "target": "x"}))
+                .is_err()
+        );
         let mut noted = Link::parse("pr:#1").unwrap();
         noted.note = Some("n".repeat(NOTE_CHARS + 1));
         assert!(noted.check().is_err());

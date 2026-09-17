@@ -30,10 +30,10 @@ pub(super) fn note<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Tex
     text(value.into()).size(13).color(c.muted)
 }
 /// The typed references beside a card, a message or a hand-off, one per
-/// row: the kind as a quiet pill, the target as text a person can read
-/// and select, and the note after it. Nothing is opened from here — a
-/// path or a pull request is the reader's to open with their own tools;
-/// what the row does is say what kind of thing it is without prose.
+/// row: the kind as a quiet pill, the target as text to read, and the
+/// note after it. Nothing is opened or copied from here — a path or a
+/// pull request is the reader's to open with their own tools; what the
+/// row does is say what kind of thing it is without prose.
 pub(super) fn links<'a>(links: &[agentdocker_core::Link], c: Colors) -> Element<'a, Message> {
     let mut rows = column![].spacing(3).width(Fill);
     for link in links {
