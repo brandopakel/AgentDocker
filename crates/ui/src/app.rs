@@ -560,7 +560,7 @@ impl App {
 
     fn send(&mut self, cmd: Cmd) {
         if let Err(queue::Rejected { command, reason }) = self.tx.send(cmd) {
-            match command {
+            match *command {
                 Cmd::Answer(id, _) => {
                     self.sending.remove(&id);
                     if self.shell.pending_answer_reveal.as_ref() == Some(&id) {

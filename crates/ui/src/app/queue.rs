@@ -103,7 +103,7 @@ pub(super) struct Receiver {
 
 #[derive(Debug)]
 pub(super) struct Rejected {
-    pub command: Cmd,
+    pub command: Box<Cmd>,
     pub reason: &'static str,
 }
 
@@ -124,7 +124,7 @@ impl Sender {
     pub(super) fn send(&self, command: Cmd) -> Result<(), Rejected> {
         if bytes(&command) > COMMAND_BYTES {
             return Err(Rejected {
-                command,
+                command: Box::new(command),
                 reason: "It exceeds the 64 KiB command limit.",
             });
         }
@@ -141,11 +141,11 @@ impl Sender {
         let error = match self.inner.try_send(command) {
             Ok(()) => return Ok(()),
             Err(mpsc::TrySendError::Full(command)) => Rejected {
-                command,
+                command: Box::new(command),
                 reason: "The daemon request queue is full; try again when it catches up.",
             },
             Err(mpsc::TrySendError::Disconnected(command)) => Rejected {
-                command,
+                command: Box::new(command),
                 reason: "The window's request worker stopped; reopen agentdocker.",
             },
         };
