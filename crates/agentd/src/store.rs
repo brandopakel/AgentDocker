@@ -1039,7 +1039,7 @@ impl Store {
         events: &[Event],
     ) -> Result<()> {
         self.publish_message_with_channel(
-            message, recipients, capacity, sender, question, closed, events, None,
+            message, recipients, capacity, sender, question, closed, events, None, None,
         )
     }
 
@@ -1056,10 +1056,16 @@ impl Store {
         closed: Option<&agentdocker_core::MessageId>,
         events: &[Event],
         channel: Option<(&Channel, Option<&JournalEntry>)>,
+        document: Option<(&str, &str, Option<&serde_json::Value>)>,
     ) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
         for recipient in recipients {
             self.insert_inbox(recipient, message, capacity)?;
+        }
+        match document {
+            Some((kind, id, Some(value))) => self.put_document(kind, id, value)?,
+            Some((kind, id, None)) => self.delete_document(kind, id)?,
+            None => {}
         }
         // The archive is written beside the queues, never instead of them:
         // a queue is what a recipient has not taken, the archive is what

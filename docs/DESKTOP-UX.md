@@ -63,7 +63,8 @@ checkout, commit and last-seen time.
 to hold: they read the reason as a `pause` message, the daemon refuses their
 new leases until **Resume**, and the header shows **Paused · reason** while
 it holds (what an agent already holds, it keeps; your own actions are not
-held). **Launch agent…** chooses an installed CLI and starts it at the project root shown
+held; only you can pause or resume, an agent asks with a message).
+**Launch agent…** chooses an installed CLI and starts it at the project root shown
 in the header. Claude and Codex launches default to **Idle messages: On**;
 turning it off visibly warns that messages may wait. Claude still requires its
 channel consent. Other tools disclose that automatic idle delivery is unavailable.

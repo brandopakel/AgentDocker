@@ -3579,8 +3579,9 @@ pub(crate) mod tests {
         app.drain();
         let received: Vec<_> = requests.try_iter().collect();
         assert!(app.connected.is_ok());
-        assert_eq!(received.len(), 9);
+        assert_eq!(received.len(), 10);
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Me)));
+        assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Pauses)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Activity)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Agents)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Leases)));

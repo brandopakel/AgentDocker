@@ -7,6 +7,9 @@ use agentdocker_core::{HUMAN, Pause};
 
 const DOCUMENT: &str = "pause";
 
+/// What a reason may be: enough to say why, not a document.
+const REASON_CHARS: usize = 400;
+
 impl Daemon {
     pub(super) async fn pause(
         self: &Arc<Self>,
@@ -21,47 +24,52 @@ impl Daemon {
                 "a pause needs a reason the agents can read",
             );
         }
+        if reason.chars().count() > REASON_CHARS {
+            return Response::error(
+                ErrorCode::Invalid,
+                format!("a pause reason is at most {REASON_CHARS} characters"),
+            );
+        }
         let (from, project) = match self.pause_scope(from, project).await {
             Ok(pair) => pair,
             Err(response) => return *response,
         };
         let mut state = lock(&self.state);
+        let now = Utc::now();
         let pause = Pause {
             project: project.clone(),
             by: from.clone(),
             reason: reason.clone(),
-            at: Utc::now(),
+            at: now,
         };
-        let mut event = Event::new(
-            EventKind::ProjectPaused {
-                project: project.clone(),
-                by: from.clone(),
-                reason: reason.clone(),
-            },
-            pause.at,
-        );
-        event.seq = state.next_seq;
-        if state.persist("project pause", |store| {
-            store.put_document_with_event(DOCUMENT, project.as_str(), &pause, &event)
-        }) != Persisted::Committed
-        {
-            return state.write_failure().unwrap_or_else(|| {
-                Response::error(ErrorCode::Internal, "the pause was not recorded")
-            });
-        }
-        state.pauses.insert(project.clone(), pause.clone());
-        state.next_seq += 1;
-        let _ = state.events.send(event);
-        // The words reach every live agent in the project, and the
-        // archive keeps them under #everyone.
-        state.send(
+        // The record and the word to the agents land together or not at
+        // all: a pause nobody was told of, or a warning with nothing
+        // behind it, is worse than a refusal.
+        let envelope = Envelope::new(
             from,
-            Destination::Project(project),
+            Destination::Project(project.clone()),
             "pause".to_owned(),
             serde_json::json!({ "text": format!("Pause: {reason}"), "reason": reason }),
             None,
+            now,
         );
-        Response::Pause { pause }
+        let transition = DocumentTransition {
+            kind: DOCUMENT,
+            id: project.as_str().to_owned(),
+            value: Some(serde_json::to_value(&pause).expect("a pause serialises")),
+            event: EventKind::ProjectPaused {
+                project: project.clone(),
+                by: pause.by.clone(),
+                reason: pause.reason.clone(),
+            },
+        };
+        match state.publish_with_channel(envelope, None, None, Some(transition)) {
+            Response::Sent { .. } => {
+                state.pauses.insert(project, pause.clone());
+                Response::Pause { pause }
+            }
+            other => other,
+        }
     }
 
     pub(super) async fn resume_project(
@@ -78,37 +86,30 @@ impl Daemon {
             return Response::Ok;
         }
         let now = Utc::now();
-        let mut event = Event::new(
-            EventKind::ProjectResumed {
-                project: project.clone(),
-                by: from.clone(),
-            },
-            now,
-        );
-        event.seq = state.next_seq;
-        if state.persist("project resume", |store| {
-            store.delete_documents_with_event(
-                DOCUMENT,
-                std::slice::from_ref(&project.as_str().to_owned()),
-                &event,
-            )
-        }) != Persisted::Committed
-        {
-            return state.write_failure().unwrap_or_else(|| {
-                Response::error(ErrorCode::Internal, "the resume was not recorded")
-            });
-        }
-        state.pauses.remove(&project);
-        state.next_seq += 1;
-        let _ = state.events.send(event);
-        state.send(
-            from,
-            Destination::Project(project),
+        let envelope = Envelope::new(
+            from.clone(),
+            Destination::Project(project.clone()),
             "resume".to_owned(),
             serde_json::json!({ "text": "Resume: carry on." }),
             None,
+            now,
         );
-        Response::Ok
+        let transition = DocumentTransition {
+            kind: DOCUMENT,
+            id: project.as_str().to_owned(),
+            value: None,
+            event: EventKind::ProjectResumed {
+                project: project.clone(),
+                by: from,
+            },
+        };
+        match state.publish_with_channel(envelope, None, None, Some(transition)) {
+            Response::Sent { .. } => {
+                state.pauses.remove(&project);
+                Response::Ok
+            }
+            other => other,
+        }
     }
 
     pub(super) fn pauses(&self) -> Response {
@@ -117,13 +118,31 @@ impl Daemon {
         Response::Pauses { pauses }
     }
 
-    /// Who is pausing, and which project: the caller's own when none is
-    /// named — a person in the app names the one they are looking at.
+    /// Who is pausing — the person, by their record or as `user`; an agent
+    /// is refused, since a hold only the person can lift must be the
+    /// person's to place — and which project: the caller's own when none
+    /// is named, though a person in the app names the one on view.
     async fn pause_scope(
         &self,
         from: String,
         project: Option<String>,
     ) -> Result<(String, ProjectId), Box<Response>> {
+        let from = {
+            let state = lock(&self.state);
+            match state.registry.resolve(&from) {
+                Ok(id) if state.registry.get(&id).is_some_and(super::humans::is_human) => {
+                    id.to_string()
+                }
+                Ok(_) => {
+                    return Err(Box::new(Response::error(
+                        ErrorCode::Forbidden,
+                        "only the person pauses or resumes a project; an agent asks with a message",
+                    )));
+                }
+                Err(_) if from == HUMAN => from,
+                Err(err) => return Err(Box::new(registry_error(err))),
+            }
+        };
         let project = match project {
             Some(selector) => self.resolve_project(&selector).await?,
             None => {
@@ -139,14 +158,6 @@ impl Daemon {
                             "the caller is in no project; name one",
                         ))
                     })?
-            }
-        };
-        let from = {
-            let state = lock(&self.state);
-            match state.registry.resolve(&from) {
-                Ok(id) => id.to_string(),
-                Err(_) if from == HUMAN => from,
-                Err(err) => return Err(Box::new(registry_error(err))),
             }
         };
         Ok((from, project))
@@ -199,7 +210,7 @@ mod tests {
     /// and the reason, leaves the person and another project's agents
     /// free, is listed, survives a reopen, and lifts on resume with a
     /// `resume` message; resuming a project that is not paused is `ok`.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_paused_project_holds_its_agents_until_the_person_lifts_it() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
@@ -240,19 +251,46 @@ mod tests {
             claim(&daemon, "alice").await,
             Response::Lease { .. }
         ));
-        assert!(matches!(
-            daemon
+        for (from, reason, code) in [
+            (HUMAN.to_owned(), "  ".to_owned(), ErrorCode::Invalid),
+            (HUMAN.to_owned(), "x".repeat(401), ErrorCode::Invalid),
+            (
+                "alice".to_owned(),
+                "I say so".to_owned(),
+                ErrorCode::Forbidden,
+            ),
+        ] {
+            let response = daemon
                 .handle(Request::Pause {
-                    from: HUMAN.to_owned(),
+                    from,
                     project: Some(here.display().to_string()),
-                    reason: "  ".to_owned(),
+                    reason,
                 })
-                .await,
-            Response::Error {
-                code: ErrorCode::Invalid,
-                ..
-            }
-        ));
+                .await;
+            assert!(
+                matches!(&response, Response::Error { code: c, .. } if *c == code),
+                "{response:?}"
+            );
+        }
+        // Bob queues behind alice's lease before the pause; the pause then
+        // holds him, and alice's release grants him nothing.
+        let queued = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move {
+                daemon
+                    .handle(Request::Claim {
+                        agent: "bob".to_owned(),
+                        resource: "task:alice".to_owned(),
+                        mode: agentdocker_core::LeaseMode::Exclusive,
+                        amount: None,
+                        ttl_secs: 60,
+                        note: None,
+                        wait_secs: 20,
+                    })
+                    .await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let Response::Pause { pause } = daemon
             .handle(Request::Pause {
                 from: HUMAN.to_owned(),
@@ -266,6 +304,27 @@ mod tests {
         assert_eq!(pause.project, project);
         assert_eq!(pause.by, person.id.to_string());
         assert_eq!(pause.reason, "sleeping the laptop");
+        assert!(!matches!(
+            daemon
+                .handle(Request::ReleaseAll {
+                    agent: "alice".to_owned(),
+                    summary: None,
+                    summary_source: Default::default(),
+                })
+                .await,
+            Response::Error { .. }
+        ));
+        match tokio::time::timeout(std::time::Duration::from_secs(5), queued)
+            .await
+            .expect("the waiter answered")
+            .unwrap()
+        {
+            Response::Error {
+                code: ErrorCode::Paused,
+                ..
+            } => {}
+            other => panic!("the waiter was granted during the pause: {other:?}"),
+        }
         // Held: a new lease is refused with the reason; the one held
         // stays held.
         match claim(&daemon, "bob").await {
@@ -332,7 +391,19 @@ mod tests {
                 ..
             }
         ));
-        // Lifted.
+        // Lifted — by the person; an agent cannot.
+        assert!(matches!(
+            daemon
+                .handle(Request::ResumeProject {
+                    from: "bob".to_owned(),
+                    project: Some(here.display().to_string()),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Forbidden,
+                ..
+            }
+        ));
         assert!(matches!(
             daemon
                 .handle(Request::ResumeProject {
