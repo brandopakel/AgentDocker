@@ -381,4 +381,4 @@ consumption; it does not replace an idle-wake or sustained-load trial.
 Receiver-upgrade review follow-up: the hidden CLI accepts the standard
 `AGENTDOCKER_AGENT_ID` default, and the architecture request table now spells out
 `upgrade_controller`, its binding response and commit-before-stop semantics.
-These two review corrections are awaiting the final source gate.
+The full source gate passed for these two review corrections at `8d42db5`; final review, CI and installed-session acceptance remain open.
