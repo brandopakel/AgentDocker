@@ -170,9 +170,16 @@ impl App {
         } else if task.column == Column::Ready {
             head = head.push(pill("for the taking", c.accent_soft, c.accent_ink, c));
         }
+        // The control's name says the state too, so a screen reader — and
+        // the smoke — hear who holds the card without opening it.
+        let label = match &holder {
+            Some((name, _)) => format!("{} — held by {name}", task.title),
+            None if task.column == Column::Ready => format!("{} — for the taking", task.title),
+            None => task.title.clone(),
+        };
         let mut body = column![custom(
             format!("task-{id}"),
-            task.title.clone(),
+            label,
             head,
             Some(Message::TaskOpen(id.clone())),
             open,

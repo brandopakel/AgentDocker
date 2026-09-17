@@ -449,7 +449,9 @@ def smoke(binary_dir, output):
                 board_gate = len(narrow_steps)
                 narrow_steps += [step("wait_text_absent", text="for the taking"), step("wait_text", text="narrow-fixture"),
                                  step("capture", name="board-pulled"),
-                                 step("click", id=f"task-next-{card['id']}"), step("wait_control", id=f"task-back-{card['id']}", present=True),
+                                 # Back is offered in every column but Backlog, so the move to
+                                 # Review is awaited by the next step's label changing to Done.
+                                 step("click", id=f"task-next-{card['id']}"), step("wait_text", text="Done \u203a"),
                                  step("click", id=f"task-next-{card['id']}"), step("wait_control", id=f"task-next-{card['id']}", present=False),
                                  step("capture", name="board-done"),
                                  step("click", id=f"task-archive-{card['id']}"), step("wait_control", id=f"task-{card['id']}", present=False)]
