@@ -2198,7 +2198,7 @@
     "result": "passed",
     "scope": "A pause survives a rollback attempt: the schema-23 daemon records a hold,\nan installed schema-22 daemon refuses to open that state, and the hold is\nstill there for the 23 daemon. Private home; never the production state.",
     "steps": [
-      "schema-23 daemon paused the project: paused aef60cbc5ffb \u2014 rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
+      "schema-23 daemon paused the project: paused aef60cbc5ffb — rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
       "pause --list shows the hold",
       "state.db at schema 23 with one pause document",
       "schema-22 daemon refused to start (exit 1); state.db unchanged (sha256 e352e94e548a), pause document retained",
@@ -3494,5 +3494,130 @@
       "purpose": "Track the existing throughput defect on the actual installed Board, not a fixture or a new project requirement.",
       "scope": "Filed the existing throughput defect through installed Board controls; CLI listing and durable task record confirmed exact title/acceptance and project. The card remains Backlog; no claim that its engineering is complete."
     }
+  },
+  "question_answer_drafts_2026_09_17": {
+    "source": "13dd72c547db6c3b00171187c5ed969aaecfee68",
+    "pr": 185,
+    "installed": false,
+    "behavior": "Version-2 text snapshots retain original question IDs, safely read version-1 message drafts, and restore no approval or send state. Confirmed completion removes text; failed delivery retains it. Explicit structured choices use the answer queue without consuming draft storage and retain earlier typed text on failure.",
+    "validation": {
+      "rust_passed": 1173,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "full_gate": "passed",
+      "gate_log": "/private/tmp/agentdocker-question-drafts-reviewed-gate-20260917.log",
+      "gate_log_sha256": "c1f18aa5755f57532959436bbb15b44d7e6dd6f1a3d6be6a0bbcd4aaeea7566f",
+      "binary_sha256": {
+        "agentdocker": "4e872b68d239bfcfac9844dec65d79bfbc5e07de2a00165483086f1b9d568a0a",
+        "agentd": "ddd8b1aa24a773a17255084f16e8803e5d30c2c9f70a3d6e1f6168c2eab03f71",
+        "agentdocker-ui": "c95e1d57427d3e6de3da9cc413a70f93f061224961f748e21d28cf3d51496bb6"
+      },
+      "source_input_sha256": "52e7623be332a7e8003b10ebbca09be131e3c0ffd514af032472d0f35a6b1909",
+      "source_dirty": false
+    },
+    "native": {
+      "result": "passed",
+      "elapsed_seconds": 131.9459227080224,
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived",
+        "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+        "normal_close_flushes_hidden_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them"
+      ],
+      "windows": {
+        "constrained-panes": 49,
+        "narrow-inbox": 124,
+        "provider-limit": 14,
+        "readiness-activity": 17,
+        "readiness-contact": 17,
+        "readiness-paused": 17,
+        "readiness-ready": 17,
+        "readiness-received": 17,
+        "restored": 6,
+        "restored-drafts": 22,
+        "workflows": 187
+      },
+      "total_rendered_steps": 487,
+      "artifacts": "/private/tmp/agentdocker-question-drafts-workflow-20260917",
+      "idle_resources": {
+        "result": "not_run",
+        "reason": "Explicit --skip-idle-measurement: foreground CPU/RSS sample omitted; no idle performance claim."
+      },
+      "cleanup_errors": [],
+      "driver_sha256": "1b3df6849dd203685366c6661aaeb62719d8da296c6f1e048b21e2078b13f495",
+      "result_sha256": "47364b80005ac0aeb1550583fd3b01df3c02ec503be903e8b2fb44c9723a3ecc",
+      "command": [
+        "python3",
+        "scripts/iced_workflow_smoke.py",
+        "--binary-dir",
+        "/private/tmp/agentdocker-question-drafts-binaries-20260917",
+        "--output",
+        "/private/tmp/agentdocker-question-drafts-workflow-20260917",
+        "--skip-idle-measurement"
+      ]
+    },
+    "retained_prior_attempts": [
+      {
+        "source": "559c476",
+        "result": "CI lint failed on collapsible_if; fixed in 51e0fe2."
+      },
+      {
+        "result": "Local tests retained old CARGO_BIN_EXE paths after moving a cache; cleaning this checkout's CLI package fixed the ENOENT failures. The cache now stays in this checkout."
+      },
+      {
+        "source": "9ca3c5f",
+        "result": "Local gate deliberately interrupted for the person's pause: 894 passed, one SIGINT, 277 not run; not a full pass."
+      },
+      {
+        "source": "9ca3c5f",
+        "result": "macOS CI: 1171 passed, unchanged terminal writer-failure test timed out at90s. Unresolved historical failure; 500 isolated local repetitions passed without reproducing it. Later clean gates do not explain the timeout.",
+        "url": "https://github.com/brandopakel/AgentDocker/actions/runs/35277860301/job/105392682069",
+        "log": "/private/tmp/agentdocker-question-drafts-resume-ci-20260917.log",
+        "log_sha256": "88751169e8b033d21650435ad75736fd59da5ff2496e130db44d965e66a6614f",
+        "local_reproduction": {
+          "binary": "/private/tmp/agentdocker-desktop-integration-20260917/target/debug/deps/agentdocker_ui-c7ab92974b88ad93",
+          "case": "terminal::tests::writer_failure_closes_the_reader_and_preserves_its_reason",
+          "passed": 500,
+          "hang": null,
+          "elapsed_s": 7.603335542022251
+        }
+      },
+      {
+        "source": "67f0728",
+        "result": "Full local gate1172/7 and Python94/1 passed before peer review found full storage blocked structured choices; final13dd72c fixes that with a new regression."
+      }
+    ],
+    "review": "Peer review found that full draft storage blocked structured choices. 13dd72c sends an already validated choice directly and adds exact-command, full-capacity and failed-delivery snapshot assertions; final review and CI pending.",
+    "limits": [
+      "Private fixture windows and rendered callbacks, not production activation, physical keyboard, IME or screen-reader acceptance.",
+      "Other task-card, pause and command forms remain window-local.",
+      "A crash after acceptance but before the clearing save can restore uncertain text; it is never automatically resubmitted.",
+      "The repeated macOS terminal timeout remains unexplained."
+    ]
   }
 }
