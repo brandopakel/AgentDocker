@@ -97,7 +97,9 @@ enum Cmd {
     Inbox,
     Activity,
     /// The selected project's board.
-    Tasks(String),
+    /// The selected project's board: a page from `offset`, `limit`
+    /// cards at most (a refresh asks for as many as are on view).
+    Tasks(String, usize, usize),
     /// The person files a card.
     TaskCreate {
         project: String,
@@ -265,7 +267,11 @@ enum Msg {
     /// The board of the project asked for.
     /// The board read for a project: its cards and whether the page
     /// cut the board short, or why it could not be read.
-    Tasks(String, Result<(Vec<agentdocker_core::Task>, bool), String>),
+    Tasks(
+        String,
+        usize,
+        Result<(Vec<agentdocker_core::Task>, bool), String>,
+    ),
     /// A filing's outcome, for the draft that made it.
     TaskCreated(String, u64, Result<(), String>),
     /// A change to the board, done (the board is read again) or refused.
@@ -410,9 +416,8 @@ pub struct App {
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
-    /// The board on view: which project's, its cards, and whether the
-    /// page cut the board short.
-    tasks: Option<(String, Vec<agentdocker_core::Task>, bool)>,
+    /// The board on view.
+    tasks: Option<Board>,
     /// A card being filed, per project: its title and what done means.
     /// Text typed for one project's board waits there while another's
     /// is on view.
@@ -705,6 +710,13 @@ impl App {
                         draft.error = Some(reason.into());
                     }
                 }
+                // A page asked for by hand that could not be queued is
+                // told so; a refresh is not.
+                Cmd::Tasks(project, offset, _) if offset > 0 => {
+                    if let Some(board) = self.tasks.as_mut().filter(|b| b.project == project) {
+                        board.loading_more = false;
+                    }
+                }
                 Cmd::TaskMove { .. }
                 | Cmd::TaskAssign { .. }
                 | Cmd::TaskArchive(_)
@@ -886,13 +898,40 @@ impl App {
                         self.session_log = Some((agent, result));
                     }
                 }
-                Msg::Tasks(project, result) => {
-                    if self.selected_project_root().as_deref() == Some(project.as_str()) {
-                        match result {
-                            Ok((tasks, more)) => self.tasks = Some((project, tasks, more)),
-                            // The board as last read stays on view; the
-                            // person is told why it is not newer.
-                            Err(error) => self.say(format!("The board could not be read: {error}")),
+                Msg::Tasks(project, offset, result) => {
+                    if self.selected_project_root().as_deref() != Some(project.as_str()) {
+                        continue;
+                    }
+                    match result {
+                        // A first page is the board anew; a later page is
+                        // appended only where it was asked for, so a
+                        // reply to an earlier ask cannot double cards.
+                        Ok((tasks, more)) => {
+                            let board = self.tasks.take().filter(|b| b.project == project);
+                            self.tasks = Some(match board {
+                                Some(mut board) if offset > 0 => {
+                                    if board.cards.len() == offset && board.loading_more {
+                                        board.cards.extend(tasks);
+                                        board.more = more;
+                                        board.loading_more = false;
+                                    }
+                                    board
+                                }
+                                _ => Board {
+                                    project,
+                                    cards: tasks,
+                                    more,
+                                    loading_more: false,
+                                },
+                            });
+                        }
+                        // The board as last read stays on view; the
+                        // person is told why it is not newer.
+                        Err(error) => {
+                            if let Some(board) = &mut self.tasks {
+                                board.loading_more = false;
+                            }
+                            self.say(format!("The board could not be read: {error}"));
                         }
                     }
                 }
@@ -1574,12 +1613,36 @@ impl App {
     }
 
     /// Read the selected project's board, when there is one and the
-    /// daemon is there.
+    /// daemon is there: as many cards as are on view, so a board
+    /// expanded past its first page stays expanded through a refresh.
     pub(crate) fn request_tasks(&mut self) {
         if self.connected.is_ok()
             && let Some(project) = self.selected_project_root()
         {
-            self.send(Cmd::Tasks(project));
+            let on_view = self
+                .tasks
+                .as_ref()
+                .filter(|b| b.project == project)
+                .map_or(0, |b| b.cards.len());
+            let limit = on_view.clamp(agentdocker_core::protocol::TASKS_LIMIT, BOARD_KEEP);
+            self.send(Cmd::Tasks(project, 0, limit));
+        }
+    }
+
+    /// The next page of the board on view, appended to it, up to what
+    /// the window keeps.
+    pub(crate) fn request_more_tasks(&mut self) {
+        if self.connected.is_ok()
+            && let Some(project) = self.selected_project_root()
+            && let Some(board) = self.tasks.as_mut().filter(|b| b.project == project)
+            && board.more
+            && !board.loading_more
+            && board.cards.len() < BOARD_KEEP
+        {
+            board.loading_more = true;
+            let offset = board.cards.len();
+            let limit = agentdocker_core::protocol::TASKS_LIMIT.min(BOARD_KEEP - offset);
+            self.send(Cmd::Tasks(project, offset, limit));
         }
     }
 
@@ -2148,20 +2211,20 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             let result = read_session_log(client, &agent).map_err(|error| format!("{error:#}"));
             Some(Msg::SessionLog(agent, result))
         }
-        Cmd::Tasks(project) => {
+        Cmd::Tasks(project, offset, limit) => {
             let result = match client.call(&Request::Tasks {
                 project: Some(project.clone()),
                 column: None,
                 archived: false,
-                offset: 0,
-                limit: agentdocker_core::protocol::TASKS_LIMIT,
+                offset,
+                limit,
             }) {
                 Ok(Response::Tasks { tasks, more }) => Ok((tasks, more)),
                 Ok(Response::Error { message, .. }) => Err(message),
                 Ok(other) => Err(format!("Unexpected reply: {other:?}")),
                 Err(error) => Err(format!("{error:#}")),
             };
-            Some(Msg::Tasks(project, result))
+            Some(Msg::Tasks(project, offset, result))
         }
         Cmd::TaskCreate {
             project,
@@ -2743,6 +2806,21 @@ pub(crate) fn runtime_label(runtime: &str) -> String {
     agentdocker_core::runtime::spec(runtime)
         .map(|spec| spec.label.to_owned())
         .unwrap_or_else(|| runtime.to_owned())
+}
+
+/// How many cards the window keeps of one board: five pages. Past that
+/// the board says so; archiving done cards is how it gets shorter.
+pub(crate) const BOARD_KEEP: usize = 500;
+
+/// The board on view: which project's, its cards as read so far —
+/// pages appended as asked for — and whether the daemon has more.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Board {
+    pub project: String,
+    pub cards: Vec<agentdocker_core::Task>,
+    pub more: bool,
+    /// A page is on its way; the control says so and asks for no other.
+    pub loading_more: bool,
 }
 
 /// A card being filed from the board.

@@ -243,6 +243,8 @@ pub enum Message {
     TaskOpen(agentdocker_core::TaskId),
     TaskAssign(agentdocker_core::TaskId, Option<agentdocker_core::AgentId>),
     TaskArchive(agentdocker_core::TaskId),
+    /// The next page of the board.
+    TasksMore,
     /// Tell the selected project's agents to hold: open the reason, or
     /// send it, or lift the pause.
     PauseStart(String),
@@ -992,6 +994,7 @@ impl App {
             }
             Message::TaskAssign(task, assignee) => self.send(Cmd::TaskAssign { task, assignee }),
             Message::TaskArchive(task) => self.send(Cmd::TaskArchive(task)),
+            Message::TasksMore => self.request_more_tasks(),
             Message::MarkAllRead => {
                 if self.connected.is_ok() {
                     let heads: Vec<(String, u64)> = self
@@ -2070,6 +2073,7 @@ mod tests {
         messages
             .send(Msg::Tasks(
                 alpha_root.clone(),
+                0,
                 Ok((
                     vec![card("aaaaaaaaaaaa", agentdocker_core::Column::Ready)],
                     false,
@@ -2077,7 +2081,7 @@ mod tests {
             ))
             .unwrap();
         app.drain();
-        assert_eq!(app.tasks.as_ref().map(|(_, t, _)| t.len()), Some(1));
+        assert_eq!(app.tasks.as_ref().map(|b| b.cards.len()), Some(1));
 
         let _ = app.update(Message::TaskTitle("Port the parser".into()));
         let _ = app.update(Message::TaskAcceptance("tests pass".into()));
@@ -2094,10 +2098,14 @@ mod tests {
         );
         // A board that cannot be read is said so, and the last board stays.
         messages
-            .send(Msg::Tasks(alpha_root.clone(), Err("storage failed".into())))
+            .send(Msg::Tasks(
+                alpha_root.clone(),
+                0,
+                Err("storage failed".into()),
+            ))
             .unwrap();
         app.drain();
-        assert_eq!(app.tasks.as_ref().map(|(_, t, _)| t.len()), Some(1));
+        assert_eq!(app.tasks.as_ref().map(|b| b.cards.len()), Some(1));
         assert!(app.status.contains("storage failed"), "{}", app.status);
 
         // Filed: typing waits; a reply to an *earlier* filing changes
@@ -2150,6 +2158,85 @@ mod tests {
         assert!(draft.sending.is_none(), "not left filing for good");
         assert!(draft.error.is_some());
         assert_eq!(draft.title, "beta's card", "the text is kept to retry");
+    }
+
+    /// The board goes on past a page: Show more asks for the next page
+    /// where the board ends and appends it once; a reply to some other
+    /// ask is not appended; a refresh asks for as many cards as are on
+    /// view, so the board stays expanded; the window keeps five pages
+    /// and then says so rather than ask for more.
+    #[test]
+    fn the_board_shows_more_a_page_at_a_time_and_stays_expanded_through_a_refresh() {
+        let (mut app, requests, messages) = app();
+        app.connected = Ok(());
+        let dir = tempfile::tempdir().unwrap();
+        let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
+        app.shell.catalog.remember(alpha.clone(), true);
+        app.shell.catalog.selected = Some(alpha.root.clone());
+        let root = alpha.root.display().to_string();
+        let page = |from: usize, count: usize| {
+            (from..from + count)
+                .map(|i| agentdocker_core::Task {
+                    id: agentdocker_core::TaskId::from(format!("{i:012x}")),
+                    project: alpha.id(),
+                    title: format!("card {i}"),
+                    acceptance: String::new(),
+                    column: agentdocker_core::Column::Backlog,
+                    assignee: None,
+                    created_by: "user".into(),
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    archived_at: None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let limit = agentdocker_core::protocol::TASKS_LIMIT;
+        messages
+            .send(Msg::Tasks(root.clone(), 0, Ok((page(0, limit), true))))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::TasksMore);
+        assert!(app.tasks.as_ref().unwrap().loading_more);
+        assert!(requests.try_iter().any(|c| matches!(
+            c,
+            Cmd::Tasks(ref p, offset, l) if *p == root && offset == limit && l == limit
+        )));
+        // A second click while a page is on its way asks for nothing.
+        let _ = app.update(Message::TasksMore);
+        assert_eq!(requests.try_iter().count(), 0);
+        // A reply to some other ask is not appended.
+        messages
+            .send(Msg::Tasks(root.clone(), 7, Ok((page(7, 3), true))))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.tasks.as_ref().unwrap().cards.len(), limit);
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                limit,
+                Ok((page(limit, limit), true)),
+            ))
+            .unwrap();
+        app.drain();
+        let board = app.tasks.as_ref().unwrap();
+        assert_eq!(
+            (board.cards.len(), board.more, board.loading_more),
+            (2 * limit, true, false)
+        );
+        // A refresh asks for everything on view.
+        app.request_tasks();
+        assert!(requests.try_iter().any(|c| matches!(
+            c,
+            Cmd::Tasks(ref p, 0, l) if *p == root && l == 2 * limit
+        )));
+        // Filled to what the window keeps: no more is asked for.
+        messages
+            .send(Msg::Tasks(root.clone(), 0, Ok((page(0, BOARD_KEEP), true))))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::TasksMore);
+        assert_eq!(requests.try_iter().count(), 0);
+        assert_eq!(app.tasks.as_ref().unwrap().cards.len(), BOARD_KEEP);
     }
 
     /// The menu under a project row renames the entry here, pins it, or

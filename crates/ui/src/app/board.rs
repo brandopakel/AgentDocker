@@ -24,10 +24,10 @@ impl App {
             );
         };
         let root = entry.project.root.display().to_string();
-        let (tasks, more): (&[Task], bool) = match &self.tasks {
-            Some((project, tasks, more)) if *project == root => (tasks, *more),
-            _ => (&[], false),
-        };
+        let board = self.tasks.as_ref().filter(|b| b.project == root);
+        let tasks: &[Task] = board.map_or(&[], |b| &b.cards);
+        let more = board.is_some_and(|b| b.more);
+        let loading = board.is_some_and(|b| b.loading_more);
         let mut page = column![self.file_card(&root, c)].spacing(14).width(Fill);
         if tasks.is_empty() && self.tasks.is_some() {
             page = page.push(note(
@@ -35,10 +35,29 @@ impl App {
                 c,
             ));
         }
-        if more {
+        // The board goes on: the next page is a click away, up to what
+        // the window keeps; past that, archiving is how it gets shorter.
+        if more && tasks.len() < BOARD_KEEP {
+            page = page.push(
+                row![
+                    small(
+                        format!("{} cards, Backlog to Done; the board goes on.", tasks.len()),
+                        c
+                    ),
+                    action(
+                        "board-more",
+                        if loading { "Loading…" } else { "Show more" },
+                        (self.connected.is_ok() && !loading).then_some(Message::TasksMore),
+                        false,
+                    ),
+                ]
+                .spacing(8)
+                .align_y(Center),
+            );
+        } else if more {
             page = page.push(note(
                 format!(
-                    "The first {} cards, Backlog to Done; the board goes on past them. Archive what is done, or read a column at a time with agentdocker task list --column.",
+                    "The first {} cards are on view and the board goes on past them: archive what is done, or read a column at a time with agentdocker task list --column.",
                     tasks.len()
                 ),
                 c,
@@ -163,10 +182,11 @@ impl App {
         let resource = format!("task:{id}");
         let holder = task.assignee.as_ref().map(|a| {
             let live = self.agents.iter().any(|r| &r.id == a && r.status.is_live());
-            let held = self
-                .leases
-                .iter()
-                .any(|l| l.resource.as_str() == resource && &l.holder == a);
+            let held = self.leases.iter().any(|l| {
+                l.resource.as_str() == resource
+                    && &l.holder == a
+                    && l.mode == agentdocker_core::LeaseMode::Exclusive
+            });
             (self.name_of(a.as_str()), live, held)
         });
         let mut head = column![

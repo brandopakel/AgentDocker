@@ -148,7 +148,7 @@ system, which is drawn from the mark:
   `task-file-ready`, `task-file-backlog`, a card `task-<id>` (opens it),
   its moves `task-back-<id>`/`task-next-<id>`, `task-hand-<id>-<agent>`,
   `task-release-<id>`, `task-archive-<id>`; the lanes scroll in
-  `board-lanes` when wide. A composer's
+  `board-more` for the next page, `board-lanes` when wide. A composer's
   accessibility node carries its send as the input's action, which is what
   Enter does, so the smoke drives Enter as a click on the input's id. The screen takes an explicit height from the window (the
   window less the chrome, at least 320) because it sits inside the workspace's

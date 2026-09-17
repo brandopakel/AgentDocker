@@ -79,8 +79,11 @@ could not be read the last board stays and the status says why. A card's draft i
 while another is on view, and filing it is answered by its own reply — a
 move or hand of some other card never clears it, and a filing the app could
 not queue says so under the form. The board is read a page at a time (100
-cards, Backlog to Done, within a byte budget); past that a note says so and
-points to `agentdocker task list --column`. Narrow, the columns stack.
+cards, Backlog to Done, within a byte budget); when it goes on, **Show
+more** appends the next page where the board ends (one page in flight; a
+reply to some other ask is not appended), a refresh keeps the board as
+expanded as it was, and at five pages the board says so and points to
+archiving or `agentdocker task list --column`. Narrow, the columns stack.
 
 **Pause…** beside it asks for a reason and tells every agent in the project
 to hold: they read the reason as a `pause` message, the daemon refuses their
