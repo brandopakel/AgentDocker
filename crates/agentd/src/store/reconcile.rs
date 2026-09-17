@@ -14,6 +14,8 @@ const ARCHIVE_BYTES: usize = 16 * 1024 * 1024;
 /// the offline repair's admission capacity.
 const RESUME_QUEUE_MESSAGES: usize = 1000;
 const RESUME_QUEUE_BYTES: usize = 4 * 1024 * 1024;
+const RESUME_READS: usize = 1000;
+const RESUME_READ_BYTES: usize = 4 * 1024 * 1024;
 
 #[cfg(test)]
 #[path = "reconcile_tests.rs"]
@@ -467,9 +469,9 @@ impl Store {
     /// point, a review or question that would become its own), an alias
     /// that pointed at a retired record is pointed at the canonical one,
     /// and the retired records' cursors go. A retired record that holds a
-    /// lease or recorded observations of its own is refused here too, so
-    /// a caller that checked memory and a store that disagrees cannot
-    /// merge it away. Nothing is written.
+    /// lease is refused here too. Observations join by physical path,
+    /// retaining the latest capture; conflicting captures at the same
+    /// time refuse the entire fold. Nothing is written.
     pub(crate) fn plan_resume(
         &self,
         canonical: &AgentRecord,
@@ -552,21 +554,34 @@ impl Store {
             .collect::<rusqlite::Result<_>>()?;
         let mut documents = Vec::new();
         let mut remove_reads = Vec::new();
+        let mut read_marks = Vec::new();
+        let mut read_bytes = 0usize;
+        let mut has_read_documents = false;
         for (kind, id, raw) in &raw_docs {
+            if kind == "reads" && (id == kept.as_str() || retired.iter().any(|r| r.as_str() == id))
+            {
+                has_read_documents = true;
+                read_bytes = read_bytes.saturating_add(raw.len());
+                anyhow::ensure!(
+                    read_bytes <= RESUME_READ_BYTES,
+                    "combined observations exceed the 4 MiB resumption budget"
+                );
+                let reads: Vec<ReadMark> = serde_json::from_str(raw)?;
+                anyhow::ensure!(
+                    reads.len() <= RESUME_READS,
+                    "a retained observation set exceeds capacity"
+                );
+                read_marks.extend(reads);
+                if id != kept.as_str() {
+                    remove_reads.push(id.clone());
+                }
+                continue;
+            }
             let doc = Document {
                 kind: kind.clone(),
                 id: id.clone(),
                 value: serde_json::from_str(raw)?,
             };
-            if doc.kind == "reads" && retired.iter().any(|r| r.as_str() == doc.id) {
-                let reads: Vec<ReadMark> = serde_json::from_value(doc.value.clone())?;
-                anyhow::ensure!(
-                    reads.is_empty(),
-                    "a retired record recorded observations of its own; resolve by hand"
-                );
-                remove_reads.push(doc.id.clone());
-                continue;
-            }
             let mut value = doc.value.clone();
             for old in retired {
                 let current = Document {
@@ -578,6 +593,33 @@ impl Store {
             if value != doc.value {
                 documents.push(Document { value, ..doc });
             }
+        }
+        if has_read_documents {
+            // Sort every capture before merging so even conflicting older
+            // equal-time captures are refused independent of document order.
+            read_marks.sort_by(|a, b| a.path.cmp(&b.path).then(a.at.cmp(&b.at)));
+            for pair in read_marks.windows(2) {
+                let (a, b) = (&pair[0], &pair[1]);
+                anyhow::ensure!(
+                    a.path != b.path
+                        || a.at != b.at
+                        || (a.version == b.version && a.head == b.head),
+                    "retained observations disagree at the same capture time"
+                );
+            }
+            let reads: BTreeMap<_, _> = read_marks
+                .into_iter()
+                .map(|mark| (mark.path.clone(), mark))
+                .collect();
+            anyhow::ensure!(
+                reads.len() <= RESUME_READS,
+                "combined observation set exceeds capacity"
+            );
+            documents.push(Document {
+                kind: "reads".into(),
+                id: kept.to_string(),
+                value: serde_json::to_value(reads.into_values().collect::<Vec<_>>())?,
+            });
         }
         let mut aliases = self.identity_aliases()?;
         for alias in &mut aliases {

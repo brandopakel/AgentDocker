@@ -58,8 +58,12 @@ registration is one queue in durable sequence order with each message once, a
 question an earlier life asked is now its own, and every other id becomes an
 alias. This applies only when the register/session-resumption eligibility rule
 in [ARCHITECTURE.md](ARCHITECTURE.md#wire-protocol) is satisfied. A record whose
-process still runs, or one that holds leases, sits in a channel or recorded
-observations of its own, is left as it is. An initialized fresh input receiver
+process still runs, or one that holds leases or sits in a channel, is left
+as it is. File observations join by path, keeping the latest capture; conflicting
+captures at the same time refuse the fold. The joined working set is bounded to
+1,000 paths and 4 MiB of stored input. Its rewrite commits with the queue, aliases
+and event, so a failed write leaves them all unchanged. Unreadable observations
+still disable coordination. An initialized fresh input receiver
 also stays separate: it may already have offered its queue head, so folding old
 backlog in front would change delivery order. Its old queue remains retained;
 this ordering does not establish successful existing-session handover.
