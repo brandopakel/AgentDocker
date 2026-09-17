@@ -1143,7 +1143,10 @@ mod tests {
         }
         assert_eq!(seen.lock().unwrap().len(), 2, "both were posted once");
         assert_eq!(
-            notices.iter().map(|(dropped, _)| *dropped).collect::<Vec<_>>(),
+            notices
+                .iter()
+                .map(|(dropped, _)| *dropped)
+                .collect::<Vec<_>>(),
             vec![1, 1],
             "the held-back loss is said on its own: {notices:?}"
         );
