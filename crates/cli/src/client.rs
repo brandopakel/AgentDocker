@@ -569,7 +569,10 @@ impl Backend for Client {
     }
 }
 
-fn into_result(response: Response) -> Result<Response> {
+/// The daemon's answer as a result: an error answer keeps its code, words
+/// and details as a [`RemoteError`], so the status a command ends with is
+/// the answer's class wherever the answer was read.
+pub fn into_result(response: Response) -> Result<Response> {
     match response {
         Response::Error {
             code,

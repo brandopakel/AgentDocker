@@ -19,8 +19,26 @@ struct FakeDaemon(Option<std::thread::JoinHandle<()>>);
 impl FakeDaemon {
     fn serve(socket: &Path, answer: Value) -> Self {
         let listener = UnixListener::bind(socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
         Self(Some(std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("one connection");
+            // The connection must come within the deadline too, so a
+            // command that never connects fails this test rather than
+            // hanging it.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "no connection within the deadline"
+                        );
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("accept failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();

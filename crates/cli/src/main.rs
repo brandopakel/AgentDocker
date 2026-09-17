@@ -1608,6 +1608,10 @@ async fn run() -> Result<()> {
                 else {
                     bail!("unexpected reply to discover");
                 };
+                // Every process is tried; the status is that of the first
+                // refusal, since a mixed result has no single class of its
+                // own, and each refusal is said with its pid.
+                let mut first: Option<client::RemoteError> = None;
                 let mut failed = 0;
                 for process in processes {
                     match client
@@ -1619,15 +1623,25 @@ async fn run() -> Result<()> {
                         .await?
                     {
                         Response::Agent { agent } => println!("{}", agent.id),
-                        Response::Error { message, .. } => {
+                        Response::Error {
+                            code,
+                            message,
+                            details,
+                        } => {
                             failed += 1;
                             eprintln!("pid {}: {message}", process.pid);
+                            first.get_or_insert(client::RemoteError {
+                                code,
+                                message,
+                                details,
+                            });
                         }
                         _ => {}
                     }
                 }
-                if failed > 0 {
-                    bail!("{failed} process(es) could not be adopted");
+                if let Some(first) = first {
+                    return Err(anyhow::Error::from(first)
+                        .context(format!("{failed} process(es) could not be adopted")));
                 }
             } else if let Some(pid) = pid {
                 let request = Request::Adopt { pid, name, runtime };

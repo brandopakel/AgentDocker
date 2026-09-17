@@ -179,6 +179,11 @@ text; the words and any details still go to stderr as `Error: … (Code)`.
 | 5 | refused: not the caller's to do, or the project is paused | `forbidden`, `paused` |
 | 6 | not now: the daemon, its storage, an engine or a build is unavailable, busy, handing over, timed out or cancelled | `storage_unavailable`, `unavailable`, `engine_unavailable`, `build_failed`, `backpressure`, `timeout`, `cancelled`, `transferring`, `event_history_lost` |
 
+The class holds wherever the answer was read — a `daemon reload` refusal, an
+`attach` the daemon refuses or ends with an error — and `adopt --all`, which
+tries every process, ends with the class of the first refusal after naming
+each one by pid.
+
 ### Look at the fleet
 
 | Command | What it does |
