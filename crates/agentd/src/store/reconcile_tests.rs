@@ -708,7 +708,7 @@ fn missing_cursor_is_unread_and_incompatible_read_sets_are_refused() {
 /// asked now the canonical record's, an alias that pointed at an earlier
 /// life pointed at the canonical record, every retired id an alias — in
 /// one transaction. A duplicate message that differs, a retired record
-/// with observations or a lease of its own, or an id that is already an
+/// with conflicting observations or a lease of its own, or an id that is already an
 /// alias refuses the plan and writes nothing.
 #[test]
 fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
@@ -990,6 +990,55 @@ fn resumed_read_sets_keep_latest_paths_and_roll_back_with_the_queue_and_event() 
         now(),
     );
     event.seq = 1;
+    let mut room = Channel {
+        id: "room".into(),
+        project: last.project.as_ref().unwrap().id(),
+        name: Some("room".into()),
+        subject: agentdocker_core::channel::ChannelSubject::Task {
+            task: "retained room".into(),
+        },
+        members: vec![
+            earlier.id.clone(),
+            last.id.clone(),
+            fresh.id.clone(),
+            "peer".into(),
+        ],
+        opened_by: Some(earlier.id.clone()),
+        opened_at: now(),
+        reviews: vec![],
+        closed_at: None,
+        resolution: None,
+    };
+    store
+        .put_document("channel", room.id.as_str(), &room)
+        .unwrap();
+    // Even an eligible open room must refuse a fold that changes who reviewed whom.
+    room.reviews.push(agentdocker_core::channel::Review {
+        by: earlier.id.clone(),
+        by_name: "earlier".into(),
+        of: fresh.id.clone(),
+        of_name: "fresh".into(),
+        verdict: agentdocker_core::channel::Verdict::Approve,
+        note: "review".into(),
+        at: now(),
+        head: None,
+    });
+    store
+        .put_document("channel", room.id.as_str(), &room)
+        .unwrap();
+    let conflict = snapshot(&store);
+    assert!(
+        store
+            .plan_resume(&canonical, &retired)
+            .unwrap_err()
+            .to_string()
+            .contains("self-review")
+    );
+    assert_eq!(snapshot(&store), conflict);
+    room.reviews.clear();
+    store
+        .put_document("channel", room.id.as_str(), &room)
+        .unwrap();
     let before = snapshot(&store);
     let plan = store.plan_resume(&canonical, &retired).unwrap();
     assert_eq!(snapshot(&store), before);
@@ -1029,6 +1078,13 @@ fn resumed_read_sets_keep_latest_paths_and_roll_back_with_the_queue_and_event() 
         vec![message.id]
     );
     assert_eq!(reopened.identity_aliases().unwrap().len(), 2);
+    let restored = reopened
+        .document::<Channel>("channel", room.id.as_str())
+        .unwrap()
+        .unwrap();
+    assert!(restored.is_open());
+    assert_eq!(restored.members, vec![last.id.clone(), "peer".into()]);
+    assert_eq!(restored.opened_by, Some(last.id));
 }
 
 #[test]

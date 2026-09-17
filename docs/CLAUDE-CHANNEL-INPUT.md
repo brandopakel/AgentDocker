@@ -58,8 +58,10 @@ registration is one queue in durable sequence order with each message once, a
 question an earlier life asked is now its own, and every other id becomes an
 alias. This applies only when the register/session-resumption eligibility rule
 in [ARCHITECTURE.md](ARCHITECTURE.md#wire-protocol) is satisfied. A record whose
-process still runs, or one that holds leases or sits in a channel, is left
-as it is. File observations join by path, keeping the latest capture; conflicting
+process still runs, or one that holds leases or has pending stale notices, is
+left as it is. Eligible open channel memberships, opener and reviewer references
+move in the same transaction; duplicate memberships collapse to one. A rewrite
+that would create a self-review refuses the entire fold. File observations join by path, keeping the latest capture; conflicting
 captures at the same time refuse the fold. The joined working set is bounded to
 1,000 paths and 4 MiB of stored input. Its rewrite commits with the queue, aliases
 and event, so a failed write leaves them all unchanged. Unreadable observations
@@ -266,12 +268,15 @@ transport regression; the older binary admits a second channel and fails. See
 [existing channel evidence](verification/2026-09-11-claude-channel-input.json).
 Actual Claude relaunch and model idle wake still need separate acceptance.
 
-September 17 observation-preserving resumption: PR #179 keeps the latest capture
-per path across eligible ended records and the fresh registration in the same
-transaction as their queue and aliases. Runtime `ef369d8` passed the full gate
-(1,149 Rust tests, seven skipped; 94 Python checks, one skipped). The real MCP
-transport fixture also passed with observations recorded through the daemon in
-both lives, preserved queue order and no surviving fixture processes. This is
-source/transport evidence, not installed Claude model acceptance. The startup
-ordering guard above remains. Results are in the
+September 17 resumption follow-up: PR #179 keeps the latest capture per path
+and eligible open channel memberships in the same transaction as the queue and
+aliases. Runtime `3b21d64` passed the full gate (1,149 Rust tests, seven skipped;
+94 Python checks, one skipped). The real MCP transport fixture passed with
+observations in both lives, preserved room membership, ordered older backlog
+and a new room message delivered once through the canonical alias; no fixture
+processes survived. Daemon tests also cover storage reopen, newly created
+self-review refusal and transaction rollback. The earlier observation-only
+fixture failed against the preceding runtime and passed with that fix.
+This is source/transport evidence, not installed Claude model acceptance.
+The startup ordering guard above remains. Results are in the
 [existing channel record](verification/2026-09-11-claude-channel-input.json).
