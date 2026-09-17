@@ -100,7 +100,7 @@ preserve its pending work or enable daemon replacement; see
 
 ### `agentdocker` (`crates/cli`)
 
-A thin client. Each invocation opens one connection, sends one request, and prints the response(s). It exists so humans and shell hooks can participate; it is not the only way in.
+A thin client. Each invocation opens one connection, sends one request, and prints the response(s). It exists so humans and shell hooks can participate; it is not the only way in. An error answer ends the command with an exit status by the answer's class — 2 invalid, 3 not found or ambiguous, 4 held (conflict, name taken, deadlock), 5 refused (forbidden, paused), 6 unavailable (storage, engine, build, backpressure, timeout, cancelled, transferring, lost history), 1 internal or anything that is not the daemon's answer — with the words and details on stderr; see the [guide](GUIDE.md#exit-status).
 
 ### Starting the daemon
 
@@ -434,7 +434,7 @@ The host control socket is mode `0600` and trusts the owning user. This is not a
 
 The [product direction](PRODUCT-DIRECTION.md) defines current delivery priorities. The phases below retain the detailed engineering design; numbered delivery rows are not GitHub PR numbers.
 
-Phases 0–2, read tracking, durable recovery, explicit worktree integration and scoped container transport are implemented in the feature stack; merge and public release status are tracked in GitHub. Engine-managed build/launch, authenticated workspace mounts, managed Podman VM transport and image-bound validation provenance are implemented in the container stack. Docker Desktop uses the engine-volume socket relay; actual Desktop verification is tracked separately from Linux engine tests. The unimplemented rows — live daemon replacement (28), Windows (20) and federation (17) — remain design intent, written at the level of detail needed to build them — data model, protocol, storage, CLI, events, and what "done" means — so that each item can become a PR without a second design pass. Phases are ordered by dependency, not importance; [Delivery order](#delivery-order) lists the PR sequence.
+Phases 0–2, read tracking, durable recovery, explicit worktree integration and scoped container transport are implemented in the feature stack; merge and public release status are tracked in GitHub. Engine-managed build/launch, authenticated workspace mounts, managed Podman VM transport and image-bound validation provenance are implemented in the container stack. Docker Desktop uses the engine-volume socket relay; actual Desktop verification is tracked separately from Linux engine tests. Live daemon replacement (28) is implemented behind its experimental gate, with broader provider acceptance still open. Full Windows (20) and federation (17) remain design intent, including the data model, protocol, storage, CLI, events and completion conditions needed for implementation. Phases are ordered by dependency, not importance; [Delivery order](#delivery-order) lists the PR sequence.
 
 ### Messaging as a workspace (proposed September 15; delivered in PRs #150/#152/#160/#163/#170)
 
@@ -910,8 +910,8 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 32 | ✅ session reconnect: a provider session that comes back as a new process is folded into its ended record by `session_id` under the transfer fence (`session_resumed`); records with retained observations are refused today, and carrying their reads across is in progress | 5 | 27 |
 | 33 | ✅ project pause: the person tells a project's agents to hold with a reason (`pause`, `resume_project`, `pauses`), the daemon refuses their new leases while it holds, and the reason reaches every live agent as a reserved `pause` message; schema 23 | 5 | 13 |
 | 34 | ⏳ token usage: the bounded reader of local Codex rollouts and Claude transcripts with explicit gaps is merged (#165/#167); the collector, `usage` protocol, CLI and Usage screen are not | 5 | — |
-| 35 | ⏳ a board of work: cards with acceptance text pulled once over a `task:<id>` lease, moved by their holder or the person, paged; in review as PR #176 | 5 | 13 |
-| 36 | ⏳ persisted message drafts: text-only, bounded, restored as unsent; in review as PR #178 | 5 | 30 |
+| 35 | ✅ a board of work: cards with acceptance text pulled once over a `task:<id>` lease, moved by their holder or the person, paged; PR #176 merged and installed; actual card creation verified | 5 | 13 |
+| 36 | ✅ persisted message drafts: text-only, bounded, restored as unsent; PR #178 merged and installed; actual conversation draft close/reopen verified; question and other form drafts remain window-local | 5 | 30 |
 
 Priority is [PRODUCT-DIRECTION.md](PRODUCT-DIRECTION.md#delivery-order): verify restore/privacy through the staged trial, complete native packaging and onboarding, then deliver Linux desktop and native Windows parity. Policy/quotas (15), restart policy (16), `commit` (10) and the rtk view (26) are implemented and covered by the integrated verification recorded on PR #119; what is still open is in [REMAINING-WORK.md](REMAINING-WORK.md). Live daemon replacement (28) has process/I/O ownership in the session owner, the coordinator fence, successor handover, connected-client resumption and installation-triggered reload in source behind `AGENTDOCKER_EXPERIMENTAL_RELOAD`. Broader provider input acceptance, attached-terminal drafts across a switch, uncertain-write reconciliation, replay retention limits, Windows and removal of the gate remain open. Windows (20) requires full native process, terminal, IPC, service and installer acceptance. Federation (17) follows a dependable single-host product.
 

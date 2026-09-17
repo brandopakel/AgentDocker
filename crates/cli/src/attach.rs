@@ -106,9 +106,8 @@ async fn open(client: &Client, agent: &str, terminal: i32) -> Result<Attached> {
     if tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line).await? == 0 {
         bail!("agentd closed the connection without attaching");
     }
-    match serde_json::from_str::<Response>(&line)? {
+    match crate::client::into_result(serde_json::from_str::<Response>(&line)?)? {
         Response::EventsReady => {}
-        Response::Error { message, .. } => bail!("{message}"),
         other => bail!("unexpected reply to attach: {other:?}"),
     }
     Ok((reader, write_half))
@@ -166,7 +165,9 @@ where
                         eprint!("\r\n[{skipped} bytes of output were dropped]\r\n");
                     }
                     Response::End => return Ok(Left::Ended),
-                    Response::Error { message, .. } => bail!("{message}"),
+                    error @ Response::Error { .. } => {
+                        crate::client::into_result(error)?;
+                    }
                     _ => {}
                 }
             }

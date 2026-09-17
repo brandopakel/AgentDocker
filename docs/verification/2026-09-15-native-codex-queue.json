@@ -3092,7 +3092,7 @@
         ]
       }
     ],
-    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait.",
+    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait. The sanitized tool timeline shows about 50 seconds between tool boundaries and a 45-second coordinator sleep before the first peer context. Attribute the 104\u2013119 seconds to end-to-end context latency, not daemon/polling latency alone.",
     "acceptance_remaining": "Reduce and measure busy delivery latency and system-notice backlog while preserving FIFO human/peer ordering, exact receipt recovery, unavailable-provider gates and no duplicate execution. Three ordered receipts do not establish prompt-like latency or sustained throughput.",
     "private_evidence": "/private/tmp/agentdocker-live-active-burst-20260917.json",
     "provider_route_review": {
@@ -3104,7 +3104,15 @@
         "threadId"
       ],
       "managed_control_socket": "Read-only daemon version check found no app-server-control socket for this profile; no daemon was started.",
-      "limit": "The documented active-turn steering API requires an owned active turn. It is not proof that an independent sidecar can steer this existing standalone TUI."
+      "limit": "The documented turn/steer API requires an active turn on the target thread and a matching expectedTurnId. This independent-terminal bridge has not established a compatible route to steer the terminal active turn through its separate connection; this is a local compatibility limitation, not an additional API ownership requirement."
+    },
+    "tool_boundary_timing": {
+      "previous_tool_completed_at": "2026-09-17T20:20:08.578Z",
+      "next_tool_started_at": "2026-09-17T20:20:58.985Z",
+      "coordinator_sleep_seconds": 45,
+      "sleep_completed_and_first_peer_context_at": "2026-09-17T20:21:44.314Z",
+      "following_tool_started_at": "2026-09-17T20:21:59.161Z",
+      "scope": "The end-to-end delay includes a gap between tools and a 45-second coordinator wait. It does not measure daemon or RPC processing alone."
     }
   }
 }
