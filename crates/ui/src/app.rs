@@ -1677,14 +1677,15 @@ impl App {
         if self.connected.is_ok()
             && let Some(project) = self.selected_project_root()
         {
-            // A refresh supersedes a page still on its way: were that
-            // page to land first, the refresh — sized to what was on
-            // view when it was asked — would fold the board back.
+            // A refresh supersedes every ask still on its way for this
+            // board — earlier refreshes and a page alike: were a page to
+            // land first, the refresh, sized to what was on view when it
+            // was asked, would fold the board back; were an earlier
+            // refresh to land last, it would overwrite the newer read.
+            self.board_asks.retain(|_, (p, _)| *p != project);
             let on_view = match self.tasks.as_mut().filter(|b| b.project == project) {
                 Some(board) => {
-                    if let Some(pending) = board.pending_more.take() {
-                        self.board_asks.remove(&pending);
-                    }
+                    board.pending_more = None;
                     board.cards.len()
                 }
                 None => 0,
@@ -1701,16 +1702,17 @@ impl App {
     }
 
     /// The next page of the board on view, appended to it, up to what
-    /// the window keeps.
+    /// the window keeps. Not while any ask for this board is on its way:
+    /// a page appended now would be to a board a refresh is about to
+    /// replace, or would double one already asked for.
     pub(crate) fn request_more_tasks(&mut self) {
         if self.connected.is_ok()
             && let Some(project) = self.selected_project_root()
-            && self.tasks.as_ref().is_some_and(|b| {
-                b.project == project
-                    && b.more
-                    && b.pending_more.is_none()
-                    && b.cards.len() < BOARD_KEEP
-            })
+            && !self.board_asks.values().any(|(p, _)| *p == project)
+            && self
+                .tasks
+                .as_ref()
+                .is_some_and(|b| b.project == project && b.more && b.cards.len() < BOARD_KEEP)
         {
             let offset = self.tasks.as_ref().map_or(0, |b| b.cards.len());
             let limit = agentdocker_core::protocol::TASKS_LIMIT.min(BOARD_KEEP - offset);

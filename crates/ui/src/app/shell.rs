@@ -2317,12 +2317,17 @@ mod tests {
         app.drain();
         assert_eq!(cards(&app), 2 * limit);
 
-        // Order two: a refresh asked before a page arrives first, then
-        // the page: the page still lands where it was asked for.
+        // Order two: while a refresh is on its way, Show more asks for
+        // nothing — a page appended now would be to a board the refresh
+        // is about to replace — and works again once the refresh lands.
         app.request_tasks();
         let (refresh, _, _) = board_asks(&requests).pop().unwrap();
         let _ = app.update(Message::TasksMore);
-        let (more_ask, _, _) = board_asks(&requests).pop().unwrap();
+        assert!(
+            board_asks(&requests).is_empty(),
+            "deferred behind the refresh"
+        );
+        assert!(!app.tasks.as_ref().unwrap().loading_more());
         messages
             .send(Msg::Tasks(
                 root.clone(),
@@ -2331,10 +2336,8 @@ mod tests {
             ))
             .unwrap();
         app.drain();
-        assert!(
-            app.tasks.as_ref().unwrap().loading_more(),
-            "a refresh keeps the page on its way"
-        );
+        let _ = app.update(Message::TasksMore);
+        let (more_ask, _, _) = board_asks(&requests).pop().unwrap();
         messages
             .send(Msg::Tasks(
                 root.clone(),
@@ -2344,6 +2347,25 @@ mod tests {
             .unwrap();
         app.drain();
         assert_eq!(cards(&app), 3 * limit);
+
+        // Two refreshes: the newer supersedes the older, so the older's
+        // reply — even landing last — cannot overwrite the newer read.
+        app.request_tasks();
+        let (older, _, _) = board_asks(&requests).pop().unwrap();
+        app.request_tasks();
+        let (newer, _, _) = board_asks(&requests).pop().unwrap();
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                newer,
+                Ok((page(0, 3 * limit), true)),
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Tasks(root.clone(), older, Ok((page(0, limit), true))))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), 3 * limit, "the older refresh is ignored");
 
         // Another project and back: the old asks are forgotten, so a
         // late page for alpha moves nothing, and alpha is read anew.

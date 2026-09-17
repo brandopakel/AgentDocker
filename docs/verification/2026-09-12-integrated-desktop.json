@@ -2895,5 +2895,32 @@
         "Does not establish Claude idle wake, project/global fanout, sustained latency, or sleep/reboot recovery."
       ]
     }
+  },
+  "installed_notification_click_2026_09_17": {
+    "result": "passed",
+    "at": "2026-09-17T18:48:58.890990+00:00",
+    "candidate": "f5e298f471dfadf5925558b44fb3f6e2d5d53a0172ce2e8a708af77a4f8dd192",
+    "source": "418fbc93c86d1658ab4c5c9975eeb76e581a4915",
+    "scope": "Actual Notification Center accessibility click on installed f5e298f4 while explicitly hidden; existing production window and provider generations preserved. No app restart, physical mouse/IME or zero-process launch tested.",
+    "case": "The person's September 17 finding (a click on a notification while the app was already open did nothing visible) on the installed revision that carries PR #175: the production app was explicitly hidden, the daemon posted an ordinary message, Notification Center's owned notification was pressed through accessibility, and the app became visible with the exact message row revealed.",
+    "message_id": "26beba01be15456f",
+    "hidden_before_click": true,
+    "click": "pressed_owned_notification",
+    "visible_and_target_found": "true, true",
+    "processes_unchanged": {
+      "gui": 25649,
+      "codex": 51242,
+      "claude": 18563
+    },
+    "poster_sha256": "0593959cd3162693d343d44c9b7bb7e2751685d225bb1fbe99ae1884eee92da4",
+    "driver_sha256": "ca6a485618c9fc08e8b6f5fdcc4453b3fa135b35a6f29a0fe503555456261769",
+    "evidence": "/private/tmp/agentdocker-installed-notification-click-20260917/result.json (private, this Mac)",
+    "recorded_by": "codex-51242; folded into this record by claude-code-18563",
+    "remaining": [
+      "Zero-process OS cold launch from a notification.",
+      "A physical mouse click rather than an accessibility press.",
+      "A click while the same conversation is open with the message outside the loaded pages (the bounded page-back path).",
+      "Signed/notarized release acceptance."
+    ]
   }
 }

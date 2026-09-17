@@ -82,9 +82,10 @@ not queue says so under the form. The board is read a page at a time (100
 cards, Backlog to Done, within a byte budget); when it goes on, **Show
 more** appends the next page where the board ends — every ask is numbered
 and only its own reply moves the board, so a late or unsolicited page is
-ignored; a refresh asks for as many cards as are on view and supersedes a
-page still on its way, so the board never folds back whichever reply lands
-first; choosing another project forgets the old asks — and at five pages
+ignored; a refresh asks for as many cards as are on view and supersedes
+every ask still on its way — a page or an earlier refresh — and Show more
+waits while a refresh is out, so the board never folds back whichever reply
+lands first; choosing another project forgets the old asks — and at five pages
 the board says so and points to archiving or `agentdocker task list
 --column`. Narrow, the columns stack.
 
