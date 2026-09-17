@@ -4501,7 +4501,10 @@ impl State {
             .and_then(|from| self.registry.get(from))
             .and_then(|record| record.project.as_ref())
             .map(agentdocker_core::ProjectRef::id);
-        match (reference.strip_prefix(agentdocker_core::agent::ROLE_PREFIX), project) {
+        match (
+            reference.strip_prefix(agentdocker_core::agent::ROLE_PREFIX),
+            project,
+        ) {
             (Some(role), Some(project)) => {
                 if let Some(error) = self.storage_failure() {
                     return Err(Box::new(error));
@@ -4549,13 +4552,19 @@ impl State {
                     .insert(agentdocker_core::agent::ROLE_LABEL.to_owned(), role.clone());
             }
             None => {
-                record.spec.labels.remove(agentdocker_core::agent::ROLE_LABEL);
+                record
+                    .spec
+                    .labels
+                    .remove(agentdocker_core::agent::ROLE_LABEL);
             }
         }
         let mut event = agentdocker_core::Event::new(
             EventKind::RoleSet {
                 agent: id.clone(),
-                project: record.project.as_ref().map(agentdocker_core::ProjectRef::id),
+                project: record
+                    .project
+                    .as_ref()
+                    .map(agentdocker_core::ProjectRef::id),
                 role,
             },
             now,

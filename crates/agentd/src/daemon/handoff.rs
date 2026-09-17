@@ -463,6 +463,169 @@ mod tests {
         }
     }
 
+    async fn role(daemon: &Arc<Daemon>, agent: &str, role: Option<&str>) -> Response {
+        daemon
+            .handle(Request::Role {
+                agent: agent.into(),
+                role: role.map(str::to_owned),
+            })
+            .await
+    }
+
+    async fn send_to(daemon: &Arc<Daemon>, from: &str, to: &str) -> Response {
+        daemon
+            .handle(Request::Send {
+                from: from.into(),
+                to: to.into(),
+                kind: "chat".into(),
+                payload: json!({"text": "for the reviewer"}),
+                reply_to: None,
+            })
+            .await
+    }
+
+    /// A role is a label a message or a hand-off can name: `role:<name>`
+    /// is the one live agent holding it in the sender's project. The
+    /// same role again is nothing; none is not found and two are
+    /// ambiguous; a finished agent has no role; a role is one word.
+    #[tokio::test]
+    async fn a_role_is_set_once_and_names_the_projects_holder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _root) = fixture(&tmp).await;
+        // Another project's reviewer never answers for this one.
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "far".into(),
+                    workdir: Some(elsewhere),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await;
+        let mut events = daemon.subscribe_events();
+        for bad in ["Reviewer", "re viewer", "", "-reviewer", &"r".repeat(41)] {
+            assert!(
+                matches!(
+                    role(&daemon, "recipient", Some(bad)).await,
+                    Response::Error {
+                        code: ErrorCode::Invalid,
+                        ..
+                    }
+                ),
+                "{bad:?}"
+            );
+        }
+        let Response::Agent { agent } = role(&daemon, "recipient", Some("reviewer")).await else {
+            panic!("a role answers with the record");
+        };
+        assert_eq!(agent.role(), Some("reviewer"));
+        match events.recv().await {
+            Ok(Event {
+                kind:
+                    EventKind::RoleSet {
+                        agent: who,
+                        project,
+                        role,
+                    },
+                ..
+            }) => {
+                assert_eq!(who, agent.id);
+                assert!(project.is_some(), "a role is said with its project");
+                assert_eq!(role.as_deref(), Some("reviewer"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            role(&daemon, "recipient", Some("reviewer")).await,
+            Response::Agent { .. }
+        ));
+        assert!(events.try_recv().is_err(), "the same role again is nothing");
+        assert!(matches!(
+            role(&daemon, "far", Some("reviewer")).await,
+            Response::Agent { .. }
+        ));
+        // From this project, the reviewer is this project's.
+        assert!(matches!(
+            send_to(&daemon, "sender", "role:reviewer").await,
+            Response::Sent { .. }
+        ));
+        let mail = inbox(&daemon, "recipient").await;
+        assert_eq!(mail.len(), 1);
+        assert_eq!(mail[0].to, Destination::Agent(agent.id.clone()));
+        assert!(inbox(&daemon, "far").await.is_empty());
+        // Unscoped — no sender to take a project from — two hold it.
+        assert!(matches!(
+            daemon
+                .handle(Request::Inspect {
+                    agent: "role:reviewer".into()
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Ambiguous,
+                ..
+            }
+        ));
+        assert!(matches!(
+            send_to(&daemon, "sender", "role:implementer").await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+        // A hand-off names the reviewer the same way.
+        match daemon
+            .handle(Request::Handoff {
+                agent: "sender".into(),
+                to: Some("role:reviewer".into()),
+                task: Some("review it".into()),
+                note: None,
+                transfer_leases: false,
+                key: None,
+            })
+            .await
+        {
+            Response::Handoff { bundle } => assert_eq!(bundle.to, Some(agent.id.clone())),
+            other => panic!("{other:?}"),
+        }
+        // Two holders here: the role names nobody until one lets go.
+        assert!(matches!(
+            role(&daemon, "other", Some("reviewer")).await,
+            Response::Agent { .. }
+        ));
+        assert!(matches!(
+            send_to(&daemon, "sender", "role:reviewer").await,
+            Response::Error {
+                code: ErrorCode::Ambiguous,
+                ..
+            }
+        ));
+        let Response::Agent { agent: other } = role(&daemon, "other", None).await else {
+            panic!("clearing answers with the record");
+        };
+        assert_eq!(other.role(), None);
+        assert!(matches!(
+            send_to(&daemon, "sender", "role:reviewer").await,
+            Response::Sent { .. }
+        ));
+        // A finished agent has no role to take.
+        daemon
+            .handle(Request::Deregister {
+                agent: "other".into(),
+            })
+            .await;
+        assert!(matches!(
+            role(&daemon, "other", Some("reviewer")).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+    }
+
     async fn inbox(daemon: &Arc<Daemon>, agent: &str) -> Vec<Envelope> {
         match daemon
             .handle(Request::Inbox {

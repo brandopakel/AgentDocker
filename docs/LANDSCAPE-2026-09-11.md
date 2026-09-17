@@ -227,16 +227,19 @@ bridge and blocked-state mirror are designed and measured in
 **Set up** for hooks and per-tool status badges are present; reply from the
 notification and trace-file resume are not. From Paprika: the first item —
 a card with acceptance text and an atomic pull over the `task:<id>` lease,
-with a Board tab in the app — is in source (PR #176); roles, typed links,
-webhooks, comment-only rules and the exit-code contract are not started, and
-the card-to-lease bridge to Paprika itself remains a proposal.
+with a Board tab in the app — is in source (PR #176), as are roles (a `role`
+label an agent is given, and `role:<name>` as the recipient of a message or
+a hand-off); typed links, webhooks and the exit-code contract are in review,
+comment-only rules are not started, and the card-to-lease bridge to Paprika
+itself remains a proposal.
 
 Assessed September 17, against the [product direction](PRODUCT-DIRECTION.md):
 what is still worth taking is small and agent-facing — an exit-code contract
 for `--json` commands (agents drive the CLI), typed links on a card, message
 or hand-off (a path, a PR, a memory note; the data already exists), webhooks
 as a signed sink on the event stream (a team channel hears `question_asked`
-and `lease_deadlock`), and roles as agent labels a hand-off can name. Reply
+and `lease_deadlock`), and roles as agent labels a hand-off can name (in
+source: `agentdocker role`, `role:<name>` as a recipient). Reply
 from the notification (Dax) is worth it once the routing acceptance above is
 closed. Not worth taking: herdr's focus/prompt bridge and blocked-state
 mirror (measured and deferred in [HERDR-BRIDGE.md](HERDR-BRIDGE.md); the

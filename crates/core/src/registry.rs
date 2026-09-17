@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use chrono::{DateTime, Utc};
 use thiserror::Error;
 
-use crate::agent::{ROLE_LABEL, ROLE_PREFIX};
+use crate::agent::ROLE_PREFIX;
 use crate::{AgentId, AgentRecord, AgentStatus, ProjectId, ProjectRef, VcsState};
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -444,7 +444,7 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::check_role;
+    use crate::agent::{ROLE_LABEL, check_role};
     use crate::{AgentSpec, ProjectRef};
 
     fn record(name: &str) -> AgentRecord {
@@ -660,8 +660,14 @@ mod tests {
         let (reviewer_id, elsewhere_id) = (reviewer.id.clone(), elsewhere.id.clone());
         reg.insert(reviewer).unwrap();
         reg.insert(elsewhere).unwrap();
-        assert_eq!(reg.resolve_role("reviewer", Some(&one)), Ok(reviewer_id.clone()));
-        assert_eq!(reg.resolve_role("reviewer", Some(&two)), Ok(elsewhere_id.clone()));
+        assert_eq!(
+            reg.resolve_role("reviewer", Some(&one)),
+            Ok(reviewer_id.clone())
+        );
+        assert_eq!(
+            reg.resolve_role("reviewer", Some(&two)),
+            Ok(elsewhere_id.clone())
+        );
         assert_eq!(
             reg.resolve("role:reviewer"),
             Err(RegistryError::RoleAmbiguous("reviewer".into())),
@@ -671,8 +677,16 @@ mod tests {
             reg.resolve_role("implementer", Some(&one)),
             Err(RegistryError::RoleNotFound("implementer".into()))
         );
-        reg.set_status(&elsewhere_id, AgentStatus::Exited { code: Some(0) }, Utc::now());
-        assert_eq!(reg.resolve("role:reviewer"), Ok(reviewer_id), "one live holder");
+        reg.set_status(
+            &elsewhere_id,
+            AgentStatus::Exited { code: Some(0) },
+            Utc::now(),
+        );
+        assert_eq!(
+            reg.resolve("role:reviewer"),
+            Ok(reviewer_id),
+            "one live holder"
+        );
         assert!(check_role("reviewer").is_ok());
         assert!(check_role("code-reviewer-2").is_ok());
         for bad in ["", "Reviewer", "re viewer", "-rev", "rev-", &"r".repeat(41)] {
