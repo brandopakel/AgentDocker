@@ -1237,4 +1237,4 @@ still preserves the prior cursor. The same bounded buffered reader counts
 prefetched bytes; skipped records reset Codex context and contribute once to the
 prefix digest. A regression covers a record larger than the maximum parser
 limit, subsequent supported usage, resumed digest equivalence and insufficient
-budget. Validation of this follow-up is pending.
+budget. Source `89ceabe` passed eight focused reader tests and the full 1,034-Rust/77-Python gate (seven skipped). After integration with merged main, `a05a751` passed the full 1,095-Rust/84-Python gate (seven skipped), formatting, strict Clippy, doctests, packaging and release build. Logs are `/private/tmp/agentdocker-usage-scan-targeted2-2026-09-17.log` and `/private/tmp/agentdocker-usage-scan-gate2-2026-09-17.log`; matching JUnit reports are retained in the corresponding `-nextest-` directories. The initial targeted command selected the wrong module and ran zero tests; that failed log remains as `targeted1`. These are file-fixture tests; daemon collection, persistence, CLI and screen acceptance remain open.
