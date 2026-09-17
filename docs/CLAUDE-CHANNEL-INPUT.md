@@ -71,8 +71,9 @@ when it finds one, answers the MCP handshake as usual but does not report its
 readiness — the step that binds input delivery — until the daemon's record for
 this very process (the same pid and process birth, both known) carries the
 `session_id` the hooks registered, or ten seconds have passed. Each look at
-the record is bounded by the transport timeout and polled beside the
-transport, so a slow daemon holds up neither control nor receipts. The hook's word is followed even
+the record is bounded by the transport timeout and cut at the deadline, and is
+polled beside the transport, so a slow daemon neither holds up control or
+receipts nor stretches the wait. The hook's word is followed even
 when it names a different session from the one the command line asked for;
 a command-line id is a claim and is never registered as identity. Past the
 wait, input is bound anyway and the adapter says so on stderr — the daemon's

@@ -212,8 +212,16 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
             // own guard keeps an earlier record separate — said so, not
             // hidden.
             _ = vouch_tick.tick(), if initialized && !ready && look.is_none() => {
-                look = Some(Box::pin(async {
-                    let record = tokio::time::timeout(IO_TIMEOUT, server.backend.call(Request::Inspect {
+                // A look never outlives the wait: the last one is cut at the
+                // deadline, so the bound is the ten seconds, not ten plus
+                // one transport timeout.
+                let remaining = vouch_deadline
+                    .map(|deadline| deadline.saturating_duration_since(tokio::time::Instant::now()))
+                    .unwrap_or(IO_TIMEOUT)
+                    .min(IO_TIMEOUT)
+                    .max(Duration::from_millis(1));
+                look = Some(Box::pin(async move {
+                    let record = tokio::time::timeout(remaining, server.backend.call(Request::Inspect {
                         agent: server.identity.id.clone(),
                     })).await;
                     match record {
