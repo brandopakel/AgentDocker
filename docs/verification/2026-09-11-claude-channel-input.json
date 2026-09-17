@@ -566,5 +566,66 @@
       "scope": "Real adapter processes driven by an MCP fixture, not a Claude model idle-wake trial. Names retained across N-way folds and alias flattening are covered by registry/store regressions through reopen. Existing live provider sessions were unchanged.",
       "status": "passed; final CI, review and installed acceptance pending"
     }
+  },
+  "observation_preserving_resume_2026_09_17": {
+    "source_commit": "ef369d8289d19b46a83ab93b31096068093b5e58",
+    "pr": 179,
+    "installed": false,
+    "gate": {
+      "result": "passed",
+      "rust_passed": 1149,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "includes": [
+        "format",
+        "strict_clippy",
+        "doctests",
+        "packaging",
+        "release_build"
+      ],
+      "log": "/private/tmp/agentdocker-resume-observations-gate-20260917.log",
+      "log_sha256": "88cf1f4863c51569b03f82a5ee98f5b33003f1f73f50e7317bbf6940ded4ff46"
+    },
+    "transport": {
+      "result": "passed",
+      "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+      "steps": [
+        "idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption",
+        "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+        "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+        "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+        "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+        "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+        "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+        "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+        "pre-initialization session fold preserved both observation sets and one channel owner across different agent IDs and delivered the older queue through its alias",
+        "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+      ],
+      "binary_sha256": {
+        "agentd": "b66936f466a4a5b84f9b13059ddf9efddebd77e947f838161488d57849da7462",
+        "agentdocker": "cf6824049e550a7a04266f2b581942f983adf4a7c2c909065a2aa78653f41012"
+      },
+      "driver_sha256": {
+        "claude_channel_smoke.py": "cf9d039290fbea61a4ca2815d9e170adc652470a55e9c4d0e65ce457437bc5b1",
+        "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+        "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+      },
+      "remaining_owned_processes": 0,
+      "duration_seconds": 38.92764129099669
+    },
+    "artifacts": "/private/tmp/agentdocker-resume-observations-channel-20260917",
+    "limits": [
+      "The transport fixture speaks MCP and uses owned sleep processes, not a real provider model.",
+      "The installed Claude process and production database were not restarted or rewritten.",
+      "Initialized-before-SessionStart remains a guarded refusal; provider startup ordering, consent and actual idle model receipt remain open."
+    ],
+    "production_preflight": {
+      "distinct_paths": 26,
+      "stored_bytes": 6205,
+      "overlapping_different_versions": 0,
+      "equal_time_conflicts": 0,
+      "result": "read-only inspection; current installed guard refuses the retained sets"
+    }
   }
 }

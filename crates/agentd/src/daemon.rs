@@ -6105,7 +6105,7 @@ impl State {
     /// with the event; memory follows. Anything that does not qualify — a
     /// record whose process is still there, one that holds leases, sits
     /// in a channel, is waiting on something, has stale changes owed to
-    /// it, has a live subscriber or recorded observations of its own, or a
+    /// it, has a live subscriber, has ambiguous observations, or a
     /// store that cannot say or refuses the rewrite — leaves the fresh
     /// record as it is.
     fn resume_session(&mut self, fresh: AgentRecord) -> AgentRecord {
@@ -6147,21 +6147,24 @@ impl State {
         }
         // Nothing any folded record did is lost: one that holds leases,
         // sits in an open channel, waits on a lease, has stale changes
-        // owed to it, has somebody subscribed to it or observed something
-        // keeps its own record. The fresh one has done none of that by the
-        // time its hooks half registers. Fail closed: a store that cannot
-        // say whether a record observed anything must not authorise
-        // retiring it.
+        // owed to it or has somebody subscribed to it keeps its own record.
+        // Read observations instead join transactionally in plan_resume.
+        // Fail closed on unreadable observations, including the canonical
+        // record: malformed storage must still disable coordination.
         let mut folded: Vec<&AgentRecord> = vec![&fresh];
         folded.extend(earlier);
-        for record in &folded {
-            let unobserved = self
+        for record in folded.iter().copied().chain(std::iter::once(prior)) {
+            if self
                 .store_read("reads", |store| {
                     store.document::<Vec<agentdocker_core::ReadMark>>("reads", record.id.as_str())
                 })
-                .is_some_and(|reads| reads.is_none_or(|reads| reads.is_empty()));
-            if !unobserved
-                || !self.leases.by_holder(&record.id).is_empty()
+                .is_none()
+            {
+                return fresh;
+            }
+        }
+        for record in &folded {
+            if !self.leases.by_holder(&record.id).is_empty()
                 || self
                     .channels
                     .values()
@@ -6913,6 +6916,31 @@ mod tests {
                 );
             }
         }
+        // Real retained observations in both ended lives must follow the
+        // session too, without making its original queue ineligible.
+        let earlier_read = agentdocker_core::ReadMark {
+            path: "/fixture/earlier.rs".into(),
+            version: "earlier-version".into(),
+            head: None,
+            at: Utc::now(),
+        };
+        let later_read = agentdocker_core::ReadMark {
+            path: "/fixture/later.rs".into(),
+            version: "later-version".into(),
+            head: None,
+            at: Utc::now(),
+        };
+        {
+            let state = lock(&daemon.state);
+            state
+                .store
+                .put_document("reads", earlier.id.as_str(), &vec![earlier_read.clone()])
+                .unwrap();
+            state
+                .store
+                .put_document("reads", first.id.as_str(), &vec![later_read.clone()])
+                .unwrap();
+        }
         // Both lives end, the earlier one first, and their processes go.
         ended(&daemon, &earlier.id, 60);
         p1.kill().unwrap();
@@ -7009,6 +7037,20 @@ mod tests {
                 vec![broadcast.clone(), m0.clone(), m1.clone(), m2.clone()],
                 "the same queue in the same order after a reopen"
             );
+            assert_eq!(
+                state
+                    .store
+                    .document::<Vec<agentdocker_core::ReadMark>>("reads", first.id.as_str())
+                    .unwrap(),
+                Some(vec![earlier_read, later_read])
+            );
+            assert!(
+                state
+                    .store
+                    .document::<Vec<agentdocker_core::ReadMark>>("reads", earlier.id.as_str())
+                    .unwrap()
+                    .is_none()
+            );
         }
         assert!(matches!(
             daemon
@@ -7031,39 +7073,49 @@ mod tests {
 
     #[test]
     fn returning_session_read_errors_disable_coordination() {
-        let dir = TempDir::new().unwrap();
-        let daemon = open(&dir);
-        let now = Utc::now();
-        let mut old = AgentRecord::new(spec_here("old"), false, now);
-        old.spec.runtime = "claude-code".into();
-        old.spec.labels.insert("session_id".into(), "same".into());
-        old.project = Some(ProjectRef::directory(std::env::temp_dir()));
-        old.status = AgentStatus::Exited { code: Some(0) };
-        old.finished_at = Some(now);
-        let mut fresh = old.clone();
-        fresh.id = AgentId::generate();
-        fresh.pid = Some(std::process::id());
-        fresh.status = AgentStatus::Running;
-        fresh.finished_at = None;
-        let mut state = lock(&daemon.state);
-        for record in [&old, &fresh] {
-            state.registry.insert(record.clone()).unwrap();
-            state.store.upsert_agent(record).unwrap();
+        for malformed_canonical in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let daemon = open(&dir);
+            let now = Utc::now();
+            let mut old = AgentRecord::new(spec_here("old"), false, now);
+            old.spec.runtime = "claude-code".into();
+            old.spec.labels.insert("session_id".into(), "same".into());
+            old.project = Some(ProjectRef::directory(std::env::temp_dir()));
+            old.status = AgentStatus::Exited { code: Some(0) };
+            old.finished_at = Some(now);
+            let mut fresh = old.clone();
+            fresh.id = AgentId::generate();
+            fresh.pid = Some(std::process::id());
+            fresh.status = AgentStatus::Running;
+            fresh.finished_at = None;
+            let mut state = lock(&daemon.state);
+            for record in [&old, &fresh] {
+                state.registry.insert(record.clone()).unwrap();
+                state.store.upsert_agent(record).unwrap();
+            }
+            state
+                .store
+                .put_document(
+                    "reads",
+                    if malformed_canonical {
+                        old.id.as_str()
+                    } else {
+                        fresh.id.as_str()
+                    },
+                    &json!("malformed"),
+                )
+                .unwrap();
+            let seq = state.next_seq;
+            assert_eq!(state.resume_session(fresh.clone()).id, fresh.id);
+            assert!(
+                state.storage_failure().is_some(),
+                "the read error disables further coordination"
+            );
+            assert_eq!(state.registry.all().count(), 2);
+            assert!(state.registry.aliases().is_empty());
+            assert!(state.store.identity_aliases().unwrap().is_empty());
+            assert_eq!(state.next_seq, seq);
         }
-        state
-            .store
-            .put_document("reads", fresh.id.as_str(), &json!("malformed"))
-            .unwrap();
-        let seq = state.next_seq;
-        assert_eq!(state.resume_session(fresh.clone()).id, fresh.id);
-        assert!(
-            state.storage_failure().is_some(),
-            "the read error disables further coordination"
-        );
-        assert_eq!(state.registry.all().count(), 2);
-        assert!(state.registry.aliases().is_empty());
-        assert!(state.store.identity_aliases().unwrap().is_empty());
-        assert_eq!(state.next_seq, seq);
     }
 
     /// While coordination is being handed over, a session's return is not
@@ -7108,6 +7160,16 @@ mod tests {
         // The new life's MCP half registers before the handover starts.
         let fresh = register("claude-code-9", None, new_life.id()).await;
         assert_ne!(fresh.id, old.id);
+        let retained = agentdocker_core::ReadMark {
+            path: "/fixture/retained.rs".into(),
+            version: "retained".into(),
+            head: None,
+            at: Utc::now(),
+        };
+        lock(&daemon.state)
+            .store
+            .put_document("reads", fresh.id.as_str(), &vec![retained.clone()])
+            .unwrap();
         daemon.offer_transfer(1).unwrap();
         let seq = lock(&daemon.state).next_seq;
         let mut named = fresh.clone();
@@ -7128,6 +7190,20 @@ mod tests {
             );
             assert!(state.registry.aliases().is_empty());
             assert_eq!(state.next_seq, seq, "no event while fenced");
+            assert_eq!(
+                state
+                    .store
+                    .document::<Vec<agentdocker_core::ReadMark>>("reads", fresh.id.as_str())
+                    .unwrap(),
+                Some(vec![retained.clone()])
+            );
+            assert!(
+                state
+                    .store
+                    .document::<Vec<agentdocker_core::ReadMark>>("reads", old.id.as_str())
+                    .unwrap()
+                    .is_none()
+            );
             assert!(state.registry.get(&old.id).unwrap().finished_at.is_some());
         }
         assert!(daemon.abort_transfer("cleanup"));
@@ -7139,6 +7215,20 @@ mod tests {
             assert_eq!(answered.pid, Some(new_life.id()));
             assert_eq!(state.registry.get(&fresh.id).map(|r| &r.id), Some(&old.id));
             assert_eq!(state.next_seq, seq + 1, "the fold's one event");
+            assert_eq!(
+                state
+                    .store
+                    .document::<Vec<agentdocker_core::ReadMark>>("reads", old.id.as_str())
+                    .unwrap(),
+                Some(vec![retained])
+            );
+            assert!(
+                state
+                    .store
+                    .document::<Vec<agentdocker_core::ReadMark>>("reads", fresh.id.as_str())
+                    .unwrap()
+                    .is_none()
+            );
         }
         new_life.kill().unwrap();
         new_life.wait().unwrap();
