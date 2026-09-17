@@ -152,8 +152,17 @@ project and human global input during one busy TUI turn and requires exact
 receipts, FIFO order and no later replay after baseline idle/draft/crash tests.
 `--scenario active-hook-lost` discards one offered hook output and requires the
 original queued IDs to remain paused without receipt or automatic resubmission.
-Implementation is under test; installed acceptance and broader provider parity
-remain open. The provider's [hook contract](https://learn.chatgpt.com/docs/hooks)
+Source `5545697` passed 14 focused tests, the full 1,093-Rust/84-Python gate
+(seven skipped), and both actual Codex 0.154.0 scenarios. Three peer/project/global
+inputs reached the same active turn in 8.7 seconds with separate exact receipts;
+the dropped-output trial retained all three IDs, paused, and did not invent a
+receipt or replay. Baseline idle wake, draft/FIFO preservation and receiver crash
+recovery passed. The old-binary failure and initial receipt-reader failure remain
+in the [existing evidence](verification/2026-09-15-native-codex-queue.json).
+The installed receiver still runs an older pinned release: installing the app
+alone does not change its immutable launch descriptor. A safe receiver upgrade
+and installed acceptance are required before closing this bug. Broader provider
+parity remains open. The provider's [hook contract](https://learn.chatgpt.com/docs/hooks)
 supports additional context without replacing the tool result.
 
 ## New managed conversations

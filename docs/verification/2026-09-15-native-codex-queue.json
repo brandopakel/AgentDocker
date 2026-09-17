@@ -2277,5 +2277,189 @@
       "Two old legacy offers were read and explicitly acknowledged before this trial; the new native-owned message was not manually read through legacy tools or acknowledged.",
       "Physical draft/input-method, sleep/reboot, multi-provider and sustained/burst acceptance remain separate."
     ]
+  },
+  "active_hook_acceptance_2026_09_17": {
+    "status": "bounded actual-client acceptance passed; installed receiver upgrade and broader provider parity remain open",
+    "source_commit": "55456975dfd92f7f9e21d739cf3f8b13386e9ba9",
+    "scope": "Actual Codex CLI 0.154.0, private PTY/profile and AgentDocker daemon, loopback model fixture. Human project/global and peer input use one FIFO owner and exact persisted provider hook receipts. Not a paid-model or installed-session trial.",
+    "trials": [
+      {
+        "result": "failed",
+        "scenario": "active-hook",
+        "source": {
+          "commit": "c931b6a2420307c3cae4c20ae9e793e9dc58fb87",
+          "dirty": false,
+          "rust_and_driver_sha256": "4439366f4e8584702c66af973c18d5503f293836582511c9fc9fd127b4110959"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "driver_sha256": "73b37e870c76afd946b8c09c36463748849de8a5d6ae3ac0a36dfcf128e30c45",
+        "cli_sha256": "caa1816b787b772497074fd4a61ff004368d477873435da7e496191ad9bd6d71",
+        "daemon_sha256": "192f8698781c71142ed9c7bff86885f3634836a06d30701239fc42a8068c3496",
+        "idle_wake_seconds": 7.168495958991116,
+        "automatic_receiver_restart_no_replay": true,
+        "cleanup_errors": [],
+        "raw_result_sha256": "dc45a4fe9a3eeaba53ab782885a9288d8a6ab033d9479a84a579c35bd688553c",
+        "artifact_directory": "/private/tmp/agentdocker-native-active-before1-2026-09-17",
+        "result_sha256": "6a1993b23b81835a303e4e3f572ed930191bcb10ad015ac6d57954c1a7f01712",
+        "finding": "Old binary: baseline idle/draft/FIFO/crash checks passed, but 15 additional active model requests saw none of the three queued markers."
+      },
+      {
+        "result": "failed",
+        "scenario": "active-hook",
+        "source": {
+          "commit": "e38f4a512b6fb4964bc2f205895e578e5c656689",
+          "dirty": false,
+          "rust_and_driver_sha256": "4d5dc6b9a8596acac0a7738fcec5cad401c52bf76df72c1a138388fdcb4f0399"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "driver_sha256": "6e8a6d4e05a4954b6ac33851360dc78b67d16eaab0792f02448bf7b2412e4157",
+        "cli_sha256": "fd1f337064da581e6a0b08758db3988e47e7a20d7455188185b6968a90b7c3ca",
+        "daemon_sha256": "192f8698781c71142ed9c7bff86885f3634836a06d30701239fc42a8068c3496",
+        "idle_wake_seconds": 7.043966541998088,
+        "automatic_receiver_restart_no_replay": true,
+        "cleanup_errors": [],
+        "raw_result_sha256": "722e8a7fcfd0155556d29f1d3a9cb835616dcec48e49e7f22d8b34955e72220e",
+        "artifact_directory": "/private/tmp/agentdocker-native-active-after1-2026-09-17",
+        "result_sha256": "7b940bf5a835930e1cbe49e4cb7b7135a0751cdfe959de4be5106f915fe53c5f",
+        "finding": "Initial candidate delivered the first hook context, but the public items API omitted its receipt. Original queue IDs were retained. The tagged persisted transcript reader corrects this gap."
+      },
+      {
+        "result": "passed",
+        "scenario": "active-hook-lost",
+        "source": {
+          "commit": "e38f4a512b6fb4964bc2f205895e578e5c656689",
+          "dirty": false,
+          "rust_and_driver_sha256": "4d5dc6b9a8596acac0a7738fcec5cad401c52bf76df72c1a138388fdcb4f0399"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "driver_sha256": "6e8a6d4e05a4954b6ac33851360dc78b67d16eaab0792f02448bf7b2412e4157",
+        "cli_sha256": "fd1f337064da581e6a0b08758db3988e47e7a20d7455188185b6968a90b7c3ca",
+        "daemon_sha256": "192f8698781c71142ed9c7bff86885f3634836a06d30701239fc42a8068c3496",
+        "idle_wake_seconds": 7.423600833979435,
+        "lost_hook_output": {
+          "retained_messages": [
+            "e8d66d50772842b3",
+            "e1572ebed3254258",
+            "e4c2aa1d4a8d445e"
+          ],
+          "paused": true,
+          "no_provider_receipt": true,
+          "no_blind_resubmission": true
+        },
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "automatic_receiver_restart_no_replay": true,
+        "cleanup_errors": [],
+        "model_requests": 18,
+        "raw_result_sha256": "a3f25d4a23d5d572be8d8cc703e3b21d658795c3735bb0684904afcd0dd58dcd",
+        "artifact_directory": "/private/tmp/agentdocker-native-active-lost1-2026-09-17",
+        "result_sha256": "e834ab643a7b3953597fe4812ce71649a9e467d97a469ad4cd858e4a7bdf72b9"
+      },
+      {
+        "result": "passed",
+        "scenario": "active-hook",
+        "source": {
+          "commit": "55456975dfd92f7f9e21d739cf3f8b13386e9ba9",
+          "dirty": false,
+          "rust_and_driver_sha256": "5076bba4df35bc7242322a9fa25c3547f67bb8b86f664a573f5187fbc0a589c9"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "driver_sha256": "6e8a6d4e05a4954b6ac33851360dc78b67d16eaab0792f02448bf7b2412e4157",
+        "cli_sha256": "fd85fd1e14eb944345770700c419a1ad41826a70cbcbfc363c25a4f59d66e18a",
+        "daemon_sha256": "192f8698781c71142ed9c7bff86885f3634836a06d30701239fc42a8068c3496",
+        "idle_wake_seconds": 7.127584583009593,
+        "active_hook": {
+          "messages": [
+            "b5bc7062fbf54cdb",
+            "7d1d879aad6c4df7",
+            "e97d9b9582fd424c"
+          ],
+          "receipts": [
+            {
+              "message": "b5bc7062fbf54cdb",
+              "receipt": {
+                "thread": "01a0ace0-26ff-7ea3-9ff8-72b2a8c9d308",
+                "turn": "01a0ace0-ef01-7b82-9181-eaf135a04b08",
+                "item": "msg_01a0ace0-efba-70c2-a1cb-43d2cb3cf49d"
+              }
+            },
+            {
+              "message": "7d1d879aad6c4df7",
+              "receipt": {
+                "thread": "01a0ace0-26ff-7ea3-9ff8-72b2a8c9d308",
+                "turn": "01a0ace0-ef01-7b82-9181-eaf135a04b08",
+                "item": "msg_01a0ace0-fc34-7183-8ed0-57f6a5952429"
+              }
+            },
+            {
+              "message": "e97d9b9582fd424c",
+              "receipt": {
+                "thread": "01a0ace0-26ff-7ea3-9ff8-72b2a8c9d308",
+                "turn": "01a0ace0-ef01-7b82-9181-eaf135a04b08",
+                "item": "msg_01a0ace1-092a-7aa1-8993-2881d39ba544"
+              }
+            }
+          ],
+          "seconds": 8.702980415982893,
+          "same_turn": true,
+          "model_requests": 3,
+          "original_provider_pid": 60617
+        },
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "automatic_receiver_restart_no_replay": true,
+        "cleanup_errors": [],
+        "model_requests": 11,
+        "raw_result_sha256": "36f51a2b3fb73db0c8d9da0a1eebbb8ae8f0c285f089fa621524a844ed09d391",
+        "artifact_directory": "/private/tmp/agentdocker-native-active-after2-2026-09-17",
+        "result_sha256": "ce69cec40d811d6161266b1b6095e71cd7881b1607bf786bd2589ea249c9670f"
+      },
+      {
+        "result": "passed",
+        "scenario": "active-hook-lost",
+        "source": {
+          "commit": "55456975dfd92f7f9e21d739cf3f8b13386e9ba9",
+          "dirty": false,
+          "rust_and_driver_sha256": "5076bba4df35bc7242322a9fa25c3547f67bb8b86f664a573f5187fbc0a589c9"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "driver_sha256": "6e8a6d4e05a4954b6ac33851360dc78b67d16eaab0792f02448bf7b2412e4157",
+        "cli_sha256": "fd85fd1e14eb944345770700c419a1ad41826a70cbcbfc363c25a4f59d66e18a",
+        "daemon_sha256": "192f8698781c71142ed9c7bff86885f3634836a06d30701239fc42a8068c3496",
+        "idle_wake_seconds": 7.133572874998208,
+        "lost_hook_output": {
+          "retained_messages": [
+            "2a2e8662f6794e15",
+            "d655a83ca90c460d",
+            "87396b06b25c40e2"
+          ],
+          "paused": true,
+          "no_provider_receipt": true,
+          "no_blind_resubmission": true
+        },
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "automatic_receiver_restart_no_replay": true,
+        "cleanup_errors": [],
+        "model_requests": 18,
+        "raw_result_sha256": "d00bb0a6f79ec32cdb00eaeff626992c4dc8eca27588b6c153a1871f38f6891c",
+        "artifact_directory": "/private/tmp/agentdocker-native-active-lost2-2026-09-17",
+        "result_sha256": "4b2c1c480f6ad30b96a0045ef1fa77796d5538dc260c79d9e79de07afcdfda02"
+      }
+    ],
+    "validation": {
+      "targeted_tests": 14,
+      "rust_tests": 1093,
+      "skipped": 7,
+      "python_checks": 84,
+      "format_lint_doctests_packaging_release": "passed",
+      "gate_log": "/private/tmp/agentdocker-native-hook-gate2-2026-09-17.log",
+      "junit": "/private/tmp/agentdocker-native-hook-gate2-nextest-2026-09-17/junit.xml"
+    },
+    "limitations": [
+      "Installed controller 94744 still runs its retained older release. Updating the application alone does not replace its immutable launch descriptor.",
+      "No arbitrary interruption without a provider tool boundary; human/peer contexts above 6000 bytes stay on the native idle route.",
+      "No-prompt startup/reopen, provider review/wait races and broader provider/service acceptance remain open."
+    ]
   }
 }

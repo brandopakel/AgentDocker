@@ -130,13 +130,19 @@ turn; existing Codex did not see it until after the human repeated the request
 and older native-queue entries drained. The September 17 UTC resume
 `ca2087509f184dd9` woke the idle Codex session, with a provider receipt at
 00:25:09 UTC, seven seconds after submission. Idle wake therefore does not close
-active delivery. A native hook handoff is being implemented in the existing
+active delivery. PR #169 implements a native hook handoff in the existing
 receiver: verified PreToolUse/PostToolUse calls receive the same FIFO input,
 with one owner, a durable offer, exact provider context receipt, and no competing hook
 ACK. An uncertain deletion/output retains the original message. Acceptance must
 cover the live busy TUI, project and global human sends, peer sends, retained
 drafts/questions, crash recovery and no later replay. This remains open until
-actual-provider and installed acceptance pass.
+installed acceptance and the remaining provider cases pass. Source `5545697`
+passed the actual Codex 0.154.0/local-model busy trial: peer, human project and
+global messages entered one active turn within 8.7 seconds with exact receipts.
+Dropped hook output retained the queued IDs without replay. The 1,093-Rust/84-Python
+gate passed (seven skipped). The existing receiver still needs a safe upgrade
+from its pinned older release; app installation alone does not change it.
+See the [existing evidence](verification/2026-09-15-native-codex-queue.json).
 
 The same resume requested @mentions, New DM/New channel, inviting agents/members,
 and Enter to send. Claude owns those interaction changes in the existing
