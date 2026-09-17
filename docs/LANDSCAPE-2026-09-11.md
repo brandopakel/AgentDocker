@@ -202,8 +202,11 @@ one alone. A card still assigned to an ended agent after its lease expires is
 stale; require confirmed card reassignment (or the person's explicit recovery)
 and a fresh successful lease claim before another agent starts. If the card was
 reassigned or closed while a local lease survives, release the old claim and
-report the transition. Lost replies must be reconciled by reading both states
-before retrying, so a retry cannot duplicate assignment or silently extend an
+report the transition. A lost reply enters an explicit uncertain state: stop work and automatic retries.
+Reading both states is diagnostic, not sufficient authority to replay a write.
+Recovery must use an idempotent or conditional operation tied to the original
+assignment, or a confirmed compensating action, before obtaining a fresh lease.
+Only then may work resume; recovery cannot duplicate assignment or renew an
 expired claim. These are acceptance requirements for the optional proposal,
 not delivered integration behavior.
 

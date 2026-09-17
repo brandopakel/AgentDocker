@@ -1713,7 +1713,73 @@
         ]
       },
       "native_scope": "Prior e6981a7 rendered workflow covers the unchanged composer controls. This follow-up changes retired-name accounting and adds an invitation reply regression; final-head graphical CI remains required. No physical Enter-key trial is claimed.",
-      "status": "source passed; final review, CI and install pending"
+      "status": "source passed; final review, CI and install pending",
+      "integration": {
+        "pr": 170,
+        "final_head": "4721b34971d303c89293e9ecea56041f8e6223be",
+        "merged_as": "7df165e2a483eb722aab8900590490f049cde931",
+        "merged_at": "2026-09-17T03:54:29Z",
+        "ci": "all final-head checks passed, including graphical jobs",
+        "review": "https://github.com/brandopakel/AgentDocker/pull/170#issuecomment-5706915605"
+      }
     }
+  },
+  "installed_messaging_upgrade_2026_09_17": {
+    "result": "passed within stated installation scope",
+    "activated_at": "2026-09-17T03:58:24Z",
+    "candidate": "79981bebcc3f66b5d848a63f26b0b894698b73c9872c5c91c38dd2cc0159214f",
+    "source": "5c461e0df33be607ffd98b4b78b0f26f54f2dfda",
+    "schema": 22,
+    "providers_preserved": true,
+    "old_controller": {
+      "pid": 20912,
+      "started_at": "2026-09-17T02:57:52.717071Z"
+    },
+    "new_controller": {
+      "pid": 29976,
+      "started_at": "2026-09-17T03:58:23.432374Z"
+    },
+    "token_and_binding_preserved": true,
+    "retained_old_receipts_confirmed": 97,
+    "bounded_oldest_receipt_evictions": 0,
+    "external_provider_count": 4,
+    "previous_release": "9bc0f0fc1045ebb25c5b68641142bb4f6954440ba44cdf03613eeb964b5a627d",
+    "backup": "<private-evidence>/state.db",
+    "private_evidence": "/private/tmp/agentdocker-installed-messaging-20260917T035818Z",
+    "daemon_pid": 29921,
+    "gui_pid": 29983,
+    "gui_scope": "Observed visible editable fields were empty; this does not establish hidden GUI draft persistence",
+    "gui_restarted": true,
+    "installed_controls": {
+      "result": "New message or channel form opened through actual installed macOS accessibility controls",
+      "scope": "Selected project, Messages and New message or channel; observed Direct message/Channel choices and live-agent picks. No new DM/channel was submitted.",
+      "physical_enter": "not attempted; macOS CGSessionCopyCurrentDictionary reported CGSSessionScreenIsLocked=true",
+      "next_step": "physical Enter/IME and compose acceptance after the screen is unlocked",
+      "screenshot": "<private-evidence>/create-form.png"
+    },
+    "limits": [
+      "Does not establish persistence of hidden GUI drafts",
+      "Does not establish idle input for plain Claude sessions",
+      "Does not establish public signing/notarization or unattended live daemon transfer"
+    ],
+    "sanitization": "Only installation identity, process IDs and retention counts are retained here; raw receiver bindings, tokens, ledgers and state backup stay private."
+  },
+  "linux_transport_failure_2026_09_17": {
+    "pr": 172,
+    "source_commit": "862dce0f6e5f7f77a91ad8b23c910c90b92deae3",
+    "job": "https://github.com/brandopakel/AgentDocker/actions/runs/35179786336/job/105069250531",
+    "artifact_id": 10480450783,
+    "result": "failed: transport observation refused",
+    "observation": {
+      "process_index": 1,
+      "pid": 9128,
+      "reason": "transport could not be checked",
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "lsof: WARNING: can't stat() ext4 file system /var/lib/containers/storage/overlay\n      Output information may be incomplete.\n",
+      "process_status": null
+    },
+    "diagnosis": "This run captured an lsof mount-stat warning in the transport observer; it does not establish absence or presence of TCP. A previous Linux ARM failure did not retain this detail and is not explained by this later result.",
+    "log": "/private/tmp/agentdocker-pr172-linux-failure-20260917.log"
   }
 }
