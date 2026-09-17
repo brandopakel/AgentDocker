@@ -1026,6 +1026,11 @@ impl App {
                         .collect();
                     merged.extend(messages);
                     self.keep_history(conversation.clone(), merged);
+                    if let Some(seek) = &mut self.reveal_archived
+                        && seek.conversation == conversation
+                    {
+                        seek.refresh_pending = false;
+                    }
                     self.seek_archived(&conversation);
                 }
                 Msg::HistoryEarlier(conversation, epoch, earlier) => {
@@ -1286,9 +1291,8 @@ impl App {
                 self.thread = None;
                 // A notification's search starts over from the newest
                 // page: the page it was waiting for is of the old archive.
-                if let Some(seek) = &mut self.reveal_archived {
-                    seek.pages = 0;
-                    seek.before = None;
+                if let Some(seek) = self.reveal_archived.clone() {
+                    self.start_archive_reveal(seek.conversation, seek.message);
                 }
                 self.on_conversation_activity();
             }
@@ -1554,6 +1558,35 @@ impl App {
     /// archive, past the newest one.
     const REVEAL_PAGES: usize = 5;
 
+    /// A notification needs a fresh answer before cached history can say
+    /// its message is missing. A new epoch rejects already queued responses,
+    /// including one for the same conversation from before the click.
+    fn start_archive_reveal(&mut self, conversation: String, message: MessageId) {
+        self.cancel_reveal();
+        self.history_epoch += 1;
+        if self.queue_reveal_page(Cmd::History(conversation.clone(), self.history_epoch)) {
+            self.reveal_archived = Some(Seek {
+                conversation,
+                message,
+                pages: 0,
+                before: None,
+                refresh_pending: true,
+            });
+        }
+    }
+
+    /// Unlike a periodic refresh, a refused notification lookup must finish
+    /// with an error: there will be no page response to advance its cursor.
+    fn queue_reveal_page(&mut self, command: Cmd) -> bool {
+        if let Err(queue::Rejected { reason, .. }) = self.tx.send(command) {
+            self.cancel_reveal();
+            self.say(reason);
+            false
+        } else {
+            true
+        }
+    }
+
     /// A page of a conversation arrived: if a notification's message is
     /// wanted there, it is either on view now — the next tick scrolls to
     /// it — or further back, and the page before is asked for, up to a
@@ -1572,6 +1605,9 @@ impl App {
         }
         if self.shell.conversation.as_deref() != Some(conversation) {
             self.reveal_archived = None;
+            return;
+        }
+        if seek.refresh_pending {
             return;
         }
         // No page yet: the one asked for is still on its way.
@@ -1631,16 +1667,17 @@ impl App {
             return;
         }
         let first = first.expect("checked");
-        self.reveal_archived = Some(Seek {
-            pages: seek.pages + 1,
-            before: Some(first),
-            ..seek
-        });
-        self.send(Cmd::HistoryBefore(
+        if self.queue_reveal_page(Cmd::HistoryBefore(
             conversation.to_owned(),
             first,
             self.history_epoch,
-        ));
+        )) {
+            self.reveal_archived = Some(Seek {
+                pages: seek.pages + 1,
+                before: Some(first),
+                ..seek
+            });
+        }
     }
 
     /// A seek and a deferred scroll are a notification's, for the
@@ -2745,6 +2782,7 @@ pub(crate) struct Seek {
     pub message: MessageId,
     pub pages: usize,
     pub before: Option<u64>,
+    pub refresh_pending: bool,
 }
 
 #[cfg(test)]
@@ -4209,6 +4247,7 @@ pub(crate) mod tests {
             message: MessageId::from(message.to_owned()),
             pages: 0,
             before: None,
+            refresh_pending: false,
         };
         app.reveal_archived = Some(seek("m950"));
         messages
@@ -4312,6 +4351,130 @@ pub(crate) mod tests {
         assert!(asked <= App::REVEAL_PAGES);
     }
 
+    /// A cached complete page and replies queued before the click cannot
+    /// declare a new notification missing. Only the fresh request can finish it.
+    #[test]
+    fn a_notification_waits_for_fresh_history_before_using_a_cached_archive() {
+        let (tx, requests) = queue::channel();
+        let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        let room = "channel:abc".to_owned();
+        app.shell.conversation = Some(room.clone());
+        app.history.insert(room.clone(), Vec::new());
+        app.history_complete.insert(room.clone());
+        let envelope = agentdocker_core::Envelope::new(
+            "a",
+            agentdocker_core::Destination::Broadcast,
+            "chat",
+            serde_json::json!({"text": "new since the cached page"}),
+            None,
+            Utc::now(),
+        );
+        let target = envelope.id.clone();
+        let old_epoch = app.history_epoch;
+        app.start_archive_reveal(room.clone(), target.clone());
+        assert!(
+            matches!(requests.try_iter().next(), Some(Cmd::History(c, epoch))
+            if c == room && epoch == app.history_epoch && epoch != old_epoch)
+        );
+        app.seek_archived(&room);
+        assert!(app.reveal_archived.as_ref().unwrap().refresh_pending);
+        messages
+            .send(Msg::History(room.clone(), old_epoch, Vec::new()))
+            .unwrap();
+        messages
+            .send(Msg::HistoryEarlier(room.clone(), old_epoch, Vec::new()))
+            .unwrap();
+        app.drain();
+        assert!(app.reveal_archived.as_ref().unwrap().refresh_pending);
+        assert!(app.status.is_empty());
+        assert!(app.shell.reveal_archived_next.is_none());
+        messages
+            .send(Msg::History(
+                room.clone(),
+                app.history_epoch,
+                vec![agentdocker_core::ArchivedMessage {
+                    seq: 1,
+                    conversation: agentdocker_core::ConversationId::from(room),
+                    envelope,
+                    replies: 0,
+                }],
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.reveal_archived.is_none());
+        assert_eq!(app.shell.reveal_archived_next.as_ref(), Some(&target));
+        assert!(app.status.is_empty());
+        assert_eq!(requests.try_iter().count(), 0);
+    }
+
+    /// Both the first page and subsequent pages must be admitted before
+    /// the lookup waits for them. Refusal leaves no cursor or deferred scroll.
+    #[test]
+    fn a_notification_reports_refused_history_requests_instead_of_waiting() {
+        for earlier in [false, true] {
+            for stopped in [false, true] {
+                let (tx, requests) = queue::channel();
+                let (_messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+                let mut app = App::bare(tx, rx);
+                app.connected = Ok(());
+                let room = "channel:abc".to_owned();
+                app.shell.conversation = Some(room.clone());
+                let target = MessageId::from("missing".to_owned());
+                if earlier {
+                    app.start_archive_reveal(room.clone(), target.clone());
+                    assert_eq!(requests.try_iter().count(), 1);
+                    app.reveal_archived.as_mut().unwrap().refresh_pending = false;
+                    let page = (1..=HISTORY_PAGE as u64)
+                        .map(|seq| agentdocker_core::ArchivedMessage {
+                            seq,
+                            conversation: agentdocker_core::ConversationId::from(room.clone()),
+                            envelope: agentdocker_core::Envelope::new(
+                                "a",
+                                agentdocker_core::Destination::Broadcast,
+                                "chat",
+                                serde_json::json!({"text": seq}),
+                                None,
+                                Utc::now(),
+                            ),
+                            replies: 0,
+                        })
+                        .collect();
+                    app.history.insert(room.clone(), page);
+                }
+                let requests = if stopped {
+                    drop(requests);
+                    None
+                } else {
+                    for _ in 0..queue::CAPACITY {
+                        app.tx.send(Cmd::History("another".into(), 0)).unwrap();
+                    }
+                    Some(requests)
+                };
+                if earlier {
+                    app.seek_archived(&room);
+                } else {
+                    app.start_archive_reveal(room, target);
+                }
+                assert!(app.reveal_archived.is_none());
+                assert!(app.shell.reveal_archived_next.is_none());
+                assert!(
+                    app.status.contains(if stopped {
+                        "worker stopped"
+                    } else {
+                        "queue is full"
+                    }),
+                    "earlier={earlier}, stopped={stopped}: {}",
+                    app.status
+                );
+                if let Some(requests) = requests {
+                    assert_eq!(requests.try_iter().count(), queue::CAPACITY);
+                }
+            }
+        }
+    }
+
     /// A notification's search ends with a word when the archive has no
     /// page before (an empty page, not a full one, is the terminal case),
     /// when the window holds all it keeps, when the daemon goes, or when
@@ -4354,6 +4517,7 @@ pub(crate) mod tests {
             message: MessageId::from(message.to_owned()),
             pages: 0,
             before: None,
+            refresh_pending: false,
         };
         let asked = |requests: &CommandReceiver| {
             requests

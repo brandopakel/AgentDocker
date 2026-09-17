@@ -1876,16 +1876,11 @@ impl App {
         // back for it if the conversation was already open at its newest
         // — a click on a notification must always show its message.
         if self.has_conversations()
+            && !is_question
             && self.screen == Screen::Questions
             && let Some(conversation) = self.shell.conversation.clone()
         {
-            self.reveal_archived = Some(super::Seek {
-                conversation: conversation.clone(),
-                message: target.message.clone(),
-                pages: 0,
-                before: None,
-            });
-            self.seek_archived(&conversation);
+            self.start_archive_reveal(conversation, target.message.clone());
         }
         // Revealing the card expands its retained text and scrolls to it. Existing answer/channel
         // drafts and their keyboard focus are not submitted or rewritten.
@@ -2420,6 +2415,10 @@ mod tests {
     fn notification_waits_for_data_then_opens_the_question_without_submitting_drafts() {
         let (mut app, commands, messages, home, mut action) = notification_app();
         app.shell.inbox_thread = Some("another-agent".into());
+        app.conversations_supported = Some(true);
+        let conversation = agentdocker_core::ConversationId::dm("user", "sender-1").to_string();
+        app.history.insert(conversation.clone(), Vec::new());
+        app.history_complete.insert(conversation);
         let project = crate::catalog::resolve(home.path()).unwrap();
         app.shell.catalog.remember(project.clone(), false);
         action.target.project = Some(project.id());
@@ -2461,9 +2460,18 @@ mod tests {
             "unfinished channel message"
         );
         assert!(app.sending.is_empty());
+        assert!(
+            app.reveal_archived.is_none(),
+            "a live question is not an archive lookup"
+        );
+        assert!(app.status.is_empty(), "no false missing-archive warning");
         assert!(commands.try_iter().all(|cmd| !matches!(
             cmd,
-            Cmd::Answer(..) | Cmd::ChannelSend(..) | Cmd::Launch(..) | Cmd::Stop(..)
+            Cmd::Answer(..)
+                | Cmd::ChannelSend(..)
+                | Cmd::Launch(..)
+                | Cmd::Stop(..)
+                | Cmd::HistoryBefore(..)
         )));
     }
 
