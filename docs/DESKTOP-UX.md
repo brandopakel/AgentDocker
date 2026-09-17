@@ -299,6 +299,8 @@ and notarization; locally signed builds are explicit previews.
 ## Keyboard and terminal
 
 - Tab and Shift-Tab move between controls; Enter/Space activate a focused button.
+  The focus ring is the keyboard's: a click focuses a control without one, and
+  the next key press shows it on whatever is focused.
 - Command/Ctrl+1–4 switch Projects, Inbox, Tools and Settings.
 - Escape closes session details or an add/launch form.
 - F6 moves focus out of terminal input. Control+] detaches.

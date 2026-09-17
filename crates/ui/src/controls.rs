@@ -129,6 +129,17 @@ use iced::{Border, Element, Event, Length, Rectangle, Size, keyboard, mouse};
 pub struct Focus {
     pub focused: bool,
     pub id: Option<String>,
+    /// Whether the focus came from a click. The ring is for the
+    /// keyboard — it says where Tab has put the focus, which the pointer
+    /// already knows — so a clicked control is focused without one, and
+    /// the next key press shows it again.
+    pub by_pointer: bool,
+}
+impl Focus {
+    /// Whether to draw the ring: focused, and not by a click.
+    pub fn ringed(&self) -> bool {
+        self.focused && !self.by_pointer
+    }
 }
 impl widget::operation::Focusable for Focus {
     fn is_focused(&self) -> bool {
@@ -139,6 +150,7 @@ impl widget::operation::Focusable for Focus {
     }
     fn unfocus(&mut self) {
         self.focused = false;
+        self.by_pointer = false;
     }
 }
 
@@ -166,6 +178,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
         let state = tree.state.downcast_mut::<Focus>();
         if state.id.as_deref() != Some(self.semantic.id.as_str()) {
             state.focused = false;
+            state.by_pointer = false;
             state.id = Some(self.semantic.id.clone());
         }
         tree.diff_children(std::slice::from_ref(&self.content));
@@ -215,12 +228,18 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
         viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_mut::<Focus>();
+        // A key press is the keyboard asking where it is: whichever
+        // control is focused shows its ring from here on.
+        if matches!(event, Event::Keyboard(keyboard::Event::KeyPressed { .. })) {
+            state.by_pointer = false;
+        }
         if self.semantic.role != accesskit::Role::Button || self.semantic.action.is_some() {
             if matches!(
                 event,
                 Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
             ) && cursor.is_over(layout.bounds())
             {
+                state.by_pointer = true;
                 shell.publish(Message::Focus(self.semantic.id.clone()));
             }
             if self.button
@@ -268,7 +287,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Control<'_> {
             cursor,
             viewport,
         );
-        if self.button && tree.state.downcast_ref::<Focus>().focused {
+        if self.button && tree.state.downcast_ref::<Focus>().ringed() {
             renderer.fill_quad(
                 renderer::Quad {
                     bounds: layout.bounds(),
@@ -724,6 +743,61 @@ mod tests {
                 assert!(messages.iter().all(|m| matches!(m, Message::ShowAdd)));
             }
         }
+    }
+    /// A click focuses a control without a ring — the pointer knows
+    /// where it clicked — and the next key press shows the ring on
+    /// whatever is focused; losing focus forgets the click.
+    #[test]
+    fn a_clicked_control_is_focused_without_a_ring_until_the_keyboard_asks() {
+        use iced::advanced::widget::operation::Focusable;
+        let renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
+        let mut element = button("add", "Add project", Some(Message::ShowAdd), false);
+        let mut tree = Tree::new(&element);
+        let node = element.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &layout::Limits::new(Size::ZERO, Size::new(400.0, 100.0)),
+        );
+        let viewport = Rectangle::with_size(Size::new(400.0, 100.0));
+        let mut update = |element: &mut Element<'_, Message>, tree: &mut Tree, event: &Event| {
+            let mut messages = Vec::new();
+            let mut shell = Shell::new(&mut messages);
+            element.as_widget_mut().update(
+                tree,
+                event,
+                Layout::new(&node),
+                mouse::Cursor::Available(iced::Point::new(4.0, 4.0)),
+                &renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut shell,
+                &viewport,
+            );
+            messages
+        };
+        let click = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let clicked = update(&mut element, &mut tree, &click);
+        assert!(
+            matches!(clicked.as_slice(), [Message::Focus(id)] if id == "add"),
+            "a click asks for the focus"
+        );
+        tree.state.downcast_mut::<Focus>().focus();
+        assert!(
+            !tree.state.downcast_ref::<Focus>().ringed(),
+            "focused by a click: no ring"
+        );
+        update(
+            &mut element,
+            &mut tree,
+            &press(keyboard::Key::Named(keyboard::key::Named::Tab), false),
+        );
+        assert!(
+            tree.state.downcast_ref::<Focus>().ringed(),
+            "the keyboard asked: the ring shows"
+        );
+        tree.state.downcast_mut::<Focus>().unfocus();
+        update(&mut element, &mut tree, &click);
+        tree.state.downcast_mut::<Focus>().focus();
+        assert!(!tree.state.downcast_ref::<Focus>().ringed());
     }
     #[test]
     fn reordering_session_controls_does_not_transfer_keyboard_focus_to_another_agent() {

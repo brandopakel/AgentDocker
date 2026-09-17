@@ -434,6 +434,10 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- The Board's five columns share the width, and an open card's title,
+  acceptance text and moves sit beneath them where there is room to read
+  them (under the card when the window is narrow). A clicked control no
+  longer keeps a focus ring: the ring is the keyboard's.
 - A project pause: `agentdocker pause "reason"` tells every agent in the
   project to hold — the reason reaches each live one as a `pause` message
   and their new leases are refused with it until `pause --lift`; `pause
