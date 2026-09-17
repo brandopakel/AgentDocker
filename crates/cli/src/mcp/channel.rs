@@ -131,6 +131,9 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
     let mut vouch_deadline: Option<tokio::time::Instant> = None;
     let mut vouch_tick = tokio::time::interval(POLL_EVERY);
     vouch_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // One look at the daemon's record at a time, polled beside the
+    // transport so a slow daemon never holds up control or receipts.
+    let mut look: Option<Pin<Box<dyn Future<Output = Option<String>> + '_>>> = None;
     let mut tick = tokio::time::interval(POLL_EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut offered: Option<(MessageId, tokio::time::Instant, bool)> = None;
@@ -201,26 +204,37 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
             }
             // Waiting for the hooks adapter to vouch for a resumed session:
             // the record this process is must carry a session id and be
-            // this very process (pid and birth). Which session the hook
-            // names is accepted as it is, even when it differs from what
-            // the command line asked for; a record for some other process
-            // generation vouches for nothing. Past the deadline, input is
-            // bound unvouched and the daemon's own guard keeps an earlier
-            // record separate — said so, not hidden.
-            _ = vouch_tick.tick(), if initialized && !ready => {
-                let vouch = server.resume_vouch.as_ref().expect("waiting only for a resume");
-                let record = tokio::time::timeout(IO_TIMEOUT, server.backend.call(Request::Inspect {
-                    agent: server.identity.id.clone(),
-                })).await;
-                let vouched = match record {
-                    Ok(Ok(Response::Agent { agent }))
-                        if agent.pid == server.identity.host_pid
-                            && agent.process_started_at == server.identity.host_started_at =>
-                    {
-                        agent.spec.labels.get("session_id").filter(|id| !id.is_empty()).cloned()
+            // this very process (pid and birth, both known). Which session
+            // the hook names is accepted as it is, even when it differs
+            // from what the command line asked for; a record for some
+            // other or unknown process generation vouches for nothing.
+            // Past the deadline, input is bound unvouched and the daemon's
+            // own guard keeps an earlier record separate — said so, not
+            // hidden.
+            _ = vouch_tick.tick(), if initialized && !ready && look.is_none() => {
+                look = Some(Box::pin(async {
+                    let record = tokio::time::timeout(IO_TIMEOUT, server.backend.call(Request::Inspect {
+                        agent: server.identity.id.clone(),
+                    })).await;
+                    match record {
+                        Ok(Ok(Response::Agent { agent }))
+                            if agent.pid.is_some()
+                                && agent.pid == server.identity.host_pid
+                                && agent.process_started_at.is_some()
+                                && agent.process_started_at == server.identity.host_started_at =>
+                        {
+                            agent.spec.labels.get("session_id").filter(|id| !id.is_empty()).cloned()
+                        }
+                        _ => None,
                     }
-                    _ => None,
-                };
+                }));
+            }
+            vouched = poll_fn(|cx| match look.as_mut() {
+                Some(pending) => pending.as_mut().poll(cx),
+                None => Poll::Pending,
+            }), if look.is_some() => {
+                look = None;
+                let vouch = server.resume_vouch.as_ref().expect("waiting only for a resume");
                 let expired = vouch_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline);
                 if let Some(session) = vouched {
                     match &vouch.requested {
@@ -647,6 +661,8 @@ mod tests {
             AfterPolls(usize),
             Other,
             WrongGeneration,
+            MissingGeneration,
+            SlowInspect,
             Never,
         }
         struct Hooks {
@@ -664,6 +680,11 @@ mod tests {
                     Request::Inspect { .. } => {
                         let n = self.inspects.get() + 1;
                         self.inspects.set(n);
+                        if self.vouch == Vouch::SlowInspect {
+                            // The daemon never answers: each look is bounded
+                            // by the transport timeout, and the wait still ends.
+                            std::future::pending::<()>().await;
+                        }
                         let mut record = agentdocker_core::AgentRecord::new(
                             agentdocker_core::AgentSpec {
                                 name: "fixture".into(),
@@ -685,7 +706,12 @@ mod tests {
                                     Some(self.started - chrono::Duration::hours(1));
                                 Some("requested-session")
                             }
-                            Vouch::Never => None,
+                            Vouch::MissingGeneration => {
+                                record.pid = None;
+                                record.process_started_at = None;
+                                Some("requested-session")
+                            }
+                            Vouch::SlowInspect | Vouch::Never => None,
                         };
                         if let Some(session) = session {
                             record
@@ -724,6 +750,8 @@ mod tests {
             Vouch::AfterPolls(3),
             Vouch::Other,
             Vouch::WrongGeneration,
+            Vouch::MissingGeneration,
+            Vouch::SlowInspect,
             Vouch::Never,
         ] {
             let started = chrono::Utc::now();
@@ -749,6 +777,8 @@ mod tests {
                 requested: Some("requested-session".into()),
                 wait: Duration::from_secs(10),
             });
+            let waits = !matches!(vouch, Vouch::Immediate | Vouch::Other);
+            let first_id = server.backend.queue.0.borrow()[0].id.clone();
             let (transport, client) = tokio::io::duplex(8192);
             let (input, output) = tokio::io::split(transport);
             let trial = async {
@@ -760,36 +790,61 @@ mod tests {
                 )
                 .await
                 .unwrap();
-                // Control keeps working while the vouch is awaited.
-                write_line(
-                    &mut writer,
-                    &json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
-                )
-                .await
-                .unwrap();
-                // The ping is answered and, once input is bound — after the
-                // full wait, for a vouch that never comes — the first
-                // message offered, in whichever order the two land.
-                let mut frames = Vec::new();
-                for _ in 0..2 {
+                async fn receive_within(
+                    reader: &mut BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+                    secs: u64,
+                ) -> Value {
                     let mut frame = Vec::new();
                     let bytes = tokio::time::timeout(
-                        Duration::from_secs(30),
-                        read_frame(&mut reader, &mut frame),
+                        Duration::from_secs(secs),
+                        read_frame(reader, &mut frame),
                     )
                     .await
                     .expect("missing channel frame")
                     .unwrap()
                     .unwrap();
-                    frames.push(serde_json::from_slice::<Value>(&bytes).unwrap());
+                    serde_json::from_slice::<Value>(&bytes).unwrap()
                 }
-                assert!(frames.iter().any(|f| f["id"] == 1), "{vouch:?}: {frames:?}");
+                if waits {
+                    // While the vouch is awaited nothing is bound or offered,
+                    // yet control and an explicit receipt are answered at
+                    // once: the wait costs the session nothing it needs.
+                    write_line(
+                        &mut writer,
+                        &json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+                    )
+                    .await
+                    .unwrap();
+                    let reply = receive_within(&mut reader, 1).await;
+                    assert_eq!(reply["id"], 1, "{vouch:?}: {reply}");
+                    write_line(
+                        &mut writer,
+                        &json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+                        "params":{"name":"acknowledge_messages","arguments":{"messages":[first_id]}}}),
+                    )
+                    .await
+                    .unwrap();
+                    let reply = receive_within(&mut reader, 1).await;
+                    assert_eq!(reply["id"], 2, "{vouch:?}: {reply}");
+                    assert_eq!(
+                        server.backend.ready_reports.get(),
+                        0,
+                        "{vouch:?}: not yet bound"
+                    );
+                    assert_eq!(
+                        server.backend.queue.0.borrow().len(),
+                        1,
+                        "{vouch:?}: the receipt landed"
+                    );
+                }
+                // Then, once input is bound — after the full wait, for a
+                // vouch that never comes — the first message is offered.
+                let offer = receive_within(&mut reader, 30).await;
                 assert!(
-                    frames
-                        .iter()
-                        .any(|f| f["params"]["meta"]["message_id"].is_string()),
-                    "{vouch:?}: {frames:?}"
+                    offer["params"]["meta"]["message_id"].is_string(),
+                    "{vouch:?}: {offer}"
                 );
+                assert_eq!(server.backend.ready_reports.get(), 1, "{vouch:?}");
                 writer.shutdown().await.unwrap();
             };
             let (result, ()) = tokio::join!(
@@ -812,10 +867,18 @@ mod tests {
                 }
                 Vouch::AfterPolls(k) => assert_eq!(inspects, k + 1, "{vouch:?}"),
                 // Never vouched: looked until the ten-second wait, then bound.
-                Vouch::WrongGeneration | Vouch::Never => {
+                Vouch::WrongGeneration | Vouch::MissingGeneration | Vouch::Never => {
                     assert!(
                         inspects >= 30,
                         "{vouch:?}: waited the full deadline ({inspects} looks)"
+                    )
+                }
+                // Each look was bounded by the transport timeout, so the
+                // wait ended on the deadline rather than hanging on one.
+                Vouch::SlowInspect => {
+                    assert!(
+                        (4..=6).contains(&inspects),
+                        "{vouch:?}: {inspects} bounded looks"
                     )
                 }
             }
