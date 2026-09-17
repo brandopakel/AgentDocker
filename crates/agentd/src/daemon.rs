@@ -1636,6 +1636,20 @@ impl Daemon {
                 launch,
                 Utc::now(),
             ),
+            Request::UpgradeController {
+                agent,
+                provider,
+                controller,
+                previous,
+                launch,
+                token,
+            } => lock(&self.state).upgrade_controller(
+                &agent,
+                (provider, controller, previous),
+                launch,
+                &token,
+                Utc::now(),
+            ),
             Request::UnbindInput {
                 agent,
                 token,

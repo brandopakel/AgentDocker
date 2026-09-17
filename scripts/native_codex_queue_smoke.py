@@ -69,6 +69,7 @@ parser.add_argument(
         "baseline",
         "active-hook",
         "active-hook-lost",
+        "controller-upgrade",
         "long-busy",
         "startup",
         "lifecycle",
@@ -89,11 +90,15 @@ parser.add_argument(
     type=Path,
     help="Older MCP CLI for the synchronous question migration trial",
 )
+parser.add_argument("--initial-receiver-cli", type=Path,
+    help="Older immutable CLI used to bootstrap the controller-upgrade scenario")
 args = parser.parse_args()
 if args.reload and args.scenario not in ("baseline", "question"):
     parser.error("--reload supports baseline and question only")
 if args.scenario in ("legacy-question", "legacy-reply", "migration") and (not args.legacy_cli):
     parser.error("legacy-question, legacy-reply and migration require --legacy-cli")
+if args.scenario == "controller-upgrade" and not args.initial_receiver_cli:
+    parser.error("controller-upgrade requires --initial-receiver-cli")
 if os.name != "posix":
     parser.error("This PTY acceptance driver requires a Unix host")
 cli = args.cli.resolve(strict=True)
@@ -244,7 +249,7 @@ class Handler(BaseHTTPRequestHandler):
             {"type": "response.output_item.done", "output_index": 0, "item": item},
             {"type": "response.completed", "response": response},
         ]
-        active_hook = (args.scenario in ("active-hook", "active-hook-lost") and users
+        active_hook = (args.scenario in ("active-hook", "active-hook-lost", "controller-upgrade") and users
             and "ACTIVE_HOOK_START" in json.dumps(users[-1])
             and not all(marker in json.dumps(body.get("input", [])) for marker in
                         ("PEER_ACTIVE_HOOK", "HUMAN_PROJECT_PAUSE", "HUMAN_BROADCAST_PAUSE")))
@@ -253,7 +258,7 @@ class Handler(BaseHTTPRequestHandler):
         if bootstrap or active_hook:
             code = (
                 "import os,json,subprocess; subprocess.run(["
-                + repr(str(cli))
+                + repr(str(args.initial_receiver_cli.resolve(strict=True) if args.scenario == "controller-upgrade" else cli))
                 + ",'hook','codex'],input=json.dumps({'hook_event_name':'PostToolUse','session_id':os.environ['CODEX_THREAD_ID'],'cwd':os.getcwd()}),text=True,check=True)"
             )
             if active_hook:
@@ -507,9 +512,12 @@ try:
                     + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n'
                 )
             provider_prefix = [codex, "--no-alt-screen"]
-            if args.scenario in ("startup", "lifecycle", "active-hook", "active-hook-lost"):
+            if args.scenario in ("startup", "lifecycle", "active-hook", "active-hook-lost", "controller-upgrade"):
                 # The only hook in this private profile is this reviewed fixture
                 # command. One-off trust does not change any user's saved policy.
+                hook_cli_path = root / "hook-cli.txt"
+                hook_cli_path.write_text(str(args.initial_receiver_cli.resolve(strict=True)
+                    if args.scenario == "controller-upgrade" else cli))
                 hook_runner = root / "hook_capture.py"
                 hook_runner.write_text(
                     "import json,os,subprocess,sys\n"
@@ -519,7 +527,8 @@ try:
                     + repr(str(out / "hook-input.json"))
                     + ").write_text(raw)\n"
                     + "p=subprocess.run("
-                    + repr([str(cli), "--socket", str(sock), "hook", "codex"])
+                    + "[Path(" + repr(str(hook_cli_path)) + ").read_text(),"
+                    + repr("--socket") + "," + repr(str(sock)) + ", 'hook', 'codex']"
                     + ",input=raw,text=True,capture_output=True)\n"
                     + "Path("
                     + repr(str(out / "hook-stderr.log"))
@@ -538,7 +547,7 @@ try:
                             "hooks": {
                                 event: [{"hooks": [{"type": "command",
                                     "command": shlex.join([sys.executable, str(hook_runner)])}]}]
-                                for event in (["PreToolUse", "PostToolUse"] if args.scenario in ("active-hook", "active-hook-lost") else ["SessionStart"])
+                                for event in (["PreToolUse", "PostToolUse"] if args.scenario in ("active-hook", "active-hook-lost", "controller-upgrade") else ["SessionStart"])
                             }
                         }
                     )
@@ -1354,7 +1363,7 @@ try:
                     15,
                 )
                 report["idle_wake_after_receiver_crash"] = True
-            if args.scenario in ("active-hook", "active-hook-lost"):
+            if args.scenario in ("active-hook", "active-hook-lost", "controller-upgrade"):
                 ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
                 start = len(report["requests"])
                 os.write(master, b"ACTIVE_HOOK_START")
@@ -1371,6 +1380,33 @@ try:
                     result = rpc({"op":"send", "from":sender, "to":destination,
                         "kind":"chat", "payload":{"text":marker}})
                     sent.append(result["message"])
+                if args.scenario == "controller-upgrade":
+                    initial = rpc({"op":"inspect", "agent":aid})["agent"]["input_binding"]
+                    wait(lambda: (json.loads(ledgerpath.read_text()).get("attempt") or {}).get("queued"), 15)
+                    pending = json.loads(ledgerpath.read_text())
+                    assert pending["version"] == 2, "the initial receiver must exercise old-ledger migration"
+                    assert pending["attempt"]["message"] == sent[0]
+                    old_queue_id = pending["attempt"]["queued"]
+                    old_completed = pending["completed"]
+                    controller_pids.add(initial["controller"]["pid"])
+                    hook_cli_path.write_text(str(cli))
+                    upgrade = subprocess.run([str(cli), "--socket", str(sock), "codex-queue-upgrade", "--agent", aid],
+                        env=daemon_env, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=75)
+                    (out / "upgrade-command.log").write_text(upgrade.stdout + upgrade.stderr)
+                    assert upgrade.returncode == 0, "receiver upgrade command failed"
+                    upgraded = rpc({"op":"inspect", "agent":aid})["agent"]["input_binding"]
+                    assert upgraded["provider"] == initial["provider"]
+                    assert upgraded["controller"] != initial["controller"]
+                    controller_pids.add(upgraded["controller"]["pid"])
+                    assert upgraded["launch"]["executable"] == str(cli)
+                    assert upgraded["token_sha256"] == initial["token_sha256"]
+                    assert upgraded["bound_at"] == initial["bound_at"]
+                    assert pending["token"] == json.loads(ledgerpath.read_text())["token"]
+                    wait(lambda: retired(initial["controller"]["pid"]), 5)
+                    report["receiver_upgrade"] = {"before":initial["controller"], "after":upgraded["controller"],
+                        "provider_preserved":True, "token_and_binding_preserved":True,
+                        "prior_completed_receipts":len(old_completed), "pending_native_queue_id":old_queue_id,
+                        "initial_cli_sha256":hashlib.sha256(args.initial_receiver_cli.resolve(strict=True).read_bytes()).hexdigest()}
                 markers = ("PEER_ACTIVE_HOOK", "HUMAN_PROJECT_PAUSE", "HUMAN_BROADCAST_PAUSE")
                 if args.scenario == "active-hook-lost":
                     wait(lambda: (out / "discarded-hook-context").exists(), 15)
@@ -1396,6 +1432,9 @@ try:
                     after = report["requests"][start:]
                     assert all("ACTIVE_HOOK_START" in json.dumps([i for i in r["body"]["input"] if i.get("role") == "user"][-1]) for r in after)
                     assert retained["attempt"] is None
+                    if args.scenario == "controller-upgrade":
+                        assert retained["version"] == 3
+                        assert retained["completed"][:len(old_completed)] == old_completed
                     report["active_hook"] = {"messages":sent, "receipts":receipts,
                         "seconds":time.monotonic()-began, "same_turn":True,
                         "model_requests":len(after), "original_provider_pid":provider.pid}
@@ -1464,6 +1503,10 @@ try:
                     cleanup_step("controller retirement", lambda: wait(
                         lambda: all(retired(pid) for pid in controller_pids), 15))
                     report["controller_survivors"] = [pid for pid in controller_pids if not retired(pid)]
+            if args.scenario == "controller-upgrade":
+                cleanup_step("upgraded controller retirement", lambda: wait(
+                    lambda: all(retired(pid) for pid in controller_pids), 15))
+                report["controller_survivors"] = [pid for pid in controller_pids if not retired(pid)]
             report["cleanup_errors"] = cleanup_errors
             if cleanup_errors or report.get("daemon_survivors") or report.get("controller_survivors"):
                 report["result"] = "failed"
