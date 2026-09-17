@@ -506,6 +506,65 @@
         "junit": "/private/tmp/agentdocker-reconnect-review-gate2-nextest-2026-09-17/junit.xml"
       },
       "scope": "Actual MCP adapter transport and fixture processes, not a live Claude model or idle-wake trial."
+    },
+    "combined_messaging_validation": {
+      "build": {
+        "format": 1,
+        "source_commit": "3c41b3b0974b0e43e551241a5714f7b1de146922",
+        "source_tree": "914a56a3b7db1b8a6f4b0aa38f2f55d4feffa309",
+        "source_input_sha256": "363daf36c5142d994e61b9f2a00ccff61e858793c32aa3e94806c0646781f944",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 22,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-launcher-integrity-2026-09-15/target/release",
+        "binary_sha256": {
+          "agentdocker": "8e811a3a469c55622977e0407dd93f8e3be402e82f6db6601a69bfb303c08c46",
+          "agentd": "f23b952f1584d008d301647f89459a1329557c7dbd1ca383146ed7262c4fbdf7",
+          "agentdocker-ui": "600e618fcd2c4a22a2759af0499d4daddabb24a98f34beafb1e057b9c0e3c8fe"
+        }
+      },
+      "gate": {
+        "result": "passed",
+        "rust_passed": 1116,
+        "rust_skipped": 7,
+        "python_checks": 84,
+        "log": "/private/tmp/agentdocker-reconnect-review-gate3-2026-09-17.log",
+        "junit": "/private/tmp/agentdocker-reconnect-review-gate3-nextest-2026-09-17/junit.xml"
+      },
+      "native": {
+        "result": "passed",
+        "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+        "steps": [
+          "idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption",
+          "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+          "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+          "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+          "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+          "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+          "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+          "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+          "pre-initialization session fold preserved one channel owner across different agent IDs and delivered the older queue through its alias",
+          "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+        ],
+        "binary_sha256": {
+          "agentd": "f23b952f1584d008d301647f89459a1329557c7dbd1ca383146ed7262c4fbdf7",
+          "agentdocker": "8e811a3a469c55622977e0407dd93f8e3be402e82f6db6601a69bfb303c08c46"
+        },
+        "driver_sha256": {
+          "claude_channel_smoke.py": "1c3d58b2c5f77cbfab6e4e45e7f3a9ee98a483580d49143ac8ef87f937dd0959",
+          "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+          "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+        },
+        "remaining_owned_processes": 0,
+        "duration_seconds": 38.409497500018915
+      },
+      "artifact_directory": "/private/tmp/agentdocker-reconnect-review-after3-2026-09-17",
+      "scope": "Real adapter processes driven by an MCP fixture, not a Claude model idle-wake trial. Names retained across N-way folds and alias flattening are covered by registry/store regressions through reopen. Existing live provider sessions were unchanged.",
+      "status": "passed; final CI, review and installed acceptance pending"
     }
   }
 }
