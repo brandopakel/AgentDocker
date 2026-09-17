@@ -704,7 +704,7 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
     let tmp = tempfile::tempdir().unwrap();
     let store = Store::open(&tmp.path().join("state.db")).unwrap();
     let last = record("last");
-    let earlier = record("earlier");
+    let earlier = record("earlier\0\'quoted");
     let fresh = record("fresh");
     let oldest = record("oldest");
     for r in [&last, &earlier, &fresh] {
@@ -752,6 +752,11 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
     canonical.status = AgentStatus::Running;
     canonical.finished_at = None;
     let retired = vec![fresh.id.clone(), earlier.id.clone()];
+    for id in &retired {
+        store
+            .put_document("reads", id.as_str(), &Vec::<ReadMark>::new())
+            .unwrap();
+    }
     let before = snapshot(&store);
     let plan = store.plan_resume(&canonical, &retired).unwrap();
     assert_eq!(snapshot(&store), before, "planning writes nothing");
@@ -793,6 +798,15 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
         .map(|m| m.id.to_string())
         .collect();
     assert_eq!(queue, ["b-1", "e-1", "f-1"], "and the same after a reopen");
+    for id in &retired {
+        assert!(
+            reopened
+                .document::<Vec<ReadMark>>("reads", id.as_str())
+                .unwrap()
+                .is_none(),
+            "retired empty reads must not accumulate: {id}"
+        );
+    }
     drop(reopened);
     let rewritten: agentdocker_core::Question = store.document("question", "q-1").unwrap().unwrap();
     assert_eq!(

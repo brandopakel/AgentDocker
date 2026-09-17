@@ -45,6 +45,7 @@ pub(crate) struct ResumePlan {
     pub aliases: Vec<AgentAlias>,
     /// The documents that named a retired id, rewritten.
     documents: Vec<Document>,
+    remove_reads: Vec<String>,
     duplicate_inbox_rows: Vec<i64>,
     /// The one queue, as the store will hold it: durable `seq` order,
     /// each message once. Memory takes this, not an order of its own,
@@ -490,16 +491,18 @@ impl Store {
                 "a retired record holds a lease; release it before the session is resumed"
             );
         }
-        let placeholders = std::iter::once(kept)
+        let ids: Vec<&str> = std::iter::once(kept)
             .chain(retired)
-            .map(|id| format!("'{}'", id.as_str().replace('\'', "''")))
-            .collect::<Vec<_>>()
-            .join(",");
+            .map(AgentId::as_str)
+            .collect();
+        let placeholders = vec!["?"; ids.len()].join(",");
         let mut stmt = self.conn.prepare(&format!(
             "SELECT seq, agent, message_id, json FROM inbox WHERE agent IN ({placeholders}) ORDER BY seq"
         ))?;
         let inbox: Vec<(i64, String, String, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .query_map(rusqlite::params_from_iter(ids), |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
             .collect::<rusqlite::Result<_>>()?;
         let mut seen = BTreeMap::new();
         let mut duplicate_inbox_rows = Vec::new();
@@ -537,6 +540,7 @@ impl Store {
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<_>>()?;
         let mut documents = Vec::new();
+        let mut remove_reads = Vec::new();
         for (kind, id, raw) in &raw_docs {
             let doc = Document {
                 kind: kind.clone(),
@@ -549,6 +553,7 @@ impl Store {
                     reads.is_empty(),
                     "a retired record recorded observations of its own; resolve by hand"
                 );
+                remove_reads.push(doc.id.clone());
                 continue;
             }
             let mut value = doc.value.clone();
@@ -579,6 +584,7 @@ impl Store {
             aliases,
             documents,
             duplicate_inbox_rows,
+            remove_reads,
             queue,
         })
     }
@@ -604,6 +610,9 @@ impl Store {
         }
         for doc in &plan.documents {
             self.put_document(&doc.kind, &doc.id, &doc.value)?;
+        }
+        for id in &plan.remove_reads {
+            self.delete_document("reads", id)?;
         }
         self.upsert_agent(&plan.canonical)?;
         for alias in &plan.aliases {

@@ -6057,13 +6057,11 @@ impl State {
         let mut folded: Vec<&AgentRecord> = vec![&fresh];
         folded.extend(earlier);
         for record in &folded {
-            let unobserved = match self
-                .store
-                .document::<Vec<agentdocker_core::ReadMark>>("reads", record.id.as_str())
-            {
-                Ok(reads) => reads.is_none_or(|reads| reads.is_empty()),
-                Err(_) => false,
-            };
+            let unobserved = self
+                .store_read("reads", |store| {
+                    store.document::<Vec<agentdocker_core::ReadMark>>("reads", record.id.as_str())
+                })
+                .is_some_and(|reads| reads.is_none_or(|reads| reads.is_empty()));
             if !unobserved
                 || !self.leases.by_holder(&record.id).is_empty()
                 || self
@@ -6937,6 +6935,43 @@ mod tests {
     /// folded: the write is skipped, memory stays as it was, no event is
     /// recorded, and the fresh record stands. Once authority is back, the
     /// same return folds.
+    #[test]
+    fn returning_session_read_errors_disable_coordination() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let now = Utc::now();
+        let mut old = AgentRecord::new(spec_here("old"), false, now);
+        old.spec.runtime = "claude-code".into();
+        old.spec.labels.insert("session_id".into(), "same".into());
+        old.project = Some(ProjectRef::directory(std::env::temp_dir()));
+        old.status = AgentStatus::Exited { code: Some(0) };
+        old.finished_at = Some(now);
+        let mut fresh = old.clone();
+        fresh.id = AgentId::generate();
+        fresh.pid = Some(std::process::id());
+        fresh.status = AgentStatus::Running;
+        fresh.finished_at = None;
+        let mut state = lock(&daemon.state);
+        for record in [&old, &fresh] {
+            state.registry.insert(record.clone()).unwrap();
+            state.store.upsert_agent(record).unwrap();
+        }
+        state
+            .store
+            .put_document("reads", fresh.id.as_str(), &json!("malformed"))
+            .unwrap();
+        let seq = state.next_seq;
+        assert_eq!(state.resume_session(fresh.clone()).id, fresh.id);
+        assert!(
+            state.storage_failure().is_some(),
+            "the read error disables further coordination"
+        );
+        assert_eq!(state.registry.all().count(), 2);
+        assert!(state.registry.aliases().is_empty());
+        assert!(state.store.identity_aliases().unwrap().is_empty());
+        assert_eq!(state.next_seq, seq);
+    }
+
     #[tokio::test]
     async fn a_fenced_daemon_leaves_a_returning_session_unfolded() {
         let dir = TempDir::new().unwrap();

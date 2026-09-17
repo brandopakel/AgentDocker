@@ -1210,3 +1210,5 @@ Provider questions hold ordinary messages until resolved. This contract does
 not give the external native-queue sidecar control of a standalone TUI turn.
 Bounded source and actual-Codex/local-model busy and lost-reply trials passed at
 `13c3e40`; hosted-model and existing-session acceptance remain open.
+
+Session resumption treats an unreadable observation record as a daemon storage failure. Identity lists are SQL parameters, and accepted empty observation documents for retired identities are removed in the same resume transaction; nonempty observations still refuse resumption.

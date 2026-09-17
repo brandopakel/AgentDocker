@@ -365,3 +365,5 @@ The connected Claude and Codex sessions exchanged this audit's ownership and
 findings through AgentDocker on September 14. The peer acknowledged the message
 and returned its findings. This verifies active-session routing and model
 consumption; it does not replace an idle-wake or sustained-load trial.
+
+Session reconnect review follow-up: failed observation reads now latch the daemon storage error, resume queries bind identity strings, and the atomic fold removes accepted empty observations belonging to retired identities. The regressions cover malformed stored observations, embedded NUL/quote identity strings, and absence of retired empty observation rows after reopen. Final validation of these corrections remains pending.
