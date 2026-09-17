@@ -3166,7 +3166,7 @@
       "178": "faf54b165c1c22e90ee8b54519ef8abffbbf2960",
       "179": "2985cb79572381e6e22c7bf656145b2f5863470c"
     },
-    "installed": true,
+    "installed": false,
     "gate": {
       "result": "passed",
       "rust_passed": 1164,

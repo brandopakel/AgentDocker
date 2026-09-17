@@ -639,5 +639,7 @@ The [existing queue record](verification/2026-09-15-native-codex-queue.json) ret
 all three IDs, timestamps and receipt hashes. Bounded batching and scheduling
 need further engineering/measurement with exact recovery and no duplicate
 execution preserved. The [documented active-turn steering API](https://learn.chatgpt.com/docs/app-server#steer-an-active-turn)
-requires an active turn owned by the connected server; its existence alone does
-not establish a safe route into this independent terminal session.
+requires an active turn on the target thread and a matching `expectedTurnId`.
+The current independent-terminal bridge has a local compatibility limitation:
+its separate connection has not established a route to steer that terminal's
+active turn. This is not an additional ownership requirement in the API contract.
