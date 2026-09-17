@@ -355,6 +355,8 @@ def smoke(binary_dir, output):
                 # against the rendered controls; the route is forwarded to the
                 # running window mid-scenario exactly as a click on a notification
                 # would forward it.
+                card = rpc(endpoint, {"op": "task_create", "from": "user", "project": str(project), "title": "Fix the fixture login",
+                                      "acceptance": "Login works with SSO and a password", "column": "ready"})["task"]
                 narrow = rpc(endpoint, {"op": "run", "spec": {"name": "narrow-fixture", "runtime": "fixture",
                               "command": ["/bin/sleep", "150"], "workdir": str(project), "restore": False}})["agent"]
                 routed = rpc(endpoint, {"op": "send", "from": narrow["id"], "to": human["id"],
@@ -430,7 +432,37 @@ def smoke(binary_dir, output):
                                  step("wait_text", text="Only in the thread"), step("click", id="close-thread"),
                                  step("wait_control", id=f"reply-thread-{routed}", present=False),
                                  step("click", id="thread-back"), step("click", id=f"thread-{agent['id']}"),
-                                 step("wait_text", text="Keep this narrow draft"), step("capture", name="narrow-draft-kept")]
+                                 step("wait_text", text="Keep this narrow draft"), step("capture", name="narrow-draft-kept"),
+                                 # The board: the person files a card as Ready, it is for the
+                                 # taking; the fixture agent pulls it on the daemon (the gated
+                                 # action below) and the card shows its holder; the person
+                                 # opens it, reads what done means, moves it on and archives it.
+                                 step("resize", width=1180, height=760), step("click", id="projects"),
+                                 step("click", id=f"project-{project}"), step("click", id="project-tab-Board"),
+                                 step("wait_control", id="task-title", present=True),
+                                 step("wait_control", id=f"task-{card['id']}", present=True),
+                                 step("fill", id="task-title", text="Write the fixture notes"),
+                                 step("fill", id="task-acceptance", text="Notes cover the fixture routes"),
+                                 step("click", id="task-file-backlog"), step("wait_text", text="Write the fixture notes"),
+                                 step("click", id=f"task-{card['id']}"), step("wait_text", text="Login works with SSO and a password"),
+                                 step("wait_text", text="for the taking"), step("capture", name="board-ready")]
+                board_gate = len(narrow_steps)
+                narrow_steps += [step("wait_text_absent", text="for the taking"), step("wait_text", text="narrow-fixture"),
+                                 step("capture", name="board-pulled"),
+                                 step("click", id=f"task-next-{card['id']}"), step("wait_control", id=f"task-back-{card['id']}", present=True),
+                                 step("click", id=f"task-next-{card['id']}"), step("wait_control", id=f"task-next-{card['id']}", present=False),
+                                 step("capture", name="board-done"),
+                                 step("click", id=f"task-archive-{card['id']}"), step("wait_control", id=f"task-{card['id']}", present=False)]
+                def pull_card():
+                    cards = {c["id"]: c for c in rpc(endpoint, {"op": "tasks", "project": str(project)})["tasks"]}
+                    filed = [c for c in cards.values() if c["title"] == "Write the fixture notes"]
+                    assert len(filed) == 1 and filed[0]["column"] == "backlog" and filed[0]["acceptance"] == "Notes cover the fixture routes", cards
+                    assert cards[card["id"]]["column"] == "ready", cards
+                    pulled = rpc(endpoint, {"op": "task_pull", "agent": narrow["id"], "task": card["id"]})
+                    assert pulled["type"] == "task" and pulled["task"]["assignee"] == narrow["id"] and pulled["task"]["column"] == "in_progress", pulled
+                    again = rpc(endpoint, {"op": "task_pull", "agent": agent["id"], "task": card["id"]})
+                    assert again["type"] == "error" and again["code"] == "conflict", again
+                    return card["id"]
                 def forward_route(name, gate):
                     def progressed():
                         if window is not None and window.poll() is not None:
@@ -445,6 +477,16 @@ def smoke(binary_dir, output):
                                             cwd=project, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=8)
                     assert result.returncode == 0, result.stderr
                     assert window.poll() is None and window.pid == primary, "narrow window was replaced by the route"
+                def when_reached(name, gate, act):
+                    def progressed():
+                        if window is not None and window.poll() is not None:
+                            raise RuntimeError(f"narrow window exited before step {gate}")
+                        try:
+                            return json.loads((output / name / "progress.json").read_text())["completed"] >= gate
+                        except (FileNotFoundError, json.JSONDecodeError):
+                            return False
+                    until(progressed, timeout=150)
+                    return act()
                 def launch_routed(name, scenario, gate):
                     nonlocal window
                     script = root / f"{name}.json"
@@ -455,14 +497,18 @@ def smoke(binary_dir, output):
                                                    "--smoke-scenario", str(script), "--smoke-deadline", "150"],
                                                   cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
                         with ThreadPoolExecutor(max_workers=1) as pool:
-                            forwarded = pool.submit(forward_route, name, gate)
-                            observation = wait_window(daemon, window, capture, timeout=180)
-                            forwarded.result(timeout=5)
+                            forwarded = pool.submit(lambda: (forward_route(name, gate), when_reached(name, board_gate, pull_card))[1])
+                            observation = wait_window(daemon, window, capture, timeout=200)
+                            report["board_card"] = forwarded.result(timeout=5)
                     result = json.loads((capture / "result.json").read_text())
                     assert result["scenario_steps_completed"] == len(scenario), result
                     return observation
                 report["narrow_inbox_window"] = launch_routed("narrow-inbox", narrow_steps, narrow_gate)
                 checks.append("narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize")
+                board = {c["id"]: c for c in rpc(endpoint, {"op": "tasks", "project": str(project), "archived": True})["tasks"]}
+                assert board[card["id"]]["column"] == "done" and board[card["id"]]["assignee"] == narrow["id"] and board[card["id"]].get("archived_at"), board
+                assert any(c["title"] == "Write the fixture notes" and c["column"] == "backlog" and not c.get("archived_at") for c in board.values()), board
+                checks.append("a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived")
                 # What the window did reached the daemon: the words sent with
                 # Enter are archived, and the room opened from the sidebar has
                 # the person, the picked member and the later invited agent.
