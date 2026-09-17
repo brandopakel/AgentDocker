@@ -465,13 +465,17 @@ def smoke(binary_dir, output):
                 checks.append("narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize")
                 # What the window did reached the daemon: the words sent with
                 # Enter are archived, and the room opened from the sidebar has
-                # the person and the one member picked.
+                # the person, the picked member and the later invited agent.
                 sent = rpc(endpoint, {"op": "history", "conversation": f"dm:{min(human['id'], narrow['id'])}:{max(human['id'], narrow['id'])}",
                                       "limit": 50})["messages"]
                 assert any("Sent with Enter" in json.dumps(m) for m in sent), sent
                 opened = [c for c in rpc(endpoint, {"op": "channels", "project": str(project)})["channels"] if c.get("name") == "planning-room"]
-                assert len(opened) == 1 and set(opened[0]["members"]) == {human["id"], narrow["id"]}, opened
-                checks.append("enter_sends_and_a_channel_opened_from_the_sidebar_has_its_picked_members")
+                assert len(opened) == 1 and set(opened[0]["members"]) == {human["id"], narrow["id"], agent["id"]}, opened
+                invited = rpc(endpoint, {"op": "peek_input", "agent": agent["id"]})["messages"]
+                notices = [m for m in invited if m.get("to") == {"kind": "channel", "value": opened[0]["id"]}
+                           and "added terminal-fixture to this channel" in json.dumps(m.get("payload"))]
+                assert len(notices) == 1, notices
+                checks.append("enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members")
                 # The largest saved columns must not crush the conversation.
                 # Change only this private profile while its window is closed.
                 catalog_path = state / "workspace.json"

@@ -373,3 +373,5 @@ compilation and native workflow acceptance remain pending. Existing-channel
 invitations are now written: Add members uses the same bounded UI worker and
 ordinary daemon queue. Membership, event and notice commit together; repeated
 invites are no-ops. Source tests and rendered workflow acceptance are pending.
+
+Messaging controls review validation: source `c3bceb3` passed 1,102 Rust tests (seven skipped), 84 Python checks, formatting, strict lint, doctests, packaging and release. The first native trial passed 378 rendered steps including creation and invitation, then the driver incorrectly expected the original two-member set after inviting a third member. The corrected assertion includes the invited member and requires exactly one invitation in that agent's actual queue; its full native repeat is pending. The failed trial is retained.
