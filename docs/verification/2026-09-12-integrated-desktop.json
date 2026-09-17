@@ -2586,7 +2586,7 @@
         "version": "0.1.0"
       },
       "preview_passed": true,
-      "first_attempt": "Rejected abbreviated source57c2612 before packaging; rerun used full SHA.",
+      "first_attempt": "Rejected abbreviated source 57c2612 before packaging; rerun used full SHA.",
       "first_log": "/private/tmp/agentdocker-resumed-channel-package-20260917.log",
       "corrected_log": "/private/tmp/agentdocker-resumed-channel-package-corrected-20260917.log",
       "path": "/private/tmp/agentdocker-resumed-channel-package-20260917/AgentDocker.app",
@@ -2664,7 +2664,7 @@
       "scope": "The private actual-Claude configuration CLI trial and real MCP resume fixture exercise unchanged CLI/daemon binaries. The UI binary changed and has the additional regression coverage above."
     },
     "limits": [
-      "Final review/CI and installed activation remain required. Candidate28f4f1f3 is superseded by6d168e4d and was not installed.",
+      "Final review/CI and installed activation remain required. Candidate 28f4f1f3 is superseded by 6d168e4d and was not installed.",
       "No actual Claude idle-model turn, provider startup consent, hands-on IME/accessibility or external release certification is claimed."
     ]
   },
@@ -2866,9 +2866,9 @@
       "scope": "Synthetic native key events exercise submit wiring after the receiver upgrade; they do not establish physical keyboard/IME behavior or idle wake."
     },
     "limits": [
-      "PR174 and167 were merged with all final checks. PR175 and177 were reviewed and locally validated but their cross-platform CI/merges remained pending at activation.",
-      "Old previews28f4f1f3 and6d168e4d were superseded without installation.",
-      "Claude parent process18563 was not restarted or opted into channels. Its retained-history handoff and provider startup consent remain open.",
+      "PR 174 and PR 167 were merged with all final checks. PR 175 and PR 177 were reviewed and locally validated but their cross-platform CI/merges remained pending at activation.",
+      "Old previews 28f4f1f3 and 6d168e4d were superseded without installation.",
+      "Claude parent process 18563 was not restarted or opted into channels. Its retained-history handoff and provider startup consent remain open.",
       "This ad-hoc signed local preview is not notarized or an externally certified release."
     ],
     "post_update_idle_wake": {

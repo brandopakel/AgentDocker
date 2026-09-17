@@ -83,8 +83,8 @@ reports above retain the facts known when they were recorded.
 
 ## September 17: idle wake after the installed receiver upgrade
 
-The reviewed `f5e298f4` preview replaced receiver29976 with25642 while retaining
-Codex51242 and all128 prior receipts. After Codex ended its response, a one-shot
+The reviewed `f5e298f4` preview replaced receiver 29976 with 25642 while retaining
+Codex51242 and all 128 prior receipts. After Codex ended its response, a one-shot
 CLI job sent `b348b388328c4d48` to its own registered identity at
 17:50:47.567827 UTC. That message began a new model turn without an intervening
 human prompt. The model sent correlated reply `44f8bbb75d0046a8` to Claude;

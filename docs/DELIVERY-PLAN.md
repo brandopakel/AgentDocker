@@ -13,14 +13,14 @@ evidence; an old “pending” entry is not by itself a current implementation g
 ### Current integration and installation (September 17 UTC)
 
 The current desktop and daemon are reviewed local preview `f5e298f4`
-(source `418fbc9`, schema23), activated at 17:38 UTC with a fresh state backup.
+(source `418fbc9`, schema 23), activated at 17:38 UTC with a fresh state backup.
 The GUI reopened after the user confirmed no unsent drafts. Provider processes
-and registered identities remained unchanged; receiver29976 became25642 with
-its binding/token and all128 retained receipts preserved. Hidden-draft
+and registered identities remained unchanged; receiver 29976 became 25642 with
+its binding/token and all 128 retained receipts preserved. Hidden-draft
 persistence is still unimplemented.
 
-PRs #174/#167 are merged with final review and all CI checks. The installed
-preview also includes reviewed #175/#177; their cross-platform CI and merges
+PRs #174/#167/#175 are merged with final review and all CI checks. The installed
+preview also includes reviewed #177; its cross-platform CI and merge
 remain pending. Local verification passed 1,147 Rust tests (seven skipped),
 94 Python checks (one skipped), 171 UI tests, the full release gate and
 429 native steps/26 checks. A targeted synthetic Enter submission from the
