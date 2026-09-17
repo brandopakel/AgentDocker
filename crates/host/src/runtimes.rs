@@ -265,8 +265,9 @@ pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
 }
 
 /// Recognize an explicit AgentDocker MCP launch, not mentions in unrelated args.
-/// Recognize the bare launch and the runtime argument written by setup. Other
-/// argument forms and wrappers remain unverified without executing the command.
+/// Recognize the bare launch and the runtime arguments written by setup,
+/// including Claude's channel-capable entry. This proves configuration, not
+/// provider consent or a live input receiver. Other forms remain unverified.
 pub fn mcp_command_matches(
     command: Option<&str>,
     args: &[&str],
@@ -277,7 +278,10 @@ pub fn mcp_command_matches(
         .and_then(|c| Path::new(c).file_name())
         .and_then(|n| n.to_str())
         == Some(marker)
-        && (args == ["mcp"] || args == ["mcp", "--runtime", runtime])
+        && (args == ["mcp"]
+            || args == ["mcp", "--runtime", runtime]
+            || (runtime == "claude-code"
+                && args == ["mcp", "--runtime", "claude-code", "--claude-channel"]))
 }
 
 /// Whether the runtime's MCP configuration registers AgentDocker.
@@ -833,6 +837,55 @@ mod tests {
             std::fs::write(&path, config).unwrap();
             assert_eq!(mcp_wiring(spec, &roots, "agentdocker"), expected);
         }
+    }
+
+    #[test]
+    fn claude_channel_registration_is_recognized_without_broadening_other_commands() {
+        let (_tmp, roots) = machine();
+        let spec = agentdocker_core::runtime::spec("claude-code").unwrap();
+        let path = mcp_config_path(spec, &roots).unwrap();
+        let channel = ["mcp", "--runtime", "claude-code", "--claude-channel"];
+        for (args, enabled, expected) in [
+            (channel.to_vec(), true, Wiring::Wired),
+            (vec!["mcp", "--runtime", "claude-code"], true, Wiring::Wired),
+            (channel.to_vec(), false, Wiring::Unverified),
+            (
+                vec!["mcp", "--runtime", "codex", "--claude-channel"],
+                true,
+                Wiring::Unverified,
+            ),
+            (
+                vec![
+                    "mcp",
+                    "--runtime",
+                    "claude-code",
+                    "--claude-channel",
+                    "extra",
+                ],
+                true,
+                Wiring::Unverified,
+            ),
+        ] {
+            let raw = serde_json::json!({"mcpServers":{"agentdocker":{
+                "command":"agentdocker", "args":args, "enabled":enabled
+            }}})
+            .to_string();
+            std::fs::write(&path, &raw).unwrap();
+            assert_eq!(mcp_wiring(spec, &roots, "agentdocker"), expected, "{raw}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+        assert!(!mcp_command_matches(
+            Some("agentdocker"),
+            &channel,
+            "agentdocker",
+            "codex"
+        ));
+        assert!(!mcp_command_matches(
+            Some("wrapper"),
+            &channel,
+            "agentdocker",
+            "claude-code"
+        ));
     }
 
     #[test]
