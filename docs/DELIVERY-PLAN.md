@@ -17,7 +17,9 @@ The current desktop and daemon are reviewed local preview `f5e298f4`
 The GUI reopened after the user confirmed no unsent drafts. Provider processes
 and registered identities remained unchanged; receiver 29976 became 25642 with
 its binding/token and all 128 retained receipts preserved. Hidden-draft
-persistence is still unimplemented.
+persistence was absent from that installed build. PR #178 has since merged,
+with bounded conversation, thread, channel and session text recovery; it is not
+yet installed. Question and other form drafts remain window-local.
 
 PRs #174/#167/#175/#177 are merged with final review and all CI checks; the
 installed preview includes #175 and #177. Local verification passed 1,147 Rust tests (seven skipped),
@@ -31,7 +33,10 @@ for this installed Codex receiver, not other providers or broadcast fanout.
 
 Claude's MCP entry now supports its channel, but the existing provider was not
 restarted or opted in. Retained observations in older lives block the current
-all-record resumption rule; safe handoff and actual idle receipt remain open.
+all-record resumption rule; #179 preserves the eligible observations, channels
+and task references transactionally. #180 bounds the SessionStart ordering wait
+while keeping MCP control responsive. PR #179 is merged after final CI/review; #180 has a clean review and its
+merge resolution awaits final CI. Safe handoff and actual idle receipt remain open.
 The task board in #176 is not in this preview. Current completion conditions
 are in [Remaining work](REMAINING-WORK.md), with source pins, failed trials and
 installation details in the [integrated record](verification/2026-09-12-integrated-desktop.json).
