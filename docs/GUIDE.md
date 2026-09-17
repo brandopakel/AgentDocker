@@ -293,7 +293,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `runtimes` | Agent tools installed here, and whether we are wired in |
+| `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those |
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches |
