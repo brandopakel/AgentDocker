@@ -1052,7 +1052,8 @@ mod tests {
                 if matches!(
                     request,
                     Request::ReportInput {
-                        report: agentdocker_core::InputReport::Ready,
+                        report: agentdocker_core::InputReport::Ready
+                            | agentdocker_core::InputReport::Paused { .. },
                         ..
                     }
                 ) {
@@ -1120,6 +1121,10 @@ mod tests {
             .unwrap();
             assert_eq!(receive(&mut reader).await["id"], 9);
             assert_eq!(server.backend.queue.0.borrow().len(), 1);
+            assert_eq!(
+                receive(&mut reader).await["params"]["meta"]["message_id"],
+                server.backend.queue.0.borrow()[0].id.as_str()
+            );
             writer.shutdown().await.unwrap();
         };
         let (result, ()) = tokio::join!(
@@ -1127,7 +1132,7 @@ mod tests {
             trial
         );
         result.unwrap();
-        assert_eq!(server.backend.reports.get(), 4);
+        assert_eq!(server.backend.reports.get(), 5);
     }
 
     #[tokio::test]
