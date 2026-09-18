@@ -157,7 +157,7 @@ dependencies = [
  "agentdocker-core",
  "agentdocker-host",
  "anyhow",
- "base64",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "filetime",
