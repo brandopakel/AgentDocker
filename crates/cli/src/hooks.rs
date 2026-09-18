@@ -36,6 +36,7 @@ use serde_json::{Value, json};
 use crate::client::{Backend, Client};
 use crate::format;
 
+mod channel_receipt;
 mod codex;
 mod input;
 
@@ -146,6 +147,26 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                 }
             };
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+            // Receipt recovery is independent of hook context delivery. It only
+            // accepts provider-recorded channel input followed by a real model
+            // response, never a successful notification write or queue removal.
+            if matches!(
+                input.hook_event_name.as_str(),
+                "PreToolUse" | "PostToolUse" | "Stop"
+            ) {
+                let receipt_deadline = deadline
+                    .min(tokio::time::Instant::now() + std::time::Duration::from_millis(250));
+                let _ = tokio::time::timeout_at(receipt_deadline, async {
+                    if let Some(agent) = session_agent(&client, &input).await? {
+                        let home = agentdocker_host::dirs::home();
+                        if crate::mcp::channel_input_active(&home, &agent)? {
+                            channel_receipt::recover(&client, &input, &agent).await?;
+                        }
+                    }
+                    Ok::<_, anyhow::Error>(())
+                })
+                .await;
+            }
             let delivery = HookDelivery {
                 backend: &client,
                 pending: RefCell::new(Vec::new()),
@@ -1002,6 +1023,10 @@ fn journal_text(digest: &str) -> String {
 /// The last [`TRANSCRIPT_TAIL`] bytes of a transcript, minus the line the
 /// cut fell in. Cost does not grow with the transcript.
 fn transcript_tail(path: &Path) -> Option<String> {
+    transcript_tail_bounded(path, TRANSCRIPT_TAIL)
+}
+
+fn transcript_tail_bounded(path: &Path, limit: u64) -> Option<String> {
     use std::io::{Seek, SeekFrom};
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new()
@@ -1014,10 +1039,10 @@ fn transcript_tail(path: &Path) -> Option<String> {
         return None;
     }
     let len = metadata.len();
-    let start = len.saturating_sub(TRANSCRIPT_TAIL);
+    let start = len.saturating_sub(limit);
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut bytes = Vec::new();
-    file.take(TRANSCRIPT_TAIL).read_to_end(&mut bytes).ok()?;
+    file.take(limit).read_to_end(&mut bytes).ok()?;
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
     if start > 0 {
         let cut = text.find('\n')?;

@@ -15,6 +15,14 @@ remain below. Optional research is outside the current delivery closure.
 
 ## Delivered source and current desktop
 
+The September 18 resumed delivery investigation confirmed a separate queue stall:
+Claude processed a channel offer but omitted its explicit ACK, blocking later
+pause requests. PR #196 adds bounded provider-transcript receipt recovery and
+original-chat reply routing guidance. Its parser/transport tests and actual
+installed pause/reply acceptance are tracked separately; the bug remains open
+until the live case passes. The requested app reconnect/approval button remains
+part of this work, including detecting a plain restart that lost its channel.
+
 The installed desktop and daemon use reviewed local-preview release `d14610b7`,
 source `3785e81` with runtime inputs identical to merged `e9c4ab2`, schema 23.
 The September 17 20:55 UTC activation used a fresh integrity-checked state backup;

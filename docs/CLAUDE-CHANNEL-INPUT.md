@@ -157,11 +157,27 @@ tool call; broader ordering, approval, cancellation and starvation cases remain.
 
 The adapter waits for MCP initialization, then offers one queued envelope with
 its complete JSON payload and stable `message_id`, `from_agent`, `kind`,
-`sent_at`, `destination` and optional `reply_to` metadata. The model must acknowledge received IDs
-using `acknowledge_messages`. That receipt frees the queue head; it confirms
-receipt, not task completion. A reply remains a separate `send_message` call.
+`sent_at`, `destination` and optional `reply_to` metadata. The model can acknowledge
+received IDs using `acknowledge_messages`. Lifecycle hooks also recover a forgotten
+ACK when the current session's provider transcript records the exact complete
+channel body and metadata followed by a real assistant response in its parent
+chain. This accepts both idle channel input and a busy `queued_command` attachment;
+an attachment without that continuation is insufficient. The receipt commits
+before removing the queue head. It confirms input receipt, not task completion.
+Replies use `send_message` to the envelope's `reply_destination` with
+`reply_to=message_id`, so project/channel responses appear in their original chat.
+A terminal-only response is not an app reply.
 
-A stdout write never removes an inbox message. Until an explicit receipt,
+Automatic recovery reads at most 2 MiB / 4,096 records at a hook boundary, within
+a 250 ms budget inside the existing one-second hook budget. It requires the
+current process generation and session, and rejects provider errors, synthetic
+responses, unrelated turns, sidechains, changed bodies and malformed metadata.
+No transcript content is retained. Old evidence outside that window, missing hooks
+and unknown provider formats retain the explicit-ACK fallback and queued input.
+This bounded repair does not automatically release a historical backlog whose
+receipt evidence has already left the window.
+
+A stdout write never removes an inbox message. Until a verified receipt,
 delivery is unconfirmed. Claude may silently ignore a channel that was not
 enabled; after 30 seconds without a receipt the adapter reports a durable
 delivery pause naming the outstanding message. That state appears in session

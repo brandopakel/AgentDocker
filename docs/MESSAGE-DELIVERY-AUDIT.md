@@ -6,6 +6,25 @@ It tracks partial implementation and the acceptance still needed for each provid
 
 Status on September 14, 2026: every pull request this log names (#103–#108, #115 and #119) is merged on `main`, so the per-checkpoint "final CI/source review remain" sentences below are historical. The opt-in Codex bridge (`--codex-input`) and Claude channel adapter (`--claude-channel`) are shipped, the MCP `ask_human` duplicate-input defect is fixed (`crates/cli/src/codex_input/mcp_answers.rs`), and the structured Iced approval/choice controls are merged. What is still open is the list in [REMAINING-WORK.md](REMAINING-WORK.md).
 
+## September 18: a forgotten channel receipt blocked later pause requests
+
+After the user approved Claude's relaunch, the provider recorded channel message
+`0d4ddb320b434666` and began a real assistant response. Claude completed that
+review, but did not call `acknowledge_messages`; one outstanding offer therefore
+blocked every later message. A second live Claude session showed the same gap
+after busy channel input. Its queued attachment had an actual assistant
+continuation, not merely a transport write. On the next day the first session
+restarted without the channel launch flag again; that separate loss of live input
+also requires the requested in-app reconnect flow.
+
+PR #196 now repairs forgotten acknowledgements at a lifecycle boundary using
+bounded, exact provider-transcript evidence, and carries the original reply
+destination in channel metadata. The receipt commits before ACK; ambiguous,
+partial, historical-generation or provider-error evidence keeps the queue intact.
+Full installed #everyone pause, app reply, idle/busy and reconnect acceptance
+remain open until the reviewed runtime passes those live cases. Parser and
+transport fixtures do not establish that a real model obeyed a pause request.
+
 ## September 16: live Claude idle-wake gap reproduced
 
 The user reported the parallel Claude session idle at its prompt. In message

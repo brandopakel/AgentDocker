@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 import traceback
+from datetime import datetime, timezone
 
 from message_queue_smoke import rpc
 from restart_smoke import digest, eventually
@@ -114,7 +115,8 @@ def run(args):
             daemon = start_daemon()
             human = rpc(endpoint, {"op": "me", "workdir": str(root)})["agent"]["id"]
             receiver, peer = [rpc(endpoint, {"op": "register", "spec": {
-                "name": name, "runtime": "claude-code", "workdir": str(root)},
+                "name": name, "runtime": "claude-code", "workdir": str(root),
+                "labels": {"session_id": "receipt-fixture"} if name == "receiver" else {}},
                 "pid": os.getpid() if name == "receiver" else None})["agent"]["id"]
                 for name in ["receiver", "peer"]]
             channel_env = {**env, "AGENTDOCKER_AGENT_ID": receiver, "AGENTDOCKER_CLAUDE_CHANNEL_INPUT": "1"}
@@ -200,10 +202,46 @@ def run(args):
             daemon = start_daemon()
             assert queued() == accepted[1:]
             connection.ack(103, accepted[:2])
-            assert connection.offer()["meta"]["message_id"] == accepted[2]
-            connection.ack(104, accepted[2:])
+            last_offer = connection.offer()
+            assert last_offer["meta"]["message_id"] == accepted[2]
+            assert last_offer["meta"]["reply_destination"] == human
+
+            # Actual CLI hook against the actual private daemon. This models
+            # Claude's transcript grammar, not a live provider response.
+            transcript = root / "receipt-fixture.jsonl"
+            def record(kind, uuid, parent, **fields):
+                return {"type": kind, "uuid": uuid, "parentUuid": parent,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "sessionId": "receipt-fixture", "isSidechain": False, **fields}
+            def escape(value):
+                return value.replace("&", "&amp;").replace('"', "&quot;")
+            metadata = " ".join(f'{key}="{escape(value)}"' for key, value in last_offer["meta"].items())
+            content = f'<channel source="agentdocker" {metadata}>\n{last_offer["content"]}\n</channel>'
+            recorded = [record("user", "input", "previous", isMeta=True,
+                               origin={"kind": "channel", "server": "agentdocker"},
+                               message={"role": "user", "content": content})]
+            def receipt_hook():
+                transcript.write_text("\n".join(json.dumps(value) for value in recorded) + "\n")
+                result = subprocess.run([str(output / "agentdocker"), "hook", "claude-code"],
+                    env=channel_env, cwd=root, input=json.dumps({"hook_event_name": "PreToolUse",
+                    "session_id": "receipt-fixture", "cwd": str(root), "transcript_path": str(transcript),
+                    "tool_name": "Bash", "tool_input": {}}).encode(), capture_output=True, timeout=3)
+                assert result.returncode == 0, result.stderr.decode()
+            receipt_hook()
+            assert queued() == accepted[2:], "a channel record without a model response was acknowledged"
+            recorded.append(record("attachment", "context", "input"))
+            recorded.append(record("assistant", "response", "context", requestId="fixture-request",
+                message={"id": "fixture-response", "role": "assistant", "model": "claude-fixture",
+                         "content": [{"type": "tool_use", "name": "Bash"}]}))
+            receipt_hook()
+            assert queued() == []
+            received = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]
+            assert received["received"]["messages"] == accepted[2:]
+            assert received["received"]["receipt"]["provider"] == "claude_channel"
+            receipt_hook()
             assert queued() == []
             report["steps"].append("MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages")
+            report["steps"].append("without an explicit model ACK, the real hook retained channel input alone and committed receipt before removing its exact head only after the modeled assistant continuation; repeated hooks were harmless")
 
             connection.send({"jsonrpc": "2.0", "id": 200, "method": "tools/call", "params": {
                 "name": "ask_human", "arguments": {"question": "Which fixture route?", "timeout_secs": 120}}})
@@ -219,6 +257,25 @@ def run(args):
             connection.ack(201, [answered])
             assert queued() == [] and connection.read(0.35) is None
             report["steps"].append("a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt")
+
+            project = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["project"]["fingerprint"]
+            project_pause = rpc(endpoint, {"op": "send", "from": "user", "to": f"project:{project}",
+                "kind": "message", "payload": {"text": "FIXTURE: pause in everyone"}})["message"]
+            offered = connection.offer()
+            assert offered["meta"]["message_id"] == project_pause
+            assert offered["meta"]["reply_destination"] == f"project:{project}"
+            connection.send({"jsonrpc": "2.0", "id": 202, "method": "tools/call", "params": {
+                "name": "send_message", "arguments": {"to": offered["meta"]["reply_destination"],
+                "reply_to": project_pause, "text": "FIXTURE: response in the same everyone chat"}}})
+            reply = json.loads(connection.response(202)["result"]["content"][0]["text"])
+            assert reply["sent"] is True
+            peer_queue = rpc(endpoint, {"op": "inbox", "agent": peer, "drain": False})["messages"]
+            matching = [message for message in peer_queue if message["id"] == reply["message_id"]]
+            assert len(matching) == 1 and matching[0]["reply_to"] == project_pause
+            assert matching[0]["to"] == {"kind": "project", "value": project}
+            connection.ack(203, [project_pause])
+            assert queued() == []
+            report["steps"].append("project fan-out carried a reply destination that the actual MCP send_message tool routed back to the same everyone conversation with its original message ID")
 
             idle = send(peer, "IDLE-TRANSPORT-OFFER")
             assert connection.offer()["meta"]["message_id"] == idle

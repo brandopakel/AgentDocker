@@ -1,6 +1,6 @@
 //! Opt-in Claude channel input over the existing private daemon queue.
 //! A completed stdout write is only an offer. The durable envelope remains
-//! until the model explicitly acknowledges its stable ID through an MCP tool.
+//! until a model ACK or verified provider transcript confirms actual input.
 use super::{Backend, Identity, McpServer, error_response};
 use agentdocker_core::{MessageId, Request, Response};
 use agentdocker_host::{dirs, lock};
@@ -330,6 +330,8 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                             "message_id": message.id.as_str(), "from_agent": message.from,
                             "kind": message.kind, "sent_at": message.sent_at.to_rfc3339(),
                             "destination": serde_json::to_string(&message.to)?,
+                            "reply_destination": reply_destination(message),
+                            "delivery_rule": "Acknowledge this message_id after receiving the full body. Reply using send_message to reply_destination with reply_to=message_id so the response appears in the original app conversation. A human pause request requires stopping work and reporting that actual state there; a terminal-only answer is not an app reply.",
                         }}
                     });
                     if let Some(question) = &message.reply_to {
@@ -340,6 +342,17 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 }
             }
         }
+    }
+}
+
+fn reply_destination(message: &agentdocker_core::Envelope) -> String {
+    use agentdocker_core::Destination;
+    match &message.to {
+        Destination::Agent(_) => message.from.clone(),
+        Destination::Project(project) => format!("project:{project}"),
+        Destination::Channel(channel) => format!("channel:{channel}"),
+        Destination::Topic(topic) => format!("topic:{topic}"),
+        Destination::Broadcast => "all".into(),
     }
 }
 
