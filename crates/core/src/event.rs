@@ -438,6 +438,17 @@ pub enum EventKind {
         project: ProjectId,
         by: String,
     },
+    /// A webhook sink gave up on deliveries: which sink (by its configured
+    /// name, never its address), the last event kind it could not post,
+    /// why in a word (`refused`, `unreachable`, `timeout`, `too_large`,
+    /// `dropped`), and how many deliveries were lost since the last such
+    /// notice. Never posted to any sink itself.
+    WebhookFailed {
+        name: String,
+        kind: String,
+        reason: String,
+        dropped: u64,
+    },
     /// The person told a project's agents to hold, and why.
     ProjectPaused {
         project: ProjectId,

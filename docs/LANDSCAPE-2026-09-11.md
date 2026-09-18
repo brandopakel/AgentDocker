@@ -239,7 +239,8 @@ for the command line (agents drive the CLI; PR #181), typed links on a card,
 message or hand-off (in source: `links` on cards, messages, checkpoints and
 hand-off bundles, shown in the app) (a path, a PR, a memory note; the data already exists), webhooks
 as a signed sink on the event stream (a team channel hears `question_asked`
-and `lease_deadlock`), and roles as agent labels a hand-off can name (in
+and `lease_deadlock`; in source: `[[webhooks]]` in `agentd.toml`, best
+effort, signed, bounded), and roles as agent labels a hand-off can name (in
 source: `agentdocker role`, `role:<name>` as a recipient). Reply
 from the notification (Dax) is worth it once the routing acceptance above is
 closed. Not worth taking: herdr's focus/prompt bridge and blocked-state
