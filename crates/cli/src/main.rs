@@ -3630,9 +3630,19 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
             ]
         })
         .collect();
+    // The last column counts this runtime's processes that no registered
+    // agent claims — what `discover` would list — not its sessions, which
+    // `ps` shows; the heading says which.
     format::table(
         &[
-            "RUNTIME", "VENDOR", "CLI", "VERSION", "APP", "MCP", "HOOKS", "RUNNING",
+            "RUNTIME",
+            "VENDOR",
+            "CLI",
+            "VERSION",
+            "APP",
+            "MCP",
+            "HOOKS",
+            "UNREGISTERED",
         ],
         &rows,
     );
