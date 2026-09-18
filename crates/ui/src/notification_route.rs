@@ -655,7 +655,7 @@ mod tests {
                         (1, Request::Send { .. }, Answer::Sent) => Response::Sent {
                             message: MessageId::from("8".to_owned()),
                             subscribers: 1,
-                            recipient_readiness: Vec::new(),
+                            recipient_readiness: None,
                         },
                         (1, Request::Send { .. }, Answer::Refused) => Response::Error {
                             code: agentdocker_core::ErrorCode::Forbidden,
