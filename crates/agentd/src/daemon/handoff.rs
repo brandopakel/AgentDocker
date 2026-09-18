@@ -587,13 +587,27 @@ mod tests {
             role(&daemon, "far", Some("reviewer")).await,
             Response::Agent { .. }
         ));
-        // From this project, the reviewer is this project's.
-        assert!(matches!(
-            send_to(&daemon, "sender", "role:reviewer").await,
-            Response::Sent { .. }
-        ));
+        // Both the queue and readiness advice name this project's resolved
+        // reviewer, never a same-role agent elsewhere or the literal role.
+        let Response::Sent {
+            message,
+            recipient_readiness: Some(readiness),
+            ..
+        } = send_to(&daemon, "sender", "role:reviewer").await
+        else {
+            panic!("a role-addressed send includes its recipient readiness");
+        };
+        assert_eq!(readiness.recipients, 1);
+        assert_eq!(readiness.needs_attention, 1);
+        assert_eq!(readiness.details.len(), 1);
+        assert_eq!(readiness.details[0].agent, agent.id);
+        assert_eq!(
+            readiness.details[0].issue,
+            agentdocker_core::SendIssue::NoReceiver
+        );
         let mail = inbox(&daemon, "recipient").await;
         assert_eq!(mail.len(), 1);
+        assert_eq!(mail[0].id, message);
         assert_eq!(mail[0].to, Destination::Agent(agent.id.clone()));
         assert!(inbox(&daemon, "far").await.is_empty());
         // Unscoped — no sender to take a project from — two hold it.
