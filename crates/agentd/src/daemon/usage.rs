@@ -455,28 +455,50 @@ fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
         let Some(old) = old else {
             return;
         };
-        let mut cursor = captured;
-        if let Some(old) = old {
-            if old.cursor.same_generation(&cursor) {
-                cursor = old.cursor;
-            } else {
+        let previous = old.as_ref().map(|old| &old.cursor);
+        let prepare =
+            |previous: Option<&reader::Cursor>| -> Result<reader::Session, reader::Error> {
+                let mut session = reader::Session::at_snapshot(captured.clone(), previous)?;
+                loop {
+                    let progress = session.prepare_next(
+                        &source.path,
+                        4 * 1024 * 1024,
+                        std::time::Duration::from_millis(100),
+                    )?;
+                    if progress.ready {
+                        return Ok(session);
+                    }
+                    if !alive_wait(weak, 1) {
+                        return Err(reader::Error::ValidationIncomplete);
+                    }
+                }
+            };
+        let (mut session, mut previous_offset) = match prepare(previous) {
+            Ok(session) => (session, previous.map_or(0, reader::Cursor::offset)),
+            Err(_) => {
                 let gap_key = format!("generation:{generation}:{key}");
                 if !snapshot(
                     weak,
                     &collection,
                     &[(
                         &gap_key,
-                        "usage file generation changed; replay deduplicates accepted sources",
+                        "usage source changed or prefix verification failed; replay deduplicates accepted sources",
                     )],
                 ) {
                     return;
                 }
+                // Retry once from the captured generation. If the file changed
+                // after discovery, even the empty prefix refuses it this pass.
+                let Ok(session) = prepare(None) else {
+                    continue;
+                };
+                (session, 0)
             }
-        }
+        };
         let mut budget = reader::Budget::default();
         loop {
-            let batch = match reader::scan(&source.path, source.runtime, Some(&cursor), budget) {
-                Ok(batch) if batch.cursor.validate(&source.path).is_ok() => batch,
+            let batch = match session.scan(&source.path, budget) {
+                Ok(batch) if session.validate(&source.path, &batch.cursor).is_ok() => batch,
                 Err(reader::Error::Oversized { .. }) if budget.bytes < 16 * 1024 * 1024 => {
                     budget.bytes = 16 * 1024 * 1024;
                     continue;
@@ -497,7 +519,7 @@ fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
                 }
             };
             let mut next = collection.clone();
-            if batch.stop == reader::Stop::Budget && batch.cursor.offset() == cursor.offset() {
+            if batch.stop == reader::Stop::Budget && batch.cursor.offset() == previous_offset {
                 let gap_key = format!("budget:{generation}:{key}");
                 if !snapshot(
                     weak,
@@ -530,7 +552,7 @@ fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
                 return;
             }
             collection = next;
-            cursor = batch.cursor;
+            previous_offset = batch.cursor.offset();
             match batch.stop {
                 reader::Stop::Complete | reader::Stop::PendingTail => break,
                 reader::Stop::Quarantined if budget.bytes < 16 * 1024 * 1024 => {
@@ -656,9 +678,9 @@ mod tests {
         assert_eq!(report.rows[0].counters.input_tokens.sum, Some(18));
         assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
         assert_eq!(report.coverage.collection.pending_tail_files, Some(0));
-        assert!(
-            report.coverage.source_gaps > 0,
-            "changed generation remains explicit"
+        assert_eq!(
+            report.coverage.source_gaps, 0,
+            "a fully reverified appended prefix is not missing history"
         );
         std::fs::copy(&path, root.join("copy.jsonl")).unwrap();
         collect_generation(&Arc::downgrade(&daemon), &config);

@@ -1194,7 +1194,7 @@ fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
 #[derive(Args)]
 struct UsageArgs {
     /// Only this agent (id, name or unique prefix).
-    #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+    #[arg(long = "agent", visible_alias = "as")]
     agent: Option<String>,
     /// Only agents in this project.
     #[arg(long, value_name = "ID|PATH")]

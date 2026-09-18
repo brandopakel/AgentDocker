@@ -15,6 +15,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod session;
+pub use session::{Preparation, Session};
+
 const MAX_BATCH: u64 = 16 * 1024 * 1024;
 const MAX_RECORD: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 4096;
@@ -169,21 +172,30 @@ impl Cursor {
     }
 
     fn validate_file(&self, file: &mut File, elapsed: Duration) -> Result<u64, Error> {
-        if self.version != 2 || self.offset > self.generation.length {
+        self.validate_suffix(file, 0, [0; 32], elapsed)
+    }
+
+    fn validate_suffix(
+        &self,
+        file: &mut File,
+        start: u64,
+        mut prefix: [u8; 32],
+        elapsed: Duration,
+    ) -> Result<u64, Error> {
+        if self.version != 2 || self.offset > self.generation.length || start > self.offset {
             return Err(Error::Cursor);
         }
         if self.generation != Generation::capture(file)? {
             return Err(Error::Changed);
         }
-        if self.offset > MAX_BATCH {
+        if self.offset - start > MAX_BATCH {
             return Err(Error::ValidationIncomplete);
         }
         let started = Instant::now();
-        file.seek(SeekFrom::Start(0))?;
-        let mut reader = BufReader::with_capacity(8192, file.take(self.offset));
-        let mut prefix = [0; 32];
+        file.seek(SeekFrom::Start(start))?;
+        let mut reader = BufReader::with_capacity(8192, file.take(self.offset - start));
         let mut line = Vec::new();
-        let mut covered = 0;
+        let mut covered = start;
         while covered < self.offset {
             if started.elapsed() >= elapsed {
                 return Err(Error::ValidationIncomplete);
@@ -213,7 +225,7 @@ impl Cursor {
         if self.generation != Generation::capture(reader.get_ref().get_ref())? {
             return Err(Error::Changed);
         }
-        Ok(covered)
+        Ok(covered - start)
     }
 }
 
@@ -283,6 +295,18 @@ pub fn scan(
     previous: Option<&Cursor>,
     budget: Budget,
 ) -> Result<Batch, Error> {
+    scan_checked(path, runtime, previous, budget, false)
+}
+
+// `prepared` is private: only Session may supply its retained, byte-verified
+// prefix. Public standalone scans continue to verify the entire prefix.
+fn scan_checked(
+    path: &Path,
+    runtime: Runtime,
+    previous: Option<&Cursor>,
+    budget: Budget,
+    prepared: bool,
+) -> Result<Batch, Error> {
     if budget.record_bytes == 0
         || budget.record_bytes > MAX_RECORD
         || budget.bytes <= budget.record_bytes as u64 + 1
@@ -305,7 +329,9 @@ pub fn scan(
             if prior.generation != generation {
                 return Err(Error::Changed);
             }
-            validation_bytes_read += prior.validate_file(&mut file, PREFIX_DEADLINE)?;
+            if !prepared {
+                validation_bytes_read += prior.validate_file(&mut file, PREFIX_DEADLINE)?;
+            }
             if prior
                 .quarantined_at_budget
                 .is_some_and(|bytes| budget.bytes <= bytes)
@@ -411,7 +437,21 @@ pub fn scan(
     if generation != Generation::capture(reader.get_ref().get_ref())? {
         return Err(Error::Changed);
     }
-    validation_bytes_read += cursor.validate_counted(path)?;
+    if prepared {
+        let prior = previous.ok_or(Error::Cursor)?;
+        let mut check = crate::files::open_regular(path)?;
+        validation_bytes_read += cursor.validate_suffix(
+            &mut check,
+            prior.offset,
+            prior.prefix_digest,
+            PREFIX_DEADLINE,
+        )?;
+        if generation != Generation::capture(&crate::files::open_regular(path)?)? {
+            return Err(Error::Changed);
+        }
+    } else {
+        validation_bytes_read += cursor.validate_counted(path)?;
+    }
     Ok(Batch {
         cursor,
         samples,

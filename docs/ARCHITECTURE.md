@@ -1153,6 +1153,21 @@ are unknown, never zero. The design:
   estimate. These estimates are neither additional provider tokens nor a precise
   measure of billed overhead; never add them to the provider total.
 
+The collector now holds an ephemeral reader session that verifies a saved prefix
+in bounded passes (up to 4 MiB / 100 ms each) before parsing. A scan rechecks its
+new bounded suffix and generation before committing; a restart discards the
+proof and rehashes the saved prefix. An appended generation of the same file may
+retain parser state only after all accepted prefix bytes match. Rewrites,
+replacement, truncation or a changing snapshot keep coverage incomplete and
+require an explicit gap/replay. No transcript bytes enter durable cursors; only
+one incomplete verification record is buffered in memory, at most 16 MiB.
+The standalone reader API retains its earlier 16 MiB whole-prefix limit.
+The 22+ MiB reader regression and the updated daemon partial-tail/restart trial
+passed in the 29-test host/daemon usage campaign. Real-binary and resource
+acceptance remain pending. The CLI uses `--agent` (with `--as` accepted as an
+alias) as an explicit filter; the calling agent identity does not silently
+filter an otherwise project-wide report.
+
 Collector follow-up preserves the committed retention cutoff when configuration
 expands: discarded history stays explicitly truncated, and newly found older
 logs do not make that interval appear restored. Attribution reconciliation saves
