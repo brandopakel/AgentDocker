@@ -91,6 +91,8 @@ enum Cmd {
     Agents,
     Leases,
     Runtimes,
+    /// Whether the remote connector is serving here (its status file).
+    Connector,
     Discovered,
     Journal(String, String),
     Channels(String, String),
@@ -265,6 +267,7 @@ enum Msg {
     Agents(Vec<AgentRecord>, BTreeMap<String, String>),
     Leases(Vec<Lease>),
     Runtimes(Vec<RuntimeInfo>),
+    Connector(Option<agentdocker_host::connector::Serving>),
     Discovered(Vec<DiscoveredProcess>),
     Journal(String, Option<u64>, Vec<JournalEntry>),
     Channels(String, Vec<agentdocker_core::Channel>),
@@ -359,6 +362,8 @@ pub struct App {
     aliases: BTreeMap<String, String>,
     leases: Vec<Lease>,
     runtimes: Vec<RuntimeInfo>,
+    /// The remote connector serving on this machine, when one is.
+    connector: Option<agentdocker_host::connector::Serving>,
     discovered: Vec<DiscoveredProcess>,
     journal: Vec<JournalEntry>,
     journal_project: Option<String>,
@@ -488,6 +493,7 @@ impl App {
             Cmd::Leases,
             Cmd::Discovered,
             Cmd::Runtimes,
+            Cmd::Connector,
             Cmd::Questions,
             Cmd::Activity,
         ] {
@@ -517,6 +523,7 @@ impl App {
             aliases: BTreeMap::new(),
             leases: Vec::new(),
             runtimes: Vec::new(),
+            connector: None,
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
@@ -588,6 +595,7 @@ impl App {
             aliases: BTreeMap::new(),
             leases: Vec::new(),
             runtimes: Vec::new(),
+            connector: None,
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
@@ -852,6 +860,7 @@ impl App {
                 }
                 Msg::Leases(leases) => self.leases = leases,
                 Msg::Runtimes(runtimes) => self.runtimes = runtimes,
+                Msg::Connector(serving) => self.connector = serving,
                 Msg::Channels(project, channels) => {
                     // A late reply for a project no longer on screen must not
                     // restore it. Other projects keep their current snapshots.
@@ -1072,6 +1081,7 @@ impl App {
                             Cmd::Leases,
                             Cmd::Discovered,
                             Cmd::Runtimes,
+                            Cmd::Connector,
                             Cmd::Questions,
                             Cmd::Activity,
                             Cmd::Inbox,
@@ -2411,6 +2421,11 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Runtimes { runtimes } => Some(Msg::Runtimes(runtimes)),
             _ => None,
         },
+        // A file under the state home, not a daemon question: the
+        // connector is its own process and the daemon does not know it.
+        Cmd::Connector => Some(Msg::Connector(agentdocker_host::connector::serving(
+            &agentdocker_host::dirs::home(),
+        ))),
         Cmd::Discovered => match client.call(&Request::Discover)? {
             Response::Processes { processes } => Some(Msg::Discovered(processes)),
             _ => None,
@@ -3113,9 +3128,13 @@ struct PauseControl {
 
 /// The one line under a browser extension's name: which browsers have
 /// it, and that its sessions never appear here.
+/// The one line under an in-browser runtime's name: where its extension
+/// is, and whether its sessions reach here — through the connector when
+/// one is serving, and what to do when none is.
 pub(crate) fn in_browser_word(
     runtime: &agentdocker_core::runtime::RuntimeInfo,
     connected: usize,
+    connector: Option<&agentdocker_host::connector::Serving>,
 ) -> String {
     let mut browsers: Vec<&str> = runtime
         .extensions
@@ -3128,10 +3147,40 @@ pub(crate) fn in_browser_word(
     } else {
         format!("Installed in {}", browsers.join(", "))
     };
-    match connected {
-        0 => format!("{installed} · works inside the browser, its sessions are not visible here"),
-        1 => format!("{installed} · one browser agent connected through the remote connector"),
-        n => format!("{installed} · {n} browser agents connected through the remote connector"),
+    match (connected, connector) {
+        (0, Some(_)) => format!(
+            "{installed} · the connector is ready; add it in {} and its sessions appear here",
+            surface_word(&runtime.name)
+        ),
+        (0, None) => {
+            format!(
+                "{installed} · its sessions reach here only through the connector, which is not running"
+            )
+        }
+        (1, _) => format!("{installed} · one browser agent connected through the connector"),
+        (n, _) => format!("{installed} · {n} browser agents connected through the connector"),
+    }
+}
+
+/// The hosted surface an in-browser runtime is, as the person calls it.
+fn surface_word(runtime: &str) -> &'static str {
+    match runtime {
+        "claude-browser" => "Claude",
+        "chatgpt-browser" => "ChatGPT",
+        _ => "the vendor's app",
+    }
+}
+
+/// Where a vendor's settings take a connector's MCP URL.
+pub(crate) fn add_connector_words(runtime: &str) -> &'static str {
+    match runtime {
+        "claude-browser" => {
+            "Claude › Settings › Connectors › Add custom connector › paste the MCP URL › Connect"
+        }
+        "chatgpt-browser" => {
+            "ChatGPT › Settings › Connectors › Advanced › Developer mode › Create › paste the MCP URL, OAuth"
+        }
+        _ => "in the vendor's connector settings, paste the MCP URL",
     }
 }
 
@@ -3260,18 +3309,34 @@ pub(crate) mod tests {
             running: 0,
         };
         assert!(runtime.installed() && runtime.in_browser());
+        let serving = agentdocker_host::connector::Serving {
+            pid: 1,
+            public_url: "https://node.example.ts.net".into(),
+            bind: "127.0.0.1:1".into(),
+            default_project: None,
+            pairing_code: "ABCD-EFGH".into(),
+            started_at: Utc::now(),
+            tunnel: None,
+            allowlist_prefixes: 0,
+        };
         assert_eq!(
-            in_browser_word(&runtime, 0),
-            "Installed in Chrome, Brave · works inside the browser, its sessions are not visible here"
+            in_browser_word(&runtime, 0, None),
+            "Installed in Chrome, Brave · its sessions reach here only through the connector, which is not running"
         );
         assert_eq!(
-            in_browser_word(&runtime, 1),
-            "Installed in Chrome, Brave · one browser agent connected through the remote connector"
+            in_browser_word(&runtime, 0, Some(&serving)),
+            "Installed in Chrome, Brave · the connector is ready; add it in Claude and its sessions appear here"
         );
         assert_eq!(
-            in_browser_word(&runtime, 2),
-            "Installed in Chrome, Brave · 2 browser agents connected through the remote connector"
+            in_browser_word(&runtime, 1, Some(&serving)),
+            "Installed in Chrome, Brave · one browser agent connected through the connector"
         );
+        assert_eq!(
+            in_browser_word(&runtime, 2, None),
+            "Installed in Chrome, Brave · 2 browser agents connected through the connector"
+        );
+        assert!(add_connector_words("claude-browser").starts_with("Claude › Settings"));
+        assert!(add_connector_words("chatgpt-browser").starts_with("ChatGPT › Settings"));
         assert_eq!(
             extension_words(&runtime.extensions[1]),
             "Chrome · Work · 1.0.93"

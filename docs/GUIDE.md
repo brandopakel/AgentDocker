@@ -74,15 +74,17 @@ agent, connected — and it is neither.
 
 When the browser agent has something a terminal agent should know, the way in
 is the one the vendors give hosted agents: a remote MCP connector.
-`agentdocker connector serve --tunnel tailscale` serves one on loopback,
-exposes it through Tailscale Funnel on this machine's own stable `*.ts.net`
-name (`--tunnel cloudflared` for a quick tunnel instead), prints the URL to add as a custom connector
-in Claude or ChatGPT and a pairing code for the consent page, and each consent
-becomes a browser agent in the project with the messaging tools and nothing
-that touches a checkout. `connector install` runs the same as a login service;
-`connector status` shows its address and pairing code; `--allow-from anthropic`
-and `--allow-from @<openai feed>` admit only the vendors' own addresses. [The
-remote connector](REMOTE-CONNECTOR.md) has the whole contract.
+`agentdocker connector serve --tunnel tailscale` serves one on loopback — one
+per machine, for every project on it — exposes it through Tailscale Funnel on
+this machine's own stable `*.ts.net` name (`--tunnel cloudflared` for a quick
+tunnel instead), prints the URL to add as a custom connector in Claude or
+ChatGPT and a pairing code for the consent page, and each consent becomes a
+browser agent in the project chosen on that page (any folder on this machine)
+with the messaging tools and nothing that touches a checkout. `connector
+install` runs the same as a login service; `connector status` and the
+desktop's Tools screen show its address and pairing code; `--allow-from
+anthropic` and `--allow-from @<openai feed>` admit only the vendors' own
+addresses. [The remote connector](REMOTE-CONNECTOR.md) has the whole contract.
 
 Everything respects `AGENTDOCKER_HOME`, so a throwaway daemon for
 experiments costs nothing:
@@ -339,7 +341,7 @@ each one by pid.
 | `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
-| `connector serve` / `status` / `install` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join this project's messaging: served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
+| `connector serve` / `status` / `install` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
 
 ---
 
@@ -520,8 +522,12 @@ Newest first. Only what changes how the product is used.
   own stable name and `--tunnel cloudflared` starts a quick tunnel;
   `connector install` runs it as a login service, `connector status` shows
   its address and pairing code, and `--allow-from` admits only the vendors'
-  published addresses. A browser agent's `project` broadcast names the served
-  project, wherever the connector runs.
+  published addresses. One connector serves every project on the machine:
+  the consent page chooses the project a browser agent joins, and its
+  `project` broadcast names that project, wherever the connector runs. A
+  vendor may identify itself by its Client ID Metadata Document instead of
+  registering (fetched only from the vendors' hosts); the desktop's Tools
+  screen shows whether the connector is serving, its URL and pairing code.
 - Every MCP tool carries annotations (read-only, destructive, idempotent,
   open-world), so a host that asks before risky calls lets the reads through.
 - `claude attach` (later shown as `claude agents`) is the terminal in front of

@@ -36,6 +36,19 @@ pub const VENDOR_CALLBACKS: &[(&str, Vendor)] = &[
 ];
 /// ChatGPT also uses a per-connection callback under this prefix.
 pub const CHATGPT_CALLBACK_PREFIX: &str = "https://chatgpt.com/connector/oauth/";
+/// Where a vendor hosts its Client ID Metadata Document: a URL-formatted
+/// `client_id` is fetched only from these hosts (or the host of a
+/// callback the person allowed), never from an address a request names.
+pub const VENDOR_METADATA_HOSTS: &[(&str, Vendor)] = &[
+    ("claude.ai", Vendor::Claude),
+    ("chatgpt.com", Vendor::ChatGpt),
+];
+/// A metadata document larger than this is not one; the vendors' are
+/// a few hundred bytes.
+pub const MAX_METADATA_BYTES: usize = 64 * 1024;
+/// How long a fetched metadata document stands before it is fetched
+/// again at the next authorization.
+pub const METADATA_LIFETIME: Duration = Duration::hours(1);
 
 /// Whose hosted surface a client is, by the callback it registered: it
 /// decides the runtime the browser agent is recorded as.
@@ -78,6 +91,46 @@ impl Vendor {
             .any(|allowed| allowed == uri)
             .then_some(Self::Other)
     }
+
+    /// The vendor whose metadata document a host may serve, when it is
+    /// one this server fetches from.
+    pub fn of_metadata_host(host: &str, extra: &[String]) -> Option<Self> {
+        if let Some((_, vendor)) = VENDOR_METADATA_HOSTS
+            .iter()
+            .find(|(known, _)| known.eq_ignore_ascii_case(host))
+        {
+            return Some(*vendor);
+        }
+        extra
+            .iter()
+            .filter_map(|allowed| host_of(allowed))
+            .any(|allowed| allowed.eq_ignore_ascii_case(host))
+            .then_some(Self::Other)
+    }
+}
+
+/// The host of an `https://` URL, without userinfo or port games: a
+/// `client_id` is a plain URL or it is not one.
+pub fn host_of(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("https://")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let host = &rest[..end];
+    if host.is_empty() || host.contains(['@', ':', '[', ']']) {
+        return None;
+    }
+    Some(host)
+}
+
+/// Whether `client_id` has the shape of a Client ID Metadata Document
+/// URL (draft-ietf-oauth-client-id-metadata-document): `https`, a host,
+/// a path, no fragment, and a length a document URL has.
+pub fn is_metadata_client_id(client_id: &str) -> bool {
+    client_id.len() <= 512
+        && !client_id.contains('#')
+        && host_of(client_id).is_some_and(|host| {
+            client_id["https://".len() + host.len()..].starts_with('/')
+                && client_id["https://".len() + host.len()..].len() > 1
+        })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,6 +140,25 @@ pub struct Client {
     pub name: Option<String>,
     pub vendor: Vendor,
     pub created_at: DateTime<Utc>,
+    /// Set for a client whose `client_id` is its metadata document's
+    /// URL: when that document was last fetched and admitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata_fetched_at: Option<DateTime<Utc>>,
+}
+
+impl Client {
+    /// The name the consent page shows. A metadata document is
+    /// self-asserted, so its `client_name` is never the relying party:
+    /// the host the document was fetched from is.
+    pub fn shown_as(&self, client_id: &str) -> String {
+        match (self.metadata_fetched_at, host_of(client_id)) {
+            (Some(_), Some(host)) => format!("{} ({host})", self.vendor.label()),
+            _ => match &self.name {
+                Some(name) => format!("{} ({name})", self.vendor.label()),
+                None => self.vendor.label().to_owned(),
+            },
+        }
+    }
 }
 
 /// One consent: one browser-agent identity, and the refresh token that
@@ -134,6 +206,8 @@ pub struct Consent {
     /// The name was made up here rather than typed, so a collision may
     /// be retried with another.
     pub generated: bool,
+    /// The project the agent joins: chosen on the consent page.
+    pub project: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -154,6 +228,11 @@ pub struct Store {
     codes: BTreeMap<String, Code>,
     #[serde(skip)]
     access: BTreeMap<String, Access>,
+    /// This server's issuer identifier, named in every authorization
+    /// response (RFC 9207) so a client can tell which server answered.
+    /// Set when the server starts; empty in a bare store.
+    #[serde(skip)]
+    pub issuer: String,
 }
 
 /// An OAuth error, with the code the vendor's client understands.
@@ -164,7 +243,7 @@ pub struct OAuthError {
 }
 
 impl OAuthError {
-    fn new(code: &'static str, description: impl Into<String>) -> Self {
+    pub fn new(code: &'static str, description: impl Into<String>) -> Self {
         Self {
             code,
             description: description.into(),
@@ -182,10 +261,14 @@ impl OAuthError {
 pub struct Pending {
     pub client_id: String,
     pub client_name: Option<String>,
+    /// The client as the consent page names it.
+    pub shown_as: String,
     pub vendor: Vendor,
     pub redirect_uri: String,
     pub state: Option<String>,
     pub code_challenge: String,
+    /// The issuer to name in the response; empty names none.
+    pub issuer: String,
 }
 
 impl Pending {
@@ -221,6 +304,10 @@ impl Pending {
         if let Some(state) = &self.state {
             url.push_str("&state=");
             url.push_str(&percent_encode(state));
+        }
+        if !self.issuer.is_empty() {
+            url.push_str("&iss=");
+            url.push_str(&percent_encode(&self.issuer));
         }
         url
     }
@@ -386,6 +473,7 @@ impl Store {
                 name: name.clone(),
                 vendor: vendor.unwrap_or(Vendor::Other),
                 created_at: now,
+                metadata_fetched_at: None,
             },
         );
         Ok(json!({
@@ -398,6 +486,132 @@ impl Store {
             "client_name": name,
             "scope": SCOPE,
         }))
+    }
+
+    /// Whether a metadata client's document was admitted recently enough
+    /// to serve another authorization without fetching it again.
+    pub fn metadata_client_fresh(&self, client_id: &str, now: DateTime<Utc>) -> bool {
+        self.clients
+            .get(client_id)
+            .and_then(|c| c.metadata_fetched_at)
+            .is_some_and(|fetched| now - fetched < METADATA_LIFETIME)
+    }
+
+    /// A Client ID Metadata Document, fetched from `client_id` by the
+    /// caller, becomes (or refreshes) the client it describes. The same
+    /// rules as registration, plus the document's: it names itself
+    /// exactly, it comes from a vendor's host, and its callbacks are that
+    /// vendor's. What it says about itself otherwise is not trusted: the
+    /// consent page shows the host, and the client is public whatever
+    /// authentication method it prefers, since this server issues no
+    /// secrets and accepts none.
+    pub fn admit_metadata_client(
+        &mut self,
+        client_id: &str,
+        document: &Value,
+        extra_callbacks: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<&Client, OAuthError> {
+        if !is_metadata_client_id(client_id) {
+            return Err(OAuthError::new(
+                "invalid_client",
+                "client_id is not a metadata document URL",
+            ));
+        }
+        let host = host_of(client_id).unwrap_or_default();
+        let Some(host_vendor) = Vendor::of_metadata_host(host, extra_callbacks) else {
+            return Err(OAuthError::new(
+                "invalid_client",
+                format!(
+                    "{host} is not a host this connector fetches client metadata from; only the vendors' hosted surfaces can connect"
+                ),
+            ));
+        };
+        if !document.is_object() {
+            return Err(OAuthError::new(
+                "invalid_client_metadata",
+                "the metadata document is not a JSON object",
+            ));
+        }
+        if document["client_id"].as_str() != Some(client_id) {
+            return Err(OAuthError::new(
+                "invalid_client_metadata",
+                "the metadata document does not name its own URL as client_id",
+            ));
+        }
+        let uris: Vec<String> = document["redirect_uris"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if uris.is_empty() {
+            return Err(OAuthError::new(
+                "invalid_client_metadata",
+                "the metadata document names no redirect_uris",
+            ));
+        }
+        for uri in &uris {
+            match Vendor::of_callback(uri, extra_callbacks) {
+                Some(vendor) if vendor == host_vendor => {}
+                Some(_) => {
+                    return Err(OAuthError::new(
+                        "invalid_client_metadata",
+                        format!("{uri} is not a callback of the vendor at {host}"),
+                    ));
+                }
+                None => {
+                    return Err(OAuthError::new(
+                        "invalid_client_metadata",
+                        format!(
+                            "{uri} is not a callback this connector admits; only the vendors' hosted surfaces can connect"
+                        ),
+                    ));
+                }
+            }
+        }
+        if let Some(grants) = document["grant_types"].as_array()
+            && !grants
+                .iter()
+                .any(|g| g.as_str() == Some("authorization_code"))
+        {
+            return Err(OAuthError::new(
+                "invalid_client_metadata",
+                "the metadata document does not use the authorization_code grant",
+            ));
+        }
+        if let Some(types) = document["response_types"].as_array()
+            && !types.iter().any(|t| t.as_str() == Some("code"))
+        {
+            return Err(OAuthError::new(
+                "invalid_client_metadata",
+                "the metadata document does not use the code response type",
+            ));
+        }
+        let name = document["client_name"]
+            .as_str()
+            .map(|n| n.chars().take(80).collect::<String>())
+            .filter(|n| !n.trim().is_empty());
+        let created_at = self
+            .clients
+            .get(client_id)
+            .map(|c| c.created_at)
+            .unwrap_or(now);
+        self.clients.insert(
+            client_id.to_owned(),
+            Client {
+                redirect_uris: uris,
+                name,
+                vendor: host_vendor,
+                created_at,
+                metadata_fetched_at: Some(now),
+            },
+        );
+        Ok(&self.clients[client_id])
     }
 
     /// Validate an authorization request. The client and its callback are
@@ -437,10 +651,12 @@ impl Store {
         let pending = Pending {
             client_id: client_id.to_owned(),
             client_name: client.name.clone(),
+            shown_as: client.shown_as(client_id),
             vendor: client.vendor,
             redirect_uri,
             state: field(params, "state").map(str::to_owned),
             code_challenge: String::new(),
+            issuer: self.issuer.clone(),
         };
         let refuse = |code, why: &str| {
             AuthorizeRefusal::Redirect(Box::new(pending.clone()), OAuthError::new(code, why))
@@ -489,6 +705,7 @@ impl Store {
         pending: &Pending,
         agent_name: String,
         generated: bool,
+        project: PathBuf,
         now: DateTime<Utc>,
     ) -> String {
         let code = random_token();
@@ -504,6 +721,7 @@ impl Store {
                     client_id: pending.client_id.clone(),
                     agent_name,
                     generated,
+                    project,
                 },
             },
         );
@@ -520,6 +738,10 @@ impl Store {
         if let Some(state) = &pending.state {
             url.push_str("&state=");
             url.push_str(&percent_encode(state));
+        }
+        if !pending.issuer.is_empty() {
+            url.push_str("&iss=");
+            url.push_str(&percent_encode(&pending.issuer));
         }
         url
     }
@@ -831,8 +1053,13 @@ mod tests {
             .unwrap();
         assert_eq!(pending.vendor, Vendor::Claude);
         assert_eq!(pending.state.as_deref(), Some("xyz"));
-        let redirect =
-            store.complete_authorization(&pending, "claude-browser-ab12".into(), false, now());
+        let redirect = store.complete_authorization(
+            &pending,
+            "claude-browser-ab12".into(),
+            false,
+            "/p/keel".into(),
+            now(),
+        );
         assert!(redirect.starts_with("https://claude.ai/api/mcp/auth_callback?code="));
         assert!(redirect.ends_with("&state=xyz"));
         assert!(store.grants.is_empty(), "consent alone makes no grant");
@@ -856,8 +1083,13 @@ mod tests {
         assert_eq!(again.unwrap_err().code, "invalid_grant");
         assert!(store.grants.is_empty());
 
-        let redirect =
-            store.complete_authorization(&pending, "claude-browser-ab12".into(), false, now());
+        let redirect = store.complete_authorization(
+            &pending,
+            "claude-browser-ab12".into(),
+            false,
+            "/p/keel".into(),
+            now(),
+        );
         let code = code_of(&redirect);
         let consent = store
             .redeem_code(
@@ -874,6 +1106,7 @@ mod tests {
                 client_id: client.clone(),
                 agent_name: "claude-browser-ab12".into(),
                 generated: false,
+                project: "/p/keel".into(),
             }
         );
         let issued = store.issue(&consent, agent(), now());
@@ -889,8 +1122,13 @@ mod tests {
         );
         assert!(store.authenticate("not-a-token", now()).is_none());
         // An expired code is gone too.
-        let redirect =
-            store.complete_authorization(&pending, "claude-browser-ab12".into(), false, now());
+        let redirect = store.complete_authorization(
+            &pending,
+            "claude-browser-ab12".into(),
+            false,
+            "/p/keel".into(),
+            now(),
+        );
         let code = code_of(&redirect);
         let late = store.redeem_code(
             &pairs(&format!(
@@ -912,8 +1150,13 @@ mod tests {
                 s256(&verifier)
             )))
             .unwrap();
-        let redirect =
-            store.complete_authorization(&pending, "claude-browser-ab12".into(), true, now());
+        let redirect = store.complete_authorization(
+            &pending,
+            "claude-browser-ab12".into(),
+            true,
+            "/p/keel".into(),
+            now(),
+        );
         let code = code_of(&redirect);
         let first = redeem(
             &mut store,
@@ -1036,8 +1279,13 @@ mod tests {
                 s256(&verifier)
             )))
             .unwrap();
-        let redirect =
-            store.complete_authorization(&pending, "claude-browser-ab12".into(), true, now());
+        let redirect = store.complete_authorization(
+            &pending,
+            "claude-browser-ab12".into(),
+            true,
+            "/p/keel".into(),
+            now(),
+        );
         let code = code_of(&redirect);
         let issued = redeem(
             &mut store,
@@ -1088,5 +1336,182 @@ mod tests {
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
             "the RFC 7636 appendix B vector"
         );
+    }
+
+    /// A vendor's metadata document stands in for registration: it is
+    /// admitted from the vendor's host with the vendor's callbacks and
+    /// nothing else, the consent page names the host rather than the
+    /// document's own `client_name`, and it goes stale after an hour.
+    #[test]
+    fn a_metadata_document_is_admitted_from_a_vendor_host_with_its_own_callbacks() {
+        assert!(is_metadata_client_id(
+            "https://chatgpt.com/oauth/client.json"
+        ));
+        assert!(is_metadata_client_id(
+            "https://claude.ai/oauth/client-metadata"
+        ));
+        for bad in [
+            "https://chatgpt.com",
+            "https://chatgpt.com/",
+            "http://chatgpt.com/oauth/client.json",
+            "https://chatgpt.com/oauth/client.json#x",
+            "https://user@chatgpt.com/oauth/client.json",
+            "https://chatgpt.com:443/oauth/client.json",
+            "opaque-client-id",
+        ] {
+            assert!(!is_metadata_client_id(bad), "{bad}");
+        }
+        let mut store = Store::default();
+        let url = "https://chatgpt.com/oauth/client.json";
+        let document = json!({
+            "client_id": url,
+            "client_name": "ChatGPT, says the document",
+            "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "private_key_jwt",
+        });
+        let admitted = store
+            .admit_metadata_client(url, &document, &[], now())
+            .unwrap();
+        assert_eq!(admitted.vendor, Vendor::ChatGpt);
+        assert_eq!(admitted.metadata_fetched_at, Some(now()));
+        assert_eq!(
+            admitted.shown_as(url),
+            "ChatGPT (chatgpt.com)",
+            "the host, never the self-asserted name"
+        );
+        assert!(store.metadata_client_fresh(url, now() + Duration::minutes(59)));
+        assert!(!store.metadata_client_fresh(url, now() + Duration::minutes(61)));
+        assert!(!store.metadata_client_fresh("https://chatgpt.com/other.json", now()));
+        // A refresh keeps the first admission's date and renews the fetch.
+        let later = now() + Duration::hours(2);
+        let refreshed = store
+            .admit_metadata_client(url, &document, &[], later)
+            .unwrap();
+        assert_eq!(refreshed.created_at, now());
+        assert_eq!(refreshed.metadata_fetched_at, Some(later));
+
+        // Refusals: the wrong host, a document that names another URL, a
+        // callback of another vendor, no callbacks, a foreign callback.
+        let refused = |store: &mut Store, url: &str, document: Value| {
+            store
+                .admit_metadata_client(url, &document, &[], now())
+                .map(|_| ())
+                .unwrap_err()
+        };
+        assert_eq!(
+            refused(
+                &mut store,
+                "https://evil.example/client.json",
+                json!({"client_id": "https://evil.example/client.json", "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"]})
+            )
+            .code,
+            "invalid_client"
+        );
+        assert_eq!(
+            refused(
+                &mut store,
+                "https://claude.ai/oauth/x.json",
+                json!({"client_id": "https://claude.ai/oauth/y.json", "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"]})
+            )
+            .code,
+            "invalid_client_metadata"
+        );
+        assert_eq!(
+            refused(
+                &mut store,
+                "https://claude.ai/oauth/x.json",
+                json!({"client_id": "https://claude.ai/oauth/x.json", "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"]})
+            )
+            .description,
+            "https://chatgpt.com/connector_platform_oauth_redirect is not a callback of the vendor at claude.ai"
+        );
+        assert_eq!(
+            refused(
+                &mut store,
+                "https://claude.ai/oauth/x.json",
+                json!({"client_id": "https://claude.ai/oauth/x.json", "redirect_uris": []})
+            )
+            .code,
+            "invalid_client_metadata"
+        );
+        assert_eq!(
+            refused(
+                &mut store,
+                "https://claude.ai/oauth/x.json",
+                json!({"client_id": "https://claude.ai/oauth/x.json", "redirect_uris": ["https://evil.example/cb"]})
+            )
+            .code,
+            "invalid_client_metadata"
+        );
+        assert_eq!(
+            refused(
+                &mut store,
+                "https://claude.ai/oauth/x.json",
+                json!("not an object")
+            )
+            .code,
+            "invalid_client_metadata"
+        );
+        assert_eq!(
+            refused(&mut store, "opaque", json!({})).code,
+            "invalid_client"
+        );
+        // A callback the person allowed brings its host along.
+        let extra = vec!["https://agents.example/oauth/cb".to_owned()];
+        let other = store
+            .admit_metadata_client(
+                "https://agents.example/client.json",
+                &json!({"client_id": "https://agents.example/client.json", "redirect_uris": ["https://agents.example/oauth/cb"]}),
+                &extra,
+                now(),
+            )
+            .unwrap();
+        assert_eq!(other.vendor, Vendor::Other);
+
+        // The admitted document authorizes like a registered client, and
+        // the code goes back with the issuer named (RFC 9207).
+        store.issuer = "https://node.example.ts.net".into();
+        let verifier = "v".repeat(50);
+        let pending = store
+            .begin_authorization(&pairs(&format!(
+                "response_type=code&client_id={}&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fconnector_platform_oauth_redirect&code_challenge={}&code_challenge_method=S256&state=s",
+                percent_encode(url),
+                s256(&verifier)
+            )))
+            .unwrap();
+        assert_eq!(pending.shown_as, "ChatGPT (chatgpt.com)");
+        assert_eq!(pending.issuer, "https://node.example.ts.net");
+        let redirect = store.complete_authorization(
+            &pending,
+            "chatgpt-browser-ab12".into(),
+            true,
+            "/p/keel".into(),
+            now(),
+        );
+        assert!(
+            redirect.ends_with("&state=s&iss=https%3A%2F%2Fnode.example.ts.net"),
+            "{redirect}"
+        );
+        let error = pending.error_redirect(&OAuthError::new("access_denied", "no"));
+        assert!(
+            error.ends_with("&state=s&iss=https%3A%2F%2Fnode.example.ts.net"),
+            "{error}"
+        );
+        let code = code_of(&redirect);
+        let consent = redeem_consent(
+            &mut store,
+            &format!(
+                "grant_type=authorization_code&code={code}&client_id={}&code_verifier={verifier}",
+                percent_encode(url)
+            ),
+        );
+        assert_eq!(consent.client_id, url);
+        assert_eq!(consent.project, PathBuf::from("/p/keel"));
+    }
+
+    fn redeem_consent(store: &mut Store, form: &str) -> Consent {
+        store.redeem_code(&pairs(form), now()).unwrap()
     }
 }
