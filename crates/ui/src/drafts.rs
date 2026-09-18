@@ -14,6 +14,14 @@ const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_PER_KIND: usize = 128;
 const MAX_KEY_BYTES: usize = 1024;
 
+/// An unfinished card, without any filing or request state.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BoardDraft {
+    pub title: String,
+    pub acceptance: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Snapshot {
@@ -23,16 +31,19 @@ pub struct Snapshot {
     pub channels: BTreeMap<String, String>,
     #[serde(default)]
     pub answers: BTreeMap<String, String>,
+    #[serde(default)]
+    pub boards: BTreeMap<String, BoardDraft>,
 }
 
 impl Default for Snapshot {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             sessions: BTreeMap::new(),
             conversations: BTreeMap::new(),
             channels: BTreeMap::new(),
             answers: BTreeMap::new(),
+            boards: BTreeMap::new(),
         }
     }
 }
@@ -40,7 +51,9 @@ impl Default for Snapshot {
 impl Snapshot {
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            self.version == 2 || (self.version == 1 && self.answers.is_empty()),
+            self.version == 3
+                || (self.boards.is_empty()
+                    && (self.version == 2 || (self.version == 1 && self.answers.is_empty()))),
             "Unsupported saved-draft version"
         );
         let mut total = 0usize;
@@ -62,6 +75,22 @@ impl Snapshot {
                 );
                 total += text.len();
             }
+        }
+        anyhow::ensure!(
+            self.boards.len() <= MAX_PER_KIND,
+            "Too many saved card drafts"
+        );
+        for (project, card) in &self.boards {
+            anyhow::ensure!(
+                !project.is_empty() && project.len() <= MAX_KEY_BYTES,
+                "Invalid card draft project"
+            );
+            anyhow::ensure!(
+                card.title.chars().count() <= agentdocker_core::task::TITLE_CHARS
+                    && card.acceptance.chars().count() <= agentdocker_core::task::ACCEPTANCE_CHARS,
+                "A card draft exceeds its text limits"
+            );
+            total += card.title.len() + card.acceptance.len();
         }
         anyhow::ensure!(
             total <= MAX_TOTAL_BYTES,
@@ -90,7 +119,7 @@ impl Snapshot {
         );
         let mut saved: Self = serde_json::from_slice(&bytes)?;
         saved.validate()?;
-        saved.version = 2;
+        saved.version = 3;
         Ok(saved)
     }
 
@@ -265,6 +294,41 @@ mod tests {
         std::fs::write(&file, unknown).unwrap();
         assert!(Snapshot::load(home.path()).is_err());
         assert_eq!(std::fs::read(file).unwrap(), unknown);
+    }
+
+    #[test]
+    fn version_two_answers_upgrade_with_card_text_without_rewriting_on_read() {
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join("drafts.json");
+        let mut earlier = Snapshot {
+            version: 2,
+            ..Default::default()
+        };
+        earlier
+            .answers
+            .insert("question".into(), "keep my answer".into());
+        earlier.save(home.path()).unwrap();
+        let mut legacy = serde_json::to_value(&earlier).unwrap();
+        legacy.as_object_mut().unwrap().remove("boards");
+        std::fs::write(&file, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let original = std::fs::read(&file).unwrap();
+        let mut saved = Snapshot::load(home.path()).unwrap();
+        assert_eq!(saved.version, 3);
+        assert_eq!(saved.answers, earlier.answers);
+        assert_eq!(std::fs::read(&file).unwrap(), original);
+        saved.boards.insert(
+            "/project".into(),
+            BoardDraft {
+                title: "café 日本語".into(),
+                acceptance: "ready when tested".into(),
+            },
+        );
+        saved.save(home.path()).unwrap();
+        assert_eq!(Snapshot::load(home.path()).unwrap(), saved);
+        let last_good = std::fs::read(&file).unwrap();
+        saved.boards.get_mut("/project").unwrap().title = "界".repeat(201);
+        assert!(saved.save(home.path()).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), last_good);
     }
 
     #[test]

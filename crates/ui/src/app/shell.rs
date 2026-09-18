@@ -17,6 +17,8 @@ pub(super) struct State {
     pub session_drafts: BTreeMap<String, SessionDraft>,
     /// Text only, keyed by the original question ID. Never restores approval or sending state.
     pub answers: BTreeMap<MessageId, String>,
+    /// Card text belongs to its original project; filing state is never restored.
+    pub task_drafts: BTreeMap<String, TaskDraft>,
     pub drafts: crate::drafts::Persistence,
     pub draft_home: PathBuf,
     pub connection_details: Option<String>,
@@ -252,6 +254,20 @@ impl State {
                 .into_iter()
                 .map(|(id, text)| (id.into(), text))
                 .collect(),
+            task_drafts: saved
+                .boards
+                .into_iter()
+                .map(|(project, draft)| {
+                    (
+                        project,
+                        TaskDraft {
+                            title: draft.title,
+                            acceptance: draft.acceptance,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
             dpi: 1.0,
             width: 1180.0,
             height: 760.0,
@@ -269,6 +285,8 @@ enum DraftKind {
     Conversation,
     Channel,
     Answer,
+    TaskTitle,
+    TaskAcceptance,
 }
 
 impl State {
@@ -298,6 +316,20 @@ impl State {
                 .filter(|(_, text)| !text.is_empty())
                 .map(|(id, text)| (id.to_string(), text.clone()))
                 .collect(),
+            boards: self
+                .task_drafts
+                .iter()
+                .filter(|(_, draft)| !draft.title.is_empty() || !draft.acceptance.is_empty())
+                .map(|(project, draft)| {
+                    (
+                        project.clone(),
+                        crate::drafts::BoardDraft {
+                            title: draft.title.clone(),
+                            acceptance: draft.acceptance.clone(),
+                        },
+                    )
+                })
+                .collect(),
             ..Default::default()
         }
     }
@@ -309,6 +341,8 @@ impl State {
             DraftKind::Conversation => self.conversation_drafts.get(&id).map(|d| &d.text),
             DraftKind::Channel => self.channel_drafts.get(&id).map(|d| &d.text),
             DraftKind::Answer => self.answers.get(&question),
+            DraftKind::TaskTitle => self.task_drafts.get(&id).map(|d| &d.title),
+            DraftKind::TaskAcceptance => self.task_drafts.get(&id).map(|d| &d.acceptance),
         };
         let total: usize = self
             .session_drafts
@@ -317,9 +351,22 @@ impl State {
             .chain(self.conversation_drafts.values().map(|d| d.text.len()))
             .chain(self.channel_drafts.values().map(|d| d.text.len()))
             .chain(self.answers.values().map(String::len))
+            .chain(
+                self.task_drafts
+                    .values()
+                    .map(|d| d.title.len() + d.acceptance.len()),
+            )
             .sum();
         let error = if id.is_empty() || id.len() > 1024 {
             Some("This draft destination is too long.")
+        } else if matches!(kind, DraftKind::TaskTitle)
+            && text.chars().count() > agentdocker_core::task::TITLE_CHARS
+        {
+            Some("Card titles can contain up to 200 characters. Your earlier text was kept.")
+        } else if matches!(kind, DraftKind::TaskAcceptance)
+            && text.chars().count() > agentdocker_core::task::ACCEPTANCE_CHARS
+        {
+            Some("Acceptance text can contain up to 4,000 characters. Your earlier text was kept.")
         } else if text.chars().count() > crate::drafts::MAX_TEXT_CHARS {
             Some("Drafts can contain up to 16,000 characters. Your earlier text was kept.")
         } else if total - old.map_or(0, String::len) + text.len() > crate::drafts::MAX_TOTAL_BYTES {
@@ -334,6 +381,23 @@ impl State {
             return false;
         }
         let edited = match kind {
+            DraftKind::TaskTitle | DraftKind::TaskAcceptance => {
+                self.task_drafts.retain(|key, d| {
+                    key == &id || d.sending() || !d.title.is_empty() || !d.acceptance.is_empty()
+                });
+                if self.task_drafts.contains_key(&id) || self.task_drafts.len() < 128 {
+                    let draft = self.task_drafts.entry(id).or_default();
+                    if matches!(kind, DraftKind::TaskTitle) {
+                        draft.title = text;
+                    } else {
+                        draft.acceptance = text;
+                    }
+                    draft.error = None;
+                    true
+                } else {
+                    false
+                }
+            }
             DraftKind::Answer => {
                 self.answers
                     .retain(|key, text| key == &question || !text.is_empty());
@@ -1155,24 +1219,31 @@ impl App {
                 }
             }
             Message::TaskTitle(title) => {
-                if let Some(draft) = self.task_draft_mut()
-                    && !draft.sending()
+                if let Some(project) = self.selected_project_root()
+                    && !self
+                        .shell
+                        .task_drafts
+                        .get(&project)
+                        .is_some_and(TaskDraft::sending)
                 {
-                    draft.title = title;
-                    draft.error = None;
+                    self.shell.edit_draft(DraftKind::TaskTitle, project, title);
                 }
             }
             Message::TaskAcceptance(acceptance) => {
-                if let Some(draft) = self.task_draft_mut()
-                    && !draft.sending()
+                if let Some(project) = self.selected_project_root()
+                    && !self
+                        .shell
+                        .task_drafts
+                        .get(&project)
+                        .is_some_and(TaskDraft::sending)
                 {
-                    draft.acceptance = acceptance;
-                    draft.error = None;
+                    self.shell
+                        .edit_draft(DraftKind::TaskAcceptance, project, acceptance);
                 }
             }
             Message::TaskFile(column) => {
                 if let Some(project) = self.selected_project_root()
-                    && let Some(draft) = self.task_drafts.get_mut(&project)
+                    && let Some(draft) = self.shell.task_drafts.get_mut(&project)
                     && !draft.sending()
                     && !draft.title.trim().is_empty()
                 {
@@ -2385,7 +2456,7 @@ mod tests {
         messages.send(Msg::TaskChanged(Ok(()))).unwrap();
         app.drain();
         assert_eq!(
-            app.task_drafts[&alpha_root].title, "Port the parser",
+            app.shell.task_drafts[&alpha_root].title, "Port the parser",
             "a move of some other card is not a filing"
         );
         // A board that cannot be read is said so, and the last board stays.
@@ -2405,19 +2476,19 @@ mod tests {
         // Filed: typing waits; a reply to an *earlier* filing changes
         // nothing; the reply to this one clears the text.
         let _ = app.update(Message::TaskFile(agentdocker_core::Column::Ready));
-        let request = app.task_drafts[&alpha_root].sending.expect("filing");
+        let request = app.shell.task_drafts[&alpha_root].sending.expect("filing");
         assert!(requests.try_iter().any(|c| matches!(
             c,
             Cmd::TaskCreate { ref project, request: r, .. } if *project == alpha_root && r == request
         )));
         let _ = app.update(Message::TaskTitle("typed while filing".into()));
-        assert_eq!(app.task_drafts[&alpha_root].title, "Port the parser");
+        assert_eq!(app.shell.task_drafts[&alpha_root].title, "Port the parser");
         messages
             .send(Msg::TaskCreated(alpha_root.clone(), request - 1, Ok(())))
             .unwrap();
         app.drain();
         assert_eq!(
-            app.task_drafts[&alpha_root].sending,
+            app.shell.task_drafts[&alpha_root].sending,
             Some(request),
             "a late reply to an earlier filing is not this one's"
         );
@@ -2425,19 +2496,19 @@ mod tests {
             .send(Msg::TaskCreated(alpha_root.clone(), request, Ok(())))
             .unwrap();
         app.drain();
-        assert_eq!(app.task_drafts[&alpha_root].title, "");
-        assert!(app.task_drafts[&alpha_root].sending.is_none());
+        assert_eq!(app.shell.task_drafts[&alpha_root].title, "");
+        assert!(app.shell.task_drafts[&alpha_root].sending.is_none());
 
         // Beta's draft is beta's: alpha's text waits while beta is on view.
         let _ = app.update(Message::TaskTitle("alpha again".into()));
         app.shell.catalog.selected = Some(beta.root.clone());
         let _ = app.update(Message::TaskTitle("beta's card".into()));
-        assert_eq!(app.task_drafts[&alpha_root].title, "alpha again");
-        assert_eq!(app.task_drafts[&beta_root].title, "beta's card");
+        assert_eq!(app.shell.task_drafts[&alpha_root].title, "alpha again");
+        assert_eq!(app.shell.task_drafts[&beta_root].title, "beta's card");
 
         // A filing the command queue refuses is told so at once.
         let _ = app.update(Message::TaskFile(agentdocker_core::Column::Backlog));
-        let request = app.task_drafts[&beta_root].sending.expect("filing");
+        let request = app.shell.task_drafts[&beta_root].sending.expect("filing");
         app.rejected(
             Cmd::TaskCreate {
                 project: beta_root.clone(),
@@ -2448,7 +2519,7 @@ mod tests {
             },
             "the command queue is full",
         );
-        let draft = &app.task_drafts[&beta_root];
+        let draft = &app.shell.task_drafts[&beta_root];
         assert!(draft.sending.is_none(), "not left filing for good");
         assert!(draft.error.is_some());
         assert_eq!(draft.title, "beta's card", "the text is kept to retry");
@@ -2976,6 +3047,132 @@ mod tests {
             .save(&app.shell.draft_home)
             .unwrap();
         assert!(State::load(home.path()).answers.is_empty());
+    }
+
+    #[test]
+    fn card_drafts_reopen_per_project_and_clear_only_after_their_confirmed_filing() {
+        let home = tempfile::tempdir().unwrap();
+        let (mut app, commands, messages) = app();
+        app.shell = State::load(home.path());
+        app.connected = Ok(());
+        let alpha = agentdocker_core::ProjectRef::directory(home.path().join("alpha"));
+        let beta = agentdocker_core::ProjectRef::directory(home.path().join("beta"));
+        for project in [&alpha, &beta] {
+            app.shell.catalog.remember(project.clone(), true);
+        }
+        let a = alpha.root.display().to_string();
+        let b = beta.root.display().to_string();
+        app.shell.catalog.selected = Some(alpha.root.clone());
+        let _ = app.update(Message::TaskTitle("café 日本語".into()));
+        let _ = app.update(Message::TaskAcceptance(
+            "Run the checks\nThen review".into(),
+        ));
+        app.shell.catalog.selected = Some(beta.root.clone());
+        let _ = app.update(Message::TaskAcceptance("A title will follow".into()));
+        app.shell.task_drafts.get_mut(&a).unwrap().sending = Some(99);
+        app.shell.task_drafts.get_mut(&a).unwrap().error = Some("old failure".into());
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        let catalog = std::mem::take(&mut app.shell.catalog);
+        app.shell = State::load(home.path());
+        app.shell.catalog = catalog;
+        assert_eq!(app.shell.task_drafts[&a].title, "café 日本語");
+        assert_eq!(
+            app.shell.task_drafts[&a].acceptance,
+            "Run the checks\nThen review"
+        );
+        assert_eq!(app.shell.task_drafts[&b].acceptance, "A title will follow");
+        assert!(
+            app.shell
+                .task_drafts
+                .values()
+                .all(|d| !d.sending() && d.error.is_none())
+        );
+        assert!(
+            commands
+                .try_iter()
+                .all(|cmd| !matches!(cmd, Cmd::TaskCreate { .. }))
+        );
+        app.shell.catalog.selected = Some(alpha.root.clone());
+        let _ = app.update(Message::TaskFile(agentdocker_core::Column::Backlog));
+        let request = app.shell.task_drafts[&a].sending.unwrap();
+        assert!(commands.try_iter().any(|cmd| matches!(cmd, Cmd::TaskCreate { project, request: r, .. } if project == a && r == request)));
+        messages
+            .send(Msg::TaskCreated(a.clone(), request, Err("offline".into())))
+            .unwrap();
+        app.drain();
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        assert_eq!(
+            State::load(home.path()).task_drafts[&a].title,
+            "café 日本語"
+        );
+        let _ = app.update(Message::TaskFile(agentdocker_core::Column::Backlog));
+        let retry = app.shell.task_drafts[&a].sending.unwrap();
+        messages
+            .send(Msg::TaskCreated(a.clone(), request, Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.shell.task_drafts[&a].title, "café 日本語",
+            "old receipt cannot clear this filing"
+        );
+        app.shell.catalog.selected = Some(beta.root);
+        messages
+            .send(Msg::TaskCreated(a.clone(), retry, Ok(())))
+            .unwrap();
+        app.drain();
+        assert!(!app.shell.drafts.clean());
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        let restored = State::load(home.path());
+        assert!(!restored.task_drafts.contains_key(&a));
+        assert_eq!(restored.task_drafts[&b].acceptance, "A title will follow");
+    }
+
+    #[test]
+    fn card_drafts_share_storage_pressure_without_evicting_unfinished_text() {
+        let mut state = State::default();
+        for index in 0..128 {
+            assert!(state.edit_draft(DraftKind::TaskTitle, index.to_string(), "keep".into()));
+        }
+        let before = state.draft_snapshot();
+        assert!(!state.edit_draft(DraftKind::TaskTitle, "overflow".into(), "new".into()));
+        assert!(!state.edit_draft(DraftKind::TaskTitle, "0".into(), "界".repeat(201)));
+        assert!(!state.edit_draft(DraftKind::TaskAcceptance, "0".into(), "界".repeat(4001)));
+        assert_eq!(state.draft_snapshot(), before);
+        assert!(state.edit_draft(DraftKind::TaskTitle, "0".into(), String::new()));
+        assert!(state.edit_draft(DraftKind::TaskTitle, "overflow".into(), "new".into()));
+        for kind in [DraftKind::Session, DraftKind::Conversation] {
+            for index in 0..128 {
+                assert!(state.edit_draft(kind, index.to_string(), "x".repeat(16_000)));
+            }
+        }
+        let used_cards: usize = state
+            .task_drafts
+            .values()
+            .map(|d| d.title.len() + d.acceptance.len())
+            .sum();
+        let mut remaining = crate::drafts::MAX_TOTAL_BYTES - 256 * 16_000 - used_cards;
+        for index in 0..128 {
+            if remaining == 0 {
+                break;
+            }
+            let count = remaining.min(16_000);
+            assert!(state.edit_draft(DraftKind::Channel, index.to_string(), "x".repeat(count)));
+            remaining -= count;
+        }
+        let before = state.draft_snapshot();
+        before.validate().unwrap();
+        assert!(!state.edit_draft(DraftKind::TaskAcceptance, "1".into(), "more".into()));
+        assert!(!state.edit_draft(DraftKind::Answer, "question".into(), "more".into()));
+        assert_eq!(state.draft_snapshot(), before);
     }
 
     #[test]

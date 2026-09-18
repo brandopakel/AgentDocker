@@ -446,10 +446,6 @@ pub struct App {
     /// cancelled by a later refresh, or made for a project no longer on
     /// view — moves nothing.
     board_asks: BTreeMap<u64, (String, usize)>,
-    /// A card being filed, per project: its title and what done means.
-    /// Text typed for one project's board waits there while another's
-    /// is on view.
-    task_drafts: BTreeMap<String, TaskDraft>,
     /// Filings so far, numbering each so its reply is told apart.
     task_requests: u64,
     /// A card whose acceptance text is open.
@@ -573,7 +569,6 @@ impl App {
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             tasks: None,
-            task_drafts: BTreeMap::new(),
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
@@ -642,7 +637,6 @@ impl App {
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             tasks: None,
-            task_drafts: BTreeMap::new(),
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
@@ -733,7 +727,7 @@ impl App {
                 Cmd::TaskCreate {
                     project, request, ..
                 } => {
-                    if let Some(draft) = self.task_drafts.get_mut(&project)
+                    if let Some(draft) = self.shell.task_drafts.get_mut(&project)
                         && draft.sending == Some(request)
                     {
                         draft.sending = None;
@@ -991,7 +985,7 @@ impl App {
                 Msg::TaskCreated(project, request, result) => {
                     // Only the filing this reply answers: a draft typed
                     // since, after a refusal, keeps its text.
-                    if let Some(draft) = self.task_drafts.get_mut(&project)
+                    if let Some(draft) = self.shell.task_drafts.get_mut(&project)
                         && draft.sending == Some(request)
                     {
                         draft.sending = None;
@@ -1000,6 +994,7 @@ impl App {
                                 draft.title.clear();
                                 draft.acceptance.clear();
                                 draft.error = None;
+                                self.shell.drafts.changed();
                             }
                             Err(error) => draft.error = Some(error),
                         }
@@ -1678,22 +1673,6 @@ impl App {
             .find(|p| p.id().as_str() == id)
             .map_or_else(|| id.to_owned(), |p| p.root.to_string_lossy().into_owned())
     }
-    /// The selected project's card draft, made on first use; bounded
-    /// like the other drafts so a long life of switching projects does
-    /// not keep text for every one of them.
-    pub(crate) fn task_draft_mut(&mut self) -> Option<&mut TaskDraft> {
-        let project = self.selected_project_root()?;
-        if !self.task_drafts.contains_key(&project) && self.task_drafts.len() >= 128 {
-            let stale = self
-                .task_drafts
-                .iter()
-                .find(|(_, d)| !d.sending() && d.title.is_empty() && d.acceptance.is_empty())
-                .map(|(k, _)| k.clone())?;
-            self.task_drafts.remove(&stale);
-        }
-        Some(self.task_drafts.entry(project).or_default())
-    }
-
     /// Read the selected project's board, when there is one and the
     /// daemon is there: as many cards as are on view, so a board
     /// expanded past its first page stays expanded through a refresh.

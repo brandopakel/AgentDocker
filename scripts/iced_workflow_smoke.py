@@ -599,6 +599,10 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("click", id="projects"), step("click", id=f"project-{project}"),
                         step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
                         step("fill", id="session-message-text", text="Keep this session across reopen"),
+                        step("click", id="projects"), step("click", id=f"project-{project}"),
+                        step("click", id="project-tab-Board"),
+                        step("fill", id="task-title", text="Unfiled card café 日本語"),
+                        step("fill", id="task-acceptance", text="Check reopen without filing"),
                     ]
                     report["constrained_panes_window"] = launch("constrained-panes", pane_steps)
                     kept = json.loads(catalog_path.read_text())["panes"]
@@ -616,6 +620,10 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 assert "Keep this thread draft" in saved_drafts["conversations"].values(), saved_drafts
                 assert saved_drafts["channels"][room["id"]] == "Keep this channel across reopen", saved_drafts
                 assert saved_drafts["answers"][draft_question] == answer_marker, saved_drafts
+                assert saved_drafts["boards"][str(project)] == {
+                    "title": "Unfiled card café 日本語", "acceptance": "Check reopen without filing"
+                }, saved_drafts
+                cards_before_reopen = rpc(endpoint, {"op": "tasks", "project": str(project), "archived": True})["tasks"]
                 restored_steps = [
                     step("resize", width=1800, height=900),
                     step("click", id=f"project-{project}"), step("click", id="inbox"),
@@ -634,8 +642,17 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                     step("click", id=f"reply-channel-{room['id']}"),
                     step("wait_text", text="Keep this channel across reopen"),
                     step("capture", name="restored-channel"),
+                    step("click", id="projects"), step("click", id=f"project-{project}"),
+                    step("click", id="project-tab-Board"),
+                    step("wait_text", text="Unfiled card café 日本語"),
+                    step("wait_text", text="Check reopen without filing"),
+                    step("capture", name="restored-board-draft"),
                 ]
                 report["restored_drafts_window"] = launch("restored-drafts", restored_steps)
+                cards_after_reopen = rpc(endpoint, {"op": "tasks", "project": str(project), "archived": True})["tasks"]
+                assert cards_after_reopen == cards_before_reopen, (cards_before_reopen, cards_after_reopen)
+                assert not any(c["title"] == "Unfiled card café 日本語" for c in cards_after_reopen)
+                checks.append("unfinished_board_card_reopens_in_its_project_without_filing_or_changing_any_card")
                 retained_input = rpc(endpoint, {"op": "peek_input", "agent": narrow["id"]})["messages"]
                 assert any(q["id"] == draft_question for q in rpc(endpoint, {"op": "questions", "agent": human["id"]})["questions"])
                 assert not any(m.get("reply_to") == draft_question and m.get("kind") == "answer" for m in retained_input)

@@ -89,7 +89,10 @@ ends the hold. The board reads again on every board or lease event; when it
 could not be read the last board stays and the status says why. A card's draft is the project's: text typed for one board waits
 while another is on view, and filing it is answered by its own reply — a
 move or hand of some other card never clears it, and a filing the app could
-not queue says so under the form. The board is read a page at a time (100
+not queue says so under the form. Unfinished title and acceptance text also
+survive closing and reopening the window, under their original project. Reopen
+does not file a card; only a confirmed filing clears its saved text. Storage
+pressure refuses new text without discarding an earlier draft. The board is read a page at a time (100
 cards, Backlog to Done, within a byte budget); when it goes on, **Show
 more** appends the next page where the board ends — every ask is numbered
 and only its own reply moves the board, so a late or unsolicited page is

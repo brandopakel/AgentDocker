@@ -213,7 +213,7 @@ database remains a manual step.
 - Questions preserve drafts across navigation and failed sends. Duplicate sends
   are disabled while waiting. A successful reply means delivery, not proof that
   an agent consumed it or resumed work.
-- Conversation/thread, channel, session and question-answer text persists under the desktop's
+- Conversation/thread, channel, session, question-answer and Board-card text persists under the desktop's
   state-root/daemon-socket identity. Only text is restored, never send state or
   queued receipts. Serialized atomic saves preserve the newest generation;
   close waits for it or reports failure with retry/explicit unsaved-close controls.
@@ -225,8 +225,12 @@ database remains a manual step.
   storage is full; failed delivery preserves earlier typed text. They still require
   a current question and any applicable file review. Answer drafts retain their original question IDs; confirmed completion
   removes them, while failed delivery keeps them. No approval, review or send
-  state is restored. Version 2 accepts existing version-1 message drafts without
-  rewriting the file until the next edit. Other forms remain window-local.
+  state is restored. Version 3 reads version-1 message and version-2 answer files
+  without rewriting them until the next edit. Board titles and acceptance text
+  remain keyed to the original project, with 200/4,000-character limits and the
+  same aggregate storage budget. A confirmed filing clears only that project's
+  draft; a refused or old response cannot clear newer text. No filing state is
+  restored and reopening never creates a card. Other forms remain window-local.
 - Each channel has its own draft and pending send. A late acknowledgement clears
   only the text it sent. Channels show membership, reviews, resolution and queued
   human messages, plus confirmed sends from this window. Reading never drains

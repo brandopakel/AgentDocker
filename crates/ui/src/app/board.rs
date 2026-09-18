@@ -100,7 +100,7 @@ impl App {
     /// about, or Ready for the next agent to pull.
     fn file_card(&self, project: &str, c: Colors) -> Element<'_, Message> {
         let blank = TaskDraft::default();
-        let draft = self.task_drafts.get(project).unwrap_or(&blank);
+        let draft = self.shell.task_drafts.get(project).unwrap_or(&blank);
         let ready = self.connected.is_ok() && !draft.sending() && !draft.title.trim().is_empty();
         let mut form = column![
             eyebrow("File a card", c),
