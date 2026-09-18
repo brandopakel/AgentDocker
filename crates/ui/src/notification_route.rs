@@ -232,16 +232,42 @@ pub fn reply(action: Action, text: String) -> Result<(), String> {
             return Ok(());
         }
     };
-    std::thread::Builder::new()
-        .name("notification-reply".into())
-        .spawn(move || {
-            let client = crate::client::Client::at(action.home.clone(), action.socket.clone());
-            if let Err(failure) = deliver(&client, &action, &text) {
-                report_failure(action, text, failure);
-            }
-        })
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    start_reply(
+        action,
+        text,
+        |action, text| {
+            std::thread::Builder::new()
+                .name("notification-reply".into())
+                .spawn(move || {
+                    let client =
+                        crate::client::Client::at(action.home.clone(), action.socket.clone());
+                    if let Err(failure) = deliver(&client, &action, &text) {
+                        report_failure(action, text, failure);
+                    }
+                })
+                .map(|_| ())
+        },
+        report_failure,
+    );
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn start_reply(
+    action: Action,
+    text: String,
+    start: impl FnOnce(Action, String) -> std::io::Result<()>,
+    recover: impl FnOnce(Action, String, Failure),
+) {
+    let recovery_action = action.clone();
+    let recovery_text = text.clone();
+    if let Err(error) = start(action, text) {
+        recover(
+            recovery_action,
+            recovery_text,
+            Failure::certain(format!("reply delivery could not start: {error}")),
+        );
+    }
 }
 
 /// Say a reply did not go: the words go back to the app that owns the
@@ -471,6 +497,33 @@ mod tests {
         })
     }
 
+    #[test]
+    fn a_reply_worker_that_cannot_start_returns_the_full_draft_for_recovery() {
+        let Activation::Open(action) = activation(7) else {
+            unreachable!()
+        };
+        let text = "日本語 reply\n".repeat(500);
+        let expected = (action.clone(), text.clone());
+        let mut recovered = None;
+        start_reply(
+            action,
+            text,
+            |_, _| Err(std::io::Error::other("worker refused")),
+            |action, text, failure| recovered = Some((action, text, failure)),
+        );
+        let (action, text, failure) = recovered.expect("recovery called");
+        assert_eq!((action, text), expected);
+        assert!(failure.certain);
+        assert!(failure.reason.contains("worker refused"));
+
+        start_reply(
+            expected.0,
+            expected.1,
+            |_, _| Ok(()),
+            |_, _, _| panic!("started delivery owns recovery"),
+        );
+    }
+
     /// A reply goes where the original went — the project's everyone,
     /// the channel, or back to whoever wrote to the person — as the
     /// person's reply to that message; a notice and a topic post have no
@@ -574,6 +627,7 @@ mod tests {
     /// answer is not, so the person is sent to the history, not to a
     /// resend.
     #[test]
+    #[cfg(unix)]
     fn a_reply_takes_only_sent_as_success_and_tells_a_refusal_from_an_unknown_outcome() {
         use agentdocker_core::{ArchivedMessage, Destination, Envelope};
         use std::io::{BufRead, BufReader, Write};

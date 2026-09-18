@@ -1,6 +1,6 @@
 //! The set of agents the daemon knows about.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use chrono::{DateTime, Utc};
 use thiserror::Error;
@@ -37,6 +37,8 @@ pub struct Registry {
     agents: HashMap<AgentId, AgentRecord>,
     aliases: BTreeMap<AgentId, AgentId>,
     retired_names: BTreeMap<AgentId, String>,
+    provider_blocks: BTreeSet<AgentId>,
+    provider_blocks_dirty: BTreeSet<AgentId>,
 }
 
 impl Registry {
@@ -54,6 +56,7 @@ impl Registry {
         if record.status.is_live() && self.live().any(|a| a.spec.name == record.spec.name) {
             return Err(RegistryError::NameTaken(record.spec.name));
         }
+        self.provider_blocks_dirty.insert(record.id.clone());
         self.agents.insert(record.id.clone(), record);
         Ok(())
     }
@@ -64,7 +67,30 @@ impl Registry {
 
     pub fn get_mut(&mut self, id: &AgentId) -> Option<&mut AgentRecord> {
         let canonical = self.canonical_id(id).clone();
+        // All changes (including whole-record replacement) pass here. Recheck
+        // only these IDs on the next snapshot, after the mutable borrow ends.
+        self.provider_blocks_dirty.insert(canonical.clone());
         self.agents.get_mut(&canonical)
+    }
+
+    /// Active provider reports, including those retained by finished sessions.
+    /// Insertion rebuilds this index during restore. Mutable access invalidates
+    /// one ID, so a send never scans unrelated retained session history.
+    pub fn provider_block_ids(&mut self) -> Vec<AgentId> {
+        for id in std::mem::take(&mut self.provider_blocks_dirty) {
+            let blocked = self.agents.get(&id).is_some_and(|record| {
+                record
+                    .provider_availability
+                    .as_ref()
+                    .is_some_and(|state| state.issue.is_some())
+            });
+            if blocked {
+                self.provider_blocks.insert(id);
+            } else {
+                self.provider_blocks.remove(&id);
+            }
+        }
+        self.provider_blocks.iter().cloned().collect()
     }
 
     /// Restore the complete flat alias set only after all checks succeed. Alias
@@ -137,6 +163,8 @@ impl Registry {
             });
         }
         let record = self.agents.remove(retired).expect("checked");
+        self.provider_blocks.remove(retired);
+        self.provider_blocks_dirty.remove(retired);
         self.retired_names
             .insert(retired.clone(), record.spec.name.clone());
         self.aliases.insert(retired.clone(), canonical.clone());
@@ -189,6 +217,8 @@ impl Registry {
             .iter()
             .map(|id| {
                 let record = self.agents.remove(id).expect("checked");
+                self.provider_blocks.remove(id);
+                self.provider_blocks_dirty.remove(id);
                 self.retired_names
                     .insert(id.clone(), record.spec.name.clone());
                 self.aliases.insert(id.clone(), canonical.clone());
@@ -438,6 +468,8 @@ impl Registry {
     pub fn remove(&mut self, id: &AgentId) -> Option<AgentRecord> {
         let canonical = self.canonical_id(id).clone();
         self.aliases.retain(|_, target| *target != canonical);
+        self.provider_blocks.remove(&canonical);
+        self.provider_blocks_dirty.remove(&canonical);
         self.retired_names
             .retain(|id, _| self.aliases.contains_key(id));
         self.agents.remove(&canonical)
@@ -464,6 +496,81 @@ mod tests {
             ..AgentSpec::default()
         };
         AgentRecord::new(spec, true, Utc::now())
+    }
+
+    #[test]
+    fn provider_report_index_tracks_mutations_restore_and_retirement_without_liveness_filtering() {
+        let mut registry = Registry::new();
+        let mut blocked = record("blocked");
+        blocked.status = AgentStatus::Exited { code: Some(1) };
+        blocked.provider_availability = Some(crate::ProviderAvailability {
+            process_started_at: blocked.created_at,
+            observed_at: blocked.created_at,
+            issue: Some(crate::ProviderIssue::local(crate::ProviderIssueKind::Usage)),
+            cleared_observation: None,
+        });
+        let current = record("current");
+        registry.insert(blocked.clone()).unwrap();
+        registry.insert(current.clone()).unwrap();
+        for index in 0..1000 {
+            let mut archived = record(&format!("archived-{index}"));
+            archived.status = AgentStatus::Exited { code: Some(0) };
+            registry.insert(archived).unwrap();
+        }
+        assert_eq!(
+            registry.provider_block_ids().as_slice(),
+            std::slice::from_ref(&blocked.id)
+        );
+        assert!(registry.provider_blocks_dirty.is_empty());
+        registry.touch(&current.id, Utc::now());
+        assert_eq!(
+            registry.provider_blocks_dirty.len(),
+            1,
+            "history is not rescanned"
+        );
+        assert_eq!(
+            registry.provider_block_ids().as_slice(),
+            std::slice::from_ref(&blocked.id)
+        );
+        registry
+            .get_mut(&blocked.id)
+            .unwrap()
+            .provider_availability
+            .as_mut()
+            .unwrap()
+            .issue = None;
+        assert!(
+            registry.provider_block_ids().is_empty(),
+            "recovery clears the index"
+        );
+        *registry.get_mut(&blocked.id).unwrap() = blocked.clone();
+        assert_eq!(
+            registry.provider_block_ids().as_slice(),
+            std::slice::from_ref(&blocked.id)
+        );
+        let mut restored = Registry::new();
+        for agent in registry.all() {
+            restored.insert(agent.clone()).unwrap();
+        }
+        assert_eq!(
+            restored.provider_block_ids().as_slice(),
+            std::slice::from_ref(&blocked.id)
+        );
+        registry.retire_into(&blocked.id, &current.id).unwrap();
+        assert!(registry.provider_block_ids().is_empty());
+        // A mutable lookup through an alias invalidates the canonical record.
+        registry.get_mut(&blocked.id).unwrap().provider_availability =
+            blocked.provider_availability.clone();
+        assert_eq!(
+            registry.provider_block_ids().as_slice(),
+            std::slice::from_ref(&current.id)
+        );
+        registry.remove(&blocked.id);
+        assert!(registry.provider_block_ids().is_empty());
+        restored
+            .fold_into(std::slice::from_ref(&blocked.id), &current.id)
+            .unwrap();
+        assert!(restored.provider_block_ids().is_empty());
     }
 
     #[test]

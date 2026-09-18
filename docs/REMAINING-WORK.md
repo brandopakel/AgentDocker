@@ -76,6 +76,15 @@ and RSS 193.2 MB; it is not sustained-use or battery acceptance. The existing
 failed fixtures and exact build/log hashes. Final CI/review, actual notification
 Reply and production activation remain pending.
 
+The September 18 final review adds forward-compatible send-status decoding,
+full reply-draft recovery when its worker cannot start, a Unix-only socket-test
+guard, and an index of active provider reports that retains finished sessions'
+quota blocks. Index invalidation follows registry mutations after committed
+daemon writes. Targeted regressions include unknown statuses with structured
+details, failed recovery writes, restore/retirement and worker-start refusal.
+The first focused run caught a unit-only fallback rejecting structured details;
+the decoder was corrected. Final gate and review of these changes remain pending.
+
 ## Engineering and acceptance still open
 
 | Priority | Work remaining | Completion condition and evidence |
