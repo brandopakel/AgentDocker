@@ -9,7 +9,12 @@ use std::{
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-const MAX_REQUEST: usize = agentdocker_host::notify::ACTION_BYTES + 1024;
+// JSON can encode one control character as six bytes. Reserve the full
+// supported recovery payload, its action and framing; forward/handle still
+// enforce the complete serialized byte limit, independently of character limits.
+const MAX_REQUEST: usize = agentdocker_host::notify::ACTION_BYTES
+    + 6 * (super::RECOVERY_CHARS + super::RECOVERY_REASON_CHARS)
+    + 1024;
 const REQUEST_TIME: Duration = Duration::from_millis(500);
 
 pub enum Launch {
@@ -161,6 +166,20 @@ async fn handle(
                                 agentdocker_host::notify::Action::parse(&s).is_ok()
                             })
                     }
+                    Activation::ReplyFailed {
+                        action,
+                        text,
+                        reason,
+                        ..
+                    } => {
+                        action.home == home
+                            && action.socket == daemon
+                            && text.chars().count() <= super::RECOVERY_CHARS
+                            && reason.chars().count() <= super::RECOVERY_REASON_CHARS
+                            && serde_json::to_string(action).ok().is_some_and(|s| {
+                                agentdocker_host::notify::Action::parse(&s).is_ok()
+                            })
+                    }
                     Activation::Focus | Activation::Inbox => true,
                 };
                 valid && handler(activation).is_ok()
@@ -294,6 +313,53 @@ mod tests {
             panic!("replacement instance")
         };
         drop(next);
+    }
+
+    #[test]
+    fn failed_reply_forwarding_preserves_full_unicode_and_escaped_text_within_bounds() {
+        let home = tempfile::tempdir().unwrap();
+        let daemon = home.path().join("daemon.sock");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handler: Handler =
+            Arc::new(move |activation| tx.send(activation).map_err(|e| e.to_string()));
+        let Launch::Primary(first) =
+            start_with(home.path(), &daemon, Activation::Focus, handler).unwrap()
+        else {
+            panic!("first instance")
+        };
+        assert_eq!(rx.recv().unwrap(), Activation::Focus);
+        let mut activation = Activation::ReplyFailed {
+            action: agentdocker_host::notify::Action {
+                home: home.path().to_owned(),
+                socket: daemon.clone(),
+                target: agentdocker_core::NotificationTarget {
+                    message: agentdocker_core::MessageId::from("message".to_owned()),
+                    agent: agentdocker_core::AgentId::from("agent"),
+                    project: None,
+                    channel: None,
+                },
+            },
+            text: "\0".repeat(super::super::RECOVERY_CHARS - 1) + "🦀",
+            reason: "\0".repeat(super::super::RECOVERY_REASON_CHARS),
+            certain: false,
+        };
+        assert!(
+            serde_json::to_vec(&activation).unwrap().len()
+                > agentdocker_host::notify::ACTION_BYTES + 1024
+        );
+        forward(home.path(), &daemon, &activation).unwrap();
+        assert_eq!(rx.recv().unwrap(), activation);
+        if let Activation::ReplyFailed { text, .. } = &mut activation {
+            text.push('x');
+        }
+        assert!(forward(home.path(), &daemon, &activation).is_err());
+        assert!(rx.try_recv().is_err());
+        if let Activation::ReplyFailed { text, .. } = &mut activation {
+            *text = "x".repeat(MAX_REQUEST);
+        }
+        assert!(forward(home.path(), &daemon, &activation).is_err());
+        assert!(rx.try_recv().is_err());
+        drop(first);
     }
 
     #[test]

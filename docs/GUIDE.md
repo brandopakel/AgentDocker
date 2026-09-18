@@ -222,7 +222,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
+| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
 | `watch` | Stream messages for an agent or matching topics |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer |
@@ -308,7 +308,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `runtimes` | Agent tools installed here, and whether we are wired in |
+| `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those |
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches |
@@ -474,6 +474,15 @@ Newest first. Only what changes how the product is used.
   and `role:reviewer` names it as the recipient of a `send`, an `ask` or
   a `handoff` — the one live agent holding that role in the sender's
   project; none is not found, two are ambiguous. `--clear` takes it away.
+- Reply from the notification: on macOS a message notification has a
+  **Reply** field, and what is typed there reaches the conversation — an
+  answer to a question closes it — without opening the window.
+- The Board's five columns share the width, and an open card's title,
+  acceptance text and moves sit beneath them where there is room to read
+  them (under the card when the window is narrow). A clicked control no
+  longer keeps a focus ring: the ring is the keyboard's.
+- `agentdocker runtimes` heads its last column UNREGISTERED: it counts a
+  tool's processes nobody registered, which `ps` never showed as sessions.
 - A project pause: `agentdocker pause "reason"` tells every agent in the
   project to hold — the reason reaches each live one as a `pause` message
   and their new leases are refused with it until `pause --lift`; `pause

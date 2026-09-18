@@ -21,6 +21,43 @@
 #[cfg(target_os = "macos")]
 const ACCEPT_WITHIN: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// The category a message notification is posted under: the one with a
+/// **Reply** field. Registered by whichever of our processes talks to the
+/// notification centre — the poster before it posts, the window when it
+/// opens — so the field is there whichever came first.
+#[cfg(target_os = "macos")]
+pub(crate) const REPLY_CATEGORY: &str = "dev.agentdocker.message";
+/// The action the typed reply comes back under.
+#[cfg(target_os = "macos")]
+pub(crate) const REPLY_ACTION: &str = "dev.agentdocker.reply";
+
+/// Register the message category with its **Reply** field.
+#[cfg(target_os = "macos")]
+pub(crate) fn register_categories() {
+    use objc2_foundation::{NSArray, NSSet, NSString};
+    use objc2_user_notifications::{
+        UNNotificationAction, UNNotificationActionOptions, UNNotificationCategory,
+        UNNotificationCategoryOptions, UNTextInputNotificationAction, UNUserNotificationCenter,
+    };
+    let reply = UNTextInputNotificationAction::actionWithIdentifier_title_options_textInputButtonTitle_textInputPlaceholder(
+        &NSString::from_str(REPLY_ACTION),
+        &NSString::from_str("Reply"),
+        UNNotificationActionOptions::empty(),
+        &NSString::from_str("Send"),
+        &NSString::from_str("Reply…"),
+    );
+    let reply: objc2::rc::Retained<UNNotificationAction> = reply.into_super();
+    let actions = NSArray::from_retained_slice(&[reply]);
+    let category = UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+        &NSString::from_str(REPLY_CATEGORY),
+        &actions,
+        &NSArray::<NSString>::new(),
+        UNNotificationCategoryOptions::empty(),
+    );
+    let categories = NSSet::from_retained_slice(&[category]);
+    UNUserNotificationCenter::currentNotificationCenter().setNotificationCategories(&categories);
+}
+
 /// Whether this process is inside an application bundle.
 ///
 /// Asked before anything else here, because
@@ -198,6 +235,7 @@ pub fn post_notification(notice: &agentdocker_host::notify::Notification) -> Res
         None => return Err("notification authorization did not answer".into()),
     }
 
+    register_categories();
     let content = notification_content(notice)?;
     let id = NSString::from_str(&format!(
         "dev.agentdocker.{}",
@@ -241,6 +279,8 @@ pub(crate) fn notification_content(
         let info =
             unsafe { objc2::rc::Retained::cast_unchecked::<objc2_foundation::NSDictionary>(info) };
         unsafe { content.setUserInfo(&info) };
+        // A message can be answered from the notification itself.
+        content.setCategoryIdentifier(&NSString::from_str(REPLY_CATEGORY));
     }
     Ok(content)
 }

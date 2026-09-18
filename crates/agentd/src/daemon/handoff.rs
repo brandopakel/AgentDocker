@@ -52,11 +52,25 @@ impl Daemon {
             let Some(record) = state.registry.get(&id).cloned() else {
                 return Response::error(ErrorCode::NotFound, "agent vanished");
             };
-            if record.status != AgentStatus::Running {
-                return Response::error(ErrorCode::Forbidden, "a handoff needs a running sender");
-            }
             (id, record)
         };
+        let key = key.unwrap_or_else(|| format!("handoff-{}", MessageId::generate()));
+        let id = format!("{}:{key}", from.as_str());
+        // A retry names the first durable bundle, even if roles, liveness or
+        // project membership changed after an uncertain response. Validate the
+        // current participants only when creating a new handoff.
+        match lock(&self.state).store_read("handoff retry", |store| {
+            store.document::<HandoffBundle>("handoff", &id)
+        }) {
+            Some(Some(bundle)) => return Response::Handoff { bundle },
+            Some(None) => {}
+            None => {
+                return Response::error(ErrorCode::StorageUnavailable, "handoff could not be read");
+            }
+        }
+        if record.status != AgentStatus::Running {
+            return Response::error(ErrorCode::Forbidden, "a handoff needs a running sender");
+        }
         let recipient = match to {
             Some(reference) => {
                 let mut state = lock(&self.state);
@@ -96,17 +110,6 @@ impl Daemon {
                 ErrorCode::Invalid,
                 "leases can only move to a named recipient; an export releases them",
             );
-        }
-        let key = key.unwrap_or_else(|| format!("handoff-{}", MessageId::generate()));
-        let id = format!("{}:{key}", from.as_str());
-        // A retry returns what the first attempt made.
-        match lock(&self.state)
-            .store
-            .document::<HandoffBundle>("handoff", &id)
-        {
-            Ok(Some(bundle)) => return Response::Handoff { bundle },
-            Ok(None) => {}
-            Err(e) => return internal(e),
         }
         // What the sender holds now: released by the checkpoint unless it
         // is to move at acceptance, and listed either way.
@@ -691,6 +694,95 @@ mod tests {
             Response::Messages { messages } => messages,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn handoff_retry_returns_the_saved_recipient_after_role_and_liveness_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _) = fixture(&tmp).await;
+        let Response::Agent { agent: recipient } =
+            role(&daemon, "recipient", Some("reviewer")).await
+        else {
+            panic!("role was not set")
+        };
+        let sender = daemon.resolve("sender").unwrap();
+        let request = Request::Handoff {
+            agent: sender.to_string(),
+            to: Some("role:reviewer".into()),
+            task: Some("review the original work".into()),
+            note: None,
+            transfer_leases: false,
+            key: Some("one-handoff".into()),
+            links: Vec::new(),
+        };
+        let Response::Handoff { bundle } = daemon.handle(request.clone()).await else {
+            panic!("first handoff failed")
+        };
+        assert_eq!(bundle.to, Some(recipient.id.clone()));
+        let queued = inbox(&daemon, "recipient").await;
+        assert_eq!(queued.len(), 1);
+
+        async fn retry(daemon: &Arc<Daemon>, request: &Request, expected: &HandoffBundle) {
+            let seq = lock(&daemon.state).next_seq;
+            assert_eq!(
+                daemon.handle(request.clone()).await,
+                Response::Handoff {
+                    bundle: expected.clone()
+                }
+            );
+            assert_eq!(lock(&daemon.state).next_seq, seq, "retry emits nothing");
+        }
+        assert!(matches!(
+            role(&daemon, "recipient", None).await,
+            Response::Agent { .. }
+        ));
+        retry(&daemon, &request, &bundle).await; // The role no longer exists.
+        let mut fresh = request.clone();
+        if let Request::Handoff { key, .. } = &mut fresh {
+            *key = Some("fresh".into());
+        }
+        assert!(matches!(
+            daemon.handle(fresh).await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        assert!(matches!(
+            role(&daemon, "other", Some("reviewer")).await,
+            Response::Agent { .. }
+        ));
+        retry(&daemon, &request, &bundle).await; // Reassignment cannot redirect it.
+        assert!(matches!(
+            role(&daemon, "recipient", Some("reviewer")).await,
+            Response::Agent { .. }
+        ));
+        retry(&daemon, &request, &bundle).await; // Nor can ambiguity hide it.
+        assert!(matches!(
+            daemon
+                .handle(Request::Deregister {
+                    agent: recipient.id.to_string()
+                })
+                .await,
+            Response::Agent { agent } if !agent.status.is_live()
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::Deregister {
+                    agent: sender.to_string()
+                })
+                .await,
+            Response::Agent { agent } if !agent.status.is_live()
+        ));
+        retry(&daemon, &request, &bundle).await;
+        assert_eq!(inbox(&daemon, recipient.id.as_str()).await, queued);
+        assert!(inbox(&daemon, "other").await.is_empty());
+        drop(daemon);
+        let restored =
+            Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+        retry(&restored, &request, &bundle).await;
+        assert_eq!(inbox(&restored, recipient.id.as_str()).await, queued);
     }
 
     #[tokio::test]

@@ -186,6 +186,14 @@ impl Panes {
         (self.window - self.effective_widths().rail - WORKSPACE_CHROME).max(1.0)
     }
 
+    /// What the page beside the rail has for its own content, after the
+    /// rail as it is dragged and the workspace's padding: what a screen
+    /// laying columns side by side must fit into, which the window's
+    /// width alone does not say.
+    pub fn workspace_width(&self) -> f32 {
+        self.messages_width()
+    }
+
     /// When even the minimum columns do not fit, use the existing
     /// conversation/thread navigation instead of squeezing the composer.
     pub fn compact_messages(&self) -> bool {
@@ -287,6 +295,21 @@ mod tests {
             },
         );
         assert!((panes.widths.rail - RAIL.1).abs() < 1e-3);
+        // The widest rail in a small window leaves the page little: a
+        // screen that lays columns out asks this, not the window.
+        panes.window_width(900.0);
+        let rail = panes.effective_widths().rail;
+        assert!(
+            (panes.workspace_width() - (900.0 - rail - WORKSPACE_CHROME)).abs() < 1e-3,
+            "{}",
+            panes.workspace_width()
+        );
+        assert!(
+            panes.workspace_width() < 600.0,
+            "too little for five lanes: {}",
+            panes.workspace_width()
+        );
+        panes.window_width(2400.0);
         assert!(!panes.thread_open());
         panes.sync_thread(true);
         assert!(panes.thread_open());

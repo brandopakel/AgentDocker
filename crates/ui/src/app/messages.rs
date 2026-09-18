@@ -933,6 +933,42 @@ impl App {
         }) {
             composer = composer.push(notice);
         }
+        // A reply from a notification the draft could not take waits
+        // here, its words the person's to copy or let go.
+        for recovery in self
+            .shell
+            .reply_recoveries
+            .iter()
+            .filter(|r| r.conversation.as_deref() == Some(key.as_str()))
+        {
+            composer = composer.push(
+                row![
+                    small(
+                        format!(
+                            "A reply from a notification was not placed ({}): {}",
+                            recovery.reason,
+                            first_line(&recovery.text, 80)
+                        ),
+                        c
+                    )
+                    .width(Fill),
+                    action(
+                        format!("reply-recovery-copy-{}", recovery.message),
+                        "Copy",
+                        Some(Message::ReplyRecoveryCopy(recovery.message.clone())),
+                        false,
+                    ),
+                    action(
+                        format!("reply-recovery-dismiss-{}", recovery.message),
+                        "Dismiss",
+                        Some(Message::ReplyRecoveryDismiss(recovery.message.clone())),
+                        false,
+                    ),
+                ]
+                .spacing(6)
+                .align_y(Center),
+            );
+        }
         // Put the receiver state where a person is about to send, including
         // thread replies. A working MCP/hook transport alone cannot wake it.
         if let Some(agent) = self.direct_input_recipient(conversation) {

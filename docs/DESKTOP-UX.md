@@ -214,7 +214,26 @@ conversation whose agent is gone, says so for one between two agents, and has
 nothing to send for notices. Drafts survive navigation, a failed request and
 disconnection. A notification opens the message's conversation even after it
 has been read, and even when the sender's record or the channel is gone: the
-archive outlives both. **Enter sends** in every composer — a
+archive outlives both. A notification for a message has a **Reply** field
+(macOS): what is typed there goes from you to where that message went — the
+project's everyone, its channel, or back to the agent who wrote to you — as a
+reply to it, so a typed answer closes the question it answers, without the
+window opening. Only the daemon's `sent` counts as sent. A reply that did
+not go is said as a notification (**Open the app to recover your reply**)
+and comes back to the app: the conversation opens with your words in its
+composer, after anything already drafted there, and the status line says why — **Reply not sent** when the
+daemon refused it, **Reply may not have been sent** when the connection went
+before an answer, in which case read the history before sending again.
+When the draft cannot take the words (draft storage is full) they wait beside
+the composer with **Copy** and **Dismiss**; the window keeps up to eight such
+replies and says so when a further one cannot be kept. A notification from
+another workspace's daemon hands the words to that workspace's window when
+it is running; otherwise the notification carries what fits and says the app
+could not keep them. A reply to a question goes to whoever asked it, wherever
+it was asked, since that is the reply that closes it. Nothing typed is sent
+twice on its own; what can be lost is said each time: a reply cut to a
+draft's 16,000 characters, a ninth kept reply, or one another workspace's
+window could not take. **Enter sends** in every composer — a
 conversation's, a thread's, the inbox reply, the session message and an
 answer — the same action as the button beside it, and nothing while the
 draft is empty or already sending. **+** beside the search starts a
@@ -316,6 +335,8 @@ and notarization; locally signed builds are explicit previews.
 ## Keyboard and terminal
 
 - Tab and Shift-Tab move between controls; Enter/Space activate a focused button.
+  The focus ring is the keyboard's: a click focuses a control without one, and
+  the next key press shows it on whatever is focused.
 - Command/Ctrl+1–4 switch Projects, Inbox, Tools and Settings.
 - Escape closes session details or an add/launch form.
 - F6 moves focus out of terminal input. Control+] detaches.

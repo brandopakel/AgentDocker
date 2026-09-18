@@ -2198,7 +2198,7 @@
     "result": "passed",
     "scope": "A pause survives a rollback attempt: the schema-23 daemon records a hold,\nan installed schema-22 daemon refuses to open that state, and the hold is\nstill there for the 23 daemon. Private home; never the production state.",
     "steps": [
-      "schema-23 daemon paused the project: paused aef60cbc5ffb \u2014 rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
+      "schema-23 daemon paused the project: paused aef60cbc5ffb — rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
       "pause --list shows the hold",
       "state.db at schema 23 with one pause document",
       "schema-22 daemon refused to start (exit 1); state.db unchanged (sha256 e352e94e548a), pause document retained",
@@ -3678,7 +3678,7 @@
         "kind": "Native fixture expected no pending input after adding a send probe",
         "artifacts": "/private/tmp/agentdocker-send-readiness-workflow-20260917",
         "elapsed_seconds": 215.8977894160198,
-        "result": "Warning/advice and exactly-one-queued-message checks passed, then readiness-ready timed out expecting Receiver active, awaiting first receipt. The new probe is still queued, so the correct app state is Queued \u00b7 awaiting provider receipt. The harness now expects that state and supplies both fixture IDs in the later simulated receipt; corrected rerun passed 496 rendered steps/29 checks across 11 windows. This was a fixture expectation error, not a provider receipt or live-model test."
+        "result": "Warning/advice and exactly-one-queued-message checks passed, then readiness-ready timed out expecting Receiver active, awaiting first receipt. The new probe is still queued, so the correct app state is Queued · awaiting provider receipt. The harness now expects that state and supplies both fixture IDs in the later simulated receipt; corrected rerun passed 496 rendered steps/29 checks across 11 windows. This was a fixture expectation error, not a provider receipt or live-model test."
       }
     ],
     "review": {
@@ -3962,6 +3962,44 @@
       "Private native workflow invokes rendered callbacks; no physical keyboard/IME or real-provider idle-wake claim.",
       "No production activation. Final combined CI and source review remain required before merge.",
       "Historical component trials and failures remain in their original sections. No new project document or verification record was created."
+    ]
+  },
+  "codex_usage_limit_recovery_2026_09_18": {
+    "status": "passed for this user-triggered recovery; automatic recovery and other providers remain unverified",
+    "installed_build_reference": "installed_board_drafts_resume_2026_09_17",
+    "agent": "50fd100f4310452fae0435fd4b6a1981",
+    "provider_process_started_at": "2026-09-12T23:36:03.055103Z",
+    "blocked_observation": "2026-09-18T02:17:19.707659Z",
+    "blocked_kind": "usage",
+    "resumption_trigger": "The user reported that the usage limit had cleared and asked Codex to resume.",
+    "interrupted_work": "A targeted handoff regression had completed while the model could not continue; its retained result was checked after resumption. Staged work remained intact and was committed as 9dd2a199a5953e621d46dd09b2a43819c959c0c7.",
+    "recovery_report": {
+      "state": "recovered",
+      "blocked_at": "2026-09-18T02:17:19.707659Z",
+      "recorded": true,
+      "input_receipt": false,
+      "task_completed": false
+    },
+    "confirmed_availability": {
+      "cleared_observation": "2026-09-18T02:17:19.707659Z",
+      "observed_at": "2026-09-18T04:10:37.811285Z",
+      "process_started_at": "2026-09-12T23:36:03.055103Z"
+    },
+    "peer_messages_delivered_after_recovery": [
+      "3dc4ea52035641da",
+      "6239a92dc8334ec6",
+      "e487d2b32aca40f9",
+      "24c3936409bb4380"
+    ],
+    "correlated_replies": [
+      "2beb1b7cf78e4cd3",
+      "5a4a6350965a4fae"
+    ],
+    "manual_inbox_read_or_acknowledgement": false,
+    "limits": [
+      "This was a human-triggered active-turn recovery, not an idle-wake trial.",
+      "A status report is neither provider input receipt nor task completion.",
+      "Does not establish automatic reset detection, all-message consumption, or parity across providers."
     ]
   }
 }
