@@ -8927,6 +8927,118 @@ mod tests {
         assert!(!stale.status.is_live() && stale.pid.is_none() || !stale.status.is_live());
     }
 
+    /// A relaunch whose program cannot be started at all is answered with
+    /// the reason, leaves the record ended with its queue, and does not
+    /// stand in the way of the next relaunch.
+    #[tokio::test]
+    async fn a_relaunch_that_cannot_start_answers_and_leaves_the_record_ended() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let session = "0f0f0f0f-1111-2222-3333-444444444444";
+        let mut ended_spec = spec("claude-code-7");
+        ended_spec.runtime = "claude-code".into();
+        ended_spec.workdir = Some(checkout.clone());
+        ended_spec
+            .labels
+            .insert("session_id".into(), session.into());
+        let Response::Agent { agent: ended } = daemon
+            .handle(Request::Register {
+                spec: ended_spec,
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("registration failed")
+        };
+        let peer = register(&daemon, "peer", None).await;
+        let Response::Sent { message, .. } = daemon
+            .handle(Request::Send {
+                from: peer.id.to_string(),
+                to: ended.id.to_string(),
+                kind: "chat".into(),
+                payload: json!({"text": "waiting"}),
+                reply_to: None,
+                links: Vec::new(),
+            })
+            .await
+        else {
+            panic!("send failed")
+        };
+        daemon.mark_exited(&ended.id, AgentStatus::Exited { code: Some(0) });
+        let relaunch = |program: &str| AgentSpec {
+            runtime: "claude-code".into(),
+            command: vec![program.to_owned(), "--resume".into(), session.into()],
+            workdir: Some(checkout.clone()),
+            ..Default::default()
+        };
+        let missing = dir.path().join("no-such-claude");
+        let answer = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            daemon.handle(Request::ResumeSession {
+                agent: ended.id.to_string(),
+                spec: relaunch(&missing.display().to_string()),
+            }),
+        )
+        .await
+        .expect("a launch that cannot start is answered");
+        assert!(
+            matches!(answer, Response::Error { .. }),
+            "the reason comes back: {answer:?}"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while lock(&daemon.state)
+            .registry
+            .get(&ended.id)
+            .is_some_and(|r| r.status.is_live())
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let after = lock(&daemon.state)
+            .registry
+            .get(&ended.id)
+            .cloned()
+            .unwrap();
+        assert!(!after.status.is_live(), "{:?}", after.status);
+        let queued = inbox(&daemon, ended.id.as_str(), false).await;
+        assert!(queued.iter().any(|m| m.id == message), "the queue is kept");
+        // The next relaunch is not held up by the one that never started.
+        let mut answer = Response::Ok;
+        for _ in 0..4 {
+            answer = tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                daemon.handle(Request::ResumeSession {
+                    agent: ended.id.to_string(),
+                    spec: AgentSpec {
+                        command: vec![
+                            "sh".into(),
+                            "-c".into(),
+                            "sleep 30".into(),
+                            "--resume".into(),
+                            session.into(),
+                        ],
+                        ..relaunch("sh")
+                    },
+                }),
+            )
+            .await
+            .expect("the next relaunch is answered");
+            if matches!(answer, Response::Agent { .. }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        let Response::Agent { agent: back } = answer else {
+            panic!("relaunch after a failed start: {answer:?}")
+        };
+        assert_eq!(back.id, ended.id);
+        assert_eq!(back.status, AgentStatus::Running);
+        daemon.stop_all().await;
+    }
+
     #[tokio::test]
     async fn a_restarted_daemon_brings_back_a_restorable_agent_under_its_own_identity() {
         let dir = TempDir::new().unwrap();
