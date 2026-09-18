@@ -3092,7 +3092,7 @@
         ]
       }
     ],
-    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait. The sanitized tool timeline shows about 50 seconds between tool boundaries and a 45-second coordinator sleep before the first peer context. Attribute the 104\u2013119 seconds to end-to-end context latency, not daemon/polling latency alone.",
+    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait. The sanitized tool timeline shows about 50 seconds between tool boundaries and a 45-second coordinator sleep before the first peer context. Attribute the 104–119 seconds to end-to-end context latency, not daemon/polling latency alone.",
     "acceptance_remaining": "Reduce and measure busy delivery latency and system-notice backlog while preserving FIFO human/peer ordering, exact receipt recovery, unavailable-provider gates and no duplicate execution. Three ordered receipts do not establish prompt-like latency or sustained throughput.",
     "private_evidence": "/private/tmp/agentdocker-live-active-burst-20260917.json",
     "provider_route_review": {
@@ -3114,5 +3114,32 @@
       "following_tool_started_at": "2026-09-17T20:21:59.161Z",
       "scope": "The end-to-end delay includes a gap between tools and a 45-second coordinator wait. It does not measure daemon or RPC processing alone."
     }
+  },
+  "status": "Existing Codex input is merged and has installed idle/active receipt evidence; universal-provider and startup acceptance remain open.",
+  "current_disposition_2026_09_18": {
+    "checked_at": "2026-09-18",
+    "source_main": "acbd09df5ab73c4721d3420f9b5a9c373f5b2429",
+    "merges": [
+      {
+        "pr": 148,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/148",
+        "merge_commit": "3b3a7e10a9f5fcb8285f81b77557633fa4d7a858",
+        "merged_at": "2026-09-16T00:54:34Z"
+      },
+      {
+        "pr": 169,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/169",
+        "merge_commit": "82ff4da439e86fb80a7b317480da0c9a61a8153a",
+        "merged_at": "2026-09-17T02:03:05Z"
+      },
+      {
+        "pr": 171,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/171",
+        "merge_commit": "df3b7586ea5c303cb5eece7633d2e420c3eea2ee",
+        "merged_at": "2026-09-17T02:57:11Z"
+      }
+    ],
+    "verification": "GitHub merge metadata and git ancestry against the recorded main; no test rerun or new installed acceptance claimed.",
+    "limits": "Top-level installed=false and scope describe the original trial. Later installed-session, receiver-upgrade and active-input sections plus the integrated desktop record carry subsequent activation evidence. Long busy turns, zero-prompt reopen and other providers remain separate."
   }
 }

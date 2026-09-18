@@ -830,5 +830,26 @@
     "Actual provider trials exercise one concrete filesystem write path and Allow/Deny. Native fixture shows network and mirrored filesystem grants; broader actual network/restriction semantics and remote/glob/special selectors remain separate.",
     "One current-turn grant does not establish session grants, MCP elicitation, secret-input presentation, arbitrary policies, overnight use or live replacement.",
     "Native automation is not physical accessibility/IME or Notification Center acceptance."
-  ]
+  ],
+  "status": "Concrete permission review merged through #115/#119; broader provider review surfaces remain open.",
+  "current_disposition_2026_09_18": {
+    "checked_at": "2026-09-18",
+    "source_main": "acbd09df5ab73c4721d3420f9b5a9c373f5b2429",
+    "merges": [
+      {
+        "pr": 115,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/115",
+        "merge_commit": "5e7f98dbb7a0dd394c81d4c1f9bd929685a336b2",
+        "merged_at": "2026-09-13T01:11:31Z"
+      },
+      {
+        "pr": 119,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/119",
+        "merge_commit": "aaa1b61f974b42bbb8b546cd2957b529e45b195a",
+        "merged_at": "2026-09-13T01:11:30Z"
+      }
+    ],
+    "verification": "GitHub merge metadata and git ancestry against the recorded main; no test rerun or new installed acceptance claimed.",
+    "limits": "The original bounded permission trials are preserved. Other review/elicitation/secret-input surfaces are still tracked in REMAINING-WORK.md."
+  }
 }

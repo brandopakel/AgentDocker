@@ -673,5 +673,20 @@
       "artifact_sha256": "4f6fcccbff9579ff1f3f9ac83341d568133a482fd8300feae00045b1b6195cea",
       "source_note": "Trial source528e4e0 adds only driver/docs corrections to build source4eb92a7; Rust, Cargo and bundled skill content are unchanged. The current integration also includes subsequent native recovery-driver/evidence corrections. No new skill loader behavior is claimed."
     }
+  },
+  "status": "Portable coordination skill merged in #149 and is included in the recorded installed d14610b7 source; fresh-session acceptance remains open.",
+  "current_disposition_2026_09_18": {
+    "checked_at": "2026-09-18",
+    "source_main": "acbd09df5ab73c4721d3420f9b5a9c373f5b2429",
+    "merges": [
+      {
+        "pr": 149,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/149",
+        "merge_commit": "197ccfa956bdb2618f205304db0cb67022ccaa6c",
+        "merged_at": "2026-09-16T00:54:49Z"
+      }
+    ],
+    "verification": "GitHub merge metadata and git ancestry against the recorded main; no test rerun or new installed acceptance claimed.",
+    "limits": "The September 15 trial status is preserved. The September 17 installed source 3785e81 includes #149; that does not prove implicit activation in every fresh provider session."
   }
 }

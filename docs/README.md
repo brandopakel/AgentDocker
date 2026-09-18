@@ -32,7 +32,7 @@ Native delivery follow-ups: [desktop packaging and installation](DESKTOP-DISTRIB
 
 - [Portable AgentDocker coordination skill](../crates/cli/skills/agentdocker/SKILL.md) — requested September 15; one source for provider setup and MCP onboarding. Private Codex/Claude loader discovery passed; full integration and other-provider acceptance remain.
 
-## Existing-document audit, September 14, 2026 (refreshed September 17)
+## Existing-document audit, September 14, 2026 (refreshed September 18)
 
 The September 14 audit covered **37 tracked Markdown files**: 34 here, the root README and
 coding instructions, and the container test README. It also checks the **61
@@ -53,6 +53,12 @@ final review/CI. The September 17 20:55 UTC activation preserved both provider
 sessions and all 128 retained receipts. Actual installed conversation-draft
 restoration passed without submitting the text. Remaining acceptance is not an
 open implementation claim.
+
+The September 18 reconciliation checked GitHub merge metadata and ancestry for
+older records that still said final review/CI or installation was pending. Their
+original trial fields remain intact; a dated disposition now supplies the index
+summary. PRs #181/#182 are also merged, with installation still pending. The
+current inventory remains 38 Markdown files and 67 verification records.
 
 **Reference** means the document describes an implemented workflow or engineering
 rule; it is not a release certificate. **Partial** means named implementation or
@@ -117,7 +123,7 @@ fails when it and the records disagree.
 
 | Record | Says |
 | --- | --- |
-| [2026-09-07-claude-profile-setup.json](verification/2026-09-07-claude-profile-setup.json) | portable_coordination_skill_2026_09_15: Combined full release gate, independent source review, actual setup/discovery and native-TUI queue acceptance passed; final CI and installation pending. |
+| [2026-09-07-claude-profile-setup.json](verification/2026-09-07-claude-profile-setup.json) | Portable coordination skill merged in #149 and is included in the recorded installed d14610b7 source; fresh-session acceptance remains open. |
 | [2026-09-07-desktop-maintenance.json](verification/2026-09-07-desktop-maintenance.json) | owned native desktop fixtures; private paths and captures excluded |
 | [2026-09-07-identity-lifecycle.json](verification/2026-09-07-identity-lifecycle.json) | Packaged adapter lifecycle with a synthetic host; separate from actual model-provider trials |
 | [2026-09-07-integration-benchmark-failure.json](verification/2026-09-07-integration-benchmark-failure.json) | Original failed integrated benchmark; not a completed performance acceptance campaign |
@@ -151,7 +157,7 @@ fails when it and the records disagree.
 | [2026-09-11-desktop-identity.json](verification/2026-09-11-desktop-identity.json) | Iced desktop identity round of 2026-09-11 on codex/desktop-delivery: per-project monogram tiles, the window-local unviewed-done badge, the Connections hooks copy and the per-launch Claude channel checkbox. |
 | [2026-09-11-desktop-release.json](verification/2026-09-11-desktop-release.json) | implemented_and_local_acceptance_passed |
 | [2026-09-11-desktop-update.json](verification/2026-09-11-desktop-update.json) | Update consumer ('agentdocker desktop update') verification on 2026-09-11: unit tests, lint and the offline update smoke against a locally packaged release under a disposable prefix. |
-| [2026-09-11-followup-integration.json](verification/2026-09-11-followup-integration.json) | local_gates_passed_final_ci_pending |
+| [2026-09-11-followup-integration.json](verification/2026-09-11-followup-integration.json) | PRs #99–#102 merged; their original local acceptance records and failures remain source-specific. |
 | [2026-09-11-hour-sustained-use.json](verification/2026-09-11-hour-sustained-use.json) | passed_for_listed_scope |
 | [2026-09-11-identity-repair.json](verification/2026-09-11-identity-repair.json) | Explicit offline reconciliation of proven local external Claude/Codex duplicate records; durable exact aliases and preserved history. |
 | [2026-09-11-macos-watcher-recovery.json](verification/2026-09-11-macos-watcher-recovery.json) | passed |
@@ -165,21 +171,21 @@ fails when it and the records disagree.
 | [2026-09-11-structured-questions.json](verification/2026-09-11-structured-questions.json) | Structured Iced command and choice questions; rendered callbacks and owned actual Codex trials |
 | [2026-09-11-terminal-selection.json](verification/2026-09-11-terminal-selection.json) | passed_for_listed_scope |
 | [2026-09-12-claude-question-queue.json](verification/2026-09-12-claude-question-queue.json) | One Claude channel question-answer path with durable shared-queue receipts and reply metadata |
-| [2026-09-12-cli-sender-identity.json](verification/2026-09-12-cli-sender-identity.json) | local acceptance and actual Claude shell sender trial passed; final CI/source review pending |
+| [2026-09-12-cli-sender-identity.json](verification/2026-09-12-cli-sender-identity.json) | CLI sender identity is integrated through #119; the original sender trials remain source-specific. |
 | [2026-09-12-compact-question-history.json](verification/2026-09-12-compact-question-history.json) | Compact retained Inbox questions, explicit complete-text details, and notification navigation without draft submission or message dismissal. |
-| [2026-09-12-event-continuation.json](verification/2026-09-12-event-continuation.json) | Local review correction acceptance passed at 9dda825: 837 Rust tests, 65 Python checks and fresh real CLI/daemon restart/schema/exhaustion checks. |
+| [2026-09-12-event-continuation.json](verification/2026-09-12-event-continuation.json) | Checked event continuation and its provider-worker integration are merged; live replacement remains experimentally gated. |
 | [2026-09-12-file-change-review.json](verification/2026-09-12-file-change-review.json) | Bounded Codex file-change approval through the shared human answer queue and compact native full-diff review. |
 | [2026-09-12-input-delivery-status.json](verification/2026-09-12-input-delivery-status.json) | PR #108 merged as 1e2914270b59fcb6721d463999eed80229e15e5d after final 5778212 CI and actual source inspection. |
 | [2026-09-12-integrated-desktop.json](verification/2026-09-12-integrated-desktop.json) | Combined PR119: messenger Inbox, minimal home and Tools, permission validation, sender identity, launcher compatibility and persisted Applications destination |
 | [2026-09-12-launcher-hook-repair.json](verification/2026-09-12-launcher-hook-repair.json) | Historical hook repair and September 15 intact launcher: private install/rollback/routes, production activation and native Codex peer wake passed. |
 | [2026-09-12-output-drain.json](verification/2026-09-12-output-drain.json) | Managed output ownership through pipe/terminal EOF and final log flush before publishing exit, releasing protection or restarting; not cross-process daemon handover. |
-| [2026-09-12-permission-review.json](verification/2026-09-12-permission-review.json) | local acceptance passed; final CI/source review pending |
+| [2026-09-12-permission-review.json](verification/2026-09-12-permission-review.json) | Concrete permission review merged through #115/#119; broader provider review surfaces remain open. |
 | [2026-09-12-provider-event-reconnect.json](verification/2026-09-12-provider-event-reconnect.json) | Local implementation and actual Codex event-only reconnect acceptance passed at 687e57f. |
 | [2026-09-12-queue-read-reconnect.json](verification/2026-09-12-queue-read-reconnect.json) | Bounded retry of retained Codex inbox reads with empty acknowledgements; uncertain writes retain existing pause behavior. |
 | [2026-09-12-thirty-minute-codex-queue.json](verification/2026-09-12-thirty-minute-codex-queue.json) | passed |
-| [2026-09-12-ux-home.json](verification/2026-09-12-ux-home.json) | functional acceptance passed; UI CPU increase under investigation; final CI/source review pending |
+| [2026-09-12-ux-home.json](verification/2026-09-12-ux-home.json) | Home simplification is integrated through #119; the recorded CPU investigation remains historical evidence. |
 | [2026-09-14-overnight-sustained-use.json](verification/2026-09-14-overnight-sustained-use.json) | passed_for_listed_scope |
-| [2026-09-15-native-codex-queue.json](verification/2026-09-15-native-codex-queue.json) | Native Codex queue, supervised recovery, canonical resume with a prompt and schema20 historical-answer migration passed at recorded sources. |
+| [2026-09-15-native-codex-queue.json](verification/2026-09-15-native-codex-queue.json) | Existing Codex input is merged and has installed idle/active receipt evidence; universal-provider and startup acceptance remain open. |
 | [2026-09-15-reload-acceptance.json](verification/2026-09-15-reload-acceptance.json) | Passed at bffc599 on release binaries built from the committed source (state schema 18): 20 successive gated reloads of one private daemon, each predecessor retired within 14.0 s of the reload being asked for, while t... |
 | [2026-09-15-retention-sustained-use.json](verification/2026-09-15-retention-sustained-use.json) | passed: 20-minute retention trial rerun with every claimed assertion (source 33f8117 of the retention branch on main 51a1a9f, hashed private daemon copy): ten registered agents, journal retention 120s applied by the d... |
 | [2026-09-15-successor-readiness.json](verification/2026-09-15-successor-readiness.json) | Passed at fb92879 on release binaries built from the committed source (state schema 18): two successive gated reloads kept a batch and a PTY agent's processes, logs and exact exits 7/3 under the third daemon with the... |

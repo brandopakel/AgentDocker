@@ -1,6 +1,6 @@
 {
   "date": "2026-09-12",
-  "status": "Local review correction acceptance passed at 9dda825: 837 Rust tests, 65 Python checks and fresh real CLI/daemon restart/schema/exhaustion checks. Final-head CI and follow-up source inspection remain pending. This prerequisite does not complete live replacement.",
+  "status": "Checked event continuation and its provider-worker integration are merged; live replacement remains experimentally gated.",
   "scope": "A complete durable database/sequence/anchor cursor, checked bounded replay, separate subscription and replay-complete boundaries, and explicit CLI continuation. Existing provider workers still pause on event-stream loss.",
   "build": {
     "format": 1,
@@ -382,5 +382,32 @@
       }
     },
     "trial_improvement": "The correction trial closes the offline SQLite connection before restart and checks the database plus WAL bytes before/after refusal. It also verifies actual exhausted-sequence startup refusal. Earlier reports remain retained."
+  },
+  "status_at_original_checkpoint": "Local review correction acceptance passed at 9dda825: 837 Rust tests, 65 Python checks and fresh real CLI/daemon restart/schema/exhaustion checks. Final-head CI and follow-up source inspection remain pending. This prerequisite does not complete live replacement.",
+  "current_disposition_2026_09_18": {
+    "checked_at": "2026-09-18",
+    "source_main": "acbd09df5ab73c4721d3420f9b5a9c373f5b2429",
+    "merges": [
+      {
+        "pr": 109,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/109",
+        "merge_commit": "ebaba5be08d79af01162a32388e947d2077f2467",
+        "merged_at": "2026-09-12T20:03:16Z"
+      },
+      {
+        "pr": 110,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/110",
+        "merge_commit": "d89a85c232e7e7aa2700c1eb66cb30d9d4315680",
+        "merged_at": "2026-09-12T20:11:43Z"
+      },
+      {
+        "pr": 155,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/155",
+        "merge_commit": "fec093cfeb8e7bb523d714529a3fd17db09ee99f",
+        "merged_at": "2026-09-17T00:59:51Z"
+      }
+    ],
+    "verification": "GitHub merge metadata and git ancestry against the recorded main; no test rerun or new installed acceptance claimed.",
+    "limits": "The original remaining list is a historical checkpoint. Later event-worker/reload implementations close its source dependencies; real-provider sustained transfers and release/platform acceptance remain open."
   }
 }

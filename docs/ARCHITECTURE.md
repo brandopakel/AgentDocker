@@ -1134,7 +1134,9 @@ skipped; 92 Python checks, one Linux-only skip). The earlier quarantine
 fixture failed on Linux and Windows because its budget omitted the valid
 prefix length; that failure and the correction remain in the
 [integrated evidence](verification/2026-09-12-integrated-desktop.json). Final
-platform CI remains pending. The parser budget also reserves the restored boundary byte, ensuring
+platform CI was pending at that checkpoint. PR #167 subsequently merged as
+`34ac70a` on September 17 and is included in the recorded installed `d14610b7`
+source. The parser budget also reserves the restored boundary byte, ensuring
 the smallest accepted resumed budget can identify an oversized record.
 
 September 17 Windows CI exposed a same-length, restored-mtime rewrite that
@@ -1156,8 +1158,9 @@ terminal-fence regression. Windows run `35185667187` on head `63ea3ca` passed
 238 tests (two skipped), including the original restored-mtime failure and the
 new forced-equal-metadata and validation-budget regressions. Logs are
 `/private/tmp/agentdocker-prefix-fence-targeted1-20260917.log` and
-`/private/tmp/agentdocker-167-windows-prefix-success-20260917.log`. Full final
-review and the remaining CI checks are still required.
+`/private/tmp/agentdocker-167-windows-prefix-success-20260917.log`. The later
+#167 merge closes that source-integration requirement; larger-prefix validation
+and collector acceptance below remain open.
 
 This primitive conservatively rejects any changed generation, including append,
 so a caller must retain the old cursor, record the generation gap and start a
