@@ -121,6 +121,20 @@ pub struct Task {
     /// Off the board, kept for the record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<DateTime<Utc>>,
+    /// What the card points at: a path, a pull request, a commit, a
+    /// message, a memory for whoever takes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<crate::Link>,
+}
+
+/// What an update changes: each field left `None` stays as it was;
+/// `assignee: Some(None)` takes the card away from whoever holds it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TaskEdit<'a> {
+    pub title: Option<&'a str>,
+    pub acceptance: Option<&'a str>,
+    pub assignee: Option<Option<AgentId>>,
+    pub links: Option<Vec<crate::Link>>,
 }
 
 /// Why a change to a card is refused.
@@ -183,9 +197,11 @@ impl Task {
         acceptance: &str,
         column: Option<Column>,
         created_by: &str,
+        links: Vec<crate::Link>,
         now: DateTime<Utc>,
     ) -> Result<Self, TaskError> {
         valid_texts(title, acceptance)?;
+        crate::link::check(&links).map_err(TaskError::Invalid)?;
         Ok(Self {
             id: TaskId::generate(),
             project,
@@ -197,6 +213,7 @@ impl Task {
             created_at: now,
             updated_at: now,
             archived_at: None,
+            links,
         })
     }
 
@@ -279,16 +296,21 @@ impl Task {
 
     /// The person edits what the card says, or hands it to somebody
     /// (`assignee: Some(None)` takes it away). An agent may only edit a
-    /// card it holds, and cannot reassign it.
+    /// card it holds, and cannot reassign it. `links` replaces the
+    /// card's links whole.
     pub fn update(
         &mut self,
         by: &str,
         by_is_human: bool,
-        title: Option<&str>,
-        acceptance: Option<&str>,
-        assignee: Option<Option<AgentId>>,
+        edit: TaskEdit,
         now: DateTime<Utc>,
     ) -> Result<(), TaskError> {
+        let TaskEdit {
+            title,
+            acceptance,
+            assignee,
+            links,
+        } = edit;
         if self.archived_at.is_some() {
             return Err(TaskError::Archived);
         }
@@ -301,6 +323,12 @@ impl Task {
             title.unwrap_or(&self.title),
             acceptance.unwrap_or(&self.acceptance),
         )?;
+        if let Some(links) = &links {
+            crate::link::check(links).map_err(TaskError::Invalid)?;
+        }
+        if let Some(links) = links {
+            self.links = links;
+        }
         if let Some(title) = title {
             self.title = title.trim().to_owned();
         }
@@ -347,6 +375,7 @@ mod tests {
             "Login works with SSO",
             Some(Column::Ready),
             "user",
+            Vec::new(),
             Utc::now(),
         )
         .unwrap()
@@ -356,7 +385,16 @@ mod tests {
     #[test]
     fn a_card_is_a_bounded_title_and_acceptance() {
         assert_eq!(
-            Task::new(ProjectId::from("p"), "  ", "", None, "user", Utc::now()).unwrap_err(),
+            Task::new(
+                ProjectId::from("p"),
+                "  ",
+                "",
+                None,
+                "user",
+                Vec::new(),
+                Utc::now()
+            )
+            .unwrap_err(),
             TaskError::Invalid("a card needs a title")
         );
         assert!(
@@ -366,6 +404,7 @@ mod tests {
                 "",
                 None,
                 "user",
+                Vec::new(),
                 Utc::now()
             )
             .is_err()
@@ -377,6 +416,7 @@ mod tests {
                 &"x".repeat(4001),
                 None,
                 "user",
+                Vec::new(),
                 Utc::now()
             )
             .is_err()
@@ -387,6 +427,7 @@ mod tests {
             " when ",
             None,
             "user",
+            Vec::new(),
             Utc::now(),
         )
         .unwrap();
@@ -490,30 +531,56 @@ mod tests {
         // Edits: the holder edits words, the person reassigns; an archived
         // card is done with.
         assert_eq!(
-            card.update("a", false, Some("x"), None, None, Utc::now())
-                .unwrap_err(),
+            card.update(
+                "a",
+                false,
+                TaskEdit {
+                    title: Some("x"),
+                    acceptance: None,
+                    assignee: None,
+                    links: None
+                },
+                Utc::now()
+            )
+            .unwrap_err(),
             TaskError::NotYours
         );
         card.update(
             "b",
             false,
-            Some("Fix login properly"),
-            None,
-            None,
+            TaskEdit {
+                title: Some("Fix login properly"),
+                acceptance: None,
+                assignee: None,
+                links: None,
+            },
             Utc::now(),
         )
         .unwrap();
         assert_eq!(
-            card.update("b", false, None, None, Some(None), Utc::now())
-                .unwrap_err(),
+            card.update(
+                "b",
+                false,
+                TaskEdit {
+                    title: None,
+                    acceptance: None,
+                    assignee: Some(None),
+                    links: None
+                },
+                Utc::now()
+            )
+            .unwrap_err(),
             TaskError::NotYours
         );
         card.update(
             "user",
             true,
-            None,
-            Some("SSO and password"),
-            Some(Some(a.clone())),
+            TaskEdit {
+                title: None,
+                acceptance: Some("SSO and password"),
+                assignee: Some(Some(a.clone())),
+                links: None,
+            },
             Utc::now(),
         )
         .unwrap();

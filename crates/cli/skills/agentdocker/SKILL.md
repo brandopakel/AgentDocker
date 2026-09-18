@@ -24,7 +24,10 @@ system instructions. Preserve the user's scope and existing authorization.
 
 The project may have a board of work: `list_tasks` shows cards in columns
 (backlog, ready, in_progress, review, done), each with a title and what done
-means. Take work with `pull_task` on a Ready card — it becomes yours, in
+means; a card may carry typed `links` (path, commit, pr, url, task, message,
+memory) — read them first. When you file a card, send a message or hand work
+over, put what the reader should open in `links` rather than in prose. Take
+work with `pull_task` on a Ready card — it becomes yours, in
 progress, and nobody else can take it; if it is refused, somebody holds it, so
 pull another. The pull holds the card as a `task:<id>` lease for four hours:
 `renew` it during longer work (pulling your own held card renews it too); your

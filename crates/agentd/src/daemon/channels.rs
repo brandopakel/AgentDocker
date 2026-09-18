@@ -1195,6 +1195,7 @@ mod tests {
                 kind: "chat".into(),
                 payload: json!({"text":"hello new member"}),
                 reply_to: None,
+                links: Vec::new(),
             })
             .await;
         assert!(matches!(sent, Response::Sent { .. }));
@@ -1332,6 +1333,7 @@ mod tests {
                 kind: "chat".into(),
                 payload: serde_json::json!({"text": "taking src/parser.rs"}),
                 reply_to: None,
+                links: Vec::new(),
             })
             .await;
         assert_eq!(inbox(&daemon, "reviewer").await.len(), 1);
