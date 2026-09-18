@@ -2500,7 +2500,7 @@ impl App {
         if agent.spec.runtime != "claude-code" {
             return Some("Only a Claude Code session can be reconnected here.");
         }
-        if agent.spec.labels.get("session_id").is_none() {
+        if !agent.spec.labels.contains_key("session_id") {
             return Some("This session has no conversation id to resume.");
         }
         if agent.status.is_live() {
@@ -4372,8 +4372,7 @@ mod tests {
     /// runtime, a missing conversation id or a missing tool is refused
     /// with the reason, and nothing is launched.
     #[test]
-    fn reconnect_here_relaunches_an_ended_claude_session_with_its_conversation_and_the_channel()
-    {
+    fn reconnect_here_relaunches_an_ended_claude_session_with_its_conversation_and_the_channel() {
         let (mut app, commands, _) = app();
         app.connected = Ok(());
         let cli = tempfile::NamedTempFile::new().unwrap();
@@ -4415,7 +4414,10 @@ mod tests {
             .unwrap();
         assert_eq!(spec.name, "claude-code-4242");
         assert_eq!(spec.runtime, "claude-code");
-        assert_eq!(spec.workdir.as_deref(), Some(std::path::Path::new("/work/repo")));
+        assert_eq!(
+            spec.workdir.as_deref(),
+            Some(std::path::Path::new("/work/repo"))
+        );
         assert!(spec.tty);
         assert_eq!(spec.command[0], "/fixture/claude");
         assert!(
@@ -4432,16 +4434,25 @@ mod tests {
                     && w[1] == "server:agentdocker")
         );
         assert_eq!(
-            spec.env.get(agentdocker_host::provider_input::CLAUDE_CHANNEL_ENV),
+            spec.env
+                .get(agentdocker_host::provider_input::CLAUDE_CHANNEL_ENV),
             Some(&"1".to_owned())
         );
+        // Through the message the app's own sibling CLI is required; a
+        // test binary has none, and that is said rather than launched.
         let _ = app.update(Message::Reconnect("ended-claude".into()));
-        assert!(app.shell.launching);
-        assert!(matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),
-            [Cmd::Launch(spec)] if spec.command.contains(&"--resume".to_owned())));
+        assert!(!app.shell.launching);
+        assert!(
+            app.shell
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("live messages")),
+            "{:?}",
+            app.shell.error
+        );
+        assert_eq!(commands.try_iter().count(), 0);
 
         // A live process is refused with the reason, and nothing launches.
-        app.shell.launching = false;
         app.agents[0].status = agentdocker_core::AgentStatus::Running;
         assert_eq!(
             app.reconnect_blocker(&app.agents[0]),
@@ -4449,7 +4460,12 @@ mod tests {
         );
         let _ = app.update(Message::Reconnect("ended-claude".into()));
         assert!(!app.shell.launching);
-        assert!(app.shell.error.as_deref().is_some_and(|e| e.contains("Exit the session")));
+        assert!(
+            app.shell
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("Exit the session"))
+        );
         assert_eq!(commands.try_iter().count(), 0);
 
         // Another runtime, no conversation id, no installed tool.
@@ -4459,7 +4475,10 @@ mod tests {
         app.agents[0].spec.runtime = "claude-code".into();
         app.agents[0].spec.labels.clear();
         assert!(app.reconnect_blocker(&app.agents[0]).is_some());
-        app.agents[0].spec.labels.insert("session_id".into(), "x".into());
+        app.agents[0]
+            .spec
+            .labels
+            .insert("session_id".into(), "x".into());
         app.runtimes.clear();
         assert!(app.reconnect_blocker(&app.agents[0]).is_some());
     }
