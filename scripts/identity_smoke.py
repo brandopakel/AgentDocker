@@ -167,12 +167,17 @@ def trial(binary_dir, output, manifest_path):
                     observation = rpc({'op': 'inspect', 'agent': owner})['agent']['reported_activity']
                     assert observation['activity'] == 'working', 'MCP-first identity did not receive hook activity'
                     report['checks'].append('prompt activity reaches the identity originally named by MCP')
+                    # A turn's end releases the leases the adapter took for edits
+                    # (`automatic`) and nothing the agent claimed on purpose.
+                    edit = rpc({'op': 'claim', 'agent': owner, 'resource': 'path:' + str(project / 'edited-by-fixture.txt'), 'ttl_secs': 120, 'automatic': True})['lease']['id']
                     result = hook.request({'hook_event_name': 'Stop', 'session_id': session, 'cwd': str(project)})
                     assert result['exit'] == 0, 'Stop failed'
                     observation = rpc({'op': 'inspect', 'agent': owner})['agent']['reported_activity']
                     assert observation['activity'] == 'idle', 'Stop did not report idle to the joined identity'
-                    assert not rpc({'op': 'leases', 'agent': owner})['leases'], 'Stop retained lease'
-                    report['checks'].append('Stop reports idle and releases the joined identity lease')
+                    held = [l['id'] for l in rpc({'op': 'leases', 'agent': owner})['leases']]
+                    assert edit not in held, 'Stop retained the automatic edit lease'
+                    assert lease in held, 'Stop released a lease the agent claimed on purpose'
+                    report['checks'].append('Stop reports idle, releases the automatic edit lease and keeps the deliberate one')
                     rpc({'op': 'claim', 'agent': owner, 'resource': 'task:session-end-fixture', 'ttl_secs': 120})
                     result = hook.request({'hook_event_name': 'SessionEnd', 'session_id': session, 'cwd': str(project)})
                     assert result['exit'] == 0, 'SessionEnd failed'
