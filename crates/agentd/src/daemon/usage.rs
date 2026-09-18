@@ -24,10 +24,13 @@ fn configuration(home: &Path) -> Result<UsageConfig, String> {
             ReadPolicy::Absent | ReadPolicy::Unchanged => UsageConfig::default(),
         };
     config.check()?;
+    if config.enabled {
+        roots(&config)?;
+    }
     Ok(config)
 }
 
-fn roots(config: &UsageConfig) -> Vec<Root> {
+fn roots(config: &UsageConfig) -> Result<Vec<Root>, String> {
     let mut codex = config.codex_roots.clone();
     let mut claude = config.claude_roots.clone();
     if let Some(home) = std::env::home_dir() {
@@ -44,7 +47,7 @@ fn roots(config: &UsageConfig) -> Vec<Root> {
             claude.push(base.join("projects"));
         }
     }
-    codex
+    let roots: Vec<_> = codex
         .into_iter()
         .map(|path| Root {
             runtime: reader::Runtime::Codex,
@@ -54,7 +57,16 @@ fn roots(config: &UsageConfig) -> Vec<Root> {
             runtime: reader::Runtime::Claude,
             path,
         }))
-        .collect()
+        .collect();
+    if roots.len() > agentdocker_host::usage::discovery::MAX_ROOTS
+        || roots.iter().any(|root| !root.path.is_absolute())
+    {
+        return Err(
+            "effective usage discovery requires at most sixteen absolute roots, including defaults"
+                .into(),
+        );
+    }
+    Ok(roots)
 }
 
 fn retained(now: DateTime<Utc>, config: &UsageConfig) -> DateTime<Utc> {
@@ -99,18 +111,15 @@ impl Daemon {
             };
             let now = Utc::now();
             let result = state.persist("usage attribution", |store| {
-                if let Some(attribution) = attribution {
-                    event = store.usage_reconcile(
-                        &runtime,
-                        &session,
-                        &attribution,
-                        retained(now, config),
-                        now,
-                        seq,
-                    )?;
-                }
-                // This cursor is only fair scheduling, never accounting progress.
-                store.put_document("usage", "reconcile_after", &(&runtime, &session))
+                event = store.usage_reconcile(
+                    &runtime,
+                    &session,
+                    attribution.as_ref(),
+                    retained(now, config),
+                    now,
+                    seq,
+                )?;
+                Ok(())
             });
             if result != Persisted::Committed {
                 return;
@@ -137,10 +146,6 @@ impl Daemon {
             Ok(since) => since,
             Err(error) => return Response::error(ErrorCode::Invalid, error),
         };
-        let range = match Range::new(since, query.until, now, retained(now, &config)) {
-            Ok(range) => range,
-            Err(error) => return Response::error(ErrorCode::Invalid, error),
-        };
         let project = match query.project {
             Some(reference) => match self.resolve_project(&reference).await {
                 Ok(project) => Some(project.to_string()),
@@ -149,6 +154,20 @@ impl Daemon {
             None => None,
         };
         let mut state = lock(&self.state);
+        let Some(retained_since) = state.store_read("usage retention", |store| {
+            store.usage_retained_since(retained(now, &config))
+        }) else {
+            return state.storage_failure().unwrap_or_else(|| {
+                Response::error(
+                    ErrorCode::StorageUnavailable,
+                    "usage retention could not be read",
+                )
+            });
+        };
+        let range = match Range::new(since, query.until, now, retained_since) {
+            Ok(range) => range,
+            Err(error) => return Response::error(ErrorCode::Invalid, error),
+        };
         let agent = match query.agent {
             Some(reference) => match state.resolve(&reference) {
                 Ok(agent) => Some(agent.to_string()),
@@ -160,7 +179,11 @@ impl Daemon {
             store.usage_report(range, query.by, project.as_deref(), agent.as_deref())
         }) {
             Some(Some(mut report)) => {
-                let expected_roots: Vec<_> = roots(&config)
+                let effective_roots = match roots(&config) {
+                    Ok(roots) => roots,
+                    Err(error) => return Response::error(ErrorCode::Invalid, error),
+                };
+                let expected_roots: Vec<_> = effective_roots
                     .iter()
                     .map(|r| r.path.display().to_string())
                     .collect();
@@ -318,7 +341,9 @@ fn snapshot(weak: &Weak<Daemon>, collection: &Collection, gaps: &[(&str, &str)])
 }
 
 fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
-    let sources = roots(config);
+    let Ok(sources) = roots(config) else {
+        return;
+    };
     let Ok(mut walk) = Walk::new(sources.clone()) else {
         return;
     };
@@ -536,6 +561,27 @@ fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn usage_configuration_counts_default_roots_against_the_limit() {
+        let home = tempfile::tempdir().unwrap();
+        // Fifteen explicit Claude roots leave only one slot. The two default
+        // Codex roots must not silently push discovery over its sixteen-root cap.
+        let config = UsageConfig {
+            enabled: true,
+            claude_roots: (0..15)
+                .map(|i| home.path().join(format!("claude-{i}")))
+                .collect(),
+            ..UsageConfig::default()
+        };
+        assert!(config.check().is_ok());
+        if std::env::home_dir().is_some() {
+            assert!(roots(&config).is_err());
+        }
+        let mut config = config;
+        config.codex_roots = vec![home.path().join("codex")];
+        assert_eq!(roots(&config).unwrap().len(), 16);
+    }
 
     fn fixture() -> (tempfile::TempDir, Arc<Daemon>, UsageConfig, PathBuf) {
         let temp = tempfile::tempdir().unwrap();

@@ -1147,6 +1147,13 @@ are unknown, never zero. The design:
   estimate. These estimates are neither additional provider tokens nor a precise
   measure of billed overhead; never add them to the provider total.
 
+Collector follow-up preserves the committed retention cutoff when configuration
+expands: discarded history stays explicitly truncated, and newly found older
+logs do not make that interval appear restored. Attribution reconciliation saves
+its scheduling cursor, moved contributions and event in one transaction, so any
+failure leaves all three unchanged. The sixteen-root/absolute-path limit applies
+after environment/default roots are expanded as well as to explicit settings.
+
 Initial source work adds pure optional counters, reset-aware deltas and strict
 hourly query bounds and checked aggregates that move sums and coverage together,
 plus local format normalization for Codex 0.153.4/0.154.0 and

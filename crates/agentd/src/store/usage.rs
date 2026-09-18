@@ -95,6 +95,14 @@ impl Store {
         self.document("usage", "collection")
     }
 
+    /// Increasing the configured retention cannot recover already discarded
+    /// history. Keep the committed cutoff across restarts and configuration edits.
+    pub(crate) fn usage_retained_since(&self, requested: DateTime<Utc>) -> Result<DateTime<Utc>> {
+        Ok(self
+            .document::<DateTime<Utc>>("usage", "retained_since")?
+            .map_or(requested, |committed| committed.max(requested)))
+    }
+
     /// Move at most 256 retained contributions per transaction. Already
     /// attributed samples are immutable history, even if the live agent moves.
     /// The caller resolves an unambiguous runtime/session before this operation.
@@ -102,15 +110,21 @@ impl Store {
         &self,
         runtime: &str,
         session: &str,
-        attribution: &Attribution,
+        attribution: Option<&Attribution>,
         retained_since: DateTime<Utc>,
         now: DateTime<Utc>,
         seq: u64,
     ) -> Result<Option<Event>> {
-        let Some(agent) = &attribution.agent else {
+        let tx = self.conn.unchecked_transaction()?;
+        // The scheduling cursor commits with the accounting/event, including
+        // a no-op. A failed cursor write must roll the entire operation back.
+        self.put_document("usage", "reconcile_after", &(runtime, session))?;
+        let Some(attribution) = attribution.filter(|a| a.agent.is_some()) else {
+            tx.commit()?;
             return Ok(None);
         };
-        let tx = self.conn.unchecked_transaction()?;
+        let agent = attribution.agent.as_ref().expect("attributed agent");
+        let retained_since = self.usage_retained_since(retained_since)?;
         let mut statement = self.conn.prepare("SELECT source_id,contribution FROM usage_samples WHERE at>=?1 AND contribution IS NOT NULL AND json_extract(contribution,'$.bucket.attribution.agent') IS NULL AND json_extract(contribution,'$.bucket.runtime')=?2 AND json_extract(contribution,'$.session')=?3 ORDER BY source_id LIMIT 256")?;
         let records = statement
             .query_map(params![text(retained_since), runtime, session], |r| {
@@ -165,6 +179,7 @@ impl Store {
             "usage batch exceeds bounds"
         );
         let tx = self.conn.unchecked_transaction()?;
+        let retained_since = self.usage_retained_since(batch.retained_since)?;
         let mut accepted = 0;
         let mut gaps = 0;
         // Reader records normally arrive in source order. Sorting this bounded
@@ -242,7 +257,7 @@ impl Store {
                 }
             };
             let mut contribution = contribution
-                .filter(|_| usage::hour(sample.at) >= batch.retained_since)
+                .filter(|_| usage::hour(sample.at) >= retained_since)
                 .map(|counters| Contribution {
                     bucket: Bucket {
                         attribution: attribution.clone(),
@@ -366,6 +381,8 @@ impl Store {
     /// Dedupe fingerprints and baselines outlive retained contributions. Old
     /// logs cannot resurrect expired totals after their file cursor changes.
     fn prune_usage(&self, since: DateTime<Utc>) -> Result<()> {
+        let since = self.usage_retained_since(since)?;
+        self.put_document("usage", "retained_since", &since)?;
         let since = text(since);
         self.conn.execute("DELETE FROM usage_buckets WHERE key IN (SELECT key FROM usage_buckets WHERE hour<?1 LIMIT 1000)", [&since])?;
         self.conn.execute("UPDATE usage_samples SET contribution=NULL WHERE source_id IN (SELECT source_id FROM usage_samples WHERE at<?1 AND contribution IS NOT NULL LIMIT 1000)", [&since])?;
@@ -375,11 +392,16 @@ impl Store {
 
     pub(crate) fn usage_report(
         &self,
-        range: Range,
+        mut range: Range,
         by: Group,
         project: Option<&str>,
         agent: Option<&str>,
     ) -> Result<Option<Report>> {
+        let retained_since = self.usage_retained_since(range.retained_since)?;
+        range.history_truncated |= range.effective_since < retained_since;
+        range.retained_since = retained_since;
+        range.effective_since = range.effective_since.max(retained_since);
+        range.effective_until = range.effective_until.max(retained_since);
         let mut statement = self.conn.prepare("SELECT key,json FROM usage_buckets WHERE hour>=?1 AND hour<?2 AND (?3 IS NULL OR project=?3) AND (?4 IS NULL OR agent=?4) ORDER BY key LIMIT 10001")?;
         let records = statement.query_map(
             params![
@@ -582,6 +604,134 @@ mod tests {
     }
 
     #[test]
+    fn usage_retention_cannot_claim_discarded_history_after_configuration_expands() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("state.db");
+        let store = Store::open(&db).unwrap();
+        let progress = progress(temp.path());
+        ingest(
+            &store,
+            &progress,
+            "first",
+            vec![(sample("old", 1, 7, false), Attribution::default())],
+            at(0),
+        )
+        .unwrap();
+        ingest(&store, &progress, "prune", vec![], at(3)).unwrap();
+        drop(store);
+        let store = Store::open(&db).unwrap();
+        // Newly discovered old logs cannot fill only part of discarded history
+        // and make the wider configured range appear complete.
+        ingest(
+            &store,
+            &progress,
+            "expanded",
+            vec![(
+                sample("late-discovered", 2, 9, false),
+                Attribution::default(),
+            )],
+            at(0),
+        )
+        .unwrap();
+        let report = report(&store, 0, 21);
+        assert!(report.rows.is_empty());
+        assert_eq!(report.coverage.retained_since, at(3));
+        assert_eq!(report.effective_since, at(3));
+        assert!(report.coverage.history_truncated);
+        assert_eq!(store.usage_retained_since(at(0)).unwrap(), at(3));
+    }
+
+    #[test]
+    fn usage_reconciliation_failure_rolls_back_cursor_buckets_and_event_together() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        ingest(
+            &store,
+            &progress,
+            "source",
+            vec![(sample("a", 1, 7, false), Attribution::default())],
+            at(0),
+        )
+        .unwrap();
+        let attribution = Attribution {
+            agent: Some("agent".into()),
+            project: Some("project".into()),
+        };
+        let before = store.max_event_seq().unwrap();
+        store.conn.execute_batch("CREATE TRIGGER fail_usage_reconcile BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT,'event refused'); END;").unwrap();
+        assert!(
+            store
+                .usage_reconcile(
+                    "codex",
+                    "session",
+                    Some(&attribution),
+                    at(0),
+                    at(20),
+                    before + 1
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .document::<(String, String)>("usage", "reconcile_after")
+                .unwrap()
+                .is_none()
+        );
+        let rows = report(&store, 0, 21).rows;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, None);
+        assert_eq!(rows[0].counters.input_tokens.sum, Some(7));
+        assert_eq!(store.max_event_seq().unwrap(), before);
+        store
+            .conn
+            .execute_batch("DROP TRIGGER fail_usage_reconcile;")
+            .unwrap();
+        store.conn.execute_batch("CREATE TRIGGER fail_usage_cursor BEFORE INSERT ON documents WHEN NEW.kind='usage' AND NEW.id='reconcile_after' BEGIN SELECT RAISE(ABORT,'cursor refused'); END;").unwrap();
+        assert!(
+            store
+                .usage_reconcile(
+                    "codex",
+                    "session",
+                    Some(&attribution),
+                    at(0),
+                    at(20),
+                    before + 1
+                )
+                .is_err()
+        );
+        assert_eq!(store.max_event_seq().unwrap(), before);
+        assert_eq!(report(&store, 0, 21).rows[0].key, None);
+        assert!(
+            store
+                .document::<(String, String)>("usage", "reconcile_after")
+                .unwrap()
+                .is_none()
+        );
+        store
+            .conn
+            .execute_batch("DROP TRIGGER fail_usage_cursor;")
+            .unwrap();
+        store
+            .usage_reconcile(
+                "codex",
+                "session",
+                Some(&attribution),
+                at(0),
+                at(20),
+                before + 1,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .document::<(String, String)>("usage", "reconcile_after")
+                .unwrap(),
+            Some(("codex".into(), "session".into()))
+        );
+        assert_eq!(report(&store, 0, 21).rows[0].key.as_deref(), Some("agent"));
+    }
+
+    #[test]
     fn usage_transaction_failure_does_not_advance_cursor_baseline_or_dedupe() {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(&temp.path().join("state.db")).unwrap();
@@ -684,7 +834,7 @@ mod tests {
             .usage_reconcile(
                 "codex",
                 "session",
-                &attribution,
+                Some(&attribution),
                 at(0),
                 at(20),
                 store.max_event_seq().unwrap() + 1,
@@ -700,7 +850,7 @@ mod tests {
                 .usage_reconcile(
                     "codex",
                     "session",
-                    &attribution,
+                    Some(&attribution),
                     at(0),
                     at(20),
                     store.max_event_seq().unwrap() + 1
@@ -727,7 +877,7 @@ mod tests {
                 .usage_reconcile(
                     "codex",
                     "session",
-                    &moved,
+                    Some(&moved),
                     at(0),
                     at(20),
                     store.max_event_seq().unwrap() + 1
