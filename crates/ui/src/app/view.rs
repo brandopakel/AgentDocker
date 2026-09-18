@@ -3401,6 +3401,9 @@ impl App {
                 if runtime.in_browser() && installed {
                     facts = facts.push(note(agentdocker_core::runtime::IN_BROWSER, c));
                 }
+                for why in &runtime.incomplete {
+                    facts = facts.push(note(format!("Inventory incomplete: {why}"), c));
+                }
                 if installed && supported && !missing && !unverified && !reporting {
                     facts = facts.push(note(
                         "Setup is saved. Start a fresh session to load it. Approve only the \

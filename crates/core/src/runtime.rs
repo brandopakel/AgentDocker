@@ -390,6 +390,12 @@ pub struct RuntimeInfo {
     /// installed in.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extensions: Vec<InstalledExtension>,
+    /// What the inventory could not read within its bounds — a special,
+    /// oversized or unreadable file, a directory with too many entries —
+    /// each named with the reason. An empty list means the inventory is
+    /// whole; a capped scan is never reported as absence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub incomplete: Vec<String>,
     /// The configuration directory, when it exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<PathBuf>,

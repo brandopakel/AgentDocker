@@ -13060,14 +13060,25 @@ deny = ["send:all"]
         std::fs::create_dir_all(&package).unwrap();
         let script = package.join("cli.js");
         std::fs::write(&script, "setTimeout(() => {}, 60000);\n").unwrap();
-        let mut child = std::process::Command::new(node)
-            .arg(&script)
-            .arg("--chrome-native-host")
-            .current_dir(dir.path())
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let pid = child.id();
+        /// The fake ends with the test, passed or failed: an assertion
+        /// that fails must not leave a sixty-second child behind.
+        struct Reaped(std::process::Child);
+        impl Drop for Reaped {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let child = Reaped(
+            std::process::Command::new(node)
+                .arg(&script)
+                .arg("--chrome-native-host")
+                .current_dir(dir.path())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let pid = child.0.id();
         // Give the process table time to show the interpreter's argv.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -13114,9 +13125,7 @@ deny = ["send:all"]
             panic!("list failed");
         };
         assert!(agents.iter().all(|a| a.pid != Some(pid)));
-
-        child.kill().unwrap();
-        child.wait().unwrap();
+        drop(child);
     }
 
     fn drain_vcs(events: &mut broadcast::Receiver<Event>) -> Vec<Option<String>> {
