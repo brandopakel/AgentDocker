@@ -885,5 +885,12 @@ follow-up reports a durable delivery pause instead, preserves the original
 offer and queue, keeps control/receipt calls responsive, and restores readiness
 after the outstanding ID leaves the queue. Its regression covers normal,
 refused and stalled status writes followed by an explicit late acknowledgement.
-Validation and actual-session recovery remain pending; this is not an idle-wake
-or provider-consent completion claim.
+Source `7350bb5` passed 1,206 Rust tests (seven skipped), 94 Python checks
+(one skipped), strict lint, packaging and release builds. Its 69-second private
+MCP transport trial held the pause through refresh, kept the queue unchanged,
+and recovered on a late explicit receipt. The same driver fails against the
+previous binary, which keeps advertising readiness. The [existing delivery
+record](verification/2026-09-12-input-delivery-status.json) retains both outcomes
+and the corrected heartbeat-fixture failure. Review, installation and actual
+session recovery remain pending; this is not an idle-wake or provider-consent
+completion claim.
