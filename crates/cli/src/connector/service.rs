@@ -306,17 +306,30 @@ fn layout(args: &ServeArgs) -> Result<Layout> {
     let user_home = std::env::home_dir().context("no home directory")?;
     let mut serve_args = args.to_argv();
     let mut path_dirs = Vec::new();
-    if args.tunnel.as_deref() == Some("cloudflared") {
-        // Resolve now: launchd's PATH will not, and a moved binary is a
-        // new install.
-        let binary = super::tunnel::find_cloudflared(args.cloudflared.as_deref())?;
-        if args.cloudflared.is_none() {
-            serve_args.push("--cloudflared".into());
-            serve_args.push(binary.to_string_lossy().into_owned());
+    // Resolve the tunnel's binary now: launchd's PATH will not, and a
+    // moved binary is a new install.
+    match args.tunnel.as_deref() {
+        Some("cloudflared") => {
+            let binary = super::tunnel::find_cloudflared(args.cloudflared.as_deref())?;
+            if args.cloudflared.is_none() {
+                serve_args.push("--cloudflared".into());
+                serve_args.push(binary.to_string_lossy().into_owned());
+            }
+            if let Some(dir) = binary.parent() {
+                path_dirs.push(dir.to_owned());
+            }
         }
-        if let Some(dir) = binary.parent() {
-            path_dirs.push(dir.to_owned());
+        Some("tailscale") => {
+            let binary = super::tunnel::find_tailscale(args.tailscale.as_deref())?;
+            if args.tailscale.is_none() {
+                serve_args.push("--tailscale".into());
+                serve_args.push(binary.to_string_lossy().into_owned());
+            }
+            if let Some(dir) = binary.parent() {
+                path_dirs.push(dir.to_owned());
+            }
         }
+        _ => {}
     }
     let project = match &args.project {
         Some(path) => path.clone(),
@@ -337,6 +350,24 @@ fn layout(args: &ServeArgs) -> Result<Layout> {
     })
 }
 
+/// launchd unloads a job asynchronously: a `bootstrap` right after
+/// `bootout` can meet the old job still there and fail with I/O error 5.
+/// Wait, briefly, until the label is gone.
+fn wait_for_bootout(target: &str) {
+    for _ in 0..50 {
+        let present = std::process::Command::new("launchctl")
+            .args(["print", target])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !present {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
     let macos = cfg!(target_os = "macos");
     if !macos && !cfg!(target_os = "linux") {
@@ -349,11 +380,22 @@ pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
     }
     if args.tunnel.as_deref() == Some("cloudflared") && args.tunnel_name.is_none() {
         eprintln!(
-            "note: a quick tunnel gets a new hostname every time the service starts, and the connector saved in Claude or ChatGPT must then be added again; for a hostname that stays, create a named tunnel and pass --tunnel-name and --public-url"
+            "note: a quick tunnel gets a new hostname every time the service starts, and the connector saved in Claude or ChatGPT must then be added again; for a hostname that stays, use --tunnel tailscale (Funnel on this machine's own name) or a named cloudflared tunnel with --tunnel-name and --public-url"
         );
     }
     let layout = layout(args)?;
     let plan = install_plan(&layout, macos);
+    if macos && !dry_run {
+        // The plan's first command boots the old job out; the bootstrap
+        // that follows needs it gone. Do the bootout here, wait, then let
+        // the plan run its (now tolerated, idle) bootout and the bootstrap.
+        let _ = std::process::Command::new("launchctl")
+            .args(["bootout", &layout.target()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        wait_for_bootout(&layout.target());
+    }
     execute(&plan, dry_run)?;
     if !dry_run {
         eprintln!(

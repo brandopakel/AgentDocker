@@ -1562,7 +1562,61 @@ fn render_whole(response: Response) -> Value {
     }
 }
 
+/// What each tool does to the world, in the MCP annotation vocabulary,
+/// so a host can tell a read from a write before asking the person:
+/// ChatGPT treats an unannotated tool as open-world and destructive and
+/// asks for every call; Claude's hosted surfaces read the same hints.
+/// Everything here talks to the local daemon, so nothing is open-world
+/// but `validate`, which runs a command of the caller's choosing.
+fn annotations(name: &str) -> Value {
+    // (read-only, destructive, idempotent, open-world)
+    let (read_only, destructive, idempotent, open_world) = match name {
+        // Looking: nothing changes.
+        "whoami" | "list_agents" | "inspect_agent" | "list_leases" | "activity" | "overlap"
+        | "open_questions" | "read_journal" | "wait_for_messages" | "check_stale" | "read_set"
+        | "list_checkpoints" | "list_handoffs" | "list_channels" | "contests" | "list_tasks"
+        | "worktree_diff" | "validation_results" => (true, false, true, false),
+        // Saying and recording: additive, repeatable.
+        "report_activity" | "report_provider_status" | "observe_paths" | "renew" => {
+            (false, false, true, false)
+        }
+        // Reading with an option to consume, or acknowledging: never
+        // destructive, and the same call twice changes nothing more.
+        "read_inbox" | "acknowledge_messages" => (false, false, true, false),
+        // Additive writes: a message, a note, a lease, a checkpoint, a
+        // card, a channel, a review, an entry.
+        "send_message" | "ask_human" | "answer_question" | "journal_note" | "claim" | "release"
+        | "save_checkpoint" | "handoff" | "resume_checkpoint" | "commit" | "create_worktree"
+        | "open_channel" | "close_channel" | "request_review" | "review" | "enter_contest"
+        | "submit_entry" | "create_task" | "move_task" | "pull_task" => {
+            (false, false, false, false)
+        }
+        // Changes files in a checkout: an uncommitted merge.
+        "integrate_worktree" => (false, true, false, false),
+        // Runs whatever command it is given.
+        "validate" => (false, true, false, true),
+        _ => (false, true, false, true),
+    };
+    json!({
+        "readOnlyHint": read_only,
+        "destructiveHint": destructive,
+        "idempotentHint": idempotent,
+        "openWorldHint": open_world,
+    })
+}
+
 fn tool_definitions() -> Vec<Value> {
+    let mut tools = bare_tool_definitions();
+    for tool in &mut tools {
+        if let Some(name) = tool["name"].as_str() {
+            let hints = annotations(name);
+            tool["annotations"] = hints;
+        }
+    }
+    tools
+}
+
+fn bare_tool_definitions() -> Vec<Value> {
     // Listings answer with the fields an agent reads; this opts into
     // the whole record when one is genuinely needed.
     let verbose = json!({
@@ -2128,6 +2182,66 @@ mod tests {
             "claude --dangerously-load-development-channels",
         ] {
             assert!(!channel_flag_names_us(&argv(command)), "{command}");
+        }
+    }
+
+    /// Every tool carries the four hints, and the hints are true to what
+    /// the tool does: a listing never writes, a message is never
+    /// destructive, and only `validate` reaches beyond the daemon.
+    #[test]
+    fn every_tool_is_annotated_and_the_reads_are_read_only() {
+        let tools = tool_definitions();
+        for tool in &tools {
+            let name = tool["name"].as_str().unwrap();
+            let hints = &tool["annotations"];
+            for key in [
+                "readOnlyHint",
+                "destructiveHint",
+                "idempotentHint",
+                "openWorldHint",
+            ] {
+                assert!(hints[key].is_boolean(), "{name} lacks {key}");
+            }
+            let read_only = hints["readOnlyHint"] == true;
+            let destructive = hints["destructiveHint"] == true;
+            assert!(
+                !(read_only && destructive),
+                "{name} is both read-only and destructive"
+            );
+            if name != "validate" {
+                assert_eq!(
+                    hints["openWorldHint"], false,
+                    "{name} talks only to the daemon"
+                );
+            }
+        }
+        let by = |name: &str| {
+            tools
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("{name}"))["annotations"]
+                .clone()
+        };
+        assert_eq!(by("list_agents")["readOnlyHint"], true);
+        assert_eq!(by("read_journal")["readOnlyHint"], true);
+        assert_eq!(by("send_message")["readOnlyHint"], false);
+        assert_eq!(by("send_message")["destructiveHint"], false);
+        assert_eq!(by("claim")["destructiveHint"], false);
+        assert_eq!(by("integrate_worktree")["destructiveHint"], true);
+        assert_eq!(by("validate")["openWorldHint"], true);
+        // The browser agent's tools: every read is read-only, nothing is
+        // destructive, so a host's "low-risk" default lets the reads through.
+        for name in REMOTE_TOOLS {
+            assert_eq!(by(name)["destructiveHint"], false, "{name}");
+        }
+        for name in [
+            "whoami",
+            "list_agents",
+            "inspect_agent",
+            "open_questions",
+            "read_journal",
+        ] {
+            assert_eq!(by(name)["readOnlyHint"], true, "{name}");
         }
     }
 

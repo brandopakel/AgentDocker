@@ -96,15 +96,21 @@ pub struct ServeArgs {
     /// A callback URL to admit besides the vendors' own, for a hosted client of yours.
     #[arg(long = "allow-callback")]
     pub allow_callbacks: Vec<String>,
-    /// Start the tunnel too: `cloudflared` (a quick tunnel with a random hostname, or with --tunnel-name a named one you routed).
-    #[arg(long, value_parser = ["cloudflared"])]
+    /// Start the tunnel too: `tailscale` (Funnel on this machine's own stable `*.ts.net` name) or `cloudflared` (a quick tunnel with a random hostname, or with --tunnel-name a named one you routed).
+    #[arg(long, value_parser = ["tailscale", "cloudflared"])]
     pub tunnel: Option<String>,
     /// The named cloudflared tunnel to run (`cloudflared tunnel create <name>` and a DNS route first); needs --public-url.
     #[arg(long, requires = "tunnel")]
     pub tunnel_name: Option<String>,
+    /// The public HTTPS port for Tailscale Funnel: 443, 8443 or 10000.
+    #[arg(long, default_value_t = 443, requires = "tunnel")]
+    pub tunnel_port: u16,
     /// Where cloudflared is, when not on PATH or in the usual places.
     #[arg(long, requires = "tunnel")]
     pub cloudflared: Option<PathBuf>,
+    /// Where the tailscale CLI is, when not on PATH, in the usual places or in the macOS app.
+    #[arg(long, requires = "tunnel")]
+    pub tailscale: Option<PathBuf>,
     /// Only admit the vendors' own addresses at /register, /token and /mcp: a CIDR, `anthropic` (its published range), or `@<file>` (OpenAI's feed JSON or one CIDR per line, re-read when it changes). Needs the tunnel's client-address header.
     #[arg(long = "allow-from")]
     pub allow_from: Vec<String>,
@@ -138,9 +144,18 @@ impl ServeArgs {
         if let Some(name) = &self.tunnel_name {
             argv.extend(["--tunnel-name".to_owned(), name.clone()]);
         }
+        if self.tunnel_port != 443 {
+            argv.extend(["--tunnel-port".to_owned(), self.tunnel_port.to_string()]);
+        }
         if let Some(path) = &self.cloudflared {
             argv.extend([
                 "--cloudflared".to_owned(),
+                path.to_string_lossy().into_owned(),
+            ]);
+        }
+        if let Some(path) = &self.tailscale {
+            argv.extend([
+                "--tailscale".to_owned(),
                 path.to_string_lossy().into_owned(),
             ]);
         }
@@ -159,6 +174,7 @@ impl ServeArgs {
         match &self.client_ip_header {
             Some(header) => header.clone(),
             None if self.tunnel.as_deref() == Some("cloudflared") => "cf-connecting-ip".into(),
+            None if self.tunnel.as_deref() == Some("tailscale") => "x-forwarded-for".into(),
             None => String::new(),
         }
     }
@@ -830,6 +846,10 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
     // The tunnel first, so the public name is known before anything is
     // said or written; it dies with this process and this process with it.
     let mut tunnel = match args.tunnel.as_deref() {
+        Some("tailscale") => {
+            let binary = tunnel::find_tailscale(args.tailscale.as_deref())?;
+            Some(tunnel::funnel_tailscale(&binary, local.port(), args.tunnel_port).await?)
+        }
         Some("cloudflared") => {
             let binary = tunnel::find_cloudflared(args.cloudflared.as_deref())?;
             let checked = args.public_url.as_deref().map(public_url).transpose()?;
@@ -894,7 +914,10 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
         project.name(),
         project.root.display(),
         match &tunnel {
-            Some(t) => format!(" by {} (pid {})", t.provider, t.pid().unwrap_or(0)),
+            Some(t) => match t.pid() {
+                Some(pid) => format!(" by {} (pid {pid})", t.provider),
+                None => format!(" by {} funnel", t.provider),
+            },
             None => String::new(),
         },
         if prefixes == 0 {
@@ -1019,13 +1042,13 @@ async fn status(client: &Client) -> Result<()> {
     println!("  pairing code: {}", serving.pairing_code);
     match &serving.tunnel {
         Some(t) => println!(
-            "  tunnel:       {}{} (pid {})",
+            "  tunnel:       {}{}{}",
             t.provider,
             t.name
                 .as_deref()
                 .map(|n| format!(" `{n}`"))
                 .unwrap_or_default(),
-            t.pid.unwrap_or(0)
+            t.pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()
         ),
         None => println!("  tunnel:       yours, in front of the listening address"),
     }
