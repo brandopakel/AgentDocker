@@ -1,10 +1,13 @@
 # The remote connector: agents that work inside a browser
 
 Status: September 17, 2026. Delivered in source as `agentdocker connector`
-(`crates/cli/src/connector/`), with unit tests and a real-binary trial on
-loopback ([record](verification/2026-09-17-remote-connector.json)). Acceptance
-against a vendor's actual hosted surface — adding the connector in a Claude or
-ChatGPT account and consenting — is the person's step and is still owed.
+(`crates/cli/src/connector/`), with unit tests, a real-binary trial on loopback,
+and an acceptance against a real Claude account: through a cloudflared quick
+tunnel to the production daemon, claude.ai registered its client, the person
+consented with the pairing code, and the browser Claude delivered a message to
+keel's terminal sessions ([record](verification/2026-09-17-remote-connector.json),
+`vendor_acceptance`). ChatGPT is not yet tried. A quick tunnel's hostname is
+ephemeral; a named tunnel or reverse proxy is the durable setup.
 
 ## Why it exists
 
