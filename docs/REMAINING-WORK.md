@@ -17,18 +17,30 @@ remain below. Optional research is outside the current delivery closure.
 
 ## September 18 user experience cleanup
 
-The user chose **shared chat first** for each project, with clearly named agents
-and terminal access nearby; Board and history move under More. This is active
-work, not a claim that the screenshots' problems are closed. Source on
-`codex/chat-first-workspace` adds project chat navigation, an obvious **Open project
-terminal**, and terminal controls for managed agents of any runtime and external
-macOS Terminal sessions. The command console remains an advanced AgentDocker tool.
-Claude owns stable names/canonical conversation grouping, compact session rows,
-visible reconnect, readable Activity, and temporary-project/history cleanup.
-Distinct concurrent sessions retain their identities; aliases and technical feeds
-must not appear as additional agents. Installation and native interaction evidence
-are required before these changes are marked delivered. Board terminology and
-external terminal hosts beyond macOS Terminal still need refinement/acceptance.
+The user chose **shared chat first** for each project. The combined source in
+PR #200 includes the two Claude cleanup branches (#201 and #203): shared Chat
+and a compact current-agent list, visible project and agent terminals, stable
+names with branch context kept in details, canonical direct-message grouping,
+technical feeds under **From AgentDocker**, temporary projects in their own fold,
+paged Earlier sessions, row-level **Reconnect here**, readable Activity failures
+and Board wording such as **Add a task** and **Done when**. Board and History are
+under **More**.
+
+Alias grouping preserves each older conversation under Earlier, including its
+history, unread count and draft. Distinct concurrent sessions keep their own
+identities. Project switching and removal retarget the chat without discarding
+drafts. Compact agent terminal controls stay in one row; large delivery feedback
+scrolls below the input instead of pushing actions outside the pane.
+
+Native trials passed 37 focused chat steps (project switching, drafts, threads,
+managed terminal, removal and the actual send destination), a larger-text layout
+trial and the rendered project-terminal action opening a shell in the exact
+folder with Unicode, spaces and punctuation. The final combined gate, broader
+native workflow, packaged installation and installed user review are recorded
+below as they complete. The screenshots' old layout remains installed until that
+activation. External terminal hosts beyond macOS Terminal and native Linux shell
+acceptance remain open; these trials do not establish physical keyboard/IME or
+screen-reader acceptance.
 
 ## Delivered source and current desktop
 

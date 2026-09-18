@@ -53,7 +53,7 @@ impl App {
                 conversation
             };
             return column![
-                container(scrollable(agents)).height(80),
+                container(scrollable(agents).id("chat-agents")).height(80),
                 container(body).height(Fill),
             ]
             .spacing(12)
@@ -65,7 +65,11 @@ impl App {
             panes = panes.push(container(self.thread_pane(c)).width(300).height(Fill));
         }
         panes
-            .push(container(scrollable(agents)).width(250).height(Fill))
+            .push(
+                container(scrollable(agents).id("chat-agents"))
+                    .width(250)
+                    .height(Fill),
+            )
             .height(Fill)
             .into()
     }

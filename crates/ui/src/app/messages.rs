@@ -1116,8 +1116,12 @@ impl App {
         // compact agent controls. Keep typing visible while feedback scrolls.
         column![
             input,
-            container(scrollable(composer).height(iced::Shrink))
-                .max_height((available_height - 48.0).clamp(0.0, 180.0)),
+            container(
+                scrollable(composer)
+                    .height(iced::Shrink)
+                    .id(format!("composer-feedback-{key}")),
+            )
+            .max_height((available_height - 48.0).clamp(0.0, 180.0)),
         ]
         .spacing(4)
         .into()
