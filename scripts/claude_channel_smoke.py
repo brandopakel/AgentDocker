@@ -258,11 +258,11 @@ def run(args):
             assert queued() == [] and connection.read(0.35) is None
             report["steps"].append("a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt")
 
-            project = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["project"]["fingerprint"]
-            project_pause = rpc(endpoint, {"op": "send", "from": "user", "to": f"project:{project}",
+            project_pause = rpc(endpoint, {"op": "send", "from": "user", "to": f"project:{root}",
                 "kind": "message", "payload": {"text": "FIXTURE: pause in everyone"}})["message"]
             offered = connection.offer()
             assert offered["meta"]["message_id"] == project_pause
+            project = json.loads(offered["meta"]["destination"])["value"]
             assert offered["meta"]["reply_destination"] == f"project:{project}"
             connection.send({"jsonrpc": "2.0", "id": 202, "method": "tools/call", "params": {
                 "name": "send_message", "arguments": {"to": offered["meta"]["reply_destination"],
