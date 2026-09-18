@@ -30,7 +30,9 @@ Native delivery follow-ups: [desktop packaging and installation](DESKTOP-DISTRIB
 
 - [Claude channel input](CLAUDE-CHANNEL-INPUT.md) — explicit local opt-in, retained offers/receipts and provider acceptance limits.
 
-- [Portable AgentDocker coordination skill](../crates/cli/skills/agentdocker/SKILL.md) — requested September 15; one source for provider setup and MCP onboarding. Private Codex/Claude loader discovery passed; full integration and other-provider acceptance remain.
+- [Portable AgentDocker coordination skill](../crates/cli/skills/agentdocker/SKILL.md) — requested September 15; one source for provider setup and MCP onboarding. Merged in #149 and included in the recorded installed source; private Codex/Claude loader discovery passed, while fresh-session implicit activation and other-provider acceptance remain.
+
+<a id="existing-document-audit-september-14-2026"></a>
 
 ## Existing-document audit, September 14, 2026 (refreshed September 18)
 
