@@ -164,7 +164,7 @@ async fn handle(
                     Activation::ReplyFailed { action, text, .. } => {
                         action.home == home
                             && action.socket == daemon
-                            && text.chars().count() <= super::REPLY_CHARS
+                            && text.chars().count() <= super::RECOVERY_CHARS
                             && serde_json::to_string(action).ok().is_some_and(|s| {
                                 agentdocker_host::notify::Action::parse(&s).is_ok()
                             })

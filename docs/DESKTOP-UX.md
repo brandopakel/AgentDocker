@@ -213,7 +213,12 @@ conversation opens with your words in its composer, after anything already
 drafted there, and the status line says why — **Reply not sent** when the
 daemon refused it, **Reply may not have been sent** when the connection went
 before an answer, in which case read the history before sending again.
-Nothing typed is sent twice on its own. **Enter sends** in every composer — a
+When the draft cannot take the words (draft storage is full) they wait beside
+the composer with **Copy** and **Dismiss**; the window keeps up to eight such
+replies and says so when a further one cannot be kept. A notification from
+another workspace's daemon hands the words to that workspace's window when
+it is running; otherwise the notification carries what fits and says the app
+could not keep them. Nothing typed is sent twice on its own. **Enter sends** in every composer — a
 conversation's, a thread's, the inbox reply, the session message and an
 answer — the same action as the button beside it, and nothing while the
 draft is empty or already sending. **+** beside the search starts a

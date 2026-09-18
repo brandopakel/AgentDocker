@@ -77,9 +77,12 @@ pub(super) struct State {
     pub project_available: Option<bool>,
     pub notification_message: Option<MessageId>,
     pending_notification: Option<(agentdocker_host::notify::Action, Instant)>,
-    /// A reply typed into a notification that did not go, waiting for
-    /// its conversation to open so the words become its draft.
-    pub reply_recovery: Option<ReplyRecovery>,
+    /// Replies typed into notifications that did not go: each waits for
+    /// its conversation to open so the words become its draft, and stays
+    /// — shown beside the composer to copy or dismiss — while the draft
+    /// cannot take them. At most [`REPLY_RECOVERIES`]; a later one is
+    /// refused and said to be.
+    pub reply_recoveries: Vec<ReplyRecovery>,
     /// Sessions whose turn finished while nobody was looking at them:
     /// finished as observed, not yet viewed. Viewing is an explicit act
     /// (opening the project or the session, or already having it on
@@ -113,14 +116,20 @@ impl State {
 }
 
 /// The words of a failed notification reply, and why it failed, until
-/// the conversation they belong to is open.
+/// they are in the conversation's draft, copied, or dismissed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplyRecovery {
     pub message: MessageId,
     pub text: String,
     pub reason: String,
     pub certain: bool,
+    /// The conversation it was placed towards, once known, so the
+    /// composer there can show what the draft could not take.
+    pub conversation: Option<String>,
 }
+
+/// How many failed replies the window keeps at once.
+pub const REPLY_RECOVERIES: usize = 8;
 
 /// Each room keeps its own draft; receipts clear only an untouched submission.
 #[derive(Clone, Debug, Default)]
@@ -408,6 +417,10 @@ pub enum Message {
     SelectThread(Option<String>),
     SelectConversation(String),
     ConversationDraft(String, String),
+    /// A kept reply from a notification, by its message: to the
+    /// clipboard, or let go.
+    ReplyRecoveryCopy(MessageId),
+    ReplyRecoveryDismiss(MessageId),
     SendConversation(String),
     OpenThread(MessageId),
     CloseThread,
@@ -596,18 +609,25 @@ impl App {
     /// conversation the notification opened, once it is open: after what
     /// is already there, so nothing typed in either place is lost, and
     /// with the reason in the status line — for an unknown outcome, that
-    /// the history decides whether to send again.
+    /// the history decides whether to send again. A draft that cannot
+    /// take them (the storage is full) keeps the recovery beside the
+    /// composer, to copy or dismiss.
     pub(super) fn recover_reply(&mut self) {
-        let Some(recovery) = self.shell.reply_recovery.clone() else {
-            return;
-        };
         let Some(conversation) = self.shell.conversation.clone() else {
             return;
         };
-        if self.shell.notification_message.as_ref() != Some(&recovery.message) {
+        let Some(message) = self.shell.notification_message.clone() else {
             return;
-        }
-        self.shell.reply_recovery = None;
+        };
+        let Some(index) = self
+            .shell
+            .reply_recoveries
+            .iter()
+            .position(|r| r.message == message && r.conversation.is_none())
+        else {
+            return;
+        };
+        let recovery = self.shell.reply_recoveries[index].clone();
         let existing = self
             .shell
             .conversation_drafts
@@ -626,6 +646,11 @@ impl App {
             .conversation_drafts
             .get(&conversation)
             .is_some_and(|d| d.text == text);
+        if placed {
+            self.shell.reply_recoveries.remove(index);
+        } else {
+            self.shell.reply_recoveries[index].conversation = Some(conversation);
+        }
         self.say(match (recovery.certain, placed) {
             (true, true) => format!(
                 "Your reply from the notification was not sent: {}. It is in the composer.",
@@ -636,12 +661,12 @@ impl App {
                 recovery.reason
             ),
             (true, false) => format!(
-                "Your reply from the notification was not sent: {}. It could not be placed in the composer; you wrote: {}",
-                recovery.reason, recovery.text
+                "Your reply from the notification was not sent: {}. The composer could not take it; it is kept beside the composer to copy.",
+                recovery.reason
             ),
             (false, false) => format!(
-                "Your reply from the notification may not have been sent: {}. Check the history above; you wrote: {}",
-                recovery.reason, recovery.text
+                "Your reply from the notification may not have been sent: {}. Check the history above; it is kept beside the composer to copy.",
+                recovery.reason
             ),
         });
     }
@@ -839,18 +864,25 @@ impl App {
                             .as_ref()
                             .is_some_and(|c| c.socket() == action.socket) =>
                     {
-                        self.shell.reply_recovery = Some(ReplyRecovery {
-                            message: action.target.message.clone(),
-                            text,
-                            reason,
-                            certain,
-                        });
-                        self.cancel_reveal();
-                        self.shell.pending_notification = Some((action, Instant::now()));
-                        for cmd in [Cmd::Agents, Cmd::Questions, Cmd::Inbox] {
-                            self.send(cmd);
+                        if self.shell.reply_recoveries.len() >= REPLY_RECOVERIES {
+                            self.say(format!(
+                                "A reply from a notification was not sent ({reason}) and the window holds as many unplaced replies as it keeps; copy or dismiss one first. You wrote: {text}"
+                            ));
+                        } else {
+                            self.shell.reply_recoveries.push(ReplyRecovery {
+                                message: action.target.message.clone(),
+                                text,
+                                reason,
+                                certain,
+                                conversation: None,
+                            });
+                            self.cancel_reveal();
+                            self.shell.pending_notification = Some((action, Instant::now()));
+                            for cmd in [Cmd::Agents, Cmd::Questions, Cmd::Inbox] {
+                                self.send(cmd);
+                            }
+                            tasks.push(self.advance_notification());
                         }
-                        tasks.push(self.advance_notification());
                     }
                     crate::notification_route::Activation::ReplyFailed { reason, .. } => {
                         self.say(format!(
@@ -1012,6 +1044,20 @@ impl App {
                 if self.connected.is_ok() {
                     self.send(Cmd::History(id, self.history_epoch));
                 }
+            }
+            Message::ReplyRecoveryCopy(message) => {
+                if let Some(recovery) = self
+                    .shell
+                    .reply_recoveries
+                    .iter()
+                    .find(|r| r.message == message)
+                {
+                    tasks.push(iced::clipboard::write(recovery.text.clone()));
+                    self.say("Your reply is on the clipboard.");
+                }
+            }
+            Message::ReplyRecoveryDismiss(message) => {
+                self.shell.reply_recoveries.retain(|r| r.message != message);
             }
             Message::ConversationDraft(id, text) => {
                 self.shell.edit_draft(DraftKind::Conversation, id, text)
@@ -3353,14 +3399,19 @@ mod tests {
             },
         ));
         let _ = app.update(Message::Tick);
-        assert!(app.shell.reply_recovery.is_none(), "placed once opened");
-        assert_eq!(app.shell.conversation.as_deref(), Some(conversation.as_str()));
+        assert!(app.shell.reply_recoveries.is_empty(), "placed once opened");
         assert_eq!(
-            app.shell.conversation_drafts[&conversation].text,
-            "half typed\n\non it",
+            app.shell.conversation.as_deref(),
+            Some(conversation.as_str())
+        );
+        assert_eq!(
+            app.shell.conversation_drafts[&conversation].text, "half typed\n\non it",
             "both drafts kept, the reply after"
         );
-        assert!(app.status.contains("was not sent: refused: recipient is paused"));
+        assert!(
+            app.status
+                .contains("was not sent: refused: recipient is paused")
+        );
         assert!(app.status.contains("in the composer"));
 
         let (mut app, _commands, messages, _home, action) = notification_app();
@@ -3394,8 +3445,94 @@ mod tests {
                 certain: true,
             },
         ));
-        assert!(app.shell.reply_recovery.is_none());
+        assert!(app.shell.reply_recoveries.is_empty());
         assert!(app.status.contains("another workspace"));
+
+        // Draft storage full: the words are kept beside the composer to
+        // copy or dismiss, not lost in a status line.
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        for kind in [
+            DraftKind::Session,
+            DraftKind::Channel,
+            DraftKind::Conversation,
+        ] {
+            for index in 0..crate::drafts::MAX_PER_KIND {
+                app.shell
+                    .edit_draft(kind, format!("filler-{index}"), "x".repeat(16_000));
+            }
+        }
+        // To the last byte.
+        let used: usize = {
+            let snapshot = app.shell.draft_snapshot();
+            snapshot
+                .sessions
+                .values()
+                .chain(snapshot.conversations.values())
+                .chain(snapshot.channels.values())
+                .map(String::len)
+                .sum()
+        };
+        app.shell.edit_draft(
+            DraftKind::Conversation,
+            "filler-room".into(),
+            "x".repeat(crate::drafts::MAX_TOTAL_BYTES - used),
+        );
+        app.shell.error = None;
+        let before = app.shell.draft_snapshot();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::ReplyFailed {
+                action: action.clone(),
+                text: "kept words".into(),
+                reason: "refused".into(),
+                certain: true,
+            },
+        ));
+        let _ = app.update(Message::Tick);
+        assert_eq!(
+            app.shell.draft_snapshot(),
+            before,
+            "no draft was made room for"
+        );
+        assert_eq!(app.shell.reply_recoveries.len(), 1);
+        assert_eq!(
+            app.shell.reply_recoveries[0].conversation.as_deref(),
+            Some(conversation.as_str())
+        );
+        assert!(app.status.contains("kept beside the composer"));
+        let _ = app.update(Message::ReplyRecoveryCopy(action.target.message.clone()));
+        assert!(app.status.contains("clipboard"));
+        assert_eq!(app.shell.reply_recoveries.len(), 1, "copying keeps it");
+        let _ = app.update(Message::ReplyRecoveryDismiss(action.target.message.clone()));
+        assert!(app.shell.reply_recoveries.is_empty());
+
+        // The window keeps a bounded number; one more is said, not kept.
+        let (mut app, _commands, _messages, _home, action) = notification_app();
+        for index in 0..REPLY_RECOVERIES {
+            let mut action = action.clone();
+            action.target.message = MessageId::from(format!("m-{index}"));
+            let _ = app.update(Message::Notification(
+                crate::notification_route::Activation::ReplyFailed {
+                    action,
+                    text: format!("words {index}"),
+                    reason: "refused".into(),
+                    certain: true,
+                },
+            ));
+        }
+        assert_eq!(app.shell.reply_recoveries.len(), REPLY_RECOVERIES);
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::ReplyFailed {
+                action,
+                text: "one too many".into(),
+                reason: "refused".into(),
+                certain: true,
+            },
+        ));
+        assert_eq!(app.shell.reply_recoveries.len(), REPLY_RECOVERIES);
+        assert!(app.status.contains("one too many"));
     }
 
     #[test]

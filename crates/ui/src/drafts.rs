@@ -11,7 +11,7 @@ use std::{
 pub const MAX_TEXT_CHARS: usize = 16_000;
 pub const MAX_TOTAL_BYTES: usize = 4 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_PER_KIND: usize = 128;
+pub const MAX_PER_KIND: usize = 128;
 const MAX_KEY_BYTES: usize = 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

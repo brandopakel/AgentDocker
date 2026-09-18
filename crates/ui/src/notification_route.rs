@@ -68,9 +68,9 @@ pub fn enqueue(activation: Activation) -> Result<(), String> {
         Action::parse(&serde_json::to_string(action).map_err(|e| e.to_string())?)?;
     }
     if let Activation::ReplyFailed { text, .. } = &activation
-        && text.chars().count() > REPLY_CHARS
+        && text.chars().count() > RECOVERY_CHARS
     {
-        return Err("the reply is longer than a notification carries".into());
+        return Err("the reply is longer than a draft holds".into());
     }
     queue()
         .lock()
@@ -83,6 +83,9 @@ pub fn enqueue(activation: Activation) -> Result<(), String> {
 /// The most a reply from a notification carries: the field is a line
 /// or two, and a message this size is refused by the daemon anyway.
 pub const REPLY_CHARS: usize = 4_000;
+/// The most of a failed reply that comes back to the app: what a draft
+/// holds. Longer is cut there and said to be.
+pub const RECOVERY_CHARS: usize = crate::drafts::MAX_TEXT_CHARS;
 
 /// Why a reply did not go, and whether that is known for sure: the
 /// daemon refused it (or nothing was ever sent), or the connection went
@@ -158,6 +161,7 @@ pub fn reply_request(to: String, message: &agentdocker_core::MessageId, text: &s
         kind: "chat".into(),
         payload: serde_json::json!({ "text": text }),
         reply_to: Some(message.clone()),
+        links: Vec::new(),
     }
 }
 
@@ -167,18 +171,20 @@ pub fn reply_request(to: String, message: &agentdocker_core::MessageId, text: &s
 /// connection that fails before an answer is not, since the daemon may
 /// have committed the message.
 #[cfg(any(target_os = "macos", test))]
-pub fn deliver(
-    client: &crate::client::Client,
-    action: &Action,
-    text: &str,
-) -> Result<(), Failure> {
+pub fn deliver(client: &crate::client::Client, action: &Action, text: &str) -> Result<(), Failure> {
     let original = match client.call(&Request::Thread {
         message: action.target.message.clone(),
         after_seq: None,
         limit: 1,
     }) {
-        Ok(Response::Thread { root, .. }) => root.envelope,
-        Ok(_) => return Err(Failure::certain("the daemon did not answer with the message")),
+        Ok(Response::Thread { root, .. }) if root.envelope.id == action.target.message => {
+            root.envelope
+        }
+        Ok(_) => {
+            return Err(Failure::certain(
+                "the daemon did not answer with the message",
+            ));
+        }
         Err(error) => {
             return Err(Failure::certain(format!(
                 "the message could not be read: {error}"
@@ -226,44 +232,65 @@ pub fn reply(action: Action, text: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Say a reply did not go: a notification, and — when the notification
-/// was this workspace's — the words back in the app as the
-/// conversation's draft. Another workspace's failure keeps the words in
-/// the notification, since only its own window could hold them.
+/// Say a reply did not go: the words go back to the app that owns the
+/// notification's workspace — this one's queue, or another running
+/// instance's — to become the conversation's draft, and a notification
+/// says why, and whether the app has the words; when no app could take
+/// them, the notification carries what fits. Nothing is claimed that did
+/// not happen.
 #[cfg(target_os = "macos")]
 fn report_failure(action: Action, text: String, failure: Failure) {
     eprintln!("reply from notification not sent: {}", failure.reason);
+    let (text, reason) = if text.chars().count() > RECOVERY_CHARS {
+        (
+            text.chars().take(RECOVERY_CHARS).collect::<String>(),
+            format!(
+                "{} (the reply was cut to what a draft holds)",
+                failure.reason
+            ),
+        )
+    } else {
+        (text, failure.reason.clone())
+    };
     let ours = action.home == agentdocker_host::dirs::home()
         && action.socket == agentdocker_host::dirs::socket_path(&action.home);
-    let body = match (failure.certain, ours) {
-        (true, true) => format!("{}. Your reply is in the app as a draft.", failure.reason),
-        (true, false) => format!("{}. You wrote: {}", failure.reason, excerpt(&text)),
-        (false, true) => format!(
-            "{}. Check the conversation's history before sending again; your reply is in the app as a draft.",
-            failure.reason
-        ),
-        (false, false) => format!(
-            "{}. Check the history before sending again. You wrote: {}",
-            failure.reason,
-            excerpt(&text)
-        ),
+    let (home, socket) = (action.home.clone(), action.socket.clone());
+    let activation = Activation::ReplyFailed {
+        action,
+        text: text.clone(),
+        reason,
+        certain: failure.certain,
     };
-    let title = if failure.certain {
-        "Reply not sent"
+    let kept = if ours {
+        enqueue(activation).map_err(|e| e.to_string())
     } else {
-        "Reply may not have been sent"
+        instance::forward(&home, &socket, &activation).map_err(|e| e.to_string())
+    };
+    let where_it_is = match &kept {
+        Ok(()) => "Your reply is in the app as a draft.".to_owned(),
+        Err(reason) => {
+            eprintln!("reply from notification could not come back to the app: {reason}");
+            format!(
+                "The app could not keep your reply. You wrote: {}",
+                excerpt(&text)
+            )
+        }
+    };
+    let (title, body) = if failure.certain {
+        (
+            "Reply not sent",
+            format!("{}. {where_it_is}", failure.reason),
+        )
+    } else {
+        (
+            "Reply may not have been sent",
+            format!(
+                "{}. Check the conversation's history before sending again. {where_it_is}",
+                failure.reason
+            ),
+        )
     };
     let _ = crate::notify::post(title, &body);
-    if ours
-        && let Err(reason) = enqueue(Activation::ReplyFailed {
-            action,
-            text,
-            reason: failure.reason,
-            certain: failure.certain,
-        })
-    {
-        eprintln!("reply from notification could not come back to the app: {reason}");
-    }
 }
 
 /// The start of what was typed, for a notification's body.
@@ -484,13 +511,18 @@ mod tests {
                 .unwrap_err()
                 .certain
         );
-        match reply_request("project:p1".into(), &MessageId::from("7".to_owned()), "on it") {
+        match reply_request(
+            "project:p1".into(),
+            &MessageId::from("7".to_owned()),
+            "on it",
+        ) {
             Request::Send {
                 from,
                 to,
                 kind,
                 payload,
                 reply_to,
+                ..
             } => {
                 assert_eq!(from, "user");
                 assert_eq!(to, "project:p1");
@@ -502,7 +534,11 @@ mod tests {
         }
         assert_eq!(reply_text("  on it  ").unwrap().as_deref(), Some("on it"));
         assert_eq!(reply_text("   ").unwrap(), None);
-        assert!(reply_text(&"x".repeat(REPLY_CHARS + 1)).unwrap_err().certain);
+        assert!(
+            reply_text(&"x".repeat(REPLY_CHARS + 1))
+                .unwrap_err()
+                .certain
+        );
     }
 
     /// Against a daemon that answers as told: the original is read to
@@ -535,6 +571,7 @@ mod tests {
                 replies: 0,
             }
         };
+        #[derive(Clone, Copy)]
         enum Answer {
             Sent,
             Refused,
@@ -545,7 +582,7 @@ mod tests {
             (Answer::Sent, Ok(())),
             (
                 Answer::Refused,
-                Err(Failure::certain("recipient is paused (forbidden)")),
+                Err(Failure::certain("Forbidden: recipient is paused")),
             ),
             (
                 Answer::Silence,
@@ -556,7 +593,7 @@ mod tests {
             (
                 Answer::Missing,
                 Err(Failure::certain(
-                    "the message could not be read: no such message (not_found)",
+                    "the message could not be read: NotFound: no such message",
                 )),
             ),
         ] {
@@ -565,6 +602,7 @@ mod tests {
             let listener = UnixListener::bind(&socket).unwrap();
             let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let log = seen.clone();
+            let served = answer;
             let server = std::thread::spawn(move || {
                 for turn in 0..2 {
                     let Ok((stream, _)) = listener.accept() else {
@@ -578,7 +616,7 @@ mod tests {
                     reader.read_line(&mut line).unwrap();
                     let request: Request = serde_json::from_str(&line).unwrap();
                     log.lock().unwrap().push(request.clone());
-                    let reply = match (turn, &request, &answer) {
+                    let reply = match (turn, &request, &served) {
                         (0, Request::Thread { .. }, Answer::Missing) => Response::Error {
                             code: agentdocker_core::ErrorCode::NotFound,
                             message: "no such message".into(),
@@ -602,7 +640,7 @@ mod tests {
                     };
                     serde_json::to_writer(reader.get_mut(), &reply).unwrap();
                     reader.get_mut().write_all(b"\n").unwrap();
-                    if matches!(answer, Answer::Missing) {
+                    if matches!(served, Answer::Missing) {
                         return;
                     }
                 }
