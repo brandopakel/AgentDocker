@@ -18,6 +18,48 @@ pub const END: &str = "# <<< agentdocker <<<";
 /// MCP server entry.
 pub const CLAUDE_CHANNEL_FLAG: &str = "--dangerously-load-development-channels server:agentdocker";
 
+/// The person's login shell: `$SHELL` when a shell set it, else the
+/// passwd entry, which is what a daemon or an app started by launchd or
+/// systemd — with no shell in its environment — has to go by.
+pub fn login_shell() -> Option<String> {
+    if let Some(shell) = std::env::var_os("SHELL")
+        && !shell.is_empty()
+    {
+        return Some(shell.to_string_lossy().into_owned());
+    }
+    passwd_shell()
+}
+
+#[cfg(unix)]
+fn passwd_shell() -> Option<String> {
+    // SAFETY: getpwuid_r writes into buffers we own and returns a pointer
+    // into them; nothing is retained past this function.
+    unsafe {
+        let mut entry: libc::passwd = std::mem::zeroed();
+        let mut buffer = vec![0u8; 4096];
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let status = libc::getpwuid_r(
+            libc::getuid(),
+            &mut entry,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        );
+        if status != 0 || result.is_null() || entry.pw_shell.is_null() {
+            return None;
+        }
+        let shell = std::ffi::CStr::from_ptr(entry.pw_shell)
+            .to_string_lossy()
+            .into_owned();
+        (!shell.is_empty()).then_some(shell)
+    }
+}
+
+#[cfg(not(unix))]
+fn passwd_shell() -> Option<String> {
+    None
+}
+
 /// A shell whose startup file we know how to extend.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shell {
@@ -154,6 +196,21 @@ mod tests {
         assert!(replaced.ends_with("# <<< agentdocker <<<\nexport EDITOR=vi\n"));
         assert_eq!(current_block(&replaced), Some(block("zsh").as_str()));
         assert_eq!(with_block(None, "zsh"), block("zsh"));
+    }
+
+    /// `$SHELL` when set; the passwd entry otherwise, which never panics
+    /// and on a machine with a login shell names one.
+    #[test]
+    fn the_login_shell_comes_from_the_environment_or_the_passwd_entry() {
+        if let Some(shell) = std::env::var_os("SHELL").filter(|s| !s.is_empty()) {
+            assert_eq!(login_shell().as_deref(), shell.to_str());
+        }
+        let from_passwd = passwd_shell();
+        if cfg!(unix)
+            && let Some(shell) = from_passwd
+        {
+            assert!(shell.starts_with('/'), "{shell}");
+        }
     }
 
     #[test]

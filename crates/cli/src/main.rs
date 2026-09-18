@@ -3582,11 +3582,14 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
             "\n`agentdocker setup --preview` reviews missing or unverified integrations; `agentdocker setup --health` explains connection issues."
         );
     }
-    if let Some(claude) = runtimes
+    // The shell is this process's to judge: the daemon may predate the
+    // field, and it was started with no shell of its own.
+    if runtimes
         .iter()
-        .find(|r| r.name == "claude-code" && r.installed())
+        .any(|r| r.name == "claude-code" && r.installed())
     {
-        match claude.shell {
+        let roots = agentdocker_host::runtimes::Roots::from_env();
+        match agentdocker_host::runtimes::shell::wiring(&roots) {
             agentdocker_core::runtime::Wiring::Missing
             | agentdocker_core::runtime::Wiring::Unverified => println!(
                 "\nA `claude` started in a terminal sees messages at its next prompt. `agentdocker setup --shell` makes every terminal launch carry the channel flag that lets AgentDocker wake it (previewed first; `setup --undo` takes it back)."

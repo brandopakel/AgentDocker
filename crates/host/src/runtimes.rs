@@ -79,7 +79,7 @@ impl Roots {
                     .map(PathBuf::from)
                     .as_deref(),
             ),
-            shell: std::env::var("SHELL").ok().filter(|s| !s.is_empty()),
+            shell: shell::login_shell(),
             home,
             path,
             app_dirs,
