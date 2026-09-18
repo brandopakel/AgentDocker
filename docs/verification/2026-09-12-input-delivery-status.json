@@ -1725,6 +1725,83 @@
       "finding": "Provider-recorded full channel input and assistant continuation existed, but explicit ACK was absent and later pause messages remained behind the head. Read-only metadata investigation did not drain or acknowledge peers.",
       "main_restart": "2026-09-18T19:12:35.279696Z new process95454 launched plain, losing live channel flags again.",
       "historical_head_limit": "Existing74334head is outside bounded suffix; safe recovery remains to implement or validate without silently dropping or replaying unknown input."
+    },
+    "actual_provider_trial": {
+      "result": {
+        "result": "passed",
+        "session": "2bc0bfdc-3199-46c2-b0f2-adacc3da77bd",
+        "scope": "Private actual Claude channel test; no production daemon/session mutation",
+        "stages": [
+          "channel registered",
+          {
+            "initial_ready": "207f7eaabcf14cb6"
+          },
+          "project pause sent while provider idle; no further terminal input",
+          "actual model reply and durable receipt arrived without explicit ACK or another terminal prompt"
+        ],
+        "started_at": 1789760525.584554,
+        "provider_pid": 90345,
+        "daemon_pid": 90323,
+        "agent_id": "e109060b01124fbdb4297eca972b525f",
+        "pause_id": "5b1b272a39b04801",
+        "reply_id": "6143c95ad4f54c17",
+        "reply_destination": {
+          "kind": "project",
+          "value": "b25434349f465eb38346e8cc6b340dd1"
+        },
+        "receipt": {
+          "messages": [
+            "5b1b272a39b04801"
+          ],
+          "receipt": {
+            "provider": "claude_channel"
+          }
+        },
+        "duration_seconds": 131.25774097442627,
+        "remaining_owned_processes": 0,
+        "provider_version": "2.1.277",
+        "explicit_ack_tools_called": 0,
+        "tool_names": [
+          "ToolSearch",
+          "mcp__agentdocker__send_message",
+          "mcp__agentdocker__send_message"
+        ],
+        "channel_record_metadata": [
+          {
+            "uuid": "194a0989-e33a-4069-bd19-bbf94a629c28",
+            "parentUuid": "1f814959-a5a2-41a1-8f42-b7ea6d9cc366",
+            "type": "user",
+            "timestamp": "2026-09-18T19:44:11.547Z",
+            "sessionId": "2bc0bfdc-3199-46c2-b0f2-adacc3da77bd",
+            "version": "2.1.277"
+          }
+        ],
+        "runtime_sha256": {
+          "agentd": "b35d4e9493c01cf71e09ba3b3bc1ff5cb77dae7ae9d355de2b55624a5cef5112",
+          "agentdocker": "24c9491c256c94f0fb47f7e588c0c9d8ad26180d26e7d381bc56e67b033532ca"
+        },
+        "driver_sha256": "2682f0cb2d443ba3993b132c75f477ec50f1b2ebc6a7e7aded8afad256a198ea"
+      },
+      "artifact_sha256": "2377045faf5491d61ff26b5c3e44053c869a5336e26ceebeff1c948f4530d35d",
+      "limits": "Private Claude2.1.277 session, one idle human project-pause and actual same-conversation reply with no explicit ACK calls. One initial setup prompt; later input entirely through channel. Existing user sessions, busy pause and installed upgrade remain separate. No production restart or inbox mutation."
+    },
+    "retained_actual_driver_failure": {
+      "result": {
+        "result": "failed",
+        "session": "daa7d076-cf33-4193-8836-94e910565e32",
+        "scope": "Private actual Claude channel test; no production daemon/session mutation",
+        "stages": [
+          "channel registered"
+        ],
+        "started_at": 1789760202.414727,
+        "provider_pid": 60330,
+        "daemon_pid": 60310,
+        "agent_id": "653b627f65af4fe29630e83ef7368d9e",
+        "error": "TimeoutError: stage timed out; inspect private terminal log",
+        "duration_seconds": 256.25999879837036,
+        "remaining_owned_processes": 0
+      },
+      "finding": "The initial harness pasted its setup prompt into the terminal without submitting it; no READY or pause stage ran. Corrected harness supplies setup as an initial CLI prompt. Both attempts reaped their own provider/daemon."
     }
   }
 }

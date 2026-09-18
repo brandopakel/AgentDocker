@@ -308,7 +308,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 if state_changed || last_report.elapsed() >= Duration::from_secs(30) {
                     let observation = match &offered {
                         Some((id, _, true)) => agentdocker_core::InputReport::Paused {
-                            reason: format!("Waiting for the session to acknowledge message {id}; following messages remain queued. Check the session's channel permission or provider limit before resending."),
+                            reason: format!("Waiting for a verified receipt for message {id}; following messages remain queued. Check live input, lifecycle hooks and provider limits. Missing or ambiguous transcript evidence is retained, not automatically resent."),
                         },
                         _ => agentdocker_core::InputReport::Ready,
                     };

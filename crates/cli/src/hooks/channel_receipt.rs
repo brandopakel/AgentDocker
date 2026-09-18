@@ -2,7 +2,7 @@
 //! A queued attachment is not evidence of model input. Require the complete
 //! channel user record and a real assistant continuation in its parent chain.
 //! Unknown/truncated formats fail closed; the explicit MCP receipt remains.
-use super::{Backend, HookInput, transcript_tail_bounded};
+use super::{Backend, HookInput};
 use agentdocker_core::{
     AgentRecord, Envelope, InputReceipt, InputReport, ReceivedInput, Request, Response,
 };
@@ -11,6 +11,8 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
+mod history;
+
 const TAIL_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_RECORDS: usize = 4096;
 
@@ -18,6 +20,7 @@ pub(super) async fn recover<B: Backend>(
     backend: &B,
     input: &HookInput,
     agent: &AgentRecord,
+    home: &std::path::Path,
 ) -> Result<()> {
     let Some(started) = agent.process_started_at else {
         return Ok(());
@@ -45,10 +48,15 @@ pub(super) async fn recover<B: Backend>(
     let Some(message) = messages.first() else {
         return Ok(());
     };
-    let Some(tail) = transcript_tail_bounded(path, TAIL_BYTES) else {
-        return Ok(());
-    };
-    if !consumed(&tail, &input.session_id, started, Utc::now(), message) {
+    let tail = history::tail(path)?;
+    let now = Utc::now();
+    if !tail
+        .as_deref()
+        .is_some_and(|tail| consumed(tail, &input.session_id, started, now, message))
+        && !history::find(home, path, agent, message, |window| {
+            consumed(window, &input.session_id, started, now, message)
+        })?
+    {
         return Ok(());
     }
     crate::input_status::report(
@@ -87,9 +95,15 @@ fn consumed(
     now: DateTime<Utc>,
     message: &Envelope,
 ) -> bool {
+    // Unrelated historical records, including compaction copies, are not in
+    // the proof chain. Start at the first candidate envelope in this window.
+    let Some(candidate) = tail.find(message.id.as_str()) else {
+        return false;
+    };
+    let start = tail[..candidate].rfind('\n').map_or(0, |i| i + 1);
     let mut lineage: HashMap<String, DateTime<Utc>> = HashMap::new();
     let mut seen = HashSet::new();
-    for (index, line) in tail.lines().enumerate() {
+    for (index, line) in tail[start..].lines().enumerate() {
         if index >= MAX_RECORDS {
             return false;
         }
@@ -470,7 +484,7 @@ mod tests {
         }
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("session.jsonl");
-        std::fs::write(&path, text(&records)).unwrap();
+        std::fs::write(&path, format!("{}\n", text(&records))).unwrap();
         let mut agent = AgentRecord::new(
             AgentSpec {
                 runtime: "claude-code".into(),
@@ -504,7 +518,9 @@ mod tests {
                 refuse_ack,
             };
             assert_eq!(
-                recover(&backend, &event, &agent).await.is_err(),
+                recover(&backend, &event, &agent, directory.path())
+                    .await
+                    .is_err(),
                 refuse_report || refuse_ack
             );
             assert_eq!(*backend.calls.borrow(), expected_calls);
@@ -513,7 +529,9 @@ mod tests {
                 if refuse_report || refuse_ack { 2 } else { 1 }
             );
             if !refuse_report && !refuse_ack {
-                recover(&backend, &event, &agent).await.unwrap();
+                recover(&backend, &event, &agent, directory.path())
+                    .await
+                    .unwrap();
                 assert_eq!(*backend.calls.borrow(), expected_calls);
                 assert_eq!(backend.queue.borrow()[0].id, next.id);
             }
@@ -530,7 +548,7 @@ mod tests {
             format!("{}\n{}", text(&records), "x".repeat(TAIL_BYTES as usize)),
         )
         .unwrap();
-        let tail = transcript_tail_bounded(&path, TAIL_BYTES).unwrap_or_default();
+        let tail = history::tail(&path).unwrap().unwrap_or_default();
         assert!(!consumed(
             &tail,
             "session",
@@ -540,7 +558,7 @@ mod tests {
         ));
         let link = directory.path().join("link");
         std::os::unix::fs::symlink(&path, &link).unwrap();
-        assert!(transcript_tail_bounded(&link, TAIL_BYTES).is_none());
-        assert!(transcript_tail_bounded(directory.path(), TAIL_BYTES).is_none());
+        assert!(history::tail(&link).is_err());
+        assert!(history::tail(directory.path()).is_err());
     }
 }

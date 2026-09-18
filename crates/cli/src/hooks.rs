@@ -160,7 +160,7 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                     if let Some(agent) = session_agent(&client, &input).await? {
                         let home = agentdocker_host::dirs::home();
                         if crate::mcp::channel_input_active(&home, &agent)? {
-                            channel_receipt::recover(&client, &input, &agent).await?;
+                            channel_receipt::recover(&client, &input, &agent, &home).await?;
                         }
                     }
                     Ok::<_, anyhow::Error>(())
@@ -1023,10 +1023,6 @@ fn journal_text(digest: &str) -> String {
 /// The last [`TRANSCRIPT_TAIL`] bytes of a transcript, minus the line the
 /// cut fell in. Cost does not grow with the transcript.
 fn transcript_tail(path: &Path) -> Option<String> {
-    transcript_tail_bounded(path, TRANSCRIPT_TAIL)
-}
-
-fn transcript_tail_bounded(path: &Path, limit: u64) -> Option<String> {
     use std::io::{Seek, SeekFrom};
     use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new()
@@ -1039,10 +1035,10 @@ fn transcript_tail_bounded(path: &Path, limit: u64) -> Option<String> {
         return None;
     }
     let len = metadata.len();
-    let start = len.saturating_sub(limit);
+    let start = len.saturating_sub(TRANSCRIPT_TAIL);
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut bytes = Vec::new();
-    file.take(limit).read_to_end(&mut bytes).ok()?;
+    file.take(TRANSCRIPT_TAIL).read_to_end(&mut bytes).ok()?;
     let mut text = String::from_utf8_lossy(&bytes).into_owned();
     if start > 0 {
         let cut = text.find('\n')?;

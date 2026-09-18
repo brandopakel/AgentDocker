@@ -220,8 +220,10 @@ def run(args):
             recorded = [record("user", "input", "previous", isMeta=True,
                                origin={"kind": "channel", "server": "agentdocker"},
                                message={"role": "user", "content": content})]
-            def receipt_hook():
-                transcript.write_text("\n".join(json.dumps(value) for value in recorded) + "\n")
+            padding = ""
+            def receipt_hook(write=True):
+                if write:
+                    transcript.write_text(padding + "\n".join(json.dumps(value) for value in recorded) + "\n" + padding)
                 result = subprocess.run([str(output / "agentdocker"), "hook", "claude-code"],
                     env=channel_env, cwd=root, input=json.dumps({"hook_event_name": "PreToolUse",
                     "session_id": "receipt-fixture", "cwd": str(root), "transcript_path": str(transcript),
@@ -233,15 +235,24 @@ def run(args):
             recorded.append(record("assistant", "response", "context", requestId="fixture-request",
                 message={"id": "fixture-response", "role": "assistant", "model": "claude-fixture",
                          "content": [{"type": "tool_use", "name": "Bash"}]}))
+            # Move the proof outside the fast suffix and first history window.
+            # Recovery must advance its private offset across hook invocations.
+            padding = (json.dumps({"type": "progress", "padding": "x" * 1024}) + "\n") * 3100
             receipt_hook()
-            assert queued() == []
+            assert queued() == accepted[2:], "history fixture unexpectedly fit the fast window"
+            history_hooks = 1
+            while queued() and history_hooks < 8:
+                receipt_hook(write=False)
+                history_hooks += 1
+            assert queued() == [] and history_hooks > 1
             received = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]
             assert received["received"]["messages"] == accepted[2:]
             assert received["received"]["receipt"]["provider"] == "claude_channel"
-            receipt_hook()
+            receipt_hook(write=False)
             assert queued() == []
             report["steps"].append("MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages")
             report["steps"].append("without an explicit model ACK, the real hook retained channel input alone and committed receipt before removing its exact head only after the modeled assistant continuation; repeated hooks were harmless")
+            report["history_recovery_hook_calls"] = history_hooks
 
             connection.send({"jsonrpc": "2.0", "id": 200, "method": "tools/call", "params": {
                 "name": "ask_human", "arguments": {"question": "Which fixture route?", "timeout_secs": 120}}})

@@ -168,14 +168,20 @@ Replies use `send_message` to the envelope's `reply_destination` with
 `reply_to=message_id`, so project/channel responses appear in their original chat.
 A terminal-only response is not an app reply.
 
-Automatic recovery reads at most 2 MiB / 4,096 records at a hook boundary, within
-a 250 ms budget inside the existing one-second hook budget. It requires the
+Automatic recovery first reads a 2 MiB suffix, then at most one additional
+2 MiB history window if the head's evidence is older. A private per-agent cursor
+keeps only the file identity, process/session generation, head ID and offset;
+successive hook boundaries advance with a 1 MiB overlap. Changes of head,
+generation or source, and truncation, reset the scan. No historical proof is
+trusted without rereading it. Each proof is limited to 4,096 records after its
+candidate ID, within a 250 ms recovery budget inside the existing one-second
+hook budget. It requires the
 current process generation and session, and rejects provider errors, synthetic
 responses, unrelated turns, sidechains, changed bodies and malformed metadata.
-No transcript content is retained. Old evidence outside that window, missing hooks
-and unknown provider formats retain the explicit-ACK fallback and queued input.
-This bounded repair does not automatically release a historical backlog whose
-receipt evidence has already left the window.
+No transcript content is retained. Missing hooks, unknown provider formats,
+ambiguous UUIDs and proof chains too large for a window keep the explicit-ACK
+fallback and queued input. Recovery clears at most one verified head per hook
+boundary; a deep backlog is not consumed in a burst.
 
 A stdout write never removes an inbox message. Until a verified receipt,
 delivery is unconfirmed. Claude may silently ignore a channel that was not
