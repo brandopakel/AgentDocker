@@ -576,10 +576,11 @@ impl App {
         {
             project_actions = project_actions.push(pause);
         }
-        if self.screen == Screen::Chat {
-            if narrow && let Some(launch) = self.launch_button() {
-                project_actions = project_actions.push(launch);
-            }
+        if self.screen == Screen::Chat
+            && narrow
+            && let Some(launch) = self.launch_button()
+        {
+            project_actions = project_actions.push(launch);
         }
         if in_project && self.shell.catalog.selected().is_some() {
             content = content.push(project_actions.wrap());
