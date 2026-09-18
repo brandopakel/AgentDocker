@@ -61,6 +61,7 @@ mod restore;
 mod tasks;
 mod transport;
 mod waiting;
+mod webhooks;
 mod working;
 mod worktrees;
 
@@ -255,6 +256,9 @@ pub struct Daemon {
     /// How session owners are run: as processes of the daemon binary, or
     /// in-process where no daemon binary is on hand (tests).
     owner_mode: supervisor::OwnerMode,
+    /// The webhook sinks, run off the state lock; never held across an
+    /// await.
+    webhooks: Mutex<webhooks::Sinks>,
     /// The listener and daemon lock, kept here from serving onward so a
     /// handover can pass them to a successor. Never held across an await.
     held: Mutex<Option<reload::Held>>,
@@ -1336,6 +1340,7 @@ impl Daemon {
             watcher_flush: Mutex::new(None),
             scanning: std::sync::atomic::AtomicBool::new(false),
             owner_mode: supervisor::OwnerMode::detect(),
+            webhooks: Mutex::new(webhooks::Sinks::default()),
             held: Mutex::new(None),
             transferred_exit: Notify::new(),
             scan_finished: Notify::new(),
@@ -1367,6 +1372,16 @@ impl Daemon {
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<Event> {
         lock(&self.state).events.subscribe()
+    }
+
+    /// A daemon-configuration problem, said once per distinct notice
+    /// and cleared when the file reads again.
+    pub(crate) fn config_notice(&self, notice: String) {
+        let mut state = lock(&self.state);
+        if state.config_notice.as_ref() != Some(&notice) {
+            warn!(%notice, "daemon configuration ignored");
+            state.config_notice = Some(notice);
+        }
     }
 
     /// Whether a synchronous `ask` is waiting on its connection for this
