@@ -4253,13 +4253,32 @@ impl Daemon {
                         waiting.end(agentdocker_core::WaitOutcome::Claimed);
                         return Response::Lease { lease };
                     }
-                    Err(err) => {
-                        let message = err.to_string();
-                        match err {
-                            LeaseError::Conflict { held_by, .. } => (message, held_by),
-                            other => return lease_error(other),
+                    Err(err) => match err {
+                        // Said by whom, by name: the holder is somebody the
+                        // person can go and talk to, and an id is not a name.
+                        LeaseError::Conflict { held_by, .. } => {
+                            let holders = held_by
+                                .iter()
+                                .map(|l| {
+                                    let name = state
+                                        .registry
+                                        .get(&l.holder)
+                                        .map(|a| a.spec.name.as_str())
+                                        .filter(|n| !n.is_empty())
+                                        .unwrap_or("an unknown agent");
+                                    format!(
+                                        "{name} ({}; {} on {})",
+                                        l.holder.short(),
+                                        l.mode,
+                                        l.resource
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            (format!("{resource} is held by {holders}"), held_by)
                         }
-                    }
+                        other => return lease_error(other),
+                    },
                 };
                 // One conflict event per request, committed with liveness.
                 let conflict = (!reported_conflict).then(|| EventKind::LeaseConflict {
@@ -9252,6 +9271,43 @@ mod tests {
         daemon.check_liveness();
         assert!(!daemon.is_live(&agent.id));
         daemon.stop_all().await;
+    }
+
+    /// A refused claim says by whom: the holder's name, which is who the
+    /// person can go and talk to, with its id and what it holds.
+    #[tokio::test]
+    async fn a_refused_claim_names_the_holder() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let writer = register(&daemon, "writer", None).await;
+        let reviewer = register(&daemon, "reviewer", None).await;
+        let claim = |agent: &AgentRecord, resource: &str| Request::Claim {
+            agent: agent.id.to_string(),
+            resource: resource.to_owned(),
+            mode: LeaseMode::Exclusive,
+            amount: None,
+            ttl_secs: 300,
+            note: Some("refactoring the parser".to_owned()),
+            wait_secs: 0,
+            automatic: false,
+        };
+        assert!(matches!(
+            daemon.handle(claim(&writer, "path:/work/src")).await,
+            Response::Lease { .. }
+        ));
+        let Response::Error { code, message, .. } =
+            daemon.handle(claim(&reviewer, "path:/work/src/parser.rs")).await
+        else {
+            panic!("the second claim is refused")
+        };
+        assert_eq!(code, ErrorCode::Conflict);
+        assert_eq!(
+            message,
+            format!(
+                "path:/work/src/parser.rs is held by writer ({}; exclusive on path:/work/src)",
+                writer.id.short()
+            )
+        );
     }
 
     #[tokio::test]
