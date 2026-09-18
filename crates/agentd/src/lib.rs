@@ -249,6 +249,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     daemon.expect_watcher();
     watcher::spawn(daemon.clone());
     daemon.notify_desktop();
+    daemon.reload_webhooks().await;
 
     let maintenance = async {
         // Liveness and lease expiration must not retire restore candidates
@@ -275,6 +276,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 daemon.refresh_project_checkouts().await;
                 daemon.refresh_vcs(None).await;
                 let _ = daemon.scan_agents().await;
+                daemon.reload_webhooks().await;
             }
             if ticks.is_multiple_of(60) {
                 daemon.prune_events();
