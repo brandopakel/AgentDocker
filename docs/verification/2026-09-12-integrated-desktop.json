@@ -5331,6 +5331,74 @@
         ]
       },
       "disposition": "The diagnostic repeated the conservative restart-gap report; the next bounded run retained exact counts and queue through ten epochs and two restarts but ended on the user pause. Neither is a passing sustained-use acceptance run."
+    },
+    "current_queue_pressure_trial": {
+      "result": "passed",
+      "scope": "Twenty private collection/queue epochs on a shared machine with another Cargo campaign. Synthetic supported logs, no actual model input or billing; latency samples are descriptive, not a performance threshold.",
+      "runtime_source": "449e9036d7b4b8502278025cbde3989bc1160504",
+      "binary_sha256": {
+        "agentd": "df6cfebb2b35d0bf591ac0ccfeea19a2f0f416b0bef0825626197c268e355666",
+        "agentdocker": "41feb052eda20eeeadc4a4dc9c005d600195035d5f47c8d32eb5a43235a8774c"
+      },
+      "driver_sha256": "757046642dd4622152ef734c2d43027c9d10e3677dc4f97b56712617cd479c7c",
+      "restarts": [
+        {
+          "after_epoch": 4,
+          "kind": "forced",
+          "seconds": 0.05920050002168864,
+          "queue_preserved": true
+        },
+        {
+          "after_epoch": 9,
+          "kind": "graceful",
+          "seconds": 0.06127020803978667,
+          "queue_preserved": true
+        },
+        {
+          "after_epoch": 14,
+          "kind": "forced",
+          "seconds": 0.05823699996108189,
+          "queue_preserved": true
+        }
+      ],
+      "integrity": "ok",
+      "table_rows": {
+        "usage_samples": 40000,
+        "usage_buckets": 1,
+        "usage_baselines": 0,
+        "usage_files": 6,
+        "usage_gaps": 3
+      },
+      "limits": [
+        "An append deliberately overlaps the collector immediately after each restart. A retained source-change/prefix-verification gap is allowed for that boundary, rather than falsely claiming uninterrupted source coverage; exact eventual sample/counter totals and FIFO IDs are still required.",
+        "The earlier zero-gap fixture expectation failed and is retained separately; this workload does not establish billing, model idle wake, overnight operation or hard latency guarantees."
+      ],
+      "elapsed_seconds": 711.4326030830271,
+      "ping_latency": {
+        "count": 13695,
+        "median_ms": 0.2229579840786755,
+        "p95_ms": 0.6285829585976899,
+        "maximum_ms": 53.07533300947398
+      },
+      "usage_latency": {
+        "count": 5594,
+        "median_ms": 0.5293124995660037,
+        "p95_ms": 1.4296669978648424,
+        "maximum_ms": 31.38270799536258
+      },
+      "rpc_errors": [],
+      "remaining_owned_processes": 0,
+      "remaining_client_threads": 0,
+      "report": {
+        "path": "/private/tmp/agentdocker-usage-current-queue-soak-20260918/result.json",
+        "sha256": "24f22575923fccae3a31613dee4d6526b795f314571fb0ddef849c5bb84d72cc"
+      },
+      "epochs": 20,
+      "final_samples": 40000,
+      "source_gaps": 3,
+      "final_input_tokens": 80000,
+      "final_output_tokens": 120000,
+      "maximum_sampled_rss_bytes": 24395776
     }
   },
   "browser_extension_inventory_2026_09_17": {
