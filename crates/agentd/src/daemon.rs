@@ -9295,8 +9295,9 @@ mod tests {
             daemon.handle(claim(&writer, "path:/work/src")).await,
             Response::Lease { .. }
         ));
-        let Response::Error { code, message, .. } =
-            daemon.handle(claim(&reviewer, "path:/work/src/parser.rs")).await
+        let Response::Error { code, message, .. } = daemon
+            .handle(claim(&reviewer, "path:/work/src/parser.rs"))
+            .await
         else {
             panic!("the second claim is refused")
         };
