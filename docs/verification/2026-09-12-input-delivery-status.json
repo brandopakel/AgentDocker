@@ -2764,7 +2764,7 @@
         "first_offer_settle_ms": 1000,
         "control_and_receipts": "responsive during settling",
         "automatic_reoffer": false,
-        "status": "Ten focused channel regressions and the full #196 gate passed. Repeated actual-provider acceptance on the combined reconnect candidate is still pending.",
+        "status": "Focused channel regressions, the full #196 gate, three actual Claude reconnect/idle-pause trials on f307c17, and the additional final reviewed package trial on 705f924 passed. Final package 6bd97894 is installed; existing user-session reconnect/consent and idle-pause acceptance remain open.",
         "full_gate": {
           "result": "passed",
           "rust_passed": 1264,
@@ -2783,6 +2783,214 @@
           ],
           "log_sha256": "9d90412fd37914cadf271c1c46ee9f25a8ba7bb561c7a3b51b2b5358e7971346"
         }
+      },
+      "repeated_actual_provider_acceptance": {
+        "result": "passed",
+        "source_commit": "f307c1729da9bd0704c06f667518b42b0eed48cf",
+        "candidate": "e1bcc8d2413385e081d31fd94a45c49ad9bec27bd5b8c38cf29ce92c77150bcb",
+        "report": "/private/tmp/agentdocker-reconnect-settled-campaign-20260918/result.json",
+        "report_sha256": "1df33b7db2a1df5e59d8303fbf59754d629027cafa860cbfe5d510927117db47",
+        "campaign_driver_sha256": "cd8ee7268714436e76ec7c7e77a7a48a80b619c128299ec425a6499c0b4e47ab",
+        "runs": [
+          {
+            "result": "passed",
+            "agent": "bb179b2ef11c43e899d7fa7d241c9092",
+            "session": "25570c4c-c097-40b4-a3a9-4ff68b081eb8",
+            "held_message": "fc882c2eefdc4c5d",
+            "held_reply": "0f9f6ccda4ae45d2",
+            "held_receipt": {
+              "messages": [
+                "fc882c2eefdc4c5d"
+              ],
+              "receipt": {
+                "provider": "claude_channel"
+              }
+            },
+            "resumed_process": {
+              "pid": 44459,
+              "started_at": "2026-09-18T21:39:27.448514Z"
+            },
+            "pause": "801c2815064b448c",
+            "pause_reply": "27cf33c62cb648b2",
+            "pause_receipt": {
+              "messages": [
+                "801c2815064b448c"
+              ],
+              "receipt": {
+                "provider": "claude_channel"
+              }
+            },
+            "elapsed_seconds": 68.52118887496181,
+            "remaining_owned_processes": 0,
+            "binary_sha256": {
+              "agentd": "ee18ecf6bb8c2db83b1ddd51ca01888d7dcd5489b73bae33df8a5d416e976288",
+              "agentdocker": "9b1d50b0919e86dd8f008fd99d0632d8a12a2111370feb1947bc037fa1d989b5",
+              "agentdocker-ui": "26bd25a94b14e0a2c77640c4985c9dd6d2520b432f2b14a504bd72725e714ffe"
+            }
+          },
+          {
+            "result": "passed",
+            "agent": "bb179b2ef11c43e899d7fa7d241c9092",
+            "session": "25570c4c-c097-40b4-a3a9-4ff68b081eb8",
+            "held_message": "e447114754cf4b11",
+            "held_reply": "24d4d20140ea435f",
+            "held_receipt": {
+              "messages": [
+                "e447114754cf4b11"
+              ],
+              "receipt": {
+                "provider": "claude_channel"
+              }
+            },
+            "resumed_process": {
+              "pid": 51347,
+              "started_at": "2026-09-18T21:40:35.664987Z"
+            },
+            "pause": "4ed9d886a4654705",
+            "pause_reply": "1a51ca2b72c44841",
+            "pause_receipt": {
+              "messages": [
+                "4ed9d886a4654705"
+              ],
+              "receipt": {
+                "provider": "claude_channel"
+              }
+            },
+            "elapsed_seconds": 67.27300329197897,
+            "remaining_owned_processes": 0,
+            "binary_sha256": {
+              "agentd": "ee18ecf6bb8c2db83b1ddd51ca01888d7dcd5489b73bae33df8a5d416e976288",
+              "agentdocker": "9b1d50b0919e86dd8f008fd99d0632d8a12a2111370feb1947bc037fa1d989b5",
+              "agentdocker-ui": "26bd25a94b14e0a2c77640c4985c9dd6d2520b432f2b14a504bd72725e714ffe"
+            }
+          },
+          {
+            "result": "passed",
+            "agent": "bb179b2ef11c43e899d7fa7d241c9092",
+            "session": "25570c4c-c097-40b4-a3a9-4ff68b081eb8",
+            "held_message": "daf2a8a317bc41c8",
+            "held_reply": "0c988440446f456e",
+            "held_receipt": {
+              "messages": [
+                "daf2a8a317bc41c8"
+              ],
+              "receipt": {
+                "provider": "claude_channel"
+              }
+            },
+            "resumed_process": {
+              "pid": 63826,
+              "started_at": "2026-09-18T21:41:43.110074Z"
+            },
+            "pause": "62eaffc5f3564a62",
+            "pause_reply": "80b1351639b64c9b",
+            "pause_receipt": {
+              "messages": [
+                "62eaffc5f3564a62"
+              ],
+              "receipt": {
+                "provider": "claude_channel"
+              }
+            },
+            "elapsed_seconds": 67.95048495900119,
+            "remaining_owned_processes": 0,
+            "binary_sha256": {
+              "agentd": "ee18ecf6bb8c2db83b1ddd51ca01888d7dcd5489b73bae33df8a5d416e976288",
+              "agentdocker": "9b1d50b0919e86dd8f008fd99d0632d8a12a2111370feb1947bc037fa1d989b5",
+              "agentdocker-ui": "26bd25a94b14e0a2c77640c4985c9dd6d2520b432f2b14a504bd72725e714ffe"
+            }
+          }
+        ],
+        "limits": "Three sequential bounded private trials of an actual Claude conversation, started through rendered Reconnect here callbacks. Only the owned provider startup consent was supplied; no model prompt after consent and no explicit inbox acknowledgement. These trials do not establish physical keyboard input, the user's existing plain session, all providers, or long-running reliability."
+      },
+      "final_reviewed_package_acceptance": {
+        "result": "passed",
+        "source_commit": "705f924e98a92d7fa9f965fd0a7cddda8e18aa3c",
+        "candidate": "6bd97894a4d57348fa6e6907d72f5984994dca403510580f1308eed004978716",
+        "report": {
+          "path": "/private/tmp/agentdocker-reconnect-final-campaign-20260918/result.json",
+          "sha256": "175133f28157cfe3ab1a8bb2d567a05f8e7173333f8789a1aa008cdd0f19994c"
+        },
+        "run": {
+          "result": "passed",
+          "agent": "bb179b2ef11c43e899d7fa7d241c9092",
+          "session": "25570c4c-c097-40b4-a3a9-4ff68b081eb8",
+          "held_message": "386a3010de0f4400",
+          "held_reply": "f74d7fdfa4ac4d45",
+          "held_receipt": {
+            "messages": [
+              "386a3010de0f4400"
+            ],
+            "receipt": {
+              "provider": "claude_channel"
+            }
+          },
+          "resumed_process": {
+            "pid": 83762,
+            "started_at": "2026-09-18T21:45:51.516453Z"
+          },
+          "pause": "89ab4f085de44071",
+          "pause_reply": "24b2ca65a6f849b8",
+          "pause_receipt": {
+            "messages": [
+              "89ab4f085de44071"
+            ],
+            "receipt": {
+              "provider": "claude_channel"
+            }
+          },
+          "elapsed_seconds": 68.39417524996679,
+          "remaining_owned_processes": 0,
+          "binary_sha256": {
+            "agentd": "ee18ecf6bb8c2db83b1ddd51ca01888d7dcd5489b73bae33df8a5d416e976288",
+            "agentdocker": "9b1d50b0919e86dd8f008fd99d0632d8a12a2111370feb1947bc037fa1d989b5",
+            "agentdocker-ui": "fdfd6472fa15763a76ea25fbbe2075549874069d1e75ee5ff13493da6eb68d5c"
+          }
+        },
+        "review_followup": "The daemon and CLI bytes are identical to f307c17, while the UI reconnect progress label is now scoped to its session. This additional actual GUI trial used the final signed package.",
+        "installation_rollback": {
+          "result": "passed",
+          "scenarios": 13,
+          "synthetic_second_generation": false,
+          "report": {
+            "path": "/private/tmp/agentdocker-reconnect-final-install-20260918/result.json",
+            "sha256": "236057fae19be27c68d5f26c72843ca9734f4034761b9021f0f965c44d359626"
+          }
+        },
+        "full_gate": {
+          "rust_passed": 1270,
+          "rust_skipped": 7,
+          "python_checks": 94,
+          "python_skipped": 1,
+          "result": "passed",
+          "log": {
+            "path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/218845eb-ba1e-4457-bb5a-e1829f5652dd/scratchpad/gate-reconnect4.log",
+            "sha256": "b865475f629c81e1a5883497d8e6810043bd02dbfb13e5b404afc13c7d6d3da0"
+          }
+        }
+      },
+      "production_activation": {
+        "at": "2026-09-18T21:48:40.118106+00:00",
+        "result": "passed",
+        "live_identities_preserved": 9,
+        "provider_processes_preserved": 6,
+        "receiver_pid_preserved": 18735,
+        "integrity": "ok",
+        "schema": 23,
+        "daemon_pid": 92608,
+        "release": "6bd97894a4d57348fa6e6907d72f5984994dca403510580f1308eed004978716",
+        "previous": "652cf6a38035c71bd3e2e5dc8d17600bb16d947b8e7b59f13ed42515b6e1224f",
+        "app_pid": 92904,
+        "input_binding_preserved": true,
+        "source_commit": "705f924e98a92d7fa9f965fd0a7cddda8e18aa3c",
+        "backup": "/private/tmp/agentdocker-before-reconnect-final-activation-20260918b",
+        "snapshot": {
+          "path": "/private/tmp/agentdocker-before-reconnect-final-activation-20260918b/after-summary.json",
+          "sha256": "ab519057e5088350dc2564b5725965a7abf501d80d482fe50b957e172e620d92"
+        },
+        "method": "Quit app; install local-preview package with expected current/candidate pins; experimental reload refused and remained disabled; rechecked zero managed live agents; stopped and started coordinator through active CLI; reopened /Applications/AgentDocker.app.",
+        "external_provider_restarts": 0,
+        "limits": "All nine live identities and six provider PID/birth pairs were unchanged. Existing plain Claude sessions still require normal exit, Reconnect here and provider consent before an installed idle-pause trial; this activation does not grant channel consent or establish those sessions' idle delivery."
       }
     }
   }
