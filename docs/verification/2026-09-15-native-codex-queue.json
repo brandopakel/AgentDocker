@@ -3092,7 +3092,7 @@
         ]
       }
     ],
-    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait. The sanitized tool timeline shows about 50 seconds between tool boundaries and a 45-second coordinator sleep before the first peer context. Attribute the 104–119 seconds to end-to-end context latency, not daemon/polling latency alone.",
+    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait. The sanitized tool timeline shows about 50 seconds between tool boundaries and a 45-second coordinator sleep before the first peer context. Attribute the 104\u2013119 seconds to end-to-end context latency, not daemon/polling latency alone.",
     "acceptance_remaining": "Reduce and measure busy delivery latency and system-notice backlog while preserving FIFO human/peer ordering, exact receipt recovery, unavailable-provider gates and no duplicate execution. Three ordered receipts do not establish prompt-like latency or sustained throughput.",
     "private_evidence": "/private/tmp/agentdocker-live-active-burst-20260917.json",
     "provider_route_review": {
@@ -3141,5 +3141,117 @@
     ],
     "verification": "GitHub merge metadata and git ancestry against the recorded main; no test rerun or new installed acceptance claimed.",
     "limits": "Top-level installed=false and scope describe the original trial. Later installed-session, receiver-upgrade and active-input sections plus the integrated desktop record carry subsequent activation evidence. Long busy turns, zero-prompt reopen and other providers remain separate."
+  },
+  "peer_answer_active_hook_2026_09_18": {
+    "scope": "Actual Codex 0.154.0 with loopback Responses fixture, private daemon/profile. No external model service or saved provider policy changes. Separate from installed-session acceptance.",
+    "source": "ee7bb1a1bb3026a8fab607835652ce3066092b67",
+    "gate": {
+      "rust_passed": 1271,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_packaging_release": "passed"
+    },
+    "peer_review": "Claude 0180d761 read-only review c4c00e57a577420c found no blockers; GitHub final review pending.",
+    "trials": {
+      "before": {
+        "report_sha256": "e10f47c227d45bcc4abe437c86f2fd9e1650b19127048335d027782a1a808c55",
+        "result": "failed",
+        "source": {
+          "commit": "ee7bb1a1bb3026a8fab607835652ce3066092b67",
+          "dirty": false,
+          "rust_and_driver_sha256": "7a28ef2e0b4c1d9adaf8b6ab542b3534c9a04c39ef372a9ec07012c403e61873"
+        },
+        "cli_sha256": "175569ba06b39c2666458e16d417a40021a090e7224e34bdde578a37a074c59f",
+        "daemon_sha256": "cda975dde3fad145c68dcb4cc2e9efabda0edbe7e233e443c1415f33c3e65e21",
+        "provider_version": "codex-cli 0.154.0",
+        "cleanup_errors": [],
+        "idle_wake_seconds": 6.136617792013567,
+        "automatic_receiver_restart_no_replay": true,
+        "binary_provenance": "CLI/daemon built from chat-first 10bc183, CLI source equivalent to 705f924. Source field identifies the ee7bb1a driver checkout, not the old binaries. Active-hook expected failure: peer-answer head timed out after 45 seconds."
+      },
+      "after": {
+        "report_sha256": "cf9d76430f8bce130e094a69cba320658ed6c0a17accf19c60895ccb1742138f",
+        "result": "passed",
+        "source": {
+          "commit": "ee7bb1a1bb3026a8fab607835652ce3066092b67",
+          "dirty": false,
+          "rust_and_driver_sha256": "7a28ef2e0b4c1d9adaf8b6ab542b3534c9a04c39ef372a9ec07012c403e61873"
+        },
+        "cli_sha256": "a7643f457820d7c58a753f5d5b7053b12349806b82ce2c432e72592a452115dd",
+        "daemon_sha256": "704917e631ee67d2e3ac6910e034ac172470eb274140f8dca3f2a389ebdbee25",
+        "provider_version": "codex-cli 0.154.0",
+        "cleanup_errors": [],
+        "active_hook": {
+          "messages": [
+            "84a7573fafc64a77",
+            "76e80ff549014633",
+            "ce53bb65565b4685"
+          ],
+          "receipts": [
+            {
+              "message": "84a7573fafc64a77",
+              "receipt": {
+                "thread": "01a0b6c0-7c65-7460-bff0-c8e41faaf678",
+                "turn": "01a0b6c1-44da-79a0-8cdd-8a6f6a471722",
+                "item": "msg_01a0b6c1-4598-7253-a515-2b965fd6bafe"
+              }
+            },
+            {
+              "message": "76e80ff549014633",
+              "receipt": {
+                "thread": "01a0b6c0-7c65-7460-bff0-c8e41faaf678",
+                "turn": "01a0b6c1-44da-79a0-8cdd-8a6f6a471722",
+                "item": "msg_01a0b6c1-51f1-7d30-96a6-b97322f8875e"
+              }
+            },
+            {
+              "message": "ce53bb65565b4685",
+              "receipt": {
+                "thread": "01a0b6c0-7c65-7460-bff0-c8e41faaf678",
+                "turn": "01a0b6c1-44da-79a0-8cdd-8a6f6a471722",
+                "item": "msg_01a0b6c1-5ec9-7672-9ead-1ec39b5cf3e6"
+              }
+            }
+          ],
+          "seconds": 8.632462750014383,
+          "same_turn": true,
+          "model_requests": 3,
+          "original_provider_pid": 66023
+        },
+        "idle_wake_seconds": 7.149625084013678,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "automatic_receiver_restart_no_replay": true
+      },
+      "lost_hook": {
+        "report_sha256": "14a0f9803d856121451719603a12a12f191c1af25091e72f400205e2a1fb8746",
+        "result": "passed",
+        "source": {
+          "commit": "ee7bb1a1bb3026a8fab607835652ce3066092b67",
+          "dirty": false,
+          "rust_and_driver_sha256": "7a28ef2e0b4c1d9adaf8b6ab542b3534c9a04c39ef372a9ec07012c403e61873"
+        },
+        "cli_sha256": "a7643f457820d7c58a753f5d5b7053b12349806b82ce2c432e72592a452115dd",
+        "daemon_sha256": "704917e631ee67d2e3ac6910e034ac172470eb274140f8dca3f2a389ebdbee25",
+        "provider_version": "codex-cli 0.154.0",
+        "cleanup_errors": [],
+        "lost_hook_output": {
+          "retained_messages": [
+            "8f72f39e49074c79",
+            "ed8f0f0cccb943b9",
+            "83edbe7bf95342d7"
+          ],
+          "paused": true,
+          "no_provider_receipt": true,
+          "no_blind_resubmission": true
+        },
+        "idle_wake_seconds": 7.451436790986918,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "automatic_receiver_restart_no_replay": true
+      }
+    },
+    "installed": "pending"
   }
 }

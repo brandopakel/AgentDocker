@@ -23,9 +23,15 @@ The source correction shares the receiver's ordinary-input classification with
 hooks, allowing peer replies and daemon-routed human input while retaining
 uncertain offers and human answers awaiting exact MCP receipts. A focused policy
 regression test and `native_codex_queue_smoke.py --scenario active-hook
---active-peer-kind answer` cover the intended boundary. Rust execution, actual
-Codex acceptance and safe installed-receiver activation are still pending; no
-production queue acknowledgement or receiver replacement is part of this patch.
+--active-peer-kind answer` cover the intended boundary. The full gate passed on `ee7bb1a`: 1,271 Rust tests (seven skipped), 94 Python
+checks (one skipped), formatting, strict lint, doctests, packaging and release.
+With actual Codex 0.154.0 and a private loopback model fixture, the old binary
+timed out behind the peer reply; the fix delivered that reply and two human
+messages in order in the same active turn in 8.63 seconds. Lost hook output
+retained all three messages without a false receipt or blind replay. See the
+[existing native queue record](verification/2026-09-15-native-codex-queue.json).
+Installed-receiver activation and final GitHub review remain pending; production
+queue entries have not been manually acknowledged or removed.
 
 The September 18 resumed delivery investigation confirmed a separate queue stall:
 Claude processed a channel offer but omitted its explicit ACK, blocking later
