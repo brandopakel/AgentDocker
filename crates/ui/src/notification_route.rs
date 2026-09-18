@@ -134,10 +134,20 @@ pub fn reply_text(text: &str) -> Result<Option<String>, Failure> {
 /// Where a reply to a message goes: where the message went. A message
 /// to the project's everyone or to a channel is answered there, one to
 /// the person is answered to whoever wrote it — never inferred from
-/// the notification, whose project is set for a direct message too.
+/// the notification, whose project is set for a direct message too. A
+/// question is answered to whoever asked it wherever it was asked: the
+/// daemon closes a question only by a reply addressed to its asker, and
+/// an answer is not for everyone.
 #[cfg(any(target_os = "macos", test))]
 pub fn reply_destination(original: &agentdocker_core::Envelope) -> Result<String, Failure> {
     use agentdocker_core::Destination;
+    if original.kind == "question" {
+        return if original.from == agentdocker_core::conversation::DAEMON {
+            Err(Failure::certain("a notice from AgentDocker has no reply"))
+        } else {
+            Ok(original.from.clone())
+        };
+    }
     Ok(match &original.to {
         Destination::Project(project) => format!("project:{}", project.as_str()),
         Destination::Channel(channel) => format!("channel:{channel}"),
@@ -208,8 +218,8 @@ pub fn deliver(client: &crate::client::Client, action: &Action, text: &str) -> R
 /// from, off the thread the notification centre called on. The window
 /// is not asked to open: the person answered where they were. A reply
 /// that did not go is said where the person is looking — a notification
-/// — and, for this workspace's daemon, comes back to the conversation as
-/// its draft with the reason, so nothing typed is lost.
+/// — and comes back to its workspace's window as the conversation's
+/// draft with the reason, within the bounds [`report_failure`] states.
 #[cfg(target_os = "macos")]
 pub fn reply(action: Action, text: String) -> Result<(), String> {
     let text = match reply_text(&text) {
@@ -494,6 +504,19 @@ mod tests {
             reply_destination(&original("sender-1", Destination::Broadcast)).unwrap(),
             "all"
         );
+        // A question asked of everyone is answered to its asker: that is
+        // the only reply the daemon closes it by, and an answer is not
+        // for everyone.
+        for to in [
+            Destination::Broadcast,
+            Destination::Project(agentdocker_core::ProjectId::from("p1")),
+            Destination::Channel(agentdocker_core::ChannelId::from("reviews")),
+            Destination::Agent("user".into()),
+        ] {
+            let mut question = original("asker-1", to);
+            question.kind = "question".into();
+            assert_eq!(reply_destination(&question).unwrap(), "asker-1");
+        }
         assert_eq!(
             reply_destination(&original("sender-1", Destination::Agent("user".into()))).unwrap(),
             "sender-1"

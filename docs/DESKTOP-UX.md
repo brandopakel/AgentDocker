@@ -218,7 +218,11 @@ the composer with **Copy** and **Dismiss**; the window keeps up to eight such
 replies and says so when a further one cannot be kept. A notification from
 another workspace's daemon hands the words to that workspace's window when
 it is running; otherwise the notification carries what fits and says the app
-could not keep them. Nothing typed is sent twice on its own. **Enter sends** in every composer — a
+could not keep them. A reply to a question goes to whoever asked it, wherever
+it was asked, since that is the reply that closes it. Nothing typed is sent
+twice on its own; what can be lost is said each time: a reply cut to a
+draft's 16,000 characters, a ninth kept reply, or one another workspace's
+window could not take. **Enter sends** in every composer — a
 conversation's, a thread's, the inbox reply, the session message and an
 answer — the same action as the button beside it, and nothing while the
 draft is empty or already sending. **+** beside the search starts a
