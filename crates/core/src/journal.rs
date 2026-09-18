@@ -131,6 +131,67 @@ pub struct JournalEntry {
     pub changes: Option<(u64, u64)>,
 }
 
+/// A failure reason with an exit report's fields spelled out in it
+/// (`… ExitReport { agent: …, code: None, signal: None, … }`), as stored
+/// by daemons before such a failure was put in words, rendered as the
+/// words: the exit code, the signal, or that the program could not be
+/// executed. Text without such a dump is returned unchanged.
+pub fn readable_failure(text: &str) -> std::borrow::Cow<'_, str> {
+    let Some(start) = text.find("ExitReport {") else {
+        return std::borrow::Cow::Borrowed(text);
+    };
+    let Some(len) = text[start..].find('}').map(|i| {
+        // The report nests `SessionOwner { … }` and `ChildIdentity { … }`:
+        // the report's own closing brace is the one that balances its
+        // opening one.
+        let mut depth = 0usize;
+        let mut end = i;
+        for (offset, ch) in text[start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = offset;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        end + 1
+    }) else {
+        return std::borrow::Cow::Borrowed(text);
+    };
+    let dump = &text[start..start + len];
+    let field = |name: &str| -> Option<Option<i64>> {
+        let key = format!("{name}: ");
+        let at = dump.find(&key)? + key.len();
+        let rest = &dump[at..];
+        if rest.starts_with("None") {
+            return Some(None);
+        }
+        let value = rest.strip_prefix("Some(")?;
+        let close = value.find(')')?;
+        value[..close].trim().parse().ok().map(Some)
+    };
+    let words = match (field("code"), field("signal")) {
+        (Some(Some(code)), _) => format!("it ended with exit code {code}"),
+        (Some(None), Some(Some(signal))) => format!("it was ended by signal {signal}"),
+        (Some(None), Some(None)) => {
+            "the program could not be executed (is the path right and the tool installed?)"
+                .to_owned()
+        }
+        _ => return std::borrow::Cow::Borrowed(text),
+    };
+    std::borrow::Cow::Owned(format!(
+        "{}{}{}",
+        &text[..start],
+        words,
+        &text[start + len..]
+    ))
+}
+
 impl JournalEntry {
     /// One line without a timestamp: `codex-1 [feat/x] released src/a.rs,
     /// src/b.rs (+3 more): "rewrote the tokenizer"`.
@@ -161,9 +222,12 @@ impl JournalEntry {
                 }
             }
             JournalKind::Note => format!("{who} noted: \"{}\"", self.summary),
+            // A leave written before failures were put in words may carry
+            // an exit report's fields; the line says it in words, the
+            // stored summary stays as it was.
+            JournalKind::Leave => format!("{who} {}", readable_failure(&self.summary)),
             JournalKind::Commit
             | JournalKind::Join
-            | JournalKind::Leave
             | JournalKind::Handoff
             | JournalKind::Review => format!("{who} {}", self.summary),
         };
@@ -657,6 +721,43 @@ fn common_dir(paths: &[PathBuf]) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stored leave whose failure spelled out the exit report's fields
+    /// reads in words, and the words say what the fields said: an exit
+    /// code, a signal, or nothing because the program never ran. Other
+    /// text is untouched.
+    #[test]
+    fn a_stored_exit_report_dump_reads_as_words() {
+        let dump = |code: &str, signal: &str| {
+            format!(
+                "left (failed: command could not be launched: command exited before it was activated: \
+                 ExitReport {{ agent: AgentId(\"0180d7615186449087095d7aa15ec0bb\"), owner: SessionOwner {{ pid: 23152, \
+                 started_at: 2026-09-18T21:59:30.123Z }}, child: ChildIdentity {{ pid: 23153, started_at: \
+                 2026-09-18T21:59:30.223Z, tty: true }}, code: {code}, signal: {signal}, log_flushed: true, \
+                 at: 2026-09-18T21:59:31.000Z }})"
+            )
+        };
+        assert_eq!(
+            readable_failure(&dump("None", "None")),
+            "left (failed: command could not be launched: command exited before it was activated: \
+             the program could not be executed (is the path right and the tool installed?))"
+        );
+        assert_eq!(
+            readable_failure(&dump("Some(127)", "None")),
+            "left (failed: command could not be launched: command exited before it was activated: \
+             it ended with exit code 127)"
+        );
+        assert_eq!(
+            readable_failure(&dump("None", "Some(9)")),
+            "left (failed: command could not be launched: command exited before it was activated: \
+             it was ended by signal 9)"
+        );
+        assert_eq!(readable_failure("left (exited 0)"), "left (exited 0)");
+        assert_eq!(
+            readable_failure("noted: \"ExitReport { not a report"),
+            "noted: \"ExitReport { not a report"
+        );
+    }
 
     fn entry(kind: JournalKind, summary: &str, source: SummarySource) -> JournalEntry {
         JournalEntry {
