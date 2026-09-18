@@ -763,7 +763,7 @@ mod tests {
             &layout::Limits::new(Size::ZERO, Size::new(400.0, 100.0)),
         );
         let viewport = Rectangle::with_size(Size::new(400.0, 100.0));
-        let mut update = |element: &mut Element<'_, Message>, tree: &mut Tree, event: &Event| {
+        let update = |element: &mut Element<'_, Message>, tree: &mut Tree, event: &Event| {
             let mut messages = Vec::new();
             let mut shell = Shell::new(&mut messages);
             element.as_widget_mut().update(
