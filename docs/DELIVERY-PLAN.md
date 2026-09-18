@@ -8,8 +8,11 @@ For current engineering, acceptance and manual release work, start with
 is the short list between main and a release other people can install. The
 dated checkpoints below retain historical evidence; an old “pending” entry is
 not by itself a current implementation gap, and this plan is not extended
-further: September 18 closes it as the record of how the native product was
-delivered and verified.
+further after September 18. It stays as the historical record of how the native
+product was delivered and what each checkpoint verified; it certifies nothing
+that is still open — actual provider idle wake for every runtime, physical
+keyboard and IME input, Linux desktop acceptance on real distributions and
+Windows — and those open items live only in [Remaining work](REMAINING-WORK.md).
 
 ## Product and engineering requirements
 
