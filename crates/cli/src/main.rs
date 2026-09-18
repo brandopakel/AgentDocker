@@ -4,6 +4,7 @@ mod agentfile;
 mod attach;
 mod client;
 mod codex_input;
+mod connector;
 mod desktop;
 mod format;
 mod hooks;
@@ -102,6 +103,9 @@ enum Command {
         #[arg(long)]
         /// Name of the new branch.
         branch: String,
+        /// Start point: a branch, tag or commit (default: this session's HEAD).
+        #[arg(long)]
+        from: Option<String>,
     },
     /// Commit this agent's checkout, journaled and attributed to it
     Commit {
@@ -451,6 +455,9 @@ enum Command {
         /// Print a machine-readable plan or health report without configuration secrets.
         #[arg(long, requires = "guided")]
         json: bool,
+        /// Make every `claude` typed in a terminal carry the channel flag that lets AgentDocker wake it: a marked block in your shell's startup file, previewed like every other change.
+        #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health", "list", "show"])]
+        shell: bool,
     },
     /// Launch a command as a supervised agent and print its id.
     Run(RunArgs),
@@ -656,16 +663,18 @@ enum Command {
     Claim(ClaimArgs),
     /// Extend a lease you hold.
     Renew {
+        /// Agent id, name or unique prefix (defaults to this session).
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
-        agent: String,
+        agent: Option<String>,
         lease: String,
         #[arg(long, default_value_t = DEFAULT_LEASE_TTL_SECS)]
         ttl: u64,
     },
     /// Release a lease you hold, or every lease with --all.
     Release {
+        /// Agent id, name or unique prefix (defaults to this session).
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
-        agent: String,
+        agent: Option<String>,
         #[arg(required_unless_present = "all")]
         lease: Option<String>,
         /// Release every lease this agent holds.
@@ -692,6 +701,8 @@ enum Command {
     Hook(hooks::HookArgs),
     /// Serve AgentDocker's tools to an MCP host (Claude Code, Codex, Cursor...) over stdio.
     Mcp(mcp::McpArgs),
+    /// Let agents that work inside a browser (Claude's or ChatGPT's extension) join a project's messaging, through a tunnel you run.
+    Connector(connector::ConnectorArgs),
     /// Supervised Codex input controller (launched by run --codex-input).
     #[command(hide = true)]
     CodexInput(codex_input::Args),
@@ -1282,8 +1293,9 @@ enum ContestCommand {
 
 #[derive(Args)]
 struct ClaimArgs {
+    /// Agent id, name or unique prefix (defaults to this session).
     #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
-    agent: String,
+    agent: Option<String>,
     /// `kind:value`. A bare path becomes `path:<absolute>`; it need not exist yet.
     resource: String,
     /// Allow other shared holders; blocks exclusive ones.
@@ -1554,12 +1566,14 @@ async fn run() -> Result<()> {
             agent,
             path,
             branch,
+            from,
         } => {
             match client
                 .call(&Request::WorktreeCreate {
                     agent,
                     path,
                     branch,
+                    from,
                 })
                 .await?
             {
@@ -2248,8 +2262,16 @@ async fn run() -> Result<()> {
             list,
             show,
             json,
+            shell,
         } => {
-            if preview || apply.is_some() || undo.is_some() || health || list || show.is_some() {
+            if preview
+                || shell
+                || apply.is_some()
+                || undo.is_some()
+                || health
+                || list
+                || show.is_some()
+            {
                 use setup::guided::Action;
                 let action = if let Some(id) = apply.as_deref() {
                     Action::Apply(id)
@@ -2264,7 +2286,7 @@ async fn run() -> Result<()> {
                 } else {
                     Action::Preview
                 };
-                setup::guided::run(socket, &runtimes, action, json).await?;
+                setup::guided::run(socket, &runtimes, action, json, shell).await?;
             } else {
                 setup::run(&client, &runtimes, dry_run).await?;
             }
@@ -2789,8 +2811,11 @@ async fn run() -> Result<()> {
             }
         }
         Command::Claim(args) => {
+            let agent = sender::resolve(&client, args.agent)
+                .await?
+                .context("claim as an agent: give --as, or run from an agent's session")?;
             let request = Request::Claim {
-                agent: args.agent,
+                agent,
                 resource: resource_key(&args.resource),
                 amount: args.amount,
                 mode: if args.shared {
@@ -2801,12 +2826,16 @@ async fn run() -> Result<()> {
                 ttl_secs: args.ttl,
                 note: args.note,
                 wait_secs: args.wait,
+                automatic: false,
             };
             if let Response::Lease { lease } = client.call(&request).await? {
                 println!("{}", lease.id);
             }
         }
         Command::Renew { agent, lease, ttl } => {
+            let agent = sender::resolve(&client, agent)
+                .await?
+                .context("renew as an agent: give --as, or run from an agent's session")?;
             let request = Request::Renew {
                 agent,
                 lease: LeaseId::from(lease.as_str()),
@@ -2822,11 +2851,15 @@ async fn run() -> Result<()> {
             all,
             summary,
         } => {
+            let agent = sender::resolve(&client, agent)
+                .await?
+                .context("release as an agent: give --as, or run from an agent's session")?;
             if all {
                 let request = Request::ReleaseAll {
                     agent,
                     summary,
                     summary_source: agentdocker_core::SummarySource::Explicit,
+                    only_automatic: false,
                 };
                 if let Response::Leases { leases } = client.call(&request).await? {
                     for lease in leases {
@@ -2856,6 +2889,7 @@ async fn run() -> Result<()> {
         Command::Daemon(args) => service::run(socket, args).await?,
         Command::Hook(args) => hooks::run(client, args).await?,
         Command::Mcp(args) => mcp::serve(client, args).await?,
+        Command::Connector(args) => connector::run(client, args).await?,
         Command::CodexInput(args) => codex_input::run(client, socket, args).await?,
         Command::CodexQueue(args) => codex_input::external::run(client, socket, args).await?,
         Command::CodexQueueUpgrade(args) => {
@@ -3752,6 +3786,25 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
             runtime.incomplete.join("\n  ")
         );
     }
+    // The shell is this process's to judge: the daemon may predate the
+    // field, and it was started with no shell of its own.
+    if runtimes
+        .iter()
+        .any(|r| r.name == "claude-code" && r.installed())
+    {
+        let roots = agentdocker_host::runtimes::Roots::from_env();
+        match agentdocker_host::runtimes::shell::wiring(&roots) {
+            agentdocker_core::runtime::Wiring::Missing
+            | agentdocker_core::runtime::Wiring::Unverified => println!(
+                "\nA `claude` started in a terminal sees messages at its next prompt. `agentdocker setup --shell` makes every terminal launch carry the channel flag that lets AgentDocker wake it (previewed first; `setup --undo` takes it back)."
+            ),
+            agentdocker_core::runtime::Wiring::Unsupported => println!(
+                "\nA `claude` started in a terminal sees messages at its next prompt; your shell is not one setup knows, so start it as `claude {}` to be woken.",
+                agentdocker_host::runtimes::shell::CLAUDE_CHANNEL_FLAG
+            ),
+            agentdocker_core::runtime::Wiring::Wired => {}
+        }
+    }
     let in_browser: Vec<&str> = runtimes
         .iter()
         .filter(|r| r.in_browser() && r.installed())
@@ -3940,9 +3993,11 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    /// The large derived command tree exceeds Linux unit-test threads'
-    /// default stack in debug builds. Keep parser assertions on a bounded
-    /// dedicated stack; integration tests still exercise the actual CLI.
+    /// Parse as the binary would, on a thread with room: clap's derived
+    /// parser for this many commands wants more stack than a test thread
+    /// has (a main thread has four times as much), and the overflow
+    /// shows up as an abort in whichever test parses first. Taken from
+    /// d910a90 on claude/roles (#186), where CI first hit it.
     fn parse_cli<const N: usize>(args: [&'static str; N]) -> Result<super::Cli, clap::Error> {
         use clap::Parser;
         std::thread::Builder::new()

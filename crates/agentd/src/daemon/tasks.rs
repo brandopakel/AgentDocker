@@ -1238,6 +1238,7 @@ mod tests {
                     agent: "alice".to_owned(),
                     summary: Some("stepping away".to_owned()),
                     summary_source: Default::default(),
+                    only_automatic: false,
                 })
                 .await,
             Response::Leases { .. }
@@ -1288,6 +1289,7 @@ mod tests {
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             })
             .await
         else {
@@ -1328,6 +1330,7 @@ mod tests {
                     agent: "alice".to_owned(),
                     summary: None,
                     summary_source: Default::default(),
+                    only_automatic: false,
                 })
                 .await,
             Response::Leases { .. }
@@ -1418,6 +1421,7 @@ mod tests {
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             })
             .await
         else {
