@@ -341,7 +341,7 @@ impl App {
                     .color(c.accent),
                 connected.then_some(Message::TaskAssign(id.clone(), Some(agent.id.clone()))),
                 false,
-                Kind::Quiet,
+                Kind::Inline,
                 [2, 6],
             ));
         }
@@ -353,7 +353,7 @@ impl App {
                 text("nobody").size(12).color(c.muted),
                 connected.then_some(Message::TaskAssign(id.clone(), None)),
                 false,
-                Kind::Quiet,
+                Kind::Inline,
                 [2, 6],
             ));
         }
@@ -370,7 +370,7 @@ impl App {
                     text("Archive").size(12).color(c.muted),
                     connected.then_some(Message::TaskArchive(id)),
                     false,
-                    Kind::Quiet,
+                    Kind::Inline,
                     [2, 6],
                 )
             ]

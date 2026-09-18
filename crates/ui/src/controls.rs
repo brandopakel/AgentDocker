@@ -343,8 +343,12 @@ pub enum Kind {
     Primary,
     /// An ordinary action: a quiet raised surface.
     Secondary,
-    /// Rows and navigation: no surface until hovered or selected.
+    /// Rows and navigation: no surface until hovered or selected, and
+    /// the row's whole width.
     Quiet,
+    /// A word in a line — a name to hand to, an archive link: the quiet
+    /// look at its own width, so several sit side by side.
+    Inline,
     /// A section switch: an underline rather than a surface.
     Tab,
     /// An action with a cost that has already been armed once.
@@ -371,7 +375,7 @@ fn button_style(
         (Kind::Segment, false) => (None, c.muted),
         (_, true) => (Some(c.accent_soft), c.accent_ink),
         (Kind::Secondary, false) => (Some(c.raised), c.text),
-        (Kind::Quiet | Kind::Tab, false) => (None, c.text),
+        (Kind::Quiet | Kind::Inline | Kind::Tab, false) => (None, c.text),
     };
     let lift = |amount: f32| match (kind, selected) {
         (Kind::Primary, _) => mix(c.accent, iced::Color::BLACK, amount),
@@ -381,7 +385,7 @@ fn button_style(
         (Kind::Segment, false) => alpha(c.text, amount * 0.6),
         (_, true) => mix(c.accent_soft, c.accent, amount * 0.6),
         (Kind::Secondary, false) => mix(c.raised, c.text, amount * 0.5),
-        (Kind::Quiet, false) => c.raised,
+        (Kind::Quiet | Kind::Inline, false) => c.raised,
     };
     match status {
         Status::Active => {}

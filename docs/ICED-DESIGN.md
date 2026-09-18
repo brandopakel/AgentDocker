@@ -88,9 +88,10 @@ system, which is drawn from the mark:
   Header pills count live sessions and open questions for the project.
 - **Controls have kinds** (`controls::Kind`): one filled *primary* action per
   screen, quiet raised *secondary* actions and filter chips, *quiet* rows and
-  rail entries that only gain a surface when hovered or selected, underline
-  *tabs* for the project sections, and a red-tinted *danger* surface for an
-  armed stop. Every kind is the same keyboard-focusable, AccessKit-labelled
+  rail entries that only gain a surface when hovered or selected (and
+  *inline* words with the same quiet look at their own width, so a card's
+  hand-to names sit side by side), underline *tabs* for the project
+  sections, and a red-tinted *danger* surface for an armed stop. Every kind is the same keyboard-focusable, AccessKit-labelled
   control; a custom-content button still carries a spoken label.
 - **Type.** Inter is bundled (`crates/ui/src/fonts/`, Regular, Medium and
   SemiBold, SIL Open Font License; the license text ships beside the files and
