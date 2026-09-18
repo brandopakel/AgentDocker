@@ -216,7 +216,9 @@ The sidebar lists **Channels** (`#everyone` for the selected project, or
 channels; a room opened before names gets a short name from its task),
 **Direct messages** with a presence dot for a live session — one row per
 live agent, by its stable name, and one row for an identity however many
-ids it has had — then, folded behind **From AgentDocker (n)**, what
+ids it has had: the conversation written in last is the row, and its
+conversations under former ids sit under **Earlier**, each with its own
+unread, draft and history — then, folded behind **From AgentDocker (n)**, what
 AgentDocker itself writes: the rooms it opens between two checkouts, named
 `Contested paths (303)` by how many paths they are about, and the
 **AgentDocker → agent** notices per agent; conversations two agents had with

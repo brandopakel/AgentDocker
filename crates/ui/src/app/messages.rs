@@ -517,7 +517,12 @@ impl App {
                 },
             }
         }
-        let direct = self.fold_direct(direct);
+        // An identity's older conversations — keyed by a former id — are
+        // not hidden: they keep their unread, draft and history, so they
+        // sit under Earlier, reachable, while the list shows the identity
+        // once.
+        let (direct, folded) = self.fold_direct(direct);
+        earlier.extend(folded);
         system.sort_by_key(|s| {
             (
                 matches!(s.kind, ConversationKind::Notices),
@@ -1600,35 +1605,39 @@ impl App {
         .into()
     }
 
-    /// One identity, one row: a conversation keyed by a former id of a
-    /// live agent is the same conversation as the one keyed by its id now;
-    /// the one written in last stands for both, and the rows stay newest
-    /// first.
+    /// One identity, one row: of the direct conversations with one live
+    /// agent — one per id it has had — the one written in last is the
+    /// row, newest first among the rows. The others are returned too, for
+    /// the Earlier group: the daemon keeps each conversation under its own
+    /// key, with its own unread, draft and history, and none of that may
+    /// be hidden.
     fn fold_direct<'s>(
         &self,
         mut direct: Vec<&'s ConversationSummary>,
-    ) -> Vec<&'s ConversationSummary> {
+    ) -> (Vec<&'s ConversationSummary>, Vec<&'s ConversationSummary>) {
         let naming = self.naming();
         direct.sort_by_key(|s| std::cmp::Reverse(s.last_at));
         let mut seen: Vec<&str> = Vec::new();
+        let mut folded = Vec::new();
         direct.retain(|summary| {
             let Some(id) = self.counterpart(summary) else {
                 return true;
             };
             let canonical = naming.canonical(id);
             if seen.contains(&canonical) {
+                folded.push(*summary);
                 return false;
             }
             seen.push(canonical);
             true
         });
-        direct
+        (direct, folded)
     }
 
-    /// The direct rows as the sidebar lists them, by conversation id; for
-    /// tests.
+    /// The direct rows as the sidebar lists them and the ones it moves to
+    /// Earlier, by conversation id; for tests.
     #[cfg(test)]
-    fn direct_rows(&self) -> Vec<&str> {
+    fn direct_rows(&self) -> (Vec<&str>, Vec<&str>) {
         let direct: Vec<&ConversationSummary> = self
             .conversations
             .iter()
@@ -1637,10 +1646,11 @@ impl App {
                     && self.counterpart(s).is_some_and(|id| self.agent_live(id))
             })
             .collect();
-        self.fold_direct(direct)
-            .into_iter()
-            .map(|s| s.conversation.as_str())
-            .collect()
+        let (direct, folded) = self.fold_direct(direct);
+        (
+            direct.into_iter().map(|s| s.conversation.as_str()).collect(),
+            folded.into_iter().map(|s| s.conversation.as_str()).collect(),
+        )
     }
 
     /// The conversations screen's own panel around the sidebar in a narrow
@@ -1964,15 +1974,34 @@ mod tests {
         );
         assert_eq!(app.conversation_label(&old_key), "Codex · agent-a");
         assert_eq!(app.conversation_label(&new_key), "Codex · agent-a");
+        // The older key keeps unread and a draft: it is not hidden, it is
+        // moved under Earlier, and the badge still counts it.
+        let mut old_key = old_key;
+        old_key.unread = 2;
+        let _ = app.update(Message::ConversationDraft(
+            old_key.conversation.as_str().to_owned(),
+            "half a reply".into(),
+        ));
         app.conversations = vec![
             old_key.clone(),
             new_key.clone(),
             pair.clone(),
             notice.clone(),
         ];
-        let rows = app.direct_rows();
+        let (rows, folded) = app.direct_rows();
         assert_eq!(rows, vec![new_key.conversation.as_str()]);
-        // Only the newest keyed row goes; a different agent keeps its own.
+        assert_eq!(folded, vec![old_key.conversation.as_str()]);
+        assert_eq!(
+            app.unread_total(),
+            2,
+            "the folded conversation's unread is still owed"
+        );
+        assert_eq!(
+            app.shell.conversation_drafts[old_key.conversation.as_str()].text,
+            "half a reply"
+        );
+        // Only the newest keyed row stays in the list; a different agent
+        // keeps its own.
         let other = summary(
             agentdocker_core::ConversationId::dm("human-id", "agent-b").as_str(),
             "dm",
@@ -1981,7 +2010,7 @@ mod tests {
         );
         app.conversations.push(other.clone());
         assert_eq!(
-            app.direct_rows(),
+            app.direct_rows().0,
             vec![new_key.conversation.as_str(), other.conversation.as_str()]
         );
     }
