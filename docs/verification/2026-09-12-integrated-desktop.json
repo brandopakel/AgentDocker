@@ -3619,5 +3619,63 @@
       "A crash after acceptance but before the clearing save can restore uncertain text; it is never automatically resubmitted.",
       "The repeated macOS terminal timeout remains unexplained."
     ]
+  },
+  "send_readiness_2026_09_18": {
+    "pr": 188,
+    "runtime_source": "fed105318fb4da9abf83f98f577efbb4d50d9523",
+    "installed": false,
+    "behavior": "Successful sends describe readiness for exactly the recipients queued, without establishing provider receipt or wake; named advice is collapsed per original composer, exposed through CLI/MCP and shared with expanded connection details.",
+    "validation": {
+      "rust_passed": 1182,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "full_gate": "passed",
+      "gate_source": "fed105318fb4da9abf83f98f577efbb4d50d9523",
+      "gate_log": "/private/tmp/agentdocker-send-readiness-final-gate-20260917.log",
+      "gate_log_sha256": "22a0cc31fa9d670367c1e65cc36cc91261d30a78c0b2227b15417d143687a24f",
+      "binary_sha256": {
+        "agentdocker": "27dd9758ab7d9814f66437ecdce8b271f40eb34ada576289924ea2714cea9afb",
+        "agentd": "73c7217c17f03b34773a411ef1da2f801f55b58f97aacb7dbc40275fe892a6c0",
+        "agentdocker-ui": "e7059af818885cc6983d84255689d4029e48b68f3a57c8802fca5f5f334aec62"
+      },
+      "source_input_sha256": "396b7fade8073e9b7689fe1f3546e87aac8649f9a0e5013a131131b7cef97db5",
+      "source_dirty": false
+    },
+    "retained_failures": [
+      {
+        "source": "869a7d4",
+        "kind": "Linux CLI parser test stack exhaustion",
+        "jobs": [
+          105431896634,
+          105431896248
+        ],
+        "rust_passed": 1167,
+        "rust_failed": 3,
+        "rust_skipped": 6,
+        "result": "The three parser tests aborted with stack overflow in normal and coverage CI. The dedicated parsing-thread fix from d910a90/491d731 is included in fed1053; Linux CI and coverage then passed. Actual CLI subprocess tests still exercise normal executable startup.",
+        "logs": [
+          "/private/tmp/agentdocker-send-readiness-linux-ci-20260917.log",
+          "/private/tmp/agentdocker-send-readiness-coverage-ci-20260917.log"
+        ]
+      },
+      {
+        "source": "fed105318fb4da9abf83f98f577efbb4d50d9523",
+        "kind": "Native fixture expected no pending input after adding a send probe",
+        "artifacts": "/private/tmp/agentdocker-send-readiness-workflow-20260917",
+        "elapsed_seconds": 215.8977894160198,
+        "result": "Warning/advice and exactly-one-queued-message checks passed, then readiness-ready timed out expecting Receiver active, awaiting first receipt. The new probe is still queued, so the correct app state is Queued · awaiting provider receipt. The harness now expects that state and supplies both fixture IDs in the later simulated receipt; rerun pending."
+      }
+    ],
+    "review": {
+      "source": "869a7d4",
+      "agentdocker_message": "c8ee4b95cad04917",
+      "result": "Claude reviewed core, daemon, CLI, UI and guidance with no blocking findings."
+    },
+    "limits": [
+      "No real-provider idle-wake, provider consent, physical keyboard/IME, production activation or idle-performance claim.",
+      "The readiness snapshot can change after sending; an older daemon that omits it stays unknown.",
+      "Final graphical rerun, automated review and CI remain pending."
+    ]
   }
 }

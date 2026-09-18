@@ -711,10 +711,11 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                "process_started_at": receiver["process_started_at"],
                                "observed_at": now(), "report": value})
             input_report({"state": "ready"})
-            report["ready_window"] = readiness_window("readiness-ready", "Receiver active, awaiting first receipt")
+            # The send probe remains queued: a live receiver is not a receipt.
+            report["ready_window"] = readiness_window("readiness-ready", "Queued · awaiting provider receipt")
             message = rpc(endpoint, {"op": "send", "from": human["id"], "to": receiver["id"],
                                      "kind": "chat", "payload": {"text": "readiness fixture"}})["message"]
-            input_report({"state": "received", "input": {"messages": [message], "receipt": {"provider": "claude_channel"}}})
+            input_report({"state": "received", "input": {"messages": [probes[0]["id"], message], "receipt": {"provider": "claude_channel"}}})
             report["received_window"] = readiness_window("readiness-received", "Delivery verified")
             input_report({"state": "paused", "reason": "Fixture transport is disconnected"})
             report["paused_window"] = readiness_window("readiness-paused", "Delivery paused")
