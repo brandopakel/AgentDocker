@@ -898,7 +898,8 @@ pub fn usage_report(report: &agentdocker_core::usage::report::Report) {
         Group::Hour => "HOUR",
     };
     let collection = &report.coverage.collection;
-    let off = collection.state == CollectionState::Unknown && collection.discovery_generation.is_none();
+    let off =
+        collection.state == CollectionState::Unknown && collection.discovery_generation.is_none();
     if report.rows.is_empty() {
         if off {
             println!(
@@ -913,7 +914,9 @@ pub fn usage_report(report: &agentdocker_core::usage::report::Report) {
             .iter()
             .map(|row| {
                 vec![
-                    row.key.clone().unwrap_or_else(|| "(unattributed)".to_owned()),
+                    row.key
+                        .clone()
+                        .unwrap_or_else(|| "(unattributed)".to_owned()),
                     thousands(row.samples),
                     counter(&row.counters.input_tokens),
                     counter(&row.counters.cache_read_input_tokens),
@@ -939,8 +942,12 @@ pub fn usage_report(report: &agentdocker_core::usage::report::Report) {
     }
     println!(
         "Range {} to {}{}{}; retained since {}{}",
-        report.effective_since.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        report.effective_until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        report
+            .effective_since
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        report
+            .effective_until
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         if report.coverage.includes_current_hour {
             " (the current hour is still filling)"
         } else {
@@ -951,7 +958,10 @@ pub fn usage_report(report: &agentdocker_core::usage::report::Report) {
         } else {
             ""
         },
-        report.coverage.retained_since.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        report
+            .coverage
+            .retained_since
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         if report.coverage.history_truncated {
             "; older history is gone"
         } else {
@@ -1049,8 +1059,14 @@ mod tests {
             known_samples: sum.map_or(0, |_| 1),
             coverage,
         };
-        assert_eq!(super::counter(&report(Some(1_234_567), Coverage::Complete)), "1,234,567");
-        assert_eq!(super::counter(&report(Some(900), Coverage::Partial)), "900~");
+        assert_eq!(
+            super::counter(&report(Some(1_234_567), Coverage::Complete)),
+            "1,234,567"
+        );
+        assert_eq!(
+            super::counter(&report(Some(900), Coverage::Partial)),
+            "900~"
+        );
         assert_eq!(super::counter(&report(None, Coverage::Unknown)), "—");
         assert_eq!(super::counter(&report(Some(0), Coverage::Unknown)), "—");
         assert_eq!(super::thousands(0), "0");

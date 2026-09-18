@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 mod board;
-mod usage;
 mod icons;
 mod messages;
 pub(crate) mod panes;
@@ -17,6 +16,7 @@ mod send_readiness;
 mod sessions;
 mod shell;
 pub(crate) mod style;
+mod usage;
 mod view;
 use queue::{Receiver as CommandReceiver, Sender as CommandSender};
 pub use shell::Message;
