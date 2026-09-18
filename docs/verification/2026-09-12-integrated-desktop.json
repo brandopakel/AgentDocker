@@ -4890,6 +4890,17 @@
         "Final source review and integration",
         "Installed billing and sustained-resource acceptance"
       ]
+    },
+    "current_main_annotation_regression": {
+      "source": "418f482",
+      "result": "failed",
+      "rust_passed": 1272,
+      "rust_failed": 1,
+      "rust_skipped": 7,
+      "failure": "mcp::tests::every_tool_is_annotated_and_the_reads_are_read_only: newly merged tool annotations omitted usage, assigning the conservative unknown-tool destructive/open-world defaults.",
+      "fix": "Classify usage as read-only, idempotent, non-destructive and local; extend the existing semantic annotation regression.",
+      "log_sha256": "426988a490e220c226b7261c7ad13bf28c79f7170c8525108ab4d62aa3cdb007",
+      "rerun": "pending"
     }
   },
   "browser_extension_inventory_2026_09_17": {

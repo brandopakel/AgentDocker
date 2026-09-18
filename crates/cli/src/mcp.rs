@@ -1614,7 +1614,7 @@ fn annotations(name: &str) -> Value {
         "whoami" | "list_agents" | "inspect_agent" | "list_leases" | "activity" | "overlap"
         | "open_questions" | "read_journal" | "wait_for_messages" | "check_stale" | "read_set"
         | "list_checkpoints" | "list_handoffs" | "list_channels" | "contests" | "list_tasks"
-        | "worktree_diff" | "validation_results" => (true, false, true, false),
+        | "worktree_diff" | "validation_results" | "usage" => (true, false, true, false),
         // Saying and recording: additive, repeatable.
         "report_activity" | "report_provider_status" | "observe_paths" | "renew" => {
             (false, false, true, false)
@@ -2278,6 +2278,8 @@ mod tests {
         };
         assert_eq!(by("list_agents")["readOnlyHint"], true);
         assert_eq!(by("read_journal")["readOnlyHint"], true);
+        assert_eq!(by("usage")["readOnlyHint"], true);
+        assert_eq!(by("usage")["idempotentHint"], true);
         assert_eq!(by("send_message")["readOnlyHint"], false);
         assert_eq!(by("send_message")["destructiveHint"], false);
         assert_eq!(by("claim")["destructiveHint"], false);
