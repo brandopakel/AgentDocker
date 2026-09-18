@@ -157,8 +157,10 @@ dependencies = [
  "agentdocker-core",
  "agentdocker-host",
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "clap",
+ "filetime",
  "indexmap",
  "libc",
  "semver",
@@ -168,6 +170,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "ureq",
  "uuid",
 ]
 

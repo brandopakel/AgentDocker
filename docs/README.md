@@ -19,6 +19,7 @@ macOS and Linux; Windows has tested foundations and remains incomplete.
 - [Native delivery progress and regression coverage](NATIVE-DELIVERY.md)
 - [Local native trial and acceptance plan](LOCAL-TRIAL.md)
 - [Architecture and wire protocol](ARCHITECTURE.md)
+- [The remote connector: agents that work inside a browser](REMOTE-CONNECTOR.md)
 - [Implementation and recovery contracts](IMPLEMENTATION-NOTES.md)
 - [Optional Docker and Podman execution](CONTAINER-ENGINES.md)
 - [Testing and benchmarks](TESTING-AND-BENCHMARKS.md)
@@ -59,8 +60,8 @@ open implementation claim.
 The September 18 reconciliation checked GitHub merge metadata and ancestry for
 older records that still said final review/CI or installation was pending. Their
 original trial fields remain intact; a dated disposition now supplies the index
-summary. PRs #181/#182 are also merged, with installation still pending. The
-current inventory remains 38 Markdown files and 67 verification records.
+summary. PRs #181/#182 are also merged and included in the current desktop preview. The
+current inventory is 39 Markdown files and 67 verification records.
 
 **Reference** means the document describes an implemented workflow or engineering
 rule; it is not a release certificate. **Partial** means named implementation or
@@ -75,6 +76,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [This index](README.md) | Reference: complete file inventory and one current backlog/crosswalk. |
 | [Remaining work](REMAINING-WORK.md) | Partial: current disposition of existing engineering, acceptance and release requirements, kept current with each merge; the September 17 rows say what is installed (`d14610b7`, including #176/#178/#179/#180) and what acceptance is still owed. |
 | [Delivery plan](DELIVERY-PLAN.md) | Partial: current sequence and T01–T12/L01–L15 status, with a current-installation section per switch; old checkpoints are historical. |
+| [Remote connector](REMOTE-CONNECTOR.md) | Partial: `agentdocker connector` is in source with unit tests, a loopback real-binary trial and an acceptance against a real Claude account through a quick tunnel; ChatGPT, a durable tunnel, egress allowlisting, CIMD and desktop status remain. |
 | [Product direction](PRODUCT-DIRECTION.md) | Partial: single-host implementation exists, including the Messages workspace, notification routing, project pause, reconnect and the usage reader; delivery-order steps 1–2 and the maintenance part of 5 are done; signed release, Linux/Windows delivery and federation remain. |
 | [Architecture](ARCHITECTURE.md) | Partial: protocol/phase inventory (delivery rows 1–36: 17 federation and 20 Windows remain incomplete; 28 reload needs broader acceptance, 34 usage needs its collector and UI, 35 board and 36 message drafts are merged and installed on the current Mac with bounded acceptance), journal/checkpoint maintenance and an environment-free core exist; live replacement is in source behind `AGENTDOCKER_EXPERIMENTAL_RELOAD` with provider-side acceptance still ahead, and Windows is incomplete. The usage collector/protocol/CLI/screen and federation remain proposals. |
 | [Implementation notes](IMPLEMENTATION-NOTES.md) | Reference: implemented coordination/recovery contracts; distinguish command relaunch from conversation restoration. |
@@ -105,7 +107,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [September 6 audit](AUDIT-2026-09-06.md) | Historical: restore/privacy fixes and pure-core environment cleanup are complete; broader acceptance stays in the current tracker. |
 | [September 7 review](REVIEW-2026-09-07.md) | Historical: merged review stacks closed; retained timeout/acceptance findings remain in the current tracker. |
 | [September 8 review](REVIEW-2026-09-08.md) | Historical: implementation follow-ups merged; original failures remain source-specific evidence. |
-| [September 11 landscape](LANDSCAPE-2026-09-11.md) | Historical research on Dax and herdr with an adoption status, plus a September 17 section on Paprika (hosted agent Kanban): how it differs, six features worth taking (a card with acceptance text over the `task:` lease, roles, typed links, webhooks, comment-only rules, a CLI exit-code contract) and an optional card-to-lease bridge; the board is in source (#176), and the exit-status contract is merged (#181), with installation pending; the other proposals remain deferred. |
+| [September 11 landscape](LANDSCAPE-2026-09-11.md) | Historical research on Dax and herdr with an adoption status, plus a September 17 section on Paprika (hosted agent Kanban): how it differs, six features worth taking (a card with acceptance text over the `task:` lease, roles, typed links, webhooks, comment-only rules, a CLI exit-code contract) and an optional card-to-lease bridge; the board is in source (#176), and the exit-status contract is merged (#181) and included in the current desktop preview; the other proposals remain deferred. |
 | [herdr bridge](HERDR-BRIDGE.md) | Deferred by measurement beyond implemented pane identity (row 25): the focus/prompt bridge and reported-blocked mirror are designed, costed and not built; nothing in current delivery depends on them. |
 
 Verification reports preserve the original trials, rather than representing

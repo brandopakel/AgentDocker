@@ -1287,6 +1287,7 @@ mod fence_tests {
             ttl_secs: 60,
             note: None,
             wait_secs: 0,
+            automatic: false,
         }
     }
 
@@ -1892,6 +1893,7 @@ mod fence_tests {
                         wait_secs: 30,
                         note: None,
                         amount: None,
+                        automatic: false,
                     })
                     .await
             }
@@ -1931,6 +1933,7 @@ mod fence_tests {
                 ttl_secs: 1,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             })
             .await
         else {

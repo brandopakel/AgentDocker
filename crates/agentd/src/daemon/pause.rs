@@ -293,6 +293,7 @@ mod tests {
                         ttl_secs: 60,
                         note: None,
                         wait_secs: 0,
+                        automatic: false,
                     })
                     .await
             }
@@ -336,6 +337,7 @@ mod tests {
                         ttl_secs: 60,
                         note: None,
                         wait_secs: 20,
+                        automatic: false,
                     })
                     .await
             })
@@ -372,6 +374,7 @@ mod tests {
                     agent: "alice".to_owned(),
                     summary: None,
                     summary_source: Default::default(),
+                    only_automatic: false,
                 })
                 .await,
             Response::Error { .. }

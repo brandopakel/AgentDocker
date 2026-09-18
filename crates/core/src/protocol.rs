@@ -88,6 +88,10 @@ pub enum Request {
         agent: String,
         path: String,
         branch: String,
+        /// The start point: a branch, tag or commit of the repository;
+        /// the agent's HEAD when absent.
+        #[serde(default)]
+        from: Option<String>,
     },
     WorktreeDiff {
         agent: String,
@@ -721,6 +725,12 @@ pub enum Request {
         /// up; 0 reports the conflict immediately.
         #[serde(default)]
         wait_secs: u64,
+        /// Taken by an adapter on the agent's behalf for the edit in hand
+        /// — the hooks adapter's per-file lease — rather than asked for.
+        /// A turn's end releases these and only these; a lease the agent
+        /// asked for holds until it releases it or the TTL runs out.
+        #[serde(default)]
+        automatic: bool,
     },
     Renew {
         agent: String,
@@ -747,6 +757,10 @@ pub enum Request {
         summary: Option<String>,
         #[serde(default)]
         summary_source: SummarySource,
+        /// Only the leases an adapter took automatically; what the agent
+        /// asked for stays held. The hooks adapter's turn-end release.
+        #[serde(default)]
+        only_automatic: bool,
     },
     /// Append a free-text note to the journal of the agent's project.
     JournalAdd {
@@ -1505,6 +1519,7 @@ mod tests {
                 ttl_secs: DEFAULT_LEASE_TTL_SECS,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             }
         );
         let back = serde_json::to_string(&req).unwrap();

@@ -400,7 +400,7 @@ fn loaded(layout: &Layout, macos: bool) -> bool {
 
 // ----- execution ---------------------------------------------------------
 
-fn execute(plan: &Plan, dry_run: bool) -> Result<()> {
+pub(crate) fn execute(plan: &Plan, dry_run: bool) -> Result<()> {
     for (path, contents) in &plan.files {
         if dry_run {
             println!("# would write {}\n{contents}", path.display());

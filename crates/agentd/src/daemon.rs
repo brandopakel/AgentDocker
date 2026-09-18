@@ -373,6 +373,10 @@ struct State {
     /// a move can be told from a branch switch for a checkout that has
     /// no agent record to remember it.
     last_branch: HashMap<PathBuf, Option<String>>,
+    /// Who asked the daemon for each linked worktree it created, so a
+    /// commit there is theirs without a lease to say so. In memory only:
+    /// a daemon that restarts falls back to the leases.
+    worktree_creators: HashMap<PathBuf, AgentId>,
     /// Every checkout of each project, by project id: the main one and
     /// its linked worktrees. Refreshed off the lock on the same tick as
     /// the VCS sweep, because enumerating them runs git.
@@ -1325,6 +1329,7 @@ impl Daemon {
                 config_notice: None,
                 last_head: HashMap::new(),
                 last_branch: HashMap::new(),
+                worktree_creators: HashMap::new(),
                 project_checkouts: HashMap::new(),
                 committing: std::collections::BTreeSet::new(),
                 reported_duplicates: std::collections::BTreeSet::new(),
@@ -1595,7 +1600,8 @@ impl Daemon {
                 agent,
                 path,
                 branch,
-            } => self.worktree_create(&agent, path, branch).await,
+                from,
+            } => self.worktree_create(&agent, path, branch, from).await,
             Request::WorktreeDiff { agent } => self.worktree_diff(&agent).await,
             Request::Commit {
                 agent,
@@ -1987,9 +1993,12 @@ impl Daemon {
                 ttl_secs,
                 note,
                 wait_secs,
+                automatic,
             } => {
-                self.claim(&agent, resource, mode, amount, ttl_secs, note, wait_secs)
-                    .await
+                self.claim(
+                    &agent, resource, mode, amount, ttl_secs, note, wait_secs, automatic,
+                )
+                .await
             }
             Request::Renew {
                 agent,
@@ -2009,9 +2018,10 @@ impl Daemon {
                 agent,
                 summary,
                 summary_source,
+                only_automatic,
             } => {
                 self.flush_release_watcher(&agent, None).await;
-                lock(&self.state).release_all(&agent, summary, summary_source)
+                lock(&self.state).release_all(&agent, summary, summary_source, only_automatic)
             }
             Request::JournalAdd { agent, summary } => {
                 lock(&self.state).journal_add(&agent, summary)
@@ -2656,9 +2666,12 @@ impl Daemon {
             if path.exists() {
                 continue;
             }
-            match worktrees::add_worktree(root.clone(), &path, &branch).await {
+            match worktrees::add_worktree(root.clone(), &path, &branch, None).await {
                 Ok(()) => {
                     info!(agent = %record.id.short(), path = %path.display(), %branch, "isolated in a worktree");
+                    lock(&self.state)
+                        .worktree_creators
+                        .insert(path.clone(), record.id.clone());
                     self.emit(EventKind::WorktreeCreated {
                         agent: record.id.clone(),
                         path: path.clone(),
@@ -4064,6 +4077,7 @@ impl Daemon {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     async fn claim(
         self: &Arc<Self>,
         reference: &str,
@@ -4073,6 +4087,7 @@ impl Daemon {
         ttl_secs: u64,
         note: Option<String>,
         wait_secs: u64,
+        automatic: bool,
     ) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
@@ -4171,7 +4186,7 @@ impl Daemon {
                     }
                 }
                 let result = if state.may_attempt(waiting.ticket()) {
-                    state.leases.clone().claim(
+                    state.leases.clone().claim_as(
                         resource.clone(),
                         holder.clone(),
                         // A quota is shared by construction: it is spent,
@@ -4185,6 +4200,7 @@ impl Daemon {
                         ttl(ttl_secs),
                         note.clone(),
                         now,
+                        automatic,
                     )
                 } else {
                     Err(LeaseError::Conflict {
@@ -5358,6 +5374,7 @@ impl State {
         reference: &str,
         summary: Option<String>,
         source: SummarySource,
+        only_automatic: bool,
     ) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
@@ -5367,6 +5384,7 @@ impl State {
             .leases
             .by_holder(&holder)
             .into_iter()
+            .filter(|l| !only_automatic || l.automatic)
             .cloned()
             .collect();
         let released = self.finish_release(&holder, released, summary, source);
@@ -5673,7 +5691,9 @@ impl State {
 
     /// A checkout's HEAD moved: one `commit` entry per checkout and HEAD,
     /// however many agents share it. Attributed to the only agent in that
-    /// checkout, else the holder of its `branch:` lease, else nobody.
+    /// checkout, else the holder of its `branch:` lease, else the live
+    /// agent the daemon created the worktree for, else the holder of an
+    /// exclusive `path:` lease over the checkout, else nobody.
     ///
     /// Takes the checkout rather than an agent, because most checkouts
     /// of a project have no agent registered in them — a `--isolate`
@@ -5733,15 +5753,31 @@ impl State {
             .collect();
         let attributed = match in_checkout.as_slice() {
             [one] => Some(one.clone()),
-            _ => new.branch.as_ref().and_then(|branch| {
-                let key = ResourceKey::new(format!("branch:{branch}"));
-                let holder = self
-                    .leases
-                    .holders_of(&key)
-                    .first()
-                    .map(|l| l.holder.clone())?;
-                self.registry.get(&holder).cloned()
-            }),
+            _ => new
+                .branch
+                .as_ref()
+                .and_then(|branch| {
+                    let key = ResourceKey::new(format!("branch:{branch}"));
+                    let holder = self
+                        .leases
+                        .holders_of(&key)
+                        .first()
+                        .map(|l| l.holder.clone())?;
+                    self.registry.get(&holder).cloned()
+                })
+                .or_else(|| {
+                    // The agent that asked for this worktree, while it lives.
+                    let creator = self.worktree_creators.get(&checkout)?;
+                    self.registry
+                        .get(creator)
+                        .filter(|a| a.status.is_live())
+                        .cloned()
+                })
+                .or_else(|| match self.attribute(&checkout) {
+                    // Holding the checkout is holding what is committed in it.
+                    Attribution::Agent { agent, .. } => self.registry.get(&agent).cloned(),
+                    Attribution::External => None,
+                }),
         };
         // Built here rather than from an agent record: the checkout is
         // what this entry is about, and there may be no agent in it.
@@ -9126,6 +9162,7 @@ mod tests {
                 ttl_secs: 300,
                 note: Some("halfway through".to_owned()),
                 wait_secs: 0,
+                automatic: false,
             })
             .await
         else {
@@ -9289,6 +9326,7 @@ mod tests {
                 ttl_secs: 60,
                 note: None,
                 wait_secs,
+                automatic: false,
             })
             .await
     }
@@ -11430,6 +11468,7 @@ deny = ["send:all"]
                         ttl_secs: 300,
                         note: None,
                         wait_secs: 0,
+                        automatic: false,
                     })
                     .await
             }
@@ -11483,6 +11522,7 @@ deny = ["send:all"]
                 ttl_secs: 300,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             })
             .await;
         assert!(matches!(response, Response::Lease { .. }), "{response:?}");
@@ -11589,6 +11629,138 @@ deny = ["send:all"]
             Some(elsewhere.canonicalize().unwrap()),
             "and attributed to the checkout it happened in"
         );
+    }
+
+    /// A commit made with git alone in a private checkout is still
+    /// somebody's: the agent the daemon created the worktree for, or the
+    /// agent holding the checkout under an exclusive `path:` lease. Only a
+    /// checkout nobody made or holds is `external`.
+    #[tokio::test]
+    async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        daemon.expect_watcher();
+        tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_millis(50),
+        ));
+        // One worktree through the daemon, from the root commit rather
+        // than HEAD; one by hand, held under a path lease; one by hand
+        // that nobody holds.
+        let root_sha = {
+            let out = std::process::Command::new("git")
+                .args(["-C", repo.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
+        };
+        let made = dir.path().join("made");
+        let Response::Worktree {
+            path: made_path,
+            branch,
+        } = daemon
+            .handle(Request::WorktreeCreate {
+                agent: "writer".into(),
+                path: made.to_string_lossy().into_owned(),
+                branch: "made-branch".into(),
+                from: Some(root_sha.clone()),
+            })
+            .await
+        else {
+            panic!("worktree_create failed");
+        };
+        assert_eq!(branch, "made-branch");
+        assert!(matches!(
+            daemon
+                .handle(Request::WorktreeCreate {
+                    agent: "writer".into(),
+                    path: dir.path().join("bad").to_string_lossy().into_owned(),
+                    branch: "bad-branch".into(),
+                    from: Some("--output=/tmp/x".into()),
+                })
+                .await,
+            Response::Error { .. }
+        ));
+        let held = dir.path().join("held");
+        let loose = dir.path().join("loose");
+        for (path, branch) in [(&held, "held-branch"), (&loose, "loose-branch")] {
+            assert!(git(
+                dir.path(),
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    branch,
+                    "--",
+                    path.to_str().unwrap(),
+                    &root_sha
+                ],
+            ));
+        }
+        let Response::Lease { .. } = daemon
+            .handle(Request::Claim {
+                agent: "writer".into(),
+                resource: format!("path:{}", held.canonicalize().unwrap().display()),
+                amount: None,
+                mode: LeaseMode::Exclusive,
+                ttl_secs: 600,
+                note: Some("private checkout".into()),
+                wait_secs: 0,
+                automatic: false,
+            })
+            .await
+        else {
+            panic!("claim failed");
+        };
+        daemon.refresh_project_checkouts().await;
+        // The watcher needs one look at each checkout before a commit
+        // there is a move.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        for (path, text) in [
+            (&made_path, "made by the daemon"),
+            (&held, "held under a lease"),
+            (&loose, "nobody's"),
+        ] {
+            std::fs::write(path.join("kept.txt"), format!("{text}\n")).unwrap();
+            assert!(git(dir.path(), path, &["add", "."]));
+            assert!(git(dir.path(), path, &["commit", "-q", "-m", text]));
+        }
+        let entries = eventually(async || {
+            let Response::Journal { entries, .. } = daemon
+                .handle(Request::Journal {
+                    project: repo.display().to_string(),
+                    agent: None,
+                    since_seq: None,
+                    until_seq: None,
+                    branch: None,
+                    kind: Some("commit".into()),
+                    path: None,
+                    grep: None,
+                    limit: 10,
+                    digest: None,
+                })
+                .await
+            else {
+                panic!("journal failed")
+            };
+            (entries.len() >= 3).then_some(entries)
+        })
+        .await;
+        let who = |text: &str| {
+            entries
+                .iter()
+                .find(|e| e.summary.contains(text))
+                .map(|e| e.agent_name.clone())
+                .unwrap_or_else(|| panic!("no entry for {text}: {entries:?}"))
+        };
+        assert_eq!(who("made by the daemon"), "writer");
+        assert_eq!(who("held under a lease"), "writer");
+        assert_eq!(who("nobody's"), "external");
     }
 
     // ----- commit ----------------------------------------------------------
@@ -11983,6 +12155,7 @@ deny = ["send:all"]
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             })
             .await
     }
@@ -12856,6 +13029,7 @@ deny = ["send:all"]
                 expires_at: now + Duration::hours(1),
                 note: None,
                 amount: 0,
+                automatic: false,
             };
             store
                 .upsert_lease(&lease("kept", first.id.clone(), "task:kept"))
@@ -12946,6 +13120,7 @@ deny = ["send:all"]
             expires_at: now + Duration::hours(1),
             note: None,
             amount: 0,
+            automatic: false,
         };
         store.upsert_lease(&protection).unwrap();
         let before = store.load_agents().unwrap();
@@ -13037,6 +13212,7 @@ deny = ["send:all"]
                         ttl_secs: 60,
                         note: None,
                         wait_secs: 5,
+                        automatic: false,
                     })
                     .await
             })
@@ -13071,6 +13247,7 @@ deny = ["send:all"]
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 1,
+                automatic: false,
             })
             .await;
         assert!(started.elapsed() >= std::time::Duration::from_secs(1));
@@ -14061,6 +14238,7 @@ deny = ["send:all"]
         };
         assert!(agents.iter().all(|a| a.pid != Some(pid)));
         drop(child);
+        assert!(!process_exists(pid), "the guard reaps the fake");
     }
 
     fn drain_vcs(events: &mut broadcast::Receiver<Event>) -> Vec<Option<String>> {
@@ -14205,6 +14383,7 @@ deny = ["send:all"]
                         ttl_secs: 60,
                         note: None,
                         wait_secs: 5,
+                        automatic: false,
                     })
                     .await
             })
@@ -14223,6 +14402,7 @@ deny = ["send:all"]
                 agent: "holder".into(),
                 summary: None,
                 summary_source: SummarySource::Explicit,
+                only_automatic: false,
             })
             .await;
         assert!(matches!(
@@ -14468,6 +14648,7 @@ deny = ["send:all"]
             expires_at: now - Duration::seconds(1),
             note: None,
             amount: 0,
+            automatic: false,
         };
         {
             let mut state = lock(&daemon.state);
@@ -15705,6 +15886,7 @@ deny = ["send:all"]
                 agent: "a".to_owned(),
                 summary: None,
                 summary_source: SummarySource::Explicit,
+                only_automatic: false,
             })
             .await
         else {
@@ -15741,6 +15923,7 @@ deny = ["send:all"]
                 agent: "a".to_owned(),
                 summary: Some("rewrote the parser".to_owned()),
                 summary_source: SummarySource::Explicit,
+                only_automatic: false,
             })
             .await
         else {
@@ -15768,6 +15951,7 @@ deny = ["send:all"]
                 agent: "a".to_owned(),
                 summary: None,
                 summary_source: SummarySource::Explicit,
+                only_automatic: false,
             })
             .await;
         assert_eq!(
@@ -15783,6 +15967,7 @@ deny = ["send:all"]
                 agent: "a".to_owned(),
                 summary: Some("  reviewed the plan, no edits  ".to_owned()),
                 summary_source: SummarySource::Explicit,
+                only_automatic: false,
             })
             .await;
         let entries = journal_of(&daemon, &repo, Some("release"), None, None).await;
@@ -16217,6 +16402,7 @@ deny = ["send:all"]
                 agent: "a".to_owned(),
                 summary: Some("I finished the parser.".to_owned()),
                 summary_source: SummarySource::Transcript,
+                only_automatic: false,
             })
             .await;
         assert_eq!(
@@ -16235,6 +16421,7 @@ deny = ["send:all"]
                 agent: "a".to_owned(),
                 summary: Some("I finished the parser.".to_owned()),
                 summary_source: SummarySource::Transcript,
+                only_automatic: false,
             })
             .await;
         let releases = journal_of(&daemon, &repo, Some("release"), None, None).await;
@@ -16375,6 +16562,7 @@ deny = ["send:all"]
                     ttl_secs: 3600,
                     note: None,
                     wait_secs: 0,
+                    automatic: false,
                 })
                 .await
         };
@@ -16565,6 +16753,7 @@ deny = ["send:all"]
                         agent: "owner".into(),
                         summary: Some("release with durable summary".into()),
                         summary_source: SummarySource::Explicit,
+                        only_automatic: false,
                     })
                     .await,
                 Response::Error {
@@ -16759,6 +16948,7 @@ deny = ["send:all"]
                     agent: "owner".into(),
                     summary: None,
                     summary_source: SummarySource::Explicit,
+                    only_automatic: false,
                 })
                 .await,
             Response::Leases { .. }
@@ -16783,6 +16973,7 @@ deny = ["send:all"]
             agent: "owner".into(),
             summary: None,
             summary_source: SummarySource::Explicit,
+            only_automatic: false,
         };
         assert!(matches!(
             tokio::time::timeout(
@@ -16838,6 +17029,7 @@ deny = ["send:all"]
                 agent: "owner".into(),
                 summary: None,
                 summary_source: SummarySource::Explicit,
+                only_automatic: false,
             }),
         )
         .await
