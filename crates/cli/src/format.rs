@@ -872,6 +872,8 @@ pub fn recipient_readiness(recipient: &agentdocker_core::RecipientReadiness) {
         recipient.issue.label()
     );
     eprintln!("    {}", recipient.guidance());
+}
+
 /// A browser extension as an app of the browser's: "Claude in Chrome
 /// 1.0.93", with the profile when the browser has more than one.
 pub fn extension(extension: &agentdocker_core::runtime::InstalledExtension) -> String {
