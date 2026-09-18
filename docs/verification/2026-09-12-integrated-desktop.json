@@ -4837,6 +4837,59 @@
         "The short quiet local collector trial does not establish sustained CPU, memory, battery, or throughput behavior.",
         "Persistent discovery resumption, bounded long-term fingerprint/baseline resources, standalone whole-prefix scans, emitted-byte overhead, final review/integration and installed acceptance remain open."
       ]
+    },
+    "review_and_windows_followup": {
+      "reviewed_source": "4cc4e08ea8ce726ca0098ec7d92766e4bd617713",
+      "corrections": [
+        "Move the Activity command description off Usage; keep agent selection an explicit query filter rather than inheriting the sender identity.",
+        "Escape table pipes and replace stale pending-corpus wording with the completed, bounded evidence.",
+        "Allow the oversized-record regression to follow up to 32 serialized budget continuations with the ordinary 100 ms production bound; preserve accounting and no-transcript-retention assertions."
+      ],
+      "retained_windows_failure": {
+        "run": 35313942751,
+        "job": 105501484084,
+        "failure": "The oversized-record test expected Complete on its first bounded scan, but a slower Windows host correctly returned Budget.",
+        "log": {
+          "path": "/private/tmp/agentdocker-usage-windows-failure-20260918.log",
+          "sha256": "1ad8da0f596d0aa2bdcca589f1ca4ca11ca5e787afdfd685794a981d0ca6095f"
+        }
+      },
+      "local_validation": {
+        "reader_tests_passed": 14,
+        "strict_clippy": true,
+        "generated_help": {
+          "passed": true,
+          "binary_sha256": "abc12a9043cc3b8f48095daea3503df426b49c3fb13788ffcb18520baa3458e3",
+          "usage_help": "Tokens the providers reported, with what the totals cover\n\nUsage: agentdocker usage [OPTIONS]\n\nOptions:\n      --agent <AGENT>      Only this agent (id, name or unique prefix); explicit query filter [alias: --as]\n      --socket <SOCKET>    Socket of the agentd daemon [env: AGENTDOCKER_SOCKET=]\n      --project <ID|PATH>  Only agents in this project\n      --since <SINCE>      From when: a duration back from now (`30m`, `24h`, `7d`) or an RFC 3339 time\n      --until <UNTIL>      Until when, RFC 3339; now when not given\n      --by <BY>            One row per agent, model, provider, project or hour [default: agent] [possible values: agent, model, provider, project, hour]\n      --json               The report as JSON, as the daemon answered it\n  -h, --help               Print help\n  -V, --version            Print version\n",
+          "activity_help": "What each agent is doing: working, idle, or blocked on a named resource held by a named agent\n\nUsage: agentdocker activity [OPTIONS]\n\nOptions:\n      --as <AGENT>         Only this agent [env: AGENTDOCKER_AGENT_ID=]\n      --socket <SOCKET>    Socket of the agentd daemon [env: AGENTDOCKER_SOCKET=]\n      --project <ID|PATH>  Only agents in this project\n  -a, --all                Include agents that have finished\n  -h, --help               Print help\n  -V, --version            Print version\n"
+        },
+        "test_log": {
+          "path": "/private/tmp/agentdocker-usage-windows-targeted-20260918.log",
+          "sha256": "104d6aa50d6ca6494258acf1897646303209f5117a70e533c6438e7bc989f34a"
+        },
+        "clippy_log": {
+          "path": "/private/tmp/agentdocker-usage-review-clippy-20260918.log",
+          "sha256": "ae67c9dbed253fddef2d8671ff9af6f24326d2770a14e93ae245d329417f809f"
+        }
+      },
+      "query_filter_trial": {
+        "passed": true,
+        "scope": "A private real-daemon CLI query with AGENTDOCKER_AGENT_ID set to an unrelated caller still returns the unfiltered fleet totals; this variable identifies senders elsewhere, not this explicit query filter.",
+        "runtime_source": "e6d95f882fb18aa49363f5411824468375b298d3",
+        "report": {
+          "path": "/private/tmp/agentdocker-usage-query-review-trial-20260918/result.json",
+          "sha256": "d7b1947acaaa7f94155420360c789850d51ab5fadbfdceeeb8043e46ff930c58"
+        },
+        "driver": {
+          "path": "/private/tmp/agentdocker-usage-review-runtime-20260918.py",
+          "sha256": "22fcbca37e18c419adb83ebdcb4ec1226b677a210e60cbd5f9c2d23f0b95faea"
+        }
+      },
+      "remaining": [
+        "Fresh Windows CI on the corrected test",
+        "Final source review and integration",
+        "Installed billing and sustained-resource acceptance"
+      ]
     }
   }
 }

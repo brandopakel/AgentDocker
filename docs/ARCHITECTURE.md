@@ -1199,8 +1199,12 @@ Cursor format 3 causes old cursors to replay through source-ID deduplication,
 revisiting both old quarantine decisions and previously unsupported Claude
 versions. The original 152-second failed corpus trial is retained privately.
 Thirty-two focused reader/store/collector regressions pass after integration
-with #191's final review fixes; the release/full gate and corpus rerun remain
-pending.
+with #191's final review fixes. Clean runtime `e6d95f8` then passed the full gate
+(1,225 Rust tests, seven skipped; 94 Python checks, one skipped), the repeated
+runtime/native fixtures and a frozen 692 MB two-session corpus. Collection
+finished in 13.8 seconds; all 4,703 unique Claude responses matched their counters,
+and one Codex counter-reset/history gap remained explicit. The existing integrated
+verification record retains the source, binaries, failed trials and scope limits.
 
 Actual-session metadata follow-up found equal Claude response counters repeated
 under different content-record timestamps (1,916 repeated message IDs), and the
@@ -1208,9 +1212,11 @@ installed provider now writes versions 2.1.271–2.1.276 with the same supported
 counter shape. The adapter accepts those observed patch versions while keeping
 its original accounting-family identity stable. Response replay ignores fragment
 observation times and keeps the first accepted hour, including earlier draft
-fingerprints; genuinely changed counters still report a gap. Validation of this
-follow-up is pending. Only accounting metadata was inspected; no prompt or
-response content was retained in these observations.
+fingerprints; genuinely changed counters still report a gap. The validation
+above covers these format, replay and cursor changes. Final source review,
+installed/provider-billing acceptance and sustained resource trials remain open.
+Only accounting metadata was retained; temporary raw transcript copies and the
+private trial databases were removed.
 
 Collection configuration is separate from scan progress: enabling collection or
 changing roots can leave a scan waiting to start, without meaning collection is

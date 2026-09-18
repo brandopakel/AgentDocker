@@ -932,6 +932,27 @@ mod tests {
         let counts = json!({"input_tokens":5,"output_tokens":3});
         let usage = json!({"type":"event_msg","timestamp":"2026-09-16T12:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":counts,"last_token_usage":counts}}}).to_string()+"\n";
         let content = "PRIVATE".repeat(MAX_RECORD / 3);
+        // A slow host may use the ordinary 100 ms pass on the large body.
+        // Follow serialized cursors exactly as the collector does rather than
+        // treating a valid continuation as an accounting failure.
+        let scan_all = |runtime| {
+            let mut cursor = None;
+            let mut samples = Vec::new();
+            let mut gaps = Vec::new();
+            for _ in 0..32 {
+                let batch = scan(&path, runtime, cursor.as_ref(), Budget::default()).unwrap();
+                let saved = serde_json::to_string(&batch.cursor).unwrap();
+                assert!(!saved.contains("PRIVATE"));
+                samples.extend(batch.samples);
+                gaps.extend(batch.gaps);
+                if batch.stop == Stop::Complete {
+                    return (samples, gaps);
+                }
+                assert_eq!(batch.stop, Stop::Budget);
+                cursor = Some(serde_json::from_str(&saved).unwrap());
+            }
+            panic!("bounded fixture continuations did not finish");
+        };
         for record in [
             json!({"type":"response_item","payload":{"content":content}}),
             json!({"type":"compacted","payload":{"replacement_history":content}}),
@@ -940,39 +961,32 @@ mod tests {
             let body = record.to_string();
             assert!(body.len() > MAX_RECORD);
             std::fs::write(&path, format!("{metadata}{body}\n{usage}")).unwrap();
-            let batch = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
-            assert_eq!(batch.stop, Stop::Complete);
-            assert!(batch.gaps.is_empty());
-            assert_eq!(batch.samples.len(), 1);
-            assert!(batch.samples[0].proves_zero_baseline);
-            assert!(
-                !serde_json::to_string(&batch.cursor)
-                    .unwrap()
-                    .contains("PRIVATE")
-            );
+            let (samples, gaps) = scan_all(Runtime::Codex);
+            assert!(gaps.is_empty());
+            assert_eq!(samples.len(), 1);
+            assert!(samples[0].proves_zero_baseline);
         }
         let body = json!({"type":"response_item","payload":{"content":content}}).to_string();
         let invalid = &body[..body.len() - 1];
         std::fs::write(&path, format!("{metadata}{invalid}\n{usage}")).unwrap();
-        let batch = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
-        assert!(batch.samples.is_empty());
-        assert_eq!(batch.gaps.len(), 2);
+        let (samples, gaps) = scan_all(Runtime::Codex);
+        assert!(samples.is_empty());
+        assert_eq!(gaps.len(), 2);
         // Accounting envelopes and future event kinds are never silently
         // skipped merely because a large body looks like transcript content.
         for kind in ["token_count", "future_event"] {
             let body = json!({"type":"event_msg","payload":{"type":kind,"content":content}});
             std::fs::write(&path, format!("{metadata}{body}\n{usage}")).unwrap();
-            let batch = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
-            assert!(batch.samples.is_empty());
-            assert_eq!(batch.gaps.len(), 2);
+            let (samples, gaps) = scan_all(Runtime::Codex);
+            assert!(samples.is_empty());
+            assert_eq!(gaps.len(), 2);
         }
         let body = json!({"type":"user","message":{"content":"PRIVATE".repeat(MAX_RECORD / 3)}})
             .to_string();
         std::fs::write(&path, format!("{body}\n{}", row(1))).unwrap();
-        let batch = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
-        assert_eq!(batch.stop, Stop::Complete);
-        assert!(batch.gaps.is_empty());
-        assert_eq!(batch.samples.len(), 1);
+        let (samples, gaps) = scan_all(Runtime::Claude);
+        assert!(gaps.is_empty());
+        assert_eq!(samples.len(), 1);
     }
 
     #[test]

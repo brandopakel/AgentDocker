@@ -592,10 +592,10 @@ enum Command {
         /// The answer.
         text: String,
     },
-    /// What each agent is doing: working, idle, or blocked on a named
-    /// resource held by a named agent.
     /// Tokens the providers reported, with what the totals cover.
     Usage(UsageArgs),
+    /// What each agent is doing: working, idle, or blocked on a named
+    /// resource held by a named agent.
     Activity {
         /// Only this agent.
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -1193,7 +1193,9 @@ fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
 
 #[derive(Args)]
 struct UsageArgs {
-    /// Only this agent (id, name or unique prefix).
+    /// Only this agent (id, name or unique prefix); explicit query filter.
+    // This selects whose usage is included, not the request's sender identity.
+    // Inheriting AGENTDOCKER_AGENT_ID would silently hide other agents' totals.
     #[arg(long = "agent", visible_alias = "as")]
     agent: Option<String>,
     /// Only agents in this project.
