@@ -2129,6 +2129,7 @@ impl App {
                     ),
                     Key::Named(Named::Escape) => {
                         self.shell.pending_notification = None;
+                        self.shell.notification_message = None;
                         self.shell.selected = None;
                         self.shell.launch = false;
                         self.shell.adding = false;
@@ -4632,6 +4633,24 @@ mod tests {
             let _ = app.update(navigation);
             assert!(app.shell.pending_notification.is_none());
         }
+        app.shell.pending_notification = Some((action.clone(), Instant::now()));
+        app.shell.notification_message = Some(MessageId::from("cancelled"));
+        let key = keyboard::Key::Named(keyboard::key::Named::Escape);
+        let _ = app.update(Message::Event(iced::Event::Keyboard(
+            keyboard::Event::KeyPressed {
+                modified_key: key.clone(),
+                key,
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: None,
+                repeat: false,
+            },
+        )));
+        assert!(app.shell.pending_notification.is_none());
+        assert!(app.shell.notification_message.is_none());
         let _ = app.update(Message::Navigate(Screen::Settings));
         let mut foreign = action.clone();
         foreign.socket = foreign.socket.with_file_name("another-daemon.sock");
