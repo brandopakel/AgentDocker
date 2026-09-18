@@ -122,7 +122,10 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Resu
         .filter(|_| roots.versions)
         .and_then(|cli| version_of(cli, &roots.home));
     let apps = desktop::apps(spec, roots)?;
-    let extensions = browser::extensions(spec, roots)?;
+    let browser::Inventory {
+        found: extensions,
+        incomplete,
+    } = browser::extensions(spec, roots)?;
     let config_dir = if spec.name == "codex" {
         roots.codex_home.clone()
     } else if spec.name == "claude-code" {
@@ -140,6 +143,7 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Resu
         version,
         apps,
         extensions,
+        incomplete,
         config_dir,
         mcp: mcp_wiring(spec, roots, marker),
         hooks: hooks_wiring_file(spec, &hook_config_path(spec, roots), marker),
