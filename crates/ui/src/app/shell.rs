@@ -4634,7 +4634,7 @@ mod tests {
             assert!(app.shell.pending_notification.is_none());
         }
         app.shell.pending_notification = Some((action.clone(), Instant::now()));
-        app.shell.notification_message = Some(MessageId::from("cancelled"));
+        app.shell.notification_message = Some(MessageId::from("cancelled".to_owned()));
         let key = keyboard::Key::Named(keyboard::key::Named::Escape);
         let _ = app.update(Message::Event(iced::Event::Keyboard(
             keyboard::Event::KeyPressed {
