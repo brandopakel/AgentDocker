@@ -3265,9 +3265,17 @@ impl App {
             } else if !installed {
                 (c.faint, "Not installed".to_owned())
             } else if runtime.in_browser() {
-                // No session of it can ever be listed: say so here, where
-                // the person comes to ask why their browser agent is not.
-                (c.faint, super::in_browser_word(runtime))
+                // No session of it appears unless one came in through the
+                // connector: say which here, where the person comes to ask
+                // why their browser agent is or is not listed.
+                (
+                    if sessions.is_empty() {
+                        c.faint
+                    } else {
+                        c.green
+                    },
+                    super::in_browser_word(runtime, sessions.len()),
+                )
             } else if !supported {
                 (c.faint, "Installed · integration unavailable".to_owned())
             } else if unverified {

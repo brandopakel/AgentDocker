@@ -74,12 +74,14 @@ agent, connected — and it is neither.
 
 When the browser agent has something a terminal agent should know, the way in
 is the one the vendors give hosted agents: a remote MCP connector.
-`agentdocker connector serve --public-url https://<your tunnel>` serves one on
-loopback for a tunnel you run, prints the URL to add as a custom connector in
-Claude or ChatGPT and a pairing code for the consent page, and each consent
+`agentdocker connector serve --tunnel cloudflared` serves one on loopback,
+starts a cloudflared tunnel for it, prints the URL to add as a custom connector
+in Claude or ChatGPT and a pairing code for the consent page, and each consent
 becomes a browser agent in the project with the messaging tools and nothing
-that touches a checkout. [The remote connector](REMOTE-CONNECTOR.md) has the
-whole contract.
+that touches a checkout. `connector install` runs the same as a login service;
+`connector status` shows its address and pairing code; `--allow-from anthropic`
+and `--allow-from @<openai feed>` admit only the vendors' own addresses. [The
+remote connector](REMOTE-CONNECTOR.md) has the whole contract.
 
 Everything respects `AGENTDOCKER_HOME`, so a throwaway daemon for
 experiments costs nothing:
@@ -134,6 +136,16 @@ Recent coordination can establish working; an explicit provider stop produces
 provisional idle that expires or is superseded by newer activity. Process
 presence, provider configuration and observed activity are separate facts.
 See [Activity and messaging](ACTIVITY-AND-MESSAGING.md).
+
+A Claude Code session you start in a terminal sees messages only at its next
+prompt, unless it was started with the channel flag
+(`--dangerously-load-development-channels server:agentdocker`); during the
+channels research preview no setting replaces the flag. `agentdocker setup
+--shell` adds a `claude` function to your shell's startup file (zsh, bash or
+fish) that passes the flag on every launch — planned, previewed and undoable
+like every other setup change — and the Claude Code card in Tools offers it as
+**Wake terminal sessions**. `runtimes` says when it is missing. The app's own
+launches already carry the flag.
 
 ### Inbox and tools
 
@@ -305,7 +317,7 @@ the flags.
 | `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
-| `connector serve` / `grants` / `revoke` | Let an agent that works inside a browser join this project's messaging through a tunnel you run; see [the remote connector](REMOTE-CONNECTOR.md) |
+| `connector serve` / `status` / `install` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join this project's messaging: served on loopback behind a tunnel you run or one it starts (`--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
 
 ---
 
@@ -463,6 +475,16 @@ Newest first. Only what changes how the product is used.
   agent — registered when its code is redeemed, after the pairing code from
   the terminal is typed on the consent page — with the messaging tools only.
   `connector grants` lists consents, `connector revoke <agent>` ends one.
+  `--tunnel cloudflared` starts the tunnel too; `connector install` runs it
+  as a login service, `connector status` shows its address and pairing code,
+  and `--allow-from` admits only the vendors' published addresses. A browser
+  agent's `project` broadcast names the served project, wherever the
+  connector runs.
+- `agentdocker setup --shell` makes every terminal `claude` carry the channel
+  flag so AgentDocker can wake it; the Claude Code card in Tools offers it as
+  **Wake terminal sessions**, and the MCP server now reads the flag from its
+  parent `claude`, so `AGENTDOCKER_CLAUDE_CHANNEL_INPUT` is no longer required
+  from a terminal.
 - Agents that work inside a browser are inventoried: `runtimes` lists each
   vendor's extension per browser profile (`claude-browser`, `chatgpt-browser`)
   and says that its sessions run in the browser and cannot be listed or

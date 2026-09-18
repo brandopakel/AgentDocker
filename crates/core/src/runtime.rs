@@ -309,7 +309,7 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
 
 /// What every listing says under a runtime that works inside the browser,
 /// so that nobody waits for a session that cannot appear.
-pub const IN_BROWSER: &str = "Sessions in the browser run there and on the vendor's side; nothing on this machine speaks for them, so AgentDocker cannot list, message or lease for them. A bridge the browser launches for a command-line tool is that tool's helper, not a session, and adopting it is refused.";
+pub const IN_BROWSER: &str = "Sessions in the browser run there and on the vendor's side; nothing on this machine speaks for them, so AgentDocker cannot list, message or lease for them — unless one joins through the remote connector (`agentdocker connector`), which gives it the messaging tools and nothing that touches a checkout. A bridge the browser launches for a command-line tool is that tool's helper, not a session, and adopting it is refused.";
 
 /// The table row for a runtime name.
 pub fn spec(name: &str) -> Option<&'static RuntimeSpec> {

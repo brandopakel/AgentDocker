@@ -157,6 +157,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "filetime",
  "indexmap",
  "libc",
  "semver",
