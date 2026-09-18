@@ -1533,10 +1533,19 @@ impl Daemon {
                 task,
                 assumptions,
                 next_steps,
+                links,
                 release_leases,
             } => {
-                self.checkpoint(&agent, key, task, assumptions, next_steps, release_leases)
-                    .await
+                self.checkpoint(
+                    &agent,
+                    key,
+                    task,
+                    assumptions,
+                    next_steps,
+                    links,
+                    release_leases,
+                )
+                .await
             }
             Request::Resume {
                 agent,
@@ -1549,11 +1558,20 @@ impl Daemon {
                 to,
                 task,
                 note,
+                links,
                 transfer_leases,
                 key,
             } => {
-                self.handoff(&agent, to.as_deref(), task, note, transfer_leases, key)
-                    .await
+                self.handoff(
+                    &agent,
+                    to.as_deref(),
+                    task,
+                    note,
+                    links,
+                    transfer_leases,
+                    key,
+                )
+                .await
             }
             Request::Handoffs { agent } => self.handoffs(agent.as_deref()),
             Request::Import { agent, bundle } => self.import(&agent, *bundle).await,
@@ -1755,7 +1773,8 @@ impl Daemon {
                 kind,
                 payload,
                 reply_to,
-            } => self.send(from, &to, kind, payload, reply_to).await,
+                links,
+            } => self.send(from, &to, kind, payload, reply_to, links).await,
             Request::Me { workdir } => self.me(workdir).await,
             Request::Ask {
                 from,
@@ -1792,8 +1811,9 @@ impl Daemon {
                 title,
                 acceptance,
                 column,
+                links,
             } => {
-                self.task_create(from, project, title, acceptance, column)
+                self.task_create(from, project, title, acceptance, column, links)
                     .await
             }
             Request::TaskPull {
@@ -1812,7 +1832,8 @@ impl Daemon {
                 title,
                 acceptance,
                 assignee,
-            } => self.task_update(&agent, &task, title, acceptance, assignee),
+                links,
+            } => self.task_update(&agent, &task, title, acceptance, assignee, links),
             Request::TaskArchive { agent, task } => self.task_archive(&agent, &task),
             Request::Tasks {
                 project,
@@ -3736,7 +3757,11 @@ impl Daemon {
         kind: String,
         payload: Value,
         reply_to: Option<MessageId>,
+        links: Vec<agentdocker_core::Link>,
     ) -> Response {
+        if let Err(reason) = agentdocker_core::link::check(&links) {
+            return Response::error(ErrorCode::Invalid, reason);
+        }
         if pause::reserved_message_kind(&kind) {
             return Response::error(
                 ErrorCode::Forbidden,
@@ -3759,7 +3784,9 @@ impl Daemon {
                 return state.refuse(&sender, &action, ruling);
             }
         }
-        state.send(from, to, kind, payload, reply_to)
+        let mut envelope = Envelope::new(from, to, kind, payload, reply_to, Utc::now());
+        envelope.links = links;
+        state.publish(envelope)
     }
 
     /// Turn a sender name and a destination shorthand into what the bus
@@ -6717,6 +6744,7 @@ mod tests {
                 kind: "chat".into(),
                 payload: json!({"text": "still here?"}),
                 reply_to: None,
+                links: Vec::new(),
             })
             .await;
         assert!(matches!(delivered, Response::Sent { .. }), "{delivered:?}");
@@ -8064,6 +8092,7 @@ mod tests {
                 kind: "chat".to_owned(),
                 payload: json!({ "text": "look at this" }),
                 reply_to: None,
+                links: Vec::new(),
             })
             .await;
         let notice = notices.try_recv().expect("a person is worth interrupting");
@@ -8090,6 +8119,7 @@ mod tests {
                 kind: "chat".to_owned(),
                 payload: json!({ "text": "carry on" }),
                 reply_to: None,
+                links: Vec::new(),
             })
             .await;
         assert!(
@@ -8201,6 +8231,7 @@ mod tests {
                 assumptions: Vec::new(),
                 next_steps: vec!["handle raw strings".to_owned()],
                 release_leases: false,
+                links: Vec::new(),
             })
             .await
         else {
@@ -10598,6 +10629,7 @@ deny = ["send:all"]
                 kind: "chat".into(),
                 payload: json!({ "text": "everyone!" }),
                 reply_to: None,
+                links: Vec::new(),
             })
             .await;
         assert!(matches!(
@@ -10620,6 +10652,7 @@ deny = ["send:all"]
                     kind: "chat".into(),
                     payload: json!({ "text": "just you" }),
                     reply_to: None,
+                    links: Vec::new(),
                 })
                 .await,
             Response::Sent { .. }
@@ -11242,6 +11275,7 @@ deny = ["send:all"]
                     kind: "chat".into(),
                     payload: json!({"text":"retain if removal fails"}),
                     reply_to: None,
+                    links: Vec::new(),
                 })
                 .await,
             Response::Sent { .. }
@@ -11302,6 +11336,7 @@ deny = ["send:all"]
                         kind: "chat".into(),
                         payload: json!({"text":"retain after failed drain"}),
                         reply_to: None,
+                        links: Vec::new(),
                     })
                     .await,
                 Response::Sent { .. }
@@ -11364,6 +11399,7 @@ deny = ["send:all"]
                     kind: "chat".into(),
                     payload: json!({"text":"retain after failed touch"}),
                     reply_to: None,
+                    links: Vec::new(),
                 })
                 .await,
             Response::Sent { .. }
@@ -11408,6 +11444,7 @@ deny = ["send:all"]
                         kind: "chat".into(),
                         payload: json!({"text":text}),
                         reply_to: None,
+                        links: Vec::new(),
                     })
                     .await,
                 Response::Sent { .. }
@@ -11579,6 +11616,7 @@ deny = ["send:all"]
             kind: "chat".into(),
             payload,
             reply_to: None,
+            links: Vec::new(),
         };
         for _ in 0..7 {
             assert!(matches!(
@@ -11826,6 +11864,7 @@ deny = ["send:all"]
                     kind: "chat".into(),
                     payload: json!({"text": text}),
                     reply_to: None,
+                    links: Vec::new(),
                 })
                 .await;
         }
@@ -11884,6 +11923,7 @@ deny = ["send:all"]
                 kind: "chat".into(),
                 payload: json!({ "text": "hello" }),
                 reply_to: None,
+                links: Vec::new(),
             })
             .await;
         drop(daemon);
@@ -11959,6 +11999,7 @@ deny = ["send:all"]
                 kind: "chat".into(),
                 payload: json!({ "text": "late" }),
                 reply_to: None,
+                links: Vec::new(),
             })
             .await;
         daemon
@@ -12502,6 +12543,7 @@ deny = ["send:all"]
                 kind: "chat".to_owned(),
                 payload: json!({ "text": "hi" }),
                 reply_to: None,
+                links: Vec::new(),
             })
             .await
     }

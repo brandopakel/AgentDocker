@@ -249,6 +249,13 @@ impl App {
                     .padding([2, 10])
                     .width(Fill),
             );
+            if !task.links.is_empty() {
+                body = body.push(
+                    container(super::view::links(&task.links, c))
+                        .padding([2, 10])
+                        .width(Fill),
+                );
+            }
             body = body.push(container(self.card_actions(task, c)).padding([2, 6]));
         }
         container(body)

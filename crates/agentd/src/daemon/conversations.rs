@@ -657,6 +657,7 @@ mod tests {
                 kind: "chat".into(),
                 payload: serde_json::json!({ "text": text }),
                 reply_to,
+                links: Vec::new(),
             })
             .await
         {
