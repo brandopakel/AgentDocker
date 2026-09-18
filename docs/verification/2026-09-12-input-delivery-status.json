@@ -1604,7 +1604,7 @@
     ]
   },
   "claude_channel_context_receipt_2026_09_18": {
-    "status": "Actual isolated Claude idle and busy pause/reply acceptance passed; final integrated review, installation and existing-session recovery remain pending",
+    "status": "Installed initial repair; actual follow-up exposed text-only final-response stall. Deferred receipt follow-up is not yet accepted.",
     "runtime_source": "60f2fae",
     "driver_followup": "5d0f52c",
     "scope": "Exact current-session channel body and metadata followed by a real assistant continuation; durable receipt before ACK; one FIFO head; 2 MiB tail plus at most one 2 MiB historical window per hook, 1 MiB overlap and 4096 proof records; unknown/error evidence retains queue. Channel and legacy hooks preserve full envelopes and original app reply destinations.",
@@ -2306,6 +2306,61 @@
       "interrupted_test": 1,
       "not_run": 778,
       "log_sha256": "1fa19d97d42360f12891d6ca7a6871f8fa6f4db8dac402b5b93b8b02ff7c343e"
+    },
+    "installed_initial_activation": {
+      "source": "d27d8acf8625243c0b465bb093954cf40f5377d6",
+      "candidate": "8cbae3a97108c35131c9baea83aeeb59294fce91f46a53a1fc2722b80a872af3",
+      "previous": "2ed6a55fa28ad810e01c6e14143ad0e4d2903032e881350fdca50c45244a79ea",
+      "schema": 23,
+      "backup": "Fresh private SQLite online backup; integrity_check ok.",
+      "daemon_before": 79193,
+      "daemon_after": 35298,
+      "reload": "Refused by the unchanged experimental-reload gate. Preflight found no live managed work; normal coordinator stop/start completed.",
+      "provider_identities": "All six running provider IDs/PIDs/generations preserved; Codex receiver 18735 unchanged.",
+      "app": "Closed normally and reopened through /Applications/AgentDocker.app."
+    },
+    "legacy_head_operator_recovery": {
+      "scope": "One-time operator recovery of an already consumed legacy queue head; not an automatic installed recovery claim",
+      "agent": "0180d7615186449087095d7aa15ec0bb",
+      "head": "fcb1ed18d7244fbf",
+      "generation": "2026-09-18T00:16:33.787409Z",
+      "session": "b928f782-c8be-4458-99de-bb7baccb57f1",
+      "queued_before": 76,
+      "proof": {
+        "input": {
+          "uuid": "67795399-bccb-413c-87ef-69bc742666af",
+          "type": "attachment",
+          "timestamp": "2026-09-18T00:39:33.003Z",
+          "parentUuid": "0b9aaeb6-b308-448a-a1af-d0f3e17f70d2"
+        },
+        "continuation": {
+          "uuid": "66094700-6184-454d-9bd8-93609f916a42",
+          "type": "assistant",
+          "timestamp": "2026-09-18T00:39:41.623Z",
+          "parentUuid": "c7fa3cc9-b5d1-42e2-a424-5251996dbfb1"
+        }
+      },
+      "driver_sha256": "5baeef9bfecdb74561a123b53fd3cb34b7fe7ab649e65863f8da170f396f1a9b",
+      "applied": true,
+      "receipt_committed": true,
+      "queued_after": 75
+    },
+    "installed_followup": {
+      "first_idle_input": "4ddfca3fa0d24532",
+      "provider_record": "15960759-82da-40f7-aa1c-d8890ec066e0",
+      "provider_record_at": "2026-09-18T20:27:07.553Z",
+      "correlated_reply": "988dd94c4cd74a91",
+      "automatic_hook_receipt_at": "2026-09-18T20:27:31.734753Z",
+      "next_head": "8d492d2c5ef4450b",
+      "next_provider_input": "181d36d5-d8f0-480a-a6ca-b02a0fa97030",
+      "next_input_at": "2026-09-18T20:27:31.779Z",
+      "text_only_response": "45b56702-2811-4e3d-ab11-403bf9beeb31",
+      "text_only_response_at": "2026-09-18T20:27:34.715Z",
+      "finding": "Existing session woke and first receipt recovered, but a subsequent text-only turn remained queued after Stop. Deferred final-record visibility or a transient receipt deadline needs a bounded follow-up check; no second operator ACK was performed.",
+      "project_canary": "d3946abb885246ee",
+      "plain_claude_project_reply": "2182aee6b4754ec3",
+      "plain_claude_scope": "Active PostToolUse delivery and correlated original-project reply, explicitly not an idle wake.",
+      "deferred_followup": "Implemented; native delayed-flush, actual text-only provider trial and revised installed acceptance pending."
     }
   }
 }

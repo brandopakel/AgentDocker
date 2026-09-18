@@ -187,6 +187,15 @@ ambiguous UUIDs and proof chains too large for a window keep the explicit-ACK
 fallback and queued input. Recovery clears at most one verified head per hook
 boundary; a deep backlog is not consumed in a burst.
 
+A final text-only response may not be visible when `Stop` runs. The hook schedules
+one bounded receipt helper after returning control: a per-agent lock, three-second
+lifetime and three delayed proof attempts. Each attempt rechecks the actual PID
+birth time, registered generation, session and channel ownership. It uses the
+same exact-body proof and receipt-before-ACK ordering; it neither submits a prompt
+nor fabricates a hook/contact/activity event. Unknown or absent proof stays queued.
+This closes the deferred-flush path; installed text-only acceptance is tracked
+separately from the earlier tool-call trials.
+
 A stdout write never removes an inbox message. Until a verified receipt,
 delivery is unconfirmed. Claude may silently ignore a channel that was not
 enabled; after 30 seconds without a receipt the adapter reports a durable

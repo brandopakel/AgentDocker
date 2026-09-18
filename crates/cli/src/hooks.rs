@@ -58,6 +58,9 @@ pub struct HookArgs {
 pub enum HookCommand {
     /// Handle one Claude Code hook event, read as JSON from stdin.
     ClaudeCode(ClaudeCodeArgs),
+    /// Bounded receipt check after a Claude Stop hook has returned.
+    #[command(hide = true)]
+    ClaudeReceipt(channel_receipt::deferred::DeferredArgs),
     /// Report Codex activity and deliver queued messages at lifecycle boundaries.
     Codex,
     /// Write the hook configuration into a host's settings file.
@@ -129,6 +132,7 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
     // the editor: it fails open past this.
     let client = client.with_start_timeout(Some(std::time::Duration::from_secs(1)));
     match args.command {
+        HookCommand::ClaudeReceipt(args) => channel_receipt::deferred::run(client, args).await,
         HookCommand::Codex => {
             if let Err(error) = codex::run(&client).await {
                 eprintln!("agentdocker hook codex: {error:#}");
@@ -165,6 +169,13 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                     }
                     Ok::<_, anyhow::Error>(())
                 })
+                .await;
+            }
+            if input.hook_event_name == "Stop" {
+                let _ = tokio::time::timeout_at(
+                    deadline,
+                    channel_receipt::deferred::schedule(&client, &input),
+                )
                 .await;
             }
             let delivery = HookDelivery {

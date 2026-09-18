@@ -254,6 +254,32 @@ def run(args):
             report["steps"].append("without an explicit model ACK, the real hook retained channel input alone and committed receipt before removing its exact head only after the modeled assistant continuation; repeated hooks were harmless")
             report["history_recovery_hook_calls"] = history_hooks
 
+            # A text-only turn may flush its final provider record after the
+            # Stop hook has returned. No future prompt/tool should be needed.
+            deferred_message = send(peer, "text-only response flushed after Stop")
+            deferred_offer = connection.offer()
+            assert deferred_offer["meta"]["message_id"] == deferred_message
+            metadata = " ".join(f'{key}="{escape(value)}"' for key, value in deferred_offer["meta"].items())
+            deferred_content = f'<channel source="agentdocker" {metadata}>\n{deferred_offer["content"]}\n</channel>'
+            input_record = record("user", "deferred-input", "previous", isMeta=True,
+                origin={"kind": "channel", "server": "agentdocker"},
+                message={"role": "user", "content": deferred_content})
+            transcript.write_text(json.dumps(input_record) + "\n")
+            stopped = subprocess.run([str(output / "agentdocker"), "hook", "claude-code"],
+                env=channel_env, cwd=root, input=json.dumps({"hook_event_name":"Stop",
+                "session_id":"receipt-fixture", "cwd":str(root), "transcript_path":str(transcript),
+                "stop_hook_active":True}).encode(), capture_output=True, timeout=3)
+            assert stopped.returncode == 0, stopped.stderr.decode()
+            assert queued() == [deferred_message], "Stop invented proof before the response was written"
+            with transcript.open("a") as stream:
+                stream.write(json.dumps(record("assistant", "deferred-response", "deferred-input",
+                    requestId="late-request", message={"id":"late-response", "role":"assistant",
+                    "model":"claude-fixture", "content":[{"type":"text", "text":"Noted."}]})) + "\n")
+            eventually(lambda: queued() == [])
+            received = rpc(endpoint, {"op":"inspect", "agent":receiver})["agent"]["input_delivery"]
+            assert received["received"]["messages"] == [deferred_message]
+            report["steps"].append("a complete text-only response appended after Stop returned was receipted without a new prompt or tool; incomplete input alone stayed queued")
+
             connection.send({"jsonrpc": "2.0", "id": 200, "method": "tools/call", "params": {
                 "name": "ask_human", "arguments": {"question": "Which fixture route?", "timeout_secs": 120}}})
             posted = json.loads(connection.response(200)["result"]["content"][0]["text"])

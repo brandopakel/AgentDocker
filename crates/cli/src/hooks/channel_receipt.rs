@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
+pub(super) mod deferred;
 mod history;
 
 const TAIL_BYTES: u64 = 2 * 1024 * 1024;
@@ -21,19 +22,19 @@ pub(super) async fn recover<B: Backend>(
     input: &HookInput,
     agent: &AgentRecord,
     home: &std::path::Path,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(started) = agent.process_started_at else {
-        return Ok(());
+        return Ok(false);
     };
     if input.session_id.is_empty()
         || agent.spec.runtime != "claude-code"
         || agent.spec.labels.get("session_id") != Some(&input.session_id)
         || !agent.status.is_live()
     {
-        return Ok(());
+        return Ok(false);
     }
     let Some(path) = input.transcript_path.as_deref() else {
-        return Ok(());
+        return Ok(false);
     };
     let Response::Messages { messages } = backend
         .call(Request::DeliveryQueue {
@@ -41,12 +42,12 @@ pub(super) async fn recover<B: Backend>(
         })
         .await?
     else {
-        return Ok(());
+        return Ok(false);
     };
     // The transport offers one head at a time. Never acknowledge another
     // envelope merely because its ID occurs somewhere in the transcript.
     let Some(message) = messages.first() else {
-        return Ok(());
+        return Ok(false);
     };
     let tail = history::tail(path)?;
     let now = Utc::now();
@@ -57,7 +58,7 @@ pub(super) async fn recover<B: Backend>(
             consumed(window, &input.session_id, started, now, message)
         })?
     {
-        return Ok(());
+        return Ok(false);
     }
     crate::input_status::report(
         backend,
@@ -85,7 +86,7 @@ pub(super) async fn recover<B: Backend>(
         ),
         "channel transcript receipt ACK refused"
     );
-    Ok(())
+    Ok(true)
 }
 
 fn consumed(

@@ -27,8 +27,15 @@ The combined current-main source `d27d8ac` passed 1,264 Rust tests (seven skippe
 scenarios and thirteen real previous/candidate installation and rollback checks.
 The native UI workflow passed across eleven windows. These private trials do not
 close the installed-session pause/reply case; that remains open until activation
-and actual recovery pass. The requested app reconnect/approval button remains
-part of this work, including detecting a plain restart that lost its channel.
+and actual recovery pass. The initial package is now installed as `8cbae3a9`, with all six provider
+processes and the Codex receiver preserved. A verified one-time recovery of the
+legacy consumed head woke the existing channel-enabled Claude; its next receipt
+then recovered automatically. A following text-only turn still stalled after
+Stop, so a bounded deferred receipt check is being validated. The plain Claude
+replied to the new canary in the original project during a tool boundary, not
+from idle. The requested app reconnect/approval button remains part of this
+work, including preserving the ended identity and queue when moving to a managed
+pane; its first UI-only version did not satisfy that requirement.
 
 The installed desktop and daemon use reviewed local-preview release `d14610b7`,
 source `3785e81` with runtime inputs identical to merged `e9c4ab2`, schema 23.
