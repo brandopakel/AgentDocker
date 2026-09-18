@@ -94,6 +94,8 @@ parser.add_argument(
 )
 parser.add_argument("--initial-receiver-cli", type=Path,
     help="Older immutable CLI used to bootstrap the controller-upgrade scenario")
+parser.add_argument("--initial-ledger-version", type=int, choices=(2, 3), default=2,
+    help="Expected initial receiver ledger format; default 2 preserves the migration trial")
 parser.add_argument("--active-peer-kind", choices=("chat", "answer"), default="chat",
     help="Message kind for the peer head in active-hook, active-hook-lost or controller-upgrade")
 args = parser.parse_args()
@@ -1391,7 +1393,7 @@ try:
                     initial = rpc({"op":"inspect", "agent":aid})["agent"]["input_binding"]
                     wait(lambda: (json.loads(ledgerpath.read_text()).get("attempt") or {}).get("queued"), 15)
                     pending = json.loads(ledgerpath.read_text())
-                    assert pending["version"] == 2, "the initial receiver must exercise old-ledger migration"
+                    assert pending["version"] == args.initial_ledger_version, "unexpected initial receiver ledger format"
                     assert pending["attempt"]["message"] == sent[0]
                     old_queue_id = pending["attempt"]["queued"]
                     old_completed = pending["completed"]
@@ -1411,6 +1413,7 @@ try:
                     assert pending["token"] == json.loads(ledgerpath.read_text())["token"]
                     wait(lambda: retired(initial["controller"]["pid"]), 5)
                     report["receiver_upgrade"] = {"before":initial["controller"], "after":upgraded["controller"],
+                        "initial_ledger_version":pending["version"],
                         "provider_preserved":True, "token_and_binding_preserved":True,
                         "prior_completed_receipts":len(old_completed), "pending_native_queue_id":old_queue_id,
                         "initial_cli_sha256":hashlib.sha256(args.initial_receiver_cli.resolve(strict=True).read_bytes()).hexdigest()}
