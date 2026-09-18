@@ -12,6 +12,10 @@ impl App {
     pub(super) fn open_project_chat(&mut self) {
         let Some(project) = self.selected_project_id() else {
             self.screen = Screen::Agents;
+            self.shell.conversation = None;
+            self.shell.thread = None;
+            self.thread = None;
+            self.cancel_reveal();
             return;
         };
         self.screen = Screen::Chat;
@@ -28,28 +32,40 @@ impl App {
     }
 
     pub(super) fn project_chat_view(&self, c: Colors) -> Element<'_, Message> {
-        let height = (self.shell.height / self.scale_factor() - 275.0).max(280.0);
         let agents = self.project_chat_agents(c);
         let conversation = self.messages_pane(c);
         if self.messages_compact() {
             let body = if self.shell.thread.is_some() {
-                self.thread_pane(c)
+                column![
+                    action(
+                        "close-thread",
+                        "Back to chat",
+                        Some(Message::CloseThread),
+                        false
+                    ),
+                    self.thread_pane(c),
+                ]
+                .spacing(8)
+                .height(Fill)
+                .into()
             } else {
                 conversation
             };
             return column![
-                container(scrollable(agents)).height(140),
-                container(body).height((height - 152.0).max(200.0)),
+                container(scrollable(agents)).height(80),
+                container(body).height(Fill),
             ]
             .spacing(12)
+            .height(Fill)
             .into();
         }
-        let mut panes = row![container(conversation).width(Fill).height(height)].spacing(18);
+        let mut panes = row![container(conversation).width(Fill).height(Fill)].spacing(18);
         if self.shell.thread.is_some() {
-            panes = panes.push(container(self.thread_pane(c)).width(300).height(height));
+            panes = panes.push(container(self.thread_pane(c)).width(300).height(Fill));
         }
         panes
-            .push(container(scrollable(agents)).width(250).height(height))
+            .push(container(scrollable(agents)).width(250).height(Fill))
+            .height(Fill)
             .into()
     }
 
@@ -165,5 +181,65 @@ mod tests {
         assert!(!app.conversation_pane_visible());
         let _ = app.update(Message::Navigate(Screen::Board));
         assert!(!app.conversation_pane_visible());
+    }
+
+    #[test]
+    fn removing_the_selected_project_cannot_keep_its_chat_target() {
+        for removal in 0..3 {
+            let root = tempfile::tempdir().unwrap();
+            let alpha = root.path().join("alpha");
+            let beta = root.path().join("beta");
+            std::fs::create_dir(&alpha).unwrap();
+            std::fs::create_dir(&beta).unwrap();
+            let (tx, _commands) = queue::channel();
+            let (_sender, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
+            let mut app = App::bare(tx, rx);
+            for path in [&alpha, &beta] {
+                app.shell
+                    .catalog
+                    .remember(ProjectRef::directory(path), false);
+            }
+            let _ = app.update(Message::SelectProject(alpha.clone()));
+            let old = app.shell.conversation.clone().unwrap();
+            let _ = app.update(Message::ConversationDraft(old.clone(), "Keep alpha".into()));
+            match removal {
+                0 => {
+                    let _ = app.update(Message::ProjectRemove(alpha));
+                }
+                1 => {
+                    let _ = app.update(Message::ForgetProject);
+                }
+                _ => {
+                    std::fs::remove_dir(alpha).unwrap();
+                    let _ = app.update(Message::Tick);
+                }
+            }
+            let expected = format!("everyone:{}", ProjectRef::directory(&beta).id());
+            assert_eq!(app.shell.catalog.selected.as_ref(), Some(&beta));
+            assert_eq!(app.shell.conversation.as_deref(), Some(expected.as_str()));
+            assert_eq!(app.shell.conversation_drafts[&old].text, "Keep alpha");
+            let _ = app.update(Message::ProjectRemove(beta));
+            assert_eq!(app.screen, Screen::Agents);
+            assert!(app.shell.conversation.is_none());
+        }
+    }
+
+    #[test]
+    fn adding_a_project_opens_chat_and_a_thread_never_squeezes_its_composer() {
+        let (tx, _commands) = queue::channel();
+        let (_sender, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        let _ = app.update(Message::FolderResolved(Ok(ProjectRef::directory(
+            "/fixture/new",
+        ))));
+        assert_eq!(app.screen, Screen::Chat);
+        app.shell.width = 1001.0;
+        app.panes.window_width(1001.0);
+        app.shell.thread = Some(MessageId::from("thread".to_owned()));
+        app.panes.sync_thread(true);
+        assert!(app.messages_compact());
+        app.shell.width = 1500.0;
+        app.panes.window_width(1500.0);
+        assert!(!app.messages_compact());
     }
 }

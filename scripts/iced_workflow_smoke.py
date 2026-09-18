@@ -306,7 +306,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("wait_text", text="Idle messages: Off"),
                          # This fake CLI is a terminal fixture, not a provider input server.
                          step("fill", id="launch-name", text="launched-from-iced"), step("click", id="confirm-launch"),
-                         step("wait_text", text="Agent launched"), step("click", id="attach-session"),
+                         step("wait_text", text="Agent launched"), step("click", id="project-tab-Agents"), step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="launched-terminal"), step("click", id="detach-terminal"),
                          step("click", id="stop-session"), step("wait_text", text="Confirm stop"), step("click", id="stop-session"),
                          step("click", id="project-more"), step("click", id="project-tab-Console"), step("fill", id="console-command", text="ps --all"),
@@ -384,7 +384,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                 step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="pause-project"),
                                 step("fill", id="pause-reason", text="Narrow pause draft 日本語"),
                                 step("capture", name="narrow-pause-draft"), step("click", id="pause-cancel"),
-                                step("click", id="inbox"),
+                                step("click", id="inbox"), step("click", id="thread-back"),
                                 step("wait_control", id=f"thread-{agent['id']}", present=True),
                                 step("wait_control", id="thread-back", present=False), step("capture", name="narrow-inbox-list"),
                                 step("click", id=f"thread-{agent['id']}"), step("wait_control", id="thread-back", present=True),

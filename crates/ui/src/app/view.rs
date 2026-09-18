@@ -558,8 +558,9 @@ impl App {
             header = header.push(launch);
         }
         let mut content = column![header].spacing(18).width(Fill);
+        let mut project_actions = row![].spacing(8);
         if in_project && self.shell.catalog.selected().is_some() {
-            content = content.push(action(
+            project_actions = project_actions.push(action(
                 "project-terminal",
                 "Open project terminal",
                 (!self.shell.terminal_opening && self.shell.project_available != Some(false))
@@ -573,15 +574,18 @@ impl App {
             && narrow
             && let Some(pause) = self.pause_controls(c)
         {
-            content = content.push(pause);
+            project_actions = project_actions.push(pause);
         }
         if self.screen == Screen::Chat {
             if narrow && let Some(launch) = self.launch_button() {
-                content = content.push(launch);
+                project_actions = project_actions.push(launch);
             }
-            if self.shell.launch {
-                content = content.push(self.launch_view(c));
-            }
+        }
+        if in_project && self.shell.catalog.selected().is_some() {
+            content = content.push(project_actions.wrap());
+        }
+        if self.screen == Screen::Chat && self.shell.launch {
+            content = content.push(self.launch_view(c));
         }
         if let Err(error) = &self.connected {
             content = content.push(attention(
@@ -827,19 +831,31 @@ impl App {
             Screen::Settings => self.settings_view(c),
             Screen::Desktop => self.installation_view(c),
         };
-        content = content.push(body);
+        // Chat owns the remaining viewport so its composer never depends on
+        // scrolling past the header. Large forms and notices scroll above it.
+        let workspace: Element<'_, Message> = if self.screen == Screen::Chat {
+            column![
+                container(scrollable(content).height(iced::Shrink))
+                    .max_height(self.shell.height / self.scale_factor() * 0.45),
+                container(body).height(Fill),
+            ]
+            .spacing(18)
+            .height(Fill)
+            .into()
+        } else {
+            scrollable(content.push(body))
+                .spacing(12)
+                .width(Fill)
+                .height(Fill)
+                .id("workspace-scroll")
+                .into()
+        };
         row![
             container(Space::new().width(1).height(Fill)).style(move |_| c.rule()),
-            container(
-                scrollable(content)
-                    .spacing(12)
-                    .width(Fill)
-                    .height(Fill)
-                    .id("workspace-scroll")
-            )
-            .padding(if narrow { [18, 18] } else { [24, 30] })
-            .width(Fill)
-            .style(move |_| c.surface(c.ground, false))
+            container(workspace)
+                .padding(if narrow { [18, 18] } else { [24, 30] })
+                .width(Fill)
+                .style(move |_| c.surface(c.ground, false))
         ]
         .height(Fill)
         .into()

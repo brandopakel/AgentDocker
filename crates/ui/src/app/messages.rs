@@ -253,6 +253,18 @@ impl App {
     }
 
     pub(super) fn messages_compact(&self) -> bool {
+        if self.screen == Screen::Chat {
+            // Chat has a different pair of side panes from Messages. Reserve
+            // the same usable composer width before showing them together.
+            let side_width = 250.0
+                + 18.0
+                + if self.shell.thread.is_some() {
+                    318.0
+                } else {
+                    0.0
+                };
+            return self.narrow() || self.panes.workspace_width() < side_width + 320.0;
+        }
         self.narrow() || self.panes.compact_messages()
     }
 

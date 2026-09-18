@@ -49,6 +49,12 @@ checking the provider's PID and birth time. It sends no keystrokes. Sessions in
 other terminal applications show an actionable failure rather than opening a
 second agent. Linux project-terminal launching is implemented; native Linux
 acceptance and external-terminal focus beyond macOS Terminal remain open.
+The chat composer stays in the viewport while long headers/forms scroll above it.
+Compact threads have **Back to chat**; side panes collapse before the composer
+loses its minimum width. Removing a project, including a vanished folder, selects
+the replacement project's chat as well as its heading and preserves other drafts.
+External Terminal focus allows 30 seconds for macOS Automation consent and explains
+where to check the permission if the action times out.
 
 
 | Destination | Everyday purpose |

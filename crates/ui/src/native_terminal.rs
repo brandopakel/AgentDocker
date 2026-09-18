@@ -26,8 +26,8 @@ pub fn open(request: Request) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn run(root: &Path, args: Vec<String>) -> Result<String, String> {
-    let output = agentdocker_host::command::run(root, &args, Duration::from_secs(8))
+fn run(root: &Path, args: Vec<String>, timeout: Duration) -> Result<String, String> {
+    let output = agentdocker_host::command::run(root, &args, timeout)
         .map_err(|e| format!("Could not open the terminal: {e}"))?;
     if !output.success {
         return Err(format!(
@@ -64,6 +64,7 @@ fn open_project(path: &Path) -> Result<(), String> {
                     .ok_or("The project folder name cannot be passed to Terminal.")?
                     .to_owned(),
             ],
+            Duration::from_secs(8),
         )?;
         Ok(())
     }
@@ -124,6 +125,7 @@ fn open_agent(pid: u32, started_at: chrono::DateTime<chrono::Utc>) -> Result<(),
             "-o".into(),
             "tty=".into(),
         ],
+        Duration::from_secs(8),
     )?;
     let tty = terminal_device(tty.trim())?;
     if agentdocker_host::procinfo::start_time(pid) != Some(started_at) {
@@ -139,7 +141,9 @@ fn open_agent(pid: u32, started_at: chrono::DateTime<chrono::Utc>) -> Result<(),
             FOCUS_TERMINAL.into(),
             tty,
         ],
-    )?;
+        Duration::from_secs(30),
+    )
+    .map_err(|error| format!("{error} macOS may be asking to allow AgentDocker to control Terminal. Check the permission prompt or System Settings → Privacy & Security → Automation, then retry."))?;
     Ok(())
 }
 

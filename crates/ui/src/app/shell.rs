@@ -1692,7 +1692,7 @@ impl App {
                         self.shell.add_path.clear();
                         self.shell.selected = None;
                         self.reset_session_view();
-                        self.screen = Screen::Agents;
+                        self.open_project_chat();
                         self.shell.changed();
                         self.refresh_project_context();
                     }
@@ -2233,6 +2233,16 @@ impl App {
                 }
                 return Task::batch(tasks);
             }
+        }
+        // Catalog removal and missing-folder cleanup can choose another
+        // project too. Its header must never accompany the previous queue.
+        if self.screen == Screen::Chat
+            && self.shell.conversation
+                != self
+                    .selected_project_id()
+                    .map(|id| format!("everyone:{id}"))
+        {
+            self.open_project_chat();
         }
         if self.shell.catalog.selected != self.shell.checked_project {
             self.shell.checked_project = self.shell.catalog.selected.clone();
