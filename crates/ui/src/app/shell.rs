@@ -633,6 +633,9 @@ pub enum Message {
     LaunchArguments(String),
     LaunchChannel(bool),
     Launch,
+    /// Relaunch an ended Claude Code session here, with its conversation
+    /// and the AgentDocker channel, so it takes messages live.
+    Reconnect(String),
     Attach(String),
     Detach,
     TerminalInput(Vec<u8>),
@@ -1893,6 +1896,18 @@ impl App {
                     }
                 }
             }
+            Message::Reconnect(id) => {
+                if self.connected.is_ok() && !self.shell.launching {
+                    match self.reconnect_spec(&id, sibling_cli()) {
+                        Ok(spec) => {
+                            self.shell.launching = true;
+                            self.shell.error = None;
+                            self.send(Cmd::Launch(Box::new(spec)));
+                        }
+                        Err(error) => self.shell.error = Some(error),
+                    }
+                }
+            }
             Message::Attach(id) => {
                 if self
                     .agents
@@ -2469,6 +2484,99 @@ impl App {
         };
         enable(&mut spec, &cli)
             .map_err(|error| format!("Cannot enable messages while idle: {error}"))?;
+        Ok(spec)
+    }
+
+    /// Why a session cannot be reconnected here right now, or nothing
+    /// when it can: it must be a Claude Code session with a conversation
+    /// to resume, its process must have ended (the app cannot exit a
+    /// session it does not own, and resuming a conversation a live
+    /// process still holds would start a second one), and its tool must
+    /// be installed. The words are the button's.
+    pub(super) fn reconnect_blocker(
+        &self,
+        agent: &agentdocker_core::AgentRecord,
+    ) -> Option<&'static str> {
+        if agent.spec.runtime != "claude-code" {
+            return Some("Only a Claude Code session can be reconnected here.");
+        }
+        if agent.spec.labels.get("session_id").is_none() {
+            return Some("This session has no conversation id to resume.");
+        }
+        if agent.status.is_live() {
+            return Some(
+                "Exit the session in its terminal first (/exit); this enables when it has.",
+            );
+        }
+        if !self
+            .runtimes
+            .iter()
+            .any(|r| r.name == "claude-code" && r.cli.is_some())
+        {
+            return Some("Claude Code is not installed here.");
+        }
+        None
+    }
+
+    /// The launch that reconnects an ended Claude Code session: its own
+    /// tool, `--resume` with its conversation, in its project folder, with
+    /// the AgentDocker channel, under its name — the daemon folds the new
+    /// process into the same record by that conversation id. Nothing is
+    /// sent or acknowledged on its behalf; consent is Claude's own prompt
+    /// in the pane this opens.
+    fn reconnect_spec(
+        &self,
+        id: &str,
+        cli: Result<PathBuf, String>,
+    ) -> Result<agentdocker_core::AgentSpec, String> {
+        let agent = self
+            .agents
+            .iter()
+            .find(|a| a.id.as_str() == id)
+            .ok_or("This session is no longer listed")?;
+        if let Some(blocker) = self.reconnect_blocker(agent) {
+            return Err(blocker.to_owned());
+        }
+        let session = agent
+            .spec
+            .labels
+            .get("session_id")
+            .cloned()
+            .ok_or("This session has no conversation id to resume")?;
+        let claude = self
+            .runtimes
+            .iter()
+            .find(|r| r.name == "claude-code")
+            .and_then(|r| r.cli.clone())
+            .ok_or("Claude Code is not installed here")?;
+        let workdir = agent
+            .spec
+            .workdir
+            .clone()
+            .or_else(|| agent.project.as_ref().map(|p| p.root.clone()))
+            .ok_or("This session has no project folder to resume in")?;
+        let mut spec = agentdocker_core::AgentSpec {
+            name: agent.spec.name.clone(),
+            runtime: "claude-code".into(),
+            provider: None,
+            model: None,
+            command: vec![
+                claude.to_string_lossy().into_owned(),
+                "--resume".into(),
+                session,
+            ],
+            workdir: Some(workdir),
+            env: BTreeMap::new(),
+            labels: BTreeMap::new(),
+            isolate: false,
+            tty: true,
+            restore: false,
+            in_pane: false,
+            restart: Default::default(),
+            depends_on: Vec::new(),
+        };
+        agentdocker_host::provider_input::enable_claude_channel(&mut spec, &cli?)
+            .map_err(|error| format!("Cannot enable live messages: {error}"))?;
         Ok(spec)
     }
 
@@ -4256,6 +4364,104 @@ mod tests {
         );
         assert_eq!(app.shell.answers[&action.target.message], "unfinished");
         assert!(app.sending.is_empty());
+    }
+
+    /// Reconnecting an ended Claude Code session launches its own tool
+    /// with `--resume` and its conversation, in its folder, with the
+    /// AgentDocker channel, under its name; a live process, another
+    /// runtime, a missing conversation id or a missing tool is refused
+    /// with the reason, and nothing is launched.
+    #[test]
+    fn reconnect_here_relaunches_an_ended_claude_session_with_its_conversation_and_the_channel()
+    {
+        let (mut app, commands, _) = app();
+        app.connected = Ok(());
+        let cli = tempfile::NamedTempFile::new().unwrap();
+        let cli_path = cli.path().to_path_buf();
+        app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
+            name: "claude-code".into(),
+            vendor: "fixture".into(),
+            label: "Claude Code".into(),
+            cli: Some("/fixture/claude".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: agentdocker_core::runtime::Wiring::Missing,
+            hooks: agentdocker_core::runtime::Wiring::Missing,
+            hooks_missing: vec![],
+            running: 0,
+        }];
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "claude-code-4242".into(),
+                runtime: "claude-code".into(),
+                workdir: Some("/work/repo".into()),
+                labels: BTreeMap::from([(
+                    "session_id".to_owned(),
+                    "218845eb-ba1e-4457-bb5a-e1829f5652dd".to_owned(),
+                )]),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.id = "ended-claude".into();
+        agent.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        app.agents.push(agent.clone());
+        let spec = app
+            .reconnect_spec("ended-claude", Ok(cli_path.clone()))
+            .unwrap();
+        assert_eq!(spec.name, "claude-code-4242");
+        assert_eq!(spec.runtime, "claude-code");
+        assert_eq!(spec.workdir.as_deref(), Some(std::path::Path::new("/work/repo")));
+        assert!(spec.tty);
+        assert_eq!(spec.command[0], "/fixture/claude");
+        assert!(
+            spec.command
+                .windows(2)
+                .any(|w| w[0] == "--resume" && w[1] == "218845eb-ba1e-4457-bb5a-e1829f5652dd"),
+            "{:?}",
+            spec.command
+        );
+        assert!(
+            spec.command
+                .windows(2)
+                .any(|w| w[0] == "--dangerously-load-development-channels"
+                    && w[1] == "server:agentdocker")
+        );
+        assert_eq!(
+            spec.env.get(agentdocker_host::provider_input::CLAUDE_CHANNEL_ENV),
+            Some(&"1".to_owned())
+        );
+        let _ = app.update(Message::Reconnect("ended-claude".into()));
+        assert!(app.shell.launching);
+        assert!(matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::Launch(spec)] if spec.command.contains(&"--resume".to_owned())));
+
+        // A live process is refused with the reason, and nothing launches.
+        app.shell.launching = false;
+        app.agents[0].status = agentdocker_core::AgentStatus::Running;
+        assert_eq!(
+            app.reconnect_blocker(&app.agents[0]),
+            Some("Exit the session in its terminal first (/exit); this enables when it has.")
+        );
+        let _ = app.update(Message::Reconnect("ended-claude".into()));
+        assert!(!app.shell.launching);
+        assert!(app.shell.error.as_deref().is_some_and(|e| e.contains("Exit the session")));
+        assert_eq!(commands.try_iter().count(), 0);
+
+        // Another runtime, no conversation id, no installed tool.
+        app.agents[0].status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        app.agents[0].spec.runtime = "codex".into();
+        assert!(app.reconnect_blocker(&app.agents[0]).is_some());
+        app.agents[0].spec.runtime = "claude-code".into();
+        app.agents[0].spec.labels.clear();
+        assert!(app.reconnect_blocker(&app.agents[0]).is_some());
+        app.agents[0].spec.labels.insert("session_id".into(), "x".into());
+        app.runtimes.clear();
+        assert!(app.reconnect_blocker(&app.agents[0]).is_some());
     }
 
     #[test]

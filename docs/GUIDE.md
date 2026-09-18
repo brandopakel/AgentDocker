@@ -256,9 +256,11 @@ limits remain separate from receiver health. An older daemon can report readines
 as unavailable rather than imply that every recipient can wake.
 
 For an existing Claude session with no channel, save the current work, exit that
-Claude session, and use the session-specific resume command shown in Delivery
-details or `ps --input-details` from its project folder. Complete Claude's startup
-channel consent. The AgentDocker MCP entry must include `--claude-channel`; see
+Claude session, and either press **Reconnect here** in the app's session Details
+(it relaunches the session in a pane of the app with its conversation and the
+channel; accept Claude's prompt there) or use the session-specific resume command
+shown in Delivery details or `ps --input-details` from its project folder.
+Complete Claude's startup channel consent. The AgentDocker MCP entry must include `--claude-channel`; see
 [Claude channel setup](CLAUDE-CHANNEL-INPUT.md). Hooks alone cannot start an idle
 turn. A copied instruction is not executed by AgentDocker.
 
@@ -484,6 +486,11 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- **Reconnect here** in a Claude Code session's Details: once the session has
+  exited in its terminal, the app relaunches it in one of its own panes with
+  its conversation (`--resume`) and the AgentDocker channel, so it takes
+  messages live; Claude's consent prompt appears in that pane. The copyable
+  command stays as the alternative.
 - Roles: `agentdocker role reviewer --as <agent>` gives an agent a role,
   and `role:reviewer` names it as the recipient of a `send`, an `ask` or
   a `handoff` — the one live agent holding that role in the sender's

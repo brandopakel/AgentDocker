@@ -11,6 +11,16 @@ instructions**. These are the facts when the message was queued, not a receipt.
 The details stay with that conversation or thread even if you switch while
 sending. Session **Details** and expanded tool connection details show current
 reconnect guidance too. Nothing is restarted or resent by opening these controls.
+For a Claude Code session the guidance has the button beside it: **Reconnect
+here** launches the session's own tool in a pane of this window with `--resume`
+and its conversation, in its project folder, with the AgentDocker channel, under
+its name — the daemon folds the new process into the same session — and
+Claude's own consent prompt appears in that pane for you to accept. Until the
+session's terminal process has ended the button waits and says so (*Exit the
+session in its terminal first*): the app does not exit a session it does not
+own, and resuming a conversation a live process still holds would start a
+second one. Nothing is sent or acknowledged on the session's behalf; the CLI
+recipe stays beside it as the alternative.
 
 ## Projects
 
