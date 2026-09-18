@@ -38,9 +38,20 @@ pub async fn refresh<B: Backend>(
     agent: &str,
     process_started_at: Option<DateTime<Utc>>,
 ) -> bool {
+    refresh_report(backend, agent, process_started_at, InputReport::Ready).await
+}
+
+/// Refresh the receiver's actual state without letting diagnostic persistence
+/// block its transport. A stalled offer must not be refreshed as ready.
+pub async fn refresh_report<B: Backend>(
+    backend: &B,
+    agent: &str,
+    process_started_at: Option<DateTime<Utc>>,
+    observation: InputReport,
+) -> bool {
     tokio::time::timeout(
         std::time::Duration::from_millis(250),
-        report(backend, agent, process_started_at, InputReport::Ready),
+        report(backend, agent, process_started_at, observation),
     )
     .await
     .is_ok_and(|result| result.is_ok())
