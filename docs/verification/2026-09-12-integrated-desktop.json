@@ -2198,7 +2198,7 @@
     "result": "passed",
     "scope": "A pause survives a rollback attempt: the schema-23 daemon records a hold,\nan installed schema-22 daemon refuses to open that state, and the hold is\nstill there for the 23 daemon. Private home; never the production state.",
     "steps": [
-      "schema-23 daemon paused the project: paused aef60cbc5ffb — rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
+      "schema-23 daemon paused the project: paused aef60cbc5ffb \u2014 rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
       "pause --list shows the hold",
       "state.db at schema 23 with one pause document",
       "schema-22 daemon refused to start (exit 1); state.db unchanged (sha256 e352e94e548a), pause document retained",
@@ -3678,7 +3678,7 @@
         "kind": "Native fixture expected no pending input after adding a send probe",
         "artifacts": "/private/tmp/agentdocker-send-readiness-workflow-20260917",
         "elapsed_seconds": 215.8977894160198,
-        "result": "Warning/advice and exactly-one-queued-message checks passed, then readiness-ready timed out expecting Receiver active, awaiting first receipt. The new probe is still queued, so the correct app state is Queued · awaiting provider receipt. The harness now expects that state and supplies both fixture IDs in the later simulated receipt; corrected rerun passed 496 rendered steps/29 checks across 11 windows. This was a fixture expectation error, not a provider receipt or live-model test."
+        "result": "Warning/advice and exactly-one-queued-message checks passed, then readiness-ready timed out expecting Receiver active, awaiting first receipt. The new probe is still queued, so the correct app state is Queued \u00b7 awaiting provider receipt. The harness now expects that state and supplies both fixture IDs in the later simulated receipt; corrected rerun passed 496 rendered steps/29 checks across 11 windows. This was a fixture expectation error, not a provider receipt or live-model test."
       }
     ],
     "review": {
@@ -4265,6 +4265,167 @@
       "This was a human-triggered active-turn recovery, not an idle-wake trial.",
       "A status report is neither provider input receipt nor task completion.",
       "Does not establish automatic reset detection, all-message consumption, or parity across providers."
+    ]
+  },
+  "usage_collection_and_presentation_2026_09_18": {
+    "result": "bounded private trials passed; source review/integration and remaining acceptance open",
+    "build": {
+      "format": 1,
+      "source_commit": "889ea35c41d74344c362b1a97a03183d0ebe1e0c",
+      "source_tree": "4cb0e40295922684b5af99b0e3450f1a39b2f8c2",
+      "source_input_sha256": "81271d7cba391abeec203cafb0bc5f8cee81072aa950acbfeb7bf3c2af8282e9",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 23,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-desktop-integration-20260917/target/release",
+      "binary_sha256": {
+        "agentdocker": "e40de9d3f3637c636cbc15968ad8a7e5765800c9e4caafa0cea90508515f12ea",
+        "agentd": "64cc6889e421d82261eb36099f399a7b99266011517cdf4e992fa691a1362371",
+        "agentdocker-ui": "ec1c7f288cb8711cce7e2cb6493688b3cb5120b732d8ada8b4c8d8484ac992bf"
+      }
+    },
+    "standard_gate": {
+      "passed": true,
+      "rust_passed": 1219,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "fmt": true,
+      "strict_clippy": true,
+      "doctests": true,
+      "cargo_package": true,
+      "release_build": true,
+      "log": {
+        "path": "/private/tmp/agentdocker-usage-accounting-layout-gate-20260918.log",
+        "sha256": "ed4c6d3848f22dcfd2cd7991edc2211ad9d1a1fbb08d51b0798d2bc178f87e06"
+      }
+    },
+    "runtime_trial": {
+      "result": "passed",
+      "checks": [
+        "collection_off_is_unknown_not_zero",
+        "large_claude_log_and_duplicate_codex_snapshot_account_once",
+        "restart_append_and_copied_log_do_not_recount_accepted_samples",
+        "cli_json_matches_real_daemon_report",
+        "retention_shrink_restart_and_expansion_do_not_restore_discarded_history",
+        "no_transcript_body_in_usage_storage"
+      ],
+      "elapsed_seconds": 37.86005341698183,
+      "fixture_bytes": 24494890,
+      "claude_samples_after_append_and_copy": 4001,
+      "claude_input_after_append_and_copy": 8002,
+      "codex_samples_after_duplicate_snapshot": 1,
+      "codex_input_after_duplicate_snapshot": 100,
+      "final_source_gaps": 0,
+      "collection_generations": 4,
+      "retention_expansion_preserved_cutoff": "2026-09-17T05:00:00Z",
+      "report": {
+        "path": "/private/tmp/agentdocker-usage-final-runtime-20260918/result.json",
+        "sha256": "826b8449f1e9a3af3da6fc9f7d1e3b78b2d87fe8312e897ed81fc9fa9de3812f"
+      },
+      "driver": {
+        "path": "/private/tmp/agentdocker-usage-runtime-trial-20260918.py",
+        "sha256": "c303d2a02b4f767989ddcbff9733e147fbd2b0f03f89ac07bfb51aa56252628b"
+      }
+    },
+    "coordination_observation": {
+      "count": 592,
+      "median_ms": 0.19977102056145668,
+      "maximum_ms": 1.7785419477149844,
+      "method": "592 sequential ping samples while enabling and collecting fixtures, including the initial wait for the 30-second worker interval. Same-machine GUI trial also ran briefly. Not isolated throughput, sustained-use or provider latency acceptance."
+    },
+    "native_usage_trial": {
+      "result": "passed",
+      "steps": 25,
+      "elapsed_seconds": 8.127101125021,
+      "widths": [
+        1440,
+        720
+      ],
+      "larger_text_steps": 2,
+      "visually_checked": [
+        "wide table",
+        "narrow model card",
+        "narrow agent card at increased text size"
+      ],
+      "report": {
+        "path": "/private/tmp/agentdocker-usage-final-ui-20260918/result.json",
+        "sha256": "fb58c2a7c05a15e6cec0392bc19da066294ab540adce9765899fee24f7d98e40"
+      },
+      "driver": {
+        "path": "/private/tmp/agentdocker-usage-ui-trial-20260918.py",
+        "sha256": "0348cafb24a37acf63ea05f5807b5987f8af107b825449b2b0867ab75bc5f0e4"
+      },
+      "captures": {
+        "usage-wide": {
+          "path": "/private/tmp/agentdocker-usage-final-ui-20260918/window/usage-wide.png",
+          "sha256": "c0fd03e7602e076dbddeefcc56a193d0ef6c6fa4c912baf13311ec23fd9104cc"
+        },
+        "usage-narrow": {
+          "path": "/private/tmp/agentdocker-usage-final-ui-20260918/window/usage-narrow.png",
+          "sha256": "fc585c9dd4eaf66a472da496c8dd7a741f9d48a234a397b10e20fe7c9381f4fc"
+        },
+        "usage-agent-narrow": {
+          "path": "/private/tmp/agentdocker-usage-final-ui-20260918/window/usage-agent-narrow.png",
+          "sha256": "149f6e6caa9c8fb9e0043cf5431e1101400df28a79e1e7c857ae002704d24e10"
+        },
+        "usage-zoom-narrow": {
+          "path": "/private/tmp/agentdocker-usage-final-ui-20260918/window/usage-zoom-narrow.png",
+          "sha256": "2cf1f72869c7f7dbf528d6feb734212814bbfb0bbd92e723442f5a6d63b8ee14"
+        }
+      }
+    },
+    "retained_failures": [
+      {
+        "kind": "compiler lint",
+        "source": "b812a59",
+        "observed": "Clippy rejected test declarations before later production items; declarations moved in a238d4f.",
+        "log": {
+          "path": "/private/tmp/agentdocker-usage-combined-gate-20260918.log",
+          "sha256": "3febc2fb334ff5c4a6bcb005d82fdfb6ff0fde60a0eeec8c3d9318e2360e1d95"
+        }
+      },
+      {
+        "kind": "accounting coverage defect",
+        "source": "a238d4f108893360fe5e35bd84a6043ae7e627b7",
+        "observed": "Identical Codex cumulative replay with changed contextual prefix proof caused one false accounting-conflict gap. Totals did not double-count. Fixed in 152c49d; restart and legacy-fingerprint regression covers both proof directions and genuine changed counters.",
+        "report": {
+          "path": "/private/tmp/agentdocker-usage-before-dedupe-trial-20260918/result.json",
+          "sha256": "6af3ffa816f1a5b8209a6e69f6c5a33aaa0bd2a7dcf9dd9dd65d430ecda8afaf"
+        },
+        "log": {
+          "path": "/private/tmp/agentdocker-usage-before-dedupe-trial-20260918.log",
+          "sha256": "81854ec46042fdabf290a49622a4c22782221df281db6fc1a08378527d2b26b8"
+        }
+      },
+      {
+        "kind": "UI fixture expectation",
+        "observed": "Fixture incorrectly expected 12000 input tokens; Claude input normalization includes 4000 cache-read and 2000 cache-write, so the correct total is 18000. Only fixture corrected.",
+        "report": {
+          "path": "/private/tmp/agentdocker-usage-ui-before-20260918/result.json",
+          "sha256": "ee2251748b48acbc9617d88146f0d4dea5dfcc922614dad66e68febcf6bb6397"
+        }
+      },
+      {
+        "kind": "rendered layout defect",
+        "source": "a238d4f108893360fe5e35bd84a6043ae7e627b7",
+        "observed": "At 720px, model names and output/reasoning columns were clipped, despite callback smoke passing. Fixed by cards and stacked filters in 889ea35.",
+        "capture": {
+          "path": "/private/tmp/agentdocker-usage-ui-before2-20260918/window/usage-narrow.png",
+          "sha256": "9f8ce7b4a5b67cfe034010da7fbe035828149cfcad53caee8becec11a0bb0a20"
+        }
+      }
+    ],
+    "limits": [
+      "Fixtures exercise real local binaries, not provider service consumption or billed usage.",
+      "No production transcript collection was enabled and these Usage binaries were not installed.",
+      "Persistent discovery resumption, bounded long-term dedupe/baseline resources, standalone scans and separate emitted-byte overhead remain open.",
+      "Actual supported-provider versions, long-running CPU/memory/battery acceptance, external final review and integration remain open.",
+      "Large/growing files are verified through ephemeral bounded passes; standalone whole-prefix validation still refuses beyond 16 MiB."
     ]
   }
 }

@@ -948,7 +948,7 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 31 | ✅ notification routing: a click opens the message — question, inbox row or archived conversation — with the routing action in the notification itself, a running app receiving it directly and a cold start carrying it; an archived message is scrolled to, paging back a bounded number of pages | 5 | 14, 30 |
 | 32 | ✅ session reconnect: a provider session that comes back as a new process is folded into its ended record by `session_id` under the transfer fence (`session_resumed`); records with retained observations are refused today, and carrying their reads across is in progress | 5 | 27 |
 | 33 | ✅ project pause: the person tells a project's agents to hold with a reason (`pause`, `resume_project`, `pauses`), the daemon refuses their new leases while it holds, and the reason reaches every live agent as a reserved `pause` message; schema 23 | 5 | 13 |
-| 34 | ⏳ token usage: the bounded reader of local Codex rollouts and Claude transcripts with explicit gaps is merged (#165/#167); the collector, `usage` protocol, CLI and Usage screen are not | 5 | — |
+| 34 | ⏳ token usage: reader merged (#165/#167); initial collector, store, protocol, CLI/MCP and responsive Usage screen integrated in draft #194 with bounded real-binary acceptance; final review, persistent discovery, long-term resources, standalone scans and overhead remain | 5 | — |
 | 35 | ✅ a board of work: cards with acceptance text pulled once over a `task:<id>` lease, moved by their holder or the person, paged; PR #176 merged and installed; actual card creation verified | 5 | 13 |
 | 36 | ✅ persisted message drafts: text-only, bounded, restored as unsent; PR #178 merged and installed; actual conversation draft close/reopen verified; question-answer drafts retain original IDs with no restored approval/send state (#185: full gate and native reopen passed at `13dd72c`; review/integration pending); Board-card text now joins the shared private snapshot under its original project, with version-1/2 migration to version 3, shared storage limits and no restored filing state (full gate and 507 native steps/30 checks passed at `720fa72`; review/integration pending); other forms remain window-local | 5 | 30 |
 
@@ -964,8 +964,10 @@ Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `
 |---|---|---|
 | Additional execution adapters (Apple `container`, others) | capability-specific | 4 |
 
-Initial collector implementation is now on `codex/usage-collection`, pending
-combined CLI/UI integration and full validation. The opt-in `[usage]` section in
+Initial collector and CLI/MCP/UI are integrated on `codex/usage-collection`
+for existing draft #194. Clean source `889ea35` passed 1,219 Rust tests
+(seven skipped), 94 Python checks (one skipped), lint, packaging and release.
+Final source review and integration remain pending. The opt-in `[usage]` section in
 `agentd.toml` accepts `enabled = true`, `retention_days = 30` (1–3650), and
 optional absolute `codex_roots` / `claude_roots`. Empty lists use the standard
 provider log directories. Disabled collection reports unknown coverage and never
@@ -982,18 +984,23 @@ previously attributed history does not follow a moved agent. Replay fingerprints
 and baselines survive aggregate retention. New tables are additive and preserve
 the existing schema-23 meanings. No transcript text is retained.
 
-Seven daemon/storage regressions and 18 host usage tests passed locally,
-including partial-tail completion, copied logs and restart, a refused database
-transaction, transfer fencing, reset/out-of-order counters and attribution.
-This is a staged implementation, not a completed acceptance claim. Discovery
-restarts after a daemon restart; file scan progress is durable. Larger-prefix
-validation, growth reuse, complete resource/retention acceptance, standalone
-scans, overhead instrumentation, and CLI/UI integration remain open. A prefix
-beyond the reader's 16 MiB validation cap remains incomplete; the collector does
-not bypass that refusal. Overhead is returned as unknown until instrumented.
+Private real binaries processed a 24,494,890-byte Claude fixture, deduplicated
+copied logs and identical Codex snapshots, resumed after append/restart, and
+preserved the committed retention cutoff through shrink/restart/expansion.
+Four discovery generations completed with no source gaps. The native Usage
+screen passed 25 rendered steps at 1440/720 pixels and increased text size.
+These are supported-format fixtures, not actual provider billing acceptance.
+See the [existing integrated record](verification/2026-09-12-integrated-desktop.json)
+for exact source, failures, hashes and short coordination observations.
+Discovery restarts after a daemon restart; file scan progress is durable.
+Persistent discovery resumption, bounded long-term fingerprint/baseline storage,
+sustained resource acceptance, standalone scans and overhead instrumentation
+remain open. The collector's ephemeral prefix session handles large/growing
+files in bounded passes; the standalone reader retains its 16 MiB validation
+limit. Overhead is returned as unknown until instrumented.
 
 **Token usage by agent, model and provider** (requested September 15;
-the bounded log reader with explicit gaps is merged in #165/#167; the initial collector/protocol is in progress; CLI and Usage screen integration and acceptance remain open). The initial adapters read local Codex rollouts
+the bounded log reader is merged in #165/#167; initial collector/protocol/CLI/MCP/UI are integrated in draft #194 with bounded acceptance; the remaining engineering and final integration above stay open). The initial adapters read local Codex rollouts
 and Claude Code transcripts. These are versioned runtime formats: an adapter
 must identify a supported usage record and model context, rather than assume
 every turn or runtime reports every counter. Missing or unsupported counters
@@ -1163,8 +1170,8 @@ require an explicit gap/replay. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
 The standalone reader API retains its earlier 16 MiB whole-prefix limit.
 The 22+ MiB reader regression and the updated daemon partial-tail/restart trial
-passed in the 29-test host/daemon usage campaign. Real-binary and resource
-acceptance remain pending. The CLI uses `--agent` (with `--as` accepted as an
+passed in the 29-test host/daemon usage campaign. The later real-binary
+restart/append/copy trial passed; sustained resource acceptance remains open. The CLI uses `--agent` (with `--as` accepted as an
 alias) as an explicit filter; the calling agent identity does not silently
 filter an otherwise project-wide report.
 
@@ -1174,8 +1181,8 @@ proof falsely reported an accounting conflict. Sample fingerprints now exclude
 that contextual proof; the first accepted observation still determines baseline
 accounting, and replay cannot retroactively manufacture missing history. The
 restart regression covers both proof directions, earlier draft fingerprints and
-a genuine changed-counter conflict. Its targeted test passed; the corrected
-real-binary trial and combined gate remain pending.
+a genuine changed-counter conflict. Its targeted test, the corrected
+real-binary trial and the 1,219-Rust-test combined gate passed.
 
 Collector follow-up preserves the committed retention cutoff when configuration
 expands: discarded history stays explicitly truncated, and newly found older
