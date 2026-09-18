@@ -3567,6 +3567,14 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
             "\n`agentdocker setup --preview` reviews missing or unverified integrations; `agentdocker setup --health` explains connection issues."
         );
     }
+    // What the inventory could not read is said, not left as absence.
+    for runtime in runtimes.iter().filter(|r| !r.incomplete.is_empty()) {
+        println!(
+            "\n{} inventory incomplete:\n  {}",
+            runtime.label,
+            runtime.incomplete.join("\n  ")
+        );
+    }
     let in_browser: Vec<&str> = runtimes
         .iter()
         .filter(|r| r.in_browser() && r.installed())

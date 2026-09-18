@@ -83,12 +83,79 @@ fn error(path: &Path, detail: &str) -> io::Error {
     io::Error::other(format!("browser inventory at {}: {detail}", path.display()))
 }
 
-/// The vendor's extension in every browser profile it is installed in.
-pub(super) fn extensions(spec: &RuntimeSpec, roots: &Roots) -> io::Result<Vec<InstalledExtension>> {
-    let mut found = Vec::new();
-    if spec.extensions.is_empty() {
-        return Ok(found);
+/// A manifest is a few kilobytes; a native messaging host file smaller.
+const MAX_JSON_BYTES: u64 = 256 * 1024;
+/// Chrome's `Local State` grows with profiles and experiments, not without bound.
+const MAX_LOCAL_STATE_BYTES: u64 = 4 * 1024 * 1024;
+/// Directory entries examined per listing: a profile directory, an
+/// extension's copies, a native messaging host directory.
+const MAX_DIR_ENTRIES: usize = 4096;
+
+/// What the inventory found, and what it could not read within its bounds.
+/// An unreadable or oversized file is reported, never taken for absence.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Inventory {
+    pub found: Vec<InstalledExtension>,
+    pub incomplete: Vec<String>,
+}
+
+/// A JSON file, read only if it is a regular file within `limit` bytes:
+/// `Ok(None)` when absent, `Err(why)` for a special, oversized, unreadable
+/// or malformed one. Opening never follows a symlink or waits on a FIFO.
+fn read_json(path: &Path, limit: u64) -> Result<Option<serde_json::Value>, String> {
+    use std::io::Read;
+    let file = match crate::files::open_regular(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let mut text = String::new();
+    file.take(limit + 1)
+        .read_to_string(&mut text)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if text.len() as u64 > limit {
+        return Err(format!(
+            "{}: larger than {limit} bytes, not read",
+            path.display()
+        ));
     }
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|e| format!("{}: not JSON ({e})", path.display()))
+}
+
+/// The entries of a directory, at most `MAX_DIR_ENTRIES` of them; the
+/// note says when there were more.
+fn entries(dir: &Path, notes: &mut Vec<String>) -> io::Result<Vec<PathBuf>> {
+    let mut listed = Vec::new();
+    let mut more = false;
+    for (index, entry) in std::fs::read_dir(dir)?.enumerate() {
+        if index >= MAX_DIR_ENTRIES {
+            more = true;
+            break;
+        }
+        if let Ok(entry) = entry {
+            listed.push(entry.path());
+        }
+    }
+    if more {
+        notes.push(format!(
+            "{}: more than {MAX_DIR_ENTRIES} entries, not all examined",
+            dir.display()
+        ));
+    }
+    listed.sort();
+    Ok(listed)
+}
+
+/// The vendor's extension in every browser profile it is installed in,
+/// with a note for everything the bounds kept it from reading.
+pub(super) fn extensions(spec: &RuntimeSpec, roots: &Roots) -> io::Result<Inventory> {
+    let mut inventory = Inventory::default();
+    if spec.extensions.is_empty() {
+        return Ok(inventory);
+    }
+    let notes = &mut inventory.incomplete;
     for dir in &roots.browser_dirs {
         match std::fs::metadata(&dir.path) {
             Ok(metadata) if metadata.is_dir() => {}
@@ -96,16 +163,16 @@ pub(super) fn extensions(spec: &RuntimeSpec, roots: &Roots) -> io::Result<Vec<In
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
             Err(_) => return Err(error(&dir.path, "user data cannot be inspected")),
         }
-        let bridges = bridges(&dir.path.join("NativeMessagingHosts"))?;
-        let profiles = profiles(&dir.path)?;
-        let names = profile_names(&dir.path.join("Local State"));
+        let bridges = bridges(&dir.path.join("NativeMessagingHosts"), notes)?;
+        let profiles = profiles(&dir.path, notes)?;
+        let names = profile_names(&dir.path.join("Local State"), notes);
         for profile in &profiles {
             for extension in spec.extensions {
                 let unpacked = profile.join("Extensions").join(extension.id);
-                let Some(version) = newest_version(&unpacked)? else {
+                let Some(version) = newest_version(&unpacked, notes)? else {
                     continue;
                 };
-                found.push(InstalledExtension {
+                inventory.found.push(InstalledExtension {
                     label: extension.label.to_owned(),
                     browser: dir.browser.clone(),
                     profile: (profiles.len() > 1).then(|| {
@@ -121,30 +188,30 @@ pub(super) fn extensions(spec: &RuntimeSpec, roots: &Roots) -> io::Result<Vec<In
             }
         }
     }
-    Ok(found)
+    Ok(inventory)
 }
 
 /// Every profile directory: the ones with an `Extensions` directory.
-fn profiles(user_data: &Path) -> io::Result<Vec<PathBuf>> {
-    let mut profiles: Vec<PathBuf> = std::fs::read_dir(user_data)
-        .map_err(|_| error(user_data, "profiles cannot be listed"))?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
+fn profiles(user_data: &Path, notes: &mut Vec<String>) -> io::Result<Vec<PathBuf>> {
+    let listed =
+        entries(user_data, notes).map_err(|_| error(user_data, "profiles cannot be listed"))?;
+    Ok(listed
+        .into_iter()
         .filter(|path| path.join("Extensions").is_dir())
-        .collect();
-    profiles.sort();
-    Ok(profiles)
+        .collect())
 }
 
 /// What the person calls each profile, by directory name, from the
-/// browser's `Local State`. Unreadable or unfamiliar: no names, and the
-/// directory names stand.
-fn profile_names(local_state: &Path) -> BTreeMap<String, String> {
-    let Ok(text) = std::fs::read_to_string(local_state) else {
-        return BTreeMap::new();
-    };
-    let Ok(state) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return BTreeMap::new();
+/// browser's `Local State`. Absent or unfamiliar: no names, and the
+/// directory names stand; unreadable within bounds: a note, and the same.
+fn profile_names(local_state: &Path, notes: &mut Vec<String>) -> BTreeMap<String, String> {
+    let state = match read_json(local_state, MAX_LOCAL_STATE_BYTES) {
+        Ok(Some(state)) => state,
+        Ok(None) => return BTreeMap::new(),
+        Err(why) => {
+            notes.push(format!("profile names unknown: {why}"));
+            return BTreeMap::new();
+        }
     };
     state["profile"]["info_cache"]
         .as_object()
@@ -163,25 +230,28 @@ fn profile_names(local_state: &Path) -> BTreeMap<String, String> {
 }
 
 /// The native messaging hosts registered in this user data directory, by
-/// the extension id each one admits: whose bridge it is. Another vendor's
-/// malformed manifest is not our failure and is skipped.
-fn bridges(hosts: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
-    let entries = match std::fs::read_dir(hosts) {
-        Ok(entries) => entries,
+/// the extension id each one admits: whose bridge it is. A manifest that
+/// cannot be read within bounds is noted; one that is not JSON is another
+/// vendor's problem and is skipped.
+fn bridges(hosts: &Path, notes: &mut Vec<String>) -> io::Result<BTreeMap<String, PathBuf>> {
+    let listed = match entries(hosts, notes) {
+        Ok(listed) => listed,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(_) => return Err(error(hosts, "native messaging hosts cannot be listed")),
     };
     let mut bridges = BTreeMap::new();
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
+    for path in listed {
         if path.extension().is_none_or(|ext| ext != "json") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
+        let manifest = match read_json(&path, MAX_JSON_BYTES) {
+            Ok(Some(manifest)) => manifest,
+            Ok(None) => continue,
+            Err(why) if why.contains("not JSON") => continue,
+            Err(why) => {
+                notes.push(format!("native messaging host skipped: {why}"));
+                continue;
+            }
         };
         let Some(program) = manifest["path"].as_str().filter(|p| !p.is_empty()) else {
             continue;
@@ -207,16 +277,17 @@ fn bridges(hosts: &Path) -> io::Result<BTreeMap<String, PathBuf>> {
 }
 
 /// The version of the newest unpacked copy of an extension: `<version>_<n>`
-/// directories, the manifest's own `version` when it says one.
-fn newest_version(unpacked: &Path) -> io::Result<Option<Option<String>>> {
-    let entries = match std::fs::read_dir(unpacked) {
-        Ok(entries) => entries,
+/// directories, the manifest's own `version` when it says one. A manifest
+/// that cannot be read within bounds leaves the copy's name to say the
+/// version, with a note; the extension is still there.
+fn newest_version(unpacked: &Path, notes: &mut Vec<String>) -> io::Result<Option<Option<String>>> {
+    let listed = match entries(unpacked, notes) {
+        Ok(listed) => listed,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(error(unpacked, "extension cannot be listed")),
     };
-    let mut copies: Vec<(Vec<u64>, PathBuf)> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
+    let mut copies: Vec<(Vec<u64>, PathBuf)> = listed
+        .into_iter()
         .filter(|path| path.is_dir())
         .map(|path| (version_key(&path), path))
         .collect();
@@ -224,16 +295,23 @@ fn newest_version(unpacked: &Path) -> io::Result<Option<Option<String>>> {
     let Some((_, newest)) = copies.pop() else {
         return Ok(None);
     };
-    let version = std::fs::read_to_string(newest.join("manifest.json"))
-        .ok()
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-        .and_then(|manifest| manifest["version"].as_str().map(str::to_owned))
-        .or_else(|| {
-            newest
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .map(|name| name.split('_').next().unwrap_or(&name).to_owned())
-        });
+    let from_name = || {
+        newest
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .map(|name| name.split('_').next().unwrap_or(&name).to_owned())
+    };
+    let version = match read_json(&newest.join("manifest.json"), MAX_JSON_BYTES) {
+        Ok(Some(manifest)) => manifest["version"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(from_name),
+        Ok(None) => from_name(),
+        Err(why) => {
+            notes.push(format!("extension version taken from its directory: {why}"));
+            from_name()
+        }
+    };
     Ok(Some(version))
 }
 
@@ -331,8 +409,9 @@ mod tests {
     fn extensions_are_found_per_profile_with_their_bridge() {
         let (_tmp, roots) = machine();
         let claude = extensions(spec("claude-browser").unwrap(), &roots).unwrap();
+        assert!(claude.incomplete.is_empty(), "{:?}", claude.incomplete);
         assert_eq!(
-            claude,
+            claude.found,
             vec![
                 InstalledExtension {
                     label: "Claude".into(),
@@ -351,15 +430,13 @@ mod tests {
             ]
         );
         let chatgpt = extensions(spec("chatgpt-browser").unwrap(), &roots).unwrap();
-        assert_eq!(chatgpt.len(), 1);
-        assert_eq!(chatgpt[0].profile.as_deref(), Some("Work"));
-        assert_eq!(chatgpt[0].version.as_deref(), Some("2.1.0"));
-        assert_eq!(chatgpt[0].bridge, None, "no host admits that id");
-        assert!(
-            extensions(spec("claude-code").unwrap(), &roots)
-                .unwrap()
-                .is_empty()
-        );
+        assert_eq!(chatgpt.found.len(), 1);
+        assert_eq!(chatgpt.found[0].profile.as_deref(), Some("Work"));
+        assert_eq!(chatgpt.found[0].version.as_deref(), Some("2.1.0"));
+        assert_eq!(chatgpt.found[0].bridge, None, "no host admits that id");
+        assert!(chatgpt.incomplete.is_empty(), "{:?}", chatgpt.incomplete);
+        let none = extensions(spec("claude-code").unwrap(), &roots).unwrap();
+        assert!(none.found.is_empty() && none.incomplete.is_empty());
     }
 
     #[test]
@@ -367,9 +444,84 @@ mod tests {
         let (tmp, mut roots) = machine();
         std::fs::remove_dir_all(tmp.path().join("Chrome/Profile 1")).unwrap();
         roots.browser_dirs.truncate(1);
-        let claude = extensions(spec("claude-browser").unwrap(), &roots).unwrap();
+        let claude = extensions(spec("claude-browser").unwrap(), &roots)
+            .unwrap()
+            .found;
         assert_eq!(claude.len(), 1);
         assert_eq!(claude[0].profile, None);
+    }
+
+    /// A FIFO where a manifest should be is not waited on, an oversized
+    /// one is not read, and a directory with too many entries is not
+    /// walked; each is said, and the extension it concerns is still
+    /// reported rather than taken for absent.
+    #[cfg(unix)]
+    #[test]
+    fn special_oversized_and_crowded_inputs_are_bounded_and_reported() {
+        use std::os::unix::fs::PermissionsExt;
+        let (tmp, roots) = machine();
+        let chrome = tmp.path().join("Chrome");
+        let claude = spec("claude-browser").unwrap().extensions[0].id;
+        // Local State becomes a FIFO: no names, one note, nothing hangs.
+        let local_state = chrome.join("Local State");
+        std::fs::remove_file(&local_state).unwrap();
+        let fifo = |path: &Path| {
+            let name = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        };
+        fifo(&local_state);
+        // The newest copy's manifest is oversized: the version comes from
+        // the directory name instead.
+        let manifest = chrome.join(format!(
+            "Default/Extensions/{claude}/1.0.93_0/manifest.json"
+        ));
+        std::fs::write(&manifest, "x".repeat(MAX_JSON_BYTES as usize + 1)).unwrap();
+        std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // A native messaging host that is a FIFO is skipped with a note,
+        // and the readable one still names its bridge.
+        fifo(&chrome.join("NativeMessagingHosts/stuck.json"));
+        let started = std::time::Instant::now();
+        let inventory = extensions(spec("claude-browser").unwrap(), &roots).unwrap();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "no FIFO was waited on"
+        );
+        let default = inventory
+            .found
+            .iter()
+            .find(|e| e.profile.as_deref() == Some("Default"))
+            .expect("the extension is still reported");
+        assert_eq!(
+            default.version.as_deref(),
+            Some("1.0.93"),
+            "from the directory name"
+        );
+        assert_eq!(default.bridge, Some(PathBuf::from("/opt/example/bridge")));
+        let notes = inventory.incomplete.join("\n");
+        assert!(notes.contains("profile names unknown"), "{notes}");
+        assert!(notes.contains("larger than"), "{notes}");
+        assert!(notes.contains("stuck.json"), "{notes}");
+
+        // A crowded directory: only the first MAX_DIR_ENTRIES are examined.
+        let crowded = tmp.path().join("Crowded");
+        for index in 0..(MAX_DIR_ENTRIES + 3) {
+            std::fs::create_dir_all(crowded.join(format!("p{index:05}/Extensions"))).unwrap();
+        }
+        let mut roots = roots;
+        roots.browser_dirs = vec![BrowserDir {
+            browser: "Crowded".into(),
+            path: crowded.clone(),
+        }];
+        let inventory = extensions(spec("claude-browser").unwrap(), &roots).unwrap();
+        assert!(inventory.found.is_empty());
+        assert!(
+            inventory
+                .incomplete
+                .iter()
+                .any(|n| n.contains("more than") && n.contains("not all examined")),
+            "{:?}",
+            inventory.incomplete
+        );
     }
 
     #[test]
