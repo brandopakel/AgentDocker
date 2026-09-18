@@ -208,9 +208,9 @@ archive outlives both. A notification for a message has a **Reply** field
 project's everyone, its channel, or back to the agent who wrote to you — as a
 reply to it, so a typed answer closes the question it answers, without the
 window opening. Only the daemon's `sent` counts as sent. A reply that did
-not go is said as a notification and comes back to the app: the
-conversation opens with your words in its composer, after anything already
-drafted there, and the status line says why — **Reply not sent** when the
+not go is said as a notification (**Open the app to recover your reply**)
+and comes back to the app: the conversation opens with your words in its
+composer, after anything already drafted there, and the status line says why — **Reply not sent** when the
 daemon refused it, **Reply may not have been sent** when the connection went
 before an answer, in which case read the history before sending again.
 When the draft cannot take the words (draft storage is full) they wait beside

@@ -82,6 +82,7 @@ pub fn enqueue(activation: Activation) -> Result<(), String> {
 
 /// The most a reply from a notification carries: the field is a line
 /// or two, and a message this size is refused by the daemon anyway.
+#[cfg(any(target_os = "macos", test))]
 pub const REPLY_CHARS: usize = 4_000;
 /// The most of a failed reply that comes back to the app: what a draft
 /// holds. Longer is cut there and said to be.
@@ -276,12 +277,14 @@ fn report_failure(action: Action, text: String, failure: Failure) {
     } else {
         instance::forward(&home, &socket, &activation).map_err(|e| e.to_string())
     };
+    // Handed to the app is not yet held by it: the window may be full of
+    // kept replies or still opening, and says what it did.
     let where_it_is = match &kept {
-        Ok(()) => "Your reply is in the app as a draft.".to_owned(),
+        Ok(()) => "Open the app to recover your reply.".to_owned(),
         Err(reason) => {
             eprintln!("reply from notification could not come back to the app: {reason}");
             format!(
-                "The app could not keep your reply. You wrote: {}",
+                "The app could not take your reply. You wrote: {}",
                 excerpt(&text)
             )
         }
