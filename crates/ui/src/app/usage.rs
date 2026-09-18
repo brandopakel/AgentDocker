@@ -172,9 +172,13 @@ impl App {
             .collect(),
             c,
         );
-        let mut page = column![row![windows, groups].spacing(10).align_y(Center)]
-            .spacing(14)
-            .width(Fill);
+        let compact = self.narrow() || self.panes.workspace_width() < 940.0;
+        let filters: Element<'_, Message> = if compact {
+            column![windows, groups].spacing(10).into()
+        } else {
+            row![windows, groups].spacing(10).align_y(Center).into()
+        };
+        let mut page = column![filters].spacing(14).width(Fill);
         if let Some(error) = &self.usage_error {
             page = page.push(note(format!("Could not read usage: {error}"), c).color(c.amber));
         }
@@ -208,7 +212,7 @@ impl App {
                 .into()
             });
         } else {
-            page = page.push(self.usage_table(report, c));
+            page = page.push(self.usage_table(report, compact, c));
         }
         page = page.push(
             column![
@@ -223,7 +227,7 @@ impl App {
 
     /// The rows as a table: the key, how many samples, then each count
     /// with its coverage mark; a legend under it.
-    fn usage_table(&self, report: &Report, c: Colors) -> Element<'_, Message> {
+    fn usage_table(&self, report: &Report, compact: bool, c: Colors) -> Element<'_, Message> {
         let key = match report.by {
             Group::Agent => "Agent",
             Group::Model => "Model",
@@ -231,6 +235,38 @@ impl App {
             Group::Project => "Project",
             Group::Hour => "Hour",
         };
+        if compact {
+            let mut cards = column![].spacing(10).width(Fill);
+            for row_ in &report.rows {
+                let mut card = column![
+                    text(self.usage_key(row_))
+                        .size(15)
+                        .font(weight(iced::font::Weight::Medium)),
+                    small(format!("{} samples", thousands(row_.samples)), c),
+                ]
+                .spacing(6)
+                .width(Fill);
+                for (label, value) in [
+                    ("Input", &row_.counters.input_tokens),
+                    ("Cache read", &row_.counters.cache_read_input_tokens),
+                    ("Cache write", &row_.counters.cache_write_input_tokens),
+                    ("Output", &row_.counters.output_tokens),
+                    ("Reasoning", &row_.counters.reasoning_output_tokens),
+                ] {
+                    card = card.push(
+                        row![
+                            container(small(label, c)).width(Fill),
+                            text(counter(value)).size(13).color(c.text),
+                        ]
+                        .spacing(12),
+                    );
+                }
+                cards = cards.push(panel(card, c));
+            }
+            return cards
+                .push(small("~ partial coverage · — not reported", c))
+                .into();
+        }
         let head = |label: &str| eyebrow(label.to_owned(), c);
         let mut table = column![
             row![
@@ -250,18 +286,22 @@ impl App {
         for row_ in &report.rows {
             table = table.push(self.usage_row(row_, c));
         }
-        table = table.push(small("~ some samples did not say · — none did", c));
+        table = table.push(small("~ partial coverage · — not reported", c));
         panel(table, c)
     }
 
-    fn usage_row(&self, row_: &Row, c: Colors) -> Element<'_, Message> {
-        let key = match &row_.key {
+    fn usage_key(&self, row_: &Row) -> String {
+        match &row_.key {
             Some(key) if matches!(self.usage.as_ref().map(|(_, r)| r.by), Some(Group::Agent)) => {
                 self.name_of(key)
             }
             Some(key) => key.clone(),
             None => "(unattributed)".to_owned(),
-        };
+        }
+    }
+
+    fn usage_row(&self, row_: &Row, c: Colors) -> Element<'_, Message> {
+        let key = self.usage_key(row_);
         let cell = |value: String| {
             container(text(value).size(13).color(c.text))
                 .width(110)

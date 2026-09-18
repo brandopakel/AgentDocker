@@ -382,3 +382,8 @@ limit. Both ends still reject oversized frames. A full recovery list shows a
 Usage reads carry request identities across project, range and grouping changes.
 Duplicate refreshes share the outstanding read; superseded replies are ignored,
 and a refused queue leaves the last totals visible with an explicit error.
+Usage filters stack and totals become labelled cards when the workspace cannot
+fit the table, including a wide project rail or increased text size. Each card
+keeps all five counter categories and the unknown/partial markers visible;
+the wide table remains available when at least 940 logical pixels fit beside
+the rail.
