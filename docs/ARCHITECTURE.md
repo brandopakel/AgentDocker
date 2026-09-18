@@ -349,6 +349,12 @@ The live bus reports `lagged {skipped}` when a slow subscriber falls more than 1
 
 **Typed links.** A card, a message, a checkpoint and a hand-off bundle may carry `links`: up to sixteen `{kind, target, note?}`, where `kind` is `path`, `commit`, `pr`, `url`, `task`, `message` or `memory` and the daemon checks only the shape its kind requires (a commit is seven to sixty-four hex digits, a pr a URL or `#123` or `owner/repo#123`, a url `http(s)://` with no spaces, a task a card id or a prefix of at least four hex digits, a message a message id, a memory its own text; a target is one line of at most 2,048 characters, a note of 200). A malformed link is `error(invalid)` before anything is routed or written. The links are the affordance — a reader knows what kind of thing to open without parsing prose — and the daemon opens nothing: whether a path exists or a pull request is open is the reader's to find out. `task_update {links}` replaces a card's links whole; the app shows them under a message and on an open card. Emitted by the same events as the thing they are on.
 
+A keyed handoff retry returns its original stored bundle before checking current
+roles, recipient membership or sender/recipient liveness. A cleared, reassigned
+or ambiguous role cannot redirect the saved handoff or hide an uncertain result.
+The retry emits no new event or recipient message, including after reopening the
+database. New handoffs still validate their current sender and destination.
+
 **Roles.** A role is a word an agent is given — `reviewer`, `implementer`, `analyst` — kept as the `role` label on its record (`role {agent, role?}`, said as `role_set`) so that "send this to the reviewer" resolves: `role:<name>` as the recipient of a `send`, an `ask` or a `handoff` is the one live agent holding that role in the sender's project. Several agents may hold one role; it is at resolution that a role must name exactly one, so a stale record that has not yet been reaped makes the role ambiguous rather than silently choosing. A finished agent's role is not an address. On the restricted endpoint a role is the credential's project's, as it is for a local sender. An agent's name cannot start with `role:` — that is how a role is addressed, and such a name would be reached as the role or shadow it; a record from before that rule which is live under such a name makes the reference `ambiguous` (neither reached nor bypassed) until it is renamed.
 
 ## Channels

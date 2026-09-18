@@ -674,7 +674,7 @@
       "source_note": "Trial source528e4e0 adds only driver/docs corrections to build source4eb92a7; Rust, Cargo and bundled skill content are unchanged. The current integration also includes subsequent native recovery-driver/evidence corrections. No new skill loader behavior is claimed."
     }
   },
-  "status": "Portable coordination skill merged in #149 and is included in the recorded installed d14610b7 source; fresh-session acceptance remains open.",
+  "status": "Portable coordination skill merged in #149 and is included in the recorded installed d14610b7 candidate built from source 3785e810; fresh-session acceptance remains open.",
   "current_disposition_2026_09_18": {
     "checked_at": "2026-09-18",
     "source_main": "acbd09df5ab73c4721d3420f9b5a9c373f5b2429",

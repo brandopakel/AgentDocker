@@ -158,8 +158,8 @@ own idea of who is live. Paprika does not know what an agent is doing to a
 checkout, cannot stop two agents editing one file, runs nothing on the machine
 and reaches an agent only when the agent calls in; AgentDocker had no board
 when this was written (it has one now — the first item below, in source), and
-still has no spec documents beside the work, no roles, no webhooks and no
-mobile client. The overlap is coordination vocabulary: Paprika's
+still has no spec documents beside the work or mobile client; roles and
+webhooks are now in source. The overlap is coordination vocabulary: Paprika's
 pull is our `claim` on a `task:<name>` lease (both atomic, both refuse a second
 taker), its hand-off is a column move where ours is a bundle to a named agent,
 its comments are our channel, its Memory link is our `journal_note`.
