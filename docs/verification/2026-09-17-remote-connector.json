@@ -255,7 +255,8 @@
   "limits": [
     "A browser agent is not woken; its inbox waits for the hosted model's next read_inbox.",
     "Revocation by a separate `connector revoke` process reaches a serving connector on the agent's next request, through the daemon's liveness answer.",
-    "Egress allowlisting, CIMD, the tunnel helper and desktop status are the second increment."
+    "Egress allowlisting, CIMD, the tunnel helper and desktop status are the second increment.",
+    "A browser agent reads its inbox only when the hosted model calls read_inbox; the inbound test needed a prompt in the chat."
   ],
   "also_covered_by_tests": "A daemon that is not answering during /mcp is a 503 with Retry-After and the grant stands (connector::tests::a_silent_daemon_does_not_end_a_grant); the loopback trial does not stop the daemon.",
   "vendor_acceptance": {
@@ -302,5 +303,9 @@
       "A quick tunnel's hostname changes at every service start; a named tunnel needs a Cloudflare account and domain the person does not have yet.",
       "ChatGPT's egress was admitted through its published feed as of 2026-09-18; the feed changes and must be refreshed."
     ]
+  },
+  "inbound_acceptance": {
+    "date": "2026-09-18T04:52:00Z",
+    "result": "Passed: a terminal session (claude-code-74334) sent message a67a2614879f4ca3 to claude-browser-qhip through the daemon; in a claude.ai chat, the browser Claude called read_inbox through the connector service, returned that message and ChatGPT's keel broadcast 6deffabefa5f4fcc (a browser agent is a member of the project it joined, so a project broadcast reaches it too), acknowledged both with acknowledge_messages (two Allow-once prompts), and the daemon's inbox for claude-browser-qhip was empty afterwards. The inbound path is cooperative: nothing woke the browser agent; the person's prompt led it to read."
   }
 }
