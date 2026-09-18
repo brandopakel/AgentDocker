@@ -5900,9 +5900,35 @@ impl State {
         }
         self.notify_humans(&envelope, &recipients);
         let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);
+        let now = Utc::now();
+        let mut readiness = agentdocker_core::SendReadiness::default();
+        let blocked_sources: Vec<_> = self
+            .registry
+            .all()
+            .filter(|record| {
+                record
+                    .provider_availability
+                    .as_ref()
+                    .is_some_and(|state| state.issue.is_some())
+            })
+            .collect();
+        for id in &recipients {
+            let issue = self.registry.get(id).map_or_else(
+                || Some(agentdocker_core::RecipientReadiness::unknown(id.clone())),
+                |agent| {
+                    let blocked =
+                        agentdocker_core::provider_block(agent, blocked_sources.iter().copied())
+                            .and_then(|(_, state)| state.issue.as_ref())
+                            .map(|issue| issue.kind);
+                    agentdocker_core::RecipientReadiness::for_agent(agent, now, blocked)
+                },
+            );
+            readiness.observe(issue);
+        }
         Response::Sent {
             message: envelope.id,
             subscribers,
+            recipient_readiness: Some(readiness),
         }
     }
 
@@ -12489,6 +12515,156 @@ deny = ["send:all"]
                 reply_to: None,
             })
             .await
+    }
+
+    #[tokio::test]
+    async fn send_readiness_reports_only_queued_recipients_and_never_receipts() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = dir.path().join("alpha");
+        let beta = dir.path().join("beta");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        let sender = register_in(&daemon, "sender", &alpha).await;
+        let ready = register_in(&daemon, "ready", &alpha).await;
+        let unbound = register_in(&daemon, "unbound", &alpha).await;
+        let unrelated = register_in(&daemon, "unrelated", &beta).await;
+        {
+            let mut state = lock(&daemon.state);
+            let now = Utc::now();
+            let agent = state.registry.get_mut(&ready.id).unwrap();
+            agent.process_started_at = Some(now);
+            agent.spec.runtime = "codex".into();
+            agent.input_delivery = Some(agentdocker_core::InputDelivery {
+                process_started_at: now,
+                reported_at: now,
+                paused: false,
+                pause_reason: None,
+                received: None,
+                received_at: None,
+            });
+            let agent = state.registry.get_mut(&unbound.id).unwrap();
+            agent.spec.runtime = "claude-code".into();
+            agent
+                .spec
+                .labels
+                .insert("session_id".into(), "resume-session".into());
+        }
+        let Response::Channel { channel } = daemon
+            .handle(Request::ChannelOpen {
+                agent: sender.id.to_string(),
+                task: "readiness test".into(),
+                members: vec![ready.id.to_string(), unbound.id.to_string()],
+                name: None,
+                project: None,
+            })
+            .await
+        else {
+            panic!("channel failed")
+        };
+        for (destination, count) in [
+            (unbound.id.to_string(), 1),
+            (
+                format!("project:{}", sender.project.as_ref().unwrap().id()),
+                2,
+            ),
+            (format!("channel:{}", channel.id), 2),
+        ] {
+            let Response::Sent {
+                message,
+                recipient_readiness: Some(report),
+                ..
+            } = send(&daemon, sender.id.as_str(), &destination).await
+            else {
+                panic!("send failed")
+            };
+            assert_eq!(report.recipients, count);
+            assert_eq!(report.needs_attention, 1);
+            assert_eq!(report.details[0].agent, unbound.id);
+            assert_eq!(
+                report.details[0].issue,
+                agentdocker_core::SendIssue::NoReceiver
+            );
+            assert!(
+                report.details[0]
+                    .guidance()
+                    .contains("claude --resume resume-session")
+            );
+            assert!(
+                inbox(&daemon, unbound.id.as_str(), false)
+                    .await
+                    .iter()
+                    .any(|m| m.id == message)
+            );
+            assert!(
+                !inbox(&daemon, unrelated.id.as_str(), false)
+                    .await
+                    .iter()
+                    .any(|m| m.id == message)
+            );
+            assert!(
+                !inbox(&daemon, sender.id.as_str(), false)
+                    .await
+                    .iter()
+                    .any(|m| m.id == message)
+            );
+        }
+        // A quota held by a different project still blocks a recipient
+        // whose receiver is current; it must not add that source to fanout.
+        {
+            let mut state = lock(&daemon.state);
+            for id in [&ready.id, &unrelated.id] {
+                let agent = state.registry.get_mut(id).unwrap();
+                agent.spec.provider = Some("fixture-provider".into());
+                agent
+                    .spec
+                    .labels
+                    .insert("provider-quota".into(), "shared".into());
+            }
+            let agent = state.registry.get_mut(&unrelated.id).unwrap();
+            agent.provider_availability = Some(agentdocker_core::ProviderAvailability {
+                process_started_at: Utc::now(),
+                observed_at: Utc::now(),
+                cleared_observation: None,
+                issue: Some(agentdocker_core::ProviderIssue {
+                    quota_group: Some("shared".into()),
+                    ..agentdocker_core::ProviderIssue::local(
+                        agentdocker_core::ProviderIssueKind::Usage,
+                    )
+                }),
+            });
+        }
+        let Response::Sent {
+            recipient_readiness: Some(report),
+            ..
+        } = send(&daemon, sender.id.as_str(), ready.id.as_str()).await
+        else {
+            panic!("send failed")
+        };
+        assert_eq!(report.recipients, 1);
+        assert_eq!(report.details[0].agent, ready.id);
+        assert_eq!(
+            report.details[0].issue,
+            agentdocker_core::SendIssue::ProviderBlocked(
+                agentdocker_core::ProviderIssueKind::Usage
+            )
+        );
+        let queued = inbox(&daemon, unbound.id.as_str(), false).await;
+        lock(&daemon.state).store.reject_writes_for_test();
+        assert!(matches!(
+            send(&daemon, sender.id.as_str(), unbound.id.as_str()).await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert_eq!(
+            lock(&daemon.state).inboxes[&unbound.id]
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            queued
+        );
     }
 
     #[tokio::test]

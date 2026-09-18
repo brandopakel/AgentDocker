@@ -253,7 +253,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `shutdown` | `ok` | the daemon exits after replying; managed agents get SIGTERM, as on Ctrl-C |
 | `reload` | `ok`, `unavailable`, `backpressure`, `conflict`, `storage_unavailable` | with `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the daemon: reads the candidate executable's `--build-info` (`AGENTDOCKER_RELOAD_CANDIDATE`, else the release its managed installation has activated since it started, else its own executable), refuses another host or an older state schema before offering anything, offers the coordinator transfer, hands the listening socket, the daemon lock and the container endpoint to the successor, and answers `ok` once the successor says it is serving, then exits without touching agents; a refusal, a death, or no readiness within 30 s answers `unavailable` with the reason and leaves this daemon serving; without the gate, refuses without changing the daemon or agents |
 | `vacuum {force?}` | `vacuumed {before_bytes, after_bytes}` | SQLite `VACUUM` on the state database; nothing else is answered while it runs, so it is a `conflict` while sessions are live unless `force` |
-| `send {from, to, kind, payload, reply_to?}` | `sent` or `error(backpressure\|forbidden)` | `pause` and `resume` are reserved for committed project lifecycle requests and are refused here, including on the restricted endpoint; `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all`; a full addressed inbox rejects the entire send without publishing or evicting previously accepted messages |
+| `send {from, to, kind, payload, reply_to?}` | `sent {message, subscribers, recipient_readiness?}` or `error(backpressure\|forbidden)` | `pause` and `resume` are reserved for committed project lifecycle requests and are refused here, including on the restricted endpoint; `to` is an agent ref, `project:<id prefix or absolute path>`, `topic:<name>`, or `all`; a full addressed inbox rejects the entire send without publishing or evicting previously accepted messages |
 | `subscribe {agent?, topics?}` | stream of `message` or `lagged {skipped: u64}` | replays unacknowledged inbox messages, then streams live; neither step consumes the inbox |
 | `inbox {agent, drain?}` | `messages`, `error(conflict)` | snapshot; only explicit `drain: true` acknowledges its message IDs. A provider-blocked destructive read returns the legacy-compatible conflict shape without consuming input. |
 | `ack_inbox {agent, messages: MessageId[]}` | `ok` | idempotently acknowledge specific delivered messages; emits `inbox_acknowledged` |
@@ -857,6 +857,21 @@ unconfirmed. The daemon-wide bus subscriber count is omitted because it says
 nothing about the recipient. CLI send prints only the message ID on stdout;
 the acceptance notice goes to stderr. Topics and empty broadcasts may have no
 queued recipient.
+
+Successful sends also return optional `recipient_readiness`: the number of exact
+durable recipients, the number needing attention, and at most 32 named details.
+The snapshot is computed after the same message transaction commits, excluding
+the sender and agents outside the actual destination. An ended/unknown record,
+missing/stale receiver, paused delivery or provider block is surfaced separately;
+provider blocks take precedence over current receiver evidence. Human inboxes do
+not need a provider receiver. The snapshot neither acknowledges input nor retries
+it, and missing data from an older daemon means unknown. Names are bounded and
+control characters removed; a Claude resume command includes a session label only
+when it is a bounded ASCII identifier, never shell syntax. MCP includes guidance
+with each detail. CLI stderr shows the named issues; `ps` has an INPUT column and
+`ps --input-details` gives guidance for every listed session, without the send
+snapshot's 32-detail cap. UI advice belongs to the original composer and expands
+on demand; it is not persisted as fresh state after reopening.
 
 Recognising a herdr session is row 25, above. Herdr marks every pane working, blocked, or idle. That is the right question and we answer it better, because we know *why*: an agent waiting on a claim is blocked **on a named resource, held by a named agent**; fresh provider observations distinguish working from idle, and an agent with neither fresh provider evidence nor recent coordination is unknown. Silence is not proof of idle; blocked resource evidence takes precedence. Row 24 derives that from the working set instead of guessing at terminal output, and it is what `ps`, `activity` and the desktop app show beside each agent.
 

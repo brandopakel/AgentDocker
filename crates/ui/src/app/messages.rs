@@ -921,6 +921,15 @@ impl App {
         if let Some(error) = draft.and_then(|d| d.error.as_ref()) {
             composer = composer.push(text(error.clone()).size(13).color(c.amber));
         }
+        if let Some(notice) = draft.and_then(|draft| {
+            super::send_readiness::notice(
+                draft,
+                super::shell::DeliveryTarget::Conversation(key.clone()),
+                c,
+            )
+        }) {
+            composer = composer.push(notice);
+        }
         // Put the receiver state where a person is about to send, including
         // thread replies. A working MCP/hook transport alone cannot wake it.
         if let Some(agent) = self.direct_input_recipient(conversation) {

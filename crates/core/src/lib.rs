@@ -75,8 +75,10 @@ pub mod working_set;
 pub use working_set::{ReadMark, StalePath};
 
 pub mod recovery;
+pub mod send_readiness;
 pub mod session;
 pub use recovery::{Checkpoint, Recovery, Validation};
+pub use send_readiness::{RecipientReadiness, SendIssue, SendReadiness};
 
 pub mod handoff;
 pub use handoff::{HandoffBundle, HandoffDiff};

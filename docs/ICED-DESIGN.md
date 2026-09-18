@@ -259,6 +259,14 @@ database remains a manual step.
   undo/rollback checks. A framework migration does not relax process identity,
   release lifetime pins, queue limits or private state requirements.
 
+Send receipts carry bounded recipient-readiness metadata into the draft for the
+original session, channel, conversation or thread. The default presentation is
+one attention line with **Delivery details**; expanded details scroll within a
+180-point area and show named recipients plus explicit open/copy controls. The
+snapshot is not persisted and never changes message acknowledgement, provider
+consent or queue order. Expanded session/tool details compute current guidance
+from the same provider-block and receiver-evidence rules.
+
 ## Keyboard and native accessibility
 
 See [the current engineering and release backlog](REMAINING-WORK.md) for open

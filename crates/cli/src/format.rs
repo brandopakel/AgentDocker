@@ -830,6 +830,36 @@ fn single_line(text: &str) -> String {
         .collect()
 }
 
+/// Readiness is separate from queue acceptance; keep stdout stable for scripts.
+pub fn send_readiness(readiness: &agentdocker_core::SendReadiness) {
+    if readiness.needs_attention == 0 {
+        return;
+    }
+    eprintln!(
+        "{} session(s) need input attention:",
+        readiness.needs_attention
+    );
+    for recipient in &readiness.details {
+        recipient_readiness(recipient);
+    }
+    if readiness.omitted() > 0 {
+        eprintln!(
+            "  {} more; inspect sessions with agentdocker ps --input-details.",
+            readiness.omitted()
+        );
+    }
+}
+
+pub fn recipient_readiness(recipient: &agentdocker_core::RecipientReadiness) {
+    eprintln!(
+        "  {} ({}): {}",
+        recipient.name,
+        recipient.agent.short(),
+        recipient.issue.label()
+    );
+    eprintln!("    {}", recipient.guidance());
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

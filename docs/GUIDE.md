@@ -194,7 +194,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `ps` | Agents, live ones by default, grouped by project |
+| `ps` | Agents grouped by project, with INPUT readiness; `--input-details` adds reconnect guidance |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
 | `inspect <agent>` | Everything known about one agent, as JSON |
@@ -232,6 +232,20 @@ each one by pid.
 | `thread <message>` | One message and the replies under it |
 | `search <query>` | Find archived messages by text (`--project` narrows; `--as <agent>` searches only what that agent could list) |
 | `me` | Register yourself as an agent named `user` |
+
+A successful `send` prints the message ID on stdout. Acceptance and recipient
+warnings go to stderr: a queued message can still be waiting for another prompt
+in a session without an input receiver. `agentdocker ps --input-details` names
+these sessions and gives reconnect guidance; it does not restart them. Provider
+limits remain separate from receiver health. An older daemon can report readiness
+as unavailable rather than imply that every recipient can wake.
+
+For an existing Claude session with no channel, save the current work, exit that
+Claude session, and use the session-specific resume command shown in Delivery
+details or `ps --input-details` from its project folder. Complete Claude's startup
+channel consent. The AgentDocker MCP entry must include `--claude-channel`; see
+[Claude channel setup](CLAUDE-CHANNEL-INPUT.md). Hooks alone cannot start an idle
+turn. A copied instruction is not executed by AgentDocker.
 
 ### Share a resource
 

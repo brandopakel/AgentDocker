@@ -117,6 +117,8 @@ pub(super) struct ChannelDraft {
     pub text: String,
     pub sending: Option<String>,
     pub error: Option<String>,
+    pub readiness: Option<agentdocker_core::SendReadiness>,
+    pub readiness_expanded: bool,
     edited_since_send: bool,
 }
 
@@ -137,6 +139,8 @@ impl ChannelDraft {
             return None;
         }
         self.error = None;
+        self.readiness = None;
+        self.readiness_expanded = false;
         self.edited_since_send = false;
         self.sending = Some(self.text.clone());
         self.sending.clone()
@@ -385,8 +389,17 @@ impl State {
 }
 
 #[derive(Clone, Debug)]
+pub enum DeliveryTarget {
+    Conversation(String),
+    Session(String),
+    Channel(String),
+}
+
+#[derive(Clone, Debug)]
 pub enum Message {
     Tick,
+    DeliveryDetails(DeliveryTarget),
+    CopyGuidance(String),
     DraftsSaved(u64, Result<(), String>),
     RetryDraftSave,
     CloseWithoutDraftSave,
@@ -1449,6 +1462,23 @@ impl App {
                         }
                         Err(error) => self.say(error.to_string()),
                     }
+                }
+            }
+            Message::CopyGuidance(text) => return iced::clipboard::write(text),
+            Message::DeliveryDetails(target) => {
+                let draft = match target {
+                    DeliveryTarget::Conversation(key) => {
+                        self.shell.conversation_drafts.get_mut(&key)
+                    }
+                    DeliveryTarget::Session(key) => self
+                        .shell
+                        .session_drafts
+                        .get_mut(&key)
+                        .map(|entry| &mut entry.draft),
+                    DeliveryTarget::Channel(key) => self.shell.channel_drafts.get_mut(&key),
+                };
+                if let Some(draft) = draft {
+                    draft.readiness_expanded = !draft.readiness_expanded;
                 }
             }
             Message::DraftsSaved(generation, result) => {
@@ -3061,7 +3091,7 @@ mod tests {
         messages
             .send(Msg::SessionSent(
                 "recipient".into(),
-                Ok(MessageId::from("receipt".to_owned())),
+                Ok(MessageId::from("receipt".to_owned()).into()),
             ))
             .unwrap();
         app.drain();
@@ -3092,7 +3122,7 @@ mod tests {
         messages
             .send(Msg::SessionSent(
                 "recipient".into(),
-                Ok(MessageId::from("next-receipt".to_owned())),
+                Ok(MessageId::from("next-receipt".to_owned()).into()),
             ))
             .unwrap();
         app.drain();
@@ -3159,6 +3189,77 @@ mod tests {
     }
 
     #[test]
+    fn late_send_readiness_stays_with_its_destination_and_does_not_restore_as_current() {
+        let (mut app, _commands, messages) = app();
+        let home = tempfile::tempdir().unwrap();
+        app.shell = State::load(home.path());
+        app.shell.conversation = Some("elsewhere".into());
+        for kind in [
+            DraftKind::Session,
+            DraftKind::Conversation,
+            DraftKind::Channel,
+        ] {
+            app.shell.edit_draft(kind, "original".into(), "sent".into());
+            let target = match kind {
+                DraftKind::Session => DeliveryTarget::Session("original".into()),
+                DraftKind::Conversation => DeliveryTarget::Conversation("original".into()),
+                DraftKind::Channel => DeliveryTarget::Channel("original".into()),
+                DraftKind::Answer => unreachable!("message drafts only"),
+            };
+            let mut report = agentdocker_core::SendReadiness::default();
+            report.observe(Some(agentdocker_core::RecipientReadiness::unknown(
+                "missing".into(),
+            )));
+            let receipt = Ok(QueuedSend {
+                message: "queued".to_owned().into(),
+                readiness: Some(report.clone()),
+            });
+            messages
+                .send(match kind {
+                    DraftKind::Session => Msg::SessionSent("original".into(), receipt),
+                    DraftKind::Conversation => Msg::ConversationSent("original".into(), receipt),
+                    DraftKind::Channel => Msg::ChannelSent("original".into(), receipt),
+                    DraftKind::Answer => unreachable!("message drafts only"),
+                })
+                .unwrap();
+            app.drain();
+            let draft = match kind {
+                DraftKind::Session => &app.shell.session_drafts["original"].draft,
+                DraftKind::Conversation => &app.shell.conversation_drafts["original"],
+                DraftKind::Channel => &app.shell.channel_drafts["original"],
+                DraftKind::Answer => unreachable!("message drafts only"),
+            };
+            assert_eq!(draft.readiness.as_ref(), Some(&report));
+            assert!(!draft.readiness_expanded);
+            assert_eq!(app.shell.conversation.as_deref(), Some("elsewhere"));
+            let _ = app.update(Message::DeliveryDetails(target));
+        }
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        let reopened = State::load(home.path());
+        assert!(
+            reopened
+                .session_drafts
+                .values()
+                .all(|entry| entry.draft.readiness.is_none())
+        );
+        assert!(
+            reopened
+                .conversation_drafts
+                .values()
+                .all(|draft| draft.readiness.is_none())
+        );
+        assert!(
+            reopened
+                .channel_drafts
+                .values()
+                .all(|draft| draft.readiness.is_none())
+        );
+    }
+
+    #[test]
     fn retyped_channel_and_session_drafts_survive_late_receipts() {
         fn draft(app: &mut App, session: bool) -> &mut ChannelDraft {
             if session {
@@ -3184,7 +3285,7 @@ mod tests {
             );
             let _ = app.update(edit(session, "changed text"));
             let _ = app.update(edit(session, "sent text"));
-            let receipt = Ok(MessageId::from("receipt".to_owned()));
+            let receipt = Ok(MessageId::from("receipt".to_owned()).into());
             messages
                 .send(if session {
                     Msg::SessionSent("recipient".into(), receipt)
@@ -3235,7 +3336,7 @@ mod tests {
         messages
             .send(Msg::SessionSent(
                 "recipient".into(),
-                Ok("receipt".to_owned().into()),
+                Ok(MessageId::from("receipt".to_owned()).into()),
             ))
             .unwrap();
         app.drain();
@@ -4000,7 +4101,7 @@ mod tests {
         messages
             .send(Msg::ChannelSent(
                 "one".into(),
-                Ok(MessageId::from("confirmed".to_owned())),
+                Ok(MessageId::from("confirmed".to_owned()).into()),
             ))
             .unwrap();
         app.drain();

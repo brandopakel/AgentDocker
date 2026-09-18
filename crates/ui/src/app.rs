@@ -12,6 +12,7 @@ mod icons;
 mod messages;
 pub(crate) mod panes;
 pub(crate) mod queue;
+mod send_readiness;
 mod sessions;
 mod shell;
 pub(crate) mod style;
@@ -301,11 +302,11 @@ enum Msg {
     UpdateChecked(Result<serde_json::Value, String>),
     Console(String),
     Launched(Result<String, String>),
-    ChannelSent(String, Result<MessageId, String>),
+    ChannelSent(String, Result<QueuedSend, String>),
     /// The room the person asked for, by id, or why not.
     ChannelOpened(MessageId, Result<agentdocker_core::ChannelId, String>),
     ChannelInvited(MessageId, String, Result<agentdocker_core::Channel, String>),
-    SessionSent(String, Result<MessageId, String>),
+    SessionSent(String, Result<QueuedSend, String>),
     /// `Err` when the daemon does not know conversations at all.
     Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
     History(String, u64, Vec<agentdocker_core::ArchivedMessage>),
@@ -319,7 +320,23 @@ enum Msg {
     /// The daemon no longer has this thread's root: it was pruned.
     ThreadGone(MessageId, u64),
     /// The draft the words came from, and the receipt or error.
-    ConversationSent(String, Result<MessageId, String>),
+    ConversationSent(String, Result<QueuedSend, String>),
+}
+
+#[derive(Debug)]
+struct QueuedSend {
+    message: MessageId,
+    readiness: Option<agentdocker_core::SendReadiness>,
+}
+
+#[cfg(test)]
+impl From<MessageId> for QueuedSend {
+    fn from(message: MessageId) -> Self {
+        Self {
+            message,
+            readiness: None,
+        }
+    }
 }
 
 pub struct App {
@@ -1254,8 +1271,9 @@ impl App {
                     let conversation = conversation.to_owned();
                     let draft = self.shell.conversation_drafts.entry(key).or_default();
                     match result {
-                        Ok(_) => {
+                        Ok(receipt) => {
                             draft.complete(Ok(()));
+                            draft.readiness = receipt.readiness;
                             self.send(Cmd::History(conversation, self.history_epoch));
                             if let Some(root) = self.shell.thread.clone() {
                                 self.send(Cmd::Thread(root, self.history_epoch));
@@ -1270,7 +1288,8 @@ impl App {
                     if let Some(entry) = self.shell.session_drafts.get_mut(&id) {
                         match result {
                             Ok(receipt) => {
-                                entry.queued = Some(receipt);
+                                entry.queued = Some(receipt.message);
+                                entry.draft.readiness = receipt.readiness;
                                 entry.draft.complete(Ok(()));
                             }
                             Err(error) => entry.draft.complete(Err(error)),
@@ -1332,6 +1351,7 @@ impl App {
                         Ok(message) => {
                             let sent = draft.sending.clone();
                             draft.complete(Ok(()));
+                            draft.readiness = message.readiness;
                             if let Some(sent) = sent {
                                 let mut receipt = agentdocker_core::Envelope::new(
                                     agentdocker_core::HUMAN,
@@ -1341,7 +1361,7 @@ impl App {
                                     None,
                                     Utc::now(),
                                 );
-                                receipt.id = message;
+                                receipt.id = message.message;
                                 self.sent_channels.push_back(receipt);
                                 while self.sent_channels.len() > SENT_CHANNEL_LIMIT
                                     || self
@@ -2811,7 +2831,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 reply_to,
             })?;
             let result = match response {
-                Response::Sent { message, .. } => Ok(message),
+                Response::Sent {
+                    message,
+                    recipient_readiness,
+                    ..
+                } => Ok(QueuedSend {
+                    message,
+                    readiness: recipient_readiness,
+                }),
                 other => Err(format!("Unexpected send response: {other:?}")),
             };
             Some(Msg::ConversationSent(draft, result))
@@ -2825,7 +2852,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 reply_to: None,
             })?;
             let result = match response {
-                Response::Sent { message, .. } => Ok(message),
+                Response::Sent {
+                    message,
+                    recipient_readiness,
+                    ..
+                } => Ok(QueuedSend {
+                    message,
+                    readiness: recipient_readiness,
+                }),
                 _ => Err("Unexpected message response".into()),
             };
             Some(Msg::SessionSent(agent, result))
@@ -2839,7 +2873,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 reply_to: None,
             })?;
             let result = match response {
-                Response::Sent { message, .. } => Ok(message),
+                Response::Sent {
+                    message,
+                    recipient_readiness,
+                    ..
+                } => Ok(QueuedSend {
+                    message,
+                    readiness: recipient_readiness,
+                }),
                 _ => Err("Unexpected message response".into()),
             };
             Some(Msg::SessionSent(agent, result))
@@ -2853,7 +2894,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 reply_to: None,
             })?;
             let result = match response {
-                Response::Sent { message, .. } => Ok(message),
+                Response::Sent {
+                    message,
+                    recipient_readiness,
+                    ..
+                } => Ok(QueuedSend {
+                    message,
+                    readiness: recipient_readiness,
+                }),
                 _ => Err("Unexpected message response".into()),
             };
             Some(Msg::ChannelSent(channel, result))
@@ -3407,7 +3455,7 @@ pub(crate) mod tests {
             messages
                 .send(Msg::ChannelSent(
                     "room".into(),
-                    Ok(MessageId::from(format!("sent-{index}"))),
+                    Ok(MessageId::from(format!("sent-{index}")).into()),
                 ))
                 .unwrap();
             app.drain();

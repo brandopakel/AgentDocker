@@ -4,6 +4,14 @@
 restores the last project and appearance. No browser, container engine or cloud
 account is required to organize local agent work.
 
+After a send, **Queued · N sessions need attention** appears when recipients
+have missing or stale input receivers, paused delivery, ended sessions or provider
+limits. **Delivery details** names them and offers **Open session** and **Copy
+instructions**. These are the facts when the message was queued, not a receipt.
+The details stay with that conversation or thread even if you switch while
+sending. Session **Details** and expanded tool connection details show current
+reconnect guidance too. Nothing is restarted or resent by opening these controls.
+
 ## Projects
 
 With no saved selection, the app opens on **All projects**, with sessions grouped

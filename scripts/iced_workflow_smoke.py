@@ -663,20 +663,34 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             checks.extend(["folder_pin_has_no_project_files", "same_project_after_launch", "last_project_restore", "quiet_project_retained", "saved_appearance"])
             # Private metadata fixture, not a model or idle-wake assertion.
             receiver = rpc(endpoint, {"op": "register", "spec": {
-                "name": "readiness-fixture", "runtime": "claude-code", "workdir": str(project)},
+                "name": "readiness-fixture", "runtime": "claude-code", "workdir": str(project),
+                "labels": {"session_id": "readiness-fixture-session"}},
                 "pid": os.getpid()})["agent"]
             def now():
                 return datetime.now(timezone.utc).isoformat()
             def readiness_window(name, expected):
                 conversation = "dm:" + ":".join(sorted([human["id"], receiver["id"]]))
                 input_status = "Idle delivery not verified" if name == "readiness-contact" else expected
+                send_probe = []
+                if name == "readiness-activity":
+                    send_probe = [
+                        step("fill", id=f"reply-{receiver['id']}", text="Send readiness acceptance probe"),
+                        step("click", id=f"send-{conversation}"),
+                        step("wait_text", text="Queued · 1 session needs attention"),
+                        step("wait_text_absent", text="claude --resume readiness-fixture-session"),
+                        step("click", id=f"delivery-details-conversation-{conversation}"),
+                        step("wait_text", text="readiness-fixture · No verified input receiver"),
+                        step("wait_text", text="claude --resume readiness-fixture-session"),
+                        step("capture", name="send-readiness-details"),
+                        step("click", id=f"delivery-details-conversation-{conversation}"),
+                    ]
                 return launch(name, [step("click", id="connections"),
                                      step("click", id="connection-details-claude-code"),
                                      step("wait_text", text="readiness-fixture"),
                                      step("wait_text", text=expected), step("capture", name=name),
                                      step("click", id="projects"), step("click", id=f"project-{project}"),
                                      step("click", id="inbox"), step("click", id=f"thread-{receiver['id']}"),
-                                     step("wait_text", text=input_status),
+                                     step("wait_text", text=input_status), *send_probe,
                                      step("fill", id=f"reply-{receiver['id']}", text="Keep the connection draft"),
                                      step("click", id=f"input-connection-{conversation}"),
                                      step("wait_text", text="Tools (MCP)"), step("click", id="inbox"),
@@ -685,6 +699,10 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             rpc(endpoint, {"op": "report_activity", "agent": receiver["id"],
                            "observation": {"activity": "working", "observed_at": now()}})
             report["activity_only_window"] = readiness_window("readiness-activity", "Idle delivery not verified")
+            probes = [m for m in rpc(endpoint, {"op": "inbox", "agent": receiver["id"], "drain": False})["messages"]
+                      if m.get("payload", {}).get("text") == "Send readiness acceptance probe"]
+            assert len(probes) == 1, probes
+            checks.append("send_warns_about_named_unbound_recipient_and_expands_reconnect_guidance_without_resending")
             rpc(endpoint, {"op": "report_adapter", "agent": receiver["id"], "adapter": "mcp",
                            "contact": {"process_started_at": receiver["process_started_at"], "observed_at": now()}})
             report["contact_window"] = readiness_window("readiness-contact", "Connected · messages wait for its next prompt")
