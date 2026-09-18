@@ -374,7 +374,7 @@ impl App {
         )
     }
     /// The words for what an agent is doing, live or finished.
-    fn activity_label(&self, agent: &AgentRecord) -> String {
+    pub(super) fn activity_label(&self, agent: &AgentRecord) -> String {
         let id = agent.id.to_string();
         if self.needs_input(&id) {
             "needs input".to_owned()
@@ -545,26 +545,43 @@ impl App {
             ));
         }
         let mut header = row![header_left].spacing(16).align_y(Center);
-        if self.screen == Screen::Agents
+        if matches!(self.screen, Screen::Agents | Screen::Chat)
             && !narrow
             && let Some(pause) = self.pause_controls(c)
         {
             header = header.push(pause);
         }
-        if self.screen == Screen::Agents
+        if matches!(self.screen, Screen::Agents | Screen::Chat)
             && !narrow
             && let Some(launch) = self.launch_button()
         {
             header = header.push(launch);
         }
         let mut content = column![header].spacing(18).width(Fill);
+        if in_project && self.shell.catalog.selected().is_some() {
+            content = content.push(action(
+                "project-terminal",
+                "Open project terminal",
+                (!self.shell.terminal_opening && self.shell.project_available != Some(false))
+                    .then_some(Message::OpenProjectTerminal),
+                false,
+            ));
+        }
         // Narrow, the hold has its own line under the header rather than
         // none: a pause is not a thing to lose with the width.
-        if self.screen == Screen::Agents
+        if matches!(self.screen, Screen::Agents | Screen::Chat)
             && narrow
             && let Some(pause) = self.pause_controls(c)
         {
             content = content.push(pause);
+        }
+        if self.screen == Screen::Chat {
+            if narrow && let Some(launch) = self.launch_button() {
+                content = content.push(launch);
+            }
+            if self.shell.launch {
+                content = content.push(self.launch_view(c));
+            }
         }
         if let Err(error) = &self.connected {
             content = content.push(attention(
@@ -638,9 +655,8 @@ impl App {
         if in_project && !self.all_projects() {
             let mut tabs = row![].spacing(14);
             for (screen, label, glyph) in [
-                (Screen::Agents, "Sessions", Icon::Sessions),
-                (Screen::Board, "Board", Icon::Board),
-                (Screen::Journal, "Activity", Icon::Activity),
+                (Screen::Chat, "Chat", Icon::Channels),
+                (Screen::Agents, "Agents", Icon::Sessions),
             ] {
                 let selected = self.screen == screen
                     || (screen == Screen::Agents && self.screen == Screen::Terminal);
@@ -659,7 +675,11 @@ impl App {
             let more_selected = self.shell.more
                 || matches!(
                     self.screen,
-                    Screen::Channels | Screen::Leases | Screen::Console
+                    Screen::Board
+                        | Screen::Journal
+                        | Screen::Channels
+                        | Screen::Leases
+                        | Screen::Console
                 );
             tabs = tabs.push(tab(
                 "project-more",
@@ -688,6 +708,28 @@ impl App {
             let queued = self.queued_channel_messages();
             let mut more = row![
                 row![
+                    icon(Icon::Board, c.muted, 14.0),
+                    action(
+                        "project-tab-Board",
+                        "Board",
+                        Some(Message::Navigate(Screen::Board)),
+                        self.screen == Screen::Board
+                    )
+                ]
+                .spacing(6)
+                .align_y(Center),
+                row![
+                    icon(Icon::Activity, c.muted, 14.0),
+                    action(
+                        "project-tab-Journal",
+                        "History",
+                        Some(Message::Navigate(Screen::Journal)),
+                        self.screen == Screen::Journal
+                    )
+                ]
+                .spacing(6)
+                .align_y(Center),
+                row![
                     icon(Icon::Channels, c.muted, 14.0),
                     action(
                         "project-tab-Channels",
@@ -710,7 +752,7 @@ impl App {
                 ),
                 action(
                     "project-tab-Console",
-                    "Command line",
+                    "AgentDocker commands",
                     Some(Message::Navigate(Screen::Console)),
                     self.screen == Screen::Console
                 ),
@@ -771,6 +813,7 @@ impl App {
             ));
         }
         let body = match self.screen {
+            Screen::Chat => self.project_chat_view(c),
             Screen::Agents => self.sessions(c),
             Screen::Board => self.board_view(c),
             Screen::Questions if self.has_conversations() => self.messages_view(c),
@@ -1856,9 +1899,10 @@ impl App {
                     .then_some(Message::Attach(id.clone())),
             ));
         } else if agent.status.is_live() {
-            body = body.push(note(
-                "Continue in the app or terminal where this agent started.",
-                c,
+            body = body.push(primary(
+                "open-original-terminal",
+                "Open original terminal",
+                (!self.shell.terminal_opening).then(|| Message::OpenAgentTerminal(id.clone())),
             ));
         }
         if agent.status.is_live() && agent.spec.runtime != "human" {

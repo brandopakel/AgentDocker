@@ -15,6 +15,21 @@ controls and repaired Codex active-input delivery. Other-provider idle delivery,
 project-pause acceptance, usage collection, release/platform work and hands-on acceptance
 remain below. Optional research is outside the current delivery closure.
 
+## September 18 user experience cleanup
+
+The user chose **shared chat first** for each project, with clearly named agents
+and terminal access nearby; Board and history move under More. This is active
+work, not a claim that the screenshots' problems are closed. Source on
+`codex/chat-first-workspace` adds project chat navigation, an obvious **Open project
+terminal**, and terminal controls for managed agents of any runtime and external
+macOS Terminal sessions. The command console remains an advanced AgentDocker tool.
+Claude owns stable names/canonical conversation grouping, compact session rows,
+visible reconnect, readable Activity, and temporary-project/history cleanup.
+Distinct concurrent sessions retain their identities; aliases and technical feeds
+must not appear as additional agents. Installation and native interaction evidence
+are required before these changes are marked delivered. Board terminology and
+external terminal hosts beyond macOS Terminal still need refinement/acceptance.
+
 ## Delivered source and current desktop
 
 The September 18 resumed delivery investigation confirmed a separate queue stall:

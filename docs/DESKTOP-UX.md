@@ -31,8 +31,18 @@ session's behalf; the CLI recipe stays beside it as the alternative.
 
 With no saved selection, the app opens on **All projects**, with sessions grouped
 under their project names. A saved project or Other sessions view is restored.
-**Projects** in the sidebar returns to All projects; choosing a project narrows
-the list. Opening a session takes you to its project and selects that session.
+**Projects** in the sidebar returns to All projects. Choosing a project opens
+its shared **Chat**, with the agents working there beside it. **Agents** opens the
+session list. **More** holds Board, History and the coordination tools.
+Opening an agent takes you to its project and selects that session.
+
+**Open project terminal**, in the project header, opens a fresh native terminal
+in that project's folder. It is separate from **More → AgentDocker commands**,
+which runs AgentDocker commands rather than a project shell. Each live agent also
+has **Terminal**: app-managed agents open inside AgentDocker; on macOS, external
+agents open their existing Terminal tab without sending any input. If the agent
+belongs to another app, the action explains that the original app is needed.
+This does not start a second copy of an agent.
 
 **Needs you** shows unanswered questions (**Answer**) and paused message
 delivery (**Review**). Finished sessions keep their **Done** badge on the row. Question previews use at
@@ -104,7 +114,7 @@ input appear first within each project. Select a row for terminal access, reply,
 window, the session replaces the list; **Back to sessions** returns to it. On a
 wide window, it opens beside the list. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
-**Board**, between Sessions and Activity, is the project's work: five
+**More → Board** is the project's work: five
 columns — Backlog, Ready, In progress, Review, Done — of cards with a title
 and what done means. **File a card** at the top takes a title and the
 acceptance text and files it **as Ready** (for the next agent to pull) or

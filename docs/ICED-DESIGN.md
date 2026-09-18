@@ -38,9 +38,22 @@ appearance preferences are read when no new appearance has been saved.
 
 ## Navigation and visual decisions
 
+The September 18 user review chose shared chat as the default project workspace.
+Project switches preserve each conversation's draft and thread history without
+marking hidden messages read. **Open project terminal** opens a fresh native shell
+in the selected physical project folder, not the AgentDocker command console.
+On macOS the directory is passed to Terminal as a file argument, never typed into
+an existing prompt. Agent **Terminal** attaches an app-managed PTY for any runtime;
+for external macOS sessions it brings the matching Terminal tab forward after
+checking the provider's PID and birth time. It sends no keystrokes. Sessions in
+other terminal applications show an actionable failure rather than opening a
+second agent. Linux project-terminal launching is implemented; native Linux
+acceptance and external-terminal focus beyond macOS Terminal remain open.
+
+
 | Destination | Everyday purpose |
 | --- | --- |
-| Projects | All projects home with the Needs you strip; per project: Sessions, Activity, and under More (Advanced) Channels, Files in use, Command line |
+| Projects | All projects home; selecting a project opens its shared Chat with a compact list of current agents. Agents is the second tab; Board, History, Channels, Files in use and AgentDocker commands are under More. Open project terminal is visible in the project header. |
 | Inbox | Questions, retained answer drafts and messages addressed to the user; Messages (conversations, threads, read cursors) against a daemon that keeps them |
 | Tools (rail id `connections`) | Installed tools and connection status. **Set up** appears for an installed tool missing MCP or hooks when no active session report exists. Expanded Details offers **Review setup**, health and history; setup plans use **Connect**, and applied plans offer **Undo** |
 | Settings | Appearance, installation, retained versions and diagnostics |

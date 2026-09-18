@@ -189,6 +189,27 @@ impl App {
         let conversation = agentdocker_core::ConversationId::from(open.to_owned());
         let kind = conversation.kind()?;
         let (name, title, members) = match kind {
+            ConversationKind::Everyone => {
+                let project = self.shell.catalog.selected()?;
+                if conversation.everyone_project()?.as_str() != project.project.id().as_str() {
+                    return None;
+                }
+                (
+                    None,
+                    project.name(),
+                    self.agents
+                        .iter()
+                        .filter(|a| {
+                            a.status.is_live()
+                                && a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
+                                && a.project
+                                    .as_ref()
+                                    .is_some_and(|p| p.id() == project.project.id())
+                        })
+                        .map(|a| a.id.clone())
+                        .collect(),
+                )
+            }
             ConversationKind::Dm => {
                 let (a, b) = conversation.dm_parties()?;
                 let other = if self.is_human(a) { b } else { a };
@@ -1256,7 +1277,7 @@ impl App {
         panel(body, c)
     }
 
-    fn messages_pane(&self, c: Colors) -> Element<'_, Message> {
+    pub(super) fn messages_pane(&self, c: Colors) -> Element<'_, Message> {
         let mention_names = self.mention_names();
         let Some(summary) = self.open_summary() else {
             return empty(
@@ -1275,7 +1296,7 @@ impl App {
         let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
         let topic = match summary.kind {
             ConversationKind::Everyone => {
-                format!("{} · {}", summary.title, plural(members, "live agent"))
+                format!("{} · {}", summary.title, plural(members, "participant"))
             }
             ConversationKind::All => "every agent on this machine".to_owned(),
             ConversationKind::Channel => {
@@ -1479,7 +1500,7 @@ impl App {
         .into()
     }
 
-    fn thread_pane(&self, c: Colors) -> Element<'_, Message> {
+    pub(super) fn thread_pane(&self, c: Colors) -> Element<'_, Message> {
         let mention_names = self.mention_names();
         let Some(root_id) = self.shell.thread.as_ref() else {
             return Space::new().into();
