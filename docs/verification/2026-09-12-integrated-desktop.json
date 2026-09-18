@@ -3546,7 +3546,7 @@
   },
   "remote_connector_2026_09_17": {
     "date": "2026-09-17",
-    "status": "Passed at d14a862 on release binaries built from the committed source (state schema 23), on loopback without a tunnel: the vendor's side of the remote connector, scripted, ran 29 steps end to end \u2014 metadata discovery, a foreign callback refused at registration and Claude's accepted, the consent page, a wrong pairing code refused, the right one redirecting to Claude's callback with the code and state while registering nothing, a wrong PKCE verifier burning the code without leaving an agent, a fresh consent under the same name, the exchange registering `claude-browser-trial` in the project as `claude-browser`, a further consent under that live name refused on the page, `initialize` naming the agent and the browser, the messaging-only tool list, a `send_message` landing in the terminal agent's inbox attributed to the browser agent, `claim` refused by name, refresh rotation with the old token dead, `connector grants` active, `connector revoke` ending the tokens and marking the agent finished. The state file is mode 0600 and holds a refresh hash, no token. The same evening, a real Claude account connected through a cloudflared quick tunnel to the production daemon and delivered a message from claude-browser-qszf to keel's terminal sessions (`vendor_acceptance`); The next day the connector ran as a login service with a vendor allowlist, and both Claude and ChatGPT connected and delivered (`service_acceptance`), which also found and fixed the project-broadcast bug. Later that night the connector moved to Tailscale Funnel on this machine's own stable name, both vendors re-connected for what should be the last time, and MCP tool annotations let ChatGPT's reads through without a prompt (`stable_host_acceptance`).",
+    "status": "Passed at d14a862 on release binaries built from the committed source (state schema 23), on loopback without a tunnel: the vendor's side of the remote connector, scripted, ran 29 steps end to end \u2014 metadata discovery, a foreign callback refused at registration and Claude's accepted, the consent page, a wrong pairing code refused, the right one redirecting to Claude's callback with the code and state while registering nothing, a wrong PKCE verifier burning the code without leaving an agent, a fresh consent under the same name, the exchange registering `claude-browser-trial` in the project as `claude-browser`, a further consent under that live name refused on the page, `initialize` naming the agent and the browser, the messaging-only tool list, a `send_message` landing in the terminal agent's inbox attributed to the browser agent, `claim` refused by name, refresh rotation with the old token dead, `connector grants` active, `connector revoke` ending the tokens and marking the agent finished. The state file is mode 0600 and holds a refresh hash, no token. The same evening, a real Claude account connected through a cloudflared quick tunnel to the production daemon and delivered a message from claude-browser-qszf to keel's terminal sessions (`vendor_acceptance`); The next day the connector ran as a login service with a vendor allowlist, and both Claude and ChatGPT connected and delivered (`service_acceptance`), which also found and fixed the project-broadcast bug. Later that night the connector moved to Tailscale Funnel on this machine's own stable name, both vendors re-connected for what should be the last time, and MCP tool annotations let ChatGPT's reads through without a prompt (`stable_host_acceptance`). Then one connector was made to serve every project on the machine (the consent page chooses), Client ID Metadata Documents were accepted beside DCR with ChatGPT's real document fetched and admitted on release binaries, and the desktop's Tools screen gained the connector's state (`any_project_and_cimd`).",
     "scope": "agentdocker connector serve/grants/revoke on release binaries in a private AGENTDOCKER_HOME with a release agentd, a registered external agent standing in for a terminal session, and a Python client (urllib, no OAuth library) performing discovery, RFC 7591 registration, the authorization code flow with PKCE S256, the token exchange, refresh, Streamable HTTP JSON-RPC and revocation. The public URL was the loopback bind address, which `serve` accepts only for loopback hosts.",
     "build": {
       "source_commit": "d14a862299307924b2a695b9d6c695d89340e96a",
@@ -3867,6 +3867,38 @@
         "Funnel must be enabled for the tailnet (this one had the `funnel` capability); the connector says how when it is not.",
         "A tailnet member's own requests to the name arrive with a 100.x address and are refused by a vendor allowlist; only internet traffic carries the client's real address.",
         "The old cloudflared-hostname plugin definition in ChatGPT had to be installed to be deleted; an uninstalled personal plugin offers only Install."
+      ]
+    },
+    "any_project_and_cimd": {
+      "date": "2026-09-18T07:05:00Z",
+      "source_commit": "c7c46ccef52ac0354f7a16bde061b316b1bd398b",
+      "binary_sha256": {
+        "agentdocker": "593643a5a56bfe84bfe54543311f97bb3cc2ae18a2edc11aa3c127f059bba3bd",
+        "agentd": "a3678ba709e4689e3f5dccc092f71623bd65767e1d72fac6b6733ed59e689ece"
+      },
+      "scope": "Actual release binaries on loopback against an isolated daemon; ChatGPT's real metadata document fetched over HTTPS; no vendor account",
+      "result": "Passed, 16 of 16 steps: one connector serves every project (the consent page proposes --project's and takes any folder on the machine; a folder that is not here is refused on the page with the choices kept; the browser agent is registered in the project typed, not the proposed one; its `project` broadcast is routed there; `grants` names that project); the authorization-server metadata advertises client_id_metadata_document_supported and authorization_response_iss_parameter_supported with token_endpoint_auth_methods_supported [none]; a metadata client_id on a foreign host is refused on the page before any fetch; ChatGPT's real document at https://chatgpt.com/oauth/client.json was fetched over HTTPS, admitted (its one redirect_uri is the stable callback; its preferred private_key_jwt is ignored, the client is public), persisted under its URL with its fetch time, shown on the page as \"ChatGPT (chatgpt.com)\", not fetched again within the hour, and the consent's redirect carried code, state and iss; the exchange with the URL as client_id issued tokens and whoami answered over /mcp.",
+      "steps": [
+        "register a terminal agent in project A",
+        "serve writes its status file",
+        "metadata advertises CIMD and RFC 9207",
+        "status names the proposed project and any project at consent",
+        "a metadata URL on a foreign host is refused on the page",
+        "ChatGPT's real metadata document is fetched and admitted; the page names the host",
+        "the page proposes project A and takes another folder",
+        "the admitted client persists under its URL with its fetch time",
+        "a folder that is not on this machine is refused on the page",
+        "consent into a typed project B redirects with code, state and iss",
+        "the exchange with the metadata URL as client_id issues tokens",
+        "the browser agent is registered in project B, not the proposed A",
+        "whoami answers over /mcp",
+        "a project broadcast is accepted (nobody else is in B: routed to B, delivered to no one)",
+        "grants lists the consent with project B",
+        "a fresh document is not fetched again"
+      ],
+      "not_covered": [
+        "No vendor account went through the CIMD path yet: both live connections were made by DCR before this metadata was served. The next connection a vendor makes is the trial; Claude selects CIMD only when both flags above are present, ChatGPT prefers it and uses its stable client and callback once iss is returned.",
+        "The desktop's Tools card change (connector state on the in-browser rows) is covered by unit tests of the wording and the worker message, not by a graphical capture."
       ]
     }
   }

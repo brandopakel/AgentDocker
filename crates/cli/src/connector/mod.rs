@@ -1,12 +1,14 @@
 //! The remote connector: how an agent that works inside a browser — the
-//! Claude side panel, the ChatGPT extension — reaches a project's other
-//! agents. Those sessions run on the vendor's side and speak to tools only
-//! over public HTTPS with OAuth, so this is a separate, opt-in process:
-//! it binds loopback, the person's tunnel gives it a public name, and it
+//! Claude side panel, the ChatGPT extension — reaches the agents on this
+//! machine. Those sessions run on the vendor's side and speak to tools
+//! only over public HTTPS with OAuth, so this is a separate, opt-in
+//! process: it binds loopback, a tunnel gives it a public name, and it
 //! serves the vendors an MCP endpoint whose tools are the messaging ones.
-//! Every consent creates one browser-agent identity in the daemon; the
-//! daemon itself never listens on the network.
+//! One connector serves every project the daemon knows: each consent
+//! chooses the project its browser-agent identity joins. The daemon
+//! itself never listens on the network.
 
+pub mod cimd;
 pub mod http;
 pub mod net;
 pub mod oauth;
@@ -90,7 +92,7 @@ pub struct ServeArgs {
     /// The loopback address to listen on; port 0 picks a free one.
     #[arg(long, default_value = "127.0.0.1:0")]
     pub bind: String,
-    /// The project browser agents join (default: the project of the current directory).
+    /// The project the consent page proposes first; the person may pick any project on this machine there.
     #[arg(long)]
     pub project: Option<PathBuf>,
     /// A callback URL to admit besides the vendors' own, for a hosted client of yours.
@@ -244,7 +246,8 @@ fn public_url(raw: &str) -> Result<String> {
 pub struct Connector<B> {
     backend: B,
     public_url: String,
-    project: agentdocker_core::ProjectRef,
+    /// Proposed first on the consent page; the person may choose another.
+    default_project: Option<agentdocker_core::ProjectRef>,
     extra_callbacks: Vec<String>,
     pairing_code: String,
     store: Mutex<Store>,
@@ -252,22 +255,31 @@ pub struct Connector<B> {
     servers: Mutex<HashMap<String, Arc<McpServer<B>>>>,
     consent_failures: AtomicU32,
     allowlist: Option<net::Allowlist>,
+    fetcher: Arc<cimd::Fetcher>,
+}
+
+/// A project the consent page offers: its root and the name shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectChoice {
+    pub root: PathBuf,
+    pub name: String,
 }
 
 impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
     pub fn new(
         backend: B,
         public_url: String,
-        project: agentdocker_core::ProjectRef,
+        default_project: Option<agentdocker_core::ProjectRef>,
         extra_callbacks: Vec<String>,
         pairing_code: String,
-        store: Store,
+        mut store: Store,
         state_path: Option<PathBuf>,
     ) -> Self {
+        store.issuer = public_url.clone();
         Self {
             backend,
             public_url,
-            project,
+            default_project,
             extra_callbacks,
             pairing_code,
             store: Mutex::new(store),
@@ -275,6 +287,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             servers: Mutex::new(HashMap::new()),
             consent_failures: AtomicU32::new(0),
             allowlist: None,
+            fetcher: Arc::new(cimd::fetch),
         }
     }
 
@@ -282,6 +295,128 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
     pub fn with_allowlist(mut self, allowlist: Option<net::Allowlist>) -> Self {
         self.allowlist = allowlist;
         self
+    }
+
+    /// What fetches a client's metadata document; tests supply a table.
+    #[cfg(test)]
+    pub fn with_fetcher(mut self, fetcher: Arc<cimd::Fetcher>) -> Self {
+        self.fetcher = fetcher;
+        self
+    }
+
+    /// The projects the daemon has seen agents in, by root, with the
+    /// default first when there is one. A daemon that does not answer
+    /// leaves the default alone: the page still works, with less choice.
+    async fn known_projects(&self) -> Vec<ProjectChoice> {
+        let mut choices: Vec<ProjectChoice> = self
+            .default_project
+            .iter()
+            .map(|p| ProjectChoice {
+                root: p.root.clone(),
+                name: p.name(),
+            })
+            .collect();
+        if let Ok(Response::Agents { agents, .. }) = self
+            .backend
+            .call(Request::List {
+                all: true,
+                project: None,
+                labels: Default::default(),
+            })
+            .await
+        {
+            let mut roots: Vec<agentdocker_core::ProjectRef> = agents
+                .into_iter()
+                .filter_map(|agent| agent.project)
+                .collect();
+            roots.sort_by(|a, b| a.root.cmp(&b.root));
+            roots.dedup_by(|a, b| a.root == b.root);
+            for project in roots {
+                if !choices.iter().any(|c| c.root == project.root) {
+                    choices.push(ProjectChoice {
+                        name: project.name(),
+                        root: project.root,
+                    });
+                }
+            }
+        }
+        choices
+    }
+
+    /// The project a consent form names, if it names one that is here:
+    /// a typed folder first, then the chosen entry, then the default.
+    /// A path that is not a directory on this machine is a problem the
+    /// page shows, not a project.
+    fn chosen_project(
+        &self,
+        form: &[(String, String)],
+    ) -> Result<Option<agentdocker_core::ProjectRef>, &'static str> {
+        let typed = field(form, "project_path")
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        let picked = field(form, "project")
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        let Some(named) = typed.or(picked) else {
+            return Ok(self.default_project.clone());
+        };
+        if let Some(default) = &self.default_project
+            && default.root == Path::new(named)
+        {
+            return Ok(Some(default.clone()));
+        }
+        let path = Path::new(named);
+        if !path.is_absolute() {
+            return Err("The project is a full path to a folder on this machine.");
+        }
+        if !path.is_dir() {
+            return Err("That folder is not on this machine.");
+        }
+        Ok(Some(agentdocker_host::project::discover(path)))
+    }
+
+    /// A URL-formatted `client_id` is its own registration: fetch its
+    /// metadata document (once an hour) and admit it, or say why not
+    /// before anything is sent to a callback it names.
+    async fn ensure_metadata_client(&self, client_id: &str) -> Result<(), OAuthError> {
+        if !oauth::is_metadata_client_id(client_id) {
+            return Ok(());
+        }
+        {
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            if store.metadata_client_fresh(client_id, Utc::now()) {
+                return Ok(());
+            }
+            if store.clients.len() >= MAX_CLIENTS && !store.clients.contains_key(client_id) {
+                return Err(OAuthError::new(
+                    "invalid_client",
+                    "this connector holds as many clients as it will; revoke or restart",
+                ));
+            }
+        }
+        let host = oauth::host_of(client_id).unwrap_or_default();
+        if Vendor::of_metadata_host(host, &self.extra_callbacks).is_none() {
+            return Err(OAuthError::new(
+                "invalid_client",
+                format!(
+                    "{host} is not a host this connector fetches client metadata from; only the vendors' hosted surfaces can connect"
+                ),
+            ));
+        }
+        let fetcher = self.fetcher.clone();
+        let url = client_id.to_owned();
+        let document = tokio::task::spawn_blocking(move || fetcher(&url))
+            .await
+            .map_err(|_| {
+                OAuthError::new("invalid_client", "the metadata fetch did not finish")
+            })??;
+        {
+            let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            store.admit_metadata_client(client_id, &document, &self.extra_callbacks, Utc::now())?;
+        }
+        self.persist();
+        eprintln!("agentdocker connector: admitted the client metadata document at {client_id}");
+        Ok(())
     }
 
     fn mcp_url(&self) -> String {
@@ -334,7 +469,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 HttpResponse::json(200, &self.server_metadata())
             }
             ("POST", "/register") => self.register(&request),
-            ("GET", "/authorize") => self.consent_form(&request),
+            ("GET", "/authorize") => self.consent_form(&request).await,
             ("POST", "/authorize") => self.consent(&request).await,
             ("POST", "/token") => self.token(&request).await,
             ("POST", "/mcp") => self.mcp(&request).await,
@@ -353,7 +488,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             "authorization_servers": [self.public_url],
             "scopes_supported": [oauth::SCOPE],
             "bearer_methods_supported": ["header"],
-            "resource_name": format!("AgentDocker connector for {}", self.project.name()),
+            "resource_name": "AgentDocker connector",
         })
     }
 
@@ -368,6 +503,12 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             "code_challenge_methods_supported": ["S256"],
             "token_endpoint_auth_methods_supported": ["none"],
             "scopes_supported": [oauth::SCOPE],
+            // A vendor's own metadata document stands in for registration
+            // (draft-ietf-oauth-client-id-metadata-document); ChatGPT uses
+            // its one stable client and callback when the issuer is named
+            // in every authorization response (RFC 9207).
+            "client_id_metadata_document_supported": true,
+            "authorization_response_iss_parameter_supported": true,
         })
     }
 
@@ -377,10 +518,9 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             page(
                 "AgentDocker connector",
                 &format!(
-                    "<p>This is the AgentDocker connector for the project <b>{}</b>. It lets an agent working inside a browser join that project's messaging.</p>\
-                     <p>Add <code>{}</code> as a custom connector: in Claude under <i>Settings › Connectors › Add custom connector</i>, in ChatGPT under <i>Settings › Connectors › Advanced › Developer mode</i>. Consent asks for the pairing code shown in the terminal that runs <code>agentdocker connector serve</code>.</p>\
-                     <p>A browser agent has no checkout here: it can find the project's agents, message them, read its inbox and the journal, and nothing else.</p>",
-                    escape_html(&self.project.name()),
+                    "<p>This is an AgentDocker connector. It lets an agent working inside a browser join the messaging of a project on this machine.</p>\
+                     <p>Add <code>{}</code> as a custom connector: in Claude under <i>Settings › Connectors › Add custom connector</i>, in ChatGPT under <i>Settings › Connectors › Advanced › Developer mode</i>. Consent asks for the pairing code shown by <code>agentdocker connector status</code> or the desktop's Tools screen, and which project the agent joins.</p>\
+                     <p>A browser agent has no checkout here: it can find agents, message them, read its inbox and the journal, and nothing else.</p>",
                     escape_html(&self.mcp_url())
                 ),
             ),
@@ -418,14 +558,22 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
     }
 
     /// Validate the request and show the consent form, or say why not.
-    fn consent_form(&self, request: &HttpRequest) -> HttpResponse {
+    async fn consent_form(&self, request: &HttpRequest) -> HttpResponse {
         let params = http::parse_query(request.query());
+        if let Some(client_id) = field(&params, "client_id")
+            && let Err(error) = self.ensure_metadata_client(client_id).await
+        {
+            return self.refuse_authorization(AuthorizeRefusal::Page(error));
+        }
         let pending = {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             store.begin_authorization(&params)
         };
         match pending {
-            Ok(pending) => HttpResponse::html(200, self.consent_html(&pending, None)),
+            Ok(pending) => {
+                let projects = self.known_projects().await;
+                HttpResponse::html(200, self.consent_html(&pending, &projects, None))
+            }
             Err(refusal) => self.refuse_authorization(refusal),
         }
     }
@@ -448,7 +596,15 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         }
     }
 
-    fn consent_html(&self, pending: &oauth::Pending, problem: Option<&str>) -> String {
+    /// The consent page: who asks, the pairing code, a name, and which
+    /// project the agent joins — the ones the daemon knows to pick from,
+    /// or any folder on this machine typed in.
+    fn consent_html(
+        &self,
+        pending: &oauth::Pending,
+        projects: &[ProjectChoice],
+        problem: Option<&str>,
+    ) -> String {
         let hidden: String = pending
             .fields()
             .iter()
@@ -459,24 +615,42 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 )
             })
             .collect();
-        let who = match &pending.client_name {
-            Some(name) => format!("{} ({})", pending.vendor.label(), escape_html(name)),
-            None => pending.vendor.label().to_owned(),
-        };
+        let who = escape_html(&pending.shown_as);
         let suggested = generated_name(pending.vendor);
         let problem = problem
             .map(|p| format!("<p class=\"problem\">{}</p>", escape_html(p)))
             .unwrap_or_default();
+        let options: String = projects
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                format!(
+                    "<option value=\"{}\"{}>{} — {}</option>",
+                    escape_html(&p.root.to_string_lossy()),
+                    if i == 0 { " selected" } else { "" },
+                    escape_html(&p.name),
+                    escape_html(&p.root.to_string_lossy())
+                )
+            })
+            .collect();
+        let chooser = if projects.is_empty() {
+            "<label>Project this agent joins: the full path of a folder on this machine<br><input name=\"project_path\" required placeholder=\"/Users/you/project\"></label>".to_owned()
+        } else {
+            format!(
+                "<label>Project this agent joins<br><select name=\"project\">{options}</select></label>\
+                 <label>…or the full path of another folder on this machine<br><input name=\"project_path\" placeholder=\"/Users/you/project\"></label>"
+            )
+        };
         page(
             "Connect a browser agent",
             &format!(
-                "<p><b>{who}</b> asks to join the project <b>{project}</b> as a browser agent. It will be able to find the project's agents, message them, read its own inbox and the journal. It gets no files, leases or worktrees.</p>\
+                "<p><b>{who}</b> asks to join a project on this machine as a browser agent. It will be able to find that project's agents, message them, read its own inbox and the journal. It gets no files, leases or worktrees.</p>\
                  {problem}\
                  <form method=\"post\" action=\"/authorize\">{hidden}\
-                 <label>Pairing code from the terminal running <code>agentdocker connector serve</code><br><input name=\"pairing_code\" autocomplete=\"off\" autofocus required placeholder=\"ABCD-EFGH\"></label>\
+                 <label>Pairing code, from <code>agentdocker connector status</code> or the desktop's Tools screen<br><input name=\"pairing_code\" autocomplete=\"off\" autofocus required placeholder=\"ABCD-EFGH\"></label>\
+                 {chooser}\
                  <label>Name for this agent<br><input name=\"agent_name\" value=\"{suggested}\" maxlength=\"64\" pattern=\"[A-Za-z0-9._-]+\"></label>\
-                 <button type=\"submit\">Connect</button></form>",
-                project = escape_html(&self.project.name()),
+                 <button type=\"submit\">Connect</button></form>"
             ),
         )
     }
@@ -491,6 +665,11 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 "the consent form posts as application/x-www-form-urlencoded",
             );
         };
+        if let Some(client_id) = field(&form, "client_id")
+            && let Err(error) = self.ensure_metadata_client(client_id).await
+        {
+            return self.refuse_authorization(AuthorizeRefusal::Page(error));
+        }
         let pending = {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             store.begin_authorization(&form)
@@ -498,6 +677,31 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         let pending = match pending {
             Ok(pending) => pending,
             Err(refusal) => return self.refuse_authorization(refusal),
+        };
+        // The page comes back with what was chosen, so a slip costs one
+        // field, not the whole form.
+        let again = |problem: &str| {
+            let chosen: Vec<ProjectChoice> = field(&form, "project")
+                .filter(|p| !p.trim().is_empty())
+                .map(|p| ProjectChoice {
+                    root: PathBuf::from(p),
+                    name: Path::new(p)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| p.to_owned()),
+                })
+                .into_iter()
+                .chain(self.default_project.iter().map(|p| ProjectChoice {
+                    root: p.root.clone(),
+                    name: p.name(),
+                }))
+                .fold(Vec::new(), |mut choices: Vec<ProjectChoice>, choice| {
+                    if !choices.iter().any(|c| c.root == choice.root) {
+                        choices.push(choice);
+                    }
+                    choices
+                });
+            self.consent_html(&pending, &chosen, Some(problem))
         };
         if self.consent_failures.load(Ordering::Relaxed) >= MAX_CONSENT_FAILURES {
             return HttpResponse::html(
@@ -516,12 +720,16 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             );
             return HttpResponse::html(
                 403,
-                self.consent_html(
-                    &pending,
-                    Some("That pairing code is not the one in the terminal."),
-                ),
+                again("That pairing code is not the one this connector shows."),
             );
         }
+        let project = match self.chosen_project(&form) {
+            Ok(Some(project)) => project,
+            Ok(None) => {
+                return HttpResponse::html(400, again("Choose the project this agent joins."));
+            }
+            Err(problem) => return HttpResponse::html(400, again(problem)),
+        };
         let typed_name = field(&form, "agent_name")
             .filter(|n| {
                 n.len() <= 64
@@ -544,27 +752,30 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         {
             return HttpResponse::html(
                 409,
-                self.consent_html(
-                    &pending,
-                    Some("That name is already a live agent's in this project; pick another."),
-                ),
+                again("That name is already a live agent's here; pick another."),
             );
         }
         let redirect = {
             let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-            store.complete_authorization(&pending, name.clone(), generated, Utc::now())
+            store.complete_authorization(
+                &pending,
+                name.clone(),
+                generated,
+                project.root.clone(),
+                Utc::now(),
+            )
         };
         eprintln!(
             "agentdocker connector: {} consented to join {} as {}; waiting for the token exchange",
             pending.vendor.label(),
-            self.project.name(),
+            project.name(),
             name
         );
         HttpResponse::redirect(&redirect)
     }
 
     /// One external, pidless agent per redeemed consent, in the project
-    /// this connector serves. It stays live until revoked.
+    /// the consent chose. It stays live until revoked.
     async fn register_agent(&self, consent: &oauth::Consent) -> Result<AgentIdentity> {
         let vendor = consent.vendor;
         let generated = consent.generated;
@@ -580,7 +791,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             let spec = AgentSpec {
                 name: attempt.clone(),
                 runtime: vendor.runtime().to_owned(),
-                workdir: Some(self.project.root.clone()),
+                workdir: Some(consent.project.clone()),
                 labels,
                 ..AgentSpec::default()
             };
@@ -598,7 +809,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                         id: agent.id.to_string(),
                         name: agent.spec.name,
                         runtime: agent.spec.runtime,
-                        project: self.project.root.clone(),
+                        project: consent.project.clone(),
                     });
                 }
                 Response::Error {
@@ -641,7 +852,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                                 consent.vendor.label(),
                                 identity.name,
                                 identity.id,
-                                self.project.name()
+                                consent.project.display()
                             );
                             let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
                             Ok(store.issue(&consent, identity, Utc::now()))
@@ -792,7 +1003,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                                 host_started_at: None,
                             },
                         )
-                        .remote(self.project.root.clone()),
+                        .remote(grant.project.clone()),
                     )
                 })
                 .clone()
@@ -826,11 +1037,15 @@ fn page(title: &str, body: &str) -> String {
 }
 
 async fn serve(client: Client, args: ServeArgs) -> Result<()> {
-    let dir = match &args.project {
-        Some(path) => path.clone(),
-        None => std::env::current_dir()?,
+    let default_project = match &args.project {
+        Some(path) => {
+            if !path.is_dir() {
+                bail!("--project {} is not a directory here", path.display());
+            }
+            Some(agentdocker_host::project::discover(path))
+        }
+        None => None,
     };
-    let project = agentdocker_host::project::discover(&dir);
     if let Response::Error { message, .. } = client.call(&Request::Ping).await? {
         bail!("the daemon is not answering: {message}");
     }
@@ -883,7 +1098,7 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
         Connector::new(
             client,
             public.clone(),
-            project.clone(),
+            default_project.clone(),
             args.allow_callbacks.clone(),
             pairing.clone(),
             store,
@@ -896,7 +1111,7 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
         pid,
         public_url: public.clone(),
         bind: local.to_string(),
-        project: project.root.clone(),
+        default_project: default_project.as_ref().map(|p| p.root.clone()),
         pairing_code: pairing.clone(),
         started_at: Utc::now(),
         tunnel: tunnel.as_ref().map(|t| service::TunnelStatus {
@@ -910,9 +1125,15 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
         eprintln!("agentdocker connector: could not write the status file: {error:#}");
     }
     eprintln!(
-        "AgentDocker connector for project {} ({})\n  listening on http://{local}, published as {public}{}\n  MCP URL to add as a custom connector: {public}/mcp\n  pairing code: {pairing}   (typed on the consent page; new each time this runs)\n  admitted addresses: {}\n  Claude:  Settings › Connectors › Add custom connector › paste the URL › Connect\n  ChatGPT: Settings › Connectors › Advanced › Developer mode › Create › paste the URL, OAuth{}",
-        project.name(),
-        project.root.display(),
+        "AgentDocker connector{}\n  listening on http://{local}, published as {public}{}\n  MCP URL to add as a custom connector: {public}/mcp\n  pairing code: {pairing}   (typed on the consent page; new each time this runs)\n  admitted addresses: {}\n  Claude:  Settings › Connectors › Add custom connector › paste the URL › Connect\n  ChatGPT: Settings › Connectors › Advanced › Developer mode › Create › paste the URL, OAuth{}",
+        match &default_project {
+            Some(p) => format!(
+                ", proposing project {} ({}) at consent",
+                p.name(),
+                p.root.display()
+            ),
+            None => ", every project on this machine (chosen at consent)".to_owned(),
+        },
         match &tunnel {
             Some(t) => match t.pid() {
                 Some(pid) => format!(" by {} (pid {pid})", t.provider),
@@ -1036,7 +1257,16 @@ async fn status(client: &Client) -> Result<()> {
         crate::format::ago(serving.started_at),
         serving.pid
     );
-    println!("  project:      {}", serving.project.display());
+    println!(
+        "  project:      {}",
+        match &serving.default_project {
+            Some(p) => format!(
+                "{} proposed; any project on this machine at consent",
+                p.display()
+            ),
+            None => "chosen at consent, any project on this machine".to_owned(),
+        }
+    );
     println!("  MCP URL:      {}/mcp", serving.public_url);
     println!("  listening on: http://{}", serving.bind);
     println!("  pairing code: {}", serving.pairing_code);
@@ -1217,12 +1447,12 @@ mod tests {
         let connector = Connector::new(
             Shared(mock.clone(), down.clone()),
             "https://x.trycloudflare.com".into(),
-            agentdocker_core::ProjectRef {
+            Some(agentdocker_core::ProjectRef {
                 root: "/p/keel".into(),
                 worktree: None,
                 fingerprint: None,
                 source: agentdocker_core::ProjectSource::Directory,
-            },
+            }),
             vec![],
             "ABCD-EFGH".into(),
             Store::default(),
@@ -1408,6 +1638,10 @@ mod tests {
     #[tokio::test]
     async fn a_vendor_connects_a_browser_agent_end_to_end() {
         let (connector, mock) = connector(vec![
+            Response::Agents {
+                agents: vec![],
+                aliases: Default::default(),
+            }, // List, for the consent page's project chooser
             Response::error(ErrorCode::NotFound, "no such agent"), // Inspect: the typed name is free
             live_agent("claude-browser-test"), // Register, at the token exchange
             live_agent("claude-browser-test"), // Inspect before initialize
@@ -1448,9 +1682,19 @@ mod tests {
             .await;
         assert_eq!(form.status, 200);
         let html = String::from_utf8_lossy(&form.body);
-        assert!(html.contains("Claude (Claude)") && html.contains("<b>keel</b>"));
+        assert!(html.contains("<b>Claude (Claude)</b>"), "{html}");
+        assert!(
+            html.contains("<option value=\"/p/keel\" selected>keel — /p/keel</option>")
+                && html.contains("name=\"project_path\""),
+            "the default project is proposed and any folder may be typed: {html}"
+        );
         assert!(html.contains("name=\"pairing_code\""));
         assert!(html.contains(&format!("value=\"{challenge}\"")));
+        assert!(
+            matches!(&mock.requests()[..], [Request::List { all: true, .. }]),
+            "the page asks the daemon which projects it knows"
+        );
+        mock.requests.lock().unwrap().clear();
 
         let consent = |code: &str, name: &str| {
             post(
@@ -1490,7 +1734,10 @@ mod tests {
             .map(|(_, v)| v.clone())
             .unwrap();
         assert!(location.starts_with("https://claude.ai/api/mcp/auth_callback?code="));
-        assert!(location.ends_with("&state=s1"));
+        assert!(
+            location.ends_with("&state=s1&iss=https%3A%2F%2Fx.trycloudflare.com"),
+            "the response names its issuer (RFC 9207): {location}"
+        );
         let code = location
             .split("code=")
             .nth(1)
@@ -1733,6 +1980,284 @@ mod tests {
             .await;
         assert_eq!(refresh.status, 400);
         assert_eq!(json_body(&refresh)["error"], "invalid_grant");
+    }
+
+    /// A vendor whose `client_id` is its metadata document's URL needs no
+    /// registration: the document is fetched from the vendor's host once
+    /// an hour, the page names that host, the code goes back with the
+    /// issuer named, and the exchange works with the URL as client_id.
+    /// Any other host is refused before a byte is fetched.
+    #[tokio::test]
+    async fn a_vendor_connects_through_its_metadata_document() {
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = fetches.clone();
+        let fetcher: Arc<cimd::Fetcher> = Arc::new(move |url: &str| {
+            counted.fetch_add(1, Ordering::Relaxed);
+            match url {
+                "https://chatgpt.com/oauth/client.json" => Ok(json!({
+                    "client_id": url,
+                    "client_name": "ChatGPT",
+                    "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+                    "token_endpoint_auth_method": "none",
+                })),
+                "https://claude.ai/oauth/elsewhere.json" => Ok(json!({
+                    "client_id": "https://claude.ai/oauth/other.json",
+                    "redirect_uris": ["https://claude.ai/api/mcp/auth_callback"],
+                })),
+                _ => Err(OAuthError::new(
+                    "invalid_client",
+                    "not fetched in this test",
+                )),
+            }
+        });
+        let (connector, mock) = connector(vec![
+            Response::Agents {
+                agents: vec![],
+                aliases: Default::default(),
+            }, // List, first consent page
+            Response::Agents {
+                agents: vec![],
+                aliases: Default::default(),
+            }, // List, second consent page
+            Response::error(ErrorCode::NotFound, "no such agent"), // Inspect: the typed name is free
+            live_agent("chatgpt-browser-test"), // Register, at the token exchange
+        ]);
+        let connector = connector.with_fetcher(fetcher);
+        let server = json_body(
+            &connector
+                .handle(get("/.well-known/oauth-authorization-server"))
+                .await,
+        );
+        assert_eq!(server["client_id_metadata_document_supported"], true);
+        assert_eq!(
+            server["authorization_response_iss_parameter_supported"],
+            true
+        );
+
+        // Not a vendor host: refused on the page, nothing fetched.
+        let foreign = connector
+            .handle(get(
+                "/authorize?response_type=code&client_id=https%3A%2F%2Fevil.example%2Fclient.json&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback&code_challenge=cccccccccccccccccccccccccccccccccccccccccccccc&code_challenge_method=S256",
+            ))
+            .await;
+        assert_eq!(foreign.status, 400);
+        assert_eq!(fetches.load(Ordering::Relaxed), 0);
+        // A vendor host whose document names another URL: refused.
+        let mismatched = connector
+            .handle(get(
+                "/authorize?response_type=code&client_id=https%3A%2F%2Fclaude.ai%2Foauth%2Felsewhere.json&redirect_uri=https%3A%2F%2Fclaude.ai%2Fapi%2Fmcp%2Fauth_callback&code_challenge=cccccccccccccccccccccccccccccccccccccccccccccc&code_challenge_method=S256",
+            ))
+            .await;
+        assert_eq!(mismatched.status, 400);
+        assert!(
+            String::from_utf8_lossy(&mismatched.body).contains("does not name its own URL"),
+            "{}",
+            String::from_utf8_lossy(&mismatched.body)
+        );
+        assert_eq!(fetches.load(Ordering::Relaxed), 1);
+
+        let client_id = "https%3A%2F%2Fchatgpt.com%2Foauth%2Fclient.json";
+        let verifier = "v".repeat(60);
+        let challenge = oauth::s256(&verifier);
+        let query = format!(
+            "response_type=code&client_id={client_id}&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fconnector_platform_oauth_redirect&code_challenge={challenge}&code_challenge_method=S256&state=s2"
+        );
+        let form = connector.handle(get(&format!("/authorize?{query}"))).await;
+        assert_eq!(form.status, 200, "{}", String::from_utf8_lossy(&form.body));
+        let html = String::from_utf8_lossy(&form.body);
+        assert!(
+            html.contains("<b>ChatGPT (chatgpt.com)</b>"),
+            "the host, not the document's name: {html}"
+        );
+        assert_eq!(fetches.load(Ordering::Relaxed), 2);
+        let again = connector.handle(get(&format!("/authorize?{query}"))).await;
+        assert_eq!(again.status, 200);
+        assert_eq!(
+            fetches.load(Ordering::Relaxed),
+            2,
+            "a fresh document is not fetched again"
+        );
+
+        let consent = connector
+            .handle(post(
+                "/authorize",
+                "application/x-www-form-urlencoded",
+                &format!("{query}&pairing_code=ABCD-EFGH&agent_name=chatgpt-browser-test&project=%2Fp%2Fkeel"),
+                None,
+            ))
+            .await;
+        assert_eq!(
+            consent.status,
+            302,
+            "{}",
+            String::from_utf8_lossy(&consent.body)
+        );
+        let location = consent
+            .headers
+            .iter()
+            .find(|(n, _)| n == "Location")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        assert!(
+            location.starts_with("https://chatgpt.com/connector_platform_oauth_redirect?code=")
+        );
+        assert!(
+            location.ends_with("&state=s2&iss=https%3A%2F%2Fx.trycloudflare.com"),
+            "{location}"
+        );
+        let code = location
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_owned();
+        let token = connector
+            .handle(post(
+                "/token",
+                "application/x-www-form-urlencoded",
+                &format!(
+                    "grant_type=authorization_code&code={code}&client_id={client_id}&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fconnector_platform_oauth_redirect&code_verifier={verifier}"
+                ),
+                None,
+            ))
+            .await;
+        assert_eq!(
+            token.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&token.body)
+        );
+        assert!(
+            matches!(
+                mock.requests().last(),
+                Some(Request::Register { spec, .. })
+                    if spec.runtime == "chatgpt-browser"
+                        && spec.workdir.as_deref() == Some(Path::new("/p/keel"))
+            ),
+            "{:?}",
+            mock.requests().last()
+        );
+        let store = connector.store.lock().unwrap();
+        let grant = store.grants.values().next().unwrap();
+        assert_eq!(grant.client_id, "https://chatgpt.com/oauth/client.json");
+        assert_eq!(grant.vendor, Vendor::ChatGpt);
+    }
+
+    /// One connector, every project: the consent page proposes the
+    /// default and takes any folder on this machine, refuses one that is
+    /// not here, and the browser agent is registered where the person
+    /// said, with `project` broadcasts going there.
+    #[tokio::test]
+    async fn consent_chooses_the_project_the_browser_agent_joins() {
+        let here = tempfile::tempdir().unwrap();
+        let root = here.path().canonicalize().unwrap();
+        let (connector, mock) = connector(vec![
+            live_agent("claude-browser-here"), // Register
+            live_agent("claude-browser-here"), // Inspect before send_message
+            Response::Ok,                      // Heartbeat
+            Response::Ok,                      // Send
+        ]);
+        let registered = json_body(
+            &connector
+                .handle(post(
+                    "/register",
+                    "application/json",
+                    r#"{"redirect_uris":["https://claude.ai/api/mcp/auth_callback"]}"#,
+                    None,
+                ))
+                .await,
+        );
+        let client_id = registered["client_id"].as_str().unwrap().to_owned();
+        let verifier = "v".repeat(60);
+        let consent = |project: &str| {
+            post(
+                "/authorize",
+                "application/x-www-form-urlencoded",
+                &format!(
+                    "response_type=code&client_id={client_id}&code_challenge={}&code_challenge_method=S256&pairing_code=ABCD-EFGH&project=%2Fp%2Fkeel&project_path={}",
+                    oauth::s256(&verifier),
+                    http::percent_encode(project)
+                ),
+                None,
+            )
+        };
+        let missing = connector.handle(consent("/no/such/folder/here")).await;
+        assert_eq!(missing.status, 400);
+        let html = String::from_utf8_lossy(&missing.body);
+        assert!(
+            html.contains("That folder is not on this machine."),
+            "{html}"
+        );
+        assert!(
+            html.contains("<option value=\"/p/keel\" selected>"),
+            "the page comes back with its choices: {html}"
+        );
+        let relative = connector.handle(consent("keel")).await;
+        assert_eq!(relative.status, 400);
+        assert!(
+            mock.requests().is_empty(),
+            "a refused project asks the daemon nothing"
+        );
+
+        let chosen = connector.handle(consent(&root.to_string_lossy())).await;
+        assert_eq!(
+            chosen.status,
+            302,
+            "{}",
+            String::from_utf8_lossy(&chosen.body)
+        );
+        let location = chosen
+            .headers
+            .iter()
+            .find(|(n, _)| n == "Location")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        let code = location
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_owned();
+        let issued = json_body(
+            &connector
+                .handle(post(
+                    "/token",
+                    "application/x-www-form-urlencoded",
+                    &format!("grant_type=authorization_code&code={code}&code_verifier={verifier}"),
+                    None,
+                ))
+                .await,
+        );
+        let access = issued["access_token"].as_str().unwrap().to_owned();
+        assert!(
+            matches!(
+                &mock.requests()[0],
+                Request::Register { spec, .. } if spec.workdir.as_deref() == Some(root.as_path())
+            ),
+            "{:?}",
+            mock.requests()[0]
+        );
+        let sent = connector
+            .handle(post(
+                "/mcp",
+                "application/json",
+                r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"project","text":"hello"}}}"#,
+                Some(&access),
+            ))
+            .await;
+        assert_eq!(sent.status, 200);
+        assert!(
+            matches!(
+                mock.requests().last(),
+                Some(Request::Send { to, .. }) if *to == format!("project:{}", root.display())
+            ),
+            "a project broadcast goes to the project the consent chose: {:?}",
+            mock.requests().last()
+        );
     }
 
     #[test]

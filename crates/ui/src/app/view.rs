@@ -3299,7 +3299,7 @@ impl App {
                     } else {
                         c.green
                     },
-                    super::in_browser_word(runtime, sessions.len()),
+                    super::in_browser_word(runtime, sessions.len(), self.connector.as_ref()),
                 )
             } else if !supported {
                 (c.faint, "Installed · integration unavailable".to_owned())
@@ -3425,6 +3425,35 @@ impl App {
                 }
                 if runtime.in_browser() && installed {
                     facts = facts.push(note(agentdocker_core::runtime::IN_BROWSER, c));
+                    // The connector is what brings a browser agent here:
+                    // its address and pairing code are what the person
+                    // needs at the vendor's settings and on the consent
+                    // page, and this card is where they look for them.
+                    match &self.connector {
+                        Some(serving) => {
+                            facts = facts.push(kv("Connector", serving.mcp_url(), c));
+                            facts = facts.push(kv(
+                                "Pairing code",
+                                format!(
+                                    "{} · typed on the consent page, which also asks which project the agent joins",
+                                    serving.pairing_code
+                                ),
+                                c,
+                            ));
+                            facts = facts.push(kv(
+                                "Add it",
+                                super::add_connector_words(&runtime.name),
+                                c,
+                            ));
+                        }
+                        None => {
+                            facts = facts.push(kv(
+                                "Connector",
+                                "not running · `agentdocker connector install --tunnel tailscale` (or `--tunnel cloudflared`) serves one for every project on this machine",
+                                c,
+                            ));
+                        }
+                    }
                 }
                 for why in &runtime.incomplete {
                     facts = facts.push(note(format!("Inventory incomplete: {why}"), c));

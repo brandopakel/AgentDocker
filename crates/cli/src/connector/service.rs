@@ -4,10 +4,9 @@
 //! arguments given at install time. The daemon's own service does the
 //! same for agentd; this borrows its shapes and commands.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
 
 use super::ServeArgs;
 use crate::service::{Cmd, Plan, execute};
@@ -15,64 +14,11 @@ use crate::service::{Cmd, Plan, execute};
 pub const LABEL: &str = "dev.agentdocker.connector";
 pub const UNIT: &str = "agentdocker-connector.service";
 
-/// What a serving connector writes about itself, for `connector status`
-/// and for the person who started it as a service and needs the pairing
-/// code without a terminal to read it from.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Serving {
-    pub pid: u32,
-    pub public_url: String,
-    pub bind: String,
-    pub project: PathBuf,
-    pub pairing_code: String,
-    pub started_at: chrono::DateTime<chrono::Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tunnel: Option<TunnelStatus>,
-    #[serde(default)]
-    pub allowlist_prefixes: usize,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TunnelStatus {
-    pub provider: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pid: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
-/// Where the serving connector describes itself.
-pub fn status_path(home: &Path) -> PathBuf {
-    home.join("connector").join("serve.json")
-}
-
-pub fn write_status(home: &Path, serving: &Serving) -> Result<()> {
-    let path = status_path(home);
-    let parent = path.parent().context("status path has no parent")?;
-    std::fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(".serve.{}.tmp", serving.pid));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(serving)?)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
-    }
-    std::fs::rename(&temporary, &path)?;
-    Ok(())
-}
-
-pub fn clear_status(home: &Path, pid: u32) {
-    let path = status_path(home);
-    // Only the process that wrote it takes it away.
-    if read_status(home).is_some_and(|s| s.pid == pid) {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
-pub fn read_status(home: &Path) -> Option<Serving> {
-    let text = std::fs::read_to_string(status_path(home)).ok()?;
-    serde_json::from_str(&text).ok()
-}
+/// What a serving connector writes about itself lives in the host crate,
+/// because the desktop reads it too.
+pub use agentdocker_host::connector::{
+    Serving, TunnelStatus, clear_status, read_status, write_status,
+};
 
 /// The service's files and commands, from the executable, the state home
 /// and the arguments `serve` was given.
@@ -331,15 +277,6 @@ fn layout(args: &ServeArgs) -> Result<Layout> {
         }
         _ => {}
     }
-    let project = match &args.project {
-        Some(path) => path.clone(),
-        None => std::env::current_dir()?,
-    };
-    if args.project.is_none() {
-        // The service has no working directory of the person's; name it.
-        serve_args.push("--project".into());
-        serve_args.push(project.to_string_lossy().into_owned());
-    }
     Ok(Layout {
         agentdocker,
         home,
@@ -467,7 +404,7 @@ mod tests {
             pid: 4242,
             public_url: "https://x.trycloudflare.com".into(),
             bind: "127.0.0.1:62800".into(),
-            project: "/Users/p/keel".into(),
+            default_project: Some("/Users/p/keel".into()),
             pairing_code: "ABCD-EFGH".into(),
             started_at: chrono::Utc::now(),
             tunnel: Some(TunnelStatus {
@@ -481,7 +418,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(status_path(dir.path()))
+            let mode = std::fs::metadata(agentdocker_host::connector::status_path(dir.path()))
                 .unwrap()
                 .permissions()
                 .mode();

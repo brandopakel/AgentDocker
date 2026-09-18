@@ -23,6 +23,7 @@ pub mod vcs;
 pub mod content;
 
 pub mod command;
+pub mod connector;
 
 pub mod containers;
 pub mod engine;

@@ -21,15 +21,20 @@ Inbox. The first three items are shown; **Show more** expands the same list and
 also keeps the full setup controls.
 
 A vendor's browser extension (Claude, ChatGPT) has its own Tools row, marked
-**Installed in Chrome · works inside the browser, its sessions are not visible
-here** — or, once a browser agent has joined through the remote connector,
-**… · one browser agent connected through the remote connector** — with the
-browser, profile and version of each copy under **Details** and the bridge the
-browser launches for a command-line tool, when one is registered. The row
-offers no **Set up**: what the extension is doing runs in the browser and on
-the vendor's side, and only the connector's consent makes a session of it. The
-bridge is that tool's helper; **Connect** never offers it and adopting it by
-pid is refused with what it is.
+**Installed in Chrome · its sessions reach here only through the connector,
+which is not running**, or **… · the connector is ready; add it in Claude and
+its sessions appear here** while `agentdocker connector` serves on this
+machine, or, once a browser agent has joined, **… · one browser agent
+connected through the connector** — with the browser, profile and version of
+each copy under **Details**, the bridge the browser launches for a
+command-line tool when one is registered, and the connector's state: its MCP
+URL, the pairing code the consent page asks for (which also asks which project
+the agent joins) and where in the vendor's settings to add it, or, when none
+serves, the `connector install` command that starts one for every project on
+this machine. The row offers no **Set up**: what the extension is doing runs
+in the browser and on the vendor's side, and only the connector's consent
+makes a session of it. The bridge is that tool's helper; **Connect** never
+offers it and adopting it by pid is refused with what it is.
 
 The Claude Code row offers **Wake terminal sessions** while the shell's startup
 file lacks the channel flag: it previews `agentdocker setup --shell`, one
