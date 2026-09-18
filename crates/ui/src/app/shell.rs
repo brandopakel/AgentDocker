@@ -377,7 +377,13 @@ impl State {
             None
         };
         if let Some(error) = error {
-            self.error = Some(error.into());
+            if matches!(kind, DraftKind::TaskTitle | DraftKind::TaskAcceptance)
+                && let Some(draft) = self.task_drafts.get_mut(&id)
+            {
+                draft.error = Some(error.into());
+            } else {
+                self.error = Some(error.into());
+            }
             return false;
         }
         let edited = match kind {
@@ -3146,6 +3152,13 @@ mod tests {
         assert!(!state.edit_draft(DraftKind::TaskTitle, "overflow".into(), "new".into()));
         assert!(!state.edit_draft(DraftKind::TaskTitle, "0".into(), "界".repeat(201)));
         assert!(!state.edit_draft(DraftKind::TaskAcceptance, "0".into(), "界".repeat(4001)));
+        assert!(
+            state.task_drafts["0"]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("4,000")
+        );
         assert_eq!(state.draft_snapshot(), before);
         assert!(state.edit_draft(DraftKind::TaskTitle, "0".into(), String::new()));
         assert!(state.edit_draft(DraftKind::TaskTitle, "overflow".into(), "new".into()));
