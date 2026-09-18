@@ -67,16 +67,22 @@ class VerifyCampaign(unittest.TestCase):
                 "#!/bin/sh\n"
                 "env | grep '^AGENTDOCKER_' >> \"$CARGO_ENV_LOG\" || true\n"
                 "echo step >> \"$CARGO_ENV_LOG.steps\"\n"
-                f"sleep {cargo_sleep + 30} & echo $! >> \"$CARGO_ENV_LOG.helpers\"\n"
+                f"[ -n \"$CARGO_FAIL\" ] && exit \"$CARGO_FAIL\"\n"
+                f"sleep {cargo_sleep + 30} >/dev/null 2>&1 </dev/null & a=$!\n"
+                # One helper that ignores TERM, as a stuck test binary might.
+                f"sh -c 'trap \"\" TERM; sleep {cargo_sleep + 30}' >/dev/null 2>&1 </dev/null & b=$!\n"
+                "echo $a $b >> \"$CARGO_ENV_LOG.helpers\"\n"
                 f"sleep {cargo_sleep}\n"
-                "kill $! 2>/dev/null; exit 0\n")
+                "kill -9 $a $b 2>/dev/null; exit 0\n")
             cargo.chmod(0o700)
+            (root / "scripts/benchmark_manifest.py").write_text('print(\'{"source":"fixture"}\')\n')
             env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_") and k != "CI"}
             env.update(environment)
             env.update(PATH=str(binary) + os.pathsep + os.environ["PATH"], FAKE_LOG=str(log),
-                       FAKE_MODE=mode, CARGO_ENV_LOG=str(seen), HOME=str(root))
-            result = subprocess.run(["bash", "scripts/verify.sh", "test"], cwd=root, env=env,
-                                    capture_output=True, text=True, timeout=20)
+                       FAKE_MODE=mode, CARGO_ENV_LOG=str(seen), HOME=str(root),
+                       CARGO_FAIL=environment.pop("CARGO_FAIL", ""))
+            result = subprocess.run(["bash", "scripts/verify.sh", environment.pop("VERIFY_MODE", "test")],
+                                    cwd=root, env=env, capture_output=True, text=True, timeout=30)
             calls = log.read_text().splitlines() if log.exists() else []
             cargo_env = seen.read_text() if seen.exists() else ""
             steps = Path(str(seen) + ".steps")
@@ -151,16 +157,25 @@ class VerifyCampaign(unittest.TestCase):
         # the helper it started, no further step starts, the run reads as
         # the loss, and the lease is still released on the way out.
         result, calls, _ = self.run_verify("renew-fails", {
-            "AGENTDOCKER_AGENT_ID": "abc", "AGENTDOCKER_CAMPAIGN_RENEW_SECS": "0"}, cargo_sleep=6)
+            "AGENTDOCKER_AGENT_ID": "abc", "AGENTDOCKER_CAMPAIGN_RENEW_SECS": "1"}, cargo_sleep=8)
         self.assertEqual(result.returncode, 75, result.stderr)
         self.assertIn("the build slot was lost", result.stderr)
-        self.assertLessEqual(self.steps, 1, "no step starts on another's campaign")
+        self.assertEqual(self.steps, 1, "the first step was in flight; no second step starts")
         self.assertIn("release lease-known", "\n".join(calls), "released on the way out")
-        import time
-        deadline = time.time() + 5
-        while time.time() < deadline and any(self.alive(pid) for pid in self.helpers):
-            time.sleep(0.1)
-        self.assertFalse(any(self.alive(pid) for pid in self.helpers), "the step's helper was left running")
+        # Both helpers are gone by the time the run has exited — the one
+        # that ignored TERM was killed — and the lease went after them.
+        self.assertEqual(len(self.helpers), 2)
+        self.assertFalse(any(self.alive(pid) for pid in self.helpers), "a helper of the step outlived the run")
+
+    def test_the_bench_finisher_ends_the_campaign_too(self):
+        # bench and fuzz take over the EXIT trap with a finisher of their
+        # own: a first-step failure there must still release the lease and
+        # stop the renew helper.
+        result, calls, _ = self.run_verify("known", {
+            "AGENTDOCKER_AGENT_ID": "abc", "VERIFY_MODE": "bench", "CARGO_FAIL": "7",
+            "AGENTDOCKER_CAMPAIGN_RENEW_SECS": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("release lease-known --as abc", "\n".join(calls), "the finisher ended the campaign")
 
     @staticmethod
     def alive(pid):

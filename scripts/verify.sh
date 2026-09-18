@@ -138,6 +138,14 @@ campaign_start() {
 }
 campaign_end() {
   if [ -n "$campaign_renew_pid" ]; then
+    # After a loss the helper is ending the step's tree: let it finish
+    # (bounded) before the lease goes, so nothing of this run outlives
+    # the slot; otherwise it is just asleep, and goes now.
+    local tries=0
+    while [ -e "$campaign_dir/lost" ] && [ "$tries" -lt 80 ] && kill -0 "$campaign_renew_pid" 2>/dev/null; do
+      tries=$((tries + 1))
+      sleep 0.1
+    done
     kill "$campaign_renew_pid" 2>/dev/null || true
   fi
   local as=()
@@ -150,16 +158,34 @@ campaign_end() {
     campaign_cli deregister --as "$campaign_transient" >/dev/null 2>&1 || true
   fi
   rm -rf "$campaign_dir"
+  # Done once: a mode's own finisher calls this before it exits, and the
+  # EXIT trap must not release or deregister a second time.
+  campaign_lease="" campaign_transient="" campaign_renew_pid=""
 }
-# This campaign's own process tree, ended from the leaves: the step child
-# and whatever it started (cargo's rustc, a linker, a test binary), never
-# a process this run did not start.
-campaign_kill_tree() {
+# This campaign's own process tree — the step child and whatever it
+# started (cargo's rustc, a linker, a test binary), never a process this
+# run did not start — listed from the leaves.
+campaign_tree() {
   local pid="$1" child
   for child in $(pgrep -P "$pid" 2>/dev/null); do
-    campaign_kill_tree "$child"
+    campaign_tree "$child"
   done
-  kill -TERM "$pid" 2>/dev/null || true
+  echo "$pid"
+}
+# End that tree: TERM to every member, a few seconds for them to go, then
+# KILL for whatever ignored it.
+campaign_kill_tree() {
+  local pids pid alive tries=0
+  pids="$(campaign_tree "$1")"
+  for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
+  while [ "$tries" -lt 50 ]; do
+    alive=""
+    for pid in $pids; do kill -0 "$pid" 2>/dev/null && alive="$alive $pid"; done
+    [ -z "$alive" ] && return 0
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  for pid in $alive; do kill -KILL "$pid" 2>/dev/null || true; done
 }
 # One step of the run. A lost slot is a failure here — before the step,
 # so nothing starts on another's campaign, and after it, so a step the
@@ -173,9 +199,20 @@ step() {
   "$@" &
   local child=$! status=0
   echo "$child" > "$campaign_dir/step"
+  # A loss that landed between the check above and the pid going on
+  # record is caught here, with the pid known: the child is ended now.
+  if [ -e "$campaign_dir/lost" ]; then
+    campaign_kill_tree "$child"
+    wait "$child" 2>/dev/null || true
+    rm -f "$campaign_dir/step"
+    echo "verify.sh: the build slot was lost; stopped: $*" >&2
+    return 75
+  fi
   wait "$child" || status=$?
   rm -f "$campaign_dir/step"
   if [ -e "$campaign_dir/lost" ]; then
+    # The helper ended the child; what the child started goes too.
+    campaign_kill_tree "$child"
     echo "verify.sh: the build slot was lost during: $*" >&2
     return 75
   fi
@@ -250,6 +287,8 @@ PY
         benchmark_binaries > artifacts/benchmark-binaries-after.json || bench_exit=1
         cmp -s artifacts/benchmark-binaries.json artifacts/benchmark-binaries-after.json || { echo 'benchmark binaries changed during workloads' >&2; bench_exit=1; }
       fi
+      # This finisher took over the EXIT trap: the campaign ends here too.
+      campaign_end "$bench_exit"
       exit "$bench_exit"
     }
     trap finish_bench EXIT
@@ -294,6 +333,8 @@ PY
       python3 scripts/benchmark_manifest.py fuzz "$seconds" > artifacts/fuzz-manifest-after.json || fuzz_status=1
       python3 -c 'import json; a=json.load(open("artifacts/fuzz-manifest.json")); b=json.load(open("artifacts/fuzz-manifest-after.json")); assert a == b, "source, lockfile or toolchain changed during fuzzing"' || fuzz_status=1
       rm -rf -- "$fuzz_fixture_root" || fuzz_status=1
+      # This finisher took over the EXIT trap: the campaign ends here too.
+      campaign_end "$fuzz_status"
       exit "$fuzz_status"
     }
     trap finish_fuzz EXIT
