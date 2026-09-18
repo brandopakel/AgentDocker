@@ -41,7 +41,15 @@ campaign_start() {
   fi
   case "$output" in
     *"give --as"*|*"specify the sender"*|*"--as <AGENT>"*)
-      echo "verify.sh: cannot tell which agent this is (${output%%$'\n'*}); running without the campaign lease" >&2
+      # No identity to claim with. With nobody holding the lease that is
+      # only a missing courtesy; with a holder it may be somebody else's
+      # campaign, and not knowing is no licence to run on top of it.
+      if [ -n "$before" ]; then
+        echo "verify.sh: cannot tell which agent this is, and task:local-cargo-campaign is held; not starting cargo on top of it (if that lease is yours, run with AGENTDOCKER_CAMPAIGN_LEASE=off or AGENTDOCKER_AGENT_ID set)." >&2
+        AGENTDOCKER_NO_AUTOSTART=1 agentdocker leases --resource task:local-cargo-campaign >&2 || true
+        exit 75
+      fi
+      echo "verify.sh: cannot tell which agent this is (${output%%$'\n'*}); nobody holds the campaign lease, running without it" >&2
       return 0 ;;
   esac
   echo "verify.sh: task:local-cargo-campaign is held by another campaign; not starting cargo on top of it." >&2
