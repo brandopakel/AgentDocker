@@ -1115,7 +1115,8 @@ are unknown, never zero. The design:
   `retained_since` (UTC hour), `history_truncated`, `future_until_clamped` and
   `includes_current_hour` (booleans), plus `source_gaps` (a nonnegative integer
   count of known unreadable/unsupported/reset intervals in the requested scope).
-  `coverage.collection` contains `state` (`unknown`, `scanning`, `caught_up`),
+  `coverage.collection` contains `enabled` (boolean or null for an older report,
+  read from current configuration), `state` (`unknown`, `scanning`, `caught_up`),
   `discovery_generation` (u64 or null), `snapshot_at` and `completed_at` (UTC
   timestamps or null), `discovery_complete` (boolean), `pending_files` (u64 or
   null while enumeration is incomplete), `pending_tail_files` (nonnegative
@@ -1210,6 +1211,11 @@ observation times and keeps the first accepted hour, including earlier draft
 fingerprints; genuinely changed counters still report a gap. Validation of this
 follow-up is pending. Only accounting metadata was inspected; no prompt or
 response content was retained in these observations.
+
+Collection configuration is separate from scan progress: enabling collection or
+changing roots can leave a scan waiting to start, without meaning collection is
+off. The CLI and desktop use the explicit optional `enabled` field, and preserve
+unknown for older reports. A disabled collector retains existing totals.
 
 Collector follow-up preserves the committed retention cutoff when configuration
 expands: discarded history stays explicitly truncated, and newly found older

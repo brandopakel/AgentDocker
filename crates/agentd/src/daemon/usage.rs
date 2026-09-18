@@ -203,6 +203,7 @@ impl Daemon {
                         }
                     }
                 }
+                report.coverage.collection.enabled = Some(config.enabled);
                 Response::Usage { report }
             }
             Some(None) => Response::error(
@@ -648,6 +649,39 @@ mod tests {
             Response::Usage { report } => report,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn usage_configuration_is_not_inferred_from_unstarted_or_old_collection() {
+        let (temp, daemon, config, root) = fixture();
+        let starting = query(&daemon).await;
+        assert_eq!(starting.coverage.collection.enabled, Some(true));
+        assert_eq!(starting.coverage.collection.discovery_generation, None);
+        std::fs::write(root.join("source.jsonl"), record("first", 4)).unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let caught_up = query(&daemon).await;
+        assert_eq!(caught_up.coverage.collection.enabled, Some(true));
+        assert_eq!(
+            caught_up.coverage.collection.state,
+            CollectionState::CaughtUp
+        );
+        let path = temp.path().join("agentd.toml");
+        let original = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, original.replace("enabled=true", "enabled=false")).unwrap();
+        let off = query(&daemon).await;
+        assert_eq!(off.coverage.collection.enabled, Some(false));
+        assert_eq!(
+            off.rows[0].samples, 1,
+            "disabling retains available history"
+        );
+        assert_eq!(
+            off.rows[0].counters.input_tokens.coverage,
+            usage::Coverage::Partial
+        );
+        std::fs::write(&path, original.replace("logs", "other-logs")).unwrap();
+        let waiting = query(&daemon).await;
+        assert_eq!(waiting.coverage.collection.enabled, Some(true));
+        assert_eq!(waiting.coverage.collection.discovery_generation, None);
     }
 
     #[tokio::test]

@@ -124,6 +124,33 @@ of the inventory. **Review setup**, **Apply reviewed changes**, and **Undo this
 setup** use saved plans. **Check connections** provides bounded diagnostics;
 actual provider delivery requires a real round trip.
 
+### Usage
+
+The #194 candidate adds **Projects → Usage** and `agentdocker usage`. Check the
+[installed-build status](REMAINING-WORK.md) before expecting this in an older app.
+Choose the last day, week or month and group reported tokens by agent, model,
+provider, project or hour. `~` marks a partial count; `—` means the source did
+not report that counter. These are token totals, not a bill. The report shows
+the available time range, gaps and whether collection has caught up.
+
+Collection is off by default. To enable it, add this section to your existing
+`~/.agentdocker/agentd.toml` (or the file under `AGENTDOCKER_HOME`), preserving its
+other settings:
+
+```toml
+[usage]
+enabled = true
+retention_days = 30
+```
+
+The running daemon picks it up on its next collection cycle. It reads supported
+local Codex and Claude Code logs; it retains accounting metadata, not message
+text. Optional `codex_roots` and `claude_roots` are arrays of absolute directories;
+empty arrays use the provider defaults. Turning collection off retains available
+totals. Increasing retention does not restore previously discarded history.
+AgentDocker's own injected overhead remains **not measured** until that separate
+instrumentation is implemented.
+
 ### Terminal and settings
 
 **Open terminal** attaches to a managed live PTY. **Detach** leaves the agent
@@ -500,9 +527,10 @@ Newest first. Only what changes how the product is used.
 - The Messages workspace: **+** for a new direct message or channel,
   invitations, `@` mentions with counts, Enter to send, resizable panes,
   an Earlier group for ended sessions' conversations.
-- A bounded reader of local Codex rollouts and Claude transcripts for
-  token usage, with explicit gaps; the `usage` command and screen are not
-  built yet.
+- Opt-in local token collection, hourly accounting and the `usage` command and
+  screen are implemented in candidate #194, with explicit unknown/partial
+  coverage. Final integration and sustained acceptance remain tracked in
+  [Remaining work](REMAINING-WORK.md).
 - Conversations: every message is archived in the one conversation its
   destination names (`everyone:<project>`, `all`, `channel:<id>`,
   `dm:<a>:<b>`, `notices:<agent>`), beside the queue it is delivered to and

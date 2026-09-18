@@ -47,12 +47,10 @@ pub fn thousands(value: u64) -> String {
     out
 }
 
-/// Whether collection has never run: the state is unknown and no
-/// discovery has been numbered. That is "off" (the default), not "no
-/// usage".
+/// Only current configuration establishes that collection is off. Missing
+/// discovery progress may mean it is starting or this is an older report.
 pub fn collection_off(report: &Report) -> bool {
-    let collection = &report.coverage.collection;
-    collection.state == CollectionState::Unknown && collection.discovery_generation.is_none()
+    report.coverage.collection.enabled == Some(false)
 }
 
 /// One line on where collection stands.
@@ -60,6 +58,11 @@ pub fn collection_line(report: &Report) -> String {
     let collection = &report.coverage.collection;
     let state = match collection.state {
         CollectionState::Unknown if collection_off(report) => "off".to_owned(),
+        CollectionState::Unknown
+            if collection.enabled == Some(true) && collection.discovery_generation.is_none() =>
+        {
+            "starting".to_owned()
+        }
         CollectionState::Unknown => "unknown".to_owned(),
         CollectionState::Scanning => match collection.pending_files {
             Some(pending) => format!("scanning, {pending} file(s) to read"),
@@ -197,7 +200,7 @@ impl App {
             page = page.push(if collection_off(report) {
                 empty(
                     "Collection is off",
-                    "Nothing has been read. Enable it in agentd.toml ([usage] enabled = true) and the daemon reads the providers' local logs from then on.",
+                    "Enable it in agentd.toml ([usage] enabled = true) to read the providers' local usage logs. Existing totals remain available.",
                     None,
                     c,
                 )
@@ -344,6 +347,7 @@ mod tests {
                 includes_current_hour: true,
                 source_gaps: 0,
                 collection: Collection {
+                    enabled: Some(true),
                     state,
                     discovery_generation: generation,
                     snapshot_at: None,
@@ -437,7 +441,13 @@ mod tests {
         assert_eq!(thousands(0), "0");
         assert_eq!(thousands(10_000_000), "10,000,000");
 
-        let off = report(Vec::new(), CollectionState::Unknown, None);
+        let mut off = report(Vec::new(), CollectionState::Unknown, None);
+        assert!(!collection_off(&off));
+        assert_eq!(collection_line(&off), "Collection: starting");
+        off.coverage.collection.enabled = None;
+        assert!(!collection_off(&off));
+        assert_eq!(collection_line(&off), "Collection: unknown");
+        off.coverage.collection.enabled = Some(false);
         assert!(collection_off(&off));
         assert_eq!(collection_line(&off), "Collection: off");
         assert_eq!(overhead_line(&off), "Overhead: not measured yet");

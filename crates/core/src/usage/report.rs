@@ -85,6 +85,10 @@ pub struct Scope {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Collection {
+    /// Current configuration, supplied by the daemon at query time. Older
+    /// reports without this field do not establish whether collection is off.
+    #[serde(default)]
+    pub enabled: Option<bool>,
     pub state: CollectionState,
     pub discovery_generation: Option<u64>,
     pub snapshot_at: Option<DateTime<Utc>>,

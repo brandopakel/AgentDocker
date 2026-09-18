@@ -898,12 +898,11 @@ pub fn usage_report(report: &agentdocker_core::usage::report::Report) {
         Group::Hour => "HOUR",
     };
     let collection = &report.coverage.collection;
-    let off =
-        collection.state == CollectionState::Unknown && collection.discovery_generation.is_none();
+    let off = collection.enabled == Some(false);
     if report.rows.is_empty() {
         if off {
             println!(
-                "Collection is off: nothing has been read. Enable it in agentd.toml ([usage] enabled = true) and the daemon reads the providers' local logs from then on."
+                "Collection is off. Enable it in agentd.toml ([usage] enabled = true) to read the providers' local usage logs. Existing totals remain available."
             );
         } else {
             println!("No usage in this range.");
@@ -976,6 +975,11 @@ pub fn usage_report(report: &agentdocker_core::usage::report::Report) {
     }
     let state = match collection.state {
         CollectionState::Unknown if off => "off".to_owned(),
+        CollectionState::Unknown
+            if collection.enabled == Some(true) && collection.discovery_generation.is_none() =>
+        {
+            "starting".to_owned()
+        }
         CollectionState::Unknown => "unknown".to_owned(),
         CollectionState::Scanning => {
             let pending = collection
