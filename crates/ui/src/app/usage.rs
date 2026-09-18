@@ -318,6 +318,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn usage_reads_ignore_old_filters_and_report_queue_refusal_without_losing_totals() {
+        let (tx, commands) = queue::channel();
+        let (messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        let dir = tempfile::tempdir().unwrap();
+        let project = agentdocker_core::ProjectRef::directory(dir.path().join("project"));
+        let root = project.root.display().to_string();
+        app.shell.catalog.remember(project.clone(), true);
+        app.shell.catalog.selected = Some(project.root);
+        app.request_usage();
+        app.request_usage();
+        let first: Vec<_> = commands.try_iter().collect();
+        assert_eq!(
+            first.len(),
+            1,
+            "identical refreshes share one outstanding read"
+        );
+        let Cmd::Usage { request: old, .. } = &first[0] else {
+            panic!("usage request")
+        };
+        app.shell.usage_since = "7d";
+        app.request_usage();
+        let Cmd::Usage {
+            request: current, ..
+        } = commands.try_iter().next().unwrap()
+        else {
+            panic!("usage request")
+        };
+        messages
+            .send(Msg::Usage(root.clone(), *old, Err("old error".into())))
+            .unwrap();
+        app.drain();
+        assert!(app.usage_error.is_none());
+        let latest = report(Vec::new(), CollectionState::CaughtUp, Some(4));
+        messages
+            .send(Msg::Usage(root.clone(), current, Ok(latest.clone())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.usage.as_ref().unwrap().1, latest);
+        messages
+            .send(Msg::Usage(
+                root,
+                *old,
+                Ok(report(Vec::new(), CollectionState::Unknown, None)),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.usage.as_ref().unwrap().1, latest);
+        for _ in 0..queue::CAPACITY {
+            app.tx.send(Cmd::Stop("fixture".into())).unwrap();
+        }
+        app.request_usage();
+        assert!(app.usage_pending.is_none());
+        assert!(app.usage_error.is_some());
+        assert_eq!(app.usage.as_ref().unwrap().1, latest);
+    }
+
     /// A count shows as the report knows it and never as an invented
     /// zero; overhead that was not measured says so; collection that
     /// never ran is off, not "no usage".

@@ -378,3 +378,7 @@ Notification reply recovery forwarding reserves the full JSON byte budget for
 metadata. Escaped control characters and Unicode cannot silently reduce that
 limit. Both ends still reject oversized frames. A full recovery list shows a
 200-character excerpt and preserves uncertain-delivery wording.
+
+Usage reads carry request identities across project, range and grouping changes.
+Duplicate refreshes share the outstanding read; superseded replies are ignored,
+and a refused queue leaves the last totals visible with an explicit error.
