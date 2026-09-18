@@ -57,6 +57,9 @@ pub struct HandoffBundle {
     pub assumptions: Vec<String>,
     #[serde(default)]
     pub next_steps: Vec<String>,
+    /// What the work points at, typed, for the recipient to open.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<crate::Link>,
     /// The physical checkout the sender worked in.
     pub checkout: PathBuf,
     /// Its ignore-aware content identity when the bundle was made; what
@@ -209,6 +212,7 @@ mod tests {
             note: None,
             assumptions: Vec::new(),
             next_steps: Vec::new(),
+            links: Vec::new(),
             checkout: PathBuf::from("/work/alpha"),
             version: "v1".into(),
             environment: None,

@@ -65,8 +65,11 @@ and what done means. **File a card** at the top takes a title and the
 acceptance text and files it **as Ready** (for the next agent to pull) or
 **in Backlog** (yours to think about). A card shows who holds it with a
 presence dot, or *for the taking* in Ready; opening a card shows its
-acceptance text and its moves: one column back or forward, **Hand to** an
-agent running here (or *nobody*), and **Archive**. An agent pulls a Ready
+acceptance text, its typed links (a kind — path, pr, commit, url, task, message,
+memory — and the target, shown as text; the app neither opens nor copies
+them, that is the person's tools' work) and its
+moves: one column back or forward, **Hand to** an agent running here (or
+*nobody*), and **Archive**. An agent pulls a Ready
 card with the `pull_task` tool and the board shows it in progress under that
 agent at once; two agents never get one card. The pull is a `task:<id>`
 lease: a card whose holder's lease has lapsed — expired, released, or the
@@ -238,7 +241,8 @@ message from your queue and **Clear shown** the visible ones; direct messages
 otherwise remain queued until a consumer explicitly takes them. The rail badge
 counts open questions and waiting messages together. Notification navigation
 opens the requested message, including an older one outside the recent window.
-On the Messages screen the message is a row of the archive: the row is marked
+A message that carries typed links shows them under its text, each as its kind
+and its target. On the Messages screen the message is a row of the archive: the row is marked
 and scrolled to once its page is here, and if the conversation was already open
 at its newest the pages before are read back for it, one at a time, up to five
 (one in flight at a time, so refreshes of the newest page do not spend the
