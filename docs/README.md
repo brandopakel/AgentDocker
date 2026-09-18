@@ -19,6 +19,7 @@ macOS and Linux; Windows has tested foundations and remains incomplete.
 - [Native delivery progress and regression coverage](NATIVE-DELIVERY.md)
 - [Local native trial and acceptance plan](LOCAL-TRIAL.md)
 - [Architecture and wire protocol](ARCHITECTURE.md)
+- [The remote connector: agents that work inside a browser](REMOTE-CONNECTOR.md)
 - [Implementation and recovery contracts](IMPLEMENTATION-NOTES.md)
 - [Optional Docker and Podman execution](CONTAINER-ENGINES.md)
 - [Testing and benchmarks](TESTING-AND-BENCHMARKS.md)
@@ -67,6 +68,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [This index](README.md) | Reference: complete file inventory and one current backlog/crosswalk. |
 | [Remaining work](REMAINING-WORK.md) | Partial: current disposition of existing engineering, acceptance and release requirements, kept current with each merge; the September 17 rows say what is installed (`d14610b7`, including #176/#178/#179/#180) and what acceptance is still owed. |
 | [Delivery plan](DELIVERY-PLAN.md) | Partial: current sequence and T01–T12/L01–L15 status, with a current-installation section per switch; old checkpoints are historical. |
+| [Remote connector](REMOTE-CONNECTOR.md) | Partial: `agentdocker connector` is in source with unit tests, a loopback real-binary trial and an acceptance against a real Claude account through a quick tunnel; ChatGPT, a durable tunnel, egress allowlisting, CIMD and desktop status remain. |
 | [Product direction](PRODUCT-DIRECTION.md) | Partial: single-host implementation exists, including the Messages workspace, notification routing, project pause, reconnect and the usage reader; delivery-order steps 1–2 and the maintenance part of 5 are done; signed release, Linux/Windows delivery and federation remain. |
 | [Architecture](ARCHITECTURE.md) | Partial: protocol/phase inventory (delivery rows 1–36: 17 federation and 20 Windows remain incomplete; 28 reload needs broader acceptance, 34 usage needs its collector and UI, 35 board and 36 message drafts are merged and installed on the current Mac with bounded acceptance), journal/checkpoint maintenance and an environment-free core exist; live replacement is in source behind `AGENTDOCKER_EXPERIMENTAL_RELOAD` with provider-side acceptance still ahead, and Windows is incomplete. The usage collector/protocol/CLI/screen and federation remain proposals. |
 | [Implementation notes](IMPLEMENTATION-NOTES.md) | Reference: implemented coordination/recovery contracts; distinguish command relaunch from conversation restoration. |

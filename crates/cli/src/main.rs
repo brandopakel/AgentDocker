@@ -4,6 +4,7 @@ mod agentfile;
 mod attach;
 mod client;
 mod codex_input;
+mod connector;
 mod desktop;
 mod format;
 mod hooks;
@@ -687,6 +688,8 @@ enum Command {
     Hook(hooks::HookArgs),
     /// Serve AgentDocker's tools to an MCP host (Claude Code, Codex, Cursor...) over stdio.
     Mcp(mcp::McpArgs),
+    /// Let agents that work inside a browser (Claude's or ChatGPT's extension) join a project's messaging, through a tunnel you run.
+    Connector(connector::ConnectorArgs),
     /// Supervised Codex input controller (launched by run --codex-input).
     #[command(hide = true)]
     CodexInput(codex_input::Args),
@@ -2787,6 +2790,7 @@ async fn run() -> Result<()> {
         Command::Daemon(args) => service::run(socket, args).await?,
         Command::Hook(args) => hooks::run(client, args).await?,
         Command::Mcp(args) => mcp::serve(client, args).await?,
+        Command::Connector(args) => connector::run(client, args).await?,
         Command::CodexInput(args) => codex_input::run(client, socket, args).await?,
         Command::CodexQueue(args) => codex_input::external::run(client, socket, args).await?,
         Command::CodexQueueUpgrade(args) => {
@@ -3852,18 +3856,30 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Parse as the binary would, on a thread with room: clap's derived
+    /// parser for this many commands wants more stack than a test thread
+    /// has (a main thread has four times as much), and the overflow
+    /// shows up as an abort in whichever test parses first. Taken from
+    /// d910a90 on claude/roles (#186), where CI first hit it.
+    fn parse_cli<const N: usize>(args: [&'static str; N]) -> Result<super::Cli, clap::Error> {
+        use clap::Parser;
+        std::thread::Builder::new()
+            .stack_size(32 << 20)
+            .spawn(move || super::Cli::try_parse_from(args))
+            .expect("a parsing thread")
+            .join()
+            .expect("parsing does not panic")
+    }
 
     #[test]
     fn pause_list_rejects_an_ignored_project_selector() {
-        use super::*;
         for selector in [".", "another-project"] {
-            let error =
-                Cli::try_parse_from(["agentdocker", "pause", "--list", "--project", selector])
-                    .err()
-                    .expect("conflicting selector must fail before connecting");
+            let error = parse_cli(["agentdocker", "pause", "--list", "--project", selector])
+                .err()
+                .expect("conflicting selector must fail before connecting");
             assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
         }
-        assert!(Cli::try_parse_from(["agentdocker", "pause", "--list"]).is_ok());
+        assert!(parse_cli(["agentdocker", "pause", "--list"]).is_ok());
     }
 
     /// `history --read` moves the cursor of whoever runs it: an agent's
@@ -3871,7 +3887,7 @@ mod tests {
     /// acknowledges the person's rows.
     #[test]
     fn history_read_is_scoped_to_the_agent_running_it() {
-        let parsed = Cli::try_parse_from([
+        let parsed = parse_cli([
             "agentdocker",
             "history",
             "dm:a:b",
@@ -3886,7 +3902,7 @@ mod tests {
         assert!(read);
         assert_eq!(agent.as_deref(), Some("agent-a"));
         // Without --as or the environment, the person reads.
-        let parsed = Cli::try_parse_from(["agentdocker", "history", "dm:a:b", "--read"]).unwrap();
+        let parsed = parse_cli(["agentdocker", "history", "dm:a:b", "--read"]).unwrap();
         let Command::History { agent, .. } = parsed.command else {
             panic!("expected history")
         };
@@ -3896,7 +3912,7 @@ mod tests {
 
     #[test]
     fn claude_channel_is_a_native_launch_option_and_preserves_provider_arguments() {
-        let parsed = Cli::try_parse_from([
+        let parsed = parse_cli([
             "agentdocker",
             "run",
             "--claude-channel",
@@ -3916,7 +3932,7 @@ mod tests {
         assert_eq!(args.runtime, "claude-code");
         assert_eq!(args.command, ["claude", "--model", "chosen-model"]);
         assert!(
-            Cli::try_parse_from([
+            parse_cli([
                 "agentdocker",
                 "run",
                 "--claude-channel",
