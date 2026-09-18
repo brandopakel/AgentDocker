@@ -19,7 +19,7 @@ use agentdocker_core::{
 };
 use iced::{
     Center, Element, Fill,
-    widget::{Space, column, container, row, scrollable, text},
+    widget::{Space, column, container, responsive, row, scrollable, text},
 };
 
 impl App {
@@ -960,6 +960,7 @@ impl App {
         placeholder: String,
         can_send: bool,
         c: Colors,
+        available_height: f32,
     ) -> Element<'_, Message> {
         let key = super::draft_key(conversation, root);
         let draft = self.shell.conversation_drafts.get(&key);
@@ -980,26 +981,24 @@ impl App {
         };
         // Enter sends, as it does everywhere people type to each other;
         // the button beside it is the same action for the pointer.
-        let mut composer = column![
-            row![
-                input_submitting(
-                    input_id,
-                    &placeholder,
-                    &text_now,
-                    move |t| Message::ConversationDraft(owner.clone(), t),
-                    can_send && !sending,
-                    submit.clone(),
-                ),
-                primary(
-                    format!("send-{key}"),
-                    if sending { "Sending…" } else { "Send" },
-                    submit,
-                )
-            ]
-            .spacing(8)
-            .align_y(Center)
+        let input = row![
+            input_submitting(
+                input_id,
+                &placeholder,
+                &text_now,
+                move |t| Message::ConversationDraft(owner.clone(), t),
+                can_send && !sending,
+                submit.clone(),
+            ),
+            primary(
+                format!("send-{key}"),
+                if sending { "Sending…" } else { "Send" },
+                submit,
+            )
         ]
-        .spacing(4);
+        .spacing(8)
+        .align_y(Center);
+        let mut composer = column![].spacing(4);
         // Mention suggestions include only the conversation's recipients.
         // Inserting a name does not change the Send destination or membership.
         if let Some(prefix) = mention_prefix(&text_now) {
@@ -1048,7 +1047,7 @@ impl App {
             composer = composer.push(text(error.clone()).size(13).color(c.amber));
         }
         if let Some(notice) = draft.and_then(|draft| {
-            super::send_readiness::notice(
+            super::send_readiness::composer_notice(
                 draft,
                 super::shell::DeliveryTarget::Conversation(key.clone()),
                 c,
@@ -1113,7 +1112,15 @@ impl App {
             }
             composer = composer.push(readiness);
         }
-        composer.into()
+        // The pane supplies its actual remaining height after headers and
+        // compact agent controls. Keep typing visible while feedback scrolls.
+        column![
+            input,
+            container(scrollable(composer).height(iced::Shrink))
+                .max_height((available_height - 48.0).clamp(0.0, 180.0)),
+        ]
+        .spacing(4)
+        .into()
     }
 
     /// The live agents the person can talk to, in the project the sidebar
@@ -1555,7 +1562,18 @@ impl App {
         };
         // The conversation's own composer, whatever thread is open beside
         // it: the thread has one of its own.
-        let composer = self.composer(&key, None, placeholder, can_send, c);
+        let composer_key = key.clone();
+        let composer = responsive(move |size| {
+            self.composer(
+                &composer_key,
+                None,
+                placeholder.clone(),
+                can_send,
+                c,
+                size.height,
+            )
+        })
+        .height(iced::Shrink);
         column![
             header,
             rule(c),
@@ -1640,13 +1658,25 @@ impl App {
                 .height(Fill)
                 .padding([6, 0]),
             rule(c),
-            container(self.composer(&key, Some(root_id), placeholder.to_owned(), can_send, c))
-                .padding(iced::Padding {
-                    top: 8.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                    left: 0.0
-                }),
+            container(
+                responsive(move |size| {
+                    self.composer(
+                        &key,
+                        Some(root_id),
+                        placeholder.to_owned(),
+                        can_send,
+                        c,
+                        size.height,
+                    )
+                })
+                .height(iced::Shrink)
+            )
+            .padding(iced::Padding {
+                top: 8.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 0.0
+            }),
         ]
         .spacing(6)
         .height(Fill)

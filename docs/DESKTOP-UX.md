@@ -9,7 +9,9 @@ have missing or stale input receivers, paused delivery, ended sessions or provid
 limits. **Delivery details** names them and offers **Open session** and **Copy
 instructions**. These are the facts when the message was queued, not a receipt.
 The details stay with that conversation or thread even if you switch while
-sending. Session **Details** and expanded tool connection details show current
+sending. In a small pane the feedback scrolls below the input, keeping typing
+and Send visible while every delivery action remains reachable.
+Session **Details** and expanded tool connection details show current
 reconnect guidance too. Nothing is restarted or resent by opening these controls.
 For a Claude Code session the guidance has the button beside it: **Reconnect
 here** asks the daemon to bring the session back under its own record — its
