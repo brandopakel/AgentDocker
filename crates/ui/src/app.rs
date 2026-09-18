@@ -155,6 +155,9 @@ enum Cmd {
     /// few actions that have buttons.
     Console(String, Option<std::path::PathBuf>),
     Launch(Box<agentdocker_core::AgentSpec>),
+    /// An ended session brought back under its own record: the daemon
+    /// checks the launch against the record and keeps the queue.
+    Resume(String, Box<agentdocker_core::AgentSpec>),
     ChannelSend(String, String),
     SessionSend(String, String),
     /// Text from the person to every agent in a project, receipted under
@@ -302,6 +305,9 @@ enum Msg {
     UpdateChecked(Result<serde_json::Value, String>),
     Console(String),
     Launched(Result<String, String>),
+    /// An ended session is back under its own id with the process the
+    /// daemon started (its id and that process's start), or why it is not.
+    Reconnected(Result<(String, Option<chrono::DateTime<chrono::Utc>>), String>),
     ChannelSent(String, Result<QueuedSend, String>),
     /// The room the person asked for, by id, or why not.
     ChannelOpened(MessageId, Result<agentdocker_core::ChannelId, String>),
@@ -699,7 +705,7 @@ impl App {
                     self.console_running = self.console_running.saturating_sub(1);
                     self.append_console(&format!("Command not queued: {reason}\n"));
                 }
-                Cmd::Launch(_) => self.shell.launching = false,
+                Cmd::Launch(_) | Cmd::Resume(..) => self.shell.launching = false,
                 Cmd::ChannelSend(id, _) => {
                     self.shell
                         .channel_drafts
@@ -849,6 +855,27 @@ impl App {
                         self.shell.selected = Some(self.canonical_agent(selected).to_owned());
                     }
                     self.agents = agents;
+                    // A reconnected session's pane opens when the list shows
+                    // the process the daemon started; an older list, from
+                    // before the reconnect, says nothing about it and the
+                    // request waits for the next one.
+                    if let Some((id, generation)) = &self.shell.attach_when_listed {
+                        let listed = self.agents.iter().find(|a| {
+                            a.id.as_str() == id
+                                && a.managed
+                                && a.spec.tty
+                                && a.process_started_at == *generation
+                        });
+                        if let Some(listed) = listed {
+                            let running = listed.status.is_live();
+                            let id = id.clone();
+                            self.shell.attach_when_listed = None;
+                            if running {
+                                self.attach(id, self.wake.clone());
+                                self.screen = Screen::Terminal;
+                            }
+                        }
+                    }
                     let projects = self.channel_projects();
                     self.channels
                         .retain(|channel| projects.contains(&channel.project.to_string()));
@@ -1160,6 +1187,18 @@ impl App {
                             self.shell.selected = Some(id);
                             self.send(Cmd::Agents);
                             self.say("Agent launched");
+                        }
+                        Err(error) => self.shell.error = Some(error),
+                    }
+                }
+                Msg::Reconnected(result) => {
+                    self.shell.launching = false;
+                    match result {
+                        Ok((id, generation)) => {
+                            self.shell.selected = Some(id.clone());
+                            self.shell.attach_when_listed = Some((id, generation));
+                            self.send(Cmd::Agents);
+                            self.say("Session reconnected; it continues in its pane");
                         }
                         Err(error) => self.shell.error = Some(error),
                     }
@@ -2265,7 +2304,7 @@ fn spawn_worker(
                         Cmd::Answer(id, _) => Some(id.clone()),
                         _ => None,
                     };
-                    let launch = matches!(&daemon, Cmd::Launch(_));
+                    let launch = matches!(&daemon, Cmd::Launch(_) | Cmd::Resume(..));
                     let dismissal = match &daemon {
                         Cmd::DismissMessages(id) => Some(id.clone()),
                         _ => None,
@@ -2681,6 +2720,17 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Response::Agent { agent } => Some(Msg::Launched(Ok(agent.id.to_string()))),
             _ => Some(Msg::Launched(Err("Unexpected launch response".into()))),
         },
+        Cmd::Resume(agent, spec) => {
+            match client.call(&Request::ResumeSession { agent, spec: *spec })? {
+                Response::Agent { agent } => Some(Msg::Reconnected(Ok((
+                    agent.id.to_string(),
+                    agent.process_started_at,
+                )))),
+                _ => Some(Msg::Reconnected(
+                    Err("Unexpected reconnect response".into()),
+                )),
+            }
+        }
         Cmd::Conversations(project) => match client.call(&Request::Conversations {
             project,
             reader: None,

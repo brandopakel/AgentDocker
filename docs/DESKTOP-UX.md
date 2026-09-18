@@ -12,15 +12,20 @@ The details stay with that conversation or thread even if you switch while
 sending. Session **Details** and expanded tool connection details show current
 reconnect guidance too. Nothing is restarted or resent by opening these controls.
 For a Claude Code session the guidance has the button beside it: **Reconnect
-here** launches the session's own tool in a pane of this window with `--resume`
-and its conversation, in its project folder, with the AgentDocker channel, under
-its name — the daemon folds the new process into the same session — and
-Claude's own consent prompt appears in that pane for you to accept. Until the
-session's terminal process has ended the button waits and says so (*Exit the
-session in its terminal first*): the app does not exit a session it does not
-own, and resuming a conversation a live process still holds would start a
-second one. Nothing is sent or acknowledged on the session's behalf; the CLI
-recipe stays beside it as the alternative.
+here** asks the daemon to bring the session back under its own record — its
+own tool with `--resume` and its conversation, in its own checkout, with the
+AgentDocker channel, under its name — so what was queued for it, its aliases,
+questions and cards stay its own; the daemon checks the launch against the
+record and refuses when the process is back, a checkout differs or somebody is
+attached, and the reason appears under the button. When the list shows the
+session running, its pane opens in this window and Claude's own consent prompt
+appears there for you to accept; a session that ends at once stays in the list
+with its exit. Until the session's terminal process has ended the button waits
+and says so (*Exit the session in its terminal first*): the app does not exit
+a session it does not own, and resuming a conversation a live process still
+holds would start a second one. One press is one resume; a second press while
+the first is unanswered does nothing. Nothing is sent or acknowledged on the
+session's behalf; the CLI recipe stays beside it as the alternative.
 
 ## Projects
 

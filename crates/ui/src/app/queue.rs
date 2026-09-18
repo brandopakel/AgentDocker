@@ -62,6 +62,9 @@ fn bytes(command: &Cmd) -> usize {
         Cmd::Launch(spec) => {
             serde_json::to_vec(spec).map_or(COMMAND_BYTES + 1, |bytes| bytes.len())
         }
+        Cmd::Resume(agent, spec) => serde_json::to_vec(spec)
+            .map_or(COMMAND_BYTES + 1, |bytes| bytes.len())
+            .saturating_add(agent.len()),
         Cmd::Setup(args) | Cmd::Desktop(args) => args.iter().fold(
             args.capacity().saturating_mul(size_of::<String>()),
             |total, arg| total.saturating_add(arg.capacity()),

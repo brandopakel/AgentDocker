@@ -36,6 +36,11 @@ pub(super) struct State {
     /// control can turn it off; provider consent and policy still apply.
     pub launch_channel: bool,
     pub launching: bool,
+    /// A session just reconnected: its pane opens when the list shows the
+    /// process the daemon started (by its start time) running, and the
+    /// list decides — a session that ended at once stays in the list with
+    /// its exit and no pane opens on it; an older list waits.
+    pub attach_when_listed: Option<(String, Option<chrono::DateTime<chrono::Utc>>)>,
     pub error: Option<String>,
     pub setup_error: Option<String>,
     pub answer_errors: BTreeMap<MessageId, String>,
@@ -1896,18 +1901,7 @@ impl App {
                     }
                 }
             }
-            Message::Reconnect(id) => {
-                if self.connected.is_ok() && !self.shell.launching {
-                    match self.reconnect_spec(&id, sibling_cli()) {
-                        Ok(spec) => {
-                            self.shell.launching = true;
-                            self.shell.error = None;
-                            self.send(Cmd::Launch(Box::new(spec)));
-                        }
-                        Err(error) => self.shell.error = Some(error),
-                    }
-                }
-            }
+            Message::Reconnect(id) => self.reconnect(&id, sibling_cli()),
             Message::Attach(id) => {
                 if self
                     .agents
@@ -2518,12 +2512,30 @@ impl App {
         None
     }
 
+    /// One press of **Reconnect here**: the launch goes to the daemon as
+    /// a resume of that record, once. A second press while the first is
+    /// unanswered does nothing, and the daemon's refusal (the list was
+    /// stale: the process is back, the checkout differs, somebody is
+    /// attached) comes back as the error under the button.
+    pub(super) fn reconnect(&mut self, id: &str, cli: Result<PathBuf, String>) {
+        if self.connected.is_ok() && !self.shell.launching {
+            match self.reconnect_spec(id, cli) {
+                Ok(spec) => {
+                    self.shell.launching = true;
+                    self.shell.error = None;
+                    self.send(Cmd::Resume(id.to_owned(), Box::new(spec)));
+                }
+                Err(error) => self.shell.error = Some(error),
+            }
+        }
+    }
+
     /// The launch that reconnects an ended Claude Code session: its own
-    /// tool, `--resume` with its conversation, in its project folder, with
-    /// the AgentDocker channel, under its name — the daemon folds the new
-    /// process into the same record by that conversation id. Nothing is
-    /// sent or acknowledged on its behalf; consent is Claude's own prompt
-    /// in the pane this opens.
+    /// tool, `--resume` with its conversation, in its own checkout, with
+    /// the AgentDocker channel, under its name. The daemon checks it
+    /// against the record and brings the record back under its own id
+    /// with its queue. Nothing is sent or acknowledged on its behalf;
+    /// consent is Claude's own prompt in the pane this opens.
     fn reconnect_spec(
         &self,
         id: &str,
@@ -2553,8 +2565,7 @@ impl App {
             .spec
             .workdir
             .clone()
-            .or_else(|| agent.project.as_ref().map(|p| p.root.clone()))
-            .ok_or("This session has no project folder to resume in")?;
+            .ok_or("This session has no checkout to resume in")?;
         let mut spec = agentdocker_core::AgentSpec {
             name: agent.spec.name.clone(),
             runtime: "claude-code".into(),
@@ -2575,7 +2586,8 @@ impl App {
             restart: Default::default(),
             depends_on: Vec::new(),
         };
-        agentdocker_host::provider_input::enable_claude_channel(&mut spec, &cli?)
+        let cli = cli.map_err(|error| format!("Cannot enable live messages: {error}"))?;
+        agentdocker_host::provider_input::enable_claude_channel(&mut spec, &cli)
             .map_err(|error| format!("Cannot enable live messages: {error}"))?;
         Ok(spec)
     }
@@ -4047,6 +4059,7 @@ mod tests {
             Cmd::Answer(..)
                 | Cmd::ChannelSend(..)
                 | Cmd::Launch(..)
+                | Cmd::Resume(..)
                 | Cmd::Stop(..)
                 | Cmd::HistoryBefore(..)
         )));
@@ -4373,7 +4386,7 @@ mod tests {
     /// with the reason, and nothing is launched.
     #[test]
     fn reconnect_here_relaunches_an_ended_claude_session_with_its_conversation_and_the_channel() {
-        let (mut app, commands, _) = app();
+        let (mut app, commands, messages) = app();
         app.connected = Ok(());
         let cli = tempfile::NamedTempFile::new().unwrap();
         let cli_path = cli.path().to_path_buf();
@@ -4451,6 +4464,87 @@ mod tests {
             app.shell.error
         );
         assert_eq!(commands.try_iter().count(), 0);
+
+        // With the CLI beside the app the press is one resume of that
+        // record at the daemon, and a second press while it is unanswered
+        // is nothing: the button waits for the answer.
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        assert!(app.shell.launching);
+        assert_eq!(app.shell.error, None);
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        let sent: Vec<Cmd> = commands.try_iter().collect();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        match &sent[0] {
+            Cmd::Resume(id, spec) => {
+                assert_eq!(id, "ended-claude");
+                assert_eq!(spec.name, "claude-code-4242");
+                assert!(spec.command.windows(2).any(|w| w[0] == "--resume"));
+            }
+            other => panic!("a reconnect is a resume, not {other:?}"),
+        }
+        // The list was stale: the daemon saw the process back, or the
+        // checkout moved. Its refusal is the error under the button, and
+        // the button is pressable again.
+        messages
+            .send(Msg::Reconnected(Err(
+                "the session is still live; a live session is not relaunched".into(),
+            )))
+            .unwrap();
+        app.drain();
+        assert!(!app.shell.launching);
+        assert!(
+            app.shell
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("still live"))
+        );
+        // The daemon's yes selects the same record, and asks for the list.
+        let generation = Some(Utc::now());
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        assert_eq!(commands.try_iter().count(), 1);
+        messages
+            .send(Msg::Reconnected(Ok(("ended-claude".into(), generation))))
+            .unwrap();
+        app.drain();
+        assert!(!app.shell.launching);
+        assert_eq!(app.shell.error, None);
+        assert_eq!(app.shell.selected.as_deref(), Some("ended-claude"));
+        assert!(commands.try_iter().any(|cmd| matches!(cmd, Cmd::Agents)));
+        // An older list, from before the reconnect, says nothing: the
+        // request waits. The list that shows the process the daemon
+        // started opens the pane when it runs; when it ended at once the
+        // session stays in the list with its exit and no pane opens.
+        messages
+            .send(Msg::Agents(vec![agent.clone()], BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_ne!(app.screen, Screen::Terminal);
+        assert!(app.shell.attach_when_listed.is_some());
+        let mut listed = agent.clone();
+        listed.managed = true;
+        listed.spec.tty = true;
+        listed.process_started_at = generation;
+        listed.status = agentdocker_core::AgentStatus::Exited { code: Some(1) };
+        messages
+            .send(Msg::Agents(vec![listed.clone()], BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_ne!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.attach_when_listed, None);
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        messages
+            .send(Msg::Reconnected(Ok(("ended-claude".into(), generation))))
+            .unwrap();
+        app.drain();
+        listed.status = agentdocker_core::AgentStatus::Running;
+        messages
+            .send(Msg::Agents(vec![listed], BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.attach_when_listed, None);
+        commands.try_iter().count();
+        app.screen = Screen::Agents;
 
         // A live process is refused with the reason, and nothing launches.
         app.agents[0].status = agentdocker_core::AgentStatus::Running;

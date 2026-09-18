@@ -826,6 +826,9 @@ pub fn event_line(event: &Event) -> String {
         } => {
             format!("reconciled {} into {}", retired.short(), canonical.short())
         }
+        EventKind::SessionRelaunched { agent, session } => {
+            format!("session relaunched {} ({session})", agent.short())
+        }
         EventKind::Unknown => "(an event this version does not know)".to_owned(),
     };
     format!("{}  {}", clock(event.at), single_line(&body))
