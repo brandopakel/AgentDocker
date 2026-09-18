@@ -6,6 +6,32 @@ It tracks partial implementation and the acceptance still needed for each provid
 
 Status on September 14, 2026: every pull request this log names (#103–#108, #115 and #119) is merged on `main`, so the per-checkpoint "final CI/source review remain" sentences below are historical. The opt-in Codex bridge (`--codex-input`) and Claude channel adapter (`--claude-channel`) are shipped, the MCP `ask_human` duplicate-input defect is fixed (`crates/cli/src/codex_input/mcp_answers.rs`), and the structured Iced approval/choice controls are merged. What is still open is the list in [REMAINING-WORK.md](REMAINING-WORK.md).
 
+## September 18: a forgotten channel receipt blocked later pause requests
+
+After the user approved Claude's relaunch, the provider recorded channel message
+`0d4ddb320b434666` and began a real assistant response. Claude completed that
+review, but did not call `acknowledge_messages`; one outstanding offer therefore
+blocked every later message. A second live Claude session showed the same gap
+after busy channel input. Its queued attachment had an actual assistant
+continuation, not merely a transport write. On the next day the first session
+restarted without the channel launch flag again; that separate loss of live input
+also requires the requested in-app reconnect flow.
+
+PR #196 now repairs forgotten acknowledgements at a lifecycle boundary using
+bounded, exact provider-transcript evidence, and carries the original reply
+destination in channel metadata. The receipt commits before ACK; ambiguous,
+partial, historical-generation or provider-error evidence keeps the queue intact.
+The installed follow-up is `652cf6a3` from `e4eae3e`. Actual private Claude idle,
+busy and text-only-then-idle trials produced a same-project pause reply and exact
+receipt without explicit ACK calls or another terminal prompt. The initial
+installed repair woke an existing channel session after a one-head, evidence-checked
+legacy recovery; a later text-only response exposed a Stop flush race, now covered
+by the bounded deferred helper and an old-build-fails/new-build-passes regression.
+Both existing Claude sessions are currently plain after independent relaunches;
+app-guided channel reconnect and their resulting idle #everyone acceptance remain
+open. Parser and transport fixtures alone are not model pause evidence. See the
+[source-pinned outcomes](verification/2026-09-12-input-delivery-status.json).
+
 ## September 16: live Claude idle-wake gap reproduced
 
 The user reported the parallel Claude session idle at its prompt. In message
@@ -863,3 +889,34 @@ A separate ten-minute trial at earlier source `33d52a3` passed 18 ordered
 inputs/replies and six idle wakeups under one identity. Broader sustained
 acceptance remains open. The later #108 merge closes the recorded source review
 and integration follow-up; it does not close the broader acceptance cases.
+
+### September 18: channel contact without a message receipt
+
+A live Claude session had 45 retained envelopes while its channel adapter
+kept refreshing input readiness with no recorded receipt. The oldest queued
+ID was `fcb1ed18d7244fbf`, sent at 00:39 UTC; the 05:51 build handoff
+`044a489bb141472a` was still retained during the 06:03 read-only inspection.
+The provider process and its hook/MCP contacts were current. A later bounded
+transcript-metadata inspection found that exact first ID in an enqueue, remove
+and queued-command attachment at 00:39:33–38 UTC; the later handoff IDs were
+absent, and no acknowledgement-tool call was recorded. The launch command named
+the AgentDocker channel. This establishes a provider attachment for the first
+offer, not model consumption or why its explicit receipt was omitted. No inbox
+was drained or acknowledged by the observer. A later peer reply is separate
+from receipt of those envelopes.
+
+The adapter previously warned only on stderr after 30 seconds, then continued
+advertising readiness while the same offered ID blocked following input. The
+follow-up reports a durable delivery pause instead, preserves the original
+offer and queue, keeps control/receipt calls responsive, and restores readiness
+after the outstanding ID leaves the queue. Its regression covers normal,
+refused and stalled status writes followed by an explicit late acknowledgement.
+Source `7350bb5` passed 1,206 Rust tests (seven skipped), 94 Python checks
+(one skipped), strict lint, packaging and release builds. Its 69-second private
+MCP transport trial held the pause through refresh, kept the queue unchanged,
+and recovered on a late explicit receipt. The same driver fails against the
+previous binary, which keeps advertising readiness. The [existing delivery
+record](verification/2026-09-12-input-delivery-status.json) retains both outcomes
+and the corrected heartbeat-fixture failure. Review, installation and actual
+session recovery remain pending; this is not an idle-wake or provider-consent
+completion claim.

@@ -14,9 +14,30 @@ delivered and verified.
 ## Product and engineering requirements
 
 
-### Current integration and installation (September 17 UTC)
+### Current integration and installation (September 18 UTC)
 
-The current desktop and daemon are reviewed local preview `d14610b7`
+The desktop and stable CLI/hooks now use local-preview `652cf6a3`, clean source
+`e4eae3e` (PR #196), schema 23; `8cbae3a9` is retained. The app reopened and all
+six live provider identities and processes were preserved. The serving coordinator
+was not restarted: its signed binary is byte-identical to the candidate's.
+The new receipt recovery passed 1,264 Rust tests (seven skipped), 94 Python
+checks (one skipped), fourteen packaged channel scenarios and thirteen real
+previous/candidate/rollback scenarios. Actual private Claude idle, busy and
+text-only-then-idle trials replied to project pauses in the same chat without
+an explicit ACK or another terminal prompt. The initial installed repair exposed
+the final-response flush race; the deferred Stop helper fixes that tested case.
+Exact sources and failures remain in the [input-delivery record](verification/2026-09-12-input-delivery-status.json).
+
+Existing Claude sessions were relaunched plainly and currently have no input
+channel. App-guided same-session reconnect, preserved identity/queue and provider
+consent in the app terminal remain the immediate work, followed by their actual
+idle #everyone pause/reply acceptance. Other-provider parity and broader release
+acceptance are not closed by these Claude trials. Final GitHub review and CI for
+#196 remain separate from this tested local-preview installation.
+
+### Historical integration and installation (September 17 UTC)
+
+At that checkpoint the desktop and daemon were local preview `d14610b7`
 (source `3785e81`, runtime identical to merged `e9c4ab2`, schema 23), activated
 at 20:55 UTC with a fresh integrity-checked state backup. Both provider processes
 and every registered live identity stayed unchanged. Receiver 25642 became 18735
@@ -188,15 +209,37 @@ and Enter to send. Claude owns those interaction changes in the existing
 completed merely by this plan entry.
 
 **September 17 user reconfirmation — still an open bug:** Claude's saved
-changes and hooks/MCP registration do not establish input readiness. The current
-plain session has no channel binding, and recent handoffs can remain queued at
-its idle prompt. Close this only after the supported same-session channel
+changes and hooks/MCP registration do not establish input readiness. At that
+checkpoint the plain session had no channel binding, and recent handoffs remained
+queued at its idle prompt. Close this only after the supported same-session channel
 relaunch preserves drafts and queued message IDs, an actual peer-only message
 starts an idle turn and receives a correlated model reply without another human
 prompt, and reconnect/retry trials preserve order without duplicate execution.
 Run equivalent idle, busy and provider-limit cases for every supported runtime;
 show unavailable input explicitly until those cases pass. The merged reconnect
 fixture and installed Codex active-input receipts do not close this Claude case.
+
+**September 17 UX requirement — app-guided connection:** The default recovery
+must be an **Enable live messages / Reconnect** action in AgentDocker, with an
+in-app preview and approval, instead of requiring users to type provider flags
+and environment variables each time. Keep the CLI recipe as an alternative.
+Resolve the existing session and check its current process/ownership before any
+handoff; preserve conversation identity, queued message IDs and unsent work.
+Guide the provider's actual startup/consent interaction and remember only setup
+or consent that the provider permits. The app's approval is not a substitute for
+provider consent, and an unattachable running process must not silently become a
+new conversation. Cancellation, a busy process, quota limits, failed launch and
+failed receipt must retain the queue and provide a clear recovery action. Prove
+peer-only idle wake and an exact receipt before showing delivery as verified.
+Use the same flow for other supported providers according to their capabilities.
+Implementation is assigned to the parallel Claude session by the user; this
+entry remains open until its reviewed app flow and actual-session tests pass.
+
+The September 18 manual trial has reached channel-enabled same-session relaunch:
+the user confirmed startup consent, and the original identity/session now has a
+fresh input receiver under the replacement process. The first correlated receipt
+and an idle-only wake are still being tested; this does not complete the button
+flow or the provider-parity acceptance.
 
 **September 16 live regression:** Claude confirmed twelve peer messages waited at
 its idle prompt until a human supplied input. The process had hooks/MCP but no

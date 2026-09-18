@@ -85,6 +85,25 @@ independent provider CLI or editor. Such writers can still race between validati
 and the provider command, so edits to the same MCP entry need coordination.
 Ordinary unrelated provider application-state updates do not invalidate a receipt.
 
+## Planned app-guided live-message connection
+
+An **Enable live messages / Reconnect** action must let the person preview and
+approve connecting an existing session from the app. It should discover the
+session and construct the supported launch/resume settings, preserve the same
+conversation, queued IDs and drafts, and guide any provider-required startup
+consent. Keep a copyable CLI command as an alternative. Do not require repeated
+manual flags when the supported setup can remember them; do not imply the app
+can grant consent that belongs to the provider.
+
+A running session that cannot attach in place needs a clear, approved handoff,
+with busy-session, cancellation, launch failure and provider-limit handling.
+No failed handoff may consume input or silently start a different conversation.
+Show setup, waiting for consent, receiver contact and verified delivery
+separately; close the flow only after a real receipt. Test actual idle wake as
+well as reconnect, retained drafts and queued-message order for each supported
+provider. This is requested engineering work, not a shipped button yet; see the
+[delivery plan](DELIVERY-PLAN.md) and [remaining work](REMAINING-WORK.md).
+
 ## What a connection check proves
 
 Tools separates saved configuration, recent adapter contact and input delivery.
