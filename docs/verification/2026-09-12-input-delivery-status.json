@@ -1602,5 +1602,129 @@
       "No provider restart, queue drain, synthetic receipt or production switch was performed.",
       "The separate Usage Claude session has no channel input route and was confirmed idle by the user; same-session relaunch and provider startup consent remain necessary."
     ]
+  },
+  "claude_channel_context_receipt_2026_09_18": {
+    "status": "Implemented and locally validated; final review, installation and actual-model everyone pause/reply acceptance pending",
+    "runtime_source": "60f2fae",
+    "driver_followup": "5d0f52c",
+    "scope": "Current-session exact channel body and metadata plus a real assistant continuation; durable receipt before ACK; one FIFO head; bounded 2 MiB/4096 record suffix; unknown/error evidence retains queue. Original app reply destination included in each offer.",
+    "standard_gate": {
+      "result": "passed",
+      "rust_passed": 1212,
+      "rust_skipped": 7,
+      "python_checks": 94,
+      "python_skipped": 1,
+      "includes": [
+        "fmt",
+        "strict clippy",
+        "doctests",
+        "package",
+        "release"
+      ],
+      "log_sha256": "b360cb182dc65013543140f6715fd3b2301fa65152272d13e7652635ac7f2b2e",
+      "source_note": "Started on60f2fae; only the private project-address fixture script changed to5d0f52c during gate. Runtime source unchanged."
+    },
+    "transport_trials": [
+      {
+        "artifact": "/private/tmp/agentdocker-channel-hook-receipt-native-20260918/result.json",
+        "sha256": "cd71d2c8fa9bc52fe60bc1de9dbc425fe07962fb712ab67d29fa1768070e8d0b",
+        "result": {
+          "result": "passed",
+          "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+          "steps": [
+            "an unreceived offer became durably paused after 30 seconds and stayed paused through refresh without inventing a receipt, replaying input or consuming the queue",
+            "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+            "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+            "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+            "without an explicit model ACK, the real hook retained channel input alone and committed receipt before removing its exact head only after the modeled assistant continuation; repeated hooks were harmless",
+            "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+            "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+            "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+            "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks"
+          ],
+          "binary_sha256": {
+            "agentd": "105b7d4af30c210ef1764600adc250e47416c5152bdc42df232c497f28794286",
+            "agentdocker": "1c96bd50aa81fef63efabe6fa3f298370c6c6530fbe021bb2422ab75a53b365d"
+          },
+          "driver_sha256": {
+            "claude_channel_smoke.py": "4645a83ee8b6668099bee6c0b145057942be824a37e2dae7b56a509750ee4a77",
+            "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+            "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+          },
+          "remaining_owned_processes": 0,
+          "duration_seconds": 69.68310308305081
+        }
+      },
+      {
+        "artifact": "/private/tmp/agentdocker-channel-hook-receipt-routing-20260918/result.json",
+        "sha256": "b9f83bdc5c675949b98f9a98aee30dfe087ebfa2f10c8d84d54615d05cc6d585",
+        "result": {
+          "result": "failed",
+          "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+          "steps": [
+            "an unreceived offer became durably paused after 30 seconds and stayed paused through refresh without inventing a receipt, replaying input or consuming the queue",
+            "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+            "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+            "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+            "without an explicit model ACK, the real hook retained channel input alone and committed receipt before removing its exact head only after the modeled assistant continuation; repeated hooks were harmless",
+            "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt"
+          ],
+          "binary_sha256": {
+            "agentd": "105b7d4af30c210ef1764600adc250e47416c5152bdc42df232c497f28794286",
+            "agentdocker": "1c96bd50aa81fef63efabe6fa3f298370c6c6530fbe021bb2422ab75a53b365d"
+          },
+          "driver_sha256": {
+            "claude_channel_smoke.py": "de6a20aaf09ccebe65d867d7dc6d01ab7dd9723dfb0097348f60eea1f69f77b2",
+            "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+            "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+          },
+          "error": "KeyError: 'fingerprint'",
+          "failed_driver_line": 261,
+          "remaining_owned_processes": 0,
+          "duration_seconds": 63.23347533296328
+        }
+      },
+      {
+        "artifact": "/private/tmp/agentdocker-channel-hook-receipt-routing2-20260918/result.json",
+        "sha256": "668491873561d206b5c40e1f6eb5cba0dc502d2e56c930510396ef1c0bff66d4",
+        "result": {
+          "result": "passed",
+          "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+          "steps": [
+            "an unreceived offer became durably paused after 30 seconds and stayed paused through refresh without inventing a receipt, replaying input or consuming the queue",
+            "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+            "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+            "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+            "without an explicit model ACK, the real hook retained channel input alone and committed receipt before removing its exact head only after the modeled assistant continuation; repeated hooks were harmless",
+            "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+            "project fan-out carried a reply destination that the actual MCP send_message tool routed back to the same everyone conversation with its original message ID",
+            "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+            "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+            "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+            "pre-initialization session fold preserved observations, open memberships and completed card identity references without changing their text or state, retained one channel owner across different agent IDs, and delivered the older queue plus a new room message through the canonical alias",
+            "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+          ],
+          "binary_sha256": {
+            "agentd": "b35d4e9493c01cf71e09ba3b3bc1ff5cb77dae7ae9d355de2b55624a5cef5112",
+            "agentdocker": "24c9491c256c94f0fb47f7e588c0c9d8ad26180d26e7d381bc56e67b033532ca"
+          },
+          "driver_sha256": {
+            "claude_channel_smoke.py": "87581d7c98fd829e2b9d3995c6ce4e240dc81d41ef01801913452750b26f8f2f",
+            "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+            "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+          },
+          "remaining_owned_processes": 0,
+          "duration_seconds": 70.14691870898241
+        }
+      }
+    ],
+    "retained_failure": "Expanded driver incorrectly required a git fingerprint for its plain temporary directory; addressed the project by its absolute directory. Failed trial left no owned processes.",
+    "live_failure": {
+      "main_claude_first_offer": "0d4ddb320b434666",
+      "busy_claude_first_offer": "fcb1ed18d7244fbf",
+      "finding": "Provider-recorded full channel input and assistant continuation existed, but explicit ACK was absent and later pause messages remained behind the head. Read-only metadata investigation did not drain or acknowledge peers.",
+      "main_restart": "2026-09-18T19:12:35.279696Z new process95454 launched plain, losing live channel flags again.",
+      "historical_head_limit": "Existing74334head is outside bounded suffix; safe recovery remains to implement or validate without silently dropping or replaying unknown input."
+    }
   }
 }
