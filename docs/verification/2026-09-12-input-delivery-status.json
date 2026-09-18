@@ -2707,6 +2707,83 @@
         "app_pid": 33866,
         "native_codex_receiver_pid": 18735
       }
+    },
+    "reconnect_startup_window": {
+      "packaged_background_key_trial": {
+        "report": "/private/tmp/agentdocker-reconnect-packaged-ui-20260918/result.json",
+        "sha256": "a25c6f46dee59c28a7401b75edf666bed3f3bfae42cf7ba37f1459ebd63edbdc",
+        "result": "failed",
+        "error": "TimeoutError: acceptance stage timed out; private capture/log retained",
+        "elapsed_seconds": 124.53247691696743,
+        "remaining_owned_processes": 0,
+        "held_message": "760e959203b54fbb",
+        "binary_sha256": {
+          "agentd": "94072f4025dcc339b3da39b78d887a9303a88515265b44b9a2fc13d9db4a7c25",
+          "agentdocker": "bb175cd37e308f80f2c3b7f23b0cb5e98e486e48891c32da0fa308da768f5dea",
+          "agentdocker-ui": "b76aa1528571ca05ddbfba3183533eec870d7b988b27feaad7ce79cde3d3c7b4"
+        },
+        "limit": "The AlwaysOnBottom background smoke window did not advance provider consent after a targeted synthetic Return. No provider delivery or physical keyboard success is claimed."
+      },
+      "packaged_reconnect_startup_failure": {
+        "report": "/private/tmp/agentdocker-reconnect-packaged-input-20260918/result.json",
+        "sha256": "602cfbd393a9882c5253e1c27275b765c9c986ac10a7d9f71a9d82a7e60072e9",
+        "result": "failed",
+        "error": "TimeoutError: acceptance stage timed out; private capture/log retained",
+        "elapsed_seconds": 123.24918133299798,
+        "remaining_owned_processes": 0,
+        "held_message": "c8195f1c52c14ab4",
+        "binary_sha256": {
+          "agentd": "94072f4025dcc339b3da39b78d887a9303a88515265b44b9a2fc13d9db4a7c25",
+          "agentdocker": "bb175cd37e308f80f2c3b7f23b0cb5e98e486e48891c32da0fa308da768f5dea",
+          "agentdocker-ui": "b76aa1528571ca05ddbfba3183533eec870d7b988b27feaad7ce79cde3d3c7b4"
+        },
+        "finding": "Consent completed, current-generation SessionStart and channel MCP connected, but first queued head c8195f1c52c14ab4 never appeared in the provider transcript and readiness paused after 30 seconds. No message was acknowledged or replayed. Candidate becea18 was not activated."
+      },
+      "wire_observation": {
+        "runtime": "becea18aa8ed26d6a212bcfb0731fbadf3ade297",
+        "provider": "Claude Code 2.1.277",
+        "wire": "/private/tmp/agentdocker-reconnect-trace-20260918/wire.jsonl",
+        "initialized": "2026-09-18T21:24:42.398917Z",
+        "offer_written": "2026-09-18T21:24:42.399936Z",
+        "provider_handlers_registered": "2026-09-18T21:24:42.401Z",
+        "provider_received": "2026-09-18T21:24:42.402Z",
+        "limit": "Transparent private transport tracing perturbs timing: this offer arrived successfully, while the prior uninstrumented run did not. This demonstrates the unsafe order, not a deterministic drop on every launch.",
+        "trial_result": {
+          "result": "passed",
+          "report": "/private/tmp/agentdocker-reconnect-trace-20260918/result.json",
+          "sha256": "2bea541953f724d1f6acc34dd63ad3be236d55c60f1b179f7774f65343144df8",
+          "elapsed_seconds": 130.87665962503524,
+          "remaining_owned_processes": 0,
+          "held_message": "44c94c58d2dc44d5",
+          "held_reply": "f2a2084356e84a16",
+          "pause": "d3e4d4fa861047d1",
+          "pause_reply": "5d2907394e4c4e0f"
+        }
+      },
+      "mitigation": {
+        "first_offer_settle_ms": 1000,
+        "control_and_receipts": "responsive during settling",
+        "automatic_reoffer": false,
+        "status": "Ten focused channel regressions and the full #196 gate passed. Repeated actual-provider acceptance on the combined reconnect candidate is still pending.",
+        "full_gate": {
+          "result": "passed",
+          "rust_passed": 1264,
+          "rust_skipped": 7,
+          "python_checks": 94,
+          "python_passed": 93,
+          "python_skipped": 1,
+          "checks": [
+            "fmt",
+            "strict Clippy",
+            "nextest",
+            "doctests",
+            "Python",
+            "cargo package",
+            "release build"
+          ],
+          "log_sha256": "9d90412fd37914cadf271c1c46ee9f25a8ba7bb561c7a3b51b2b5358e7971346"
+        }
+      }
     }
   },
   "reconnect_here_actual_ui_2026_09_18": {
