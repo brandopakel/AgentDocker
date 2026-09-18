@@ -110,11 +110,15 @@ mod tests {
         let mine = serving(std::process::id());
         write_status(home.path(), &mine).unwrap();
         assert_eq!(read_status(home.path()), Some(mine.clone()));
-        assert_eq!(
-            super::serving(home.path()),
-            Some(mine.clone()),
-            "this process is alive"
-        );
+        // `procinfo::alive` answers on Unix only; elsewhere every pid reads
+        // as gone and nothing is ever "serving".
+        if cfg!(unix) {
+            assert_eq!(
+                super::serving(home.path()),
+                Some(mine.clone()),
+                "this process is alive"
+            );
+        }
         assert_eq!(mine.mcp_url(), "https://node.example.ts.net/mcp");
         clear_status(home.path(), mine.pid + 1);
         assert!(
