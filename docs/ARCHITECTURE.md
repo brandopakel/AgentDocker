@@ -286,6 +286,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `task_update {agent, task, title?, acceptance?, assignee?, links?}` | `task {task}`, `error(forbidden\|invalid\|storage_unavailable)` | an agent edits only a card it holds with a live lease (`forbidden`, `details.hold: lapsed` otherwise). A hand by the person is a confirmed reassignment: the old holder's lease ends and, for a running agent, the new holder's `task:<id>` lease is taken in the same commit (`lease_released`/`lease_claimed` follow `task_updated`); handed to an agent that is not running, or taken away (`assignee: ""`), the card has no hold until somebody pulls it by name. Otherwise: the person edits any card's words and hands it to an agent (`assignee` an id, name or prefix; `""` takes it away); an agent edits only the words of a card it holds. Emits `task_updated`. |
 | `task_archive {agent, task}` | `ok`, `error(forbidden\|storage_unavailable)` | releases the card's leases in the same commit; an agent archives only a card it holds with a live lease. off the board, kept for the record: the person's to do, or the assignee's for a card in `done`. Archiving twice is `ok`. Emits `task_archived`. |
 | `tasks {project?, column?, archived?, offset?, limit?}` | `tasks {tasks: Task[], more}`, `error(storage_unavailable)` | one page of the board, Backlog to Done and oldest first within a column, from `offset`, at most `limit` cards (1–500; 100 by default) and within a page's byte budget (768 KiB of serialised cards; a page holds at least one card whatever its size), with `more` when the board goes on past them — the next page starts at `offset + tasks.len()`, so every card is reachable without a mutation. Read as a page from the store, so a board of long cards never fills a frame or holds the lock; archived cards only when asked; every project's when none is named. A read: served during a coordinator transfer. |
+| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage, overhead}` | Initial collector branch: read hourly local usage grouped by agent/model/provider/project/hour with explicit collection and counter coverage. Defaults to the last 24 hours; strict duration/RFC3339 bounds, retention rounding and unknown counters follow the contract below. More than 10,000 buckets or an overflowing grouped total refuses the query without disabling coordination. Served through the transfer fence. |
 | `pause {from, project?, reason}` | `pause {pause: {project, by, reason, at}}`, `error(invalid\|forbidden\|not_found\|ambiguous\|backpressure\|storage_unavailable)` | the person tells a project's agents to hold: one `pause` message from `from` reaches every live agent in the project (archived under `#everyone`, payload `{text: "Pause: <reason>", reason}`) and the pause is written as a document in the same transaction — neither exists without the other, and a refused send (backpressure, storage) pauses nothing. Until it is lifted, `claim` from an agent in that project answers `paused` with the reason, a waiter queued before the pause included (what an agent holds, it keeps; the person's own claims are not held). A declared human sender may pause (`forbidden` for a nonhuman identity); the host socket trusts its owning OS user and `--from user` is not proof of human presence. The authenticated restricted/container endpoint cannot pause or resume a project; the reason is 1–400 characters; `project` is an id, root or unique prefix, the caller's own when absent; a second pause replaces the reason. The document is schema 23's: a daemon older than that refuses to open the database rather than open it and quietly not hold anyone, so rollback requires restoring a compatible pre-upgrade state backup while stopped, or retaining the newer daemon. Lifting a pause does not downgrade schema23 and does not make that state readable by schema22 — tried on real binaries in [the rollback refusal record](verification/2026-09-12-integrated-desktop.json): the installed schema-22 daemon exited with both numbers in its reason, the file unchanged, and the schema-23 daemon still listed the hold. Emits `project_paused`. |
 | `resume_project {from, project?}` | `ok`, `error(forbidden\|not_found\|ambiguous\|backpressure\|storage_unavailable)` | the person lifts the pause: a `resume` message reaches the project's live agents in the same transaction as the document's removal, and their leases are theirs again. `ok` for a project that is not paused. Emits `project_resumed`. |
 | `pauses` | `pauses {pauses: Pause[]}` | the projects that are paused, and why, oldest first |
@@ -956,10 +957,37 @@ Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `
 | Request | Response | Phase |
 |---|---|---|
 | Additional execution adapters (Apple `container`, others) | capability-specific | 4 |
-| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage, overhead}` | 5 |
+
+Initial collector implementation is now on `codex/usage-collection`, pending
+combined CLI/UI integration and full validation. The opt-in `[usage]` section in
+`agentd.toml` accepts `enabled = true`, `retention_days = 30` (1–3650), and
+optional absolute `codex_roots` / `claude_roots`. Empty lists use the standard
+provider log directories. Disabled collection reports unknown coverage and never
+scans transcripts in a private test daemon implicitly.
+
+A separate worker discovers at most 100,000 entries and 10,000 files per
+snapshot, with bounded directory pages/depth, prioritizes filenames matching
+live session IDs, captures each file generation, and reads outside the daemon
+state lock. File cursors, dedupe fingerprints, cumulative baselines, hourly
+buckets, gaps and `usage_recorded {generation, samples, gaps}` commit together
+under the coordinator fence. `usage_reconciled {agent, samples}` moves retained
+unattributed contributions only after unique runtime/session resolution;
+previously attributed history does not follow a moved agent. Replay fingerprints
+and baselines survive aggregate retention. New tables are additive and preserve
+the existing schema-23 meanings. No transcript text is retained.
+
+Seven daemon/storage regressions and 18 host usage tests passed locally,
+including partial-tail completion, copied logs and restart, a refused database
+transaction, transfer fencing, reset/out-of-order counters and attribution.
+This is a staged implementation, not a completed acceptance claim. Discovery
+restarts after a daemon restart; file scan progress is durable. Larger-prefix
+validation, growth reuse, complete resource/retention acceptance, standalone
+scans, overhead instrumentation, and CLI/UI integration remain open. A prefix
+beyond the reader's 16 MiB validation cap remains incomplete; the collector does
+not bypass that refusal. Overhead is returned as unknown until instrumented.
 
 **Token usage by agent, model and provider** (requested September 15;
-the bounded log reader with explicit gaps is merged in #165/#167; the collector, protocol, CLI and Usage screen are not delivered). The initial adapters read local Codex rollouts
+the bounded log reader with explicit gaps is merged in #165/#167; the initial collector/protocol is in progress; CLI and Usage screen integration and acceptance remain open). The initial adapters read local Codex rollouts
 and Claude Code transcripts. These are versioned runtime formats: an adapter
 must identify a supported usage record and model context, rather than assume
 every turn or runtime reports every counter. Missing or unsupported counters
