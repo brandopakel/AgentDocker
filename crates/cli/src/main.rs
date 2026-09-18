@@ -3680,6 +3680,7 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
     let rows: Vec<Vec<String>> = sorted
         .iter()
         .map(|r| {
+            // An extension is an app of the browser's: "Claude in Chrome 1.0.93".
             let apps = r
                 .apps
                 .iter()
@@ -3687,6 +3688,7 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
                     Some(v) => format!("{} {v}", a.label),
                     None => a.label.clone(),
                 })
+                .chain(r.extensions.iter().map(format::extension))
                 .collect::<Vec<_>>()
                 .join(", ");
             vec![
@@ -3741,6 +3743,22 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
         println!(
             "\n`agentdocker setup --preview` reviews missing or unverified integrations; `agentdocker setup --health` explains connection issues."
         );
+    }
+    // What the inventory could not read is said, not left as absence.
+    for runtime in runtimes.iter().filter(|r| !r.incomplete.is_empty()) {
+        println!(
+            "\n{} inventory incomplete:\n  {}",
+            runtime.label,
+            runtime.incomplete.join("\n  ")
+        );
+    }
+    let in_browser: Vec<&str> = runtimes
+        .iter()
+        .filter(|r| r.in_browser() && r.installed())
+        .map(|r| r.label.as_str())
+        .collect();
+    if !in_browser.is_empty() {
+        println!("\n{}", format::in_browser_note(&in_browser));
     }
 }
 

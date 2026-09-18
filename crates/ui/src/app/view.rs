@@ -3320,6 +3320,10 @@ impl App {
                 )
             } else if !installed {
                 (c.faint, "Not installed".to_owned())
+            } else if runtime.in_browser() {
+                // No session of it can ever be listed: say so here, where
+                // the person comes to ask why their browser agent is not.
+                (c.faint, super::in_browser_word(runtime))
             } else if !supported {
                 (c.faint, "Installed · integration unavailable".to_owned())
             } else if unverified {
@@ -3396,6 +3400,18 @@ impl App {
                 .spacing(6);
                 for app in &runtime.apps {
                     facts = facts.push(kv("Application", app.label.clone(), c));
+                }
+                for extension in &runtime.extensions {
+                    facts = facts.push(kv("Browser", super::extension_words(extension), c));
+                    if let Some(bridge) = &extension.bridge {
+                        facts = facts.push(kv("Bridge", bridge.display().to_string(), c));
+                    }
+                }
+                if runtime.in_browser() && installed {
+                    facts = facts.push(note(agentdocker_core::runtime::IN_BROWSER, c));
+                }
+                for why in &runtime.incomplete {
+                    facts = facts.push(note(format!("Inventory incomplete: {why}"), c));
                 }
                 if installed && supported && !missing && !unverified && !reporting {
                     facts = facts.push(note(
