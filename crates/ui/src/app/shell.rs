@@ -1962,9 +1962,11 @@ impl App {
                 if !self.shell.terminal_opening
                     && let Some(path) = self.shell.catalog.selected.as_ref()
                 {
+                    let path = path.clone();
                     self.shell.terminal_opening = true;
+                    self.say("Opening terminal…");
                     tasks.push(open_native_terminal(
-                        crate::native_terminal::Request::Project(path.clone()),
+                        crate::native_terminal::Request::Project(path),
                     ));
                 }
             }
@@ -1980,6 +1982,7 @@ impl App {
                         if let (Some(pid), Some(started_at)) = (agent.pid, agent.process_started_at)
                         {
                             self.shell.terminal_opening = true;
+                            self.say("Opening terminal…");
                             tasks.push(open_native_terminal(
                                 crate::native_terminal::Request::Agent { pid, started_at },
                             ));
@@ -1991,6 +1994,7 @@ impl App {
             }
             Message::NativeTerminalOpened(result) => {
                 self.shell.terminal_opening = false;
+                self.status.clear();
                 match result {
                     Ok(()) => self.say("Terminal opened"),
                     Err(error) => self.shell.error = Some(error),
@@ -4527,7 +4531,10 @@ mod tests {
         );
         let _ = app.update(Message::ToggleTemporary);
         assert_eq!(app.shell.temporary_open, Some(false));
-        assert!(!app.temporary_fold_open(), "closable while a scratch session runs");
+        assert!(
+            !app.temporary_fold_open(),
+            "closable while a scratch session runs"
+        );
         app.shell.temporary_open = None;
         assert!(app.temporary_fold_open(), "automatic: open while one runs");
     }
