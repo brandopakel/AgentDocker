@@ -145,6 +145,8 @@ system, which is drawn from the mark:
   `new-kind-direct`/`new-kind-channel`, `new-direct-<agent>`,
   `new-channel-name`, `new-channel-purpose`, `new-member-<agent>`,
   `new-channel-create`; a mention offer `mention-<agent>`. On the Board
+  Usage under More (`project-tab-Usage`): `usage-since-24h|7d|30d`,
+  `usage-by-Agent|Model|Provider|Hour`. On the Board
   tab (`project-tab-Board`): `task-title`, `task-acceptance`,
   `task-file-ready`, `task-file-backlog`, a card `task-<id>` (opens it),
   its moves `task-back-<id>`/`task-next-<id>`, `task-hand-<id>-<agent>`,

@@ -175,7 +175,7 @@ fn hint<'a>(
     .into()
 }
 /// A track holding `segment` choices.
-fn segmented<'a>(choices: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
+pub(super) fn segmented<'a>(choices: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
     let mut track = row![].spacing(2);
     for choice in choices {
         track = track.push(choice);
@@ -659,7 +659,7 @@ impl App {
             let more_selected = self.shell.more
                 || matches!(
                     self.screen,
-                    Screen::Channels | Screen::Leases | Screen::Console
+                    Screen::Channels | Screen::Leases | Screen::Console | Screen::Usage
                 );
             tabs = tabs.push(tab(
                 "project-more",
@@ -713,6 +713,12 @@ impl App {
                     "Command line",
                     Some(Message::Navigate(Screen::Console)),
                     self.screen == Screen::Console
+                ),
+                action(
+                    "project-tab-Usage",
+                    "Usage",
+                    Some(Message::Navigate(Screen::Usage)),
+                    self.screen == Screen::Usage
                 ),
             ]
             .spacing(6);
@@ -773,6 +779,7 @@ impl App {
         let body = match self.screen {
             Screen::Agents => self.sessions(c),
             Screen::Board => self.board_view(c),
+            Screen::Usage => self.usage_view(c),
             Screen::Questions if self.has_conversations() => self.messages_view(c),
             Screen::Questions => self.questions(c),
             Screen::Runtimes => self.connections(c),
