@@ -9,8 +9,8 @@ message to keel's terminal sessions — first from a terminal-run connector, the
 from the connector installed as a login service with a vendor-egress allowlist
 ([record](verification/2026-09-12-integrated-desktop.json), `remote_connector_2026_09_17`, `vendor_acceptance`
 and `service_acceptance`). A quick tunnel's hostname is ephemeral, and both
-vendors' saved connectors must be re-added when it changes; a named tunnel is
-the durable setup.
+vendors' saved connectors must be re-added when it changes; `--tunnel tailscale`
+(or a named cloudflared tunnel) is the durable setup.
 
 ## Why it exists
 
@@ -28,15 +28,20 @@ kept as small as the requirement allows and as far from the daemon as possible.
   listens on the network; the connector talks to it over the local socket like
   any other client.
 - Loopback only. It binds `127.0.0.1` and refuses anything else. The public
-  hostname and TLS come from a tunnel: one the person runs in front of it
-  (ngrok, Tailscale Funnel, a reverse proxy — its HTTPS address is
-  `--public-url`), or cloudflared started by the connector itself with
-  `--tunnel cloudflared`: a quick tunnel, whose random `*.trycloudflare.com`
-  hostname it reads from cloudflared's output, or with `--tunnel-name` a named
-  tunnel the person created and routed (`cloudflared tunnel login`, `tunnel
-  create <name>`, `tunnel route dns <name> <host>`), whose hostname is
-  `--public-url`. The tunnel child dies with the connector and the connector
-  stops when the tunnel exits.
+  hostname and TLS come from a tunnel. `--tunnel tailscale` is the one to
+  reach for: Tailscale Funnel on this machine's own `*.ts.net` name, which is
+  the same after every restart and needs no domain — the connector reads the
+  name from `tailscale status`, sets `tailscale funnel --bg --https=<443|8443|10000>
+  http://127.0.0.1:<port>` on the way in and clears it on the way out; Funnel
+  must be enabled for the tailnet (the error says how). `--tunnel cloudflared`
+  starts cloudflared as a child: a quick tunnel, whose random
+  `*.trycloudflare.com` hostname it reads from cloudflared's output and which
+  changes at every start, or with `--tunnel-name` a named tunnel the person
+  created and routed (`cloudflared tunnel login`, `tunnel create <name>`,
+  `tunnel route dns <name> <host>`), whose hostname is `--public-url`. Any
+  other tunnel or reverse proxy is `--public-url` with the person running it.
+  A tunnel child dies with the connector and the connector stops when it
+  exits.
 - Its own OAuth 2.1 authorization server, with dynamic client registration that
   admits only the vendors' callback URLs.
 - One browser-agent identity per consent, in one project, alive until revoked.
@@ -98,7 +103,7 @@ what it reads on web pages.
 
 | Command | What it does |
 | --- | --- |
-| `connector serve [--public-url <https://…>] [--tunnel cloudflared [--tunnel-name <name>] [--cloudflared <path>]] [--bind 127.0.0.1:0] [--project <path>] [--allow-callback <url>]… [--allow-from <cidr>\|anthropic\|@<file>]… [--client-ip-header <name>]` | Serve; prints the MCP URL, the pairing code, the admitted addresses and the vendors' setup steps, and writes `$AGENTDOCKER_HOME/connector/serve.json` (mode 0600) with the same for `status`. Plain `http://` is accepted only for a loopback host, for a trial without a tunnel. |
+| `connector serve [--public-url <https://…>] [--tunnel tailscale [--tunnel-port 443\|8443\|10000] [--tailscale <path>] \| --tunnel cloudflared [--tunnel-name <name>] [--cloudflared <path>]] [--bind 127.0.0.1:0] [--project <path>] [--allow-callback <url>]… [--allow-from <cidr>\|anthropic\|@<file>]… [--client-ip-header <name>]` | Serve; prints the MCP URL, the pairing code, the admitted addresses and the vendors' setup steps, and writes `$AGENTDOCKER_HOME/connector/serve.json` (mode 0600) with the same for `status`. Plain `http://` is accepted only for a loopback host, for a trial without a tunnel. |
 | `connector status` | Whether a connector is serving here: its address, listening socket, pairing code, tunnel, admitted prefixes, and how many browser agents the daemon holds live. |
 | `connector install <serve arguments> [--dry-run]` | Run the connector as a login service — a launchd agent (`dev.agentdocker.connector`) or a systemd user unit — with those arguments, `AGENTDOCKER_HOME` and a PATH that includes where cloudflared was found; its log is `$AGENTDOCKER_HOME/connector/serve.log`. A quick tunnel gets a new hostname at every start and says so. |
 | `connector uninstall [--dry-run]` | Remove the service. |
@@ -108,9 +113,9 @@ what it reads on web pages.
 ## Admitting only the vendors
 
 Behind a tunnel every TCP peer is the tunnel, so the address worth checking is
-the one it writes into a header: `cf-connecting-ip` for cloudflared (the default
-with `--tunnel cloudflared`), `x-forwarded-for` for most others
-(`--client-ip-header`). `--allow-from` takes a CIDR, `anthropic` (its published
+the one it writes into a header: `cf-connecting-ip` for cloudflared,
+`x-forwarded-for` for Tailscale Funnel and most others; the connector picks the
+right one for a tunnel it runs (`--client-ip-header` otherwise). `--allow-from` takes a CIDR, `anthropic` (its published
 connector range, `160.79.104.0/21`) or `@<file>` — OpenAI's feed
 (`https://openai.com/chatgpt-connectors.json`, a few hundred prefixes that
 change; keep it fresh with `curl -o`) or one CIDR per line — and re-reads a file
@@ -133,10 +138,14 @@ OAuth flow is the only gate.
 - `project` as a recipient is the served project, wherever the connector's
   process runs; a service starts in no project at all, and a broadcast resolved
   from its working directory once went to a project nobody was in.
+- Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `openWorldHint`), so a host that asks before destructive or
+  open-world calls — ChatGPT's *Allow low-risk actions* default — lets the
+  reads through and asks for the writes; nothing here is open-world but
+  `validate`, which runs a command.
 - Not done yet: Client ID Metadata Documents (both vendors fall back to DCR and
-  ChatGPT says so in its form); MCP tool annotations (ChatGPT marks every tool
-  "open world, destructive" without them and asks for each call); the desktop
-  Tools card shows connected browser agents but not the service's state.
+  ChatGPT says so in its form); the desktop Tools card shows connected browser
+  agents but not the service's state.
 
 ## What a browser agent cannot get
 

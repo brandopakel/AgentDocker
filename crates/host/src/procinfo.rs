@@ -287,14 +287,26 @@ pub fn is_codex_binary(argv: &[String]) -> bool {
 /// messaging so the extension can reach Claude Code: the bridge for a
 /// terminal session that drives the browser, not a session and not the
 /// agent working in the browser's side panel, which has no process here.
+///
+/// Claude Code also runs a session in two processes: a `bg-spare` that
+/// holds the model — it registers itself through its own hooks and MCP
+/// server once a terminal takes it, so discovery has nothing to add and
+/// `adopt` nothing to make of it — and the `attach` (later retitled
+/// `agents`) terminal in front of it, which is that session's screen,
+/// not a second session; adopting it would make one session two agents.
 fn claude_helper(arguments: &[String]) -> Option<&'static str> {
     let mode = arguments.first()?;
     if mode.starts_with("bg-") {
-        Some("a Claude Code background task")
+        Some(
+            "a Claude Code background session process, which registers itself through its own adapters",
+        )
     } else {
         match mode.as_str() {
             "daemon" => Some("Claude Code's background daemon"),
             "--chrome-native-host" => Some("Claude Code's bridge for the browser extension"),
+            "attach" | "agents" => {
+                Some("the terminal attached to a background Claude Code session, not the session")
+            }
             _ => None,
         }
     }
@@ -619,6 +631,9 @@ mod tests {
             "node /x/@anthropic-ai/claude-code/cli.js --chrome-native-host",
             "node /x/@anthropic-ai/claude-code/cli.js daemon run",
             "node /x/@anthropic-ai/claude-code/cli.js bg-spare",
+            "claude bg-spare --bg-spare /tmp/cc-daemon-501/x/spare/y.claim.sock",
+            "claude attach ef93b626",
+            "/Users/p/.local/bin/claude agents",
         ] {
             assert_eq!(runtime_of(&argv(command)), None, "{command}");
             let helper = helper_of(&argv(command)).unwrap_or_else(|| panic!("{command}"));
@@ -628,12 +643,19 @@ mod tests {
             helper_of(&argv("claude --chrome-native-host")).map(|h| h.role),
             Some("Claude Code's bridge for the browser extension")
         );
+        assert!(
+            helper_of(&argv("claude attach ef93b626"))
+                .map(|h| h.role)
+                .is_some_and(|role| role.contains("terminal attached"))
+        );
         for command in [
             "claude --chrome",
             "claude -- --chrome-native-host",
             "claude --resume session",
             "node /x/@anthropic-ai/claude-code/cli.js --chrome",
             "node /x/@anthropic-ai/claude-code/cli.js -- --chrome-native-host",
+            "claude -p attach the file",
+            "claude -- agents",
         ] {
             assert_eq!(runtime_of(&argv(command)), Some("claude-code"), "{command}");
             assert_eq!(helper_of(&argv(command)), None, "{command}");

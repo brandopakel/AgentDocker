@@ -20,29 +20,165 @@ const READY_DEADLINE: Duration = Duration::from_secs(60);
 /// held back this long before anyone is told it.
 const DNS_SETTLE: Duration = Duration::from_secs(4);
 
-/// A running tunnel child and the public URL it serves.
+/// A tunnel in front of the connector and the public URL it serves: a
+/// child process of ours (cloudflared), or a configuration in a daemon
+/// that outlives us (Tailscale Funnel), taken down when we stop.
 #[derive(Debug)]
 pub struct Tunnel {
     pub provider: &'static str,
     pub public_url: String,
     pub name: Option<String>,
-    child: Child,
+    child: Option<Child>,
+    /// The command that undoes the configuration, when there is one.
+    teardown: Option<(PathBuf, Vec<String>)>,
 }
 
 impl Tunnel {
     pub fn pid(&self) -> Option<u32> {
-        self.child.id()
+        self.child.as_ref().and_then(Child::id)
     }
 
-    /// Whether the child has exited; the connector stops with it.
+    /// Whether the child has exited; the connector stops with it. A
+    /// tunnel that is a daemon's configuration has no child to lose.
     pub fn exited(&mut self) -> Option<std::process::ExitStatus> {
-        self.child.try_wait().ok().flatten()
+        self.child
+            .as_mut()
+            .and_then(|child| child.try_wait().ok().flatten())
     }
 
     pub async fn stop(&mut self) {
-        let _ = self.child.start_kill();
-        let _ = tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await;
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.start_kill();
+            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+        }
+        if let Some((binary, args)) = self.teardown.take() {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(15),
+                Command::new(binary)
+                    .args(args)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status(),
+            )
+            .await;
+        }
     }
+}
+
+/// Where `tailscale` is: an explicit path, PATH, the usual places, or
+/// the macOS app bundle's own CLI.
+pub fn find_tailscale(explicit: Option<&Path>) -> Result<PathBuf> {
+    if let Some(path) = explicit {
+        if path.is_file() {
+            return Ok(path.to_owned());
+        }
+        bail!("{} is not a file", path.display());
+    }
+    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("tailscale"))
+                .collect()
+        })
+        .unwrap_or_default();
+    candidates.extend(
+        [
+            "/usr/local/bin/tailscale",
+            "/opt/homebrew/bin/tailscale",
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+            "/usr/bin/tailscale",
+        ]
+        .iter()
+        .map(PathBuf::from),
+    );
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .context("tailscale is not installed; see https://tailscale.com/download, then run again")
+}
+
+/// The ports Tailscale Funnel will serve on.
+pub const FUNNEL_PORTS: &[u16] = &[443, 8443, 10000];
+
+/// Expose the connector through Tailscale Funnel: the node's own
+/// `*.ts.net` name, which is the same after every restart, on one of the
+/// ports Funnel allows. Funnel is a configuration in tailscaled, not a
+/// process of ours, so it is set on the way in and cleared on the way out.
+pub async fn funnel_tailscale(binary: &Path, port: u16, https_port: u16) -> Result<Tunnel> {
+    if !FUNNEL_PORTS.contains(&https_port) {
+        bail!(
+            "Tailscale Funnel serves on {} only; --tunnel-port {https_port} is not one of them",
+            FUNNEL_PORTS
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let status = Command::new(binary)
+        .args(["status", "--json"])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .with_context(|| format!("cannot run {} status", binary.display()))?;
+    if !status.status.success() {
+        bail!(
+            "tailscale status failed: {}",
+            String::from_utf8_lossy(&status.stderr).trim()
+        );
+    }
+    let status: serde_json::Value =
+        serde_json::from_slice(&status.stdout).context("tailscale status is not JSON")?;
+    let this = &status["Self"];
+    if this["Online"] != true {
+        bail!("this machine is not online on its tailnet; `tailscale up` first");
+    }
+    let host = this["DNSName"]
+        .as_str()
+        .map(|name| name.trim_end_matches('.'))
+        .filter(|name| !name.is_empty())
+        .context("tailscale status names no DNS name for this machine; MagicDNS must be on")?
+        .to_owned();
+    let capable = this["CapMap"]
+        .as_object()
+        .is_some_and(|caps| caps.contains_key("funnel"));
+    if !capable {
+        bail!(
+            "Funnel is not enabled for this machine: turn it on for the tailnet in the admin console (Access controls › nodeAttrs `funnel`), or run `{} funnel --bg {port}` once and follow the link it prints",
+            binary.display()
+        );
+    }
+    let target = format!("http://127.0.0.1:{port}");
+    let https = format!("--https={https_port}");
+    let set = Command::new(binary)
+        .args(["funnel", "--bg", &https, &target])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .with_context(|| format!("cannot run {} funnel", binary.display()))?;
+    if !set.status.success() {
+        bail!(
+            "tailscale funnel refused: {}{}",
+            String::from_utf8_lossy(&set.stderr).trim(),
+            String::from_utf8_lossy(&set.stdout).trim()
+        );
+    }
+    let public_url = if https_port == 443 {
+        format!("https://{host}")
+    } else {
+        format!("https://{host}:{https_port}")
+    };
+    Ok(Tunnel {
+        provider: "tailscale",
+        public_url,
+        name: Some(host),
+        child: None,
+        teardown: Some((
+            binary.to_owned(),
+            vec!["funnel".into(), https, "off".into()],
+        )),
+    })
 }
 
 /// Where `cloudflared` is, from an explicit path or the usual places;
@@ -173,7 +309,8 @@ pub async fn spawn_cloudflared(
         provider: "cloudflared",
         public_url,
         name: name.map(str::to_owned),
-        child,
+        child: Some(child),
+        teardown: None,
     })
 }
 
@@ -192,6 +329,56 @@ pub fn quick_tunnel_url(line: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fake tailscale answers `status --json` and records the funnel
+    /// commands it is given: the public URL is the node's stable name,
+    /// the funnel is set on the bind port and cleared on stop, and a
+    /// machine without the capability is told what to enable.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_funnel_is_the_nodes_own_name_set_on_entry_and_cleared_on_exit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("calls.log");
+        let fake = dir.path().join("tailscale");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\necho \"$*\" >> {log}\nif [ \"$1\" = status ]; then echo '{{\"Self\":{{\"DNSName\":\"mac.tail1.ts.net.\",\"Online\":true,\"CapMap\":{{\"funnel\":[],\"https\":[]}}}}}}'; fi\nexit 0\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut tunnel = funnel_tailscale(&fake, 62800, 443).await.unwrap();
+        assert_eq!(tunnel.public_url, "https://mac.tail1.ts.net");
+        assert_eq!(tunnel.name.as_deref(), Some("mac.tail1.ts.net"));
+        assert!(tunnel.pid().is_none() && tunnel.exited().is_none());
+        tunnel.stop().await;
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            calls.contains("funnel --bg --https=443 http://127.0.0.1:62800"),
+            "{calls}"
+        );
+        assert!(calls.contains("funnel --https=443 off"), "{calls}");
+        let other = funnel_tailscale(&fake, 62800, 8443).await.unwrap();
+        assert_eq!(other.public_url, "https://mac.tail1.ts.net:8443");
+        assert!(funnel_tailscale(&fake, 62800, 8080).await.is_err());
+
+        let unable = dir.path().join("unable");
+        std::fs::write(
+            &unable,
+            "#!/bin/sh\nif [ \"$1\" = status ]; then echo '{\"Self\":{\"DNSName\":\"mac.tail1.ts.net.\",\"Online\":true,\"CapMap\":{\"https\":[]}}}'; fi\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&unable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = funnel_tailscale(&unable, 62800, 443)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Funnel is not enabled"), "{error}");
+        assert!(find_tailscale(Some(&fake)).is_ok());
+    }
 
     #[test]
     fn the_quick_tunnel_url_is_read_out_of_cloudflareds_box() {

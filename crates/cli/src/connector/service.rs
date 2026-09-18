@@ -306,17 +306,30 @@ fn layout(args: &ServeArgs) -> Result<Layout> {
     let user_home = std::env::home_dir().context("no home directory")?;
     let mut serve_args = args.to_argv();
     let mut path_dirs = Vec::new();
-    if args.tunnel.as_deref() == Some("cloudflared") {
-        // Resolve now: launchd's PATH will not, and a moved binary is a
-        // new install.
-        let binary = super::tunnel::find_cloudflared(args.cloudflared.as_deref())?;
-        if args.cloudflared.is_none() {
-            serve_args.push("--cloudflared".into());
-            serve_args.push(binary.to_string_lossy().into_owned());
+    // Resolve the tunnel's binary now: launchd's PATH will not, and a
+    // moved binary is a new install.
+    match args.tunnel.as_deref() {
+        Some("cloudflared") => {
+            let binary = super::tunnel::find_cloudflared(args.cloudflared.as_deref())?;
+            if args.cloudflared.is_none() {
+                serve_args.push("--cloudflared".into());
+                serve_args.push(binary.to_string_lossy().into_owned());
+            }
+            if let Some(dir) = binary.parent() {
+                path_dirs.push(dir.to_owned());
+            }
         }
-        if let Some(dir) = binary.parent() {
-            path_dirs.push(dir.to_owned());
+        Some("tailscale") => {
+            let binary = super::tunnel::find_tailscale(args.tailscale.as_deref())?;
+            if args.tailscale.is_none() {
+                serve_args.push("--tailscale".into());
+                serve_args.push(binary.to_string_lossy().into_owned());
+            }
+            if let Some(dir) = binary.parent() {
+                path_dirs.push(dir.to_owned());
+            }
         }
+        _ => {}
     }
     let project = match &args.project {
         Some(path) => path.clone(),
@@ -349,7 +362,7 @@ pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
     }
     if args.tunnel.as_deref() == Some("cloudflared") && args.tunnel_name.is_none() {
         eprintln!(
-            "note: a quick tunnel gets a new hostname every time the service starts, and the connector saved in Claude or ChatGPT must then be added again; for a hostname that stays, create a named tunnel and pass --tunnel-name and --public-url"
+            "note: a quick tunnel gets a new hostname every time the service starts, and the connector saved in Claude or ChatGPT must then be added again; for a hostname that stays, use --tunnel tailscale (Funnel on this machine's own name) or a named cloudflared tunnel with --tunnel-name and --public-url"
         );
     }
     let layout = layout(args)?;
