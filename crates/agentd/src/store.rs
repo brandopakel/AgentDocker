@@ -2611,6 +2611,7 @@ mod tests {
             expires_at: now + Duration::seconds(30),
             note: Some("n".into()),
             amount: 0,
+            automatic: false,
         };
         store.upsert_lease(&lease).unwrap();
         assert_eq!(store.load_leases().unwrap(), vec![lease.clone()]);
@@ -2635,6 +2636,7 @@ mod tests {
             expires_at: now + Duration::seconds(30),
             note: None,
             amount: 0,
+            automatic: false,
         };
         store.upsert_lease(&lease).unwrap();
         let mut event = Event::new(
@@ -4029,6 +4031,7 @@ mod tests {
             expires_at: Utc::now() + Duration::seconds(60),
             note: None,
             amount: 0,
+            automatic: false,
         };
         store.upsert_lease(&lease).unwrap();
         store

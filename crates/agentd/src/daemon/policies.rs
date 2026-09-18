@@ -418,6 +418,7 @@ mod tests {
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             })
             .await;
         assert!(
@@ -536,6 +537,7 @@ mod tests {
             ttl_secs: 60,
             note: None,
             wait_secs: 0,
+            automatic: false,
         };
         std::fs::write(daemon.home.join("policy.toml"), "[[rule] broken").unwrap();
         let mut events = daemon.subscribe_events();

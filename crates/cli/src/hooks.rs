@@ -511,6 +511,9 @@ pub async fn claude_code<B: Backend>(
                     ttl_secs: opts.ttl,
                     note: Some(format!("editing in Claude Code session {}", me.spec.name)),
                     wait_secs: 0,
+                    // Taken for this edit, not asked for: the turn's end
+                    // gives it back. What the agent claimed itself stays.
+                    automatic: true,
                 })
                 .await?;
             match response {
@@ -539,7 +542,12 @@ pub async fn claude_code<B: Backend>(
                 .as_deref()
                 .and_then(transcript_tail)
                 .and_then(|tail| transcript_summary(&tail));
-            release_all(backend, &me, summary).await?;
+            // The edit leases this adapter took during the turn go back;
+            // a worktree, a branch or a build campaign the agent claimed
+            // itself is held until it says otherwise or the TTL ends. A
+            // turn ends whenever the model answers, which is no reason
+            // to lose what it deliberately holds.
+            release_held(backend, &me, summary, true).await?;
             // A newer limit may supersede this snapshot while Stop is running.
             // Keep that block, but do not let a rejected recovery retain leases
             // or produce another wake attempt.
@@ -567,7 +575,7 @@ pub async fn claude_code<B: Backend>(
         }
         "SessionEnd" => {
             if let Some(me) = session_agent(backend, input).await? {
-                release_all(backend, &me, None).await?;
+                release_held(backend, &me, None, false).await?;
                 backend
                     .call(Request::Deregister {
                         agent: me.id.to_string(),
@@ -927,10 +935,13 @@ async fn drain_inbox<B: Backend>(backend: &B, me: &AgentRecord) -> Result<Vec<En
 
 /// Release everything; a summary here is a quoted transcript tail, never
 /// something the model typed for the journal.
-async fn release_all<B: Backend>(
+/// Give back this agent's leases: every one at session end, only the
+/// ones this adapter took for edits at the end of a turn.
+async fn release_held<B: Backend>(
     backend: &B,
     me: &AgentRecord,
     summary: Option<String>,
+    only_automatic: bool,
 ) -> Result<()> {
     let summary_source = if summary.is_some() {
         SummarySource::Transcript
@@ -942,6 +953,7 @@ async fn release_all<B: Backend>(
             agent: me.id.to_string(),
             summary,
             summary_source,
+            only_automatic,
         })
         .await?;
     anyhow::ensure!(
@@ -1514,7 +1526,13 @@ mod tests {
             3,
             "failed recovery must not read or wake the queue"
         );
-        assert!(matches!(requests[1], Request::ReleaseAll { .. }));
+        assert!(matches!(
+            requests[1],
+            Request::ReleaseAll {
+                only_automatic: true,
+                ..
+            }
+        ));
         assert!(matches!(&requests[2], Request::ReportProvider {
             report: agentdocker_core::ProviderReport::Recovered { blocked_at: observed }, ..
         } if *observed == blocked_at));
@@ -2064,7 +2082,7 @@ mod tests {
         let requests = backend.requests();
         assert!(matches!(
             &requests[2],
-            Request::Claim { agent, resource, ttl_secs: 600, .. }
+            Request::Claim { agent, resource, ttl_secs: 600, automatic: true, .. }
                 if agent == me.id.as_str() && resource.starts_with("path:/")
         ));
     }
@@ -2337,7 +2355,16 @@ mod tests {
                 .is_none()
         );
         let requests = backend.requests();
-        assert!(matches!(&requests[1], Request::ReleaseAll { .. }));
+        assert!(
+            matches!(
+                &requests[1],
+                Request::ReleaseAll {
+                    only_automatic: false,
+                    ..
+                }
+            ),
+            "a session's end gives everything back"
+        );
         assert!(matches!(&requests[2], Request::Deregister { agent } if agent == me.id.as_str()));
     }
 

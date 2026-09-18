@@ -1315,6 +1315,7 @@ mod tests {
             ttl_secs: 60,
             wait_secs: 0,
             note: Some("x".repeat(1024 * 1024)),
+            automatic: false,
         })
         .unwrap()
             + "\n";
@@ -1375,6 +1376,7 @@ mod tests {
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             })
             .await;
         let mut events = daemon.subscribe_events();
@@ -1398,6 +1400,7 @@ mod tests {
                 agent: "holder".into(),
                 summary: None,
                 summary_source: agentdocker_core::SummarySource::Explicit,
+                only_automatic: false,
             })
             .await;
         assert!(

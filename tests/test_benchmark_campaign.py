@@ -41,9 +41,10 @@ class BenchmarkCampaign(unittest.TestCase):
             (root / "artifacts").mkdir()
             stale = root / "artifacts/socket-disjoint-100.json"
             stale.write_text("stale outcome")
+            # A fixture campaign never negotiates the machine's build slot.
             result = subprocess.run(["bash", "scripts/verify.sh", "bench"], cwd=root,
                 env={**os.environ, "PATH": str(binary) + os.pathsep + os.environ["PATH"],
-                     "CARGO_TARGET_DIR": str(build)},
+                     "CARGO_TARGET_DIR": str(build), "AGENTDOCKER_CAMPAIGN_LEASE": "off"},
                 capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 1)
             self.assertIn("fixture timeout", result.stderr)

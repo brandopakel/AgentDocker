@@ -1054,6 +1054,7 @@ impl App {
                 }
                 if screen == Screen::Runtimes {
                     self.send(Cmd::Runtimes);
+                    self.send(Cmd::Connector);
                 }
                 if screen == Screen::Desktop {
                     self.send(Cmd::Desktop(self.desktop.command("status")));
@@ -1625,6 +1626,7 @@ impl App {
                 self.shell.connection_details = Some(name);
                 self.shell.other_tools = true;
                 self.send(Cmd::Runtimes);
+                self.send(Cmd::Connector);
             }
             Message::OtherTools => self.shell.other_tools = !self.shell.other_tools,
             Message::Search(text) => {
@@ -4279,6 +4281,7 @@ mod tests {
                 mcp: agentdocker_core::runtime::Wiring::Missing,
                 hooks: agentdocker_core::runtime::Wiring::Missing,
                 hooks_missing: vec![],
+                shell: agentdocker_core::runtime::Wiring::Unsupported,
                 running: 0,
             }];
             app.shell.launch_runtime = Some(runtime.into());
