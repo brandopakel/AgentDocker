@@ -3750,6 +3750,19 @@
       },
       "cleanup_errors": [],
       "visual_review": "The named warning, wrapped guidance and open/copy controls were inspected in the readiness-activity capture."
+    },
+    "main_integration": {
+      "source": "1b8875c6d2c0cd97bd0c8844e4ecc6c9a7fc5317",
+      "base": "acbd09df5ab73c4721d3420f9b5a9c373f5b2429",
+      "result": "passed",
+      "rust_passed": 1183,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "full_gate": "fmt, strict Clippy, nextest, doctests, Python, documentation, packaging and release build passed",
+      "log": "/private/tmp/agentdocker-send-readiness-main-integration-20260918.log",
+      "log_sha256": "2ec8cdf3dd089a5a9be4cf3f780de6b3296acb67626e9363848632bc3fa53a97",
+      "limits": "Combined source with merged typed links; native acceptance remains pinned to fed1053 runtime / eb612e7 harness. Final CI/integration and production activation pending."
     }
   }
 }
