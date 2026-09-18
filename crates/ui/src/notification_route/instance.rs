@@ -333,7 +333,7 @@ mod tests {
                 home: home.path().to_owned(),
                 socket: daemon.clone(),
                 target: agentdocker_core::NotificationTarget {
-                    message: agentdocker_core::MessageId::from("message"),
+                    message: agentdocker_core::MessageId::from("message".to_owned()),
                     agent: agentdocker_core::AgentId::from("agent"),
                     project: None,
                     channel: None,
