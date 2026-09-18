@@ -734,6 +734,9 @@ impl App {
             c,
         ));
         let mut body = column![head, text(shown).size(14)].spacing(3).width(Fill);
+        if !message.envelope.links.is_empty() {
+            body = body.push(super::view::links(&message.envelope.links, c));
+        }
         if long {
             body = body.push(action(
                 format!("message-detail-{id}"),

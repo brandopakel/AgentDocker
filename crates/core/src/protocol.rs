@@ -134,6 +134,9 @@ pub enum Request {
         assumptions: Vec<String>,
         #[serde(default)]
         next_steps: Vec<String>,
+        /// Typed references for whoever takes the work up.
+        #[serde(default)]
+        links: Vec<crate::Link>,
         #[serde(default)]
         release_leases: bool,
     },
@@ -161,6 +164,9 @@ pub enum Request {
         task: Option<String>,
         #[serde(default)]
         note: Option<String>,
+        /// Typed references for the recipient to open first.
+        #[serde(default)]
+        links: Vec<crate::Link>,
         #[serde(default)]
         transfer_leases: bool,
         /// Retries with the same key return the same bundle.
@@ -416,6 +422,10 @@ pub enum Request {
         payload: Value,
         #[serde(default)]
         reply_to: Option<MessageId>,
+        /// Typed references beside the text: at most sixteen, each with
+        /// the shape its kind requires.
+        #[serde(default)]
+        links: Vec<crate::Link>,
     },
     /// Stream messages for `agent` and/or matching `topics` until the
     /// connection closes. Queued messages are replayed first and retained
@@ -557,6 +567,9 @@ pub enum Request {
         /// Backlog when absent.
         #[serde(default)]
         column: Option<crate::Column>,
+        /// Typed references on the card: at most sixteen.
+        #[serde(default)]
+        links: Vec<crate::Link>,
     },
     /// An agent takes a Ready card nobody holds: it becomes theirs, in
     /// progress, held as the `task:<id>` lease. Answers `task`, or
@@ -590,6 +603,9 @@ pub enum Request {
         acceptance: Option<String>,
         #[serde(default)]
         assignee: Option<String>,
+        /// Replaces the card's links whole when given.
+        #[serde(default)]
+        links: Option<Vec<crate::Link>>,
     },
     /// Off the board, kept for the record. Answers `ok`.
     TaskArchive {

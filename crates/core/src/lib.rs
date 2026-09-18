@@ -22,6 +22,7 @@ pub use input::{
 };
 pub mod journal;
 pub mod lease;
+pub mod link;
 pub mod message;
 pub mod notification;
 pub mod paths;
@@ -42,6 +43,7 @@ pub use change::{Attribution, Change, ChangeKind, Overlap, OverlapParty, overlap
 pub use event::{Event, EventCursor, EventKind, WaitOutcome};
 pub use journal::{Digest, DigestBudget, JournalEntry, JournalFilter, JournalKind, SummarySource};
 pub use lease::{Claimed, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, ResourceKey};
+pub use link::{Link, LinkKind};
 pub use message::{
     AnswerRoute, Destination, Envelope, HUMAN, HUMAN_RUNTIME, MessageId, Question,
     QuestionFileChange, QuestionFileChangeKind, QuestionOption, QuestionPresentation,

@@ -221,7 +221,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `send` | Message an agent, the project, a topic, or everyone |
+| `send` | Message an agent, the project, a topic, or everyone A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
 | `watch` | Stream messages for an agent or matching topics |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer |
@@ -255,7 +255,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `renew` / `release` | Extend or give up a lease you hold |
 | `leases` | Every lease held right now |
 | `waiting` | Claims waiting for a resource, oldest first |
-| `task` | The board of work: `task create "Fix login" --acceptance "SSO works" --column ready` files a card; `task pull <id> --as <agent>` takes a Ready card once and holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`, naming whom it is expected from); `task move <id> review` (an agent moves only a card it holds; back to Ready or to Done ends the hold), `task update <id> --assignee bob` (a hand ends the old hold and takes the lease for a running agent), `task archive <id>`, `task list [--column ready] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
+| `task` | The board of work: `task create "Fix login" --acceptance "SSO works" --column ready --link pr:#176 --link path:crates/core/src/task.rs` files a card (a `--link` is `kind:target` — path, commit, pr, url, task, message or memory — and `task update --link …` replaces them, `--no-links` clears them); `task pull <id> --as <agent>` takes a Ready card once and holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`, naming whom it is expected from); `task move <id> review` (an agent moves only a card it holds; back to Ready or to Done ends the hold), `task update <id> --assignee bob` (a hand ends the old hold and takes the lease for a running agent), `task archive <id>`, `task list [--column ready] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
 | `pause` | `agentdocker pause "sleeping the laptop"` tells every agent in this directory's project to hold: they get the reason as a `pause` message and their new leases are refused until `agentdocker pause --lift`; `--project` names another project; `pause --list` lists what is paused and why |
 
 ### Know what changed
@@ -284,7 +284,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | Command | What it does |
 |---|---|
 | `checkpoint` / `checkpoints` | Persist task context and content identity; `checkpoints prune --older-than <duration>` forgets finished sessions' old ones |
-| `handoff` / `handoffs` | Hand an agent's work to another, with everything around it |
+| `handoff` / `handoffs` | Hand an agent's work to another, with everything around it `--link kind:target` names what the recipient should open first; `checkpoint --link` does the same for a replacement session. |
 | `resume` | Inspect or accept a verified handoff |
 | `export` / `import` | Carry a bundle to another host |
 
