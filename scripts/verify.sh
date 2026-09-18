@@ -7,12 +7,39 @@ python3 scripts/build_storage.py
 # the exclusive lease `task:local-cargo-campaign` while their cargo runs;
 # this script takes it for the caller so a run never starts on top of
 # another's. It asks only the machine's own daemon: with AGENTDOCKER_HOME
-# set (a private or test daemon), on CI, or with no daemon answering, it
-# runs without the lease. AGENTDOCKER_CAMPAIGN_LEASE=off skips it too.
+# pointing elsewhere (a private or test daemon), on CI, or with no daemon
+# answering, it runs without the lease. AGENTDOCKER_CAMPAIGN_LEASE=off skips
+# it too, for a caller that already holds the lease through its own tools.
 # A lease the caller already holds is kept and never released here; a
 # lease somebody else holds past the wait stops the run before any cargo
 # process exists, and says whose it is.
+#
+# The lease needs an agent to hold it. A session's own identity is used
+# when the daemon knows it (AGENTDOCKER_AGENT_ID, or the process the CLI
+# can tell it is); otherwise this run registers itself as an agent for its
+# duration — `verify-<pid>`, external, ended when the run ends — so there
+# is never a run that holds nothing because nobody could be named. The
+# lease is renewed while the run lasts, since a cold gate outlives a TTL.
+#
+# The session variables a managed launch exports (identity, home, socket,
+# channel) are taken here and then dropped from the environment: the
+# suites run in the environment CI has, where none of them is set.
 campaign_lease=""
+campaign_agent="${AGENTDOCKER_AGENT_ID:-}"
+campaign_socket="${AGENTDOCKER_SOCKET:-}"
+campaign_transient=""
+campaign_renew_pid=""
+unset AGENTDOCKER_AGENT_ID AGENTDOCKER_AGENT_NAME AGENTDOCKER_SOCKET AGENTDOCKER_CLAUDE_CHANNEL_INPUT
+campaign_cli() {
+  if [ -n "$campaign_socket" ]; then
+    AGENTDOCKER_NO_AUTOSTART=1 agentdocker "$@" --socket "$campaign_socket"
+  else
+    AGENTDOCKER_NO_AUTOSTART=1 agentdocker "$@"
+  fi
+}
+campaign_holders() {
+  campaign_cli leases --resource task:local-cargo-campaign 2>/dev/null | tail -n +2 || true
+}
 campaign_start() {
   local mode="$1"
   [ "${AGENTDOCKER_CAMPAIGN_LEASE:-on}" = "off" ] && return 0
@@ -20,51 +47,93 @@ campaign_start() {
   # Python suite drives fixture campaigns through this file); a nested
   # run must not negotiate the slot against its own parent.
   export AGENTDOCKER_CAMPAIGN_LEASE=off
-  [ -n "${AGENTDOCKER_HOME:-}" ] && return 0
+  if [ -n "${AGENTDOCKER_HOME:-}" ] && [ "${AGENTDOCKER_HOME%/}" != "${HOME%/}/.agentdocker" ]; then
+    unset AGENTDOCKER_HOME
+    return 0
+  fi
+  unset AGENTDOCKER_HOME
   [ -n "${CI:-}" ] && return 0
   command -v agentdocker >/dev/null 2>&1 || return 0
-  AGENTDOCKER_NO_AUTOSTART=1 agentdocker ping >/dev/null 2>&1 || return 0
+  campaign_cli ping >/dev/null 2>&1 || return 0
+  local ttl=1800
+  case "$mode" in bench|coverage|fuzz) ttl=3600 ;; esac
   # The ids on the resource before asking: a claim by an agent that
   # already holds it renews that lease and answers with the same id, and
   # a lease that was the caller's before this run stays the caller's.
   local before
-  before="$(AGENTDOCKER_NO_AUTOSTART=1 agentdocker leases --resource task:local-cargo-campaign 2>/dev/null | tail -n +2 | awk '{print $1}' || true)"
-  local ttl=1800
-  case "$mode" in bench|coverage|fuzz) ttl=3600 ;; esac
-  local output
-  if output="$(AGENTDOCKER_NO_AUTOSTART=1 agentdocker claim task:local-cargo-campaign \
+  before="$(campaign_holders | awk '{print $1}')"
+  # `as` is `--as <agent>` when an identity is known, empty otherwise;
+  # the expansion below is the form macOS's bash 3.2 accepts under set -u.
+  local output as=()
+  [ -n "$campaign_agent" ] && as=(--as "$campaign_agent")
+  if ! output="$(campaign_cli claim task:local-cargo-campaign ${as[@]+"${as[@]}"} \
       --ttl "$ttl" --wait "${AGENTDOCKER_CAMPAIGN_WAIT:-600}" \
       --note "scripts/verify.sh $mode in $PWD" 2>&1)"; then
-    if grep -qx "$output" <<<"$before"; then
-      echo "verify.sh: task:local-cargo-campaign was already yours ($output); renewed, not released here" >&2
-      return 0
-    fi
-    campaign_lease="$output"
-    echo "verify.sh: holding task:local-cargo-campaign ($campaign_lease) for this $mode run" >&2
+    case "$output" in
+      *"give --as"*|*"specify the sender"*|*"--as <AGENT>"*|*"no agent matches"*)
+        # Nobody to claim as: this run becomes an agent of its own for as
+        # long as it lasts, and holds the lease itself.
+        if ! campaign_agent="$(campaign_cli register --name "verify-$$" --runtime custom \
+            --pid "$$" --workdir "$PWD" --label campaign=verify.sh 2>/dev/null)"; then
+          if [ -n "$before" ]; then
+            echo "verify.sh: cannot tell which agent this is, could not register as one, and task:local-cargo-campaign is held; not starting cargo on top of it (if that lease is yours, run with AGENTDOCKER_CAMPAIGN_LEASE=off)." >&2
+            campaign_holders >&2
+            exit 75
+          fi
+          echo "verify.sh: cannot tell which agent this is and could not register as one; nobody holds the campaign lease, running without it" >&2
+          return 0
+        fi
+        campaign_transient="$campaign_agent"
+        echo "verify.sh: registered as verify-$$ ($campaign_agent) for this run" >&2
+        as=(--as "$campaign_agent")
+        if ! output="$(campaign_cli claim task:local-cargo-campaign ${as[@]+"${as[@]}"} \
+            --ttl "$ttl" --wait "${AGENTDOCKER_CAMPAIGN_WAIT:-600}" \
+            --note "scripts/verify.sh $mode in $PWD" 2>&1)"; then
+          echo "verify.sh: task:local-cargo-campaign is held by another campaign; not starting cargo on top of it." >&2
+          echo "$output" >&2
+          campaign_holders >&2
+          exit 75
+        fi ;;
+      *)
+        echo "verify.sh: task:local-cargo-campaign is held by another campaign; not starting cargo on top of it." >&2
+        echo "$output" >&2
+        campaign_holders >&2
+        exit 75 ;;
+    esac
+  fi
+  if grep -qx "$output" <<<"$before"; then
+    echo "verify.sh: task:local-cargo-campaign was already yours ($output); renewed, not released here" >&2
     return 0
   fi
-  case "$output" in
-    *"give --as"*|*"specify the sender"*|*"--as <AGENT>"*)
-      # No identity to claim with. With nobody holding the lease that is
-      # only a missing courtesy; with a holder it may be somebody else's
-      # campaign, and not knowing is no licence to run on top of it.
-      if [ -n "$before" ]; then
-        echo "verify.sh: cannot tell which agent this is, and task:local-cargo-campaign is held; not starting cargo on top of it (if that lease is yours, run with AGENTDOCKER_CAMPAIGN_LEASE=off or AGENTDOCKER_AGENT_ID set)." >&2
-        AGENTDOCKER_NO_AUTOSTART=1 agentdocker leases --resource task:local-cargo-campaign >&2 || true
-        exit 75
-      fi
-      echo "verify.sh: cannot tell which agent this is (${output%%$'\n'*}); nobody holds the campaign lease, running without it" >&2
-      return 0 ;;
-  esac
-  echo "verify.sh: task:local-cargo-campaign is held by another campaign; not starting cargo on top of it." >&2
-  echo "$output" >&2
-  AGENTDOCKER_NO_AUTOSTART=1 agentdocker leases --resource task:local-cargo-campaign >&2 || true
-  exit 75
+  campaign_lease="$output"
+  echo "verify.sh: holding task:local-cargo-campaign ($campaign_lease) for this $mode run" >&2
+  # Renewed at a third of the TTL, so a long run never lets it lapse under
+  # a running cargo; the loop ends with the run or when a renewal fails.
+  # It holds none of this shell's descriptors and takes its sleep down
+  # with it, so nothing waits on it after the run.
+  (
+    trap 'kill "$nap" 2>/dev/null; exit 0' TERM
+    while :; do
+      sleep $((ttl / 3)) & nap=$!
+      wait "$nap" || exit 0
+      campaign_cli renew "$campaign_lease" ${as[@]+"${as[@]}"} --ttl "$ttl" >/dev/null 2>&1 || exit 0
+    done
+  ) >/dev/null 2>&1 </dev/null &
+  campaign_renew_pid=$!
 }
 campaign_end() {
-  [ -n "$campaign_lease" ] || return 0
-  AGENTDOCKER_NO_AUTOSTART=1 agentdocker release "$campaign_lease" \
-    --summary "scripts/verify.sh finished (exit $1)" >/dev/null 2>&1 || true
+  if [ -n "$campaign_renew_pid" ]; then
+    kill "$campaign_renew_pid" 2>/dev/null || true
+  fi
+  local as=()
+  [ -n "$campaign_agent" ] && as=(--as "$campaign_agent")
+  if [ -n "$campaign_lease" ]; then
+    campaign_cli release "$campaign_lease" ${as[@]+"${as[@]}"} \
+      --summary "scripts/verify.sh finished (exit $1)" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$campaign_transient" ]; then
+    campaign_cli deregister --as "$campaign_transient" >/dev/null 2>&1 || true
+  fi
 }
 trap 'campaign_end $?' EXIT
 campaign_start "${1:-check}"

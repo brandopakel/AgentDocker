@@ -531,10 +531,15 @@ Newest first. Only what changes how the product is used.
   holder's, so `git commit` there is journaled as that agent's rather than
   `external`. `claim`, `renew` and `release` act as this session without
   `--as`. `scripts/verify.sh` takes the machine's `task:local-cargo-campaign`
-  lease for its run, keeps one the caller already held, and stops instead of
-  starting on top of another campaign; the scripts it runs in turn inherit
-  that decision (`AGENTDOCKER_CAMPAIGN_LEASE=off`) rather than negotiating
-  the slot against their own parent.
+  lease for its run, keeps one the caller already held, renews it while the
+  run lasts, and stops instead of starting on top of another campaign; when
+  the daemon cannot tell which session is calling, the run registers itself
+  as an agent (`verify-<pid>`, ended with the run) and holds the lease as
+  that, so no run is ever unheld because nobody could be named; the scripts
+  it runs in turn inherit that decision (`AGENTDOCKER_CAMPAIGN_LEASE=off`)
+  rather than negotiating the slot against their own parent, and the
+  suites run without a managed session's identity, socket or home in the
+  environment.
 - The remote connector: `agentdocker connector serve --public-url <https://…>`
   serves an OAuth-protected MCP endpoint on loopback for a tunnel you run, so
   Claude's or ChatGPT's browser side panel can join a project as a browser
