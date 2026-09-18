@@ -97,6 +97,23 @@ It does not establish Claude idle wake, all-recipient project/global delivery,
 sustained latency or sleep/reboot recovery. The separate installed Enter test
 arrived during an active turn and is not counted as idle evidence.
 
+## September 18: actual Codex usage-limit recovery
+
+A real usage limit interrupted Codex at `2026-09-18T02:17:19.707659Z`.
+AgentDocker retained the `usage` observation for the same provider process
+started on September 12. After the user asked to resume, Codex checked the
+completed targeted-test result and saved work, then reported recovery naming
+that exact blocked observation. At `04:10:37.811285Z` AgentDocker recorded it
+cleared without changing the process generation.
+
+Claude's queued handoffs `3dc4ea52035641da`, `6239a92dc8334ec6` and
+`e487d2b32aca40f9`, plus fresh message `24c3936409bb4380`, then reached the
+active model context without a manual inbox read or acknowledgement. Correlated
+replies and scope are in the [existing installed record](verification/2026-09-12-integrated-desktop.json).
+This verifies one human-triggered recovery and queue release. A recovered status
+is not an input receipt or completed task; automatic reset detection, idle wake
+and equivalent recovery across other providers still require acceptance.
+
 ## Required behavior
 
 An agent-to-agent message must enter the same provider input workflow and queue
