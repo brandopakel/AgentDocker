@@ -270,7 +270,7 @@ async fn service(
         } else {
             if !availability::check(client, provider, ledger, &agent).await? {
                 refresh(client, ledger, &mut last_refresh).await?;
-                wait_for_hook(hooks, client, provider, ledger).await?;
+                wait_for_hook(hooks, client, provider, ledger, &origin).await?;
                 continue;
             }
             let (messages, uncertain, answers_routed) = queue(client, ledger, Vec::new()).await?;
@@ -327,7 +327,7 @@ async fn service(
         if healthy {
             refresh(client, ledger, &mut last_refresh).await?;
         }
-        wait_for_hook(hooks, client, provider, ledger).await?;
+        wait_for_hook(hooks, client, provider, ledger, &origin).await?;
     }
 }
 
@@ -336,11 +336,12 @@ async fn wait_for_hook(
     client: &Client,
     provider: &mut Provider,
     ledger: &mut Ledger,
+    origin: &super::mcp_answers::Origin,
 ) -> Result<()> {
     tokio::select! {
         stream = hooks.accept() => {
             match stream {
-                Ok(stream) => if let Err(error) = hooks::serve(stream, client, provider, ledger).await {
+                Ok(stream) => if let Err(error) = hooks::serve(stream, client, provider, ledger, origin).await {
                     eprintln!("Native hook delivery retained: {error:#}");
                 },
                 Err(error) => return Err(error.into()),
