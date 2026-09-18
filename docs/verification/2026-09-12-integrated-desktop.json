@@ -3962,7 +3962,272 @@
       "Private native workflow invokes rendered callbacks; no physical keyboard/IME or real-provider idle-wake claim.",
       "No production activation. Final combined CI and source review remain required before merge.",
       "Historical component trials and failures remain in their original sections. No new project document or verification record was created."
-    ]
+    ],
+    "notification_board_followup": {
+      "status": "local validation passed; final combined CI/review and activation pending",
+      "build": {
+        "format": 1,
+        "source_commit": "22e81bd21f84de3c99edcdc744a7413eabab2aff",
+        "source_tree": "acaf67b72ae024bcebb1269dec8906b402d769b9",
+        "source_input_sha256": "b65a4cfe8fdc9be37468a8742ee5651a33aa4a682026406a460189ad4ccaeee6",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 23,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-desktop-integration-20260917/target/release",
+        "binary_sha256": {
+          "agentdocker": "da58b3cbd3eff8d7f2442a1805917d2fd02856dab14c1743541f4dd3021447db",
+          "agentd": "45691d74746a2017065a74aec06242a6e5c1d1188f0987510894bdf28be41f4c",
+          "agentdocker-ui": "8adb5ccd3e31ca44c6c5ba6ce9abc629e4315eb28c946675a78501a9373d5ce0"
+        }
+      },
+      "changes": [
+        "Integrate merged Board layout189 and notification replies190 while retaining question/Board drafts, role routing and exact-recipient readiness.",
+        "Handoff retries return the saved bundle before resolving changed roles or recipient liveness.",
+        "Failed notification replies preserve full bounded Unicode/escaped text across workspace windows; uncertain outcomes remain uncertain and full recovery status is bounded.",
+        "Exclude unregistered Usage screen source from this desktop integration; retain it for the separate Usage feature."
+      ],
+      "standard_gate": {
+        "command": "bash scripts/verify.sh check",
+        "rust_tests": 1202,
+        "rust_skipped": 7,
+        "python_checks": 94,
+        "python_skipped": 1,
+        "format_clippy_doctests_docs_packaging_release": "passed",
+        "artifact": {
+          "path": "/private/tmp/agentdocker-191-notification-review-gate-fixed-20260918.log",
+          "sha256": "3d13584fe6dd3f6087ddb9387070b15f2267ea99ceab3fa2c419b443e41c335d"
+        }
+      },
+      "native_workflow": {
+        "result": "passed",
+        "total_rendered_steps": 507,
+        "windows": {
+          "restored-drafts": 28,
+          "readiness-received": 17,
+          "provider-limit": 14,
+          "readiness-activity": 26,
+          "readiness-ready": 17,
+          "workflows": 187,
+          "restored": 6,
+          "readiness-paused": 17,
+          "readiness-contact": 17,
+          "narrow-inbox": 124,
+          "constrained-panes": 54
+        },
+        "checks": [
+          "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+          "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+          "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+          "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+          "rendered_actions",
+          "answer_and_draft_navigation",
+          "native_vt_rendering",
+          "terminal_attach_detach",
+          "channels",
+          "setup_review_apply_undo",
+          "launch_and_confirmed_stop",
+          "focused_control_reveal",
+          "compact_zoom",
+          "current_history_separation",
+          "project_attention",
+          "compact_session_navigation",
+          "folder_pin_has_no_project_files",
+          "same_project_after_launch",
+          "last_project_restore",
+          "quiet_project_retained",
+          "saved_appearance",
+          "send_warns_about_named_unbound_recipient_and_expands_reconnect_guidance_without_resending",
+          "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+          "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+          "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+          "a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived",
+          "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+          "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+          "unfinished_board_card_reopens_in_its_project_without_filing_or_changing_any_card",
+          "normal_close_flushes_hidden_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them"
+        ],
+        "elapsed_seconds": 155.14017924998188,
+        "artifact": {
+          "path": "/private/tmp/agentdocker-191-final-workflow-20260918.log",
+          "sha256": "a1688547319dcf0225c385e8b8af83cab2c4feada8a56050c4d4ba3a0d0aceef"
+        },
+        "driver": {
+          "path": "scripts/iced_workflow_smoke.py",
+          "sha256": "1c20440b19d8f9371c0899a46656e55aea1c1127e31d2609e85767bed8c53063"
+        },
+        "idle_resources": {
+          "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+          "samples": [
+            {
+              "window": {
+                "rss_bytes": 193265664,
+                "ps_cpu_percent": 1.0
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 193265664,
+                "ps_cpu_percent": 0.0
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 193265664,
+                "ps_cpu_percent": 0.4
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.1
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 193150976,
+                "ps_cpu_percent": 3.0
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.1
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 193150976,
+                "ps_cpu_percent": 0.8
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 193150976,
+                "ps_cpu_percent": 4.9
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 193150976,
+                "ps_cpu_percent": 0.2
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 193216512,
+                "ps_cpu_percent": 4.7
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.2
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 193200128,
+                "ps_cpu_percent": 0.7
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 193200128,
+                "ps_cpu_percent": 3.8
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 193200128,
+                "ps_cpu_percent": 0.2
+              },
+              "daemon": {
+                "rss_bytes": 20758528,
+                "ps_cpu_percent": 0.0
+              }
+            },
+            {
+              "window": {
+                "rss_bytes": 193200128,
+                "ps_cpu_percent": 4.6
+              },
+              "daemon": {
+                "rss_bytes": 20774912,
+                "ps_cpu_percent": 0.2
+              }
+            }
+          ],
+          "summary": {
+            "window": {
+              "median_rss_bytes": 193200128.0,
+              "maximum_rss_bytes": 193265664,
+              "median_ps_cpu_percent": 0.9
+            },
+            "daemon": {
+              "median_rss_bytes": 20758528.0,
+              "maximum_rss_bytes": 20774912,
+              "median_ps_cpu_percent": 0.0
+            }
+          }
+        },
+        "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+        "cleanup": "completed without reported cleanup errors"
+      },
+      "retained_failures": [
+        {
+          "path": "/private/tmp/agentdocker-191-handoff-retry-targeted-20260918.log",
+          "sha256": "9aad0edfd5fc2f592b64ff3b1b488f6717ab7a7c02fe8cca3f700584e9a71081"
+        },
+        {
+          "path": "/private/tmp/agentdocker-191-notification-board-gate-20260918.log",
+          "sha256": "e08bc1a127291544ce318d6b784d11036ebd1647c97ac0d9e05237f86655bdc3"
+        },
+        {
+          "path": "/private/tmp/agentdocker-191-notification-board-gate-fixed-20260918.log",
+          "sha256": "e5e83084566901c9d202c09c4527aafed46d8405babf3169d663caf8d5367690"
+        },
+        {
+          "path": "/private/tmp/agentdocker-191-notification-review-gate-20260918.log",
+          "sha256": "3ac145b344bb83b006ef5263da75630f024085981dbe16a3ba0aca3acb7c70f1"
+        }
+      ],
+      "failure_disposition": "A deregistration fixture initially expected Ok instead of Agent. Integration fixtures initially omitted the optional readiness field, then used a Vec rather than Option; a new forwarding fixture initially passed a borrowed message ID. Corrected fixtures and regression tests pass on this exact clean runtime.",
+      "interrupted_gate": {
+        "artifact": {
+          "path": "/private/tmp/agentdocker-191-handoff-retry-gate-20260918.log",
+          "sha256": "07e9ae090984db137bbcc5dbbb2ac228957e2078fa5665fca11b642b5e567aa3"
+        },
+        "reason": "Intentionally interrupted owned gate to incorporate189/190; not counted as passing."
+      },
+      "physical_notification_reply": "not tested",
+      "installation": "not activated by this trial"
+    }
   },
   "codex_usage_limit_recovery_2026_09_18": {
     "status": "passed for this user-triggered recovery; automatic recovery and other providers remain unverified",
