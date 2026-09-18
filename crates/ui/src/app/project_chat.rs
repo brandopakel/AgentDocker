@@ -70,11 +70,13 @@ impl App {
     }
 
     fn project_chat_agents(&self, c: Colors) -> Element<'_, Message> {
+        let naming = self.naming();
         let agents: Vec<_> = self
             .agents
             .iter()
             .filter(|a| {
                 a.status.is_live()
+                    && !naming.folded(a)
                     && a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
                     && self.has_project(a.project.as_ref())
             })

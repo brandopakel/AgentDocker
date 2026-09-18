@@ -76,10 +76,33 @@ impl App {
         names
     }
 
-    /// The tool an agent is, without the branch: `Codex`, `Claude Code`.
+    /// The tool an agent is: `Codex`, `Claude Code`. From the record's
+    /// runtime, so a chosen name still says what runs under it.
     fn tool_of(&self, id: &str) -> String {
-        let name = self.name_of(id);
-        name.split(" · ").next().unwrap_or(&name).to_owned()
+        match self.naming().record(id) {
+            Some(agent) => super::runtime_label(&agent.spec.runtime),
+            None => self.name_of(id),
+        }
+    }
+
+    /// How many paths a collision room is about: the ones its title lists
+    /// and the `(+n more)` it ends with. None when the title is not a
+    /// path list.
+    fn contested_paths(summary: &ConversationSummary) -> Option<usize> {
+        let title = summary.title.trim();
+        if title.is_empty() {
+            return None;
+        }
+        let (listed, more) = match title.rsplit_once(" (+") {
+            Some((listed, rest)) => (
+                listed,
+                rest.strip_suffix(" more)")
+                    .and_then(|n| n.parse::<usize>().ok())?,
+            ),
+            None => (title, 0),
+        };
+        let listed = listed.split(", ").filter(|p| !p.trim().is_empty()).count();
+        (listed > 0).then_some(listed + more)
     }
 
     /// The other party of a direct conversation the person is in; none for
@@ -118,19 +141,29 @@ impl App {
                 }
             }
             ConversationKind::All => "#all".to_owned(),
-            // A room opened before names, or a collision room, is called
-            // by a short name made from its task or paths, never by the
-            // whole task; the header carries the rest.
-            ConversationKind::Channel | ConversationKind::Collision => match &summary.name {
+            // A room opened before names is called by a short name made
+            // from its task, never by the whole task; the header carries
+            // the rest.
+            ConversationKind::Channel => match &summary.name {
                 Some(name) if !name.is_empty() => format!("#{name}"),
                 _ => format!("#{}", Self::short_room_name(summary)),
             },
-            // A pair of agents reads as their tools: the branch each is on
-            // belongs under the header, not in the list.
+            // A collision room is about paths: say how many, never which,
+            // in a list. The header lists them.
+            ConversationKind::Collision => match &summary.name {
+                Some(name) if !name.is_empty() => format!("#{name}"),
+                _ => match Self::contested_paths(summary) {
+                    Some(n) => format!("Contested paths ({n})"),
+                    None => format!("#{}", Self::short_room_name(summary)),
+                },
+            },
+            // A pair of agents reads as the two names, so two pairs of the
+            // same tools are told apart; what each is on belongs under
+            // the header, not in the list.
             ConversationKind::Dm => match self.counterpart(summary) {
                 Some(id) => self.name_of(id),
                 None => match summary.conversation.dm_parties() {
-                    Some((a, b)) => format!("{} ↔ {}", self.tool_of(a), self.tool_of(b)),
+                    Some((a, b)) => format!("{} ↔ {}", self.name_of(a), self.name_of(b)),
                     None => summary.title.clone(),
                 },
             },
@@ -495,17 +528,19 @@ impl App {
                 || summary.title.to_lowercase().contains(&filter)
         };
         let mut channels: Vec<&ConversationSummary> = Vec::new();
-        let mut collisions: Vec<&ConversationSummary> = Vec::new();
+        // What AgentDocker itself writes — notices to an agent, the rooms
+        // it opens between two checkouts — is one folded group, never in
+        // among the person's conversations.
+        let mut system: Vec<&ConversationSummary> = Vec::new();
         let mut direct: Vec<&ConversationSummary> = Vec::new();
         let mut peers: Vec<&ConversationSummary> = Vec::new();
         let mut earlier: Vec<&ConversationSummary> = Vec::new();
-        let mut notices: Vec<&ConversationSummary> = Vec::new();
         for summary in self.conversations.iter().filter(|s| matches(s)) {
             match summary.kind {
                 ConversationKind::Everyone | ConversationKind::All | ConversationKind::Channel => {
                     channels.push(summary);
                 }
-                ConversationKind::Collision => collisions.push(summary),
+                ConversationKind::Collision | ConversationKind::Notices => system.push(summary),
                 // The person's own direct messages are the list; what two
                 // agents said to each other is a group of its own, folded.
                 ConversationKind::Dm => match self.counterpart(summary) {
@@ -513,9 +548,15 @@ impl App {
                     Some(_) => earlier.push(summary),
                     None => peers.push(summary),
                 },
-                ConversationKind::Notices => notices.push(summary),
             }
         }
+        let direct = self.fold_direct(direct);
+        system.sort_by_key(|s| {
+            (
+                matches!(s.kind, ConversationKind::Notices),
+                self.conversation_label(s).to_lowercase(),
+            )
+        });
         // The broadcast first, then named rooms by their names.
         channels.sort_by_key(|s| {
             (
@@ -645,21 +686,6 @@ impl App {
         for summary in channels {
             list = list.push(self.conversation_row(summary, None, c));
         }
-        if !collisions.is_empty() {
-            let open = self.shell.collisions_open;
-            list = list.push(Self::group_toggle(
-                "collisions-toggle",
-                format!("Collisions ({})", collisions.len()),
-                open,
-                Message::ToggleCollisions,
-                c,
-            ));
-            if open {
-                for summary in collisions {
-                    list = list.push(self.conversation_row(summary, None, c));
-                }
-            }
-        }
         list = list.push(
             container(eyebrow("Direct messages", c)).padding(iced::Padding {
                 top: 12.0,
@@ -674,8 +700,20 @@ impl App {
         for summary in direct {
             list = list.push(self.conversation_row(summary, Some(true), c));
         }
-        for summary in notices {
-            list = list.push(self.conversation_row(summary, None, c));
+        if !system.is_empty() {
+            let open = self.shell.collisions_open;
+            list = list.push(Self::group_toggle(
+                "collisions-toggle",
+                format!("From AgentDocker ({})", system.len()),
+                open,
+                Message::ToggleCollisions,
+                c,
+            ));
+            if open {
+                for summary in system {
+                    list = list.push(self.conversation_row(summary, None, c));
+                }
+            }
         }
         if !peers.is_empty() {
             let open = self.shell.peers_open;
@@ -1062,11 +1100,14 @@ impl App {
     /// is scoped to when it is: who a direct message can go to, who a
     /// channel can hold.
     fn agents_to_talk_to(&self) -> Vec<&AgentRecord> {
+        let naming = self.naming();
         let mut agents: Vec<&AgentRecord> = self
             .agents
             .iter()
             .filter(|a| a.status.is_live() && !self.is_human(a.id.as_str()))
             .filter(|a| self.has_project(a.project.as_ref()))
+            // One identity once: a former id is not another agent to talk to.
+            .filter(|a| !naming.folded(a))
             .collect();
         agents.sort_by_key(|a| self.name_of(a.id.as_str()).to_lowercase());
         agents
@@ -1321,8 +1362,15 @@ impl App {
                     plural(members, "member")
                 )
             }
+            // A live session's branch belongs here, under the name.
             ConversationKind::Dm => match self.counterpart(&summary) {
-                Some(id) if self.agent_live(id) => "direct message".to_owned(),
+                Some(id) if self.agent_live(id) => {
+                    let naming = self.naming();
+                    match naming.record(id).and_then(|a| naming.context(a)) {
+                        Some(context) => format!("direct message · {context}"),
+                        None => "direct message".to_owned(),
+                    }
+                }
                 Some(_) => "direct message · this session has ended".to_owned(),
                 None => match summary.conversation.dm_parties() {
                     Some((a, b)) => format!(
@@ -1585,6 +1633,49 @@ impl App {
         .into()
     }
 
+    /// One identity, one row: a conversation keyed by a former id of a
+    /// live agent is the same conversation as the one keyed by its id now;
+    /// the one written in last stands for both, and the rows stay newest
+    /// first.
+    fn fold_direct<'s>(
+        &self,
+        mut direct: Vec<&'s ConversationSummary>,
+    ) -> Vec<&'s ConversationSummary> {
+        let naming = self.naming();
+        direct.sort_by_key(|s| std::cmp::Reverse(s.last_at));
+        let mut seen: Vec<&str> = Vec::new();
+        direct.retain(|summary| {
+            let Some(id) = self.counterpart(summary) else {
+                return true;
+            };
+            let canonical = naming.canonical(id);
+            if seen.contains(&canonical) {
+                return false;
+            }
+            seen.push(canonical);
+            true
+        });
+        direct
+    }
+
+    /// The direct rows as the sidebar lists them, by conversation id; for
+    /// tests.
+    #[cfg(test)]
+    fn direct_rows(&self) -> Vec<&str> {
+        let direct: Vec<&ConversationSummary> = self
+            .conversations
+            .iter()
+            .filter(|s| {
+                s.kind == ConversationKind::Dm
+                    && self.counterpart(s).is_some_and(|id| self.agent_live(id))
+            })
+            .collect();
+        self.fold_direct(direct)
+            .into_iter()
+            .map(|s| s.conversation.as_str())
+            .collect()
+    }
+
     /// The conversations screen's own panel around the sidebar in a narrow
     /// window, so it reads as a list rather than loose rows.
     #[allow(dead_code)]
@@ -1816,6 +1907,115 @@ mod tests {
         assert_eq!(
             app.shell.conversation_drafts[conversation].text,
             "kept draft"
+        );
+    }
+
+    /// The list reads by stable names: a pair of agents as its two names,
+    /// a collision room as a count of paths, and a conversation keyed by a
+    /// former id of a live agent stands with the one keyed by its id now —
+    /// one identity, one row.
+    #[test]
+    fn rows_are_named_stably_and_one_identity_is_one_row() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
+        human.id = AgentId::from("human-id");
+        let mut first = record("codex-1", "codex", Some(1));
+        first.id = AgentId::from("agent-a");
+        let mut second = record("codex-2", "codex", Some(2));
+        second.id = AgentId::from("agent-b");
+        second.created_at = first.created_at + chrono::Duration::seconds(1);
+        let mut claude = record("claude-code-3", "claude-code", Some(3));
+        claude.id = AgentId::from("agent-c");
+        app.agents = vec![human, first, second, claude];
+        app.aliases =
+            std::collections::BTreeMap::from([("agent-a-old".to_owned(), "agent-a".to_owned())]);
+        let summary =
+            |conversation: &str, kind: &str, title: &str, at: i64| -> ConversationSummary {
+                serde_json::from_value(serde_json::json!({
+                    "conversation": conversation, "kind": kind, "title": title,
+                    "members": [], "unread": 0,
+                    "last_at": Utc::now() + chrono::Duration::seconds(at),
+                }))
+                .unwrap()
+            };
+        let pair = summary(
+            agentdocker_core::ConversationId::dm("agent-a", "agent-b").as_str(),
+            "dm",
+            "",
+            0,
+        );
+        assert_eq!(
+            app.conversation_label(&pair),
+            "Codex · agent-a ↔ Codex · agent-b"
+        );
+        let with_claude = summary(
+            agentdocker_core::ConversationId::dm("agent-c", "agent-b").as_str(),
+            "dm",
+            "",
+            0,
+        );
+        assert_eq!(
+            app.conversation_label(&with_claude),
+            "Codex · agent-b ↔ Claude Code"
+        );
+        let contested = summary(
+            "channel:ee3cbc67d8b7",
+            "collision",
+            ".coderabbit.yaml, .config/nextest.toml, .github/workflows/ci.yml (+300 more)",
+            0,
+        );
+        assert_eq!(app.conversation_label(&contested), "Contested paths (303)");
+        assert_eq!(
+            App::contested_paths(&summary("channel:x", "collision", "a.rs, b.rs", 0)),
+            Some(2)
+        );
+        assert_eq!(
+            App::contested_paths(&summary("channel:x", "collision", "", 0)),
+            None
+        );
+        let notice = summary("notices:agent-b", "notices", "", 0);
+        assert_eq!(
+            app.conversation_label(&notice),
+            "AgentDocker → Codex · agent-b"
+        );
+        assert_eq!(app.tool_of("agent-c"), "Claude Code");
+
+        // Two direct conversations with one identity: the newer stands.
+        let old_key = summary(
+            agentdocker_core::ConversationId::dm("human-id", "agent-a-old").as_str(),
+            "dm",
+            "",
+            -60,
+        );
+        let new_key = summary(
+            agentdocker_core::ConversationId::dm("human-id", "agent-a").as_str(),
+            "dm",
+            "",
+            0,
+        );
+        assert_eq!(app.conversation_label(&old_key), "Codex · agent-a");
+        assert_eq!(app.conversation_label(&new_key), "Codex · agent-a");
+        app.conversations = vec![
+            old_key.clone(),
+            new_key.clone(),
+            pair.clone(),
+            notice.clone(),
+        ];
+        let rows = app.direct_rows();
+        assert_eq!(rows, vec![new_key.conversation.as_str()]);
+        // Only the newest keyed row goes; a different agent keeps its own.
+        let other = summary(
+            agentdocker_core::ConversationId::dm("human-id", "agent-b").as_str(),
+            "dm",
+            "",
+            -5,
+        );
+        app.conversations.push(other.clone());
+        assert_eq!(
+            app.direct_rows(),
+            vec![new_key.conversation.as_str(), other.conversation.as_str()]
         );
     }
 
