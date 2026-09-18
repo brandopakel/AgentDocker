@@ -235,6 +235,17 @@ are merged, with installation pending in the current desktop batch,
 comment-only rules are not started, and the card-to-lease bridge to Paprika
 itself remains a proposal.
 
+Closed September 18. Every item the September 17 assessment said was worth
+taking is merged on main: the exit-code contract (#181), typed links (#182),
+webhooks (#183), roles (#186) and reply from the notification (#190, with
+per-recipient delivery readiness, #188), the last three through the combined
+#191. Token usage — the one item from before the research — has its collector
+and presentation in review (#194). What the assessment set aside stays set
+aside: herdr's focus/prompt bridge and blocked-state mirror, trace-file
+resume, Paprika's spec documents, mobile client and hosted rules, and the
+card-to-lease bridge until somebody runs both. The comparison tables above are
+the record of what each product had on September 11; they are not maintained.
+
 Assessed September 17, against the [product direction](PRODUCT-DIRECTION.md):
 what is still worth taking is small and agent-facing — an exit-code contract
 for the command line (agents drive the CLI; PR #181), typed links on a card,

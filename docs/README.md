@@ -57,11 +57,17 @@ sessions and all 128 retained receipts. Actual installed conversation-draft
 restoration passed without submitting the text. Remaining acceptance is not an
 open implementation claim.
 
+Later on September 18 the September landscape items landed — typed links #182,
+webhooks #183, the Board layout #189, and through the combined #191 roles #186,
+reply from the notification #190, delivery readiness #188 and question drafts
+#185 — and [Remaining work](REMAINING-WORK.md) gained the road to v1, the short
+list between main and a release other people can install.
+
 The September 18 reconciliation checked GitHub merge metadata and ancestry for
 older records that still said final review/CI or installation was pending. Their
 original trial fields remain intact; a dated disposition now supplies the index
 summary. PRs #181/#182 are also merged, with installation still pending. The
-current inventory remains 38 Markdown files and 67 verification records.
+current inventory is 39 Markdown files (the connector's document joined on September 18) and 67 verification records.
 
 **Reference** means the document describes an implemented workflow or engineering
 rule; it is not a release certificate. **Partial** means named implementation or

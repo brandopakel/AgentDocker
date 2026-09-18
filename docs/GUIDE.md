@@ -24,9 +24,14 @@ If you want the reasoning instead of the instructions, read
 curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/install.sh | sh
 ```
 
-That installs the released CLI and daemon under `~/.local/bin`. Older macOS
-release archives also include the desktop app; current packaging separates the
-CLI archive and desktop download. From a checkout:
+On a Mac that installs the desktop app — with the `agentdocker` command and
+the daemon inside it — through the app's own installer, so `agentdocker desktop
+update` and rollback work from the first install; on Linux, or with
+`AGENTDOCKER_INSTALL=cli`, it puts the two commands under `~/.local/bin`. A
+release that has no desktop archive yet (v0.1.0) falls back to the commands and
+says so. Until the app is signed with a Developer ID, macOS quarantines a
+downloaded copy: right-click it and choose **Open** once, or
+`xattr -dr com.apple.quarantine ~/Applications/AgentDocker.app`. From a checkout:
 
 ```sh
 cargo install --path crates/cli --locked   # agentdocker + agentd

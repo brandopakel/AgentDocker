@@ -4,8 +4,12 @@ Audited September 14, 2026 against merged `aaa1b61` (PR #119). This is the exist
 
 
 For current engineering, acceptance and manual release work, start with
-[Remaining work](REMAINING-WORK.md). The dated checkpoints below retain historical
-evidence; an old “pending” entry is not by itself a current implementation gap.
+[Remaining work](REMAINING-WORK.md) — its [road to v1](REMAINING-WORK.md#the-road-to-v1-a-release-other-people-can-install-and-try)
+is the short list between main and a release other people can install. The
+dated checkpoints below retain historical evidence; an old “pending” entry is
+not by itself a current implementation gap, and this plan is not extended
+further: September 18 closes it as the record of how the native product was
+delivered and verified.
 
 ## Product and engineering requirements
 
