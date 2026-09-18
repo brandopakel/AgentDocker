@@ -5018,6 +5018,319 @@
       "remaining_owned_processes": 0,
       "remaining_client_threads": 0,
       "disposition": "Failed; exact queue counts survived but the strict zero-gap assertion failed after restart. This is not a completed sustained-use acceptance run."
+    },
+    "retained_queue_pressure_followups": {
+      "agentdocker-usage-queue-diagnostic-20260918": {
+        "result": "failed",
+        "scope": "Twenty private collection/queue epochs on a shared machine with another Cargo campaign. Synthetic supported logs, no actual model input or billing; latency samples are descriptive, not a performance threshold.",
+        "runtime_source": "e6d95f882fb18aa49363f5411824468375b298d3",
+        "binary_sha256": {
+          "agentd": "d46b58ff7d0dbd0702b1ff8c9ae7c2affb55a70ad0ee1e59a245281caaf4f63b",
+          "agentdocker": "9c3ba4902236480edcd0a805afac7b88243fd3d4b1cbc8c6c545c8b1bd824701"
+        },
+        "driver_sha256": "d2bb38fb39f1e6c291b5cec0b787c56621c6e0e308f2e5ce83cc3c534e521c34",
+        "epochs": [
+          {
+            "epoch": 0,
+            "samples": 2000,
+            "generation": 2,
+            "retained_messages": 20,
+            "collection_seconds": 31.339926915999968
+          }
+        ],
+        "restarts": [
+          {
+            "after_epoch": 0,
+            "kind": "forced",
+            "seconds": 0.056435916980262846,
+            "queue_preserved": true
+          }
+        ],
+        "error": "AssertionError({'retained_since': '2026-08-19T06:00:00Z', 'history_truncated': False, 'future_until_clamped': False, 'includes_current_hour': True, 'source_gaps': 1, 'collection': {'enabled': True, 'state': 'caught_up', 'discovery_generation': 4, 'snapshot_at': '2026-09-18T06:51:47.235028Z', 'completed_at': '2026-09-18T06:51:47.623512Z', 'discovery_complete': True, 'pending_files': 0, 'pending_tail_files': 0, 'scope': {'roots': ['/private/tmp/ad-usage-soak-dmdyuarx/absent', '/private/tmp/ad-usage-soak-dmdyuarx/claude'], 'formats': ['codex-rollout-0.153.4-0.154.0-v1', 'claude-transcript-2.1.268-270-v1', 'claude-transcript-2.1.271-276-v1']}}})",
+        "gap_diagnostics": [
+          {
+            "reason": "usage source changed or prefix verification failed; replay deduplicates accepted sources",
+            "count": 1
+          }
+        ],
+        "failed_report": {
+          "type": "usage",
+          "rows": [
+            {
+              "key": "soak-model",
+              "samples": 4000,
+              "counters": {
+                "input_tokens": {
+                  "sum": 8000,
+                  "known_samples": 4000,
+                  "coverage": "partial"
+                },
+                "cache_read_input_tokens": {
+                  "sum": 0,
+                  "known_samples": 4000,
+                  "coverage": "partial"
+                },
+                "cache_write_input_tokens": {
+                  "sum": 0,
+                  "known_samples": 4000,
+                  "coverage": "partial"
+                },
+                "output_tokens": {
+                  "sum": 12000,
+                  "known_samples": 4000,
+                  "coverage": "partial"
+                },
+                "reasoning_output_tokens": {
+                  "sum": null,
+                  "known_samples": 0,
+                  "coverage": "unknown"
+                }
+              }
+            }
+          ],
+          "by": "model",
+          "as_of": "2026-09-18T06:51:47.670963Z",
+          "effective_since": "2026-09-17T06:00:00Z",
+          "effective_until": "2026-09-18T07:00:00Z",
+          "coverage": {
+            "retained_since": "2026-08-19T06:00:00Z",
+            "history_truncated": false,
+            "future_until_clamped": false,
+            "includes_current_hour": true,
+            "source_gaps": 1,
+            "collection": {
+              "enabled": true,
+              "state": "caught_up",
+              "discovery_generation": 4,
+              "snapshot_at": "2026-09-18T06:51:47.235028Z",
+              "completed_at": "2026-09-18T06:51:47.623512Z",
+              "discovery_complete": true,
+              "pending_files": 0,
+              "pending_tail_files": 0,
+              "scope": {
+                "roots": [
+                  "/private/tmp/ad-usage-soak-dmdyuarx/absent",
+                  "/private/tmp/ad-usage-soak-dmdyuarx/claude"
+                ],
+                "formats": [
+                  "codex-rollout-0.153.4-0.154.0-v1",
+                  "claude-transcript-2.1.268-270-v1",
+                  "claude-transcript-2.1.271-276-v1"
+                ]
+              }
+            }
+          },
+          "overhead": {
+            "injected_bytes": null,
+            "known_events": 0,
+            "coverage": "unknown",
+            "estimated_tokens": null
+          }
+        },
+        "elapsed_seconds": 62.97048520902172,
+        "ping_latency": {
+          "count": 1215,
+          "median_ms": 0.15129201347008348,
+          "p95_ms": 0.30633300775662065,
+          "maximum_ms": 22.60854101041332
+        },
+        "usage_latency": {
+          "count": 498,
+          "median_ms": 0.3579159965738654,
+          "p95_ms": 0.6739160162396729,
+          "maximum_ms": 15.570291026961058
+        },
+        "rpc_errors": [],
+        "resource_samples": [
+          {
+            "elapsed_seconds": 31.400355542020407,
+            "rss_bytes": 21954560,
+            "ps_cpu_percent": 7.6
+          }
+        ],
+        "remaining_owned_processes": 0,
+        "remaining_client_threads": 0
+      },
+      "agentdocker-usage-queue-bounded-20260918": {
+        "result": "interrupted_by_user_pause",
+        "scope": "Twenty private collection/queue epochs on a shared machine with another Cargo campaign. Synthetic supported logs, no actual model input or billing; latency samples are descriptive, not a performance threshold.",
+        "runtime_source": "e6d95f882fb18aa49363f5411824468375b298d3",
+        "binary_sha256": {
+          "agentd": "d46b58ff7d0dbd0702b1ff8c9ae7c2affb55a70ad0ee1e59a245281caaf4f63b",
+          "agentdocker": "9c3ba4902236480edcd0a805afac7b88243fd3d4b1cbc8c6c545c8b1bd824701"
+        },
+        "driver_sha256": "d4a89b156270f715e2c01e8d7c5604ef3ddb9029b4dcde32222526734273a654",
+        "epochs": [
+          {
+            "epoch": 0,
+            "samples": 2000,
+            "generation": 2,
+            "retained_messages": 20,
+            "source_gaps": 0,
+            "collection_seconds": 31.315289666003082
+          },
+          {
+            "epoch": 1,
+            "samples": 4000,
+            "generation": 3,
+            "retained_messages": 20,
+            "source_gaps": 0,
+            "collection_seconds": 31.281413249962498
+          },
+          {
+            "epoch": 2,
+            "samples": 6000,
+            "generation": 4,
+            "retained_messages": 20,
+            "source_gaps": 0,
+            "collection_seconds": 31.59618837502785
+          },
+          {
+            "epoch": 3,
+            "samples": 8000,
+            "generation": 5,
+            "retained_messages": 20,
+            "source_gaps": 0,
+            "collection_seconds": 32.317084416979924
+          },
+          {
+            "epoch": 4,
+            "samples": 10000,
+            "generation": 6,
+            "retained_messages": 20,
+            "source_gaps": 0,
+            "collection_seconds": 32.22180091700284
+          },
+          {
+            "epoch": 5,
+            "samples": 12000,
+            "generation": 8,
+            "retained_messages": 20,
+            "source_gaps": 1,
+            "collection_seconds": 33.132980499998666
+          },
+          {
+            "epoch": 6,
+            "samples": 14000,
+            "generation": 9,
+            "retained_messages": 20,
+            "source_gaps": 1,
+            "collection_seconds": 32.679381707974244
+          },
+          {
+            "epoch": 7,
+            "samples": 16000,
+            "generation": 10,
+            "retained_messages": 20,
+            "source_gaps": 1,
+            "collection_seconds": 33.965898959024344
+          },
+          {
+            "epoch": 8,
+            "samples": 18000,
+            "generation": 11,
+            "retained_messages": 20,
+            "source_gaps": 1,
+            "collection_seconds": 33.807400416000746
+          },
+          {
+            "epoch": 9,
+            "samples": 20000,
+            "generation": 12,
+            "retained_messages": 20,
+            "source_gaps": 1,
+            "collection_seconds": 33.99523695901735
+          }
+        ],
+        "restarts": [
+          {
+            "after_epoch": 4,
+            "kind": "forced",
+            "seconds": 0.055846375005785376,
+            "queue_preserved": true
+          },
+          {
+            "after_epoch": 9,
+            "kind": "graceful",
+            "seconds": 0.05981912498828024,
+            "queue_preserved": true
+          }
+        ],
+        "elapsed_seconds": 338.130204999994,
+        "ping_latency": {
+          "count": 6513,
+          "median_ms": 0.1784160267561674,
+          "p95_ms": 0.5778329796157777,
+          "maximum_ms": 34.78862502379343
+        },
+        "usage_latency": {
+          "count": 2662,
+          "median_ms": 0.3977919986937195,
+          "p95_ms": 1.3062909711152315,
+          "maximum_ms": 20.967125019524246
+        },
+        "rpc_errors": [],
+        "resource_samples": [
+          {
+            "elapsed_seconds": 31.37555620801868,
+            "rss_bytes": 22396928,
+            "ps_cpu_percent": 10.6
+          },
+          {
+            "elapsed_seconds": 62.65745641599642,
+            "rss_bytes": 22921216,
+            "ps_cpu_percent": 12.6
+          },
+          {
+            "elapsed_seconds": 94.25389020796865,
+            "rss_bytes": 23543808,
+            "ps_cpu_percent": 9.2
+          },
+          {
+            "elapsed_seconds": 126.57121933298185,
+            "rss_bytes": 23871488,
+            "ps_cpu_percent": 13.1
+          },
+          {
+            "elapsed_seconds": 158.7961437079939,
+            "rss_bytes": 24084480,
+            "ps_cpu_percent": 9.8
+          },
+          {
+            "elapsed_seconds": 191.98593629099196,
+            "rss_bytes": 22593536,
+            "ps_cpu_percent": 9.3
+          },
+          {
+            "elapsed_seconds": 224.66594641597476,
+            "rss_bytes": 22691840,
+            "ps_cpu_percent": 13.4
+          },
+          {
+            "elapsed_seconds": 258.6323061659932,
+            "rss_bytes": 23429120,
+            "ps_cpu_percent": 9.2
+          },
+          {
+            "elapsed_seconds": 292.44005083298543,
+            "rss_bytes": 23478272,
+            "ps_cpu_percent": 16.2
+          },
+          {
+            "elapsed_seconds": 326.43555212498177,
+            "rss_bytes": 23511040,
+            "ps_cpu_percent": 10.9
+          }
+        ],
+        "remaining_owned_processes": 0,
+        "remaining_client_threads": 0,
+        "pause_message_id": "a1213051025745f8",
+        "limits": [
+          "This twenty-epoch trial was stopped for laptop sleep before completion; partial epochs do not establish sustained-use acceptance.",
+          "Deliberate restart/append overlap retains explicit source-change coverage gaps; initial zero-gap fixture failure and diagnostic are preserved."
+        ]
+      },
+      "disposition": "The diagnostic repeated the conservative restart-gap report; the next bounded run retained exact counts and queue through ten epochs and two restarts but ended on the user pause. Neither is a passing sustained-use acceptance run."
     }
   },
   "browser_extension_inventory_2026_09_17": {
