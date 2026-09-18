@@ -74,7 +74,9 @@ are covered by regressions. The short idle sample measured median app CPU 0.9%
 and RSS 193.2 MB; it is not sustained-use or battery acceptance. The existing
 [integrated record](verification/2026-09-12-integrated-desktop.json) retains all
 failed fixtures and exact build/log hashes. Final CI/review, actual notification
-Reply and production activation remain pending.
+Reply and production activation remain pending. The prepared local-preview package
+`240eb0e7` passed all thirteen private installation/repair/rollback/pin/cleanup
+scenarios; the second generation in that trial used synthetic package metadata.
 
 ## Engineering and acceptance still open
 

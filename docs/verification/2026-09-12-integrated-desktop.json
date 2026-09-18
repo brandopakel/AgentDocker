@@ -4226,7 +4226,39 @@
         "reason": "Intentionally interrupted owned gate to incorporate189/190; not counted as passing."
       },
       "physical_notification_reply": "not tested",
-      "installation": "not activated by this trial"
+      "installation": "not activated by this trial",
+      "packaging_and_private_install_trial": {
+        "source_commit": "22e81bd21f84de3c99edcdc744a7413eabab2aff",
+        "candidate_id": "240eb0e78ac9aa2aa729fc94d69bbfbdd3342939489b10e9978911ac368abb99",
+        "schema": 23,
+        "signing": "local-preview",
+        "notarized": false,
+        "installation_trial_passed": true,
+        "scenarios": [
+          "preview without writes and pinned initial installation",
+          "same-release repair replaces the old wrapper and preserves activation",
+          "legacy bundle hooks and MCP work through generation 240eb0e78ac9aa2aa729fc94d69bbfbdd3342939489b10e9978911ac368abb99",
+          "activation keeps the existing fixture daemon responsive",
+          "legacy bundle hooks and MCP work through generation 8413387f98a0b73e5d9504fc1a6d9220b7d3a4cc2991594915642eb327c55ea5",
+          "changed preview payload and active generation are refused",
+          "compatible rollback switches all commands and retains both releases",
+          "legacy bundle hooks and MCP work through generation 240eb0e78ac9aa2aa729fc94d69bbfbdd3342939489b10e9978911ac368abb99",
+          "tampered executable is refused without changing activation",
+          "cleanup retains active, rollback and running or legacy binaries",
+          "uninstall preserves the live daemon and its state",
+          "daemon exit releases its pin and invalidates stale cleanup preview",
+          "unused payloads removed; permanent pins and daemon state retained"
+        ],
+        "manifest": {
+          "path": "/private/tmp/agentdocker-191-package-20260918/manifest.json",
+          "sha256": "5a102d259eb93d4068c776cf98eff33434b6c80c51ee193a8c7e3ea81c97bab6"
+        },
+        "trial": {
+          "path": "/private/tmp/agentdocker-191-install-trial-20260918/result.json",
+          "sha256": "9797e4b09a2a4b0e732d0b7aa17f27a196b8fddc206e83dab5ed413d60ba83c4"
+        },
+        "scope": "Disposable prefix and fixture daemon only. No production activation. Synthetic second generation uses the same binaries with different metadata."
+      }
     }
   },
   "codex_usage_limit_recovery_2026_09_18": {
