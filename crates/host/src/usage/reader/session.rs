@@ -7,117 +7,6 @@ pub struct Preparation {
     pub bytes_read: u64,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    fn row(id: usize) -> String {
-        serde_json::json!({"type":"assistant","version":"2.1.270","sessionId":"large-session",
-            "timestamp":"2026-09-18T01:00:00Z","message":{"id":format!("response-{id}"),
-                "model":"fixture","content":[{"text":"private".repeat(800)}],
-                "usage":{"input_tokens":2,"output_tokens":3}}})
-        .to_string()
-            + "\n"
-    }
-
-    fn prepare(session: &mut Session, path: &Path) -> Result<usize, Error> {
-        let mut passes = 0;
-        loop {
-            let progress = session.prepare_next(path, 1024 * 1024, Duration::from_millis(100))?;
-            assert!(progress.bytes_read <= 1024 * 1024);
-            passes += 1;
-            if progress.ready {
-                return Ok(passes);
-            }
-        }
-    }
-
-    #[test]
-    fn large_prefixes_resume_and_append_without_replaying_accepted_records() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("large.jsonl");
-        let mut file = File::create(&path).unwrap();
-        for id in 0..4000 {
-            file.write_all(row(id).as_bytes()).unwrap();
-        }
-        drop(file);
-        assert!(std::fs::metadata(&path).unwrap().len() > MAX_BATCH);
-        let mut session = Session::open(&path, Runtime::Claude, None).unwrap();
-        prepare(&mut session, &path).unwrap();
-        let mut samples = Vec::new();
-        let last = loop {
-            let batch = session.scan(&path, Budget::default()).unwrap();
-            assert!(batch.bytes_read <= Budget::default().bytes);
-            assert!(batch.validation_bytes_read <= MAX_BATCH);
-            assert!(batch.gaps.is_empty());
-            session.validate(&path, &batch.cursor).unwrap();
-            samples.extend(batch.samples.iter().map(|s| s.source_id.clone()));
-            if batch.stop == Stop::Complete {
-                break batch.cursor;
-            }
-        };
-        assert_eq!(samples.len(), 4000);
-        assert_eq!(
-            samples
-                .iter()
-                .collect::<std::collections::HashSet<_>>()
-                .len(),
-            4000
-        );
-        assert!(
-            matches!(last.validate(&path), Err(Error::ValidationIncomplete)),
-            "standalone validation remains explicitly bounded"
-        );
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        file.write_all(row(4000).as_bytes()).unwrap();
-        drop(file);
-        // A restart/append rebuilds the prefix proof in bounded passes.
-        let persisted: Cursor =
-            serde_json::from_slice(&serde_json::to_vec(&last).unwrap()).unwrap();
-        let mut resumed = Session::open(&path, Runtime::Claude, Some(&persisted)).unwrap();
-        assert!(matches!(
-            resumed.scan(&path, Budget::default()),
-            Err(Error::ValidationIncomplete)
-        ));
-        assert!(prepare(&mut resumed, &path).unwrap() > 16);
-        let batch = resumed.scan(&path, Budget::default()).unwrap();
-        assert_eq!(batch.stop, Stop::Complete);
-        assert_eq!(batch.samples.len(), 1);
-        assert!(!samples.contains(&batch.samples[0].source_id));
-        assert!(
-            !serde_json::to_string(&batch.cursor)
-                .unwrap()
-                .contains("private")
-        );
-
-        // A rewrite with unchanged length is found by the prefix hash. A
-        // truncated file cannot reuse even a previously verified prefix.
-        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        file.write_all(b" ").unwrap();
-        drop(file);
-        let mut changed = Session::open(&path, Runtime::Claude, Some(&batch.cursor)).unwrap();
-        assert!(matches!(prepare(&mut changed, &path), Err(Error::Changed)));
-        assert!(matches!(
-            session.validate(&path, &last),
-            Err(Error::Changed)
-        ));
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_len(5)
-            .unwrap();
-        assert!(matches!(
-            Session::open(&path, Runtime::Claude, Some(&last)),
-            Err(Error::Changed)
-        ));
-    }
-}
-
 pub struct Session {
     cursor: Cursor,
     checked: u64,
@@ -247,5 +136,116 @@ impl Session {
             return Err(Error::Changed);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn row(id: usize) -> String {
+        serde_json::json!({"type":"assistant","version":"2.1.270","sessionId":"large-session",
+            "timestamp":"2026-09-18T01:00:00Z","message":{"id":format!("response-{id}"),
+                "model":"fixture","content":[{"text":"private".repeat(800)}],
+                "usage":{"input_tokens":2,"output_tokens":3}}})
+        .to_string()
+            + "\n"
+    }
+
+    fn prepare(session: &mut Session, path: &Path) -> Result<usize, Error> {
+        let mut passes = 0;
+        loop {
+            let progress = session.prepare_next(path, 1024 * 1024, Duration::from_millis(100))?;
+            assert!(progress.bytes_read <= 1024 * 1024);
+            passes += 1;
+            if progress.ready {
+                return Ok(passes);
+            }
+        }
+    }
+
+    #[test]
+    fn large_prefixes_resume_and_append_without_replaying_accepted_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.jsonl");
+        let mut file = File::create(&path).unwrap();
+        for id in 0..4000 {
+            file.write_all(row(id).as_bytes()).unwrap();
+        }
+        drop(file);
+        assert!(std::fs::metadata(&path).unwrap().len() > MAX_BATCH);
+        let mut session = Session::open(&path, Runtime::Claude, None).unwrap();
+        prepare(&mut session, &path).unwrap();
+        let mut samples = Vec::new();
+        let last = loop {
+            let batch = session.scan(&path, Budget::default()).unwrap();
+            assert!(batch.bytes_read <= Budget::default().bytes);
+            assert!(batch.validation_bytes_read <= MAX_BATCH);
+            assert!(batch.gaps.is_empty());
+            session.validate(&path, &batch.cursor).unwrap();
+            samples.extend(batch.samples.iter().map(|s| s.source_id.clone()));
+            if batch.stop == Stop::Complete {
+                break batch.cursor;
+            }
+        };
+        assert_eq!(samples.len(), 4000);
+        assert_eq!(
+            samples
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            4000
+        );
+        assert!(
+            matches!(last.validate(&path), Err(Error::ValidationIncomplete)),
+            "standalone validation remains explicitly bounded"
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(row(4000).as_bytes()).unwrap();
+        drop(file);
+        // A restart/append rebuilds the prefix proof in bounded passes.
+        let persisted: Cursor =
+            serde_json::from_slice(&serde_json::to_vec(&last).unwrap()).unwrap();
+        let mut resumed = Session::open(&path, Runtime::Claude, Some(&persisted)).unwrap();
+        assert!(matches!(
+            resumed.scan(&path, Budget::default()),
+            Err(Error::ValidationIncomplete)
+        ));
+        assert!(prepare(&mut resumed, &path).unwrap() > 16);
+        let batch = resumed.scan(&path, Budget::default()).unwrap();
+        assert_eq!(batch.stop, Stop::Complete);
+        assert_eq!(batch.samples.len(), 1);
+        assert!(!samples.contains(&batch.samples[0].source_id));
+        assert!(
+            !serde_json::to_string(&batch.cursor)
+                .unwrap()
+                .contains("private")
+        );
+
+        // A rewrite with unchanged length is found by the prefix hash. A
+        // truncated file cannot reuse even a previously verified prefix.
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.write_all(b" ").unwrap();
+        drop(file);
+        let mut changed = Session::open(&path, Runtime::Claude, Some(&batch.cursor)).unwrap();
+        assert!(matches!(prepare(&mut changed, &path), Err(Error::Changed)));
+        assert!(matches!(
+            session.validate(&path, &last),
+            Err(Error::Changed)
+        ));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(5)
+            .unwrap();
+        assert!(matches!(
+            Session::open(&path, Runtime::Claude, Some(&last)),
+            Err(Error::Changed)
+        ));
     }
 }
