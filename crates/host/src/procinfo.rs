@@ -218,12 +218,57 @@ pub fn runtime_of(argv: &[String]) -> Option<&'static str> {
     }
 }
 
+/// A process of a known runtime that is not a session: the daemon it
+/// keeps, a background task, an API sidecar, the bridge a browser
+/// extension launches. [`runtime_of`] says no to these; this says what
+/// they are, so an attempt to adopt one is refused with the reason
+/// instead of registered as a `custom` agent nobody will hear from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Helper {
+    pub runtime: &'static str,
+    /// What the process is, for the person: "Claude Code's bridge for
+    /// the browser extension".
+    pub role: &'static str,
+}
+
+/// The helper a command line is, when it belongs to a known runtime but
+/// is not a session of it.
+pub fn helper_of(argv: &[String]) -> Option<Helper> {
+    let (runtime, arguments) = match executable(argv)?.as_ref() {
+        "claude" => ("claude-code", &argv[1..]),
+        "codex" => ("codex", &argv[1..]),
+        exe if interpreter(exe) => {
+            let script = argv.get(1)?;
+            #[cfg(windows)]
+            let script = script.replace('\\', "/");
+            if script.contains("@anthropic-ai/claude-code") {
+                ("claude-code", &argv[2..])
+            } else if script.contains("@openai/codex") {
+                ("codex", &argv[2..])
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    let role = match runtime {
+        "claude-code" => claude_helper(arguments),
+        _ => codex_helper(arguments),
+    }?;
+    Some(Helper { runtime, role })
+}
+
 /// Known service entry points use the same executable as actual sessions.
 /// Only inspect the first mode argument; a prompt can mention these strings.
 /// `codex app-server` is the API sidecar a receiver or a reviewer speaks
 /// to, not a session anybody could connect or message.
+fn codex_helper(arguments: &[String]) -> Option<&'static str> {
+    (arguments.first().map(String::as_str) == Some("app-server"))
+        .then_some("Codex's app-server sidecar")
+}
+
 fn codex_runtime(arguments: &[String]) -> Option<&'static str> {
-    (arguments.first().map(String::as_str) != Some("app-server")).then_some("codex")
+    codex_helper(arguments).is_none().then_some("codex")
 }
 
 /// Whether the process is Codex's own binary in any role, sidecar
@@ -238,11 +283,37 @@ pub fn is_codex_binary(argv: &[String]) -> bool {
     }
 }
 
+/// `--chrome-native-host` is what the browser launches through native
+/// messaging so the extension can reach Claude Code: the bridge for a
+/// terminal session that drives the browser, not a session and not the
+/// agent working in the browser's side panel, which has no process here.
+///
+/// Claude Code also runs a session in two processes: a `bg-spare` that
+/// holds the model — it registers itself through its own hooks and MCP
+/// server once a terminal takes it, so discovery has nothing to add and
+/// `adopt` nothing to make of it — and the `attach` (later retitled
+/// `agents`) terminal in front of it, which is that session's screen,
+/// not a second session; adopting it would make one session two agents.
+fn claude_helper(arguments: &[String]) -> Option<&'static str> {
+    let mode = arguments.first()?;
+    if mode.starts_with("bg-") {
+        Some(
+            "a Claude Code background session process, which registers itself through its own adapters",
+        )
+    } else {
+        match mode.as_str() {
+            "daemon" => Some("Claude Code's background daemon"),
+            "--chrome-native-host" => Some("Claude Code's bridge for the browser extension"),
+            "attach" | "agents" => {
+                Some("the terminal attached to a background Claude Code session, not the session")
+            }
+            _ => None,
+        }
+    }
+}
+
 fn claude_runtime(arguments: &[String]) -> Option<&'static str> {
-    (!arguments.first().is_some_and(|mode| {
-        mode.starts_with("bg-") || matches!(mode.as_str(), "daemon" | "--chrome-native-host")
-    }))
-    .then_some("claude-code")
+    claude_helper(arguments).is_none().then_some("claude-code")
 }
 
 /// What a Claude Code command line asks for by way of an earlier session:
@@ -560,17 +631,64 @@ mod tests {
             "node /x/@anthropic-ai/claude-code/cli.js --chrome-native-host",
             "node /x/@anthropic-ai/claude-code/cli.js daemon run",
             "node /x/@anthropic-ai/claude-code/cli.js bg-spare",
+            "claude bg-spare --bg-spare /tmp/cc-daemon-501/x/spare/y.claim.sock",
+            "claude attach ef93b626",
+            "/Users/p/.local/bin/claude agents",
         ] {
             assert_eq!(runtime_of(&argv(command)), None, "{command}");
+            let helper = helper_of(&argv(command)).unwrap_or_else(|| panic!("{command}"));
+            assert_eq!(helper.runtime, "claude-code", "{command}");
         }
+        assert_eq!(
+            helper_of(&argv("claude --chrome-native-host")).map(|h| h.role),
+            Some("Claude Code's bridge for the browser extension")
+        );
+        assert!(
+            helper_of(&argv("claude attach ef93b626"))
+                .map(|h| h.role)
+                .is_some_and(|role| role.contains("terminal attached"))
+        );
         for command in [
             "claude --chrome",
             "claude -- --chrome-native-host",
             "claude --resume session",
             "node /x/@anthropic-ai/claude-code/cli.js --chrome",
             "node /x/@anthropic-ai/claude-code/cli.js -- --chrome-native-host",
+            "claude -p attach the file",
+            "claude -- agents",
         ] {
             assert_eq!(runtime_of(&argv(command)), Some("claude-code"), "{command}");
+            assert_eq!(helper_of(&argv(command)), None, "{command}");
+        }
+    }
+
+    /// A helper is a known runtime's process; a program of its own is not
+    /// one, however it is called.
+    #[test]
+    fn helpers_belong_to_known_runtimes_only() {
+        let argv = |command: &str| {
+            command
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let codex = helper_of(&argv("codex app-server --stdio")).unwrap();
+        assert_eq!(
+            (codex.runtime, codex.role),
+            ("codex", "Codex's app-server sidecar")
+        );
+        assert_eq!(
+            helper_of(&argv("node /x/@openai/codex/bin/codex.js app-server")).map(|h| h.runtime),
+            Some("codex")
+        );
+        assert_eq!(runtime_of(&argv("codex app-server --stdio")), None);
+        for command in [
+            "codex resume 01a0",
+            "sleep --chrome-native-host",
+            "chrome-native-host",
+            "node /x/other/cli.js --chrome-native-host",
+        ] {
+            assert_eq!(helper_of(&argv(command)), None, "{command}");
         }
     }
 

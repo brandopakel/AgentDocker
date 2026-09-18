@@ -28,6 +28,28 @@ Inbox. The first three items are shown; **Show more** expands the same list and
 **Connect** for discovered processes and **Set up** for installed tools. Tools
 also keeps the full setup controls.
 
+A vendor's browser extension (Claude, ChatGPT) has its own Tools row, marked
+**Installed in Chrome · its sessions reach here only through the connector,
+which is not running**, or **… · the connector is ready; add it in Claude and
+its sessions appear here** while `agentdocker connector` serves on this
+machine, or, once a browser agent has joined, **… · one browser agent
+connected through the connector** — with the browser, profile and version of
+each copy under **Details**, the bridge the browser launches for a
+command-line tool when one is registered, and the connector's state: its MCP
+URL, the pairing code the consent page asks for (which also asks which project
+the agent joins) and where in the vendor's settings to add it, or, when none
+serves, the `connector install` command that starts one for every project on
+this machine. The row offers no **Set up**: what the extension is doing runs
+in the browser and on the vendor's side, and only the connector's consent
+makes a session of it. The bridge is that tool's helper; **Connect** never
+offers it and adopting it by pid is refused with what it is.
+
+The Claude Code row offers **Wake terminal sessions** while the shell's startup
+file lacks the channel flag: it previews `agentdocker setup --shell`, one
+reviewable change (a `claude` function that adds the flag) applied with
+**Connect** and taken back with **Undo**, and **Details** says what terminal
+launches do today.
+
 The sidebar remembers projects found through agents and folders you add yourself.
 **Add project…** lets you browse or enter an existing folder. It pins the project
 without starting an agent, changing integrations or creating files. Later sessions
@@ -236,8 +258,11 @@ composer, after anything already drafted there, and the status line says why —
 daemon refused it, **Reply may not have been sent** when the connection went
 before an answer, in which case read the history before sending again.
 When the draft cannot take the words (draft storage is full) they wait beside
-the composer with **Copy** and **Dismiss**; the window keeps up to eight such
-replies and says so when a further one cannot be kept. A notification from
+the composer with **Copy** and **Dismiss**; when the conversation itself cannot
+be opened (its message, project or channel is gone) they wait at the top of the
+Messages list instead, with the same two controls, whatever is on view; the
+window keeps up to eight such replies and says so when a further one cannot be
+kept. A notification from
 another workspace's daemon hands the words to that workspace's window when
 it is running; otherwise the notification carries what fits and says the app
 could not keep them. A reply to a question goes to whoever asked it, wherever

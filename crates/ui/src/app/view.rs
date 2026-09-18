@@ -3327,6 +3327,18 @@ impl App {
                 )
             } else if !installed {
                 (c.faint, "Not installed".to_owned())
+            } else if runtime.in_browser() {
+                // No session of it appears unless one came in through the
+                // connector: say which here, where the person comes to ask
+                // why their browser agent is or is not listed.
+                (
+                    if sessions.is_empty() {
+                        c.faint
+                    } else {
+                        c.green
+                    },
+                    super::in_browser_word(runtime, sessions.len(), self.connector.as_ref()),
+                )
             } else if !supported {
                 (c.faint, "Installed · integration unavailable".to_owned())
             } else if unverified {
@@ -3367,6 +3379,25 @@ impl App {
                     ])),
                 ));
             }
+            // A `claude` typed in a terminal only sees messages at its next
+            // prompt unless the shell adds the channel flag; one reviewed
+            // change does that, and this is where the person looks for it.
+            let terminal_wake = runtime.name == "claude-code"
+                && installed
+                && matches!(
+                    runtime.shell,
+                    agentdocker_core::runtime::Wiring::Missing
+                        | agentdocker_core::runtime::Wiring::Unverified
+                );
+            if terminal_wake {
+                actions = actions.push(action(
+                    "setup-shell",
+                    "Wake terminal sessions",
+                    (!self.setup_busy)
+                        .then_some(Message::Setup(vec!["--shell".into(), "--preview".into()])),
+                    false,
+                ));
+            }
             actions = actions.push(action(
                 format!("connection-details-{}", runtime.name),
                 if expanded { "Hide details" } else { "Details" },
@@ -3401,8 +3432,69 @@ impl App {
                     kv("Live activity (hooks)", wiring(runtime.hooks), c),
                 ]
                 .spacing(6);
+                if runtime.name == "claude-code" {
+                    facts = facts.push(kv(
+                        "Terminal launches",
+                        match runtime.shell {
+                            agentdocker_core::runtime::Wiring::Wired => {
+                                "wake on messages (shell startup file carries the channel flag)"
+                            }
+                            agentdocker_core::runtime::Wiring::Missing => {
+                                "see messages at their next prompt; Wake terminal sessions adds the channel flag to every `claude`"
+                            }
+                            agentdocker_core::runtime::Wiring::Unverified => {
+                                "an older agentdocker block is in the shell startup file; Wake terminal sessions replaces it"
+                            }
+                            agentdocker_core::runtime::Wiring::Unsupported => {
+                                "your shell is not one setup knows (zsh, bash, fish); start claude with --dangerously-load-development-channels server:agentdocker yourself"
+                            }
+                        },
+                        c,
+                    ));
+                }
                 for app in &runtime.apps {
                     facts = facts.push(kv("Application", app.label.clone(), c));
+                }
+                for extension in &runtime.extensions {
+                    facts = facts.push(kv("Browser", super::extension_words(extension), c));
+                    if let Some(bridge) = &extension.bridge {
+                        facts = facts.push(kv("Bridge", bridge.display().to_string(), c));
+                    }
+                }
+                if runtime.in_browser() && installed {
+                    facts = facts.push(note(agentdocker_core::runtime::IN_BROWSER, c));
+                    // The connector is what brings a browser agent here:
+                    // its address and pairing code are what the person
+                    // needs at the vendor's settings and on the consent
+                    // page, and this card is where they look for them.
+                    match &self.connector {
+                        Some(serving) => {
+                            facts = facts.push(kv("Connector", serving.mcp_url(), c));
+                            facts = facts.push(kv(
+                                "Pairing code",
+                                format!(
+                                    "{} · typed on the consent page, which also asks which project the agent joins",
+                                    serving.pairing_code
+                                ),
+                                c,
+                            ));
+                            facts = facts.push(kv(
+                                "Add it",
+                                super::add_connector_words(&runtime.name),
+                                c,
+                            ));
+                        }
+                        None => {
+                            facts = facts.push(kv(
+                                "Connector",
+                                "not running · `agentdocker connector install --tunnel tailscale` (or `--tunnel cloudflared`) serves one for every project on this machine",
+                                c,
+                            ));
+                        }
+                    }
+                }
+                for why in &runtime.incomplete {
+                    facts = facts.push(note(format!("Inventory incomplete: {why}"), c));
                 }
                 if installed && supported && !missing && !unverified && !reporting {
                     facts = facts.push(note(
@@ -3613,7 +3705,14 @@ impl App {
             .map(|change| value(change, "runtime"))
             .and_then(|name| self.runtimes.iter().find(|r| r.name == name))
             .map(|r| r.label.clone());
+        let shell_plan = changes
+            .into_iter()
+            .flatten()
+            .any(|change| value(change, "channel") == "shell");
         let title_text = match (&tool, phase.as_str()) {
+            (Some(_), "applied") if shell_plan => "Terminal launches will wake".to_owned(),
+            (Some(_), "undone") if shell_plan => "Shell change undone".to_owned(),
+            (Some(_), _) if shell_plan => "Wake terminal sessions".to_owned(),
             (Some(tool), "applied") => format!("{tool} setup saved"),
             (Some(tool), "undone") => format!("{tool} setup undone"),
             (Some(tool), _) => format!("Connect {tool}"),
@@ -3640,6 +3739,7 @@ impl App {
             let what = match value(change, "channel").as_str() {
                 "mcp" => "Tools (MCP)".to_owned(),
                 "activity hooks" | "hooks" => "Live activity (hooks)".to_owned(),
+                "shell" => "Terminal launches wake (shell startup file)".to_owned(),
                 other => other.to_owned(),
             };
             body = body.push(

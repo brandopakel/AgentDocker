@@ -54,6 +54,7 @@ pub(super) async fn add_worktree(
     root: PathBuf,
     path: &Path,
     branch: &str,
+    from: Option<&str>,
 ) -> Result<(), Box<Response>> {
     if path.exists() || path.starts_with(&root) {
         return Err(Box::new(failure(
@@ -73,6 +74,14 @@ pub(super) async fn add_worktree(
         Ok(output) if output.success && !branch.starts_with('-') => {}
         _ => return Err(Box::new(failure("invalid branch name"))),
     }
+    // The start point is a ref, never an option: `--` ends the flags.
+    let start = match from {
+        Some(from) if from.starts_with('-') || from.trim().is_empty() => {
+            return Err(Box::new(failure("invalid start point")));
+        }
+        Some(from) => from.to_owned(),
+        None => "HEAD".to_owned(),
+    };
     match git(
         root,
         vec![
@@ -82,7 +91,7 @@ pub(super) async fn add_worktree(
             branch.to_owned(),
             "--".into(),
             path.to_string_lossy().into_owned(),
-            "HEAD".into(),
+            start,
         ],
     )
     .await
@@ -191,11 +200,16 @@ pub(super) async fn cleanup_unstarted(record: &AgentRecord) -> (bool, bool, Opti
 }
 
 impl Daemon {
+    /// A linked checkout on a new branch, from this session's HEAD or
+    /// from `from` (a branch, tag or commit of the same repository). The
+    /// daemon remembers who asked, so commits made there with git alone
+    /// are still that agent's in the journal.
     pub(super) async fn worktree_create(
         &self,
         reference: &str,
         path: String,
         branch: String,
+        from: Option<String>,
     ) -> Response {
         let (agent, root, _) = match self.reader_checkout(reference) {
             Ok(v) => v,
@@ -205,10 +219,12 @@ impl Daemon {
             Ok(p) => p,
             Err(e) => return failure(e),
         };
-        if let Err(response) = add_worktree(root, &path, &branch).await {
+        if let Err(response) = add_worktree(root, &path, &branch, from.as_deref()).await {
             return *response;
         }
-        lock(&self.state).emit(EventKind::WorktreeCreated {
+        let mut state = lock(&self.state);
+        state.worktree_creators.insert(path.clone(), agent.clone());
+        state.emit(EventKind::WorktreeCreated {
             agent,
             path: path.clone(),
         });
@@ -573,6 +589,7 @@ impl Daemon {
                 600,
                 Some(format!("integrating verified source {head}")),
                 0,
+                false,
             )
             .await
         {
@@ -689,7 +706,8 @@ mod tests {
                 .worktree_create(
                     "target",
                     branch.to_string_lossy().into_owned(),
-                    "feature".into()
+                    "feature".into(),
+                    None,
                 )
                 .await,
             Response::Worktree { .. }

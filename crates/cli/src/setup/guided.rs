@@ -360,8 +360,64 @@ fn deregister(step: &Delegated) -> Result<()> {
     Ok(())
 }
 
+/// What `--shell` asks for: every terminal `claude` carrying the channel
+/// flag, through a marked block in the shell's startup file.
+fn prepare_shell(plan: &mut Plan, roots: &Roots) -> Result<()> {
+    let Some(shell) = runtimes::shell::shell(roots) else {
+        plan.notes.push(format!(
+            "shell: {} is not a shell setup knows (zsh, bash, fish); to wake terminal sessions, make `claude` run `claude {}` yourself",
+            roots.shell.as_deref().unwrap_or("$SHELL is unset"),
+            runtimes::shell::CLAUDE_CHANNEL_FLAG
+        ));
+        return Ok(());
+    };
+    match runtimes::shell::wiring(roots) {
+        Wiring::Wired => {
+            plan.notes.push(format!(
+                "shell: {} already starts every `claude` with the channel flag; open a new terminal for it to apply",
+                shell.rc.display()
+            ));
+            return Ok(());
+        }
+        Wiring::Unverified => plan.notes.push(format!(
+            "shell: {} holds an older agentdocker block; this plan replaces it",
+            shell.rc.display()
+        )),
+        Wiring::Missing | Wiring::Unsupported => {}
+    }
+    let before = read_config(&shell.rc)?;
+    let after = runtimes::shell::with_block(before.as_deref(), shell.name);
+    let target = project::try_canonical(&shell.rc)?;
+    plan.changes.push(Change {
+        runtime: "claude-code".into(),
+        channel: "shell".into(),
+        path: shell.rc,
+        target,
+        before,
+        after,
+    });
+    plan.notes.push(
+        "shell: a `claude` function that runs the real claude with the channel flag; takes effect in new terminals, and `agentdocker setup --undo` takes it back"
+            .into(),
+    );
+    Ok(())
+}
+
 /// Plan edits from injectable provider roots, without changing their files.
-fn prepare(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
+fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> Result<Plan> {
+    if shell {
+        let mut plan = Plan {
+            format: 1,
+            id: uuid::Uuid::new_v4().to_string(),
+            phase: "prepared".into(),
+            executable: executable.to_owned(),
+            changes: Vec::new(),
+            delegated: Vec::new(),
+            notes: Vec::new(),
+        };
+        prepare_shell(&mut plan, roots)?;
+        return Ok(plan);
+    }
     let inventory = selected_inventory(roots, names)?;
     let targets: Vec<&RuntimeInfo> = if names.is_empty() {
         inventory
@@ -767,6 +823,7 @@ pub async fn run(
     names: &[String],
     action: Action<'_>,
     json_output: bool,
+    shell: bool,
 ) -> Result<()> {
     let apply_id = if let Action::Apply(id) = action {
         Some(id)
@@ -835,7 +892,7 @@ pub async fn run(
         let mut plan = if let Some(id) = apply_id.or(undo_id) {
             load(&directory, id)?
         } else {
-            prepare(&roots, names, &crate::desktop::setup_executable()?)?
+            prepare(&roots, names, &crate::desktop::setup_executable()?, shell)?
         };
         if apply_id.is_some() || undo_id.is_some() {
             if let Err(error) = apply(&directory, &mut plan, undo_id.is_some()) {
@@ -864,6 +921,67 @@ pub async fn run(
 mod tests {
     use super::*;
 
+    /// `--shell` is one reviewable change to the shell's startup file:
+    /// previewed with the person's other lines untouched, applied with
+    /// their mode kept, and undone to the byte. A shell setup does not
+    /// know is a note, not a guess.
+    #[test]
+    fn the_shell_block_is_planned_applied_and_undone_like_any_other_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut roots = roots(tmp.path());
+        roots.shell = Some("/bin/zsh".into());
+        let rc = tmp.path().join(".zshrc");
+        std::fs::write(&rc, "export EDITOR=vi\n").unwrap();
+        std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let executable = tmp.path().join("bin/agentdocker");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut plan = prepare(&roots, &[], &executable, true).unwrap();
+        assert_eq!(plan.changes.len(), 1);
+        assert_eq!(plan.changes[0].channel, "shell");
+        assert_eq!(plan.changes[0].path, rc);
+        assert!(
+            plan.changes[0]
+                .after
+                .starts_with("export EDITOR=vi\n\n# >>> agentdocker >>>")
+        );
+        assert!(plan.delegated.is_empty(), "no provider tool is involved");
+        let view = plan.view();
+        assert!(
+            !view.to_string().contains("export EDITOR"),
+            "snapshots stay private"
+        );
+
+        let directory = directory(&tmp.path().join("state")).unwrap();
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        assert_eq!(runtimes::shell::wiring(&roots), Wiring::Wired);
+        assert_eq!(
+            std::fs::metadata(&rc).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "the startup file keeps its mode"
+        );
+        let again = prepare(&roots, &[], &executable, true).unwrap();
+        assert!(again.changes.is_empty());
+        assert!(
+            again
+                .notes
+                .iter()
+                .any(|n| n.contains("already starts every `claude`"))
+        );
+
+        apply(&directory, &mut plan, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&rc).unwrap(), "export EDITOR=vi\n");
+        assert_eq!(runtimes::shell::wiring(&roots), Wiring::Missing);
+
+        roots.shell = Some("/bin/tcsh".into());
+        let unknown = prepare(&roots, &[], &executable, true).unwrap();
+        assert!(unknown.changes.is_empty());
+        assert!(unknown.notes[0].contains("not a shell setup knows"));
+    }
+
     fn roots(path: &Path) -> Roots {
         Roots {
             home: path.to_owned(),
@@ -873,6 +991,8 @@ mod tests {
             app_dirs: vec![],
             install_dirs: vec![],
             desktop_dirs: vec![],
+            browser_dirs: vec![],
+            shell: None,
             versions: false,
         }
     }
@@ -917,7 +1037,7 @@ path.write_text(json.dumps(value))
             let (roots, _) = fake_claude(tmp.path());
             writing_claude(tmp.path());
             let executable = tmp.path().join("bin/agentdocker");
-            let mut plan = prepare(&roots, &["claude-code".into()], &executable).unwrap();
+            let mut plan = prepare(&roots, &["claude-code".into()], &executable, false).unwrap();
             let directory = directory(&tmp.path().join("separate-agentdocker-state")).unwrap();
             save(&directory, &plan).unwrap();
             if undo {
@@ -988,6 +1108,7 @@ path.write_text(json.dumps(value))
             &roots,
             &["claude-code".into()],
             &temp.path().join("bin/agentdocker"),
+            false,
         )
         .unwrap();
 
@@ -1058,6 +1179,7 @@ path.write_text(json.dumps(value))
             &roots,
             &["claude-code".into()],
             &temp.path().join("bin/agentdocker"),
+            false,
         )
         .unwrap();
         assert!(plan.delegated.is_empty(), "already wired; nothing to add");
@@ -1129,7 +1251,7 @@ path.write_text(json.dumps(value))
         let exe = temp.path().join("bin/agentdocker");
 
         // The ordinary case: we make it, so we may take it back.
-        let mut ours = prepare(&roots, &["claude-code".into()], &exe).unwrap();
+        let mut ours = prepare(&roots, &["claude-code".into()], &exe, false).unwrap();
         save(&directory, &ours).unwrap();
         std::fs::write(
             temp.path().join(".claude.json"),
@@ -1150,7 +1272,7 @@ path.write_text(json.dumps(value))
 
         // The case that used to lose somebody's work: the registration
         // appears between the preview and the apply.
-        let mut theirs = prepare(&roots, &["claude-code".into()], &exe).unwrap();
+        let mut theirs = prepare(&roots, &["claude-code".into()], &exe, false).unwrap();
         assert_eq!(theirs.delegated.len(), 1);
         run_step(&theirs.delegated[0], &theirs.delegated[0].add).unwrap();
         assert!(registers_us(&theirs.delegated[0]).unwrap());
@@ -1183,7 +1305,7 @@ path.write_text(json.dumps(value))
         let directory = directory(&temp.path().join("state")).unwrap();
         let exe = temp.path().join("bin/agentdocker");
 
-        let mut plan = prepare(&roots, &["claude-code".into()], &exe).unwrap();
+        let mut plan = prepare(&roots, &["claude-code".into()], &exe, false).unwrap();
         save(&directory, &plan).unwrap();
         apply(&directory, &mut plan, false).unwrap();
         // Read back from disk rather than from the plan in hand: the
@@ -1213,6 +1335,7 @@ path.write_text(json.dumps(value))
                 &roots,
                 &["claude-code".into()],
                 &temp.path().join("bin/agentdocker"),
+                false,
             )
             .unwrap();
             save(&directory, &plan).unwrap();
@@ -1257,6 +1380,7 @@ path.write_text(json.dumps(value))
                     &roots,
                     &["claude-code".into()],
                     &temp.path().join("bin/agentdocker"),
+                    false,
                 )
                 .unwrap();
                 save(&directory, &plan).unwrap();
@@ -1287,6 +1411,7 @@ path.write_text(json.dumps(value))
             &roots,
             &["claude-code".into()],
             &temp.path().join("bin/agentdocker"),
+            false,
         )
         .unwrap();
         plan.phase = "applying".into();
@@ -1314,6 +1439,7 @@ path.write_text(json.dumps(value))
             &roots,
             &["claude-code".into()],
             &temp.path().join("bin/agentdocker"),
+            false,
         )
         .unwrap();
         save(&directory, &plan).unwrap();
@@ -1344,6 +1470,7 @@ path.write_text(json.dumps(value))
                 &roots,
                 &["claude-code".into()],
                 &temp.path().join("bin/agentdocker"),
+                false,
             )
             .unwrap();
             let step = &plan.delegated[0];
@@ -1379,6 +1506,7 @@ path.write_text(json.dumps(value))
             &roots,
             &["claude-code".into()],
             &temp.path().join("bin/agentdocker"),
+            false,
         )
         .unwrap();
         assert!(
@@ -1428,7 +1556,13 @@ path.write_text(json.dumps(value))
         std::fs::write(applications.join("code.desktop"), "invalid launcher").unwrap();
         roots.desktop_dirs.push(applications);
         assert!(selected_inventory(&roots, &[]).is_err());
-        let plan = prepare(&roots, &["codex".into()], &std::env::current_exe().unwrap()).unwrap();
+        let plan = prepare(
+            &roots,
+            &["codex".into()],
+            &std::env::current_exe().unwrap(),
+            false,
+        )
+        .unwrap();
         assert_eq!(plan.changes.len(), 3);
         assert_eq!(plan.changes[0].runtime, "codex");
         assert!(selected_inventory(&roots, &["unknown-provider".into()]).is_err());
@@ -1442,6 +1576,7 @@ path.write_text(json.dumps(value))
                 .map(|name| (*name).to_owned())
                 .collect::<Vec<_>>(),
             &std::env::current_exe().unwrap(),
+            false,
         )
         .unwrap()
     }
@@ -1471,7 +1606,7 @@ path.write_text(json.dumps(value))
         // recognized by their actual `agentdocker` executable name.
         let executable = tmp.path().join("agentdocker");
         std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &executable).unwrap();
-        let mut plan = prepare(&roots, &["codex".into()], &executable).unwrap();
+        let mut plan = prepare(&roots, &["codex".into()], &executable, false).unwrap();
         assert_eq!(plan.changes.len(), 3);
         assert!(
             plan.changes
@@ -1487,7 +1622,7 @@ path.write_text(json.dumps(value))
                 .contains("my-check")
         );
         assert!(
-            prepare(&roots, &["codex".into()], &executable)
+            prepare(&roots, &["codex".into()], &executable, false)
                 .unwrap()
                 .changes
                 .is_empty()
@@ -1507,7 +1642,7 @@ path.write_text(json.dumps(value))
         let executable = tmp.path().join("agentdocker");
         std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &executable).unwrap();
         let names = vec!["codex".into(), "claude-code".into(), "gemini-cli".into()];
-        let mut plan = prepare(&roots, &names, &executable).unwrap();
+        let mut plan = prepare(&roots, &names, &executable, false).unwrap();
         let skills: Vec<_> = plan
             .changes
             .iter()
@@ -1532,7 +1667,7 @@ path.write_text(json.dumps(value))
             );
         }
         assert!(
-            prepare(&roots, &names, &executable)
+            prepare(&roots, &names, &executable, false)
                 .unwrap()
                 .changes
                 .is_empty()
@@ -1544,7 +1679,7 @@ path.write_text(json.dumps(value))
         std::fs::write(&skills[0], &edited).unwrap();
         assert!(apply(&directory, &mut plan, true).is_err());
         assert_eq!(std::fs::read_to_string(&skills[0]).unwrap(), edited);
-        let fresh = prepare(&roots, &names, &executable).unwrap();
+        let fresh = prepare(&roots, &names, &executable, false).unwrap();
         assert!(
             fresh.changes.is_empty(),
             "a fresh plan also preserves the edit"
@@ -1577,7 +1712,7 @@ path.write_text(json.dumps(value))
             Sha256::digest(body.as_bytes())
         );
         std::fs::write(&path, &old).unwrap();
-        let mut plan = prepare(&roots, &["codex".into()], &executable).unwrap();
+        let mut plan = prepare(&roots, &["codex".into()], &executable, false).unwrap();
         let directory = directory(&tmp.path().join("state")).unwrap();
         apply(&directory, &mut plan, false).unwrap();
         assert_eq!(
@@ -1587,7 +1722,7 @@ path.write_text(json.dumps(value))
         apply(&directory, &mut plan, true).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
         std::fs::write(&path, "My independent skill\n").unwrap();
-        let fresh = prepare(&roots, &["codex".into()], &executable).unwrap();
+        let fresh = prepare(&roots, &["codex".into()], &executable, false).unwrap();
         assert!(!fresh.changes.iter().any(|change| change.path == path));
     }
 

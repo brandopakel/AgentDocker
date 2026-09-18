@@ -10,8 +10,10 @@ use agentdocker_core::runtime::{McpWiring, RUNTIMES, RuntimeInfo, RuntimeSpec, W
 
 use crate::command;
 
+pub mod browser;
 mod desktop;
 pub mod health;
+pub mod shell;
 
 /// Where to look: injectable so tests can build a machine in a temp dir.
 #[derive(Clone, Debug)]
@@ -29,6 +31,11 @@ pub struct Roots {
     pub desktop_dirs: Vec<PathBuf>,
     /// Where macOS app bundles live; injectable on other hosts for tests.
     pub app_dirs: Vec<PathBuf>,
+    /// Each browser's user-data directory, where its profiles keep their
+    /// extensions; injectable for tests.
+    pub browser_dirs: Vec<browser::BrowserDir>,
+    /// The person's login shell (`$SHELL`), for the terminal-launch check.
+    pub shell: Option<String>,
     /// Ask each CLI for its version; off in tests that only lay out files.
     pub versions: bool,
 }
@@ -65,6 +72,14 @@ impl Roots {
             } else {
                 Vec::new()
             },
+            browser_dirs: browser::browser_dirs(
+                &home,
+                std::env::consts::OS,
+                std::env::var_os("LOCALAPPDATA")
+                    .map(PathBuf::from)
+                    .as_deref(),
+            ),
+            shell: shell::login_shell(),
             home,
             path,
             app_dirs,
@@ -111,6 +126,10 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Resu
         .filter(|_| roots.versions)
         .and_then(|cli| version_of(cli, &roots.home));
     let apps = desktop::apps(spec, roots)?;
+    let browser::Inventory {
+        found: extensions,
+        incomplete,
+    } = browser::extensions(spec, roots)?;
     let config_dir = if spec.name == "codex" {
         roots.codex_home.clone()
     } else if spec.name == "claude-code" {
@@ -127,8 +146,15 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Resu
         cli,
         version,
         apps,
+        extensions,
+        incomplete,
         config_dir,
         mcp: mcp_wiring(spec, roots, marker),
+        shell: if spec.name == "claude-code" {
+            shell::wiring(roots)
+        } else {
+            Wiring::Unsupported
+        },
         hooks: hooks_wiring_file(spec, &hook_config_path(spec, roots), marker),
         hooks_missing: hooks_missing_file(spec, &hook_config_path(spec, roots), marker),
         running: 0,
@@ -698,6 +724,8 @@ mod tests {
             install_dirs: vec![],
             desktop_dirs: vec![],
             app_dirs: vec![apps],
+            browser_dirs: vec![],
+            shell: None,
             versions: false,
         };
         (tmp, roots)

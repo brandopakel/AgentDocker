@@ -59,6 +59,33 @@ and in the app — but it cannot tell the daemon what it is holding or
 reading, so it reports nothing it is doing. See
 [Why an agent reads "idle"](#why-an-agent-reads-idle).
 
+An agent that works **inside the browser** — Claude's or ChatGPT's extension
+in its side panel, whichever vendor's — is a different case. `runtimes` finds
+the extension in each Chrome, Brave, Edge, Arc, Chromium or Vivaldi profile
+(`Claude in Chrome 1.0.93`) and says under the table that its sessions run in
+the browser and on the vendor's side: nothing on this machine speaks for them,
+so AgentDocker cannot list, message or lease for them, and no setup changes
+that. What *is* on this machine is at most a bridge the browser launches for a
+command-line tool (`claude --chrome-native-host`, for a terminal Claude Code
+that drives the browser). That bridge is the tool's helper, not a session:
+`discover` never lists it and `adopt <pid>` refuses it by name, because
+registered it would sit in a project called `chrome` looking like your browser
+agent, connected — and it is neither.
+
+When the browser agent has something a terminal agent should know, the way in
+is the one the vendors give hosted agents: a remote MCP connector.
+`agentdocker connector serve --tunnel tailscale` serves one on loopback — one
+per machine, for every project on it — exposes it through Tailscale Funnel on
+this machine's own stable `*.ts.net` name (`--tunnel cloudflared` for a quick
+tunnel instead), prints the URL to add as a custom connector in Claude or
+ChatGPT and a pairing code for the consent page, and each consent becomes a
+browser agent in the project chosen on that page (any folder on this machine)
+with the messaging tools and nothing that touches a checkout. `connector
+install` runs the same as a login service; `connector status` and the
+desktop's Tools screen show its address and pairing code; `--allow-from
+anthropic` and `--allow-from @<openai feed>` admit only the vendors' own
+addresses. [The remote connector](REMOTE-CONNECTOR.md) has the whole contract.
+
 Everything respects `AGENTDOCKER_HOME`, so a throwaway daemon for
 experiments costs nothing:
 
@@ -112,6 +139,16 @@ Recent coordination can establish working; an explicit provider stop produces
 provisional idle that expires or is superseded by newer activity. Process
 presence, provider configuration and observed activity are separate facts.
 See [Activity and messaging](ACTIVITY-AND-MESSAGING.md).
+
+A Claude Code session you start in a terminal sees messages only at its next
+prompt, unless it was started with the channel flag
+(`--dangerously-load-development-channels server:agentdocker`); during the
+channels research preview no setting replaces the flag. `agentdocker setup
+--shell` adds a `claude` function to your shell's startup file (zsh, bash or
+fish) that passes the flag on every launch — planned, previewed and undoable
+like every other setup change — and the Claude Code card in Tools offers it as
+**Wake terminal sessions**. `runtimes` says when it is missing. The app's own
+launches already carry the flag.
 
 ### Inbox and tools
 
@@ -243,6 +280,7 @@ each one by pid.
 | `restart <agent>` | Replace a managed container after confirming it exited |
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |
 | `role <name>` | Give an agent (`--as`) a role — `reviewer`, `implementer` — so `send --to role:reviewer` and `handoff role:reviewer` reach it; `--clear` takes it away |
+| `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml` |
 | `heartbeat` | Report that an agent is alive |
 
@@ -301,7 +339,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `worktree-create` | A new linked checkout and branch, without touching existing files |
+| `worktree-create --branch <name> [--from <ref>]` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours |
 | `worktree-diff` | Tracked changes in an agent's checkout |
 | `commit` | Commit the agent's checkout, journaled and attributed to it |
 | `validate` | Run a check and retain its command, log and content fingerprints |
@@ -336,7 +374,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those |
+| `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches |
@@ -347,6 +385,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
+| `connector serve` / `status` / `install` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
 
 ---
 
@@ -388,7 +427,11 @@ For Claude Code, `agentdocker setup claude-code` installs handlers for
 and `SessionEnd`. They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, and
-anything it read that has gone stale.
+anything it read that has gone stale. `PreToolUse` takes a lease on the
+file about to be edited and `Stop` gives those edit leases back when the
+turn ends; a lease the session claimed itself — a worktree, a branch, the
+build campaign — is not touched until the session releases it, its TTL runs
+out, or the session ends.
 
 ---
 
@@ -505,6 +548,53 @@ Newest first. Only what changes how the product is used.
 - Reply from the notification: on macOS a message notification has a
   **Reply** field, and what is typed there reaches the conversation — an
   answer to a question closes it — without opening the window.
+- A turn's end no longer takes an agent's deliberate leases away: the
+  Claude Code `Stop` hook releases only the per-file edit leases it took
+  itself (`automatic`), so a worktree, branch or build-campaign lease
+  claimed through `claim` or the MCP tools holds until released or expired.
+  `SessionEnd` still gives everything back.
+- Commits in a private checkout are attributed: a worktree made with
+  `agentdocker worktree-create` (now with `--from <ref>`) is remembered as its
+  maker's, and a checkout held under an exclusive `path:` lease is its
+  holder's, so `git commit` there is journaled as that agent's rather than
+  `external`. `claim`, `renew` and `release` act as this session without
+  `--as`. `scripts/verify.sh` takes the machine's `task:local-cargo-campaign`
+  lease for its run, keeps one the caller already held, and stops instead of
+  starting on top of another campaign; the scripts it runs in turn inherit
+  that decision (`AGENTDOCKER_CAMPAIGN_LEASE=off`) rather than negotiating
+  the slot against their own parent.
+- The remote connector: `agentdocker connector serve --public-url <https://…>`
+  serves an OAuth-protected MCP endpoint on loopback for a tunnel you run, so
+  Claude's or ChatGPT's browser side panel can join a project as a browser
+  agent — registered when its code is redeemed, after the pairing code from
+  the terminal is typed on the consent page — with the messaging tools only.
+  `connector grants` lists consents, `connector revoke <agent>` ends one.
+  `--tunnel tailscale` exposes it through Tailscale Funnel on this machine's
+  own stable name and `--tunnel cloudflared` starts a quick tunnel;
+  `connector install` runs it as a login service, `connector status` shows
+  its address and pairing code, and `--allow-from` admits only the vendors'
+  published addresses. One connector serves every project on the machine:
+  the consent page chooses the project a browser agent joins, and its
+  `project` broadcast names that project, wherever the connector runs. A
+  vendor may identify itself by its Client ID Metadata Document instead of
+  registering (fetched only from the vendors' hosts); the desktop's Tools
+  screen shows whether the connector is serving, its URL and pairing code.
+- Every MCP tool carries annotations (read-only, destructive, idempotent,
+  open-world), so a host that asks before risky calls lets the reads through.
+- `claude attach` (later shown as `claude agents`) is the terminal in front of
+  a background Claude Code session, whose `bg-spare` process registers itself:
+  neither is discovered or adoptable as a second agent.
+- `agentdocker setup --shell` makes every terminal `claude` carry the channel
+  flag so AgentDocker can wake it; the Claude Code card in Tools offers it as
+  **Wake terminal sessions**, and the MCP server now reads the flag from its
+  parent `claude`, so `AGENTDOCKER_CLAUDE_CHANNEL_INPUT` is no longer required
+  from a terminal.
+- Agents that work inside a browser are inventoried: `runtimes` lists each
+  vendor's extension per browser profile (`claude-browser`, `chatgpt-browser`)
+  and says that its sessions run in the browser and cannot be listed or
+  messaged; a runtime's helper such as `claude --chrome-native-host` is never
+  discovered and cannot be adopted; `rm` on a live external record says
+  `deregister`.
 - The Board's five columns share the width, and an open card's title,
   acceptance text and moves sit beneath them where there is room to read
   them (under the card when the window is narrow). A clicked control no

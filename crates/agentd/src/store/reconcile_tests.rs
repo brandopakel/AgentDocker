@@ -634,6 +634,7 @@ fn repair_moves_typed_protection_and_membership_and_refuses_self_review() {
         change_seq: Some(8),
         note: Some("retired".into()),
         amount: 0,
+        automatic: false,
     };
     store.upsert_lease(&lease).unwrap();
     let plan = preview(&store, &a, &b);
@@ -940,6 +941,7 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
             expires_at: now() + Duration::hours(1),
             note: None,
             amount: 0,
+            automatic: false,
         })
         .unwrap();
     let error = store.plan_resume(&canonical, &retired).unwrap_err();
@@ -1150,6 +1152,7 @@ fn resumed_cards_keep_their_work_without_inventing_a_hold() {
         change_seq: None,
         note: None,
         amount: 0,
+        automatic: false,
     };
     store.upsert_lease(&lease).unwrap();
     let retired = vec![fresh.id.clone(), earlier.id.clone()];
