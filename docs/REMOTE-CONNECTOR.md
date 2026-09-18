@@ -7,7 +7,7 @@ tunnel to the production daemon, each vendor registered its client by DCR, the
 person consented with the pairing code, and each browser agent delivered a
 message to keel's terminal sessions — first from a terminal-run connector, then
 from the connector installed as a login service with a vendor-egress allowlist
-([record](verification/2026-09-17-remote-connector.json), `vendor_acceptance`
+([record](verification/2026-09-12-integrated-desktop.json), `remote_connector_2026_09_17`, `vendor_acceptance`
 and `service_acceptance`). A quick tunnel's hostname is ephemeral, and both
 vendors' saved connectors must be re-added when it changes; a named tunnel is
 the durable setup.
