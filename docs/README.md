@@ -66,7 +66,7 @@ list between main and a release other people can install.
 The September 18 reconciliation checked GitHub merge metadata and ancestry for
 older records that still said final review/CI or installation was pending. Their
 original trial fields remain intact; a dated disposition now supplies the index
-summary. PRs #181/#182 are also merged, with installation still pending. The
+summary. PRs #181/#182 are also merged and included in the current desktop preview. The
 current inventory is 39 Markdown files (the connector's document joined on September 18) and 67 verification records.
 
 **Reference** means the document describes an implemented workflow or engineering
@@ -113,7 +113,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [September 6 audit](AUDIT-2026-09-06.md) | Historical: restore/privacy fixes and pure-core environment cleanup are complete; broader acceptance stays in the current tracker. |
 | [September 7 review](REVIEW-2026-09-07.md) | Historical: merged review stacks closed; retained timeout/acceptance findings remain in the current tracker. |
 | [September 8 review](REVIEW-2026-09-08.md) | Historical: implementation follow-ups merged; original failures remain source-specific evidence. |
-| [September 11 landscape](LANDSCAPE-2026-09-11.md) | Historical research on Dax and herdr with an adoption status, plus a September 17 section on Paprika (hosted agent Kanban): how it differs, six features worth taking (a card with acceptance text over the `task:` lease, roles, typed links, webhooks, comment-only rules, a CLI exit-code contract) and an optional card-to-lease bridge; the board is in source (#176), and the exit-status contract is merged (#181), with installation pending; the other proposals remain deferred. |
+| [September 11 landscape](LANDSCAPE-2026-09-11.md) | Historical research on Dax and herdr with an adoption status, plus a September 17 section on Paprika (hosted agent Kanban): how it differs, six features worth taking (a card with acceptance text over the `task:` lease, roles, typed links, webhooks, comment-only rules, a CLI exit-code contract) and an optional card-to-lease bridge; the board is in source (#176), and the exit-status contract is merged (#181) and included in the current desktop preview; the other proposals remain deferred. |
 | [herdr bridge](HERDR-BRIDGE.md) | Deferred by measurement beyond implemented pane identity (row 25): the focus/prompt bridge and reported-blocked mirror are designed, costed and not built; nothing in current delivery depends on them. |
 
 Verification reports preserve the original trials, rather than representing

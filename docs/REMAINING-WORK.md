@@ -1,5 +1,7 @@
 # Remaining engineering and release work
 
+Final #191 review: Escape now clears both pending notification navigation and its message selection. The inventory count and historical exit-code wording are corrected; the recovery record retains its actual availability observation without treating the earlier blocked timestamp as a clearance time.
+
 Current status: September 18, 2026 UTC. This is the single backlog for the
 requirements already in the project docs. It replaces duplicated progress notes;
 their source pins, failed trials and acceptance limits remain in the existing
