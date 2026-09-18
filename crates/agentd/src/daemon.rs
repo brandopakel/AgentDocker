@@ -8923,6 +8923,12 @@ mod tests {
         {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+        let before = lock(&daemon.state)
+            .registry
+            .get(&ended.id)
+            .cloned()
+            .unwrap();
+        assert!(!before.status.is_live());
         lock(&daemon.state)
             .store
             .reject_event_for_test("session_relaunched");
@@ -8943,7 +8949,7 @@ mod tests {
             .get(&ended.id)
             .cloned()
             .unwrap();
-        assert!(!stale.status.is_live() && stale.pid.is_none() || !stale.status.is_live());
+        assert_eq!(stale, before, "a fenced return changes nothing in memory");
     }
 
     /// A relaunch whose program cannot be started at all is answered with

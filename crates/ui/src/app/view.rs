@@ -1976,7 +1976,7 @@ impl App {
                     let blocker = self.reconnect_blocker(agent);
                     let mut reconnect = row![primary(
                         format!("reconnect-{}", agent.id),
-                        if self.shell.launching {
+                        if self.shell.reconnecting.as_deref() == Some(agent.id.as_str()) {
                             "Reconnecting…"
                         } else {
                             "Reconnect here"

@@ -1191,6 +1191,7 @@ impl App {
                 }
                 Msg::Launched(result) => {
                     self.shell.launching = false;
+                    self.shell.reconnecting = None;
                     match result {
                         Ok(id) => {
                             self.shell.launch = false;
@@ -1203,6 +1204,7 @@ impl App {
                 }
                 Msg::Reconnected(result) => {
                     self.shell.launching = false;
+                    self.shell.reconnecting = None;
                     match result {
                         Ok((id, generation)) => {
                             self.shell.selected = Some(id.clone());

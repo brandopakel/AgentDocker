@@ -36,6 +36,10 @@ pub(super) struct State {
     /// control can turn it off; provider consent and policy still apply.
     pub launch_channel: bool,
     pub launching: bool,
+    /// The session whose resume is on its way to the daemon, so its
+    /// button alone says "Reconnecting…" (a launch from the Launch form
+    /// sets `launching` too, and is not a reconnect).
+    pub reconnecting: Option<String>,
     /// A session just reconnected: its pane opens when the list shows the
     /// process the daemon started (by its start time) running, and the
     /// list decides — a session that ended at once stays in the list with
@@ -2525,6 +2529,7 @@ impl App {
             match self.reconnect_spec(id, cli) {
                 Ok(spec) => {
                     self.shell.launching = true;
+                    self.shell.reconnecting = Some(id.to_owned());
                     self.shell.error = None;
                     self.send(Cmd::Resume(id.to_owned(), Box::new(spec)));
                 }
@@ -4474,6 +4479,7 @@ mod tests {
         // is nothing: the button waits for the answer.
         app.reconnect("ended-claude", Ok(cli_path.clone()));
         assert!(app.shell.launching);
+        assert_eq!(app.shell.reconnecting.as_deref(), Some("ended-claude"));
         assert_eq!(app.shell.error, None);
         app.reconnect("ended-claude", Ok(cli_path.clone()));
         let sent: Vec<Cmd> = commands.try_iter().collect();
@@ -4496,6 +4502,10 @@ mod tests {
             .unwrap();
         app.drain();
         assert!(!app.shell.launching);
+        assert_eq!(
+            app.shell.reconnecting, None,
+            "the button says Reconnect here again"
+        );
         assert!(
             app.shell
                 .error
