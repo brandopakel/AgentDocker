@@ -234,8 +234,9 @@ the card-to-lease bridge to Paprika itself remains a proposal.
 
 Assessed September 17, against the [product direction](PRODUCT-DIRECTION.md):
 what is still worth taking is small and agent-facing — an exit-code contract
-for `--json` commands (agents drive the CLI), typed links on a card, message
-or hand-off (a path, a PR, a memory note; the data already exists), webhooks
+for the command line (agents drive the CLI; PR #181), typed links on a card,
+message or hand-off (in source: `links` on cards, messages, checkpoints and
+hand-off bundles, shown in the app) (a path, a PR, a memory note; the data already exists), webhooks
 as a signed sink on the event stream (a team channel hears `question_asked`
 and `lease_deadlock`), and roles as agent labels a hand-off can name. Reply
 from the notification (Dax) is worth it once the routing acceptance above is

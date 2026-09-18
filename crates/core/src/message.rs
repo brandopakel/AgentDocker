@@ -103,6 +103,9 @@ pub struct Envelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_to: Option<MessageId>,
     pub sent_at: DateTime<Utc>,
+    /// What the message points at, typed, beside its text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<crate::Link>,
 }
 
 impl Envelope {
@@ -122,6 +125,7 @@ impl Envelope {
             payload,
             reply_to,
             sent_at: now,
+            links: Vec::new(),
         }
     }
 }
