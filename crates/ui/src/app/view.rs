@@ -1045,6 +1045,19 @@ impl App {
         rows.into()
     }
 
+    /// Whether the Temporary fold is open: the person's choice once made,
+    /// otherwise open while a scratch project has a live session.
+    pub(super) fn temporary_fold_open(&self) -> bool {
+        self.shell.temporary_open.unwrap_or_else(|| {
+            self.shell
+                .catalog
+                .projects
+                .iter()
+                .filter(|e| !e.pinned && crate::catalog::is_scratch(&e.project.root))
+                .any(|e| self.live_in(&e.project.root) > 0)
+        })
+    }
+
     /// Live, non-human sessions in the project at `root`.
     fn live_in(&self, root: &std::path::Path) -> usize {
         self.agents
@@ -1128,7 +1141,7 @@ impl App {
             let selected_here = temporary
                 .iter()
                 .any(|e| project_page && self.selected_root() == Some(e.project.root.as_path()));
-            let open = self.shell.temporary_open || selected_here || live > 0;
+            let open = self.temporary_fold_open() || selected_here;
             let label = format!("Temporary ({})", temporary.len());
             let mut fold = row![
                 text(if open { "▾" } else { "▸" }).size(11).color(c.muted),
@@ -1830,7 +1843,13 @@ impl App {
                 // in the meta line; this says only that it is new to you.
                 content = content.push(pill("Done", c.accent_soft, c.accent_ink, c));
             }
-            content = content.push(pill(agent.spec.runtime.clone(), c.raised, c.muted, c));
+            // A generated name already reads as the tool ("Claude Code ·
+            // 0180d761"); the runtime pill would say it twice. A chosen
+            // name keeps the pill, which is then the only place the tool
+            // is named.
+            if !agent.name_is_generated() {
+                content = content.push(pill(agent.spec.runtime.clone(), c.raised, c.muted, c));
+            }
             // An ended Claude Code session that can come back says so on
             // its row: the one thing to do with it is right there, not
             // behind Details. While its resume is on its way the row says

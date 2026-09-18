@@ -98,9 +98,11 @@ either way. Shared scratch roots such as `/tmp` and `/var/tmp` remain
 discoverable, including when Linux reports one as its default temporary
 directory, but a folder discovered there and never pinned is not listed
 among your projects: it sits in a **Temporary (n)** fold under them (a
-fixture's workspace, a trial's worktree), folded while nothing runs in any of
-them and none is selected, open otherwise or by hand, with the live count on
-the fold; pinning one moves it up. Sessions whose project is unknown
+fixture's workspace, a trial's worktree). Until you toggle it the fold is
+automatic — open while one of them has a live session, closed otherwise — and
+from then on it is as you left it, closable even while one runs; selecting one
+of them shows it either way, and the live count sits on the fold. Pinning one
+moves it up. Sessions whose project is unknown
 appear under **Other sessions**.
 
 **Current** shows live sessions; **Needs input** shows this project's
@@ -115,7 +117,9 @@ Search applies to the
 selected project, both filters and the Earlier group. Switching projects
 returns to Current. Nothing is deleted when a row moves to Earlier.
 
-Session rows show the name, runtime, branch and observed activity. Sessions needing
+Session rows show the name, branch and observed activity, with the runtime as a
+pill only when the name is one somebody chose (a generated name already reads
+as the tool). Sessions needing
 input appear first within each project. An ended Claude Code session that can
 come back carries **Reconnect here** on its row itself (the same action as in
 Details, which still says why a session cannot be reconnected yet); while its

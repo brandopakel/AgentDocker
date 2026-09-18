@@ -66,8 +66,10 @@ pub(super) struct State {
     /// a page more for each *Show older*; closing the group resets it.
     pub earlier_shown: usize,
     /// Whether the temporary projects (discovered under /tmp, unpinned)
-    /// are unfolded in the sidebar.
-    pub temporary_open: bool,
+    /// are unfolded in the sidebar: the person's choice once they have
+    /// toggled it, until then automatic (open while one of them has a
+    /// live session).
+    pub temporary_open: Option<bool>,
     /// Whether the conversations between agents are unfolded.
     pub peers_open: bool,
     /// The project row whose menu is open.
@@ -1297,7 +1299,10 @@ impl App {
                     .max(EARLIER_PAGE)
                     .saturating_add(EARLIER_PAGE);
             }
-            Message::ToggleTemporary => self.shell.temporary_open = !self.shell.temporary_open,
+            Message::ToggleTemporary => {
+                let open = self.temporary_fold_open();
+                self.shell.temporary_open = Some(!open);
+            }
             Message::TogglePeers => self.shell.peers_open = !self.shell.peers_open,
             Message::PaneResized(grid, event) => {
                 if self.panes.resized(grid, event) {
@@ -4492,11 +4497,39 @@ mod tests {
         assert!(!app.shell.earlier_open);
         let _ = app.update(Message::ToggleEarlier);
         assert_eq!(app.shell.earlier_shown, EARLIER_PAGE, "reopened at a page");
-        assert!(!app.shell.temporary_open);
+        // The temporary fold is automatic until toggled: closed with
+        // nothing running in a scratch project, and a toggle is the
+        // person's choice from then on — closable even while one runs.
+        assert_eq!(app.shell.temporary_open, None);
+        assert!(!app.temporary_fold_open());
         let _ = app.update(Message::ToggleTemporary);
-        assert!(app.shell.temporary_open);
+        assert_eq!(app.shell.temporary_open, Some(true));
+        assert!(app.temporary_fold_open());
+        let mut scratch = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "claude-code-77".into(),
+                runtime: "claude-code".into(),
+                workdir: Some("/private/tmp/fixture/workspace".into()),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        scratch.id = "scratch-live".into();
+        scratch.status = agentdocker_core::AgentStatus::Running;
+        scratch.project = Some(agentdocker_core::ProjectRef::directory(
+            "/private/tmp/fixture/workspace",
+        ));
+        app.agents.push(scratch);
+        app.shell.catalog.remember(
+            agentdocker_core::ProjectRef::directory("/private/tmp/fixture/workspace"),
+            false,
+        );
         let _ = app.update(Message::ToggleTemporary);
-        assert!(!app.shell.temporary_open);
+        assert_eq!(app.shell.temporary_open, Some(false));
+        assert!(!app.temporary_fold_open(), "closable while a scratch session runs");
+        app.shell.temporary_open = None;
+        assert!(app.temporary_fold_open(), "automatic: open while one runs");
     }
 
     /// Reconnecting an ended Claude Code session launches its own tool
