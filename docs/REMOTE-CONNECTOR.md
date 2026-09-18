@@ -5,7 +5,7 @@ Status: September 17, 2026. Delivered in source as `agentdocker connector`
 and an acceptance against a real Claude account: through a cloudflared quick
 tunnel to the production daemon, claude.ai registered its client, the person
 consented with the pairing code, and the browser Claude delivered a message to
-keel's terminal sessions ([record](verification/2026-09-17-remote-connector.json),
+keel's terminal sessions ([record](verification/2026-09-12-integrated-desktop.json), `remote_connector_2026_09_17`,
 `vendor_acceptance`). ChatGPT is not yet tried. A quick tunnel's hostname is
 ephemeral; a named tunnel or reverse proxy is the durable setup.
 
