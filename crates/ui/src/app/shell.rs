@@ -299,6 +299,23 @@ impl State {
     pub fn changed(&mut self) {
         self.generation = self.generation.wrapping_add(1);
     }
+
+    /// Failed notification replies whose conversation could not be
+    /// opened — the message, project or channel is gone, or the route was
+    /// cancelled — and which no route is still on its way to. They are
+    /// shown where the person can always reach them, whatever is on view.
+    pub fn orphan_reply_recoveries(&self) -> Vec<&ReplyRecovery> {
+        let routing: Option<&MessageId> = self
+            .pending_notification
+            .as_ref()
+            .map(|(action, _)| &action.target.message);
+        self.reply_recoveries
+            .iter()
+            .filter(|r| r.conversation.is_none())
+            .filter(|r| routing != Some(&r.message))
+            .filter(|r| self.notification_message.as_ref() != Some(&r.message))
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -4096,6 +4113,33 @@ mod tests {
         assert!(app.status.contains("one too many"));
         assert!(app.status.contains("may not have been sent"));
         assert!(app.status.chars().count() < 512);
+
+        // A route that gives up — the message is gone and no
+        // conversation opens — leaves the words reachable at the top of
+        // the Messages list, not bound to whatever conversation is on view.
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        app.shell.reply_recoveries.push(ReplyRecovery {
+            message: action.target.message.clone(),
+            text: "orphaned words".into(),
+            reason: "refused".into(),
+            certain: true,
+            conversation: None,
+        });
+        app.shell.pending_notification = Some((action.clone(), Instant::now()));
+        assert!(
+            app.shell.orphan_reply_recoveries().is_empty(),
+            "still on its way to its conversation"
+        );
+        app.shell.pending_notification = None;
+        app.shell.notification_message = None;
+        let orphans = app.shell.orphan_reply_recoveries();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].text, "orphaned words");
+        let _ = app.update(Message::ReplyRecoveryDismiss(action.target.message));
+        assert!(app.shell.orphan_reply_recoveries().is_empty());
     }
 
     #[test]

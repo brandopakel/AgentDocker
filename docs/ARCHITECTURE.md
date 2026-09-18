@@ -1197,7 +1197,7 @@ terminal-fence regression. Windows run `35185667187` on head `63ea3ca` passed
 new forced-equal-metadata and validation-budget regressions. Logs are
 `/private/tmp/agentdocker-prefix-fence-targeted1-20260917.log` and
 `/private/tmp/agentdocker-167-windows-prefix-success-20260917.log`. The later
-#167 merge closes that source-integration requirement; larger-prefix validation
+PR #167 merge closes that source-integration requirement; larger-prefix validation
 and collector acceptance below remain open.
 
 This primitive conservatively rejects any changed generation, including append,

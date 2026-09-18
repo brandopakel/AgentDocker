@@ -234,8 +234,11 @@ composer, after anything already drafted there, and the status line says why —
 daemon refused it, **Reply may not have been sent** when the connection went
 before an answer, in which case read the history before sending again.
 When the draft cannot take the words (draft storage is full) they wait beside
-the composer with **Copy** and **Dismiss**; the window keeps up to eight such
-replies and says so when a further one cannot be kept. A notification from
+the composer with **Copy** and **Dismiss**; when the conversation itself cannot
+be opened (its message, project or channel is gone) they wait at the top of the
+Messages list instead, with the same two controls, whatever is on view; the
+window keeps up to eight such replies and says so when a further one cannot be
+kept. A notification from
 another workspace's daemon hands the words to that workspace's window when
 it is running; otherwise the notification carries what fits and says the app
 could not keep them. A reply to a question goes to whoever asked it, wherever
