@@ -2198,7 +2198,7 @@
     "result": "passed",
     "scope": "A pause survives a rollback attempt: the schema-23 daemon records a hold,\nan installed schema-22 daemon refuses to open that state, and the hold is\nstill there for the 23 daemon. Private home; never the production state.",
     "steps": [
-      "schema-23 daemon paused the project: paused aef60cbc5ffb — rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
+      "schema-23 daemon paused the project: paused aef60cbc5ffb \u2014 rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
       "pause --list shows the hold",
       "state.db at schema 23 with one pause document",
       "schema-22 daemon refused to start (exit 1); state.db unchanged (sha256 e352e94e548a), pause document retained",
@@ -3678,7 +3678,7 @@
         "kind": "Native fixture expected no pending input after adding a send probe",
         "artifacts": "/private/tmp/agentdocker-send-readiness-workflow-20260917",
         "elapsed_seconds": 215.8977894160198,
-        "result": "Warning/advice and exactly-one-queued-message checks passed, then readiness-ready timed out expecting Receiver active, awaiting first receipt. The new probe is still queued, so the correct app state is Queued · awaiting provider receipt. The harness now expects that state and supplies both fixture IDs in the later simulated receipt; corrected rerun passed 496 rendered steps/29 checks across 11 windows. This was a fixture expectation error, not a provider receipt or live-model test."
+        "result": "Warning/advice and exactly-one-queued-message checks passed, then readiness-ready timed out expecting Receiver active, awaiting first receipt. The new probe is still queued, so the correct app state is Queued \u00b7 awaiting provider receipt. The harness now expects that state and supplies both fixture IDs in the later simulated receipt; corrected rerun passed 496 rendered steps/29 checks across 11 windows. This was a fixture expectation error, not a provider receipt or live-model test."
       }
     ],
     "review": {
@@ -3866,6 +3866,102 @@
       "Private native workflow; no production activation or physical keyboard/IME acceptance.",
       "Final CI, review and merge remain pending. Other form drafts remain separate.",
       "No idle-performance or live-provider delivery claim."
+    ]
+  },
+  "combined_drafts_readiness_roles_2026_09_18": {
+    "pr": 191,
+    "source": "4913664def0b92f2654d0cda9477a148be758d77",
+    "source_tree": "869005060afb7fc5dba14fcbe78faad8aa537944",
+    "source_input_sha256": "0f86dd4a737373f83f37eea499f3355616ebe44598b571915361248b2a80c081",
+    "source_dirty": false,
+    "installed": false,
+    "state_schema": 23,
+    "components": {
+      "question_drafts": 185,
+      "roles": 186,
+      "send_readiness": 188,
+      "historical_document_dispositions": 192,
+      "board_drafts": 191,
+      "merged_base": "349e786fa70ad0d398d6f7d97be9ba30155f5e51"
+    },
+    "validation": {
+      "full_gate": "fmt, strict Clippy, nextest, doctests, Python, documentation, packaging and release build passed",
+      "rust_passed": 1196,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "gate_log": "/private/tmp/agentdocker-combined-drafts-readiness-gate-20260918.log",
+      "gate_log_sha256": "1555bba89a39bdc16a04a4432b58e4e2f0b973e3e155cf51433041c176d3ad16",
+      "binary_sha256": {
+        "agentdocker": "7f75dcb18ea1f0758d562a32b0dbf054acb32d96091b875a8bbcb82bbefddc30",
+        "agentd": "5ea9cc7256fc7e24cc06d32db206b8fb53c4bf23d0abab8a069ab0f7e0f92ee6",
+        "agentdocker-ui": "03ad24ef825fd872bba79350f498ed0d9367fe046aa83d0165e9dd8191abcca3"
+      },
+      "combined_regression": "a_role_is_set_once_and_names_the_projects_holder asserts the exact resolved recipient, one queued message, one no-receiver readiness detail and no message for a same-role holder in another project."
+    },
+    "native": {
+      "result": "passed",
+      "elapsed_seconds": 140.13275950000389,
+      "rendered_steps": 507,
+      "window_steps": {
+        "constrained-panes": 54,
+        "narrow-inbox": 124,
+        "provider-limit": 14,
+        "readiness-activity": 26,
+        "readiness-contact": 17,
+        "readiness-paused": 17,
+        "readiness-ready": 17,
+        "readiness-received": 17,
+        "restored": 6,
+        "restored-drafts": 28,
+        "workflows": 187
+      },
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "send_warns_about_named_unbound_recipient_and_expands_reconnect_guidance_without_resending",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived",
+        "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+        "unfinished_board_card_reopens_in_its_project_without_filing_or_changing_any_card",
+        "normal_close_flushes_hidden_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them"
+      ],
+      "artifacts": "/private/tmp/agentdocker-combined-drafts-readiness-workflow-20260918",
+      "report_log": "/private/tmp/agentdocker-combined-drafts-readiness-workflow-20260918.log",
+      "report_sha256": "4d16c1484fd8c1a27e9e2805bc54b69c4155828cbf08572498c8c6a02bbf9a1f",
+      "harness_sha256": "1c20440b19d8f9371c0899a46656e55aea1c1127e31d2609e85767bed8c53063",
+      "idle_resources": {
+        "result": "not_run",
+        "reason": "Explicit --skip-idle-measurement: foreground CPU/RSS sample omitted; no idle performance claim."
+      },
+      "visual_review": "Restored Board title and acceptance text remain visible in the original project; the fixture verifies all cards are unchanged and the restored card is not filed."
+    },
+    "limits": [
+      "Private native workflow invokes rendered callbacks; no physical keyboard/IME or real-provider idle-wake claim.",
+      "No production activation. Final combined CI and source review remain required before merge.",
+      "Historical component trials and failures remain in their original sections. No new project document or verification record was created."
     ]
   }
 }
