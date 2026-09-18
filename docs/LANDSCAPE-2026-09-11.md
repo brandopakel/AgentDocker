@@ -230,7 +230,8 @@ sent as the person's reply to that message); trace-file resume is not. From Papr
 a card with acceptance text and an atomic pull over the `task:<id>` lease,
 with a Board tab in the app — is in source (PR #176), as are roles (a `role`
 label an agent is given, and `role:<name>` as the recipient of a message or
-a hand-off); typed links, webhooks and the exit-code contract are in review,
+a hand-off); typed links (#182), webhooks (#183) and the exit-code contract (#181)
+are merged, with installation pending in the current desktop batch,
 comment-only rules are not started, and the card-to-lease bridge to Paprika
 itself remains a proposal.
 

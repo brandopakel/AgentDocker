@@ -66,6 +66,16 @@ runtime `4913664` passed 1,196 Rust tests (seven skipped), 94 Python checks
 the same agent within the sender's project. Final combined CI/review and activation
 remain pending; these changes are not in installed `d14610b7`.
 
+The combined #191 follow-up includes merged Board layout #189 and notification
+replies #190. Clean runtime `22e81bd` passed 1,202 Rust tests (seven skipped),
+94 Python checks (one skipped), the full release gate and 507 rendered steps /
+30 checks across 11 windows. Cross-window reply bounds and saved handoff retries
+are covered by regressions. The short idle sample measured median app CPU 0.9%
+and RSS 193.2 MB; it is not sustained-use or battery acceptance. The existing
+[integrated record](verification/2026-09-12-integrated-desktop.json) retains all
+failed fixtures and exact build/log hashes. Final CI/review, actual notification
+Reply and production activation remain pending.
+
 ## Engineering and acceptance still open
 
 | Priority | Work remaining | Completion condition and evidence |
