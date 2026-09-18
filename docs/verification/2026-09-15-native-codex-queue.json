@@ -3252,6 +3252,88 @@
         "automatic_receiver_restart_no_replay": true
       }
     },
-    "installed": "pending"
+    "installed": {
+      "release": "486c5dd04fbe96b102dac08d2e223e72049f8f651926f87fd3c55352626ca268",
+      "source": "c0a7c56688fff19f51b449c607baded420c94218",
+      "receiver_before": 18735,
+      "receiver_after": 60959,
+      "provider_pid_preserved": 51242,
+      "daemon_pid_preserved": 92608,
+      "managed_claude_pid_preserved": 23973,
+      "thread_preserved": "01a089b2-c485-7361-b64c-a72f724e00a4",
+      "token_preserved": true,
+      "original_peer_answer_delivered": "724bf89e7e794f29",
+      "correlated_model_reply": "0d2e4b3979704ea6",
+      "receipt_window": "Bounded128; after six new receipts the prior122-entry suffix remained in order; six oldest entries aged out normally. No manual queue ACK/drain/replay.",
+      "ui": "Existing window unchanged; shared-chat UI activation separate.",
+      "backup_integrity": "ok; regular receiver files saved; live hook socket excluded"
+    },
+    "packaged_upgrade": {
+      "result": "passed",
+      "cli_sha256": "24335ae0c0c26971c2d0b8ad2cbf9fdb241b90d5b6c940aa2946e0dfd55184d1",
+      "daemon_sha256": "df3389bb9d4b37c67b301336b1cc4f3e60504d0c50603bdc08665a08567e63ff",
+      "driver_sha256": "0c95bc5d28c7d1cb7a8dd0f4f14a8f7bdc3f8d633a66f0832afba4af203479f7",
+      "receiver_upgrade": {
+        "before": {
+          "pid": 54104,
+          "started_at": "2026-09-18T23:17:05.994974Z"
+        },
+        "after": {
+          "pid": 55527,
+          "started_at": "2026-09-18T23:17:16.995026Z"
+        },
+        "initial_ledger_version": 3,
+        "provider_preserved": true,
+        "token_and_binding_preserved": true,
+        "prior_completed_receipts": 6,
+        "pending_native_queue_id": "01a0b6cf-4f12-79f1-96d1-120fc27d6486",
+        "initial_cli_sha256": "b93a755783f2fc07b01f26dadc627a221e1e6296e7590743bbad73abcd6e8ccc"
+      },
+      "active_hook": {
+        "messages": [
+          "12079702d30546b4",
+          "611dad8595954af7",
+          "c2d17beb1d084b29"
+        ],
+        "receipts": [
+          {
+            "message": "12079702d30546b4",
+            "receipt": {
+              "thread": "01a0b6ce-8648-7030-93c6-8ac2ebeb428d",
+              "turn": "01a0b6cf-4e88-7013-8c90-efc3e97e00a1",
+              "item": "msg_01a0b6cf-5b86-72b1-81fa-0e41402e9b38"
+            }
+          },
+          {
+            "message": "611dad8595954af7",
+            "receipt": {
+              "thread": "01a0b6ce-8648-7030-93c6-8ac2ebeb428d",
+              "turn": "01a0b6cf-4e88-7013-8c90-efc3e97e00a1",
+              "item": "msg_01a0b6cf-6879-7d52-a8d4-811d125add56"
+            }
+          },
+          {
+            "message": "c2d17beb1d084b29",
+            "receipt": {
+              "thread": "01a0b6ce-8648-7030-93c6-8ac2ebeb428d",
+              "turn": "01a0b6cf-4e88-7013-8c90-efc3e97e00a1",
+              "item": "msg_01a0b6cf-7550-70b0-adb4-e95c0f7c967b"
+            }
+          }
+        ],
+        "seconds": 11.908495749987196,
+        "same_turn": true,
+        "model_requests": 4,
+        "original_provider_pid": 48880
+      },
+      "cleanup_errors": [],
+      "scope": "Current-format3 receiver replacement with the actual installed d14610b7 initial binary. Earlier attempt used legacy-format2 driver default and failed that prerequisite before replacement; rerun explicitly required3."
+    },
+    "installation_trial": {
+      "scenarios": 13,
+      "previous": "6bd97894",
+      "candidate": "486c5dd04fbe96b102dac08d2e223e72049f8f651926f87fd3c55352626ca268",
+      "result": "passed"
+    }
   }
 }
