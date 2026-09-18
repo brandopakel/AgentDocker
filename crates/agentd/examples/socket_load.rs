@@ -156,6 +156,7 @@ fn main() -> Result<()> {
                                     ttl_secs: 60,
                                     note: None,
                                     wait_secs: 0,
+                                    automatic: false,
                                 },
                             )?;
                             match reply {

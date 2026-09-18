@@ -8,7 +8,10 @@
 //! daemon itself never listens on the network.
 
 pub mod http;
+pub mod net;
 pub mod oauth;
+pub mod service;
+pub mod tunnel;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -47,8 +50,18 @@ pub struct ConnectorArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum ConnectorCommand {
-    /// Serve the connector on loopback for the tunnel in front of it.
+    /// Serve the connector on loopback, behind a tunnel you run or one it starts for you.
     Serve(ServeArgs),
+    /// Whether a connector is serving here: its address, pairing code and tunnel.
+    Status,
+    /// Run the connector as a login service (launchd or systemd) with these serve arguments.
+    Install(InstallArgs),
+    /// Remove the connector service.
+    Uninstall {
+        /// Say what would be removed without removing it.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// The browser agents that have connected, and whether they still can.
     Grants,
     /// End a browser agent's access: its tokens stop working and the agent is marked finished.
@@ -59,11 +72,21 @@ pub enum ConnectorCommand {
 }
 
 #[derive(Args, Debug)]
+pub struct InstallArgs {
+    #[command(flatten)]
+    pub serve: ServeArgs,
+    /// Say what would be written and run without doing it.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Args, Debug, Default, Clone)]
 pub struct ServeArgs {
     /// The HTTPS address the tunnel publishes this connector at, without a
-    /// trailing slash: the vendors add `/mcp` to it.
+    /// trailing slash: the vendors add `/mcp` to it. Not needed with a
+    /// quick tunnel, which chooses its own; required with a named one.
     #[arg(long)]
-    pub public_url: String,
+    pub public_url: Option<String>,
     /// The loopback address to listen on; port 0 picks a free one.
     #[arg(long, default_value = "127.0.0.1:0")]
     pub bind: String,
@@ -73,11 +96,80 @@ pub struct ServeArgs {
     /// A callback URL to admit besides the vendors' own, for a hosted client of yours.
     #[arg(long = "allow-callback")]
     pub allow_callbacks: Vec<String>,
+    /// Start the tunnel too: `cloudflared` (a quick tunnel with a random hostname, or with --tunnel-name a named one you routed).
+    #[arg(long, value_parser = ["cloudflared"])]
+    pub tunnel: Option<String>,
+    /// The named cloudflared tunnel to run (`cloudflared tunnel create <name>` and a DNS route first); needs --public-url.
+    #[arg(long, requires = "tunnel")]
+    pub tunnel_name: Option<String>,
+    /// Where cloudflared is, when not on PATH or in the usual places.
+    #[arg(long, requires = "tunnel")]
+    pub cloudflared: Option<PathBuf>,
+    /// Only admit the vendors' own addresses at /register, /token and /mcp: a CIDR, `anthropic` (its published range), or `@<file>` (OpenAI's feed JSON or one CIDR per line, re-read when it changes). Needs the tunnel's client-address header.
+    #[arg(long = "allow-from")]
+    pub allow_from: Vec<String>,
+    /// The header the tunnel writes the client address into (cloudflared: cf-connecting-ip, the default with --tunnel cloudflared).
+    #[arg(long)]
+    pub client_ip_header: Option<String>,
+}
+
+impl ServeArgs {
+    /// The arguments back as given, for a service definition.
+    pub fn to_argv(&self) -> Vec<String> {
+        let mut argv = Vec::new();
+        if let Some(url) = &self.public_url {
+            argv.extend(["--public-url".to_owned(), url.clone()]);
+        }
+        if self.bind != "127.0.0.1:0" {
+            argv.extend(["--bind".to_owned(), self.bind.clone()]);
+        }
+        if let Some(project) = &self.project {
+            argv.extend([
+                "--project".to_owned(),
+                project.to_string_lossy().into_owned(),
+            ]);
+        }
+        for callback in &self.allow_callbacks {
+            argv.extend(["--allow-callback".to_owned(), callback.clone()]);
+        }
+        if let Some(tunnel) = &self.tunnel {
+            argv.extend(["--tunnel".to_owned(), tunnel.clone()]);
+        }
+        if let Some(name) = &self.tunnel_name {
+            argv.extend(["--tunnel-name".to_owned(), name.clone()]);
+        }
+        if let Some(path) = &self.cloudflared {
+            argv.extend([
+                "--cloudflared".to_owned(),
+                path.to_string_lossy().into_owned(),
+            ]);
+        }
+        for allow in &self.allow_from {
+            argv.extend(["--allow-from".to_owned(), allow.clone()]);
+        }
+        if let Some(header) = &self.client_ip_header {
+            argv.extend(["--client-ip-header".to_owned(), header.clone()]);
+        }
+        argv
+    }
+
+    /// The header to read the client address from: the one given, else
+    /// cloudflared's when it runs the tunnel.
+    fn client_ip_header(&self) -> String {
+        match &self.client_ip_header {
+            Some(header) => header.clone(),
+            None if self.tunnel.as_deref() == Some("cloudflared") => "cf-connecting-ip".into(),
+            None => String::new(),
+        }
+    }
 }
 
 pub async fn run(client: Client, args: ConnectorArgs) -> Result<()> {
     match args.command {
         ConnectorCommand::Serve(args) => serve(client, args).await,
+        ConnectorCommand::Status => status(&client).await,
+        ConnectorCommand::Install(args) => service::install(&args.serve, args.dry_run),
+        ConnectorCommand::Uninstall { dry_run } => service::uninstall(dry_run),
         ConnectorCommand::Grants => grants(&client).await,
         ConnectorCommand::Revoke { agent } => revoke(&client, &agent).await,
     }
@@ -143,6 +235,7 @@ pub struct Connector<B> {
     state_path: Option<PathBuf>,
     servers: Mutex<HashMap<String, Arc<McpServer<B>>>>,
     consent_failures: AtomicU32,
+    allowlist: Option<net::Allowlist>,
 }
 
 impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
@@ -165,7 +258,14 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             state_path,
             servers: Mutex::new(HashMap::new()),
             consent_failures: AtomicU32::new(0),
+            allowlist: None,
         }
+    }
+
+    /// Admit only these addresses at the vendor-facing endpoints.
+    pub fn with_allowlist(mut self, allowlist: Option<net::Allowlist>) -> Self {
+        self.allowlist = allowlist;
+        self
     }
 
     fn mcp_url(&self) -> String {
@@ -188,6 +288,25 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
     /// One request in, one response out. Nothing here holds the store
     /// across an await.
     pub async fn handle(&self, request: HttpRequest) -> HttpResponse {
+        // The vendor speaks to these three; the person's browser to the
+        // rest. An allowlist is exact: no header, no entry.
+        if matches!(request.path(), "/register" | "/token" | "/mcp")
+            && let Some(allowlist) = &self.allowlist
+            && !allowlist.allows(&request)
+        {
+            eprintln!(
+                "agentdocker connector: refused {} from {} (not in --allow-from)",
+                request.path(),
+                allowlist
+                    .client_ip(&request)
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_else(|| "an unreported address".to_owned())
+            );
+            return HttpResponse::json(
+                403,
+                &json!({"error": "forbidden", "error_description": "this address is not one the connector admits"}),
+            );
+        }
         match (request.method.as_str(), request.path()) {
             ("GET", "/") => self.front_page(),
             ("GET", "/.well-known/oauth-protected-resource")
@@ -657,7 +776,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                                 host_started_at: None,
                             },
                         )
-                        .remote(),
+                        .remote(self.project.root.clone()),
                     )
                 })
                 .clone()
@@ -691,7 +810,6 @@ fn page(title: &str, body: &str) -> String {
 }
 
 async fn serve(client: Client, args: ServeArgs) -> Result<()> {
-    let public = public_url(&args.public_url)?;
     let dir = match &args.project {
         Some(path) => path.clone(),
         None => std::env::current_dir()?,
@@ -709,53 +827,233 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
             "the connector listens on loopback only; the tunnel in front of it is what is public"
         );
     }
+    // The tunnel first, so the public name is known before anything is
+    // said or written; it dies with this process and this process with it.
+    let mut tunnel = match args.tunnel.as_deref() {
+        Some("cloudflared") => {
+            let binary = tunnel::find_cloudflared(args.cloudflared.as_deref())?;
+            let checked = args.public_url.as_deref().map(public_url).transpose()?;
+            Some(
+                tunnel::spawn_cloudflared(
+                    &binary,
+                    local.port(),
+                    args.tunnel_name.as_deref(),
+                    checked.as_deref(),
+                )
+                .await?,
+            )
+        }
+        Some(other) => bail!("unknown tunnel `{other}`"),
+        None => None,
+    };
+    let public = match (&tunnel, &args.public_url) {
+        (Some(tunnel), _) => tunnel.public_url.clone(),
+        (None, Some(url)) => public_url(url)?,
+        (None, None) => bail!(
+            "--public-url is required without --tunnel: the HTTPS address your tunnel publishes this connector at"
+        ),
+    };
+    let allowlist = net::Allowlist::parse(&args.allow_from, &args.client_ip_header())?;
+    let prefixes = allowlist.as_ref().map(net::Allowlist::len).unwrap_or(0);
+    let home = agentdocker_host::dirs::home();
     let path = state_path();
     let store = load_store(&path)?;
     let pairing = oauth::pairing_code();
-    let connector = Arc::new(Connector::new(
-        client,
-        public.clone(),
-        project.clone(),
-        args.allow_callbacks.clone(),
-        pairing.clone(),
-        store,
-        Some(path),
-    ));
+    let connector = Arc::new(
+        Connector::new(
+            client,
+            public.clone(),
+            project.clone(),
+            args.allow_callbacks.clone(),
+            pairing.clone(),
+            store,
+            Some(path),
+        )
+        .with_allowlist(allowlist),
+    );
+    let pid = std::process::id();
+    let serving = service::Serving {
+        pid,
+        public_url: public.clone(),
+        bind: local.to_string(),
+        project: project.root.clone(),
+        pairing_code: pairing.clone(),
+        started_at: Utc::now(),
+        tunnel: tunnel.as_ref().map(|t| service::TunnelStatus {
+            provider: t.provider.to_owned(),
+            pid: t.pid(),
+            name: t.name.clone(),
+        }),
+        allowlist_prefixes: prefixes,
+    };
+    if let Err(error) = service::write_status(&home, &serving) {
+        eprintln!("agentdocker connector: could not write the status file: {error:#}");
+    }
     eprintln!(
-        "AgentDocker connector for project {} ({})\n  listening on http://{local}, published as {public}\n  MCP URL to add as a custom connector: {public}/mcp\n  pairing code: {pairing}   (typed on the consent page; new each time this runs)\n  Claude:  Settings › Connectors › Add custom connector › paste the URL › Connect\n  ChatGPT: Settings › Connectors › Advanced › Developer mode › Create › paste the URL, OAuth\n  Tunnel example: cloudflared tunnel --url http://{local}",
+        "AgentDocker connector for project {} ({})\n  listening on http://{local}, published as {public}{}\n  MCP URL to add as a custom connector: {public}/mcp\n  pairing code: {pairing}   (typed on the consent page; new each time this runs)\n  admitted addresses: {}\n  Claude:  Settings › Connectors › Add custom connector › paste the URL › Connect\n  ChatGPT: Settings › Connectors › Advanced › Developer mode › Create › paste the URL, OAuth{}",
         project.name(),
         project.root.display(),
+        match &tunnel {
+            Some(t) => format!(" by {} (pid {})", t.provider, t.pid().unwrap_or(0)),
+            None => String::new(),
+        },
+        if prefixes == 0 {
+            "any (no --allow-from)".to_owned()
+        } else {
+            format!("{prefixes} prefixes (--allow-from)")
+        },
+        if tunnel.is_none() {
+            format!("\n  Tunnel example: cloudflared tunnel --url http://{local}")
+        } else {
+            String::new()
+        }
     );
     let limit = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
-    loop {
-        // One refused connection (descriptors exhausted, a reset) is not
-        // a reason to stop serving the rest.
-        let stream = match listener.accept().await {
-            Ok((stream, _)) => stream,
-            Err(error) => {
-                eprintln!("agentdocker connector: accept failed: {error}");
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                continue;
+    let mut shutdown = shutdown_signal();
+    let mut tunnel_check = tokio::time::interval(std::time::Duration::from_secs(2));
+    let outcome = loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let stream = match accepted {
+                    Ok((stream, _)) => stream,
+                    Err(error) => {
+                        // One refused connection (descriptors exhausted, a
+                        // reset) is not a reason to stop serving the rest.
+                        eprintln!("agentdocker connector: accept failed: {error}");
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
+                };
+                let Ok(permit) = limit.clone().acquire_owned().await else {
+                    break Ok(());
+                };
+                let connector = connector.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let (read, mut write) = stream.into_split();
+                    let mut reader = BufReader::new(read);
+                    let response = match http::read_request(&mut reader).await {
+                        Ok(request) => connector.handle(request).await,
+                        Err(http::HttpError::Closed | http::HttpError::Timeout) => return,
+                        Err(http::HttpError::Bad(status, why)) => HttpResponse::text(status, why),
+                        Err(http::HttpError::Io(_)) => return,
+                    };
+                    let _ = http::write_response(&mut write, &response).await;
+                    let _ = write.shutdown().await;
+                });
             }
-        };
-        let Ok(permit) = limit.clone().acquire_owned().await else {
-            break;
-        };
-        let connector = connector.clone();
-        tokio::spawn(async move {
-            let _permit = permit;
-            let (read, mut write) = stream.into_split();
-            let mut reader = BufReader::new(read);
-            let response = match http::read_request(&mut reader).await {
-                Ok(request) => connector.handle(request).await,
-                Err(http::HttpError::Closed | http::HttpError::Timeout) => return,
-                Err(http::HttpError::Bad(status, why)) => HttpResponse::text(status, why),
-                Err(http::HttpError::Io(_)) => return,
-            };
-            let _ = http::write_response(&mut write, &response).await;
-            let _ = write.shutdown().await;
-        });
+            _ = tunnel_check.tick() => {
+                if let Some(t) = tunnel.as_mut()
+                    && let Some(status) = t.exited()
+                {
+                    break Err(anyhow::anyhow!(
+                        "the tunnel exited ({status}); the connector stops with it"
+                    ));
+                }
+            }
+            _ = &mut shutdown => {
+                eprintln!("agentdocker connector: stopping");
+                break Ok(());
+            }
+        }
+    };
+    service::clear_status(&home, pid);
+    if let Some(t) = tunnel.as_mut() {
+        t.stop().await;
     }
+    outcome
+}
+
+/// Ctrl-C, or the SIGTERM a service manager sends.
+fn shutdown_signal() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    Box::pin(async {
+        #[cfg(unix)]
+        {
+            let mut term =
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(term) => term,
+                    Err(_) => {
+                        let _ = tokio::signal::ctrl_c().await;
+                        return;
+                    }
+                };
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    })
+}
+
+/// What is serving here, from the status file and the process table.
+async fn status(client: &Client) -> Result<()> {
+    let home = agentdocker_host::dirs::home();
+    let Some(serving) = service::read_status(&home) else {
+        eprintln!(
+            "no connector is serving here (no status file); `agentdocker connector serve` or `connector install`"
+        );
+        return Ok(());
+    };
+    let alive = agentdocker_host::procinfo::alive(serving.pid);
+    if !alive {
+        eprintln!(
+            "the connector that started {} (pid {}) is not running; its last address was {}",
+            crate::format::ago(serving.started_at),
+            serving.pid,
+            serving.public_url
+        );
+        return Ok(());
+    }
+    println!(
+        "serving since {} (pid {})",
+        crate::format::ago(serving.started_at),
+        serving.pid
+    );
+    println!("  project:      {}", serving.project.display());
+    println!("  MCP URL:      {}/mcp", serving.public_url);
+    println!("  listening on: http://{}", serving.bind);
+    println!("  pairing code: {}", serving.pairing_code);
+    match &serving.tunnel {
+        Some(t) => println!(
+            "  tunnel:       {}{} (pid {})",
+            t.provider,
+            t.name
+                .as_deref()
+                .map(|n| format!(" `{n}`"))
+                .unwrap_or_default(),
+            t.pid.unwrap_or(0)
+        ),
+        None => println!("  tunnel:       yours, in front of the listening address"),
+    }
+    println!(
+        "  admitted:     {}",
+        if serving.allowlist_prefixes == 0 {
+            "any address".to_owned()
+        } else {
+            format!("{} prefixes", serving.allowlist_prefixes)
+        }
+    );
+    let store = load_store(&state_path())?;
+    let mut active = 0;
+    for grant in store.grants.values().filter(|g| g.active()) {
+        if let Ok(Response::Agent { agent }) = client
+            .call(&Request::Inspect {
+                agent: grant.agent_id.clone(),
+            })
+            .await
+            && agent.status.is_live()
+        {
+            active += 1;
+        }
+    }
+    println!(
+        "  browser agents: {active} live of {} consents (`connector grants`)",
+        store.grants.len()
+    );
     Ok(())
 }
 
@@ -1096,6 +1394,9 @@ mod tests {
             live_agent("claude-browser-test"), // Inspect before send_message
             Response::Ok,                      // Heartbeat
             Response::Ok,                      // Send
+            live_agent("claude-browser-test"), // Inspect before the broadcast
+            Response::Ok,                      // Heartbeat
+            Response::Ok,                      // Send to the project
             live_agent("claude-browser-test"), // Inspect before the notification
             Response::Ok,                      // Heartbeat
             live_agent("claude-browser-test"), // Inspect before the refused claim
@@ -1264,6 +1565,22 @@ mod tests {
             requests.last().unwrap(),
             Request::Send { to, .. } if to == "claude-2c8d1062"
         ));
+        let broadcast = connector
+            .handle(post(
+                "/mcp",
+                "application/json",
+                r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"send_message","arguments":{"to":"project","text":"to everyone in keel"}}}"#,
+                Some(&access),
+            ))
+            .await;
+        assert_eq!(broadcast.status, 200);
+        assert!(
+            matches!(
+                mock.requests().last().unwrap(),
+                Request::Send { to, .. } if to == "project:/p/keel"
+            ),
+            "a project broadcast names the served project, not this process's directory"
+        );
         let notification = connector
             .handle(post(
                 "/mcp",

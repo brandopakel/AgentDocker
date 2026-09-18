@@ -13,6 +13,7 @@ use crate::command;
 pub mod browser;
 mod desktop;
 pub mod health;
+pub mod shell;
 
 /// Where to look: injectable so tests can build a machine in a temp dir.
 #[derive(Clone, Debug)]
@@ -33,6 +34,8 @@ pub struct Roots {
     /// Each browser's user-data directory, where its profiles keep their
     /// extensions; injectable for tests.
     pub browser_dirs: Vec<browser::BrowserDir>,
+    /// The person's login shell (`$SHELL`), for the terminal-launch check.
+    pub shell: Option<String>,
     /// Ask each CLI for its version; off in tests that only lay out files.
     pub versions: bool,
 }
@@ -76,6 +79,7 @@ impl Roots {
                     .map(PathBuf::from)
                     .as_deref(),
             ),
+            shell: shell::login_shell(),
             home,
             path,
             app_dirs,
@@ -146,6 +150,11 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Resu
         incomplete,
         config_dir,
         mcp: mcp_wiring(spec, roots, marker),
+        shell: if spec.name == "claude-code" {
+            shell::wiring(roots)
+        } else {
+            Wiring::Unsupported
+        },
         hooks: hooks_wiring_file(spec, &hook_config_path(spec, roots), marker),
         hooks_missing: hooks_missing_file(spec, &hook_config_path(spec, roots), marker),
         running: 0,
@@ -716,6 +725,7 @@ mod tests {
             desktop_dirs: vec![],
             app_dirs: vec![apps],
             browser_dirs: vec![],
+            shell: None,
             versions: false,
         };
         (tmp, roots)

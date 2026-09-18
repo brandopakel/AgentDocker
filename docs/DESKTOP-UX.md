@@ -22,12 +22,20 @@ also keeps the full setup controls.
 
 A vendor's browser extension (Claude, ChatGPT) has its own Tools row, marked
 **Installed in Chrome · works inside the browser, its sessions are not visible
-here**, with the browser, profile and version of each copy under **Details** and
-the bridge the browser launches for a command-line tool, when one is registered.
-The row offers no **Set up** and never lists a session: what the extension is
-doing runs in the browser and on the vendor's side, and nothing on this machine
-speaks for it. The bridge is that tool's helper; **Connect** never offers it and
-adopting it by pid is refused with what it is.
+here** — or, once a browser agent has joined through the remote connector,
+**… · one browser agent connected through the remote connector** — with the
+browser, profile and version of each copy under **Details** and the bridge the
+browser launches for a command-line tool, when one is registered. The row
+offers no **Set up**: what the extension is doing runs in the browser and on
+the vendor's side, and only the connector's consent makes a session of it. The
+bridge is that tool's helper; **Connect** never offers it and adopting it by
+pid is refused with what it is.
+
+The Claude Code row offers **Wake terminal sessions** while the shell's startup
+file lacks the channel flag: it previews `agentdocker setup --shell`, one
+reviewable change (a `claude` function that adds the flag) applied with
+**Connect** and taken back with **Undo**, and **Details** says what terminal
+launches do today.
 
 The sidebar remembers projects found through agents and folders you add yourself.
 **Add project…** lets you browse or enter an existing folder. It pins the project

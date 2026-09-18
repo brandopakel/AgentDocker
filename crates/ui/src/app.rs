@@ -3113,17 +3113,26 @@ struct PauseControl {
 
 /// The one line under a browser extension's name: which browsers have
 /// it, and that its sessions never appear here.
-pub(crate) fn in_browser_word(runtime: &agentdocker_core::runtime::RuntimeInfo) -> String {
+pub(crate) fn in_browser_word(
+    runtime: &agentdocker_core::runtime::RuntimeInfo,
+    connected: usize,
+) -> String {
     let mut browsers: Vec<&str> = runtime
         .extensions
         .iter()
         .map(|e| e.browser.as_str())
         .collect();
     browsers.dedup();
-    format!(
-        "Installed in {} · works inside the browser, its sessions are not visible here",
-        browsers.join(", ")
-    )
+    let installed = if browsers.is_empty() {
+        "Not installed in a browser here".to_owned()
+    } else {
+        format!("Installed in {}", browsers.join(", "))
+    };
+    match connected {
+        0 => format!("{installed} · works inside the browser, its sessions are not visible here"),
+        1 => format!("{installed} · one browser agent connected through the remote connector"),
+        n => format!("{installed} · {n} browser agents connected through the remote connector"),
+    }
 }
 
 /// "Chrome · Work · 1.0.93": the browser, the profile when there are
@@ -3247,12 +3256,21 @@ pub(crate) mod tests {
             mcp: Wiring::Unsupported,
             hooks: Wiring::Unsupported,
             hooks_missing: vec![],
+            shell: Wiring::Unsupported,
             running: 0,
         };
         assert!(runtime.installed() && runtime.in_browser());
         assert_eq!(
-            in_browser_word(&runtime),
+            in_browser_word(&runtime, 0),
             "Installed in Chrome, Brave · works inside the browser, its sessions are not visible here"
+        );
+        assert_eq!(
+            in_browser_word(&runtime, 1),
+            "Installed in Chrome, Brave · one browser agent connected through the remote connector"
+        );
+        assert_eq!(
+            in_browser_word(&runtime, 2),
+            "Installed in Chrome, Brave · 2 browser agents connected through the remote connector"
         );
         assert_eq!(
             extension_words(&runtime.extensions[1]),
@@ -3277,6 +3295,7 @@ pub(crate) mod tests {
             mcp: Wiring::Wired,
             hooks: Wiring::Missing,
             hooks_missing: vec!["StopFailure".into()],
+            shell: Wiring::Unsupported,
             running: 0,
         };
         assert_eq!(

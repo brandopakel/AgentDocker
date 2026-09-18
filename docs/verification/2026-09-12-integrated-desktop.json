@@ -3546,7 +3546,7 @@
   },
   "remote_connector_2026_09_17": {
     "date": "2026-09-17",
-    "status": "Passed at d14a862 on release binaries built from the committed source (state schema 23), on loopback without a tunnel: the vendor's side of the remote connector, scripted, ran 29 steps end to end \u2014 metadata discovery, a foreign callback refused at registration and Claude's accepted, the consent page, a wrong pairing code refused, the right one redirecting to Claude's callback with the code and state while registering nothing, a wrong PKCE verifier burning the code without leaving an agent, a fresh consent under the same name, the exchange registering `claude-browser-trial` in the project as `claude-browser`, a further consent under that live name refused on the page, `initialize` naming the agent and the browser, the messaging-only tool list, a `send_message` landing in the terminal agent's inbox attributed to the browser agent, `claim` refused by name, refresh rotation with the old token dead, `connector grants` active, `connector revoke` ending the tokens and marking the agent finished. The state file is mode 0600 and holds a refresh hash, no token. The same evening, a real Claude account connected through a cloudflared quick tunnel to the production daemon and delivered a message from claude-browser-qszf to keel's terminal sessions (`vendor_acceptance`); ChatGPT is not yet tried.",
+    "status": "Passed at d14a862 on release binaries built from the committed source (state schema 23), on loopback without a tunnel: the vendor's side of the remote connector, scripted, ran 29 steps end to end \u2014 metadata discovery, a foreign callback refused at registration and Claude's accepted, the consent page, a wrong pairing code refused, the right one redirecting to Claude's callback with the code and state while registering nothing, a wrong PKCE verifier burning the code without leaving an agent, a fresh consent under the same name, the exchange registering `claude-browser-trial` in the project as `claude-browser`, a further consent under that live name refused on the page, `initialize` naming the agent and the browser, the messaging-only tool list, a `send_message` landing in the terminal agent's inbox attributed to the browser agent, `claim` refused by name, refresh rotation with the old token dead, `connector grants` active, `connector revoke` ending the tokens and marking the agent finished. The state file is mode 0600 and holds a refresh hash, no token. The same evening, a real Claude account connected through a cloudflared quick tunnel to the production daemon and delivered a message from claude-browser-qszf to keel's terminal sessions (`vendor_acceptance`); The next day the connector ran as a login service with a vendor allowlist, and both Claude and ChatGPT connected and delivered (`service_acceptance`), which also found and fixed the project-broadcast bug.",
     "scope": "agentdocker connector serve/grants/revoke on release binaries in a private AGENTDOCKER_HOME with a release agentd, a registered external agent standing in for a terminal session, and a Python client (urllib, no OAuth library) performing discovery, RFC 7591 registration, the authorization code flow with PKCE S256, the token exchange, refresh, Streamable HTTP JSON-RPC and revocation. The public URL was the loopback bind address, which `serve` accepts only for loopback hosts.",
     "build": {
       "source_commit": "d14a862299307924b2a695b9d6c695d89340e96a",
@@ -3802,7 +3802,7 @@
       "A browser agent is not woken; its inbox waits for the hosted model's next read_inbox.",
       "Revocation by a separate `connector revoke` process reaches a serving connector on the agent's next request, through the daemon's liveness answer.",
       "Egress allowlisting, CIMD, the tunnel helper and desktop status are the second increment.",
-      "ChatGPT's connector has not been tried against a real account."
+      "A browser agent reads its inbox only when the hosted model calls read_inbox; the inbound test needed a prompt in the chat."
     ],
     "also_covered_by_tests": "A daemon that is not answering during /mcp is a 503 with Retry-After and the grant stands (connector::tests::a_silent_daemon_does_not_end_a_grant); the loopback trial does not stop the daemon.",
     "vendor_acceptance": {
@@ -3824,6 +3824,35 @@
         "The side panel was not driven: the chat surface and the side panel use the same account connectors per Claude's documentation, and this trial used a chat tab.",
         "The connector and the tunnel ran as background processes of the assistant's session, not as services."
       ]
+    },
+    "service_acceptance": {
+      "date": "2026-09-18T00:57:48Z",
+      "result": "Passed on the connector installed as a launchd service (`agentdocker connector install --tunnel cloudflared --project /Users/brandopakel/keel --allow-from anthropic --allow-from @~/.agentdocker/connector/openai-connectors.json`) against the production daemon: the service started cloudflared itself, published a quick-tunnel hostname, and admitted 272 prefixes (Anthropic's /21 plus OpenAI's 271-prefix feed of 2026-09-18). From the public side the metadata was open and POST /mcp from this Mac's own address was refused 403 and logged. Claude's registration and token exchange came through the allowlist from Anthropic's range and registered claude-browser-oid2; ChatGPT (Pro plan, Developer mode on, New Plugin with OAuth, DCR chosen because CIMD is not advertised) registered a client with the per-connection callback https://chatgpt.com/connector/oauth/<id>, consented with the pairing code, and registered chatgpt-browser-cr0h. ChatGPT's first `send_message` to `project` (message 424ef88f8e214121) was archived under everyone:d15aacfd\u2026 \u2014 a project nobody was in \u2014 because the MCP server resolved `project` from the service's working directory `/`; it reached no inbox. After the fix (remote mode resolves `project` to the served root) the service was restarted with the fixed binary (new quick-tunnel hostname, both connectors re-added and consented: claude-browser-qhip, chatgpt-browser-fnvy), and ChatGPT's second broadcast 6deffabefa5f4fcc went to project:59dbd732689f \u2014 keel \u2014 and sits in claude-code-74455's inbox and nobody else's.",
+      "service_binary_sha256": "94535ae2bf17844138eefa4604693db79ef5e806f9c1770e8db45910bd9e9765",
+      "service_binary_source": "built from the working tree whose code equals commit 8da5b9b (the docs of that commit were written after the build); the loopback trial below ran on the release build of 8da5b9b itself",
+      "loopback_trial_on_8da5b9b": {
+        "steps_passed": 29,
+        "binary_sha256": {
+          "agentdocker": "30a15dc843f27c34d6a862cba75a6a63389d1f34dee6108ae28e5e116f3c80be",
+          "agentd": "93bb2edc18440b4654f27abc32db20c60e72653ad44dd51f06b55a06a6c8b0ef"
+        },
+        "source_tree": "7a87ad004ec074c626d29f9e10058fbfef2aff00"
+      },
+      "observed": [
+        "A first quick tunnel's hostname was looked up locally before Cloudflare published it and the ISP resolver cached NXDOMAIN for ~28 minutes; the connector now holds a new hostname back for four seconds before saying it.",
+        "claude.ai's Add dialog offers no URL edit; ChatGPT's plugin menu offers Edit name/description, Disconnect, Delete \u2014 a new hostname means remove and re-add on both, and one more consent each.",
+        "ChatGPT annotates every tool `open world, destructive, output schema recommended` and asks Allow once per call because the tools carry no MCP annotations; adding readOnlyHint/destructiveHint would let its `Allow low-risk actions` default apply.",
+        "A connector added to a Claude account appears in every Claude surface of that account, including this Claude Code session, as the browser agent's tools; the connector's instructions now say not to use them from a session that has its own."
+      ],
+      "limits": [
+        "The service points at a copy of the release binary under ~/.agentdocker/connector/bin until the installed desktop ships `connector`; then `agentdocker connector install` from the installed CLI replaces it.",
+        "A quick tunnel's hostname changes at every service start; a named tunnel needs a Cloudflare account and domain the person does not have yet.",
+        "ChatGPT's egress was admitted through its published feed as of 2026-09-18; the feed changes and must be refreshed."
+      ]
+    },
+    "inbound_acceptance": {
+      "date": "2026-09-18T04:52:00Z",
+      "result": "Passed: a terminal session (claude-code-74334) sent message a67a2614879f4ca3 to claude-browser-qhip through the daemon; in a claude.ai chat, the browser Claude called read_inbox through the connector service, returned that message and ChatGPT's keel broadcast 6deffabefa5f4fcc (a browser agent is a member of the project it joined, so a project broadcast reaches it too), acknowledged both with acknowledge_messages (two Allow-once prompts), and the daemon's inbox for claude-browser-qhip was empty afterwards. The inbound path is cooperative: nothing woke the browser agent; the person's prompt led it to read."
     },
     "folded_from": "2026-09-17-remote-connector.json (folded into this record at review's request; the section keeps that record's fields)"
   }

@@ -160,6 +160,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
+ "filetime",
  "indexmap",
  "libc",
  "semver",
