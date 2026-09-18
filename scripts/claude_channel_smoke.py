@@ -152,13 +152,24 @@ def run(args):
             heartbeat_deadline = time.monotonic() + 36
             while True:
                 refreshed = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]
-                if refreshed["reported_at"] > initial_ready["reported_at"]:
+                if refreshed["paused"]:
                     break
-                assert time.monotonic() < heartbeat_deadline, "idle receiver did not refresh readiness"
+                assert time.monotonic() < heartbeat_deadline, "unreceived offer did not expose its delivery pause"
                 assert connection.read(0.25) is None, "heartbeat duplicated an unacknowledged offer"
-            assert refreshed["paused"] is False and refreshed.get("received") is None
+            assert refreshed["reported_at"] > initial_ready["reported_at"]
+            assert refreshed.get("received") is None
+            assert accepted[0] in refreshed["pause_reason"]
+            paused_at = refreshed["reported_at"]
+            heartbeat_deadline = time.monotonic() + 36
+            while True:
+                refreshed = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]
+                assert refreshed["paused"] is True and refreshed.get("received") is None
+                if refreshed["reported_at"] > paused_at:
+                    break
+                assert time.monotonic() < heartbeat_deadline, "missing-receipt pause did not refresh"
+                assert connection.read(0.25) is None, "paused channel duplicated an offer"
             assert queued() == accepted
-            report["steps"].append("idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption")
+            report["steps"].append("an unreceived offer became durably paused after 30 seconds and stayed paused through refresh without inventing a receipt, replaying input or consuming the queue")
             duplicate = spawn(command, channel_env)
             assert duplicate.wait(timeout=5) != 0 and queued() == accepted
             report["steps"].append("channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner")
@@ -176,6 +187,8 @@ def run(args):
             connection.ack(102, accepted[:1])
             assert connection.offer()["meta"]["message_id"] == accepted[1]
             assert queued() == accepted[1:]
+            recovered = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]
+            assert recovered["paused"] is False and recovered["received"]["messages"] == accepted[:1]
             report["steps"].append("eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure")
 
             connection.process.kill()

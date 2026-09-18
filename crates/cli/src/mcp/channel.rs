@@ -26,6 +26,7 @@ const ACTIVE_CALLS: usize = 8;
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_EVERY: Duration = Duration::from_millis(250);
+const RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) struct Owner {
     _process: lock::Lock,
@@ -138,7 +139,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut offered: Option<(MessageId, tokio::time::Instant, bool)> = None;
     let mut unavailable = false;
-    let mut last_ready = tokio::time::Instant::now();
+    let mut last_report = tokio::time::Instant::now();
     let mut readiness_unavailable = false;
     let mut provider_blocked = None;
     loop {
@@ -167,7 +168,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                         }
                     }
                     initialized = true;
-                    last_ready = tokio::time::Instant::now();
+                    last_report = tokio::time::Instant::now();
                     continue;
                 }
                 // A channel always reserves service for handshake, ping and
@@ -262,7 +263,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 crate::input_status::report(&server.backend, &server.identity.id, server.identity.host_started_at,
                     agentdocker_core::InputReport::Ready).await?;
                 ready = true;
-                last_ready = tokio::time::Instant::now();
+                last_report = tokio::time::Instant::now();
             }
             _ = tick.tick(), if ready => {
                 let reply = tokio::time::timeout(IO_TIMEOUT, server.backend.call(Request::DeliveryQueue {
@@ -288,26 +289,39 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                         continue;
                     }
                 };
-                // Refresh only while the queue is reachable. Missing receipt
-                // remains visible separately; an offer is not consumption.
-                if last_ready.elapsed() >= Duration::from_secs(30) {
-                    let refreshed = crate::input_status::refresh(&server.backend, &server.identity.id,
-                        server.identity.host_started_at).await;
+                let mut state_changed = false;
+                if let Some((id, since, warned)) = &mut offered {
+                    if messages.iter().any(|message| &message.id == id) {
+                        if !*warned && since.elapsed() >= RECEIPT_TIMEOUT {
+                            eprintln!("agentdocker channel: message {id} has no receipt after 30 seconds; verify this session's channel opt-in and permissions");
+                            *warned = true;
+                            state_changed = true;
+                        }
+                    } else {
+                        state_changed = *warned;
+                        offered = None;
+                    }
+                }
+                // Queue reachability is not evidence that the provider consumed
+                // an offer. Keep a missing-receipt state visible until that ID
+                // leaves the queue, including after failed diagnostic writes.
+                if state_changed || last_report.elapsed() >= Duration::from_secs(30) {
+                    let observation = match &offered {
+                        Some((id, _, true)) => agentdocker_core::InputReport::Paused {
+                            reason: format!("Waiting for the session to acknowledge message {id}; following messages remain queued. Check the session's channel permission or provider limit before resending."),
+                        },
+                        _ => agentdocker_core::InputReport::Ready,
+                    };
+                    let refreshed = crate::input_status::refresh_report(&server.backend, &server.identity.id,
+                        server.identity.host_started_at, observation).await;
                     if !refreshed && !readiness_unavailable {
                         eprintln!("agentdocker channel: readiness refresh unavailable; current status will expire without changing the message queue");
                     }
                     readiness_unavailable = !refreshed;
-                    last_ready = tokio::time::Instant::now();
+                    last_report = tokio::time::Instant::now();
                 }
-                if let Some((id, since, warned)) = &mut offered {
-                    if messages.iter().any(|message| &message.id == id) {
-                        if !*warned && since.elapsed() >= Duration::from_secs(30) {
-                            eprintln!("agentdocker channel: message {id} has no receipt after 30 seconds; verify this session's channel opt-in and permissions");
-                            *warned = true;
-                        }
-                        continue;
-                    }
-                    offered = None;
+                if offered.is_some() {
+                    continue;
                 }
                 if let Some(message) = messages.first() {
                     let mut notification = json!({
@@ -541,6 +555,139 @@ mod tests {
             .unwrap()
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// A live channel with no receipt must expose the blocked FIFO instead of
+    /// refreshing ready forever. Diagnostic failure never consumes or replays
+    /// input, and a late receipt can recover without restarting the provider.
+    #[tokio::test(start_paused = true)]
+    async fn unreceived_offer_stays_paused_until_ack_even_after_failed_status_writes() {
+        use agentdocker_core::InputReport;
+        use std::cell::Cell;
+        struct Observed {
+            queue: Queue,
+            reports: RefCell<Vec<InputReport>>,
+            first_pause: Cell<bool>,
+            failure: u8,
+        }
+        impl Backend for Observed {
+            async fn call(&self, request: Request) -> Result<Response> {
+                if let Request::ReportInput { report, .. } = &request {
+                    self.reports.borrow_mut().push(report.clone());
+                    if matches!(report, InputReport::Paused { .. })
+                        && !self.first_pause.replace(true)
+                    {
+                        match self.failure {
+                            1 => bail!("diagnostic write refused"),
+                            2 => std::future::pending::<()>().await,
+                            _ => {}
+                        }
+                    }
+                }
+                self.queue.call(request).await
+            }
+        }
+        for failure in 0..3 {
+            let old = server();
+            let mut server = McpServer::new(
+                Observed {
+                    queue: old.backend,
+                    reports: RefCell::new(Vec::new()),
+                    first_pause: Cell::new(false),
+                    failure,
+                },
+                old.identity,
+            );
+            server.claude_channel = true;
+            let ids: Vec<_> = server
+                .backend
+                .queue
+                .0
+                .borrow()
+                .iter()
+                .map(|m| m.id.clone())
+                .collect();
+            let (transport, client) = tokio::io::duplex(8192);
+            let (input, output) = tokio::io::split(transport);
+            let trial = async {
+                let (reader, mut writer) = tokio::io::split(client);
+                let mut reader = BufReader::new(reader);
+                write_line(
+                    &mut writer,
+                    &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+                )
+                .await
+                .unwrap();
+                assert_eq!(
+                    receive(&mut reader).await["params"]["meta"]["message_id"],
+                    ids[0].as_str()
+                );
+                let mut frame = Vec::new();
+                assert!(
+                    tokio::time::timeout(
+                        Duration::from_secs(65),
+                        read_frame(&mut reader, &mut frame)
+                    )
+                    .await
+                    .is_err()
+                );
+                {
+                    let reports = server.backend.reports.borrow();
+                    let first = reports
+                        .iter()
+                        .position(|r| matches!(r, InputReport::Paused { .. }))
+                        .expect("missing durable receipt warning");
+                    assert!(
+                        reports.len() >= first + 2,
+                        "missing retry/refresh after the first stalled report"
+                    );
+                    assert!(reports[first..].iter().all(|r| matches!(r, InputReport::Paused { reason } if reason.contains(ids[0].as_str()))));
+                }
+                assert_eq!(
+                    server
+                        .backend
+                        .queue
+                        .0
+                        .borrow()
+                        .iter()
+                        .map(|m| m.id.clone())
+                        .collect::<Vec<_>>(),
+                    ids
+                );
+                write_line(
+                    &mut writer,
+                    &json!({"jsonrpc":"2.0","id":90,"method":"ping"}),
+                )
+                .await
+                .unwrap();
+                assert_eq!(receive(&mut reader).await["id"], 90);
+                write_line(&mut writer, &json!({"jsonrpc":"2.0","id":91,"method":"tools/call","params":{"name":"acknowledge_messages","arguments":{"messages":[ids[0]]}}})).await.unwrap();
+                assert_eq!(receive(&mut reader).await["id"], 91);
+                assert_eq!(
+                    receive(&mut reader).await["params"]["meta"]["message_id"],
+                    ids[1].as_str()
+                );
+                assert!(matches!(
+                    server.backend.reports.borrow().last(),
+                    Some(InputReport::Ready)
+                ));
+                assert_eq!(server.backend.queue.0.borrow().len(), 1);
+                assert!(
+                    tokio::time::timeout(
+                        Duration::from_secs(1),
+                        read_frame(&mut reader, &mut frame)
+                    )
+                    .await
+                    .is_err()
+                );
+                writer.shutdown().await.unwrap();
+            };
+            let (result, ()) = tokio::join!(
+                pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+                trial
+            );
+            result.unwrap();
+        }
     }
 
     #[tokio::test(start_paused = true)]

@@ -163,7 +163,12 @@ receipt, not task completion. A reply remains a separate `send_message` call.
 
 A stdout write never removes an inbox message. Until an explicit receipt,
 delivery is unconfirmed. Claude may silently ignore a channel that was not
-enabled; after 30 seconds without a receipt the adapter reports a diagnostic.
+enabled; after 30 seconds without a receipt the adapter reports a durable
+delivery pause naming the outstanding message. That state appears in session
+details and send-readiness warnings. It stays paused through periodic refreshes
+until that message leaves the queue; fresh transport contact alone does not
+clear it. A failed or stalled diagnostic write is bounded and retried, without
+blocking the receipt/control path or offering the message again.
 The message remains recoverable through a non-draining CLI inbox read.
 The channel MCP hides and refuses `read_inbox` and `wait_for_messages` so the
 model receives input through the channel queue. Reconnects offer the same

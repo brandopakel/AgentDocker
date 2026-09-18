@@ -863,3 +863,27 @@ A separate ten-minute trial at earlier source `33d52a3` passed 18 ordered
 inputs/replies and six idle wakeups under one identity. Broader sustained
 acceptance remains open. The later #108 merge closes the recorded source review
 and integration follow-up; it does not close the broader acceptance cases.
+
+### September 18: channel contact without a message receipt
+
+A live Claude session had 45 retained envelopes while its channel adapter
+kept refreshing input readiness with no recorded receipt. The oldest queued
+ID was `fcb1ed18d7244fbf`, sent at 00:39 UTC; the 05:51 build handoff
+`044a489bb141472a` was still retained during the 06:03 read-only inspection.
+The provider process and its hook/MCP contacts were current. A later bounded
+transcript-metadata inspection found that exact first ID in an enqueue, remove
+and queued-command attachment at 00:39:33–38 UTC; the later handoff IDs were
+absent, and no acknowledgement-tool call was recorded. The launch command named
+the AgentDocker channel. This establishes a provider attachment for the first
+offer, not model consumption or why its explicit receipt was omitted. No inbox
+was drained or acknowledged by the observer. A later peer reply is separate
+from receipt of those envelopes.
+
+The adapter previously warned only on stderr after 30 seconds, then continued
+advertising readiness while the same offered ID blocked following input. The
+follow-up reports a durable delivery pause instead, preserves the original
+offer and queue, keeps control/receipt calls responsive, and restores readiness
+after the outstanding ID leaves the queue. Its regression covers normal,
+refused and stalled status writes followed by an explicit late acknowledgement.
+Validation and actual-session recovery remain pending; this is not an idle-wake
+or provider-consent completion claim.
