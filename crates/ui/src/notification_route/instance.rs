@@ -161,6 +161,14 @@ async fn handle(
                                 agentdocker_host::notify::Action::parse(&s).is_ok()
                             })
                     }
+                    Activation::ReplyFailed { action, text, .. } => {
+                        action.home == home
+                            && action.socket == daemon
+                            && text.chars().count() <= super::REPLY_CHARS
+                            && serde_json::to_string(action).ok().is_some_and(|s| {
+                                agentdocker_host::notify::Action::parse(&s).is_ok()
+                            })
+                    }
                     Activation::Focus | Activation::Inbox => true,
                 };
                 valid && handler(activation).is_ok()

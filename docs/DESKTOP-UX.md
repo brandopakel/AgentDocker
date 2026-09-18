@@ -204,11 +204,16 @@ nothing to send for notices. Drafts survive navigation, a failed request and
 disconnection. A notification opens the message's conversation even after it
 has been read, and even when the sender's record or the channel is gone: the
 archive outlives both. A notification for a message has a **Reply** field
-(macOS): what is typed there goes from you to that conversation — the channel
-it was in, else the agent who wrote — as a reply to that message, so a typed
-answer closes the question it answers, without the window opening; a reply
-that could not be sent says so as a notification and the message stays in
-the app. **Enter sends** in every composer — a
+(macOS): what is typed there goes from you to where that message went — the
+project's everyone, its channel, or back to the agent who wrote to you — as a
+reply to it, so a typed answer closes the question it answers, without the
+window opening. Only the daemon's `sent` counts as sent. A reply that did
+not go is said as a notification and comes back to the app: the
+conversation opens with your words in its composer, after anything already
+drafted there, and the status line says why — **Reply not sent** when the
+daemon refused it, **Reply may not have been sent** when the connection went
+before an answer, in which case read the history before sending again.
+Nothing typed is sent twice on its own. **Enter sends** in every composer — a
 conversation's, a thread's, the inbox reply, the session message and an
 answer — the same action as the button beside it, and nothing while the
 draft is empty or already sending. **+** beside the search starts a

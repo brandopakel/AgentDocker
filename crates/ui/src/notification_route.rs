@@ -2,8 +2,8 @@
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 
-#[cfg(target_os = "macos")]
-use agentdocker_core::Request;
+#[cfg(any(target_os = "macos", test))]
+use agentdocker_core::{Request, Response};
 use agentdocker_host::notify::Action;
 use serde::{Deserialize, Serialize};
 pub mod instance;
@@ -20,6 +20,17 @@ pub enum Activation {
     /// Older notifications have no destination and open Inbox.
     Inbox,
     Open(Action),
+    /// A reply typed into a notification that did not go: the words
+    /// come back to the conversation as its draft, with the reason.
+    /// `certain` says the daemon refused it (or nothing was sent);
+    /// otherwise the outcome is unknown and the history decides whether
+    /// to send again.
+    ReplyFailed {
+        action: Action,
+        text: String,
+        reason: String,
+        certain: bool,
+    },
 }
 
 #[derive(Default)]
@@ -53,8 +64,13 @@ pub fn receive(action: Option<Action>) -> Result<(), String> {
 }
 
 pub fn enqueue(activation: Activation) -> Result<(), String> {
-    if let Activation::Open(action) = &activation {
+    if let Activation::Open(action) | Activation::ReplyFailed { action, .. } = &activation {
         Action::parse(&serde_json::to_string(action).map_err(|e| e.to_string())?)?;
+    }
+    if let Activation::ReplyFailed { text, .. } = &activation
+        && text.chars().count() > REPLY_CHARS
+    {
+        return Err("the reply is longer than a notification carries".into());
     }
     queue()
         .lock()
@@ -66,57 +82,198 @@ pub fn enqueue(activation: Activation) -> Result<(), String> {
 
 /// The most a reply from a notification carries: the field is a line
 /// or two, and a message this size is refused by the daemon anyway.
-#[cfg(target_os = "macos")]
 pub const REPLY_CHARS: usize = 4_000;
 
-/// What a reply typed into a notification sends: from the person, to the
-/// notification's conversation — the channel it was in, else the agent
-/// who wrote — as a reply to that message, so an answer to a question
-/// closes it the way the composer's would. Blank is nothing to send.
-#[cfg(target_os = "macos")]
-pub fn reply_request(action: &Action, text: &str) -> Result<Request, String> {
+/// Why a reply did not go, and whether that is known for sure: the
+/// daemon refused it (or nothing was ever sent), or the connection went
+/// before an answer came and the daemon may have committed it — in
+/// which case the history, not a resend, is the next step.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failure {
+    pub reason: String,
+    pub certain: bool,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl Failure {
+    fn certain(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            certain: true,
+        }
+    }
+    fn unknown(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            certain: false,
+        }
+    }
+}
+
+/// The words of a reply as they will be sent: trimmed, `None` when there
+/// are none (the field's Send with nothing typed is nothing), refused
+/// when longer than a notification's field should carry.
+#[cfg(any(target_os = "macos", test))]
+pub fn reply_text(text: &str) -> Result<Option<String>, Failure> {
     let text = text.trim();
     if text.is_empty() {
-        return Err("nothing to send".into());
+        return Ok(None);
     }
     if text.chars().count() > REPLY_CHARS {
-        return Err("the reply is too long for a notification; answer in the app".into());
+        return Err(Failure::certain(
+            "the reply is longer than a notification carries; answer in the app",
+        ));
     }
-    let to = match &action.target.channel {
-        Some(channel) => format!("channel:{channel}"),
-        None => action.target.agent.to_string(),
-    };
-    Ok(Request::Send {
+    Ok(Some(text.to_owned()))
+}
+
+/// Where a reply to a message goes: where the message went. A message
+/// to the project's everyone or to a channel is answered there, one to
+/// the person is answered to whoever wrote it — never inferred from
+/// the notification, whose project is set for a direct message too.
+#[cfg(any(target_os = "macos", test))]
+pub fn reply_destination(original: &agentdocker_core::Envelope) -> Result<String, Failure> {
+    use agentdocker_core::Destination;
+    Ok(match &original.to {
+        Destination::Project(project) => format!("project:{}", project.as_str()),
+        Destination::Channel(channel) => format!("channel:{channel}"),
+        Destination::Broadcast => "all".to_owned(),
+        Destination::Agent(_) if original.from == agentdocker_core::conversation::DAEMON => {
+            return Err(Failure::certain("a notice from AgentDocker has no reply"));
+        }
+        Destination::Agent(_) => original.from.clone(),
+        Destination::Topic(_) => return Err(Failure::certain("a topic post has no reply")),
+    })
+}
+
+/// The reply as the person's, to where the original went, as a reply to
+/// it — so an answer to a question closes it the way the composer's
+/// would.
+#[cfg(any(target_os = "macos", test))]
+pub fn reply_request(to: String, message: &agentdocker_core::MessageId, text: &str) -> Request {
+    Request::Send {
         from: agentdocker_core::HUMAN.into(),
         to,
         kind: "chat".into(),
         payload: serde_json::json!({ "text": text }),
-        reply_to: Some(action.target.message.clone()),
-    })
+        reply_to: Some(message.clone()),
+    }
 }
 
-/// Send a reply typed into a notification through the daemon it came
+/// Send a reply through the daemon a notification names: read the
+/// original from its archive to learn where it went, then send, and
+/// take only `sent` as success. A refusal from the daemon is certain; a
+/// connection that fails before an answer is not, since the daemon may
+/// have committed the message.
+#[cfg(any(target_os = "macos", test))]
+pub fn deliver(
+    client: &crate::client::Client,
+    action: &Action,
+    text: &str,
+) -> Result<(), Failure> {
+    let original = match client.call(&Request::Thread {
+        message: action.target.message.clone(),
+        after_seq: None,
+        limit: 1,
+    }) {
+        Ok(Response::Thread { root, .. }) => root.envelope,
+        Ok(_) => return Err(Failure::certain("the daemon did not answer with the message")),
+        Err(error) => {
+            return Err(Failure::certain(format!(
+                "the message could not be read: {error}"
+            )));
+        }
+    };
+    let to = reply_destination(&original)?;
+    match client.call(&reply_request(to, &action.target.message, text)) {
+        Ok(Response::Sent { .. }) => Ok(()),
+        Ok(_) => Err(Failure::unknown(
+            "the daemon answered with something other than sent",
+        )),
+        Err(error) if error.downcast_ref::<crate::client::RemoteError>().is_some() => {
+            Err(Failure::certain(error.to_string()))
+        }
+        Err(error) => Err(Failure::unknown(error.to_string())),
+    }
+}
+
+/// A reply typed into a notification, sent through the daemon it came
 /// from, off the thread the notification centre called on. The window
 /// is not asked to open: the person answered where they were. A reply
-/// that could not be sent is said as a notification, since that is
-/// where the person is looking.
+/// that did not go is said where the person is looking — a notification
+/// — and, for this workspace's daemon, comes back to the conversation as
+/// its draft with the reason, so nothing typed is lost.
 #[cfg(target_os = "macos")]
 pub fn reply(action: Action, text: String) -> Result<(), String> {
-    let request = reply_request(&action, &text)?;
+    let text = match reply_text(&text) {
+        Ok(Some(text)) => text,
+        Ok(None) => return Ok(()),
+        Err(failure) => {
+            report_failure(action, text, failure);
+            return Ok(());
+        }
+    };
     std::thread::Builder::new()
         .name("notification-reply".into())
         .spawn(move || {
             let client = crate::client::Client::at(action.home.clone(), action.socket.clone());
-            if let Err(reason) = client.call(&request) {
-                eprintln!("reply from notification not sent: {reason}");
-                let _ = crate::notify::post(
-                    "Reply not sent",
-                    &format!("{reason}. The message is still in the app."),
-                );
+            if let Err(failure) = deliver(&client, &action, &text) {
+                report_failure(action, text, failure);
             }
         })
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// Say a reply did not go: a notification, and — when the notification
+/// was this workspace's — the words back in the app as the
+/// conversation's draft. Another workspace's failure keeps the words in
+/// the notification, since only its own window could hold them.
+#[cfg(target_os = "macos")]
+fn report_failure(action: Action, text: String, failure: Failure) {
+    eprintln!("reply from notification not sent: {}", failure.reason);
+    let ours = action.home == agentdocker_host::dirs::home()
+        && action.socket == agentdocker_host::dirs::socket_path(&action.home);
+    let body = match (failure.certain, ours) {
+        (true, true) => format!("{}. Your reply is in the app as a draft.", failure.reason),
+        (true, false) => format!("{}. You wrote: {}", failure.reason, excerpt(&text)),
+        (false, true) => format!(
+            "{}. Check the conversation's history before sending again; your reply is in the app as a draft.",
+            failure.reason
+        ),
+        (false, false) => format!(
+            "{}. Check the history before sending again. You wrote: {}",
+            failure.reason,
+            excerpt(&text)
+        ),
+    };
+    let title = if failure.certain {
+        "Reply not sent"
+    } else {
+        "Reply may not have been sent"
+    };
+    let _ = crate::notify::post(title, &body);
+    if ours
+        && let Err(reason) = enqueue(Activation::ReplyFailed {
+            action,
+            text,
+            reason: failure.reason,
+            certain: failure.certain,
+        })
+    {
+        eprintln!("reply from notification could not come back to the app: {reason}");
+    }
+}
+
+/// The start of what was typed, for a notification's body.
+#[cfg(target_os = "macos")]
+fn excerpt(text: &str) -> String {
+    let mut short: String = text.chars().take(200).collect();
+    if short.len() < text.len() {
+        short.push('…');
+    }
+    short
 }
 
 pub fn take() -> Vec<Activation> {
@@ -177,14 +334,22 @@ mod native {
                     && let Some(typed) = response.downcast_ref::<UNTextInputNotificationResponse>()
                 {
                     // A reply typed into the notification: sent, not opened.
+                    // A notification that cannot say where it came from
+                    // cannot take a reply; the person is told, with their
+                    // words, where they are looking.
+                    let text = typed.userText().to_string();
                     let content = response.notification().request().content();
                     let outcome = match decode_content(&content) {
-                        Ok(Some(action)) => super::reply(action, typed.userText().to_string()),
+                        Ok(Some(action)) => super::reply(action, text.clone()),
                         Ok(None) => Err("this notification has no conversation to reply to".into()),
                         Err(reason) => Err(reason),
                     };
                     if let Err(reason) = outcome {
                         eprintln!("reply from notification: {reason}");
+                        let _ = crate::notify::post(
+                            "Reply not sent",
+                            &format!("{reason}. You wrote: {}", super::excerpt(&text)),
+                        );
                     }
                 }
                 completion.call(());
@@ -265,16 +430,61 @@ mod tests {
         })
     }
 
-    /// A reply goes from the person to the notification's conversation
-    /// — the channel it was in, else the agent who wrote — as a reply to
-    /// that message; blank or oversized is refused before any socket.
-    #[cfg(target_os = "macos")]
+    /// A reply goes where the original went — the project's everyone,
+    /// the channel, or back to whoever wrote to the person — as the
+    /// person's reply to that message; a notice and a topic post have no
+    /// reply; blank is nothing and oversized is refused before any socket.
     #[test]
-    fn a_reply_answers_the_notifications_conversation_as_the_person() {
-        let Activation::Open(mut action) = activation(7) else {
-            unreachable!()
+    fn a_reply_answers_where_the_original_went_as_the_person() {
+        use agentdocker_core::{Destination, Envelope};
+        let original = |from: &str, to: Destination| {
+            Envelope::new(
+                from,
+                to,
+                "chat",
+                serde_json::json!({"text": "?"}),
+                None,
+                chrono::Utc::now(),
+            )
         };
-        match reply_request(&action, "  on it  ").unwrap() {
+        assert_eq!(
+            reply_destination(&original(
+                "sender-1",
+                Destination::Project(agentdocker_core::ProjectId::from("p1"))
+            ))
+            .unwrap(),
+            "project:p1"
+        );
+        assert_eq!(
+            reply_destination(&original(
+                "sender-1",
+                Destination::Channel(agentdocker_core::ChannelId::from("reviews"))
+            ))
+            .unwrap(),
+            "channel:reviews"
+        );
+        assert_eq!(
+            reply_destination(&original("sender-1", Destination::Broadcast)).unwrap(),
+            "all"
+        );
+        assert_eq!(
+            reply_destination(&original("sender-1", Destination::Agent("user".into()))).unwrap(),
+            "sender-1"
+        );
+        assert!(
+            reply_destination(&original(
+                agentdocker_core::conversation::DAEMON,
+                Destination::Agent("user".into())
+            ))
+            .unwrap_err()
+            .certain
+        );
+        assert!(
+            reply_destination(&original("sender-1", Destination::Topic("t".into())))
+                .unwrap_err()
+                .certain
+        );
+        match reply_request("project:p1".into(), &MessageId::from("7".to_owned()), "on it") {
             Request::Send {
                 from,
                 to,
@@ -283,20 +493,138 @@ mod tests {
                 reply_to,
             } => {
                 assert_eq!(from, "user");
-                assert_eq!(to, "agent");
+                assert_eq!(to, "project:p1");
                 assert_eq!(kind, "chat");
                 assert_eq!(payload["text"], "on it");
                 assert_eq!(reply_to, Some(MessageId::from("7".to_owned())));
             }
             other => panic!("{other:?}"),
         }
-        action.target.channel = Some(agentdocker_core::ChannelId::from("reviews"));
-        assert!(matches!(
-            reply_request(&action, "seen").unwrap(),
-            Request::Send { to, .. } if to == "channel:reviews"
-        ));
-        assert!(reply_request(&action, "   ").is_err());
-        assert!(reply_request(&action, &"x".repeat(REPLY_CHARS + 1)).is_err());
+        assert_eq!(reply_text("  on it  ").unwrap().as_deref(), Some("on it"));
+        assert_eq!(reply_text("   ").unwrap(), None);
+        assert!(reply_text(&"x".repeat(REPLY_CHARS + 1)).unwrap_err().certain);
+    }
+
+    /// Against a daemon that answers as told: the original is read to
+    /// learn where it went and the reply follows it; only `sent` is
+    /// success; a refusal is certain; a connection that closes before an
+    /// answer is not, so the person is sent to the history, not to a
+    /// resend.
+    #[test]
+    fn a_reply_takes_only_sent_as_success_and_tells_a_refusal_from_an_unknown_outcome() {
+        use agentdocker_core::{ArchivedMessage, Destination, Envelope};
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        let Activation::Open(action) = activation(7) else {
+            unreachable!()
+        };
+        let root = || {
+            let mut envelope = Envelope::new(
+                "sender-1",
+                Destination::Project(agentdocker_core::ProjectId::from("p1")),
+                "chat",
+                serde_json::json!({"text": "?"}),
+                None,
+                chrono::Utc::now(),
+            );
+            envelope.id = MessageId::from("7".to_owned());
+            ArchivedMessage {
+                seq: 1,
+                conversation: agentdocker_core::ConversationId::of(&envelope).unwrap(),
+                envelope,
+                replies: 0,
+            }
+        };
+        enum Answer {
+            Sent,
+            Refused,
+            Silence,
+            Missing,
+        }
+        for (answer, expected) in [
+            (Answer::Sent, Ok(())),
+            (
+                Answer::Refused,
+                Err(Failure::certain("recipient is paused (forbidden)")),
+            ),
+            (
+                Answer::Silence,
+                Err(Failure::unknown(
+                    "agentd closed the connection without answering",
+                )),
+            ),
+            (
+                Answer::Missing,
+                Err(Failure::certain(
+                    "the message could not be read: no such message (not_found)",
+                )),
+            ),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let socket = tmp.path().join("agentd.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let log = seen.clone();
+            let server = std::thread::spawn(move || {
+                for turn in 0..2 {
+                    let Ok((stream, _)) = listener.accept() else {
+                        return;
+                    };
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                        .unwrap();
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let request: Request = serde_json::from_str(&line).unwrap();
+                    log.lock().unwrap().push(request.clone());
+                    let reply = match (turn, &request, &answer) {
+                        (0, Request::Thread { .. }, Answer::Missing) => Response::Error {
+                            code: agentdocker_core::ErrorCode::NotFound,
+                            message: "no such message".into(),
+                            details: None,
+                        },
+                        (0, Request::Thread { .. }, _) => Response::Thread {
+                            root: root(),
+                            replies: Vec::new(),
+                        },
+                        (1, Request::Send { .. }, Answer::Sent) => Response::Sent {
+                            message: MessageId::from("8".to_owned()),
+                            subscribers: 1,
+                        },
+                        (1, Request::Send { .. }, Answer::Refused) => Response::Error {
+                            code: agentdocker_core::ErrorCode::Forbidden,
+                            message: "recipient is paused".into(),
+                            details: None,
+                        },
+                        (1, Request::Send { .. }, Answer::Silence) => return,
+                        other => panic!("unexpected turn {:?}", other.1),
+                    };
+                    serde_json::to_writer(reader.get_mut(), &reply).unwrap();
+                    reader.get_mut().write_all(b"\n").unwrap();
+                    if matches!(answer, Answer::Missing) {
+                        return;
+                    }
+                }
+            });
+            let client = crate::client::Client::at(tmp.path().to_owned(), socket);
+            let mut action = action.clone();
+            action.home = tmp.path().to_owned();
+            action.socket = client.socket().to_owned();
+            let outcome = deliver(&client, &action, "on it");
+            server.join().unwrap();
+            assert_eq!(outcome, expected);
+            let seen = seen.lock().unwrap();
+            assert!(matches!(&seen[0], Request::Thread { message, .. } if message.as_str() == "7"));
+            if !matches!(answer, Answer::Missing) {
+                assert!(
+                    matches!(&seen[1], Request::Send { to, reply_to, from, .. }
+                        if to == "project:p1" && reply_to.as_ref().map(|m| m.as_str()) == Some("7") && from == "user"),
+                    "the reply follows the original to the project's everyone: {:?}",
+                    seen[1]
+                );
+            }
+        }
     }
 
     #[test]

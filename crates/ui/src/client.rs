@@ -74,7 +74,7 @@ impl Client {
     /// A client for the daemon a notification came from, which may not
     /// be this instance's. It starts nothing: the daemon that posted the
     /// notification is the one to answer, or the reply has nowhere to go.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", test))]
     pub fn at(home: PathBuf, socket: PathBuf) -> Self {
         Self {
             socket,

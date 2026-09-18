@@ -77,6 +77,9 @@ pub(super) struct State {
     pub project_available: Option<bool>,
     pub notification_message: Option<MessageId>,
     pending_notification: Option<(agentdocker_host::notify::Action, Instant)>,
+    /// A reply typed into a notification that did not go, waiting for
+    /// its conversation to open so the words become its draft.
+    pub reply_recovery: Option<ReplyRecovery>,
     /// Sessions whose turn finished while nobody was looking at them:
     /// finished as observed, not yet viewed. Viewing is an explicit act
     /// (opening the project or the session, or already having it on
@@ -107,6 +110,16 @@ impl State {
             }
         }
     }
+}
+
+/// The words of a failed notification reply, and why it failed, until
+/// the conversation they belong to is open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplyRecovery {
+    pub message: MessageId,
+    pub text: String,
+    pub reason: String,
+    pub certain: bool,
 }
 
 /// Each room keeps its own draft; receipts clear only an untouched submission.
@@ -576,6 +589,61 @@ impl App {
         if self.connected.is_ok() {
             self.send(Cmd::History(conversation, self.history_epoch));
         }
+        self.recover_reply();
+    }
+
+    /// Put a failed notification reply's words into the draft of the
+    /// conversation the notification opened, once it is open: after what
+    /// is already there, so nothing typed in either place is lost, and
+    /// with the reason in the status line — for an unknown outcome, that
+    /// the history decides whether to send again.
+    pub(super) fn recover_reply(&mut self) {
+        let Some(recovery) = self.shell.reply_recovery.clone() else {
+            return;
+        };
+        let Some(conversation) = self.shell.conversation.clone() else {
+            return;
+        };
+        if self.shell.notification_message.as_ref() != Some(&recovery.message) {
+            return;
+        }
+        self.shell.reply_recovery = None;
+        let existing = self
+            .shell
+            .conversation_drafts
+            .get(&conversation)
+            .map(|d| d.text.clone())
+            .unwrap_or_default();
+        let text = if existing.trim().is_empty() {
+            recovery.text.clone()
+        } else {
+            format!("{existing}\n\n{}", recovery.text)
+        };
+        self.shell
+            .edit_draft(DraftKind::Conversation, conversation.clone(), text.clone());
+        let placed = self
+            .shell
+            .conversation_drafts
+            .get(&conversation)
+            .is_some_and(|d| d.text == text);
+        self.say(match (recovery.certain, placed) {
+            (true, true) => format!(
+                "Your reply from the notification was not sent: {}. It is in the composer.",
+                recovery.reason
+            ),
+            (false, true) => format!(
+                "Your reply from the notification may not have been sent: {}. Check the history above before sending it again from the composer.",
+                recovery.reason
+            ),
+            (true, false) => format!(
+                "Your reply from the notification was not sent: {}. It could not be placed in the composer; you wrote: {}",
+                recovery.reason, recovery.text
+            ),
+            (false, false) => format!(
+                "Your reply from the notification may not have been sent: {}. Check the history above; you wrote: {}",
+                recovery.reason, recovery.text
+            ),
+        });
     }
 
     fn take_answer_reveal(&mut self) -> Option<MessageId> {
@@ -756,6 +824,38 @@ impl App {
                     }
                     crate::notification_route::Activation::Open(_) => {
                         self.say("This notification belongs to another local workspace.")
+                    }
+                    // A reply that did not go comes back as the words of
+                    // its conversation's draft, once that conversation is
+                    // open — the same route a click takes to the message.
+                    crate::notification_route::Activation::ReplyFailed {
+                        action,
+                        text,
+                        reason,
+                        certain,
+                    } if action.home == self.home
+                        && self
+                            .client
+                            .as_ref()
+                            .is_some_and(|c| c.socket() == action.socket) =>
+                    {
+                        self.shell.reply_recovery = Some(ReplyRecovery {
+                            message: action.target.message.clone(),
+                            text,
+                            reason,
+                            certain,
+                        });
+                        self.cancel_reveal();
+                        self.shell.pending_notification = Some((action, Instant::now()));
+                        for cmd in [Cmd::Agents, Cmd::Questions, Cmd::Inbox] {
+                            self.send(cmd);
+                        }
+                        tasks.push(self.advance_notification());
+                    }
+                    crate::notification_route::Activation::ReplyFailed { reason, .. } => {
+                        self.say(format!(
+                            "A reply to another workspace's notification was not sent: {reason}"
+                        ));
                     }
                     crate::notification_route::Activation::Focus => {}
                     crate::notification_route::Activation::Inbox => {
@@ -2118,6 +2218,7 @@ impl App {
                 self.send(Cmd::History(conversation, self.history_epoch));
             }
         }
+        self.recover_reply();
         // On the Messages screen the message is a row of the archive, not
         // of the inbox: it is scrolled to once its page is here, paging
         // back for it if the conversation was already open at its newest
@@ -3222,6 +3323,81 @@ mod tests {
     /// An archived message's notification opens its conversation even when
     /// its sender's record is gone and its channel is closed: the archive
     /// outlives both, and no ten-second wait ends in "no longer available".
+    /// A reply typed into a notification that did not go opens the
+    /// conversation the way a click does and puts the words in its
+    /// composer — after what was already there, never over it — and says
+    /// why; an unknown outcome says to read the history first. Another
+    /// workspace's failure is only said.
+    #[test]
+    fn a_failed_notification_reply_comes_back_as_the_conversations_draft() {
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let conversation = agentdocker_core::ConversationId::dm("user", "sender-1")
+            .as_str()
+            .to_owned();
+        app.shell.conversation_drafts.insert(
+            conversation.clone(),
+            ChannelDraft {
+                text: "half typed".into(),
+                ..Default::default()
+            },
+        );
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::ReplyFailed {
+                action: action.clone(),
+                text: "on it".into(),
+                reason: "refused: recipient is paused".into(),
+                certain: true,
+            },
+        ));
+        let _ = app.update(Message::Tick);
+        assert!(app.shell.reply_recovery.is_none(), "placed once opened");
+        assert_eq!(app.shell.conversation.as_deref(), Some(conversation.as_str()));
+        assert_eq!(
+            app.shell.conversation_drafts[&conversation].text,
+            "half typed\n\non it",
+            "both drafts kept, the reply after"
+        );
+        assert!(app.status.contains("was not sent: refused: recipient is paused"));
+        assert!(app.status.contains("in the composer"));
+
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::ReplyFailed {
+                action,
+                text: "still here".into(),
+                reason: "agentd closed the connection without answering".into(),
+                certain: false,
+            },
+        ));
+        let _ = app.update(Message::Tick);
+        assert_eq!(
+            app.shell.conversation_drafts[&conversation].text,
+            "still here"
+        );
+        assert!(app.status.contains("may not have been sent"));
+        assert!(app.status.contains("Check the history"));
+
+        let (mut app, _commands, _messages, _home, mut action) = notification_app();
+        action.home = std::path::PathBuf::from("/elsewhere");
+        action.socket = std::path::PathBuf::from("/elsewhere/agentd.sock");
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::ReplyFailed {
+                action,
+                text: "lost".into(),
+                reason: "refused".into(),
+                certain: true,
+            },
+        ));
+        assert!(app.shell.reply_recovery.is_none());
+        assert!(app.status.contains("another workspace"));
+    }
+
     #[test]
     fn an_archived_notification_opens_its_conversation_without_a_live_sender_or_channel() {
         // A direct message from a sender nobody has a record of.
