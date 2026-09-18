@@ -36,9 +36,11 @@ If you know [herdr](https://github.com/herdrdev/herdr), the two are complements 
 > Status: **alpha, single host.** Main includes the native desktop app, runtime inventory/setup, background discovery, human questions and notifications that open their message, PTY sessions, working-state recovery, fair leases/activity, channels, contests, multiplexer adapters, a Messages workspace (archived conversations, named channels, threads, search, mentions), a project pause, same-session reconnect and a bounded usage-log reader. The project Board and persisted message drafts are merged and installed on the current Mac; broader provider and input acceptance remains open. The published [v0.1.0 release](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0) predates the newer sessions/activity/contest/multiplexer work. macOS and Linux have native host support and desktop packaging with graphical CI. Published signed desktop releases, target-distribution acceptance and full native Windows support remain unfinished; Windows CI currently covers core/host foundations. Before real-agent trials, read the [current remaining work](docs/REMAINING-WORK.md) and [trial plan](docs/LOCAL-TRIAL.md).
 
 The [current remaining-work tracker](docs/REMAINING-WORK.md) separates engineering
-gaps from release setup and manual acceptance. The desktop now opens on current
-sessions grouped by project, with finished runs in History, conversations in
-Inbox, and advanced actions under More.
+gaps from release setup and manual acceptance. Selecting a project opens its
+shared chat, with current agents and terminal access nearby. **Open project
+terminal** starts a shell in that folder. **Agents** shows sessions; Board and
+History are under **More**. The tracker distinguishes these source changes from
+the installed desktop and records the remaining acceptance work.
 
 ## The Docker analogy
 
