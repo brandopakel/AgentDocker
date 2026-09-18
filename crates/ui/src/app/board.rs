@@ -13,6 +13,12 @@ use iced::{
     widget::{Space, column, container, row, text},
 };
 
+/// The least the five lanes need side by side — a card's words wrap
+/// below this rather than the lanes sharing it — measured against the
+/// page beside the rail, which a wide rail in a small window can leave
+/// far narrower than the window itself.
+const LANES_FIT: f32 = 5.0 * 150.0 + 4.0 * 12.0;
+
 impl App {
     pub(super) fn board_view(&self, c: Colors) -> Element<'_, Message> {
         let Some(entry) = self.shell.catalog.selected() else {
@@ -66,7 +72,7 @@ impl App {
                 c,
             ));
         }
-        let narrow = self.narrow();
+        let narrow = self.narrow() || self.panes.workspace_width() < LANES_FIT;
         // Wide, five columns sharing the width, the open card's detail
         // beneath them where there is room to read it; narrow, one
         // column below the other with the detail under its card.

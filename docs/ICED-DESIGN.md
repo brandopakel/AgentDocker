@@ -149,9 +149,11 @@ system, which is drawn from the mark:
   `task-file-ready`, `task-file-backlog`, a card `task-<id>` (opens it),
   its moves `task-back-<id>`/`task-next-<id>`, `task-hand-<id>-<agent>`,
   `task-release-<id>`, `task-archive-<id>`; `board-more` for the next
-  page. When wide the five lanes share the width and the open card's
-  detail — title, acceptance text, moves — sits beneath them; narrow, the
-  lanes stack and the detail sits under its card. A composer's
+  page. When the page beside the rail is at least ~800 px wide the five
+  lanes share it and the open card's detail — title, acceptance text,
+  moves — sits beneath them; narrower than that (a narrow window, or a
+  wide rail in a small one), the lanes stack and the detail sits under
+  its card. A composer's
   accessibility node carries its send as the input's action, which is what
   Enter does, so the smoke drives Enter as a click on the input's id. The screen takes an explicit height from the window (the
   window less the chrome, at least 320) because it sits inside the workspace's
@@ -266,9 +268,11 @@ All action buttons participate in Tab/Shift-Tab traversal and activate with
 Enter/Space. Repeated key events do not repeat an activation. Escape closes
 forms/details; Command/Ctrl+1–4 switch primary sections. F6 leaves terminal input;
 Control+] detaches. Button focus follows stable identity when session rows move.
-The focus ring is drawn for keyboard and programmatic focus only: a click
-focuses a control without it (the pointer knows where it clicked), the next
-key press shows it again, and losing focus forgets the click
+The focus ring follows the input modality: a click focuses a control without
+it (the pointer knows where it clicked) and it stays off that control until a
+key is pressed — whatever asks for the focus meanwhile, the click included —
+while Tab and a focus the app moves to another control show it; losing focus
+forgets the click
 (`a_clicked_control_is_focused_without_a_ring_until_the_keyboard_asks`).
 Text inputs use Iced's native input-method support.
 
