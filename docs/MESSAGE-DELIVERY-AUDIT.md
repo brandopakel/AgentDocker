@@ -21,9 +21,16 @@ PR #196 now repairs forgotten acknowledgements at a lifecycle boundary using
 bounded, exact provider-transcript evidence, and carries the original reply
 destination in channel metadata. The receipt commits before ACK; ambiguous,
 partial, historical-generation or provider-error evidence keeps the queue intact.
-Full installed #everyone pause, app reply, idle/busy and reconnect acceptance
-remain open until the reviewed runtime passes those live cases. Parser and
-transport fixtures do not establish that a real model obeyed a pause request.
+The installed follow-up is `652cf6a3` from `e4eae3e`. Actual private Claude idle,
+busy and text-only-then-idle trials produced a same-project pause reply and exact
+receipt without explicit ACK calls or another terminal prompt. The initial
+installed repair woke an existing channel session after a one-head, evidence-checked
+legacy recovery; a later text-only response exposed a Stop flush race, now covered
+by the bounded deferred helper and an old-build-fails/new-build-passes regression.
+Both existing Claude sessions are currently plain after independent relaunches;
+app-guided channel reconnect and their resulting idle #everyone acceptance remain
+open. Parser and transport fixtures alone are not model pause evidence. See the
+[source-pinned outcomes](verification/2026-09-12-input-delivery-status.json).
 
 ## September 16: live Claude idle-wake gap reproduced
 

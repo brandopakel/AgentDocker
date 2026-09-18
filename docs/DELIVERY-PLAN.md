@@ -10,9 +10,30 @@ evidence; an old “pending” entry is not by itself a current implementation g
 ## Product and engineering requirements
 
 
-### Current integration and installation (September 17 UTC)
+### Current integration and installation (September 18 UTC)
 
-The current desktop and daemon are reviewed local preview `d14610b7`
+The desktop and stable CLI/hooks now use local-preview `652cf6a3`, clean source
+`e4eae3e` (PR #196), schema 23; `8cbae3a9` is retained. The app reopened and all
+six live provider identities and processes were preserved. The serving coordinator
+was not restarted: its signed binary is byte-identical to the candidate's.
+The new receipt recovery passed 1,264 Rust tests (seven skipped), 94 Python
+checks (one skipped), fourteen packaged channel scenarios and thirteen real
+previous/candidate/rollback scenarios. Actual private Claude idle, busy and
+text-only-then-idle trials replied to project pauses in the same chat without
+an explicit ACK or another terminal prompt. The initial installed repair exposed
+the final-response flush race; the deferred Stop helper fixes that tested case.
+Exact sources and failures remain in the [input-delivery record](verification/2026-09-12-input-delivery-status.json).
+
+Existing Claude sessions were relaunched plainly and currently have no input
+channel. App-guided same-session reconnect, preserved identity/queue and provider
+consent in the app terminal remain the immediate work, followed by their actual
+idle #everyone pause/reply acceptance. Other-provider parity and broader release
+acceptance are not closed by these Claude trials. Final GitHub review and CI for
+#196 remain separate from this tested local-preview installation.
+
+### Historical integration and installation (September 17 UTC)
+
+At that checkpoint the desktop and daemon were local preview `d14610b7`
 (source `3785e81`, runtime identical to merged `e9c4ab2`, schema 23), activated
 at 20:55 UTC with a fresh integrity-checked state backup. Both provider processes
 and every registered live identity stayed unchanged. Receiver 25642 became 18735
