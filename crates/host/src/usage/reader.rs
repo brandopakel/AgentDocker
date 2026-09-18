@@ -482,15 +482,29 @@ fn scan_checked(
 /// prefix that merely looks like a non-accounting record is never sufficient.
 fn context_neutral_record(line: &[u8], runtime: Runtime) -> bool {
     #[derive(Deserialize)]
+    struct Payload {
+        #[serde(rename = "type")]
+        kind: Option<String>,
+    }
+    #[derive(Deserialize)]
     struct Envelope {
         #[serde(rename = "type")]
         kind: String,
+        payload: Option<Payload>,
     }
     let Ok(record) = serde_json::from_slice::<Envelope>(line) else {
         return false;
     };
     match runtime {
-        Runtime::Codex => record.kind == "response_item",
+        Runtime::Codex => {
+            matches!(record.kind.as_str(), "response_item" | "compacted")
+                || (record.kind == "event_msg"
+                    && record
+                        .payload
+                        .as_ref()
+                        .and_then(|payload| payload.kind.as_deref())
+                        == Some("item_completed"))
+        }
         Runtime::Claude => matches!(
             record.kind.as_str(),
             "user" | "progress" | "system" | "summary" | "file-history-snapshot"
@@ -917,26 +931,41 @@ mod tests {
                 + "\n";
         let counts = json!({"input_tokens":5,"output_tokens":3});
         let usage = json!({"type":"event_msg","timestamp":"2026-09-16T12:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":counts,"last_token_usage":counts}}}).to_string()+"\n";
-        let body =
-            json!({"type":"response_item","payload":{"content":"PRIVATE".repeat(MAX_RECORD / 3)}})
-                .to_string();
-        assert!(body.len() > MAX_RECORD);
-        std::fs::write(&path, format!("{metadata}{body}\n{usage}")).unwrap();
-        let batch = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
-        assert_eq!(batch.stop, Stop::Complete);
-        assert!(batch.gaps.is_empty());
-        assert_eq!(batch.samples.len(), 1);
-        assert!(batch.samples[0].proves_zero_baseline);
-        assert!(
-            !serde_json::to_string(&batch.cursor)
-                .unwrap()
-                .contains("PRIVATE")
-        );
+        let content = "PRIVATE".repeat(MAX_RECORD / 3);
+        for record in [
+            json!({"type":"response_item","payload":{"content":content}}),
+            json!({"type":"compacted","payload":{"replacement_history":content}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","item":content}}),
+        ] {
+            let body = record.to_string();
+            assert!(body.len() > MAX_RECORD);
+            std::fs::write(&path, format!("{metadata}{body}\n{usage}")).unwrap();
+            let batch = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
+            assert_eq!(batch.stop, Stop::Complete);
+            assert!(batch.gaps.is_empty());
+            assert_eq!(batch.samples.len(), 1);
+            assert!(batch.samples[0].proves_zero_baseline);
+            assert!(
+                !serde_json::to_string(&batch.cursor)
+                    .unwrap()
+                    .contains("PRIVATE")
+            );
+        }
+        let body = json!({"type":"response_item","payload":{"content":content}}).to_string();
         let invalid = &body[..body.len() - 1];
         std::fs::write(&path, format!("{metadata}{invalid}\n{usage}")).unwrap();
         let batch = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
         assert!(batch.samples.is_empty());
         assert_eq!(batch.gaps.len(), 2);
+        // Accounting envelopes and future event kinds are never silently
+        // skipped merely because a large body looks like transcript content.
+        for kind in ["token_count", "future_event"] {
+            let body = json!({"type":"event_msg","payload":{"type":kind,"content":content}});
+            std::fs::write(&path, format!("{metadata}{body}\n{usage}")).unwrap();
+            let batch = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
+            assert!(batch.samples.is_empty());
+            assert_eq!(batch.gaps.len(), 2);
+        }
         let body = json!({"type":"user","message":{"content":"PRIVATE".repeat(MAX_RECORD / 3)}})
             .to_string();
         std::fs::write(&path, format!("{body}\n{}", row(1))).unwrap();

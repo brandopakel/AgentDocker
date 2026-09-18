@@ -1191,11 +1191,15 @@ A completed prefix now returns ordinary budget exhaustion so the next record
 gets one full bounded pass; only failure with that full allowance quarantines.
 Complete oversized non-accounting JSON envelopes can be skipped without losing
 Codex session metadata: the whole JSON structure is validated while unknown
-fields are discarded. Malformed or accounting envelopes still create gaps.
+fields are discarded. This includes observed `response_item`, `compacted` and
+`event_msg/item_completed` bodies; accounting and unknown event types are not
+silently skipped. Malformed or accounting envelopes still create gaps.
 Cursor format 3 causes old cursors to replay through source-ID deduplication,
 revisiting both old quarantine decisions and previously unsupported Claude
-versions. The original 152-second failed corpus trial is retained privately;
-follow-up validation is pending.
+versions. The original 152-second failed corpus trial is retained privately.
+Thirty-two focused reader/store/collector regressions pass after integration
+with #191's final review fixes; the release/full gate and corpus rerun remain
+pending.
 
 Actual-session metadata follow-up found equal Claude response counters repeated
 under different content-record timestamps (1,916 repeated message IDs), and the
