@@ -27,7 +27,7 @@ impl Session {
     pub fn at_snapshot(captured: Cursor, previous: Option<&Cursor>) -> Result<Self, Error> {
         let runtime = captured.runtime;
         let cursor = if let Some(previous) = previous {
-            if previous.version != 2
+            if previous.version != CURSOR_VERSION
                 || previous.runtime != runtime
                 || previous.offset > previous.generation.length
             {

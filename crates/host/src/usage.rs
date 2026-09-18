@@ -203,7 +203,19 @@ pub fn claude(record: &Value) -> Result<Option<Sample>, String> {
     if usage.is_null() {
         return Ok(None);
     }
-    if !matches!(record["version"].as_str(), Some("2.1.268" | "2.1.270")) {
+    if !matches!(
+        record["version"].as_str(),
+        Some(
+            "2.1.268"
+                | "2.1.270"
+                | "2.1.271"
+                | "2.1.272"
+                | "2.1.273"
+                | "2.1.274"
+                | "2.1.275"
+                | "2.1.276"
+        )
+    ) {
         return Err("unsupported Claude transcript version".into());
     }
     if !usage.is_object() {
@@ -234,6 +246,8 @@ pub fn claude(record: &Value) -> Result<Option<Sample>, String> {
     Ok(Some(Sample {
         source_id: identity("claude-code", &session, &id),
         runtime: "claude-code".into(),
+        // Keep the original accounting-family identity as compatible patch
+        // versions are verified; changing it would conflict with saved samples.
         format: "claude-transcript-2.1.268-270-v1".into(),
         session_id: session,
         at: timestamp(&record["timestamp"])?,
@@ -317,7 +331,9 @@ mod tests {
     #[test]
     fn claude_caches_are_disjoint_and_content_records_share_one_response_id() {
         let mut record = json!({"type":"assistant","version":"2.1.270","sessionId":"session-a","uuid":"part-one","timestamp":"2026-09-16T12:00:00Z","message":{"id":"message-a","model":"model-a","content":[{"text":"PRIVATE"}],"usage":{"input_tokens":2,"cache_read_input_tokens":30,"cache_creation_input_tokens":15,"output_tokens":9,"output_tokens_details":{"thinking_tokens":3},"cache_creation":{"ephemeral_1h_input_tokens":15}}}});
-        for version in ["2.1.268", "2.1.270"] {
+        for version in [
+            "2.1.268", "2.1.270", "2.1.271", "2.1.272", "2.1.273", "2.1.274", "2.1.275", "2.1.276",
+        ] {
             record["version"] = json!(version);
             assert!(claude(&record).unwrap().is_some());
         }

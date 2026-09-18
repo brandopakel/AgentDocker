@@ -1184,12 +1184,38 @@ restart regression covers both proof directions, earlier draft fingerprints and
 a genuine changed-counter conflict. Its targeted test, the corrected
 real-binary trial and the 1,219-Rust-test combined gate passed.
 
+The frozen 602 MB Codex corpus exposed a quarantine error: an oversized record
+that received only the remainder of a batch was marked as unable to fit that
+entire budget. At the maximum budget this permanently stalled collection.
+A completed prefix now returns ordinary budget exhaustion so the next record
+gets one full bounded pass; only failure with that full allowance quarantines.
+Complete oversized non-accounting JSON envelopes can be skipped without losing
+Codex session metadata: the whole JSON structure is validated while unknown
+fields are discarded. Malformed or accounting envelopes still create gaps.
+Cursor format 3 causes old cursors to replay through source-ID deduplication,
+revisiting both old quarantine decisions and previously unsupported Claude
+versions. The original 152-second failed corpus trial is retained privately;
+follow-up validation is pending.
+
+Actual-session metadata follow-up found equal Claude response counters repeated
+under different content-record timestamps (1,916 repeated message IDs), and the
+installed provider now writes versions 2.1.271–2.1.276 with the same supported
+counter shape. The adapter accepts those observed patch versions while keeping
+its original accounting-family identity stable. Response replay ignores fragment
+observation times and keeps the first accepted hour, including earlier draft
+fingerprints; genuinely changed counters still report a gap. Validation of this
+follow-up is pending. Only accounting metadata was inspected; no prompt or
+response content was retained in these observations.
+
 Collector follow-up preserves the committed retention cutoff when configuration
 expands: discarded history stays explicitly truncated, and newly found older
 logs do not make that interval appear restored. Attribution reconciliation saves
 its scheduling cursor, moved contributions and event in one transaction, so any
 failure leaves all three unchanged. The sixteen-root/absolute-path limit applies
 after environment/default roots are expanded as well as to explicit settings.
+
+The following dated reader milestones preserve their original acceptance scope;
+the integrated collector/presentation status is recorded above.
 
 Initial source work adds pure optional counters, reset-aware deltas and strict
 hourly query bounds and checked aggregates that move sums and coverage together,
@@ -1218,7 +1244,7 @@ and check a cooperative time deadline between bounded reads. A trailing partial
 record does not advance the offset. Both the open object and current path are
 checked after reading, and the caller must validate again before committing.
 
-The cursor format is now version 2. An oversized record whose newline cannot
+The earlier cursor format was version 2. An oversized record whose newline cannot
 fit in the bounded batch returns `Stop::Quarantined`, retaining only verified
 complete records before it and recording the attempted byte budget in the
 cursor. Commit those samples, gaps and the quarantined cursor together; the
@@ -1295,7 +1321,8 @@ crash/replay/rotation/truncation and partial-line trials; cache/reasoning overla
 checks; unfinished/failed discovery and bounded scans with growing files;
 unregistered and retired-session attribution; hour-boundary/retention
 checks; and actual CLI/desktop acceptance showing coverage and effective ranges.
-This proposal does not mark the collector, protocol, CLI or Usage screen built.
+The original proposal does not itself establish completion; the current source
+and bounded acceptance are recorded above, with remaining work kept open.
 
 Registration resumption refuses a fresh record once it has input-delivery
 evidence: a receiver may already have offered its head, and merging older

@@ -193,19 +193,31 @@ impl Store {
             // a replay. Keep compatibility with draft stores that hashed it.
             let mut accounting = sample.clone();
             accounting.proves_zero_baseline = false;
+            if sample.semantics == Semantics::Response {
+                // Claude emits several content records for one response, each
+                // with its own observation time. The first accepted record
+                // fixes the hour; later fragments must not move or recount it.
+                accounting.at = DateTime::<Utc>::UNIX_EPOCH;
+            }
             let hash = fingerprint(&accounting)?;
-            let old: Option<String> = self
+            let old: Option<(String, String)> = self
                 .conn
                 .query_row(
-                    "SELECT fingerprint FROM usage_samples WHERE source_id=?1",
+                    "SELECT fingerprint,at FROM usage_samples WHERE source_id=?1",
                     [&sample.source_id],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
-            if let Some(old) = old {
+            if let Some((old, first_at)) = old {
                 if old != hash {
-                    accounting.proves_zero_baseline = true;
-                    if old != fingerprint(&accounting)? {
+                    let mut legacy = sample.clone();
+                    if sample.semantics == Semantics::Response {
+                        legacy.at = DateTime::parse_from_rfc3339(&first_at)?.with_timezone(&Utc);
+                    }
+                    legacy.proves_zero_baseline = false;
+                    let without_proof = fingerprint(&legacy)?;
+                    legacy.proves_zero_baseline = true;
+                    if old != without_proof && old != fingerprint(&legacy)? {
                         gaps += self.usage_gap(
                             &format!("conflict:{}", sample.source_id),
                             None,
@@ -610,6 +622,74 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM usage_samples", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1, "fingerprint survives aggregate retention");
+    }
+
+    #[test]
+    fn usage_response_fragments_keep_the_first_hour_without_false_conflicts() {
+        for legacy_hash in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let db = temp.path().join("state.db");
+            let store = Store::open(&db).unwrap();
+            let progress = progress(temp.path());
+            let mut value = sample("one-response", 2, 10, false);
+            ingest(
+                &store,
+                &progress,
+                "first-fragment",
+                vec![(value.clone(), Attribution::default())],
+                at(0),
+            )
+            .unwrap();
+            if legacy_hash {
+                store
+                    .conn
+                    .execute(
+                        "UPDATE usage_samples SET fingerprint=?1 WHERE source_id=?2",
+                        params![fingerprint(&value).unwrap(), value.source_id],
+                    )
+                    .unwrap();
+            }
+            drop(store);
+            let store = Store::open(&db).unwrap();
+            value.at = at(3);
+            ingest(
+                &store,
+                &progress,
+                "later-fragment",
+                vec![(value.clone(), Attribution::default())],
+                at(0),
+            )
+            .unwrap();
+            let observed = report(&store, 0, 21);
+            assert_eq!(observed.rows.len(), 1);
+            assert_eq!(observed.rows[0].samples, 1);
+            assert_eq!(observed.rows[0].counters.input_tokens.sum, Some(10));
+            assert_eq!(observed.coverage.source_gaps, 0);
+            let hours = store
+                .usage_report(
+                    Range::new(Some(at(0)), Some(at(21)), at(23), at(0)).unwrap(),
+                    Group::Hour,
+                    None,
+                    None,
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(hours.rows.len(), 1);
+            assert_eq!(
+                hours.rows[0].key.as_deref(),
+                Some("2026-09-17T02:00:00.000000000Z")
+            );
+            value.counters.input_tokens = Some(11);
+            ingest(
+                &store,
+                &progress,
+                "real-conflict",
+                vec![(value, Attribution::default())],
+                at(0),
+            )
+            .unwrap();
+            assert_eq!(report(&store, 0, 21).coverage.source_gaps, 1);
+        }
     }
 
     #[test]

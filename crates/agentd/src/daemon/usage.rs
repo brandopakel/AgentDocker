@@ -380,6 +380,7 @@ fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
             formats: vec![
                 "codex-rollout-0.153.4-0.154.0-v1".into(),
                 "claude-transcript-2.1.268-270-v1".into(),
+                "claude-transcript-2.1.271-276-v1".into(),
             ],
         },
         ..Collection::default()

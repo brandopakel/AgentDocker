@@ -19,6 +19,9 @@ mod session;
 pub use session::{Preparation, Session};
 
 const MAX_BATCH: u64 = 16 * 1024 * 1024;
+// Revisit prior unsupported Claude patch versions and old quarantine decisions.
+// The collector replays an older cursor with source-ID deduplication.
+const CURSOR_VERSION: u32 = 3;
 const MAX_RECORD: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 4096;
 const PREFIX_DEADLINE: Duration = Duration::from_secs(1);
@@ -126,7 +129,7 @@ impl Cursor {
             return Err(Error::Changed);
         }
         Ok(Self {
-            version: 2,
+            version: CURSOR_VERSION,
             runtime,
             generation,
             offset: 0,
@@ -182,7 +185,10 @@ impl Cursor {
         mut prefix: [u8; 32],
         elapsed: Duration,
     ) -> Result<u64, Error> {
-        if self.version != 2 || self.offset > self.generation.length || start > self.offset {
+        if self.version != CURSOR_VERSION
+            || self.offset > self.generation.length
+            || start > self.offset
+        {
             return Err(Error::Cursor);
         }
         if self.generation != Generation::capture(file)? {
@@ -320,7 +326,7 @@ fn scan_checked(
     let mut validation_bytes_read = 0;
     let mut cursor = match previous {
         Some(prior) => {
-            if prior.version != 2
+            if prior.version != CURSOR_VERSION
                 || prior.runtime != runtime
                 || prior.offset > prior.generation.length
             {
@@ -345,7 +351,7 @@ fn scan_checked(
             next
         }
         None => Cursor {
-            version: 2,
+            version: CURSOR_VERSION,
             runtime,
             generation: generation.clone(),
             offset: 0,
@@ -372,6 +378,7 @@ fn scan_checked(
     let mut gaps = Vec::new();
     let mut line = Vec::new();
     let mut records = 0;
+    let starting_offset = cursor.offset;
     let stop = loop {
         if cursor.offset == generation.length {
             break Stop::Complete;
@@ -392,6 +399,12 @@ fn scan_checked(
                 reader.read_until(b'\n', &mut line)?;
             }
             if line.last() != Some(&b'\n') {
+                // An earlier complete prefix consumed part of this pass. Try
+                // this record once with the full budget before quarantining;
+                // even the maximum budget may have only a small remainder.
+                if cursor.offset > starting_offset {
+                    break Stop::Budget;
+                }
                 cursor.quarantined_at_budget = Some(budget.bytes);
                 break Stop::Quarantined;
             }
@@ -403,7 +416,9 @@ fn scan_checked(
                 Stop::Budget
             };
         }
-        let parsed = if oversized {
+        let parsed = if oversized && context_neutral_record(&line, runtime) {
+            Ok(None)
+        } else if oversized {
             Err("record exceeds the configured size limit".to_owned())
         } else {
             serde_json::from_slice(&line)
@@ -460,6 +475,27 @@ fn scan_checked(
         validation_bytes_read,
         stop,
     })
+}
+
+/// Ignore large prompt/tool bodies only after validating the complete JSON
+/// envelope. Serde skips unknown fields without retaining their values. A
+/// prefix that merely looks like a non-accounting record is never sufficient.
+fn context_neutral_record(line: &[u8], runtime: Runtime) -> bool {
+    #[derive(Deserialize)]
+    struct Envelope {
+        #[serde(rename = "type")]
+        kind: String,
+    }
+    let Ok(record) = serde_json::from_slice::<Envelope>(line) else {
+        return false;
+    };
+    match runtime {
+        Runtime::Codex => record.kind == "response_item",
+        Runtime::Claude => matches!(
+            record.kind.as_str(),
+            "user" | "progress" | "system" | "summary" | "file-history-snapshot"
+        ),
+    }
 }
 
 fn record_digest(prefix: [u8; 32], line: &[u8]) -> [u8; 32] {
@@ -809,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_tail_quarantines_with_complete_prefix_and_recovers_without_replaying_it() {
+    fn oversized_tail_gets_the_full_budget_after_the_complete_prefix() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("log");
         let first = row(0);
@@ -819,17 +855,21 @@ mod tests {
         };
         std::fs::write(&path, format!("{first}{}\n{}", "x".repeat(1000), row(1))).unwrap();
         let blocked = scan(&path, Runtime::Claude, None, limits).unwrap();
-        assert_eq!(blocked.stop, Stop::Quarantined);
+        assert_eq!(blocked.stop, Stop::Budget);
         assert_eq!(blocked.samples.len(), 1);
         assert_eq!(blocked.cursor.offset(), first.len() as u64);
         blocked.cursor.validate(&path).unwrap();
         let saved = serde_json::to_string(&blocked.cursor).unwrap();
         assert!(!saved.contains("PRIVATE_TRANSCRIPT"));
         let restored: Cursor = serde_json::from_str(&saved).unwrap();
-        assert!(
-            matches!(scan(&path, Runtime::Claude, Some(&restored), limits),
-            Err(Error::Oversized { offset }) if offset == first.len() as u64)
-        );
+        let retry = scan(&path, Runtime::Claude, Some(&restored), limits).unwrap();
+        assert_eq!(retry.stop, Stop::Budget);
+        assert!(retry.samples.is_empty());
+        assert_eq!(retry.gaps.len(), 1);
+        assert_eq!(retry.cursor.offset(), first.len() as u64 + 1001);
+        let next = scan(&path, Runtime::Claude, Some(&retry.cursor), limits).unwrap();
+        assert_eq!(next.stop, Stop::Complete);
+        assert_eq!(next.samples.len(), 1);
         let larger = Budget {
             bytes: 4000,
             ..budget()
@@ -857,7 +897,7 @@ mod tests {
         };
         std::fs::write(&path, format!("{first}{}\n", "x".repeat(1000))).unwrap();
         let blocked = scan(&path, Runtime::Claude, None, limits).unwrap();
-        assert_eq!(blocked.stop, Stop::Quarantined);
+        assert_eq!(blocked.stop, Stop::Budget);
         std::fs::write(&path, format!("{}{}\n", row(1), "x".repeat(1000))).unwrap();
         let mut restored = blocked.cursor;
         restored.generation = Generation::capture(&File::open(&path).unwrap()).unwrap();
@@ -865,6 +905,45 @@ mod tests {
             scan(&path, Runtime::Claude, Some(&restored), limits),
             Err(Error::Changed)
         ));
+    }
+
+    #[test]
+    fn large_valid_non_accounting_bodies_keep_supported_context_but_malformed_ones_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        let metadata =
+            json!({"type":"session_meta","payload":{"id":"thread-a","cli_version":"0.154.0"}})
+                .to_string()
+                + "\n";
+        let counts = json!({"input_tokens":5,"output_tokens":3});
+        let usage = json!({"type":"event_msg","timestamp":"2026-09-16T12:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":counts,"last_token_usage":counts}}}).to_string()+"\n";
+        let body =
+            json!({"type":"response_item","payload":{"content":"PRIVATE".repeat(MAX_RECORD / 3)}})
+                .to_string();
+        assert!(body.len() > MAX_RECORD);
+        std::fs::write(&path, format!("{metadata}{body}\n{usage}")).unwrap();
+        let batch = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
+        assert_eq!(batch.stop, Stop::Complete);
+        assert!(batch.gaps.is_empty());
+        assert_eq!(batch.samples.len(), 1);
+        assert!(batch.samples[0].proves_zero_baseline);
+        assert!(
+            !serde_json::to_string(&batch.cursor)
+                .unwrap()
+                .contains("PRIVATE")
+        );
+        let invalid = &body[..body.len() - 1];
+        std::fs::write(&path, format!("{metadata}{invalid}\n{usage}")).unwrap();
+        let batch = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
+        assert!(batch.samples.is_empty());
+        assert_eq!(batch.gaps.len(), 2);
+        let body = json!({"type":"user","message":{"content":"PRIVATE".repeat(MAX_RECORD / 3)}})
+            .to_string();
+        std::fs::write(&path, format!("{body}\n{}", row(1))).unwrap();
+        let batch = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
+        assert_eq!(batch.stop, Stop::Complete);
+        assert!(batch.gaps.is_empty());
+        assert_eq!(batch.samples.len(), 1);
     }
 
     #[test]
