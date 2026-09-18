@@ -75,6 +75,7 @@ struct Cursor {
     path_hash: String,
     device: u64,
     inode: u64,
+    observed_len: u64,
     offset: u64,
 }
 
@@ -108,12 +109,15 @@ pub(super) fn find(
         ),
         device: before.dev(),
         inode: before.ino(),
+        observed_len: before.len(),
         offset: 0,
     };
     if let Ok(mut previous) = serde_json::from_slice::<Cursor>(&bytes) {
         let offset = previous.offset;
+        let shortened = before.len() < previous.observed_len;
         previous.offset = 0;
-        if previous == current && offset <= before.len() {
+        previous.observed_len = before.len();
+        if !shortened && previous == current && offset <= before.len() {
             current.offset = offset;
         }
     }
@@ -193,9 +197,9 @@ mod tests {
     }
     #[test]
     fn head_generation_inode_and_truncation_changes_restart_without_reusing_proof() {
-        let (root, path, mut agent, mut message) = fixture();
-        let original = format!("START\n{}\n", "x".repeat(WINDOW as usize * 2));
-        for change in 0..4 {
+        for change in 0..5 {
+            let (root, path, mut agent, mut message) = fixture();
+            let original = format!("START\n{}", format!("{}\n", "x".repeat(1023)).repeat(4096));
             std::fs::write(&path, &original).unwrap();
             assert!(!find(root.path(), &path, &agent, &message, |_| false).unwrap());
             match change {
@@ -205,14 +209,31 @@ mod tests {
                     std::fs::rename(&path, root.path().join("old")).unwrap();
                     std::fs::write(&path, &original).unwrap();
                 }
-                _ => std::fs::write(&path, "START\n").unwrap(),
+                3 => std::fs::write(&path, "START\n").unwrap(),
+                _ => std::fs::write(
+                    &path,
+                    format!("START\n{}\n", "x".repeat(WINDOW as usize + 1024)),
+                )
+                .unwrap(),
             }
-            assert!(
-                find(root.path(), &path, &agent, &message, |window| window
-                    .starts_with("START\n")
-                    || window == "START")
+            // Another test's fork can briefly inherit our just-dropped
+            // descriptor until exec closes it. Production skips busy locks;
+            // allow that same retry here without accepting a later offset.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if find(root.path(), &path, &agent, &message, |window| {
+                    window.starts_with("START\n") || window == "START"
+                })
                 .unwrap()
-            );
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "source change {change} must restart at the beginning"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         }
     }
     #[test]

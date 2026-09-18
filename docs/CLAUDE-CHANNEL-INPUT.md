@@ -167,6 +167,10 @@ before removing the queue head. It confirms input receipt, not task completion.
 Replies use `send_message` to the envelope's `reply_destination` with
 `reply_to=message_id`, so project/channel responses appear in their original chat.
 A terminal-only response is not an app reply.
+The legacy lifecycle-hook path carries the same complete envelope and reply
+destination; it no longer strips IDs and routing down to a display-name/text
+summary. Hooks alone still require a provider prompt/tool boundary and cannot
+wake a plain idle session.
 
 Automatic recovery first reads a 2 MiB suffix, then at most one additional
 2 MiB history window if the head's evidence is older. A private per-agent cursor

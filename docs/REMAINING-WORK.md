@@ -18,9 +18,11 @@ remain below. Optional research is outside the current delivery closure.
 The September 18 resumed delivery investigation confirmed a separate queue stall:
 Claude processed a channel offer but omitted its explicit ACK, blocking later
 pause requests. PR #196 adds bounded provider-transcript receipt recovery and
-original-chat reply routing guidance. Its parser/transport tests and actual
-installed pause/reply acceptance are tracked separately; the bug remains open
-until the live case passes. The requested app reconnect/approval button remains
+original-chat reply routing. Actual isolated Claude idle and busy trials both
+received a project pause, replied in the same chat and committed a receipt without
+an explicit ACK call or another terminal prompt. Bounded historical recovery and
+complete legacy-hook envelopes address old stuck heads and misplaced replies.
+The installed-session pause/reply case remains open until the upgrade passes it. The requested app reconnect/approval button remains
 part of this work, including detecting a plain restart that lost its channel.
 
 The installed desktop and daemon use reviewed local-preview release `d14610b7`,

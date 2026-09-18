@@ -1503,7 +1503,7 @@
       "inspection_at": "2026-09-18T06:03:00Z",
       "fresh_contact": true,
       "receipt": null,
-      "provider_metadata": "The first ID appeared in enqueue/remove and queued-command attachment records at 00:39:33\u201338 UTC; later handoff IDs and an acknowledgement-tool call were absent. Attachment is not model consumption or an explanation for the missing receipt."
+      "provider_metadata": "The first ID appeared in enqueue/remove and queued-command attachment records at 00:39:33–38 UTC; later handoff IDs and an acknowledgement-tool call were absent. Attachment is not model consumption or an explanation for the missing receipt."
     },
     "standard_gate": {
       "passed": true,
@@ -1604,10 +1604,10 @@
     ]
   },
   "claude_channel_context_receipt_2026_09_18": {
-    "status": "Implemented and locally validated; final review, installation and actual-model everyone pause/reply acceptance pending",
+    "status": "Actual isolated Claude idle and busy pause/reply acceptance passed; final integrated review, installation and existing-session recovery remain pending",
     "runtime_source": "60f2fae",
     "driver_followup": "5d0f52c",
-    "scope": "Current-session exact channel body and metadata plus a real assistant continuation; durable receipt before ACK; one FIFO head; bounded 2 MiB/4096 record suffix; unknown/error evidence retains queue. Original app reply destination included in each offer.",
+    "scope": "Exact current-session channel body and metadata followed by a real assistant continuation; durable receipt before ACK; one FIFO head; 2 MiB tail plus at most one 2 MiB historical window per hook, 1 MiB overlap and 4096 proof records; unknown/error evidence retains queue. Channel and legacy hooks preserve full envelopes and original app reply destinations.",
     "standard_gate": {
       "result": "passed",
       "rust_passed": 1212,
@@ -1724,7 +1724,7 @@
       "busy_claude_first_offer": "fcb1ed18d7244fbf",
       "finding": "Provider-recorded full channel input and assistant continuation existed, but explicit ACK was absent and later pause messages remained behind the head. Read-only metadata investigation did not drain or acknowledge peers.",
       "main_restart": "2026-09-18T19:12:35.279696Z new process95454 launched plain, losing live channel flags again.",
-      "historical_head_limit": "Existing74334head is outside bounded suffix; safe recovery remains to implement or validate without silently dropping or replaying unknown input."
+      "historical_head_limit": "Bounded incremental history recovery is implemented; native transport trial recovered an old head in three hook boundaries. Existing installed-session recovery remains pending."
     },
     "actual_provider_trial": {
       "result": {
@@ -1783,7 +1783,7 @@
         "driver_sha256": "2682f0cb2d443ba3993b132c75f477ec50f1b2ebc6a7e7aded8afad256a198ea"
       },
       "artifact_sha256": "2377045faf5491d61ff26b5c3e44053c869a5336e26ceebeff1c948f4530d35d",
-      "limits": "Private Claude2.1.277 session, one idle human project-pause and actual same-conversation reply with no explicit ACK calls. One initial setup prompt; later input entirely through channel. Existing user sessions, busy pause and installed upgrade remain separate. No production restart or inbox mutation."
+      "limits": "Private Claude 2.1.277 session, one idle human project-pause and actual same-conversation reply with no explicit ACK calls. One initial setup prompt; later input entirely through channel. Installed upgrade remains separate. No production restart or inbox mutation."
     },
     "retained_actual_driver_failure": {
       "result": {
@@ -1802,6 +1802,135 @@
         "remaining_owned_processes": 0
       },
       "finding": "The initial harness pasted its setup prompt into the terminal without submitting it; no READY or pause stage ran. Corrected harness supplies setup as an initial CLI prompt. Both attempts reaped their own provider/daemon."
-    }
+    },
+    "actual_busy_provider_trial": {
+      "result": {
+        "result": "passed",
+        "session": "c9ea4e25-2741-495b-8d1f-b63a296d36ca",
+        "scope": "Private actual Claude channel test; no production daemon/session mutation",
+        "stages": [
+          "channel registered",
+          {
+            "initial_ready": "88dfe91653f34c3a"
+          },
+          "busy channel turn began its eight-second tool; sending human project pause now",
+          "project pause sent during the provider sleep tool; no further terminal input",
+          "actual model reply and durable receipt arrived without explicit ACK or another terminal prompt"
+        ],
+        "started_at": 1789761028.789124,
+        "provider_pid": 22612,
+        "daemon_pid": 22591,
+        "agent_id": "cdcd8b45b2034ab3b720a3b4a0531da8",
+        "busy_message_id": "38124615fc5f440c",
+        "busy_tool_start": {
+          "uuid": "e49d2e87-4197-4b82-a99a-8494aa7cc8ae",
+          "timestamp": "2026-09-18T19:51:56.437Z",
+          "sessionId": "c9ea4e25-2741-495b-8d1f-b63a296d36ca"
+        },
+        "pause_id": "0d361a5938304ad2",
+        "reply_id": "9207f953a1124d12",
+        "reply_destination": {
+          "kind": "project",
+          "value": "955c3007fd6053ad8549e1955200dea3"
+        },
+        "receipt": {
+          "messages": [
+            "0d361a5938304ad2"
+          ],
+          "receipt": {
+            "provider": "claude_channel"
+          }
+        },
+        "duration_seconds": 102.35647797584534,
+        "remaining_owned_processes": 0,
+        "explicit_ack_tools_called": 0,
+        "tool_names": [
+          "ToolSearch",
+          "mcp__agentdocker__send_message",
+          "Bash",
+          "mcp__agentdocker__send_message",
+          "mcp__agentdocker__send_message"
+        ],
+        "channel_record_metadata": [
+          {
+            "uuid": "f3b76231-1855-424c-9819-6456b64fd28c",
+            "parentUuid": "943144ae-7fa9-45ae-9334-4d4bcf18cba0",
+            "type": "user",
+            "timestamp": "2026-09-18T19:51:54.353Z",
+            "sessionId": "c9ea4e25-2741-495b-8d1f-b63a296d36ca",
+            "version": "2.1.277"
+          },
+          {
+            "uuid": "09e33677-1733-46cf-be05-4c47f0ac462f",
+            "parentUuid": "8a84f686-5287-4511-8d94-825eb9c7fae3",
+            "type": "attachment",
+            "timestamp": "2026-09-18T19:52:04.830Z",
+            "sessionId": "c9ea4e25-2741-495b-8d1f-b63a296d36ca",
+            "version": "2.1.277"
+          }
+        ],
+        "provider_version": "2.1.277",
+        "driver_sha256": "e6d2f8aac83e8d042eeaf875245b5bc154f1fd44e0461df16a60af7788f0a69d",
+        "runtime_source": "60f2fae with fixture-only5d0f52c correction"
+      },
+      "artifact_sha256": "2a981b2bacd6fde0b4430b2a3f85b12074f2125842306d860112373944518d87",
+      "limits": "Private actual Claude 2.1.277 with explicit ACK tool disabled. Peer work started a sleep tool; project pause was sent during that tool and entered a queued_command provider attachment. Correlated same-project reply and durable receipt arrived without further terminal input. Owned processes were reaped after receipt; this does not establish indefinite post-pause quiescence or recovery of existing production sessions."
+    },
+    "historical_transport_trial": {
+      "source": "95b189b8a1b833a094bddaff2e9c6a0b20420d0f",
+      "artifact_sha256": "49a43c2469761e778cfcb036a3d0f45e33621c05cf0e1eae7420438ea39795e5",
+      "result": {
+        "result": "passed",
+        "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+        "steps": [
+          "an unreceived offer became durably paused after 30 seconds and stayed paused through refresh without inventing a receipt, replaying input or consuming the queue",
+          "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+          "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+          "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+          "without an explicit model ACK, the real hook retained channel input alone and committed receipt before removing its exact head only after the modeled assistant continuation; repeated hooks were harmless",
+          "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+          "project fan-out carried a reply destination that the actual MCP send_message tool routed back to the same everyone conversation with its original message ID",
+          "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+          "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+          "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+          "pre-initialization session fold preserved observations, open memberships and completed card identity references without changing their text or state, retained one channel owner across different agent IDs, and delivered the older queue plus a new room message through the canonical alias",
+          "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+        ],
+        "binary_sha256": {
+          "agentd": "105b7d4af30c210ef1764600adc250e47416c5152bdc42df232c497f28794286",
+          "agentdocker": "4a638371c347a6d41c76c05e42decf13df8ba513bd575e8a526bdcd0f28dee4c"
+        },
+        "driver_sha256": {
+          "claude_channel_smoke.py": "a1ea5445469db25798306c86a5e3d1e7eb1eca1fc7a1a813e195c265ec38de74",
+          "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+          "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+        },
+        "history_recovery_hook_calls": 3,
+        "remaining_owned_processes": 0,
+        "duration_seconds": 70.7271537919878
+      },
+      "limits": "Private MCP transport fixture, not a model. Uses one bounded historical window per hook; no production queue mutation."
+    },
+    "history_integration_gate": {
+      "source": "95b189b8a1b833a094bddaff2e9c6a0b20420d0f",
+      "result": "passed",
+      "rust_passed": 1223,
+      "rust_skipped": 7,
+      "python_checks": 94,
+      "python_skipped": 1,
+      "includes": [
+        "fmt",
+        "strict clippy",
+        "doctests",
+        "package",
+        "release"
+      ],
+      "log_sha256": "9e94e8bd4f589502c381cfd295d581df23f170c4aded99f24a8c6c2536f0341c"
+    },
+    "followup_regression_findings": [
+      "A transcript shortened while still longer than the scan offset must reset the cursor; observed length is now retained. The added test failed before the fix.",
+      "Concurrent cargo-test forks can retain a just-dropped lock until exec; the source-change regression now allows bounded retry without accepting a later scan offset.",
+      "Legacy Claude hooks dropped IDs, routing and non-text payload fields. They now carry complete JSON envelopes and original conversation reply destinations, covered for every destination type and multiline/structured payloads."
+    ]
   }
 }
