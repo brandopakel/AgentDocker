@@ -15,6 +15,8 @@ fault injection into the isolated receiver ledger (never the provider database),
 and explicitly closing/reopening the same TUI conversation with queued input.
 The long-busy scenario holds a direct user turn for 65 seconds, verifies retained
 peer input without a false idle pause, then requires ordered provider receipts.
+Active-hook scenarios accept --active-peer-kind answer to exercise an ordinary
+peer reply at the queue head followed by human input in the same active turn.
 With --reload, baseline/question also hand the private daemon over while idle,
 with a draft, during a busy turn and (question only) before a pending answer.
 Private profiles/processes are retired; --output keeps private traces and a
@@ -92,7 +94,11 @@ parser.add_argument(
 )
 parser.add_argument("--initial-receiver-cli", type=Path,
     help="Older immutable CLI used to bootstrap the controller-upgrade scenario")
+parser.add_argument("--active-peer-kind", choices=("chat", "answer"), default="chat",
+    help="Message kind for the peer head in active-hook, active-hook-lost or controller-upgrade")
 args = parser.parse_args()
+if args.active_peer_kind != "chat" and args.scenario not in ("active-hook", "active-hook-lost", "controller-upgrade"):
+    parser.error("--active-peer-kind requires an active-hook or controller-upgrade scenario")
 if args.reload and args.scenario not in ("baseline", "question"):
     parser.error("--reload supports baseline and question only")
 if args.scenario in ("legacy-question", "legacy-reply", "migration") and (not args.legacy_cli):
@@ -111,6 +117,7 @@ out.mkdir(mode=0o700)
 report = {
     "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "scenario": args.scenario,
+    "active_peer_kind": args.active_peer_kind,
     "reload_enabled": args.reload,
     "result": "failed",
     "scope": __doc__,
@@ -1372,13 +1379,13 @@ try:
                 wait(lambda: len(report["requests"]) > start, 15)
                 began = time.monotonic()
                 sent = []
-                for sender, destination, marker in [
-                    (peer, aid, "PEER_ACTIVE_HOOK"),
-                    ("user", "project:" + str(repo), "HUMAN_PROJECT_PAUSE"),
-                    ("user", "all", "HUMAN_BROADCAST_PAUSE"),
+                for sender, destination, kind, marker in [
+                    (peer, aid, args.active_peer_kind, "PEER_ACTIVE_HOOK"),
+                    ("user", "project:" + str(repo), "chat", "HUMAN_PROJECT_PAUSE"),
+                    ("user", "all", "chat", "HUMAN_BROADCAST_PAUSE"),
                 ]:
                     result = rpc({"op":"send", "from":sender, "to":destination,
-                        "kind":"chat", "payload":{"text":marker}})
+                        "kind":kind, "payload":{"text":marker}})
                     sent.append(result["message"])
                 if args.scenario == "controller-upgrade":
                     initial = rpc({"op":"inspect", "agent":aid})["agent"]["input_binding"]

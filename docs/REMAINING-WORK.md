@@ -32,6 +32,16 @@ external terminal hosts beyond macOS Terminal still need refinement/acceptance.
 
 ## Delivered source and current desktop
 
+A September 18 installed-session audit found an ordinary peer `answer` retained
+at the Codex native queue head because active hooks rejected every answer kind.
+The source correction shares the receiver's ordinary-input classification with
+hooks, allowing peer replies and daemon-routed human input while retaining
+uncertain offers and human answers awaiting exact MCP receipts. A focused policy
+regression test and `native_codex_queue_smoke.py --scenario active-hook
+--active-peer-kind answer` cover the intended boundary. Rust execution, actual
+Codex acceptance and safe installed-receiver activation are still pending; no
+production queue acknowledgement or receiver replacement is part of this patch.
+
 The September 18 resumed delivery investigation confirmed a separate queue stall:
 Claude processed a channel offer but omitted its explicit ACK, blocking later
 pause requests. PR #196 adds bounded provider-transcript receipt recovery and
