@@ -359,7 +359,11 @@ For Claude Code, `agentdocker setup claude-code` installs handlers for
 and `SessionEnd`. They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, and
-anything it read that has gone stale.
+anything it read that has gone stale. `PreToolUse` takes a lease on the
+file about to be edited and `Stop` gives those edit leases back when the
+turn ends; a lease the session claimed itself — a worktree, a branch, the
+build campaign — is not touched until the session releases it, its TTL runs
+out, or the session ends.
 
 ---
 
@@ -469,6 +473,11 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- A turn's end no longer takes an agent's deliberate leases away: the
+  Claude Code `Stop` hook releases only the per-file edit leases it took
+  itself (`automatic`), so a worktree, branch or build-campaign lease
+  claimed through `claim` or the MCP tools holds until released or expired.
+  `SessionEnd` still gives everything back.
 - Commits in a private checkout are attributed: a worktree made with
   `agentdocker worktree-create` (now with `--from <ref>`) is remembered as its
   maker's, and a checkout held under an exclusive `path:` lease is its

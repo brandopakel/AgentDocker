@@ -218,6 +218,7 @@ impl Daemon {
                 agent.as_str(),
                 None,
                 agentdocker_core::SummarySource::Explicit,
+                false,
             );
         }
         Response::Checkpoint { checkpoint }
@@ -919,6 +920,7 @@ mod tests {
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             })
             .await;
         let next = lock(&daemon.state).next_seq;
@@ -1090,6 +1092,7 @@ mod tests {
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             })
             .await;
         assert!(matches!(

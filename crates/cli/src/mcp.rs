@@ -1010,6 +1010,7 @@ impl<B: Backend> McpServer<B> {
                         ttl_secs: args.ttl_secs,
                         note: args.note,
                         wait_secs: args.wait_secs.min(MAX_CLAIM_WAIT_SECS),
+                        automatic: false,
                     })
                     .await
                     .map_err(transport)?;

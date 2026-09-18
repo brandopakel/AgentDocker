@@ -442,6 +442,7 @@ mod tests {
                 ttl_secs: 60,
                 note: Some("mine".into()),
                 wait_secs: 0,
+                automatic: false,
             })
             .await
         {

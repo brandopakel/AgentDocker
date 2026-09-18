@@ -857,6 +857,7 @@ mod tests {
                 ttl_secs: 600,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             })
             .await
         else {

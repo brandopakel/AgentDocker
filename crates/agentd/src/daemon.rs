@@ -1945,9 +1945,12 @@ impl Daemon {
                 ttl_secs,
                 note,
                 wait_secs,
+                automatic,
             } => {
-                self.claim(&agent, resource, mode, amount, ttl_secs, note, wait_secs)
-                    .await
+                self.claim(
+                    &agent, resource, mode, amount, ttl_secs, note, wait_secs, automatic,
+                )
+                .await
             }
             Request::Renew {
                 agent,
@@ -1967,9 +1970,10 @@ impl Daemon {
                 agent,
                 summary,
                 summary_source,
+                only_automatic,
             } => {
                 self.flush_release_watcher(&agent, None).await;
-                lock(&self.state).release_all(&agent, summary, summary_source)
+                lock(&self.state).release_all(&agent, summary, summary_source, only_automatic)
             }
             Request::JournalAdd { agent, summary } => {
                 lock(&self.state).journal_add(&agent, summary)
@@ -3833,6 +3837,7 @@ impl Daemon {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     async fn claim(
         self: &Arc<Self>,
         reference: &str,
@@ -3842,6 +3847,7 @@ impl Daemon {
         ttl_secs: u64,
         note: Option<String>,
         wait_secs: u64,
+        automatic: bool,
     ) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
@@ -3940,7 +3946,7 @@ impl Daemon {
                     }
                 }
                 let result = if state.may_attempt(waiting.ticket()) {
-                    state.leases.clone().claim(
+                    state.leases.clone().claim_as(
                         resource.clone(),
                         holder.clone(),
                         // A quota is shared by construction: it is spent,
@@ -3954,6 +3960,7 @@ impl Daemon {
                         ttl(ttl_secs),
                         note.clone(),
                         now,
+                        automatic,
                     )
                 } else {
                     Err(LeaseError::Conflict {
@@ -5035,6 +5042,7 @@ impl State {
         reference: &str,
         summary: Option<String>,
         source: SummarySource,
+        only_automatic: bool,
     ) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
@@ -5044,6 +5052,7 @@ impl State {
             .leases
             .by_holder(&holder)
             .into_iter()
+            .filter(|l| !only_automatic || l.automatic)
             .cloned()
             .collect();
         let released = self.finish_release(&holder, released, summary, source);
@@ -8381,6 +8390,7 @@ mod tests {
                 ttl_secs: 300,
                 note: Some("halfway through".to_owned()),
                 wait_secs: 0,
+                automatic: false,
             })
             .await
         else {
@@ -8544,6 +8554,7 @@ mod tests {
                 ttl_secs: 60,
                 note: None,
                 wait_secs,
+                automatic: false,
             })
             .await
     }
@@ -10683,6 +10694,7 @@ deny = ["send:all"]
                         ttl_secs: 300,
                         note: None,
                         wait_secs: 0,
+                        automatic: false,
                     })
                     .await
             }
@@ -10736,6 +10748,7 @@ deny = ["send:all"]
                 ttl_secs: 300,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             })
             .await;
         assert!(matches!(response, Response::Lease { .. }), "{response:?}");
@@ -10924,6 +10937,7 @@ deny = ["send:all"]
                 ttl_secs: 600,
                 note: Some("private checkout".into()),
                 wait_secs: 0,
+                automatic: false,
             })
             .await
         else {
@@ -11367,6 +11381,7 @@ deny = ["send:all"]
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 0,
+                automatic: false,
             })
             .await
     }
@@ -12232,6 +12247,7 @@ deny = ["send:all"]
                 expires_at: now + Duration::hours(1),
                 note: None,
                 amount: 0,
+                automatic: false,
             };
             store
                 .upsert_lease(&lease("kept", first.id.clone(), "task:kept"))
@@ -12322,6 +12338,7 @@ deny = ["send:all"]
             expires_at: now + Duration::hours(1),
             note: None,
             amount: 0,
+            automatic: false,
         };
         store.upsert_lease(&protection).unwrap();
         let before = store.load_agents().unwrap();
@@ -12413,6 +12430,7 @@ deny = ["send:all"]
                         ttl_secs: 60,
                         note: None,
                         wait_secs: 5,
+                        automatic: false,
                     })
                     .await
             })
@@ -12447,6 +12465,7 @@ deny = ["send:all"]
                 ttl_secs: 60,
                 note: None,
                 wait_secs: 1,
+                automatic: false,
             })
             .await;
         assert!(started.elapsed() >= std::time::Duration::from_secs(1));
@@ -13429,6 +13448,7 @@ deny = ["send:all"]
                         ttl_secs: 60,
                         note: None,
                         wait_secs: 5,
+                        automatic: false,
                     })
                     .await
             })
@@ -13447,6 +13467,7 @@ deny = ["send:all"]
                 agent: "holder".into(),
                 summary: None,
                 summary_source: SummarySource::Explicit,
+                only_automatic: false,
             })
             .await;
         assert!(matches!(
@@ -13692,6 +13713,7 @@ deny = ["send:all"]
             expires_at: now - Duration::seconds(1),
             note: None,
             amount: 0,
+            automatic: false,
         };
         {
             let mut state = lock(&daemon.state);
@@ -14929,6 +14951,7 @@ deny = ["send:all"]
                 agent: "a".to_owned(),
                 summary: None,
                 summary_source: SummarySource::Explicit,
+                only_automatic: false,
             })
             .await
         else {
@@ -14965,6 +14988,7 @@ deny = ["send:all"]
                 agent: "a".to_owned(),
                 summary: Some("rewrote the parser".to_owned()),
                 summary_source: SummarySource::Explicit,
+                only_automatic: false,
             })
             .await
         else {
@@ -14992,6 +15016,7 @@ deny = ["send:all"]
                 agent: "a".to_owned(),
                 summary: None,
                 summary_source: SummarySource::Explicit,
+                only_automatic: false,
             })
             .await;
         assert_eq!(
@@ -15007,6 +15032,7 @@ deny = ["send:all"]
                 agent: "a".to_owned(),
                 summary: Some("  reviewed the plan, no edits  ".to_owned()),
                 summary_source: SummarySource::Explicit,
+                only_automatic: false,
             })
             .await;
         let entries = journal_of(&daemon, &repo, Some("release"), None, None).await;
@@ -15441,6 +15467,7 @@ deny = ["send:all"]
                 agent: "a".to_owned(),
                 summary: Some("I finished the parser.".to_owned()),
                 summary_source: SummarySource::Transcript,
+                only_automatic: false,
             })
             .await;
         assert_eq!(
@@ -15459,6 +15486,7 @@ deny = ["send:all"]
                 agent: "a".to_owned(),
                 summary: Some("I finished the parser.".to_owned()),
                 summary_source: SummarySource::Transcript,
+                only_automatic: false,
             })
             .await;
         let releases = journal_of(&daemon, &repo, Some("release"), None, None).await;
@@ -15599,6 +15627,7 @@ deny = ["send:all"]
                     ttl_secs: 3600,
                     note: None,
                     wait_secs: 0,
+                    automatic: false,
                 })
                 .await
         };
@@ -15789,6 +15818,7 @@ deny = ["send:all"]
                         agent: "owner".into(),
                         summary: Some("release with durable summary".into()),
                         summary_source: SummarySource::Explicit,
+                        only_automatic: false,
                     })
                     .await,
                 Response::Error {
@@ -15983,6 +16013,7 @@ deny = ["send:all"]
                     agent: "owner".into(),
                     summary: None,
                     summary_source: SummarySource::Explicit,
+                    only_automatic: false,
                 })
                 .await,
             Response::Leases { .. }
@@ -16007,6 +16038,7 @@ deny = ["send:all"]
             agent: "owner".into(),
             summary: None,
             summary_source: SummarySource::Explicit,
+            only_automatic: false,
         };
         assert!(matches!(
             tokio::time::timeout(
@@ -16062,6 +16094,7 @@ deny = ["send:all"]
                 agent: "owner".into(),
                 summary: None,
                 summary_source: SummarySource::Explicit,
+                only_automatic: false,
             }),
         )
         .await

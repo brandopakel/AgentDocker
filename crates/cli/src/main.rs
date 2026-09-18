@@ -2678,6 +2678,7 @@ async fn main() -> Result<()> {
                 ttl_secs: args.ttl,
                 note: args.note,
                 wait_secs: args.wait,
+                automatic: false,
             };
             if let Response::Lease { lease } = client.call(&request).await? {
                 println!("{}", lease.id);
@@ -2710,6 +2711,7 @@ async fn main() -> Result<()> {
                     agent,
                     summary,
                     summary_source: agentdocker_core::SummarySource::Explicit,
+                    only_automatic: false,
                 };
                 if let Response::Leases { leases } = client.call(&request).await? {
                     for lease in leases {

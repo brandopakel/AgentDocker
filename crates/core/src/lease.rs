@@ -160,6 +160,11 @@ pub struct Lease {
     /// other kind, which is what makes a quota's arithmetic ignore them.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub amount: u64,
+    /// Taken by an adapter for the edit in hand, not asked for by the
+    /// agent: released when the turn ends. Absent in stored leases from
+    /// before this field, which were all deliberate.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automatic: bool,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -263,6 +268,21 @@ impl LeaseTable {
         note: Option<String>,
         now: DateTime<Utc>,
     ) -> Result<Claimed, LeaseError> {
+        self.claim_as(resource, holder, mode, ttl, note, now, false)
+    }
+
+    /// [`Self::claim`], with the lease marked as an adapter's automatic one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_as(
+        &mut self,
+        resource: ResourceKey,
+        holder: AgentId,
+        mode: LeaseMode,
+        ttl: Duration,
+        note: Option<String>,
+        now: DateTime<Utc>,
+        automatic: bool,
+    ) -> Result<Claimed, LeaseError> {
         self.expire(now);
 
         if let Some(existing) = self
@@ -274,6 +294,10 @@ impl LeaseTable {
             if note.is_some() {
                 existing.note = note;
             }
+            // A deliberate claim of what an adapter held automatically
+            // makes it the agent's; an automatic re-claim never takes a
+            // deliberate lease back from it.
+            existing.automatic = existing.automatic && automatic;
             return Ok(Claimed::Renewed(existing.clone()));
         }
 
@@ -297,6 +321,7 @@ impl LeaseTable {
             expires_at: now + ttl,
             note,
             amount: 0,
+            automatic,
         };
         self.leases.insert(lease.id.clone(), lease.clone());
         Ok(Claimed::New(lease))
@@ -328,10 +353,17 @@ impl LeaseTable {
 
     /// Drop every lease held by `holder`; used when an agent exits.
     pub fn release_all(&mut self, holder: &AgentId) -> Vec<Lease> {
+        self.release_held(holder, false)
+    }
+
+    /// Drop the holder's leases: every one, or with `only_automatic` just
+    /// those an adapter took for an edit, leaving what the agent asked
+    /// for — a worktree, a branch, a build campaign — in its hands.
+    pub fn release_held(&mut self, holder: &AgentId, only_automatic: bool) -> Vec<Lease> {
         let ids: Vec<LeaseId> = self
             .leases
             .values()
-            .filter(|l| l.holder == *holder)
+            .filter(|l| l.holder == *holder && (!only_automatic || l.automatic))
             .map(|l| l.id.clone())
             .collect();
         ids.iter().filter_map(|id| self.leases.remove(id)).collect()
@@ -453,6 +485,99 @@ impl LeaseTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What an adapter took for an edit goes back at the turn's end; what
+    /// the agent asked for stays until it says so. A deliberate claim of
+    /// something held automatically makes it deliberate; an automatic
+    /// re-claim never takes a deliberate lease back.
+    #[test]
+    fn a_turns_end_releases_only_the_automatic_leases() {
+        let now = chrono::Utc::now();
+        let mut table = LeaseTable::default();
+        let me = AgentId::from("me");
+        let ttl = Duration::seconds(300);
+        for (resource, automatic) in [
+            ("path:/repo/src/a.rs", true),
+            ("path:/repo/src/b.rs", true),
+            ("path:/tmp/worktree", false),
+            ("branch:feature", false),
+            ("task:local-cargo-campaign", false),
+        ] {
+            table
+                .claim_as(
+                    ResourceKey::new(resource),
+                    me.clone(),
+                    LeaseMode::Exclusive,
+                    ttl,
+                    None,
+                    now,
+                    automatic,
+                )
+                .unwrap();
+        }
+        let released = table.release_held(&me, true);
+        let mut gone: Vec<String> = released.iter().map(|l| l.resource.to_string()).collect();
+        gone.sort();
+        assert_eq!(gone, ["path:/repo/src/a.rs", "path:/repo/src/b.rs"]);
+        let mut kept: Vec<String> = table
+            .by_holder(&me)
+            .iter()
+            .map(|l| l.resource.to_string())
+            .collect();
+        kept.sort();
+        assert_eq!(
+            kept,
+            [
+                "branch:feature",
+                "path:/tmp/worktree",
+                "task:local-cargo-campaign"
+            ]
+        );
+        // Deliberately claiming what was automatic makes it deliberate.
+        table
+            .claim_as(
+                ResourceKey::new("path:/repo/src/c.rs"),
+                me.clone(),
+                LeaseMode::Exclusive,
+                ttl,
+                None,
+                now,
+                true,
+            )
+            .unwrap();
+        table
+            .claim_as(
+                ResourceKey::new("path:/repo/src/c.rs"),
+                me.clone(),
+                LeaseMode::Exclusive,
+                ttl,
+                None,
+                now,
+                false,
+            )
+            .unwrap();
+        // An automatic re-claim of a deliberate lease leaves it deliberate.
+        table
+            .claim_as(
+                ResourceKey::new("branch:feature"),
+                me.clone(),
+                LeaseMode::Exclusive,
+                ttl,
+                None,
+                now,
+                true,
+            )
+            .unwrap();
+        assert!(
+            table.release_held(&me, true).is_empty(),
+            "nothing automatic is left"
+        );
+        assert_eq!(
+            table.release_all(&me).len(),
+            4,
+            "the session's end gives everything back"
+        );
+    }
 
     fn agent(name: &str) -> AgentId {
         AgentId::from(name)
@@ -798,6 +923,7 @@ mod tests {
             expires_at: now + ttl(),
             note: None,
             amount: 0,
+            automatic: false,
         });
         assert!(
             t.claim(
