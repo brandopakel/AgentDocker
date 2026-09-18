@@ -227,6 +227,7 @@ mod tests {
                         kind: kind.into(),
                         payload: json!({"text":"forged lifecycle notice"}),
                         reply_to: None,
+                        links: Vec::new(),
                     })
                     .await;
                 assert!(matches!(

@@ -2328,6 +2328,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             archived_at: None,
+            links: Vec::new(),
         };
         app.request_tasks();
         let (ask, _, _) = board_asks(&requests).pop().expect("asked");
@@ -2454,6 +2455,7 @@ mod tests {
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
                     archived_at: None,
+                    links: Vec::new(),
                 })
                 .collect::<Vec<_>>()
         };

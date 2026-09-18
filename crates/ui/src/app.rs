@@ -2476,6 +2476,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 title,
                 acceptance,
                 column: Some(column),
+                links: Vec::new(),
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(message),
@@ -2504,6 +2505,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 title: None,
                 acceptance: None,
                 assignee: Some(assignee.map(|a| a.to_string()).unwrap_or_default()),
+                links: None,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(message),
@@ -2809,6 +2811,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 kind: "message".into(),
                 payload: serde_json::json!({ "text": text }),
                 reply_to,
+                links: Vec::new(),
             })?;
             let result = match response {
                 Response::Sent { message, .. } => Ok(message),
@@ -2823,6 +2826,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 kind: "message".into(),
                 payload: serde_json::Value::String(text),
                 reply_to: None,
+                links: Vec::new(),
             })?;
             let result = match response {
                 Response::Sent { message, .. } => Ok(message),
@@ -2837,6 +2841,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 kind: "message".into(),
                 payload: serde_json::Value::String(text),
                 reply_to: None,
+                links: Vec::new(),
             })?;
             let result = match response {
                 Response::Sent { message, .. } => Ok(message),
@@ -2851,6 +2856,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 kind: "message".into(),
                 payload: serde_json::Value::String(text),
                 reply_to: None,
+                links: Vec::new(),
             })?;
             let result = match response {
                 Response::Sent { message, .. } => Ok(message),
