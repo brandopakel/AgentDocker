@@ -97,6 +97,23 @@ It does not establish Claude idle wake, all-recipient project/global delivery,
 sustained latency or sleep/reboot recovery. The separate installed Enter test
 arrived during an active turn and is not counted as idle evidence.
 
+## September 18: actual Codex usage-limit recovery
+
+A real usage limit interrupted Codex at `2026-09-18T02:17:19.707659Z`.
+AgentDocker retained the `usage` observation for the same provider process
+started on September 12. After the user asked to resume, Codex checked the
+completed targeted-test result and saved work, then reported recovery naming
+that exact blocked observation. At `04:10:37.811285Z` AgentDocker recorded it
+cleared without changing the process generation.
+
+Claude's queued handoffs `3dc4ea52035641da`, `6239a92dc8334ec6` and
+`e487d2b32aca40f9`, plus fresh message `24c3936409bb4380`, then reached the
+active model context without a manual inbox read or acknowledgement. Correlated
+replies and scope are in the [existing installed record](verification/2026-09-12-integrated-desktop.json).
+This verifies one human-triggered recovery and queue release. A recovered status
+is not an input receipt or completed task; automatic reset detection, idle wake
+and equivalent recovery across other providers still require acceptance.
+
 ## Required behavior
 
 An agent-to-agent message must enter the same provider input workflow and queue
@@ -758,9 +775,9 @@ Actual Codex 0.153.4 Allow and Deny trials at `cb17213` each passed six rendered
 control steps with three ordinary inputs, three correlated replies and one
 provider record. The failed first driver and the later viewport/button visual
 corrections remain source-specific evidence. These callbacks do not establish
-physical accessibility/IME acceptance. PR #105 final CI and actual source review
-remain pending. The separate MCP `ask_human` duplicate-input bug is next; it is
-not resolved by the native question controls.
+physical accessibility/IME acceptance. PR #105 subsequently merged as `7110670`;
+the separate MCP `ask_human` duplicate-input bug was resolved in merged #106
+(`90c9e24`), as recorded below.
 
 
 ### September 11: MCP human answers retain exact tool-result receipts
@@ -779,9 +796,10 @@ passed with three ordered inputs, three replies and one provider identity.
 In the crash trial, the provider completed the tool while the controller was
 stopped; one restart recovered that receipt without a fourth turn. Monitored
 user profiles were unchanged and all owned processes were cleaned up. The full
-local gate passed 813 Rust tests, 65 Python checks and 137 native steps. Final
-CI and actual source review remain pending; sustained conversations, visible
-durable status and the other review surfaces still need completion.
+local gate passed 813 Rust tests, 65 Python checks and 137 native steps. PR #106
+subsequently merged as `90c9e24`; durable delivery status followed in merged #108.
+Sustained conversations and other review surfaces retain their separate acceptance
+requirements in [Remaining work](REMAINING-WORK.md).
 
 
 ### September 12: Claude questions use the normal channel queue
@@ -829,8 +847,9 @@ Native trials reproduced macOS `EINVAL` when setting a log read timeout after
 a fast peer closed. Setting it before transmission fixes the reader; saved logs
 survive restart. The report retains the failed regression, corrected driver
 expectation and fresh native evidence. This does not explain the older benchmark
-timeout. Final CI/source review remain pending; other provider review surfaces,
-sustained/reconnect acceptance, live upgrade and platform/release gates remain.
+timeout. PR #108 subsequently merged as `1e29142`; its source integration is
+complete. Other provider review surfaces, sustained/reconnect acceptance, live
+upgrade and platform/release gates remain in the current tracker.
 
 
 The review correction at `c116d28` rejects conflicting equal-timestamp reports,
@@ -842,4 +861,5 @@ clear a later pause. Its regression and the clarified contract are in the
 25 recovery steps, seven channel scenarios and a fresh actual Codex trial.
 A separate ten-minute trial at earlier source `33d52a3` passed 18 ordered
 inputs/replies and six idle wakeups under one identity. Broader sustained
-acceptance remains open. Final CI and follow-up source review remain pending.
+acceptance remains open. The later #108 merge closes the recorded source review
+and integration follow-up; it does not close the broader acceptance cases.

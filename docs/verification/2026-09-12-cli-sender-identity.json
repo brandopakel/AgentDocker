@@ -542,5 +542,20 @@
     "python_passed": 65,
     "full_log": "/private/tmp/agentdocker-cli-sender-integrated-check-2026-09-12.log",
     "full_log_sha256": "6ea988d2bf49c81e99f64de45ed18a16453611693b022749ccf9c51abcb4d214"
+  },
+  "status": "CLI sender identity is integrated through #119; the original sender trials remain source-specific.",
+  "current_disposition_2026_09_18": {
+    "checked_at": "2026-09-18",
+    "source_main": "acbd09df5ab73c4721d3420f9b5a9c373f5b2429",
+    "merges": [
+      {
+        "pr": 119,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/119",
+        "merge_commit": "aaa1b61f974b42bbb8b546cd2957b529e45b195a",
+        "merged_at": "2026-09-13T01:11:30Z"
+      }
+    ],
+    "verification": "GitHub merge metadata and git ancestry against the recorded main; no test rerun or new installed acceptance claimed.",
+    "limits": "Closed #116 is not itself a merge; its final head and the recorded runtime are ancestors of #119. Broader sender/runtime acceptance remains separate."
   }
 }

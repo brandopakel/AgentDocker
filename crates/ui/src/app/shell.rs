@@ -15,6 +15,10 @@ pub(super) struct State {
     pub review_delivery: bool,
     pub session_message: bool,
     pub session_drafts: BTreeMap<String, SessionDraft>,
+    /// Text only, keyed by the original question ID. Never restores approval or sending state.
+    pub answers: BTreeMap<MessageId, String>,
+    /// Card text belongs to its original project; filing state is never restored.
+    pub task_drafts: BTreeMap<String, TaskDraft>,
     pub drafts: crate::drafts::Persistence,
     pub draft_home: PathBuf,
     pub connection_details: Option<String>,
@@ -77,6 +81,12 @@ pub(super) struct State {
     pub project_available: Option<bool>,
     pub notification_message: Option<MessageId>,
     pending_notification: Option<(agentdocker_host::notify::Action, Instant)>,
+    /// Replies typed into notifications that did not go: each waits for
+    /// its conversation to open so the words become its draft, and stays
+    /// — shown beside the composer to copy or dismiss — while the draft
+    /// cannot take them. At most [`REPLY_RECOVERIES`]; a later one is
+    /// refused and said to be.
+    pub reply_recoveries: Vec<ReplyRecovery>,
     /// Sessions whose turn finished while nobody was looking at them:
     /// finished as observed, not yet viewed. Viewing is an explicit act
     /// (opening the project or the session, or already having it on
@@ -109,12 +119,30 @@ impl State {
     }
 }
 
+/// The words of a failed notification reply, and why it failed, until
+/// they are in the conversation's draft, copied, or dismissed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplyRecovery {
+    pub message: MessageId,
+    pub text: String,
+    pub reason: String,
+    pub certain: bool,
+    /// The conversation it was placed towards, once known, so the
+    /// composer there can show what the draft could not take.
+    pub conversation: Option<String>,
+}
+
+/// How many failed replies the window keeps at once.
+pub const REPLY_RECOVERIES: usize = 8;
+
 /// Each room keeps its own draft; receipts clear only an untouched submission.
 #[derive(Clone, Debug, Default)]
 pub(super) struct ChannelDraft {
     pub text: String,
     pub sending: Option<String>,
     pub error: Option<String>,
+    pub readiness: Option<agentdocker_core::SendReadiness>,
+    pub readiness_expanded: bool,
     edited_since_send: bool,
 }
 
@@ -135,6 +163,8 @@ impl ChannelDraft {
             return None;
         }
         self.error = None;
+        self.readiness = None;
+        self.readiness_expanded = false;
         self.edited_since_send = false;
         self.sending = Some(self.text.clone());
         self.sending.clone()
@@ -241,6 +271,25 @@ impl State {
                     )
                 })
                 .collect(),
+            answers: saved
+                .answers
+                .into_iter()
+                .map(|(id, text)| (id.into(), text))
+                .collect(),
+            task_drafts: saved
+                .boards
+                .into_iter()
+                .map(|(project, draft)| {
+                    (
+                        project,
+                        TaskDraft {
+                            title: draft.title,
+                            acceptance: draft.acceptance,
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
             dpi: 1.0,
             width: 1180.0,
             height: 760.0,
@@ -250,6 +299,23 @@ impl State {
     pub fn changed(&mut self) {
         self.generation = self.generation.wrapping_add(1);
     }
+
+    /// Failed notification replies whose conversation could not be
+    /// opened — the message, project or channel is gone, or the route was
+    /// cancelled — and which no route is still on its way to. They are
+    /// shown where the person can always reach them, whatever is on view.
+    pub fn orphan_reply_recoveries(&self) -> Vec<&ReplyRecovery> {
+        let routing: Option<&MessageId> = self
+            .pending_notification
+            .as_ref()
+            .map(|(action, _)| &action.target.message);
+        self.reply_recoveries
+            .iter()
+            .filter(|r| r.conversation.is_none())
+            .filter(|r| routing != Some(&r.message))
+            .filter(|r| self.notification_message.as_ref() != Some(&r.message))
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -257,6 +323,9 @@ enum DraftKind {
     Session,
     Conversation,
     Channel,
+    Answer,
+    TaskTitle,
+    TaskAcceptance,
 }
 
 impl State {
@@ -280,15 +349,39 @@ impl State {
                 .filter(|(_, d)| !d.text.is_empty())
                 .map(|(k, d)| (k.clone(), d.text.clone()))
                 .collect(),
+            answers: self
+                .answers
+                .iter()
+                .filter(|(_, text)| !text.is_empty())
+                .map(|(id, text)| (id.to_string(), text.clone()))
+                .collect(),
+            boards: self
+                .task_drafts
+                .iter()
+                .filter(|(_, draft)| !draft.title.is_empty() || !draft.acceptance.is_empty())
+                .map(|(project, draft)| {
+                    (
+                        project.clone(),
+                        crate::drafts::BoardDraft {
+                            title: draft.title.clone(),
+                            acceptance: draft.acceptance.clone(),
+                        },
+                    )
+                })
+                .collect(),
             ..Default::default()
         }
     }
 
-    fn edit_draft(&mut self, kind: DraftKind, id: String, text: String) {
+    fn edit_draft(&mut self, kind: DraftKind, id: String, text: String) -> bool {
+        let question = MessageId::from(id.clone());
         let old = match kind {
             DraftKind::Session => self.session_drafts.get(&id).map(|d| &d.draft.text),
             DraftKind::Conversation => self.conversation_drafts.get(&id).map(|d| &d.text),
             DraftKind::Channel => self.channel_drafts.get(&id).map(|d| &d.text),
+            DraftKind::Answer => self.answers.get(&question),
+            DraftKind::TaskTitle => self.task_drafts.get(&id).map(|d| &d.title),
+            DraftKind::TaskAcceptance => self.task_drafts.get(&id).map(|d| &d.acceptance),
         };
         let total: usize = self
             .session_drafts
@@ -296,11 +389,25 @@ impl State {
             .map(|d| d.draft.text.len())
             .chain(self.conversation_drafts.values().map(|d| d.text.len()))
             .chain(self.channel_drafts.values().map(|d| d.text.len()))
+            .chain(self.answers.values().map(String::len))
+            .chain(
+                self.task_drafts
+                    .values()
+                    .map(|d| d.title.len() + d.acceptance.len()),
+            )
             .sum();
         let error = if id.is_empty() || id.len() > 1024 {
             Some("This draft destination is too long.")
+        } else if matches!(kind, DraftKind::TaskTitle)
+            && text.chars().count() > agentdocker_core::task::TITLE_CHARS
+        {
+            Some("Card titles can contain up to 200 characters. Your earlier text was kept.")
+        } else if matches!(kind, DraftKind::TaskAcceptance)
+            && text.chars().count() > agentdocker_core::task::ACCEPTANCE_CHARS
+        {
+            Some("Acceptance text can contain up to 4,000 characters. Your earlier text was kept.")
         } else if text.chars().count() > crate::drafts::MAX_TEXT_CHARS {
-            Some("Messages can contain up to 16,000 characters. Your earlier text was kept.")
+            Some("Drafts can contain up to 16,000 characters. Your earlier text was kept.")
         } else if total - old.map_or(0, String::len) + text.len() > crate::drafts::MAX_TOTAL_BYTES {
             Some(
                 "Draft storage is full. Finish or clear an earlier draft first; your earlier text was kept.",
@@ -309,10 +416,43 @@ impl State {
             None
         };
         if let Some(error) = error {
-            self.error = Some(error.into());
-            return;
+            if matches!(kind, DraftKind::TaskTitle | DraftKind::TaskAcceptance)
+                && let Some(draft) = self.task_drafts.get_mut(&id)
+            {
+                draft.error = Some(error.into());
+            } else {
+                self.error = Some(error.into());
+            }
+            return false;
         }
         let edited = match kind {
+            DraftKind::TaskTitle | DraftKind::TaskAcceptance => {
+                self.task_drafts.retain(|key, d| {
+                    key == &id || d.sending() || !d.title.is_empty() || !d.acceptance.is_empty()
+                });
+                if self.task_drafts.contains_key(&id) || self.task_drafts.len() < 128 {
+                    let draft = self.task_drafts.entry(id).or_default();
+                    if matches!(kind, DraftKind::TaskTitle) {
+                        draft.title = text;
+                    } else {
+                        draft.acceptance = text;
+                    }
+                    draft.error = None;
+                    true
+                } else {
+                    false
+                }
+            }
+            DraftKind::Answer => {
+                self.answers
+                    .retain(|key, text| key == &question || !text.is_empty());
+                if self.answers.contains_key(&question) || self.answers.len() < 128 {
+                    self.answers.insert(question, text);
+                    true
+                } else {
+                    false
+                }
+            }
             DraftKind::Session => {
                 self.session_drafts.retain(|key, d| {
                     key == &id || !d.draft.text.is_empty() || d.draft.sending.is_some()
@@ -350,16 +490,25 @@ impl State {
         if edited {
             self.drafts.changed();
         } else {
-            self.error = Some(
-                "Finish or clear an earlier message draft first. Existing drafts were kept.".into(),
-            );
+            self.error =
+                Some("Finish or clear an earlier draft first. Existing drafts were kept.".into());
         }
+        edited
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum DeliveryTarget {
+    Conversation(String),
+    Session(String),
+    Channel(String),
 }
 
 #[derive(Clone, Debug)]
 pub enum Message {
     Tick,
+    DeliveryDetails(DeliveryTarget),
+    CopyGuidance(String),
     DraftsSaved(u64, Result<(), String>),
     RetryDraftSave,
     CloseWithoutDraftSave,
@@ -395,6 +544,10 @@ pub enum Message {
     SelectThread(Option<String>),
     SelectConversation(String),
     ConversationDraft(String, String),
+    /// A kept reply from a notification, by its message: to the
+    /// clipboard, or let go.
+    ReplyRecoveryCopy(MessageId),
+    ReplyRecoveryDismiss(MessageId),
     SendConversation(String),
     OpenThread(MessageId),
     CloseThread,
@@ -576,6 +729,73 @@ impl App {
         if self.connected.is_ok() {
             self.send(Cmd::History(conversation, self.history_epoch));
         }
+        self.recover_reply();
+    }
+
+    /// Put a failed notification reply's words into the draft of the
+    /// conversation the notification opened, once it is open: after what
+    /// is already there, so nothing typed in either place is lost, and
+    /// with the reason in the status line — for an unknown outcome, that
+    /// the history decides whether to send again. A draft that cannot
+    /// take them (the storage is full) keeps the recovery beside the
+    /// composer, to copy or dismiss.
+    pub(super) fn recover_reply(&mut self) {
+        let Some(conversation) = self.shell.conversation.clone() else {
+            return;
+        };
+        let Some(message) = self.shell.notification_message.clone() else {
+            return;
+        };
+        let Some(index) = self
+            .shell
+            .reply_recoveries
+            .iter()
+            .position(|r| r.message == message && r.conversation.is_none())
+        else {
+            return;
+        };
+        let recovery = self.shell.reply_recoveries[index].clone();
+        let existing = self
+            .shell
+            .conversation_drafts
+            .get(&conversation)
+            .map(|d| d.text.clone())
+            .unwrap_or_default();
+        let text = if existing.trim().is_empty() {
+            recovery.text.clone()
+        } else {
+            format!("{existing}\n\n{}", recovery.text)
+        };
+        self.shell
+            .edit_draft(DraftKind::Conversation, conversation.clone(), text.clone());
+        let placed = self
+            .shell
+            .conversation_drafts
+            .get(&conversation)
+            .is_some_and(|d| d.text == text);
+        if placed {
+            self.shell.reply_recoveries.remove(index);
+        } else {
+            self.shell.reply_recoveries[index].conversation = Some(conversation);
+        }
+        self.say(match (recovery.certain, placed) {
+            (true, true) => format!(
+                "Your reply from the notification was not sent: {}. It is in the composer.",
+                recovery.reason
+            ),
+            (false, true) => format!(
+                "Your reply from the notification may not have been sent: {}. Check the history above before sending it again from the composer.",
+                recovery.reason
+            ),
+            (true, false) => format!(
+                "Your reply from the notification was not sent: {}. The composer could not take it; it is kept beside the composer to copy.",
+                recovery.reason
+            ),
+            (false, false) => format!(
+                "Your reply from the notification may not have been sent: {}. Check the history above; it is kept beside the composer to copy.",
+                recovery.reason
+            ),
+        });
     }
 
     fn take_answer_reveal(&mut self) -> Option<MessageId> {
@@ -757,6 +977,51 @@ impl App {
                     crate::notification_route::Activation::Open(_) => {
                         self.say("This notification belongs to another local workspace.")
                     }
+                    // A reply that did not go comes back as the words of
+                    // its conversation's draft, once that conversation is
+                    // open — the same route a click takes to the message.
+                    crate::notification_route::Activation::ReplyFailed {
+                        action,
+                        text,
+                        reason,
+                        certain,
+                    } if action.home == self.home
+                        && self
+                            .client
+                            .as_ref()
+                            .is_some_and(|c| c.socket() == action.socket) =>
+                    {
+                        if self.shell.reply_recoveries.len() >= REPLY_RECOVERIES {
+                            let outcome = if certain {
+                                "was not sent"
+                            } else {
+                                "may not have been sent"
+                            };
+                            self.say(format!(
+                                "A reply from a notification {outcome} ({reason}) and the window holds as many unplaced replies as it keeps; copy or dismiss one first. You wrote: {}",
+                                super::view::first_line(&text, 200)
+                            ));
+                        } else {
+                            self.shell.reply_recoveries.push(ReplyRecovery {
+                                message: action.target.message.clone(),
+                                text,
+                                reason,
+                                certain,
+                                conversation: None,
+                            });
+                            self.cancel_reveal();
+                            self.shell.pending_notification = Some((action, Instant::now()));
+                            for cmd in [Cmd::Agents, Cmd::Questions, Cmd::Inbox] {
+                                self.send(cmd);
+                            }
+                            tasks.push(self.advance_notification());
+                        }
+                    }
+                    crate::notification_route::Activation::ReplyFailed { reason, .. } => {
+                        self.say(format!(
+                            "A reply to another workspace's notification was not sent: {reason}"
+                        ));
+                    }
                     crate::notification_route::Activation::Focus => {}
                     crate::notification_route::Activation::Inbox => {
                         self.shell.pending_notification = None;
@@ -901,7 +1166,9 @@ impl App {
                         || entry.draft.sending.is_some()
                 });
             }
-            Message::SessionDraft(id, text) => self.shell.edit_draft(DraftKind::Session, id, text),
+            Message::SessionDraft(id, text) => {
+                self.shell.edit_draft(DraftKind::Session, id, text);
+            }
             Message::SelectConversation(id) => {
                 if self.shell.conversation.as_deref() != Some(id.as_str()) {
                     self.shell.thread = None;
@@ -914,8 +1181,22 @@ impl App {
                     self.send(Cmd::History(id, self.history_epoch));
                 }
             }
+            Message::ReplyRecoveryCopy(message) => {
+                if let Some(recovery) = self
+                    .shell
+                    .reply_recoveries
+                    .iter()
+                    .find(|r| r.message == message)
+                {
+                    tasks.push(iced::clipboard::write(recovery.text.clone()));
+                    self.say("Your reply is on the clipboard.");
+                }
+            }
+            Message::ReplyRecoveryDismiss(message) => {
+                self.shell.reply_recoveries.retain(|r| r.message != message);
+            }
             Message::ConversationDraft(id, text) => {
-                self.shell.edit_draft(DraftKind::Conversation, id, text)
+                self.shell.edit_draft(DraftKind::Conversation, id, text);
             }
             Message::SendConversation(key) => {
                 // The key says where the words were typed: the conversation's
@@ -1114,24 +1395,31 @@ impl App {
                 }
             }
             Message::TaskTitle(title) => {
-                if let Some(draft) = self.task_draft_mut()
-                    && !draft.sending()
+                if let Some(project) = self.selected_project_root()
+                    && !self
+                        .shell
+                        .task_drafts
+                        .get(&project)
+                        .is_some_and(TaskDraft::sending)
                 {
-                    draft.title = title;
-                    draft.error = None;
+                    self.shell.edit_draft(DraftKind::TaskTitle, project, title);
                 }
             }
             Message::TaskAcceptance(acceptance) => {
-                if let Some(draft) = self.task_draft_mut()
-                    && !draft.sending()
+                if let Some(project) = self.selected_project_root()
+                    && !self
+                        .shell
+                        .task_drafts
+                        .get(&project)
+                        .is_some_and(TaskDraft::sending)
                 {
-                    draft.acceptance = acceptance;
-                    draft.error = None;
+                    self.shell
+                        .edit_draft(DraftKind::TaskAcceptance, project, acceptance);
                 }
             }
             Message::TaskFile(column) => {
                 if let Some(project) = self.selected_project_root()
-                    && let Some(draft) = self.task_drafts.get_mut(&project)
+                    && let Some(draft) = self.shell.task_drafts.get_mut(&project)
                     && !draft.sending()
                     && !draft.title.trim().is_empty()
                 {
@@ -1424,6 +1712,23 @@ impl App {
                     }
                 }
             }
+            Message::CopyGuidance(text) => return iced::clipboard::write(text),
+            Message::DeliveryDetails(target) => {
+                let draft = match target {
+                    DeliveryTarget::Conversation(key) => {
+                        self.shell.conversation_drafts.get_mut(&key)
+                    }
+                    DeliveryTarget::Session(key) => self
+                        .shell
+                        .session_drafts
+                        .get_mut(&key)
+                        .map(|entry| &mut entry.draft),
+                    DeliveryTarget::Channel(key) => self.shell.channel_drafts.get_mut(&key),
+                };
+                if let Some(draft) = draft {
+                    draft.readiness_expanded = !draft.readiness_expanded;
+                }
+            }
             Message::DraftsSaved(generation, result) => {
                 self.shell.drafts.complete(generation, result);
             }
@@ -1451,8 +1756,8 @@ impl App {
             }
             Message::Draft(id, value) => {
                 if !self.sending.contains(&id) {
-                    self.answers
-                        .insert(id, value.chars().take(16_000).collect());
+                    self.shell
+                        .edit_draft(DraftKind::Answer, id.to_string(), value);
                 }
             }
             Message::AnswerChoice(id, value) => {
@@ -1471,8 +1776,13 @@ impl App {
                                 .is_some_and(|p| p.valid_for(&q.text) && p.permits_choice(&value))
                     })
                 {
-                    self.answers.insert(id.clone(), value);
-                    return self.update(Message::Answer(id));
+                    // A choice is an explicit submission, not a draft edit.
+                    // Full draft storage must not block Allow/Deny, nor may
+                    // clicking a choice overwrite earlier typed text on failure.
+                    self.shell.answer_errors.remove(&id);
+                    self.sending.insert(id.clone());
+                    self.shell.pending_answer_reveal = Some(id.clone());
+                    self.send(Cmd::Answer(id, value));
                 }
             }
             Message::Answer(id) => {
@@ -1485,12 +1795,14 @@ impl App {
                                 q.presentation,
                                 Some(agentdocker_core::QuestionPresentation::CodexFiles { .. })
                             ) || self
+                                .shell
                                 .answers
                                 .get(&id)
                                 .is_none_or(|answer| !answer.trim().eq_ignore_ascii_case("allow"))
                                 || self.shell.file_review.as_ref() == Some(&id))
                     })
                     && let Some(answer) = self
+                        .shell
                         .answers
                         .get(&id)
                         .filter(|s| !s.trim().is_empty())
@@ -1817,6 +2129,7 @@ impl App {
                     ),
                     Key::Named(Named::Escape) => {
                         self.shell.pending_notification = None;
+                        self.shell.notification_message = None;
                         self.shell.selected = None;
                         self.shell.launch = false;
                         self.shell.adding = false;
@@ -2120,6 +2433,7 @@ impl App {
                 self.send(Cmd::History(conversation, self.history_epoch));
             }
         }
+        self.recover_reply();
         // On the Messages screen the message is a row of the archive, not
         // of the inbox: it is scrolled to once its page is here, paging
         // back for it if the conversation was already open at its newest
@@ -2321,7 +2635,7 @@ mod tests {
         messages.send(Msg::TaskChanged(Ok(()))).unwrap();
         app.drain();
         assert_eq!(
-            app.task_drafts[&alpha_root].title, "Port the parser",
+            app.shell.task_drafts[&alpha_root].title, "Port the parser",
             "a move of some other card is not a filing"
         );
         // A board that cannot be read is said so, and the last board stays.
@@ -2341,19 +2655,19 @@ mod tests {
         // Filed: typing waits; a reply to an *earlier* filing changes
         // nothing; the reply to this one clears the text.
         let _ = app.update(Message::TaskFile(agentdocker_core::Column::Ready));
-        let request = app.task_drafts[&alpha_root].sending.expect("filing");
+        let request = app.shell.task_drafts[&alpha_root].sending.expect("filing");
         assert!(requests.try_iter().any(|c| matches!(
             c,
             Cmd::TaskCreate { ref project, request: r, .. } if *project == alpha_root && r == request
         )));
         let _ = app.update(Message::TaskTitle("typed while filing".into()));
-        assert_eq!(app.task_drafts[&alpha_root].title, "Port the parser");
+        assert_eq!(app.shell.task_drafts[&alpha_root].title, "Port the parser");
         messages
             .send(Msg::TaskCreated(alpha_root.clone(), request - 1, Ok(())))
             .unwrap();
         app.drain();
         assert_eq!(
-            app.task_drafts[&alpha_root].sending,
+            app.shell.task_drafts[&alpha_root].sending,
             Some(request),
             "a late reply to an earlier filing is not this one's"
         );
@@ -2361,19 +2675,19 @@ mod tests {
             .send(Msg::TaskCreated(alpha_root.clone(), request, Ok(())))
             .unwrap();
         app.drain();
-        assert_eq!(app.task_drafts[&alpha_root].title, "");
-        assert!(app.task_drafts[&alpha_root].sending.is_none());
+        assert_eq!(app.shell.task_drafts[&alpha_root].title, "");
+        assert!(app.shell.task_drafts[&alpha_root].sending.is_none());
 
         // Beta's draft is beta's: alpha's text waits while beta is on view.
         let _ = app.update(Message::TaskTitle("alpha again".into()));
         app.shell.catalog.selected = Some(beta.root.clone());
         let _ = app.update(Message::TaskTitle("beta's card".into()));
-        assert_eq!(app.task_drafts[&alpha_root].title, "alpha again");
-        assert_eq!(app.task_drafts[&beta_root].title, "beta's card");
+        assert_eq!(app.shell.task_drafts[&alpha_root].title, "alpha again");
+        assert_eq!(app.shell.task_drafts[&beta_root].title, "beta's card");
 
         // A filing the command queue refuses is told so at once.
         let _ = app.update(Message::TaskFile(agentdocker_core::Column::Backlog));
-        let request = app.task_drafts[&beta_root].sending.expect("filing");
+        let request = app.shell.task_drafts[&beta_root].sending.expect("filing");
         app.rejected(
             Cmd::TaskCreate {
                 project: beta_root.clone(),
@@ -2384,7 +2698,7 @@ mod tests {
             },
             "the command queue is full",
         );
-        let draft = &app.task_drafts[&beta_root];
+        let draft = &app.shell.task_drafts[&beta_root];
         assert!(draft.sending.is_none(), "not left filing for good");
         assert!(draft.error.is_some());
         assert_eq!(draft.title, "beta's card", "the text is kept to retry");
@@ -2649,11 +2963,13 @@ mod tests {
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
         });
-        app.answers.insert(id.clone(), "original draft".into());
+        app.shell
+            .answers
+            .insert(id.clone(), "original draft".into());
         let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
-        assert_eq!(app.answers[&id], "original draft");
+        assert_eq!(app.shell.answers[&id], "original draft");
         assert_eq!(commands.try_iter().count(), 0);
-        app.answers.insert(id.clone(), " Allow ".into());
+        app.shell.answers.insert(id.clone(), " Allow ".into());
         let _ = app.update(Message::Answer(id.clone()));
         assert_eq!(
             commands.try_iter().count(),
@@ -2670,8 +2986,8 @@ mod tests {
         let _ = app.update(Message::Tick);
         assert!(app.shell.file_review.is_none());
         assert_eq!(
-            app.answers[&id], "Allow",
-            "an in-flight answer stays retained"
+            app.shell.answers[&id], " Allow ",
+            "the typed draft stays retained while the explicit choice is in flight"
         );
     }
 
@@ -2695,19 +3011,19 @@ mod tests {
             expires_at: Utc::now() + chrono::Duration::minutes(5),
         };
         app.questions.push(question.clone());
-        app.answers.insert(id.clone(), "earlier draft".into());
+        app.shell.answers.insert(id.clone(), "earlier draft".into());
         let _ = app.update(Message::AnswerChoice(
             id.clone(),
             "Allow for this session".into(),
         ));
         assert_eq!(commands.try_iter().count(), 0);
-        assert_eq!(app.answers[&id], "earlier draft");
+        assert_eq!(app.shell.answers[&id], "earlier draft");
         let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
         assert!(
             matches!(commands.try_iter().collect::<Vec<_>>().as_slice(), [Cmd::Answer(message, answer)] if message == &id && answer == "Allow")
         );
-        assert_eq!(app.answers[&id], "Allow");
+        assert_eq!(app.shell.answers[&id], "earlier draft");
         app.sending.clear();
         app.questions.clear();
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
@@ -2716,7 +3032,71 @@ mod tests {
         app.questions.push(expired);
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
         assert_eq!(commands.try_iter().count(), 0);
-        assert_eq!(app.answers[&id], "Allow");
+        assert_eq!(app.shell.answers[&id], "earlier draft");
+    }
+
+    #[test]
+    fn explicit_choices_bypass_full_draft_storage_and_failed_delivery_keeps_text() {
+        let (mut app, commands, messages) = app();
+        app.connected = Ok(());
+        for index in 0..128 {
+            assert!(
+                app.shell
+                    .edit_draft(DraftKind::Answer, index.to_string(), "x".into())
+            );
+            assert!(app.shell.edit_draft(
+                DraftKind::Session,
+                index.to_string(),
+                "s".repeat(16_000)
+            ));
+            assert!(app.shell.edit_draft(
+                DraftKind::Conversation,
+                index.to_string(),
+                "c".repeat(16_000)
+            ));
+        }
+        let remaining = crate::drafts::MAX_TOTAL_BYTES - 128 * (1 + 16_000 * 2);
+        for (index, chunk) in vec![b'z'; remaining].chunks(16_000).enumerate() {
+            assert!(app.shell.edit_draft(
+                DraftKind::Channel,
+                index.to_string(),
+                String::from_utf8(chunk.to_vec()).unwrap()
+            ));
+        }
+        app.shell.drafts = crate::drafts::Persistence::loaded();
+        let before = app.shell.draft_snapshot();
+        before.validate().unwrap();
+        for key in ["0", "without-a-draft"] {
+            let id = MessageId::from(key.to_owned());
+            let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
+                command: "printf hello".into(),
+                cwd: "/owned".into(),
+                reason: "Fixture".into(),
+            };
+            app.questions.push(Question {
+                id: id.clone(),
+                from: "asker".into(),
+                to: agentdocker_core::Destination::Agent("human".into()),
+                text: presentation.text(),
+                presentation: Some(presentation),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+            });
+            let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
+            assert!(matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),
+                [Cmd::Answer(question, answer)] if question == &id && answer == "Allow"));
+            assert!(app.sending.contains(&id));
+            assert_eq!(app.shell.draft_snapshot(), before);
+            assert!(app.shell.drafts.clean());
+            messages
+                .send(Msg::Answered(id.clone(), Err("offline".into())))
+                .unwrap();
+            app.drain();
+            assert!(!app.sending.contains(&id));
+            assert_eq!(app.shell.answer_errors[&id], "offline");
+            assert_eq!(app.shell.draft_snapshot(), before);
+            assert!(app.shell.drafts.clean());
+        }
     }
 
     #[test]
@@ -2764,6 +3144,270 @@ mod tests {
         app.shell.catalog.updates.enabled = false;
         app.schedule_update_check(186_401);
         assert!(app.shell.pending_update.is_none());
+    }
+
+    #[test]
+    fn answer_drafts_restore_unsent_and_follow_confirmed_question_lifecycle() {
+        let home = tempfile::tempdir().unwrap();
+        let (mut app, commands, messages) = app();
+        app.shell = State::load(home.path());
+        app.connected = Ok(());
+        let id = MessageId::from("question-one".to_owned());
+        let other = MessageId::from("question-two".to_owned());
+        let question = Question {
+            presentation: None,
+            id: id.clone(),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Agent("human".into()),
+            text: "Continue?".into(),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        };
+        app.questions = vec![
+            question.clone(),
+            Question {
+                id: other.clone(),
+                ..question.clone()
+            },
+        ];
+        let _ = app.update(Message::Draft(id.clone(), "café 日本語\nnot yet".into()));
+        let _ = app.update(Message::Draft(other.clone(), "keep this one".into()));
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        app.shell = State::load(home.path());
+        assert_eq!(app.shell.answers[&id], "café 日本語\nnot yet");
+        assert!(app.sending.is_empty());
+        assert!(app.shell.file_review.is_none());
+        assert!(
+            commands
+                .try_iter()
+                .all(|cmd| !matches!(cmd, Cmd::Answer(..))),
+            "restoration is not consent or submission"
+        );
+        let _ = app.update(Message::Answer(id.clone()));
+        assert!(
+            commands
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::Answer(ref key, _) if key == &id))
+        );
+        messages
+            .send(Msg::Answered(id.clone(), Err("offline".into())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.shell.answers[&id], "café 日本語\nnot yet");
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        assert_eq!(
+            State::load(home.path()).answers[&id],
+            "café 日本語\nnot yet"
+        );
+        messages.send(Msg::Answered(id.clone(), Ok(()))).unwrap();
+        app.drain();
+        assert!(!app.shell.drafts.clean());
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        let reopened = State::load(home.path());
+        assert!(!reopened.answers.contains_key(&id));
+        assert_eq!(reopened.answers[&other], "keep this one");
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        app.drain();
+        assert!(
+            app.shell.answers.is_empty(),
+            "a completed question no longer has a draft"
+        );
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        assert!(State::load(home.path()).answers.is_empty());
+    }
+
+    #[test]
+    fn card_drafts_reopen_per_project_and_clear_only_after_their_confirmed_filing() {
+        let home = tempfile::tempdir().unwrap();
+        let (mut app, commands, messages) = app();
+        app.shell = State::load(home.path());
+        app.connected = Ok(());
+        let alpha = agentdocker_core::ProjectRef::directory(home.path().join("alpha"));
+        let beta = agentdocker_core::ProjectRef::directory(home.path().join("beta"));
+        for project in [&alpha, &beta] {
+            app.shell.catalog.remember(project.clone(), true);
+        }
+        let a = alpha.root.display().to_string();
+        let b = beta.root.display().to_string();
+        app.shell.catalog.selected = Some(alpha.root.clone());
+        let _ = app.update(Message::TaskTitle("café 日本語".into()));
+        let _ = app.update(Message::TaskAcceptance(
+            "Run the checks\nThen review".into(),
+        ));
+        app.shell.catalog.selected = Some(beta.root.clone());
+        let _ = app.update(Message::TaskAcceptance("A title will follow".into()));
+        app.shell.task_drafts.get_mut(&a).unwrap().sending = Some(99);
+        app.shell.task_drafts.get_mut(&a).unwrap().error = Some("old failure".into());
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        let catalog = std::mem::take(&mut app.shell.catalog);
+        app.shell = State::load(home.path());
+        app.shell.catalog = catalog;
+        assert_eq!(app.shell.task_drafts[&a].title, "café 日本語");
+        assert_eq!(
+            app.shell.task_drafts[&a].acceptance,
+            "Run the checks\nThen review"
+        );
+        assert_eq!(app.shell.task_drafts[&b].acceptance, "A title will follow");
+        assert!(
+            app.shell
+                .task_drafts
+                .values()
+                .all(|d| !d.sending() && d.error.is_none())
+        );
+        assert!(
+            commands
+                .try_iter()
+                .all(|cmd| !matches!(cmd, Cmd::TaskCreate { .. }))
+        );
+        app.shell.catalog.selected = Some(alpha.root.clone());
+        let _ = app.update(Message::TaskFile(agentdocker_core::Column::Backlog));
+        let request = app.shell.task_drafts[&a].sending.unwrap();
+        assert!(commands.try_iter().any(|cmd| matches!(cmd, Cmd::TaskCreate { project, request: r, .. } if project == a && r == request)));
+        messages
+            .send(Msg::TaskCreated(a.clone(), request, Err("offline".into())))
+            .unwrap();
+        app.drain();
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        assert_eq!(
+            State::load(home.path()).task_drafts[&a].title,
+            "café 日本語"
+        );
+        let _ = app.update(Message::TaskFile(agentdocker_core::Column::Backlog));
+        let retry = app.shell.task_drafts[&a].sending.unwrap();
+        messages
+            .send(Msg::TaskCreated(a.clone(), request, Ok(())))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.shell.task_drafts[&a].title, "café 日本語",
+            "old receipt cannot clear this filing"
+        );
+        app.shell.catalog.selected = Some(beta.root);
+        messages
+            .send(Msg::TaskCreated(a.clone(), retry, Ok(())))
+            .unwrap();
+        app.drain();
+        assert!(!app.shell.drafts.clean());
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        let restored = State::load(home.path());
+        assert!(!restored.task_drafts.contains_key(&a));
+        assert_eq!(restored.task_drafts[&b].acceptance, "A title will follow");
+    }
+
+    #[test]
+    fn card_drafts_share_storage_pressure_without_evicting_unfinished_text() {
+        let mut state = State::default();
+        for index in 0..128 {
+            assert!(state.edit_draft(DraftKind::TaskTitle, index.to_string(), "keep".into()));
+        }
+        let before = state.draft_snapshot();
+        assert!(!state.edit_draft(DraftKind::TaskTitle, "overflow".into(), "new".into()));
+        assert!(!state.edit_draft(DraftKind::TaskTitle, "0".into(), "界".repeat(201)));
+        assert!(!state.edit_draft(DraftKind::TaskAcceptance, "0".into(), "界".repeat(4001)));
+        assert!(
+            state.task_drafts["0"]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("4,000")
+        );
+        assert_eq!(state.draft_snapshot(), before);
+        assert!(state.edit_draft(DraftKind::TaskTitle, "0".into(), String::new()));
+        assert!(state.edit_draft(DraftKind::TaskTitle, "overflow".into(), "new".into()));
+        for kind in [DraftKind::Session, DraftKind::Conversation] {
+            for index in 0..128 {
+                assert!(state.edit_draft(kind, index.to_string(), "x".repeat(16_000)));
+            }
+        }
+        let used_cards: usize = state
+            .task_drafts
+            .values()
+            .map(|d| d.title.len() + d.acceptance.len())
+            .sum();
+        let mut remaining = crate::drafts::MAX_TOTAL_BYTES - 256 * 16_000 - used_cards;
+        for index in 0..128 {
+            if remaining == 0 {
+                break;
+            }
+            let count = remaining.min(16_000);
+            assert!(state.edit_draft(DraftKind::Channel, index.to_string(), "x".repeat(count)));
+            remaining -= count;
+        }
+        let before = state.draft_snapshot();
+        before.validate().unwrap();
+        assert!(!state.edit_draft(DraftKind::TaskAcceptance, "1".into(), "more".into()));
+        assert!(!state.edit_draft(DraftKind::Answer, "question".into(), "more".into()));
+        assert_eq!(state.draft_snapshot(), before);
+    }
+
+    #[test]
+    fn answer_edits_share_the_total_budget_and_never_truncate_or_evict_text() {
+        let mut state = State::default();
+        for index in 0..128 {
+            assert!(state.edit_draft(DraftKind::Answer, index.to_string(), "keep".into()));
+        }
+        let before = state.draft_snapshot();
+        assert!(!state.edit_draft(DraftKind::Answer, "overflow".into(), "new".into()));
+        assert_eq!(state.draft_snapshot(), before);
+        assert!(!state.edit_draft(DraftKind::Answer, "0".into(), "界".repeat(16_001)));
+        assert_eq!(state.draft_snapshot(), before);
+        assert!(state.edit_draft(DraftKind::Answer, "0".into(), String::new()));
+        assert!(state.edit_draft(DraftKind::Answer, "overflow".into(), "new".into()));
+        for index in 0..128 {
+            assert!(state.edit_draft(DraftKind::Session, index.to_string(), "x".repeat(16_000)));
+        }
+        for index in 0..127 {
+            assert!(state.edit_draft(
+                DraftKind::Conversation,
+                index.to_string(),
+                "x".repeat(16_000)
+            ));
+        }
+        assert!(state.edit_draft(DraftKind::Conversation, "last".into(), "x".repeat(16_000)));
+        let snapshot = state.draft_snapshot();
+        let used = [
+            &snapshot.sessions,
+            &snapshot.conversations,
+            &snapshot.channels,
+            &snapshot.answers,
+        ]
+        .into_iter()
+        .flat_map(|drafts| drafts.values())
+        .map(String::len)
+        .sum::<usize>();
+        let left = crate::drafts::MAX_TOTAL_BYTES - used;
+        // Fill the remaining shared space without changing any answer.
+        for (index, chunk) in "z".repeat(left).as_bytes().chunks(16_000).enumerate() {
+            assert!(state.edit_draft(
+                DraftKind::Channel,
+                index.to_string(),
+                String::from_utf8(chunk.to_vec()).unwrap()
+            ));
+        }
+        let before = state.draft_snapshot();
+        assert!(!state.edit_draft(DraftKind::Answer, "1".into(), "longer than keep".into()));
+        assert_eq!(state.draft_snapshot(), before);
     }
 
     #[test]
@@ -2832,7 +3476,7 @@ mod tests {
         messages
             .send(Msg::SessionSent(
                 "recipient".into(),
-                Ok(MessageId::from("receipt".to_owned())),
+                Ok(MessageId::from("receipt".to_owned()).into()),
             ))
             .unwrap();
         app.drain();
@@ -2863,7 +3507,7 @@ mod tests {
         messages
             .send(Msg::SessionSent(
                 "recipient".into(),
-                Ok(MessageId::from("next-receipt".to_owned())),
+                Ok(MessageId::from("next-receipt".to_owned()).into()),
             ))
             .unwrap();
         app.drain();
@@ -2930,6 +3574,83 @@ mod tests {
     }
 
     #[test]
+    fn late_send_readiness_stays_with_its_destination_and_does_not_restore_as_current() {
+        let (mut app, _commands, messages) = app();
+        let home = tempfile::tempdir().unwrap();
+        app.shell = State::load(home.path());
+        app.shell.conversation = Some("elsewhere".into());
+        for kind in [
+            DraftKind::Session,
+            DraftKind::Conversation,
+            DraftKind::Channel,
+        ] {
+            app.shell.edit_draft(kind, "original".into(), "sent".into());
+            let target = match kind {
+                DraftKind::Session => DeliveryTarget::Session("original".into()),
+                DraftKind::Conversation => DeliveryTarget::Conversation("original".into()),
+                DraftKind::Channel => DeliveryTarget::Channel("original".into()),
+                DraftKind::Answer | DraftKind::TaskTitle | DraftKind::TaskAcceptance => {
+                    unreachable!("message drafts only")
+                }
+            };
+            let mut report = agentdocker_core::SendReadiness::default();
+            report.observe(Some(agentdocker_core::RecipientReadiness::unknown(
+                "missing".into(),
+            )));
+            let receipt = Ok(QueuedSend {
+                message: "queued".to_owned().into(),
+                readiness: Some(report.clone()),
+            });
+            messages
+                .send(match kind {
+                    DraftKind::Session => Msg::SessionSent("original".into(), receipt),
+                    DraftKind::Conversation => Msg::ConversationSent("original".into(), receipt),
+                    DraftKind::Channel => Msg::ChannelSent("original".into(), receipt),
+                    DraftKind::Answer | DraftKind::TaskTitle | DraftKind::TaskAcceptance => {
+                        unreachable!("message drafts only")
+                    }
+                })
+                .unwrap();
+            app.drain();
+            let draft = match kind {
+                DraftKind::Session => &app.shell.session_drafts["original"].draft,
+                DraftKind::Conversation => &app.shell.conversation_drafts["original"],
+                DraftKind::Channel => &app.shell.channel_drafts["original"],
+                DraftKind::Answer | DraftKind::TaskTitle | DraftKind::TaskAcceptance => {
+                    unreachable!("message drafts only")
+                }
+            };
+            assert_eq!(draft.readiness.as_ref(), Some(&report));
+            assert!(!draft.readiness_expanded);
+            assert_eq!(app.shell.conversation.as_deref(), Some("elsewhere"));
+            let _ = app.update(Message::DeliveryDetails(target));
+        }
+        app.shell
+            .draft_snapshot()
+            .save(&app.shell.draft_home)
+            .unwrap();
+        let reopened = State::load(home.path());
+        assert!(
+            reopened
+                .session_drafts
+                .values()
+                .all(|entry| entry.draft.readiness.is_none())
+        );
+        assert!(
+            reopened
+                .conversation_drafts
+                .values()
+                .all(|draft| draft.readiness.is_none())
+        );
+        assert!(
+            reopened
+                .channel_drafts
+                .values()
+                .all(|draft| draft.readiness.is_none())
+        );
+    }
+
+    #[test]
     fn retyped_channel_and_session_drafts_survive_late_receipts() {
         fn draft(app: &mut App, session: bool) -> &mut ChannelDraft {
             if session {
@@ -2955,7 +3676,7 @@ mod tests {
             );
             let _ = app.update(edit(session, "changed text"));
             let _ = app.update(edit(session, "sent text"));
-            let receipt = Ok(MessageId::from("receipt".to_owned()));
+            let receipt = Ok(MessageId::from("receipt".to_owned()).into());
             messages
                 .send(if session {
                     Msg::SessionSent("recipient".into(), receipt)
@@ -3006,7 +3727,7 @@ mod tests {
         messages
             .send(Msg::SessionSent(
                 "recipient".into(),
-                Ok("receipt".to_owned().into()),
+                Ok(MessageId::from("receipt".to_owned()).into()),
             ))
             .unwrap();
         app.drain();
@@ -3061,8 +3782,10 @@ mod tests {
                 ..question.clone()
             },
         ];
-        app.answers.insert(first.clone(), "Yes".into());
-        app.answers.insert(second.clone(), "Keep my draft".into());
+        app.shell.answers.insert(first.clone(), "Yes".into());
+        app.shell
+            .answers
+            .insert(second.clone(), "Keep my draft".into());
         let _ = app.update(Message::Answer(first.clone()));
         assert!(
             matches!(commands.try_iter().collect::<Vec<_>>().as_slice(), [Cmd::Answer(id, _)] if id == &first)
@@ -3072,15 +3795,15 @@ mod tests {
         assert_eq!(app.take_answer_reveal(), Some(second.clone()));
         assert_eq!(app.shell.inbox_thread.as_deref(), Some("next-asker"));
         assert!(app.take_answer_reveal().is_none());
-        assert_eq!(app.answers[&second], "Keep my draft");
+        assert_eq!(app.shell.answers[&second], "Keep my draft");
         app.questions.insert(0, question);
-        app.answers.insert(first.clone(), "Yes".into());
+        app.shell.answers.insert(first.clone(), "Yes".into());
         let _ = app.update(Message::Answer(first.clone()));
         let _ = app.update(Message::Draft(second.clone(), "Newer draft".into()));
         messages.send(Msg::Answered(first, Ok(()))).unwrap();
         app.drain();
         assert!(app.take_answer_reveal().is_none());
-        assert_eq!(app.answers[&second], "Newer draft");
+        assert_eq!(app.shell.answers[&second], "Newer draft");
     }
 
     #[test]
@@ -3110,8 +3833,10 @@ mod tests {
                     ..question
                 },
             ];
-            app.answers.insert(first.clone(), "Yes".into());
-            app.answers.insert(second.clone(), "Keep this draft".into());
+            app.shell.answers.insert(first.clone(), "Yes".into());
+            app.shell
+                .answers
+                .insert(second.clone(), "Keep this draft".into());
             let _ = app.update(Message::Answer(first.clone()));
             assert!(matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),
                 [Cmd::Answer(id, _)] if id == &first));
@@ -3128,7 +3853,7 @@ mod tests {
             assert_eq!(app.shell.inbox_thread.as_deref(), Some("first-asker"));
             assert!(app.shell.pending_answer_reveal.is_none());
             assert!(!app.shell.reveal_next_question);
-            assert_eq!(app.answers[&second], "Keep this draft");
+            assert_eq!(app.shell.answers[&second], "Keep this draft");
         }
     }
 
@@ -3173,7 +3898,8 @@ mod tests {
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
         };
-        app.answers
+        app.shell
+            .answers
             .insert(question.id.clone(), "unfinished answer".into());
         app.shell.channel_drafts.insert(
             "another-room".into(),
@@ -3200,7 +3926,7 @@ mod tests {
         assert_eq!(app.shell.catalog.selected.as_ref(), Some(&project.root));
         assert_eq!(app.shell.notification_message.as_ref(), Some(&question.id));
         assert!(app.shell.pending_notification.is_none());
-        assert_eq!(app.answers[&question.id], "unfinished answer");
+        assert_eq!(app.shell.answers[&question.id], "unfinished answer");
         assert_eq!(
             app.shell.channel_drafts["another-room"].text,
             "unfinished channel message"
@@ -3224,6 +3950,201 @@ mod tests {
     /// An archived message's notification opens its conversation even when
     /// its sender's record is gone and its channel is closed: the archive
     /// outlives both, and no ten-second wait ends in "no longer available".
+    /// A reply typed into a notification that did not go opens the
+    /// conversation the way a click does and puts the words in its
+    /// composer — after what was already there, never over it — and says
+    /// why; an unknown outcome says to read the history first. Another
+    /// workspace's failure is only said.
+    #[test]
+    fn a_failed_notification_reply_comes_back_as_the_conversations_draft() {
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let conversation = agentdocker_core::ConversationId::dm("user", "sender-1")
+            .as_str()
+            .to_owned();
+        app.shell.conversation_drafts.insert(
+            conversation.clone(),
+            ChannelDraft {
+                text: "half typed".into(),
+                ..Default::default()
+            },
+        );
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::ReplyFailed {
+                action: action.clone(),
+                text: "on it".into(),
+                reason: "refused: recipient is paused".into(),
+                certain: true,
+            },
+        ));
+        let _ = app.update(Message::Tick);
+        assert!(app.shell.reply_recoveries.is_empty(), "placed once opened");
+        assert_eq!(
+            app.shell.conversation.as_deref(),
+            Some(conversation.as_str())
+        );
+        assert_eq!(
+            app.shell.conversation_drafts[&conversation].text, "half typed\n\non it",
+            "both drafts kept, the reply after"
+        );
+        assert!(
+            app.status
+                .contains("was not sent: refused: recipient is paused")
+        );
+        assert!(app.status.contains("in the composer"));
+
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::ReplyFailed {
+                action,
+                text: "still here".into(),
+                reason: "agentd closed the connection without answering".into(),
+                certain: false,
+            },
+        ));
+        let _ = app.update(Message::Tick);
+        assert_eq!(
+            app.shell.conversation_drafts[&conversation].text,
+            "still here"
+        );
+        assert!(app.status.contains("may not have been sent"));
+        assert!(app.status.contains("Check the history"));
+
+        let (mut app, _commands, _messages, _home, mut action) = notification_app();
+        action.home = std::path::PathBuf::from("/elsewhere");
+        action.socket = std::path::PathBuf::from("/elsewhere/agentd.sock");
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::ReplyFailed {
+                action,
+                text: "lost".into(),
+                reason: "refused".into(),
+                certain: true,
+            },
+        ));
+        assert!(app.shell.reply_recoveries.is_empty());
+        assert!(app.status.contains("another workspace"));
+
+        // Draft storage full: the words are kept beside the composer to
+        // copy or dismiss, not lost in a status line.
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        for kind in [
+            DraftKind::Session,
+            DraftKind::Channel,
+            DraftKind::Conversation,
+        ] {
+            for index in 0..crate::drafts::MAX_PER_KIND {
+                app.shell
+                    .edit_draft(kind, format!("filler-{index}"), "x".repeat(16_000));
+            }
+        }
+        // To the last byte.
+        let used: usize = {
+            let snapshot = app.shell.draft_snapshot();
+            snapshot
+                .sessions
+                .values()
+                .chain(snapshot.conversations.values())
+                .chain(snapshot.channels.values())
+                .map(String::len)
+                .sum()
+        };
+        app.shell.edit_draft(
+            DraftKind::Conversation,
+            "filler-room".into(),
+            "x".repeat(crate::drafts::MAX_TOTAL_BYTES - used),
+        );
+        app.shell.error = None;
+        let before = app.shell.draft_snapshot();
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::ReplyFailed {
+                action: action.clone(),
+                text: "kept words".into(),
+                reason: "refused".into(),
+                certain: true,
+            },
+        ));
+        let _ = app.update(Message::Tick);
+        assert_eq!(
+            app.shell.draft_snapshot(),
+            before,
+            "no draft was made room for"
+        );
+        assert_eq!(app.shell.reply_recoveries.len(), 1);
+        assert_eq!(
+            app.shell.reply_recoveries[0].conversation.as_deref(),
+            Some(conversation.as_str())
+        );
+        assert!(app.status.contains("kept beside the composer"));
+        let _ = app.update(Message::ReplyRecoveryCopy(action.target.message.clone()));
+        assert!(app.status.contains("clipboard"));
+        assert_eq!(app.shell.reply_recoveries.len(), 1, "copying keeps it");
+        let _ = app.update(Message::ReplyRecoveryDismiss(action.target.message.clone()));
+        assert!(app.shell.reply_recoveries.is_empty());
+
+        // The window keeps a bounded number; one more is said, not kept.
+        let (mut app, _commands, _messages, _home, action) = notification_app();
+        for index in 0..REPLY_RECOVERIES {
+            let mut action = action.clone();
+            action.target.message = MessageId::from(format!("m-{index}"));
+            let _ = app.update(Message::Notification(
+                crate::notification_route::Activation::ReplyFailed {
+                    action,
+                    text: format!("words {index}"),
+                    reason: "refused".into(),
+                    certain: true,
+                },
+            ));
+        }
+        assert_eq!(app.shell.reply_recoveries.len(), REPLY_RECOVERIES);
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::ReplyFailed {
+                action,
+                text: "one too many ".to_owned() + &"🦀".repeat(4000),
+                reason: "connection lost".into(),
+                certain: false,
+            },
+        ));
+        assert_eq!(app.shell.reply_recoveries.len(), REPLY_RECOVERIES);
+        assert!(app.status.contains("one too many"));
+        assert!(app.status.contains("may not have been sent"));
+        assert!(app.status.chars().count() < 512);
+
+        // A route that gives up — the message is gone and no
+        // conversation opens — leaves the words reachable at the top of
+        // the Messages list, not bound to whatever conversation is on view.
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages.send(Msg::Inbox(Vec::new())).unwrap();
+        messages.send(Msg::Questions(Vec::new())).unwrap();
+        app.shell.reply_recoveries.push(ReplyRecovery {
+            message: action.target.message.clone(),
+            text: "orphaned words".into(),
+            reason: "refused".into(),
+            certain: true,
+            conversation: None,
+        });
+        app.shell.pending_notification = Some((action.clone(), Instant::now()));
+        assert!(
+            app.shell.orphan_reply_recoveries().is_empty(),
+            "still on its way to its conversation"
+        );
+        app.shell.pending_notification = None;
+        app.shell.notification_message = None;
+        let orphans = app.shell.orphan_reply_recoveries();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].text, "orphaned words");
+        let _ = app.update(Message::ReplyRecoveryDismiss(action.target.message));
+        assert!(app.shell.orphan_reply_recoveries().is_empty());
+    }
+
     #[test]
     fn an_archived_notification_opens_its_conversation_without_a_live_sender_or_channel() {
         // A direct message from a sender nobody has a record of.
@@ -3322,7 +4243,8 @@ mod tests {
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
             }]))
             .unwrap();
-        app.answers
+        app.shell
+            .answers
             .insert(action.target.message.clone(), "unfinished".into());
         let _ = app.update(Message::Notification(
             crate::notification_route::Activation::Open(action.clone()),
@@ -3335,7 +4257,7 @@ mod tests {
             app.shell.notification_message.as_ref(),
             Some(&action.target.message)
         );
-        assert_eq!(app.answers[&action.target.message], "unfinished");
+        assert_eq!(app.shell.answers[&action.target.message], "unfinished");
         assert!(app.sending.is_empty());
     }
 
@@ -3508,8 +4430,10 @@ mod tests {
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
         });
-        app.answers.insert(id.clone(), "target draft".into());
-        app.answers.insert(other.clone(), "other draft".into());
+        app.shell.answers.insert(id.clone(), "target draft".into());
+        app.shell
+            .answers
+            .insert(other.clone(), "other draft".into());
         app.shell.pending_answer_reveal = Some(other.clone());
         app.shell.reveal_next_question = true;
         app.shell.inbox_thread = Some("another-agent".into());
@@ -3523,8 +4447,8 @@ mod tests {
         );
         assert!(app.shell.pending_answer_reveal.is_none());
         assert!(!app.shell.reveal_next_question);
-        assert_eq!(app.answers[&id], "target draft");
-        assert_eq!(app.answers[&other], "other draft");
+        assert_eq!(app.shell.answers[&id], "target draft");
+        assert_eq!(app.shell.answers[&other], "other draft");
         assert_eq!(
             commands.try_iter().count(),
             0,
@@ -3541,7 +4465,7 @@ mod tests {
         assert_eq!(app.screen, Screen::Agents);
         app.questions.clear();
         let _ = app.update(Message::OpenQuestion(id.clone()));
-        assert_eq!(app.answers[&id], "target draft");
+        assert_eq!(app.shell.answers[&id], "target draft");
         assert_eq!(app.screen, Screen::Questions);
     }
 
@@ -3709,6 +4633,24 @@ mod tests {
             let _ = app.update(navigation);
             assert!(app.shell.pending_notification.is_none());
         }
+        app.shell.pending_notification = Some((action.clone(), Instant::now()));
+        app.shell.notification_message = Some(MessageId::from("cancelled".to_owned()));
+        let key = keyboard::Key::Named(keyboard::key::Named::Escape);
+        let _ = app.update(Message::Event(iced::Event::Keyboard(
+            keyboard::Event::KeyPressed {
+                modified_key: key.clone(),
+                key,
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: None,
+                repeat: false,
+            },
+        )));
+        assert!(app.shell.pending_notification.is_none());
+        assert!(app.shell.notification_message.is_none());
         let _ = app.update(Message::Navigate(Screen::Settings));
         let mut foreign = action.clone();
         foreign.socket = foreign.socket.with_file_name("another-daemon.sock");
@@ -3766,7 +4708,7 @@ mod tests {
         messages
             .send(Msg::ChannelSent(
                 "one".into(),
-                Ok(MessageId::from("confirmed".to_owned())),
+                Ok(MessageId::from("confirmed".to_owned()).into()),
             ))
             .unwrap();
         app.drain();

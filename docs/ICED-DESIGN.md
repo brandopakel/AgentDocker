@@ -218,7 +218,7 @@ database remains a manual step.
 - Questions preserve drafts across navigation and failed sends. Duplicate sends
   are disabled while waiting. A successful reply means delivery, not proof that
   an agent consumed it or resumed work.
-- Conversation/thread, channel and session text persists under the desktop's
+- Conversation/thread, channel, session, question-answer and Board-card text persists under the desktop's
   state-root/daemon-socket identity. Only text is restored, never send state or
   queued receipts. Serialized atomic saves preserve the newest generation;
   close waits for it or reports failure with retry/explicit unsaved-close controls.
@@ -226,7 +226,16 @@ database remains a manual step.
   keeps at most 128 drafts per kind, 16,000 characters per draft and 4 MiB of
   aggregate UTF-8 text; only empty drafts can be pruned. Files are private,
   versioned and bounded to 32 MiB; invalid loads disable writes and preserve the
-  file. Question answers and other forms are not included in this persistence.
+  file. Explicit structured choices use the answer queue directly even when draft
+  storage is full; failed delivery preserves earlier typed text. They still require
+  a current question and any applicable file review. Answer drafts retain their original question IDs; confirmed completion
+  removes them, while failed delivery keeps them. No approval, review or send
+  state is restored. Version 3 reads version-1 message and version-2 answer files
+  without rewriting them until the next edit. Board titles and acceptance text
+  remain keyed to the original project, with 200/4,000-character limits and the
+  same aggregate storage budget. A confirmed filing clears only that project's
+  draft; a refused or old response cannot clear newer text. No filing state is
+  restored and reopening never creates a card. Other forms remain window-local.
 - Each channel has its own draft and pending send. A late acknowledgement clears
   only the text it sent. Channels show membership, reviews, resolution and queued
   human messages, plus confirmed sends from this window. Reading never drains
@@ -258,6 +267,14 @@ database remains a manual step.
 - Setup and installation preserve their existing exact-preview/apply and
   undo/rollback checks. A framework migration does not relax process identity,
   release lifetime pins, queue limits or private state requirements.
+
+Send receipts carry bounded recipient-readiness metadata into the draft for the
+original session, channel, conversation or thread. The default presentation is
+one attention line with **Delivery details**; expanded details scroll within a
+180-point area and show named recipients plus explicit open/copy controls. The
+snapshot is not persisted and never changes message acknowledgement, provider
+consent or queue order. Expanded session/tool details compute current guidance
+from the same provider-block and receiver-evidence rules.
 
 ## Keyboard and native accessibility
 
@@ -353,3 +370,9 @@ a lost reply is an uncertain outcome to check before retrying, not an automatic
 resubmission. The pause reason and actions occupy separate rows on narrow
 windows. A durable pause blocks new agent lease claims but does not stop a model
 process or establish that every recipient has consumed the pause message.
+
+Notification reply recovery forwarding reserves the full JSON byte budget for
+16,000 reply characters, a 512-character reason and validated destination
+metadata. Escaped control characters and Unicode cannot silently reduce that
+limit. Both ends still reject oversized frames. A full recovery list shows a
+200-character excerpt and preserves uncertain-delivery wording.

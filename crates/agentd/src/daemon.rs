@@ -519,8 +519,11 @@ fn registry_error(err: RegistryError) -> Response {
     let code = match err {
         RegistryError::IdentityReserved(_) => ErrorCode::Conflict,
         RegistryError::NameTaken(_) => ErrorCode::NameTaken,
-        RegistryError::NotFound(_) => ErrorCode::NotFound,
-        RegistryError::Ambiguous(_) | RegistryError::ProjectAmbiguous(_) => ErrorCode::Ambiguous,
+        RegistryError::NotFound(_) | RegistryError::RoleNotFound(_) => ErrorCode::NotFound,
+        RegistryError::Ambiguous(_)
+        | RegistryError::ProjectAmbiguous(_)
+        | RegistryError::RoleAmbiguous(_)
+        | RegistryError::RoleShadowed(_) => ErrorCode::Ambiguous,
         RegistryError::ProjectNotFound(_) => ErrorCode::NotFound,
     };
     Response::error(code, err.to_string())
@@ -1668,6 +1671,7 @@ impl Daemon {
             Request::ReportActivity { agent, observation } => {
                 lock(&self.state).report_activity(&agent, observation, Utc::now())
             }
+            Request::Role { agent, role } => lock(&self.state).set_role(&agent, role, Utc::now()),
             Request::ReportAdapter {
                 agent,
                 adapter,
@@ -3822,15 +3826,18 @@ impl Daemon {
         from: String,
         to: &str,
     ) -> Result<(String, Destination), Box<Response>> {
-        let from = match lock(&self.state).registry.resolve(&from) {
-            Ok(id) => id.to_string(),
+        let sender = match lock(&self.state).registry.resolve(&from) {
+            Ok(id) => Some(id),
             // An unregistered sender is allowed: `agentd` and a bare
             // `user` both speak without a record of their own.
-            Err(RegistryError::NotFound(_)) => from,
+            Err(RegistryError::NotFound(_)) => None,
             Err(err) => return Err(Box::new(registry_error(err))),
         };
+        let from = sender.as_ref().map_or(from, ToString::to_string);
         let to = match Destination::parse(to) {
-            Destination::Agent(reference) => Destination::Agent(self.resolve(reference.as_str())?),
+            Destination::Agent(reference) => Destination::Agent(
+                lock(&self.state).resolve_from(sender.as_ref(), reference.as_str())?,
+            ),
             Destination::Project(selector) => {
                 Destination::Project(self.resolve_project(selector.as_str()).await?)
             }
@@ -4550,6 +4557,98 @@ impl State {
         self.registry
             .resolve(reference)
             .map_err(|err| Box::new(registry_error(err)))
+    }
+
+    /// Resolve a reference as `from` would: `role:<name>` is the one live
+    /// holder in the sender's project when the sender works in one, so
+    /// "the reviewer" means this project's reviewer; anything else, and
+    /// a sender without a project, resolves as [`State::resolve`] does.
+    pub fn resolve_from(
+        &mut self,
+        from: Option<&AgentId>,
+        reference: &str,
+    ) -> Result<AgentId, Box<Response>> {
+        let project = from
+            .and_then(|from| self.registry.get(from))
+            .and_then(|record| record.project.as_ref())
+            .map(agentdocker_core::ProjectRef::id);
+        match (
+            reference.strip_prefix(agentdocker_core::agent::ROLE_PREFIX),
+            project,
+        ) {
+            (Some(role), Some(project)) => {
+                if let Some(error) = self.storage_failure() {
+                    return Err(Box::new(error));
+                }
+                self.registry
+                    .resolve_role(role, Some(&project))
+                    .map_err(|err| Box::new(registry_error(err)))
+            }
+            _ => self.resolve(reference),
+        }
+    }
+
+    /// Give `reference` a role or take it away. A role is one word
+    /// ([`agentdocker_core::agent::check_role`]), kept as the `role`
+    /// label on a live record and said as `role_set`; the same role again
+    /// is nothing. Several live agents may hold one role — it is at
+    /// resolution that a role must name exactly one.
+    pub(super) fn set_role(
+        &mut self,
+        reference: &str,
+        role: Option<String>,
+        now: DateTime<Utc>,
+    ) -> Response {
+        if let Some(role) = &role
+            && let Err(reason) = agentdocker_core::agent::check_role(role)
+        {
+            return Response::error(ErrorCode::Invalid, reason);
+        }
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let mut record = self.registry.get(&id).expect("resolved agent").clone();
+        if !record.status.is_live() {
+            return Response::error(ErrorCode::Invalid, "a finished agent has no role");
+        }
+        if record.role() == role.as_deref() {
+            return Response::Agent { agent: record };
+        }
+        match &role {
+            Some(role) => {
+                record
+                    .spec
+                    .labels
+                    .insert(agentdocker_core::agent::ROLE_LABEL.to_owned(), role.clone());
+            }
+            None => {
+                record
+                    .spec
+                    .labels
+                    .remove(agentdocker_core::agent::ROLE_LABEL);
+            }
+        }
+        let mut event = agentdocker_core::Event::new(
+            EventKind::RoleSet {
+                agent: id.clone(),
+                project: record
+                    .project
+                    .as_ref()
+                    .map(agentdocker_core::ProjectRef::id),
+                role,
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        let committed = self.persist("role", |store| store.agent_transition(&record, &event));
+        if committed == Persisted::Committed {
+            *self.registry.get_mut(&id).expect("resolved agent") = record.clone();
+            self.next_seq += 1;
+            let _ = self.events.send(event);
+        }
+        self.write_failure()
+            .unwrap_or(Response::Agent { agent: record })
     }
 
     pub fn is_live(&mut self, id: &AgentId) -> bool {
@@ -6003,9 +6102,31 @@ impl State {
         }
         self.notify_humans(&envelope, &recipients);
         let subscribers = self.bus.send(envelope.clone()).unwrap_or(0);
+        let now = Utc::now();
+        let mut readiness = agentdocker_core::SendReadiness::default();
+        let blocked_sources: Vec<_> = self
+            .registry
+            .provider_block_ids()
+            .into_iter()
+            .filter_map(|id| self.registry.get(&id))
+            .collect();
+        for id in &recipients {
+            let issue = self.registry.get(id).map_or_else(
+                || Some(agentdocker_core::RecipientReadiness::unknown(id.clone())),
+                |agent| {
+                    let blocked =
+                        agentdocker_core::provider_block(agent, blocked_sources.iter().copied())
+                            .and_then(|(_, state)| state.issue.as_ref())
+                            .map(|issue| issue.kind);
+                    agentdocker_core::RecipientReadiness::for_agent(agent, now, blocked)
+                },
+            );
+            readiness.observe(issue);
+        }
         Response::Sent {
             message: envelope.id,
             subscribers,
+            recipient_readiness: Some(readiness),
         }
     }
 
@@ -6031,6 +6152,18 @@ impl State {
             record.spec.labels.insert(
                 agentdocker_core::agent::NAME_LABEL.to_owned(),
                 agentdocker_core::agent::GENERATED_NAME.to_owned(),
+            );
+        }
+        // `role:<name>` is how a role is addressed; a name spelled that
+        // way would be reached as the role or shadow it, never plainly.
+        if record
+            .spec
+            .name
+            .starts_with(agentdocker_core::agent::ROLE_PREFIX)
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "an agent's name cannot start with `role:`; that is how a role is addressed",
             );
         }
         // One process, one agent.
@@ -12748,6 +12881,158 @@ deny = ["send:all"]
                 links: Vec::new(),
             })
             .await
+    }
+
+    #[tokio::test]
+    async fn send_readiness_reports_only_queued_recipients_and_never_receipts() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let alpha = dir.path().join("alpha");
+        let beta = dir.path().join("beta");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        let sender = register_in(&daemon, "sender", &alpha).await;
+        let ready = register_in(&daemon, "ready", &alpha).await;
+        let unbound = register_in(&daemon, "unbound", &alpha).await;
+        let unrelated = register_in(&daemon, "unrelated", &beta).await;
+        {
+            let mut state = lock(&daemon.state);
+            let now = Utc::now();
+            let agent = state.registry.get_mut(&ready.id).unwrap();
+            agent.process_started_at = Some(now);
+            agent.spec.runtime = "codex".into();
+            agent.input_delivery = Some(agentdocker_core::InputDelivery {
+                process_started_at: now,
+                reported_at: now,
+                paused: false,
+                pause_reason: None,
+                received: None,
+                received_at: None,
+            });
+            let agent = state.registry.get_mut(&unbound.id).unwrap();
+            agent.spec.runtime = "claude-code".into();
+            agent
+                .spec
+                .labels
+                .insert("session_id".into(), "resume-session".into());
+        }
+        let Response::Channel { channel } = daemon
+            .handle(Request::ChannelOpen {
+                agent: sender.id.to_string(),
+                task: "readiness test".into(),
+                members: vec![ready.id.to_string(), unbound.id.to_string()],
+                name: None,
+                project: None,
+            })
+            .await
+        else {
+            panic!("channel failed")
+        };
+        for (destination, count) in [
+            (unbound.id.to_string(), 1),
+            (
+                format!("project:{}", sender.project.as_ref().unwrap().id()),
+                2,
+            ),
+            (format!("channel:{}", channel.id), 2),
+        ] {
+            let Response::Sent {
+                message,
+                recipient_readiness: Some(report),
+                ..
+            } = send(&daemon, sender.id.as_str(), &destination).await
+            else {
+                panic!("send failed")
+            };
+            assert_eq!(report.recipients, count);
+            assert_eq!(report.needs_attention, 1);
+            assert_eq!(report.details[0].agent, unbound.id);
+            assert_eq!(
+                report.details[0].issue,
+                agentdocker_core::SendIssue::NoReceiver
+            );
+            assert!(
+                report.details[0]
+                    .guidance()
+                    .contains("claude --resume resume-session")
+            );
+            assert!(
+                inbox(&daemon, unbound.id.as_str(), false)
+                    .await
+                    .iter()
+                    .any(|m| m.id == message)
+            );
+            assert!(
+                !inbox(&daemon, unrelated.id.as_str(), false)
+                    .await
+                    .iter()
+                    .any(|m| m.id == message)
+            );
+            assert!(
+                !inbox(&daemon, sender.id.as_str(), false)
+                    .await
+                    .iter()
+                    .any(|m| m.id == message)
+            );
+        }
+        // A quota held by a different project still blocks a recipient
+        // whose receiver is current; it must not add that source to fanout.
+        {
+            let mut state = lock(&daemon.state);
+            for id in [&ready.id, &unrelated.id] {
+                let agent = state.registry.get_mut(id).unwrap();
+                agent.spec.provider = Some("fixture-provider".into());
+                agent
+                    .spec
+                    .labels
+                    .insert("provider-quota".into(), "shared".into());
+            }
+            let agent = state.registry.get_mut(&unrelated.id).unwrap();
+            // Finished sources still carry shared-quota blocks.
+            agent.status = AgentStatus::Exited { code: Some(1) };
+            agent.provider_availability = Some(agentdocker_core::ProviderAvailability {
+                process_started_at: Utc::now(),
+                observed_at: Utc::now(),
+                cleared_observation: None,
+                issue: Some(agentdocker_core::ProviderIssue {
+                    quota_group: Some("shared".into()),
+                    ..agentdocker_core::ProviderIssue::local(
+                        agentdocker_core::ProviderIssueKind::Usage,
+                    )
+                }),
+            });
+        }
+        let Response::Sent {
+            recipient_readiness: Some(report),
+            ..
+        } = send(&daemon, sender.id.as_str(), ready.id.as_str()).await
+        else {
+            panic!("send failed")
+        };
+        assert_eq!(report.recipients, 1);
+        assert_eq!(report.details[0].agent, ready.id);
+        assert_eq!(
+            report.details[0].issue,
+            agentdocker_core::SendIssue::ProviderBlocked(
+                agentdocker_core::ProviderIssueKind::Usage
+            )
+        );
+        let queued = inbox(&daemon, unbound.id.as_str(), false).await;
+        lock(&daemon.state).store.reject_writes_for_test();
+        assert!(matches!(
+            send(&daemon, sender.id.as_str(), unbound.id.as_str()).await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        assert_eq!(
+            lock(&daemon.state).inboxes[&unbound.id]
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            queued
+        );
     }
 
     #[tokio::test]

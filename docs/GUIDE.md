@@ -231,7 +231,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `ps` | Agents, live ones by default, grouped by project |
+| `ps` | Agents grouped by project, with INPUT readiness; `--input-details` adds reconnect guidance |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
 | `inspect <agent>` | Everything known about one agent, as JSON |
@@ -250,6 +250,8 @@ each one by pid.
 | `adopt <pid>` | Register one of them; `--all` for all |
 | `stop <agent>` | Signal an agent to stop |
 | `restart <agent>` | Replace a managed container after confirming it exited |
+| `deregister` / `rm` | Mark an external agent finished / forget a finished one |
+| `role <name>` | Give an agent (`--as`) a role — `reviewer`, `implementer` — so `send --to role:reviewer` and `handoff role:reviewer` reach it; `--clear` takes it away |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml` |
 | `heartbeat` | Report that an agent is alive |
@@ -258,7 +260,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `send` | Message an agent, the project, a topic, or everyone A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
+| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
 | `watch` | Stream messages for an agent or matching topics |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer |
@@ -269,6 +271,20 @@ each one by pid.
 | `thread <message>` | One message and the replies under it |
 | `search <query>` | Find archived messages by text (`--project` narrows; `--as <agent>` searches only what that agent could list) |
 | `me` | Register yourself as an agent named `user` |
+
+A successful `send` prints the message ID on stdout. Acceptance and recipient
+warnings go to stderr: a queued message can still be waiting for another prompt
+in a session without an input receiver. `agentdocker ps --input-details` names
+these sessions and gives reconnect guidance; it does not restart them. Provider
+limits remain separate from receiver health. An older daemon can report readiness
+as unavailable rather than imply that every recipient can wake.
+
+For an existing Claude session with no channel, save the current work, exit that
+Claude session, and use the session-specific resume command shown in Delivery
+details or `ps --input-details` from its project folder. Complete Claude's startup
+channel consent. The AgentDocker MCP entry must include `--claude-channel`; see
+[Claude channel setup](CLAUDE-CHANNEL-INPUT.md). Hooks alone cannot start an idle
+turn. A copied instruction is not executed by AgentDocker.
 
 ### Share a resource
 
@@ -497,6 +513,13 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- Roles: `agentdocker role reviewer --as <agent>` gives an agent a role,
+  and `role:reviewer` names it as the recipient of a `send`, an `ask` or
+  a `handoff` — the one live agent holding that role in the sender's
+  project; none is not found, two are ambiguous. `--clear` takes it away.
+- Reply from the notification: on macOS a message notification has a
+  **Reply** field, and what is typed there reaches the conversation — an
+  answer to a question closes it — without opening the window.
 - A turn's end no longer takes an agent's deliberate leases away: the
   Claude Code `Stop` hook releases only the per-file edit leases it took
   itself (`automatic`), so a worktree, branch or build-campaign lease
@@ -625,5 +648,7 @@ In Messages, **+** starts a direct message or named channel. Press Enter to send
 mention suggestions only include the current conversation's recipients. In an
 open channel you belong to, **Add members** adds another available agent. The
 CLI equivalent is `agentdocker channel invite --as <member> <channel> <agent>`.
-These Messages additions are in the current review candidate, pending native
-and installed acceptance; they do not change an older running app.
+These Messages additions merged in PR #170 and are included in the recorded
+September 17 installed `d14610b7` preview. Native workflows and a targeted
+synthetic Enter event passed; physical keyboard and IME acceptance remain in
+[Remaining work](REMAINING-WORK.md).

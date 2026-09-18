@@ -291,6 +291,14 @@ pub enum Request {
         #[serde(default)]
         vcs: Option<VcsState>,
     },
+    /// Give a live agent a role (`reviewer`, `implementer`…) or take it
+    /// away, so a message or a hand-off can name it as `role:<name>`.
+    /// Kept as the `role` label. Answers `agent`.
+    Role {
+        agent: String,
+        #[serde(default)]
+        role: Option<String>,
+    },
     /// A provider lifecycle observation, separate from process liveness.
     /// Older observations are ignored; observations expire after five minutes.
     ReportActivity {
@@ -1211,6 +1219,10 @@ pub enum Response {
     Sent {
         message: MessageId,
         subscribers: usize,
+        /// Snapshot of the exact queued recipients, not a receipt or idle-wake proof.
+        /// Older daemons omit it; clients must keep that state unknown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recipient_readiness: Option<crate::SendReadiness>,
     },
     Message {
         message: Envelope,
@@ -1413,6 +1425,20 @@ fn access_ttl() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_send_responses_keep_readiness_unknown() {
+        let legacy = serde_json::json!({"type":"sent", "message":"m1", "subscribers":5});
+        let response: Response = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(matches!(
+            response,
+            Response::Sent {
+                recipient_readiness: None,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_value(response).unwrap(), legacy);
+    }
 
     #[test]
     fn handover_capability_is_optional_and_never_relabels_other_errors() {

@@ -1530,11 +1530,23 @@ fn render_whole(response: Response) -> Value {
         Response::Sent {
             message,
             subscribers: _,
-        } => text_result(
-            &json!({ "sent": true, "message_id": message,
-                "delivery": "accepted_by_agentdocker", "provider_receipt": "unconfirmed", "idle_wake": "unconfirmed" }),
-            false,
-        ),
+            recipient_readiness,
+        } => {
+            let readiness = recipient_readiness.as_ref().map(|report| json!({
+                "recipients": report.recipients, "needs_attention": report.needs_attention,
+                "omitted": report.omitted(),
+                "details": report.details.iter().map(|recipient| {
+                    let mut value = serde_json::to_value(recipient).expect("readiness serializes");
+                    value["guidance"] = json!(recipient.guidance());
+                    value
+                }).collect::<Vec<_>>()
+            }));
+            text_result(
+                &json!({ "sent": true, "message_id": message,
+                "delivery": "accepted_by_agentdocker", "provider_receipt": "unconfirmed", "idle_wake": "unconfirmed", "recipient_readiness": readiness }),
+                false,
+            )
+        }
         Response::Messages { messages } => text_result(&json!({ "messages": messages }), false),
         Response::Answer {
             message,
@@ -1641,7 +1653,7 @@ fn bare_tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "The recipient: agent id, name, or unique prefix." },
+                    "to": { "type": "string", "description": "The recipient: agent id, name, or unique prefix, or `role:<name>` for the one agent holding that role in this project." },
                     "task": { "type": "string", "description": "What the recipient should continue." },
                     "note": { "type": "string", "description": "Anything the daemon does not already know." },
                     "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } },
@@ -1768,7 +1780,7 @@ fn bare_tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "Agent id/name, `project` (this project) or `project:<id|path>`, `topic:<name>`, or `all`." },
+                    "to": { "type": "string", "description": "Agent id/name or `role:<name>` (the one agent holding that role in this project), `project` (this project) or `project:<id|path>`, `topic:<name>`, or `all`." },
                     "text": { "type": "string" },
                     "payload": { "type": "object", "description": "Structured payload instead of text." },
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },
@@ -2480,6 +2492,7 @@ mod tests {
         let mut channel = server(vec![Response::Sent {
             message: "posted-question".to_owned().into(),
             subscribers: 0,
+            recipient_readiness: None,
         }]);
         channel.claude_channel = true;
         let definitions = channel
@@ -2653,6 +2666,7 @@ mod tests {
         let s = server(vec![Response::Sent {
             message: MessageId::from("m1".to_owned()),
             subscribers: 1,
+            recipient_readiness: None,
         }]);
         let reply = s
             .handle(rpc(
@@ -2697,11 +2711,55 @@ mod tests {
     }
 
     #[test]
+    fn send_advice_names_unbound_recipients_without_claiming_message_receipt() {
+        let mut agent = agentdocker_core::AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "Claude reviewer".into(),
+                runtime: "claude-code".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.status = agentdocker_core::AgentStatus::Running;
+        agent
+            .spec
+            .labels
+            .insert("session_id".into(), "resume-me".into());
+        let mut report = agentdocker_core::SendReadiness::default();
+        report.observe(agentdocker_core::RecipientReadiness::for_agent(
+            &agent,
+            Utc::now(),
+            None,
+        ));
+        let result = render_whole(Response::Sent {
+            message: "m1".to_owned().into(),
+            subscribers: 10,
+            recipient_readiness: Some(report),
+        });
+        let text: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text["provider_receipt"], "unconfirmed");
+        assert_eq!(text["recipient_readiness"]["needs_attention"], 1);
+        assert_eq!(
+            text["recipient_readiness"]["details"][0]["name"],
+            "Claude reviewer"
+        );
+        assert!(
+            text["recipient_readiness"]["details"][0]["guidance"]
+                .as_str()
+                .unwrap()
+                .contains("claude --resume resume-me")
+        );
+    }
+
+    #[test]
     fn subscribers_never_establish_provider_receipt_or_wake() {
         for subscribers in [0, 1, 100] {
             let result = render_whole(Response::Sent {
                 message: "queued-message".to_owned().into(),
                 subscribers,
+                recipient_readiness: None,
             });
             let text: Value =
                 serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();

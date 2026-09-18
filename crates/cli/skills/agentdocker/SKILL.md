@@ -89,6 +89,7 @@ agentdocker observe --as SESSION_ID /absolute/path
 agentdocker claim --as SESSION_ID path:/absolute/path
 agentdocker stale --as SESSION_ID /absolute/path
 agentdocker send --from SESSION_ID --to RECIPIENT 'Message'
+agentdocker send --from SESSION_ID --to role:reviewer 'Message'   # the one agent with that role here
 agentdocker inbox --as SESSION_ID
 agentdocker inbox --as SESSION_ID --ack RECEIVED_MESSAGE_ID
 agentdocker release --as SESSION_ID LEASE_ID --summary 'What changed and why'

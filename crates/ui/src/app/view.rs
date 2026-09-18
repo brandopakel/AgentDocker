@@ -1878,6 +1878,7 @@ impl App {
                 let draft = entry.map(|entry| &entry.draft);
                 let sending = draft.is_some_and(|draft| draft.sending.is_some());
                 let value = draft.map_or("", |draft| draft.text.as_str());
+                let target_for_notice = draft_key.clone();
                 let target = draft_key.clone();
                 let send = (!sending && !value.trim().is_empty() && self.connected.is_ok())
                     .then_some(Message::SendSession(draft_key));
@@ -1899,6 +1900,15 @@ impl App {
                         },
                         send,
                     ));
+                if let Some(notice) = draft.and_then(|draft| {
+                    super::send_readiness::notice(
+                        draft,
+                        super::shell::DeliveryTarget::Session(target_for_notice.clone()),
+                        c,
+                    )
+                }) {
+                    body = body.push(notice);
+                }
                 if let Some(error) = draft.and_then(|draft| draft.error.as_deref()) {
                     body = body.push(text(error).size(13).color(c.amber));
                 } else if entry.is_some_and(|entry| entry.queued.is_some()) {
@@ -1952,6 +1962,11 @@ impl App {
             }
             if let Some(session) = &agent.session {
                 details = details.push(kv("Terminal", format!("{session:?}"), c));
+            }
+            if let Some(guidance) =
+                super::send_readiness::reconnect(agent, &self.agents, "inspector", c)
+            {
+                details = details.push(guidance);
             }
             body = body.push(details);
         }
@@ -2324,6 +2339,15 @@ impl App {
                     c,
                 ));
             }
+            if let Some(notice) = entry.and_then(|entry| {
+                super::send_readiness::notice(
+                    &entry.draft,
+                    super::shell::DeliveryTarget::Session(id.to_owned()),
+                    c,
+                )
+            }) {
+                composer = composer.push(notice);
+            }
             convo = convo.push(composer);
         } else {
             convo = convo.push(small("Choose a conversation to reply.", c));
@@ -2442,7 +2466,7 @@ impl App {
             let draft_id = id.clone();
             let busy = self.sending.contains(&id);
             let expired = question.expired(Utc::now());
-            let answer = self.answers.get(&id).cloned().unwrap_or_default();
+            let answer = self.shell.answers.get(&id).cloned().unwrap_or_default();
             let mut body = column![
                 row![
                     dot(if expired { c.faint } else { c.amber }, 8.0, c),
@@ -2914,6 +2938,13 @@ impl App {
                     .unwrap_or_default();
                 if let Some(error) = &draft.error {
                     body = body.push(text(error.clone()).size(13).color(c.amber));
+                }
+                if let Some(notice) = super::send_readiness::notice(
+                    &draft,
+                    super::shell::DeliveryTarget::Channel(id.clone()),
+                    c,
+                ) {
+                    body = body.push(notice);
                 }
                 body = body.push(
                     row![
@@ -3493,6 +3524,11 @@ impl App {
                             ),
                             c,
                         ));
+                    if let Some(guidance) =
+                        super::send_readiness::reconnect(agent, &self.agents, "tools", c)
+                    {
+                        facts = facts.push(guidance);
+                    }
                 }
                 if !sessions.is_empty()
                     && !ready

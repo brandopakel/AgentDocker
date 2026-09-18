@@ -158,8 +158,8 @@ own idea of who is live. Paprika does not know what an agent is doing to a
 checkout, cannot stop two agents editing one file, runs nothing on the machine
 and reaches an agent only when the agent calls in; AgentDocker had no board
 when this was written (it has one now — the first item below, in source), and
-still has no spec documents beside the work, no roles, no webhooks and no
-mobile client. The overlap is coordination vocabulary: Paprika's
+still has no spec documents beside the work or mobile client; roles and
+webhooks are now in source. The overlap is coordination vocabulary: Paprika's
 pull is our `claim` on a `task:<name>` lease (both atomic, both refuse a second
 taker), its hand-off is a column move where ours is a bundle to a named agent,
 its comments are our channel, its Memory link is our `journal_note`.
@@ -183,7 +183,8 @@ its comments are our channel, its Memory link is our `journal_note`.
 5. **Rules that only comment or move**, never run commands — the same line we
    draw around policies.
 6. **`--json` everywhere with documented exit codes** for agents driving the
-   CLI; ours has `--json` on most commands and no exit-code contract yet.
+   CLI; ours has `--json` on most commands, and the exit-code contract
+   is merged (#181) and included in the current desktop preview.
 
 ### Combining rather than competing
 
@@ -224,21 +225,26 @@ session is recognised at registration and shown in `ps`); the focus/prompt
 bridge and blocked-state mirror are designed and measured in
 [HERDR-BRIDGE.md](HERDR-BRIDGE.md) and deferred; a shipped SKILL.md exists
 (the portable coordination skill). From Dax: per-project visual identity,
-**Set up** for hooks and per-tool status badges are present; reply from the
-notification and trace-file resume are not. From Paprika: the first item —
+**Set up** for hooks and per-tool status badges are present, and so is reply
+from the notification (a **Reply** field on macOS message notifications,
+sent as the person's reply to that message); trace-file resume is not. From Paprika: the first item —
 a card with acceptance text and an atomic pull over the `task:<id>` lease,
-with a Board tab in the app — is in source (PR #176); roles, typed links,
-webhooks, comment-only rules and the exit-code contract are not started, and
-the card-to-lease bridge to Paprika itself remains a proposal.
+with a Board tab in the app — is in source (PR #176), as are roles (a `role`
+label an agent is given, and `role:<name>` as the recipient of a message or
+a hand-off); typed links (#182), webhooks (#183) and the exit-code contract (#181)
+are merged and included in the current desktop preview;
+comment-only rules are not started, and the card-to-lease bridge to Paprika
+itself remains a proposal.
 
 Assessed September 17, against the [product direction](PRODUCT-DIRECTION.md):
-what is still worth taking is small and agent-facing — an exit-code contract
-for the command line (agents drive the CLI; PR #181), typed links on a card,
+the adopted work is small and agent-facing — the merged CLI exit-code contract
+(PR #181, included in the current desktop preview), typed links on a card,
 message or hand-off (in source: `links` on cards, messages, checkpoints and
 hand-off bundles, shown in the app) (a path, a PR, a memory note; the data already exists), webhooks
 as a signed sink on the event stream (a team channel hears `question_asked`
 and `lease_deadlock`; in source: `[[webhooks]]` in `agentd.toml`, best
-effort, signed, bounded), and roles as agent labels a hand-off can name. Reply
+effort, signed, bounded), and roles as agent labels a hand-off can name (in
+source: `agentdocker role`, `role:<name>` as a recipient). Reply
 from the notification (Dax) is worth it once the routing acceptance above is
 closed. Not worth taking: herdr's focus/prompt bridge and blocked-state
 mirror (measured and deferred in [HERDR-BRIDGE.md](HERDR-BRIDGE.md); the

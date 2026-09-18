@@ -275,6 +275,7 @@ impl Daemon {
             | Request::AckInbox { agent, .. }
             | Request::ReportProvider { agent, .. }
             | Request::ReportActivity { agent, .. }
+            | Request::Role { agent, .. }
             | Request::Release { agent, .. }
             | Request::ReleaseAll { agent, .. }
             | Request::JournalAdd { agent, .. } => {
@@ -342,15 +343,18 @@ impl Daemon {
                 check_agent(from)?;
                 *from = identity;
                 let state = lock(&self.state);
-                let target = state
-                    .registry
-                    .resolve(to)
-                    .map_err(|_| reject("restricted messaging needs a specific project peer"))?;
                 let owner = state
                     .registry
                     .get(&grant.agent)
                     .and_then(|a| a.project.as_ref())
                     .map(ProjectRef::id);
+                // A role is the credential's project's, as it is for a
+                // local sender: another project's holder is not a peer.
+                let target = match to.strip_prefix(agentdocker_core::agent::ROLE_PREFIX) {
+                    Some(role) => state.registry.resolve_role(role, owner.as_ref()),
+                    None => state.registry.resolve(to),
+                }
+                .map_err(|_| reject("restricted messaging needs a specific project peer"))?;
                 if state
                     .registry
                     .get(&target)
@@ -660,6 +664,27 @@ mod tests {
         let peer = daemon.resolve("peer").unwrap().to_string();
         assert!(
             matches!(daemon.restricted_request(&token, send("peer")).unwrap(), Request::Send { to, .. } if to == peer)
+        );
+        // A role is the credential's project's: the outsider holding the
+        // same role neither answers for it nor makes it ambiguous.
+        for who in ["peer", "outsider"] {
+            assert!(matches!(
+                daemon
+                    .handle(Request::Role {
+                        agent: who.into(),
+                        role: Some("reviewer".into()),
+                    })
+                    .await,
+                Response::Agent { .. }
+            ));
+        }
+        assert!(
+            matches!(daemon.restricted_request(&token, send("role:reviewer")).unwrap(), Request::Send { to, .. } if to == peer)
+        );
+        assert!(
+            daemon
+                .restricted_request(&token, send("role:implementer"))
+                .is_err()
         );
         assert!(
             daemon

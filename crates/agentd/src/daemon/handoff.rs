@@ -52,15 +52,29 @@ impl Daemon {
             let Some(record) = state.registry.get(&id).cloned() else {
                 return Response::error(ErrorCode::NotFound, "agent vanished");
             };
-            if record.status != AgentStatus::Running {
-                return Response::error(ErrorCode::Forbidden, "a handoff needs a running sender");
-            }
             (id, record)
         };
+        let key = key.unwrap_or_else(|| format!("handoff-{}", MessageId::generate()));
+        let id = format!("{}:{key}", from.as_str());
+        // A retry names the first durable bundle, even if roles, liveness or
+        // project membership changed after an uncertain response. Validate the
+        // current participants only when creating a new handoff.
+        match lock(&self.state).store_read("handoff retry", |store| {
+            store.document::<HandoffBundle>("handoff", &id)
+        }) {
+            Some(Some(bundle)) => return Response::Handoff { bundle },
+            Some(None) => {}
+            None => {
+                return Response::error(ErrorCode::StorageUnavailable, "handoff could not be read");
+            }
+        }
+        if record.status != AgentStatus::Running {
+            return Response::error(ErrorCode::Forbidden, "a handoff needs a running sender");
+        }
         let recipient = match to {
             Some(reference) => {
                 let mut state = lock(&self.state);
-                let id = match state.resolve(reference) {
+                let id = match state.resolve_from(Some(&from), reference) {
                     Ok(id) => id,
                     Err(e) => return *e,
                 };
@@ -96,17 +110,6 @@ impl Daemon {
                 ErrorCode::Invalid,
                 "leases can only move to a named recipient; an export releases them",
             );
-        }
-        let key = key.unwrap_or_else(|| format!("handoff-{}", MessageId::generate()));
-        let id = format!("{}:{key}", from.as_str());
-        // A retry returns what the first attempt made.
-        match lock(&self.state)
-            .store
-            .document::<HandoffBundle>("handoff", &id)
-        {
-            Ok(Some(bundle)) => return Response::Handoff { bundle },
-            Ok(None) => {}
-            Err(e) => return internal(e),
         }
         // What the sender holds now: released by the checkpoint unless it
         // is to move at acceptance, and listed either way.
@@ -485,6 +488,202 @@ mod tests {
         }
     }
 
+    async fn role(daemon: &Arc<Daemon>, agent: &str, role: Option<&str>) -> Response {
+        daemon
+            .handle(Request::Role {
+                agent: agent.into(),
+                role: role.map(str::to_owned),
+            })
+            .await
+    }
+
+    async fn send_to(daemon: &Arc<Daemon>, from: &str, to: &str) -> Response {
+        daemon
+            .handle(Request::Send {
+                from: from.into(),
+                to: to.into(),
+                kind: "chat".into(),
+                payload: json!({"text": "for the reviewer"}),
+                reply_to: None,
+                links: Vec::new(),
+            })
+            .await
+    }
+
+    /// A role is a label a message or a hand-off can name: `role:<name>`
+    /// is the one live agent holding it in the sender's project. The
+    /// same role again is nothing; none is not found and two are
+    /// ambiguous; a finished agent has no role; a role is one word.
+    #[tokio::test]
+    async fn a_role_is_set_once_and_names_the_projects_holder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _root) = fixture(&tmp).await;
+        // Another project's reviewer never answers for this one.
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "far".into(),
+                    workdir: Some(elsewhere),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await;
+        let mut events = daemon.subscribe_events();
+        for bad in ["Reviewer", "re viewer", "", "-reviewer", &"r".repeat(41)] {
+            assert!(
+                matches!(
+                    role(&daemon, "recipient", Some(bad)).await,
+                    Response::Error {
+                        code: ErrorCode::Invalid,
+                        ..
+                    }
+                ),
+                "{bad:?}"
+            );
+        }
+        // A name spelled like a role would be reached as one, or shadow it.
+        assert!(matches!(
+            daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: "role:reviewer".into(),
+                        ..AgentSpec::default()
+                    },
+                    pid: None,
+                    session: None,
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        let Response::Agent { agent } = role(&daemon, "recipient", Some("reviewer")).await else {
+            panic!("a role answers with the record");
+        };
+        assert_eq!(agent.role(), Some("reviewer"));
+        match events.recv().await {
+            Ok(Event {
+                kind:
+                    EventKind::RoleSet {
+                        agent: who,
+                        project,
+                        role,
+                    },
+                ..
+            }) => {
+                assert_eq!(who, agent.id);
+                assert!(project.is_some(), "a role is said with its project");
+                assert_eq!(role.as_deref(), Some("reviewer"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            role(&daemon, "recipient", Some("reviewer")).await,
+            Response::Agent { .. }
+        ));
+        assert!(events.try_recv().is_err(), "the same role again is nothing");
+        assert!(matches!(
+            role(&daemon, "far", Some("reviewer")).await,
+            Response::Agent { .. }
+        ));
+        // Both the queue and readiness advice name this project's resolved
+        // reviewer, never a same-role agent elsewhere or the literal role.
+        let Response::Sent {
+            message,
+            recipient_readiness: Some(readiness),
+            ..
+        } = send_to(&daemon, "sender", "role:reviewer").await
+        else {
+            panic!("a role-addressed send includes its recipient readiness");
+        };
+        assert_eq!(readiness.recipients, 1);
+        assert_eq!(readiness.needs_attention, 1);
+        assert_eq!(readiness.details.len(), 1);
+        assert_eq!(readiness.details[0].agent, agent.id);
+        assert_eq!(
+            readiness.details[0].issue,
+            agentdocker_core::SendIssue::NoReceiver
+        );
+        let mail = inbox(&daemon, "recipient").await;
+        assert_eq!(mail.len(), 1);
+        assert_eq!(mail[0].id, message);
+        assert_eq!(mail[0].to, Destination::Agent(agent.id.clone()));
+        assert!(inbox(&daemon, "far").await.is_empty());
+        // Unscoped — no sender to take a project from — two hold it.
+        assert!(matches!(
+            daemon
+                .handle(Request::Inspect {
+                    agent: "role:reviewer".into()
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Ambiguous,
+                ..
+            }
+        ));
+        assert!(matches!(
+            send_to(&daemon, "sender", "role:implementer").await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+        // A hand-off names the reviewer the same way.
+        match daemon
+            .handle(Request::Handoff {
+                agent: "sender".into(),
+                to: Some("role:reviewer".into()),
+                task: Some("review it".into()),
+                note: None,
+                transfer_leases: false,
+                key: None,
+                links: Vec::new(),
+            })
+            .await
+        {
+            Response::Handoff { bundle } => assert_eq!(bundle.to, Some(agent.id.clone())),
+            other => panic!("{other:?}"),
+        }
+        // Two holders here: the role names nobody until one lets go.
+        assert!(matches!(
+            role(&daemon, "other", Some("reviewer")).await,
+            Response::Agent { .. }
+        ));
+        assert!(matches!(
+            send_to(&daemon, "sender", "role:reviewer").await,
+            Response::Error {
+                code: ErrorCode::Ambiguous,
+                ..
+            }
+        ));
+        let Response::Agent { agent: other } = role(&daemon, "other", None).await else {
+            panic!("clearing answers with the record");
+        };
+        assert_eq!(other.role(), None);
+        assert!(matches!(
+            send_to(&daemon, "sender", "role:reviewer").await,
+            Response::Sent { .. }
+        ));
+        // A finished agent has no role to take.
+        daemon
+            .handle(Request::Deregister {
+                agent: "other".into(),
+            })
+            .await;
+        assert!(matches!(
+            role(&daemon, "other", Some("reviewer")).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+    }
+
     async fn inbox(daemon: &Arc<Daemon>, agent: &str) -> Vec<Envelope> {
         match daemon
             .handle(Request::Inbox {
@@ -496,6 +695,95 @@ mod tests {
             Response::Messages { messages } => messages,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn handoff_retry_returns_the_saved_recipient_after_role_and_liveness_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _) = fixture(&tmp).await;
+        let Response::Agent { agent: recipient } =
+            role(&daemon, "recipient", Some("reviewer")).await
+        else {
+            panic!("role was not set")
+        };
+        let sender = daemon.resolve("sender").unwrap();
+        let request = Request::Handoff {
+            agent: sender.to_string(),
+            to: Some("role:reviewer".into()),
+            task: Some("review the original work".into()),
+            note: None,
+            transfer_leases: false,
+            key: Some("one-handoff".into()),
+            links: Vec::new(),
+        };
+        let Response::Handoff { bundle } = daemon.handle(request.clone()).await else {
+            panic!("first handoff failed")
+        };
+        assert_eq!(bundle.to, Some(recipient.id.clone()));
+        let queued = inbox(&daemon, "recipient").await;
+        assert_eq!(queued.len(), 1);
+
+        async fn retry(daemon: &Arc<Daemon>, request: &Request, expected: &HandoffBundle) {
+            let seq = lock(&daemon.state).next_seq;
+            assert_eq!(
+                daemon.handle(request.clone()).await,
+                Response::Handoff {
+                    bundle: expected.clone()
+                }
+            );
+            assert_eq!(lock(&daemon.state).next_seq, seq, "retry emits nothing");
+        }
+        assert!(matches!(
+            role(&daemon, "recipient", None).await,
+            Response::Agent { .. }
+        ));
+        retry(&daemon, &request, &bundle).await; // The role no longer exists.
+        let mut fresh = request.clone();
+        if let Request::Handoff { key, .. } = &mut fresh {
+            *key = Some("fresh".into());
+        }
+        assert!(matches!(
+            daemon.handle(fresh).await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        assert!(matches!(
+            role(&daemon, "other", Some("reviewer")).await,
+            Response::Agent { .. }
+        ));
+        retry(&daemon, &request, &bundle).await; // Reassignment cannot redirect it.
+        assert!(matches!(
+            role(&daemon, "recipient", Some("reviewer")).await,
+            Response::Agent { .. }
+        ));
+        retry(&daemon, &request, &bundle).await; // Nor can ambiguity hide it.
+        assert!(matches!(
+            daemon
+                .handle(Request::Deregister {
+                    agent: recipient.id.to_string()
+                })
+                .await,
+            Response::Agent { agent } if !agent.status.is_live()
+        ));
+        assert!(matches!(
+            daemon
+                .handle(Request::Deregister {
+                    agent: sender.to_string()
+                })
+                .await,
+            Response::Agent { agent } if !agent.status.is_live()
+        ));
+        retry(&daemon, &request, &bundle).await;
+        assert_eq!(inbox(&daemon, recipient.id.as_str()).await, queued);
+        assert!(inbox(&daemon, "other").await.is_empty());
+        drop(daemon);
+        let restored =
+            Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+        retry(&restored, &request, &bundle).await;
+        assert_eq!(inbox(&restored, recipient.id.as_str()).await, queued);
     }
 
     #[tokio::test]

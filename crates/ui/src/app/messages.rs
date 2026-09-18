@@ -495,6 +495,38 @@ impl App {
             )
         });
         let mut list = column![].spacing(2);
+        // A reply from a notification that did not go, whose conversation
+        // could not be opened either: reachable here whatever is on view.
+        for recovery in self.shell.orphan_reply_recoveries() {
+            list = list.push(
+                column![
+                    small(
+                        format!(
+                            "A reply from a notification was not sent ({}) and its conversation could not be opened: {}",
+                            recovery.reason,
+                            first_line(&recovery.text, 80)
+                        ),
+                        c
+                    ),
+                    row![
+                        action(
+                            format!("reply-recovery-copy-{}", recovery.message),
+                            "Copy",
+                            Some(Message::ReplyRecoveryCopy(recovery.message.clone())),
+                            false,
+                        ),
+                        action(
+                            format!("reply-recovery-dismiss-{}", recovery.message),
+                            "Dismiss",
+                            Some(Message::ReplyRecoveryDismiss(recovery.message.clone())),
+                            false,
+                        ),
+                    ]
+                    .spacing(6),
+                ]
+                .spacing(4),
+            );
+        }
         // Find one, or start one: the search and, beside it, the way to a
         // conversation that does not exist yet.
         let form_open = self.new_conversation.is_some();
@@ -923,6 +955,51 @@ impl App {
         }
         if let Some(error) = draft.and_then(|d| d.error.as_ref()) {
             composer = composer.push(text(error.clone()).size(13).color(c.amber));
+        }
+        if let Some(notice) = draft.and_then(|draft| {
+            super::send_readiness::notice(
+                draft,
+                super::shell::DeliveryTarget::Conversation(key.clone()),
+                c,
+            )
+        }) {
+            composer = composer.push(notice);
+        }
+        // A reply from a notification the draft could not take waits
+        // here, its words the person's to copy or let go.
+        for recovery in self
+            .shell
+            .reply_recoveries
+            .iter()
+            .filter(|r| r.conversation.as_deref() == Some(key.as_str()))
+        {
+            composer = composer.push(
+                row![
+                    small(
+                        format!(
+                            "A reply from a notification was not placed ({}): {}",
+                            recovery.reason,
+                            first_line(&recovery.text, 80)
+                        ),
+                        c
+                    )
+                    .width(Fill),
+                    action(
+                        format!("reply-recovery-copy-{}", recovery.message),
+                        "Copy",
+                        Some(Message::ReplyRecoveryCopy(recovery.message.clone())),
+                        false,
+                    ),
+                    action(
+                        format!("reply-recovery-dismiss-{}", recovery.message),
+                        "Dismiss",
+                        Some(Message::ReplyRecoveryDismiss(recovery.message.clone())),
+                        false,
+                    ),
+                ]
+                .spacing(6)
+                .align_y(Center),
+            );
         }
         // Put the receiver state where a person is about to send, including
         // thread replies. A working MCP/hook transport alone cannot wake it.

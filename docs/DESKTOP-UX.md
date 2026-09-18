@@ -4,6 +4,14 @@
 restores the last project and appearance. No browser, container engine or cloud
 account is required to organize local agent work.
 
+After a send, **Queued · N sessions need attention** appears when recipients
+have missing or stale input receivers, paused delivery, ended sessions or provider
+limits. **Delivery details** names them and offers **Open session** and **Copy
+instructions**. These are the facts when the message was queued, not a receipt.
+The details stay with that conversation or thread even if you switch while
+sending. Session **Details** and expanded tool connection details show current
+reconnect guidance too. Nothing is restarted or resent by opening these controls.
+
 ## Projects
 
 With no saved selection, the app opens on **All projects**, with sessions grouped
@@ -103,7 +111,10 @@ ends the hold. The board reads again on every board or lease event; when it
 could not be read the last board stays and the status says why. A card's draft is the project's: text typed for one board waits
 while another is on view, and filing it is answered by its own reply — a
 move or hand of some other card never clears it, and a filing the app could
-not queue says so under the form. The board is read a page at a time (100
+not queue says so under the form. Unfinished title and acceptance text also
+survive closing and reopening the window, under their original project. Reopen
+does not file a card; only a confirmed filing clears its saved text. Storage
+pressure refuses new text without discarding an earlier draft. The board is read a page at a time (100
 cards, Backlog to Done, within a byte budget); when it goes on, **Show
 more** appends the next page where the board ends — every ask is numbered
 and only its own reply moves the board, so a late or unsolicited page is
@@ -225,7 +236,29 @@ conversation whose agent is gone, says so for one between two agents, and has
 nothing to send for notices. Drafts survive navigation, a failed request and
 disconnection. A notification opens the message's conversation even after it
 has been read, and even when the sender's record or the channel is gone: the
-archive outlives both. **Enter sends** in every composer — a
+archive outlives both. A notification for a message has a **Reply** field
+(macOS): what is typed there goes from you to where that message went — the
+project's everyone, its channel, or back to the agent who wrote to you — as a
+reply to it, so a typed answer closes the question it answers, without the
+window opening. Only the daemon's `sent` counts as sent. A reply that did
+not go is said as a notification (**Open the app to recover your reply**)
+and comes back to the app: the conversation opens with your words in its
+composer, after anything already drafted there, and the status line says why — **Reply not sent** when the
+daemon refused it, **Reply may not have been sent** when the connection went
+before an answer, in which case read the history before sending again.
+When the draft cannot take the words (draft storage is full) they wait beside
+the composer with **Copy** and **Dismiss**; when the conversation itself cannot
+be opened (its message, project or channel is gone) they wait at the top of the
+Messages list instead, with the same two controls, whatever is on view; the
+window keeps up to eight such replies and says so when a further one cannot be
+kept. A notification from
+another workspace's daemon hands the words to that workspace's window when
+it is running; otherwise the notification carries what fits and says the app
+could not keep them. A reply to a question goes to whoever asked it, wherever
+it was asked, since that is the reply that closes it. Nothing typed is sent
+twice on its own; what can be lost is said each time: a reply cut to a
+draft's 16,000 characters, a ninth kept reply, or one another workspace's
+window could not take. **Enter sends** in every composer — a
 conversation's, a thread's, the inbox reply, the session message and an
 answer — the same action as the button beside it, and nothing while the
 draft is empty or already sending. **+** beside the search starts a
@@ -240,14 +273,16 @@ reaches); a row whose unread rows name the person shows an **@n** pill beside
 its count, and such a message carries **mentions you** in its header.
 The selected project also scopes archived direct conversations. Project message search retains finished sessions' direct messages and AgentDocker notices after restart.
 
-Conversation, thread, channel and session message text is saved locally for
+Conversation, thread, channel, session and unfinished answer text is saved locally for
 its daemon and restored after a normal window close. Text that was in flight
 returns as an editable draft and is never sent automatically; check the history
 before retrying an uncertain submission. Newer edits survive older send replies.
 A failed save keeps the window open with **Retry saving** and an explicit
 **Close without saving** choice. An unreadable saved file is preserved. Storage
-limits refuse new text visibly while keeping existing nonempty drafts. Question
-answers, command input and other forms still remain window-local.
+limits refuse new text visibly while keeping existing nonempty drafts. Answers
+return under their original question ID without restoring approval/review or
+sending state; a confirmed answer or fresh completed-question snapshot removes
+the saved text. Command input and other forms remain window-local.
 
 Inbox reads like a messenger. The left column lists one conversation per agent
 with its mark, the latest line and how many items wait; **Everyone** shows all

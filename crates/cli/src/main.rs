@@ -260,6 +260,9 @@ enum Command {
         /// Do not look for running agent processes nobody registered.
         #[arg(long)]
         no_discover: bool,
+        /// Show input readiness and reconnect guidance for sessions needing attention.
+        #[arg(long)]
+        input_details: bool,
     },
     /// Find running agent processes (Claude Code, Codex, ...) nobody registered.
     Discover,
@@ -465,6 +468,8 @@ enum Command {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
     },
+    /// Give an agent a role, so `role:<name>` names it as a recipient.
+    Role(RoleArgs),
     /// Signal an agent to stop.
     Stop {
         agent: String,
@@ -1118,8 +1123,9 @@ struct SendArgs {
     /// Sender; defaults to this agent's identity, or `user` in a human terminal.
     #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
     from: Option<String>,
-    /// Agent id/name, `project` (everyone working in this directory's
-    /// project) or `project:<id|path>`, `topic:<name>`, or `all`.
+    /// Agent id/name or `role:<name>` (the one agent holding that role in
+    /// the sender's project), `project` (everyone working in this
+    /// directory's project) or `project:<id|path>`, `topic:<name>`, or `all`.
     #[arg(long)]
     to: String,
     /// Message kind: chat, task, handoff, question, answer, notice...
@@ -1170,7 +1176,7 @@ struct HandoffArgs {
     #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
     /// Agent id, name or unique prefix (defaults to this session).
     agent: String,
-    /// The recipient: id, name or unique prefix.
+    /// The recipient: id, name or unique prefix, or `role:<name>` for the one agent holding that role in this project.
     to: String,
     #[arg(long)]
     /// What the recipient should continue.
@@ -1192,6 +1198,22 @@ struct HandoffArgs {
 /// `kind:target` from the command line, checked for its kind's shape.
 fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
     agentdocker_core::Link::parse(text).map_err(str::to_owned)
+}
+
+/// Its own struct, as `RunArgs` is: every field added
+/// straight to `Command` costs the parser's stack, and a test thread has
+/// little of it.
+#[derive(Args)]
+struct RoleArgs {
+    #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+    /// Agent id, name or unique prefix (defaults to this session).
+    agent: String,
+    /// The role: one word of lowercase letters, digits and hyphens (`reviewer`).
+    #[arg(required_unless_present = "clear")]
+    role: Option<String>,
+    /// Take the role away.
+    #[arg(long, conflicts_with = "role")]
+    clear: bool,
 }
 
 #[derive(Args)]
@@ -1647,6 +1669,7 @@ async fn run() -> Result<()> {
             project,
             labels,
             no_discover,
+            input_details,
         } => {
             let request = Request::List {
                 all,
@@ -1656,6 +1679,24 @@ async fn run() -> Result<()> {
             let Response::Agents { agents, .. } = client.call(&request).await? else {
                 return Ok(());
             };
+            // A retained quota block can originate in an ended session or
+            // another project; filtering the visible rows must not hide it.
+            let all_sources = if !all || project.is_some() || !labels.is_empty() {
+                match client
+                    .call(&Request::List {
+                        all: true,
+                        project: None,
+                        labels: BTreeMap::new(),
+                    })
+                    .await?
+                {
+                    Response::Agents { agents, .. } => Some(agents),
+                    other => anyhow::bail!("unexpected input-readiness response: {other:?}"),
+                }
+            } else {
+                None
+            };
+            let sources = all_sources.as_deref().unwrap_or(&agents);
             let mut unadopted = Vec::new();
             if !no_discover && project.is_none() && labels.is_empty() {
                 if let Response::Processes { processes } = client.call(&Request::Discover).await? {
@@ -1676,7 +1717,20 @@ async fn run() -> Result<()> {
                 Ok(Response::Activity { activity }) => activity,
                 _ => Vec::new(),
             };
-            print_agents(&agents, &unadopted, &activity);
+            print_agents(&agents, &unadopted, &activity, sources);
+            if input_details {
+                let now = chrono::Utc::now();
+                for agent in &agents {
+                    let blocked = agentdocker_core::provider_block(agent, sources)
+                        .and_then(|(_, state)| state.issue.as_ref())
+                        .map(|issue| issue.kind);
+                    if let Some(issue) =
+                        agentdocker_core::RecipientReadiness::for_agent(agent, now, blocked)
+                    {
+                        format::recipient_readiness(&issue);
+                    }
+                }
+            }
             if !unadopted.is_empty() {
                 eprintln!(
                     "{} running agent process(es) nobody registered; `agentdocker adopt <pid>` brings one in",
@@ -2350,6 +2404,15 @@ async fn run() -> Result<()> {
         Command::Rm { agent } => {
             client.call(&Request::Remove { agent }).await?;
         }
+        Command::Role(RoleArgs { agent, role, clear }) => {
+            let role = if clear { None } else { role };
+            if let Response::Agent { agent } = client.call(&Request::Role { agent, role }).await? {
+                match agent.role() {
+                    Some(role) => println!("{} is the {role}", agent.spec.name),
+                    None => println!("{} has no role", agent.spec.name),
+                }
+            }
+        }
         Command::Inspect { agent } => {
             if let Response::Agent { agent } = client.call(&Request::Inspect { agent }).await? {
                 println!("{}", serde_json::to_string_pretty(&agent)?);
@@ -2478,10 +2541,16 @@ async fn run() -> Result<()> {
             if let Response::Sent {
                 message,
                 subscribers: _,
+                recipient_readiness,
             } = client.call(&request).await?
             {
                 println!("{message}");
-                eprintln!("accepted by AgentDocker; provider receipt and idle wake unconfirmed");
+                eprintln!("accepted by AgentDocker; provider receipt unconfirmed");
+                if let Some(readiness) = recipient_readiness {
+                    format::send_readiness(&readiness);
+                } else {
+                    eprintln!("recipient input readiness unavailable from this daemon");
+                }
             }
         }
         Command::Me => {
@@ -3385,6 +3454,7 @@ fn print_agents(
     agents: &[AgentRecord],
     unadopted: &[DiscoveredProcess],
     activity: &[AgentActivity],
+    input_sources: &[AgentRecord],
 ) {
     let doing = |id: &agentdocker_core::AgentId| {
         activity
@@ -3423,6 +3493,22 @@ fn print_agents(
                 a.spec.runtime.clone(),
                 a.spec.model.clone().unwrap_or_else(|| "-".to_owned()),
                 a.status.to_string(),
+                if a.spec.runtime == agentdocker_core::HUMAN_RUNTIME {
+                    "App inbox".into()
+                } else if let Some((_, state)) = agentdocker_core::provider_block(a, input_sources)
+                {
+                    state
+                        .issue
+                        .as_ref()
+                        .expect("provider block")
+                        .kind
+                        .label()
+                        .into()
+                } else {
+                    agentdocker_core::InputReadiness::for_agent(a, chrono::Utc::now())
+                        .label()
+                        .into()
+                },
                 doing(&a.id),
             ];
             if in_session {
@@ -3451,6 +3537,7 @@ fn print_agents(
             p.runtime.clone(),
             "-".to_owned(),
             "unadopted".to_owned(),
+            "Not connected".to_owned(),
             "-".to_owned(),
         ];
         if in_session {
@@ -3465,7 +3552,8 @@ fn print_agents(
         row
     }));
     let mut headers = vec![
-        "AGENT ID", "NAME", "PROJECT", "BRANCH", "HEAD", "RUNTIME", "MODEL", "STATUS", "DOING",
+        "AGENT ID", "NAME", "PROJECT", "BRANCH", "HEAD", "RUNTIME", "MODEL", "STATUS", "INPUT",
+        "DOING",
     ];
     if in_session {
         headers.push("LIVES IN");

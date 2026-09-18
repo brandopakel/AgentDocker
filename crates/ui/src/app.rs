@@ -12,6 +12,7 @@ mod icons;
 mod messages;
 pub(crate) mod panes;
 pub(crate) mod queue;
+mod send_readiness;
 mod sessions;
 mod shell;
 pub(crate) mod style;
@@ -304,11 +305,11 @@ enum Msg {
     UpdateChecked(Result<serde_json::Value, String>),
     Console(String),
     Launched(Result<String, String>),
-    ChannelSent(String, Result<MessageId, String>),
+    ChannelSent(String, Result<QueuedSend, String>),
     /// The room the person asked for, by id, or why not.
     ChannelOpened(MessageId, Result<agentdocker_core::ChannelId, String>),
     ChannelInvited(MessageId, String, Result<agentdocker_core::Channel, String>),
-    SessionSent(String, Result<MessageId, String>),
+    SessionSent(String, Result<QueuedSend, String>),
     /// `Err` when the daemon does not know conversations at all.
     Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
     History(String, u64, Vec<agentdocker_core::ArchivedMessage>),
@@ -322,7 +323,23 @@ enum Msg {
     /// The daemon no longer has this thread's root: it was pruned.
     ThreadGone(MessageId, u64),
     /// The draft the words came from, and the receipt or error.
-    ConversationSent(String, Result<MessageId, String>),
+    ConversationSent(String, Result<QueuedSend, String>),
+}
+
+#[derive(Debug)]
+struct QueuedSend {
+    message: MessageId,
+    readiness: Option<agentdocker_core::SendReadiness>,
+}
+
+#[cfg(test)]
+impl From<MessageId> for QueuedSend {
+    fn from(message: MessageId) -> Self {
+        Self {
+            message,
+            readiness: None,
+        }
+    }
 }
 
 pub struct App {
@@ -422,11 +439,8 @@ pub struct App {
     /// kept between runs.
     settings: crate::theme::Settings,
     home: std::path::PathBuf,
-    /// Questions put to the human, and what is being typed in reply to
-    /// each. The draft is keyed by message id so answering one question
-    /// does not disturb another half-written answer.
+    /// Open questions put to the human; saved answer text lives in the shell.
     questions: Vec<Question>,
-    answers: BTreeMap<MessageId, String>,
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
@@ -437,10 +451,6 @@ pub struct App {
     /// cancelled by a later refresh, or made for a project no longer on
     /// view — moves nothing.
     board_asks: BTreeMap<u64, (String, usize)>,
-    /// A card being filed, per project: its title and what done means.
-    /// Text typed for one project's board waits there while another's
-    /// is on view.
-    task_drafts: BTreeMap<String, TaskDraft>,
     /// Filings so far, numbering each so its reply is told apart.
     task_requests: u64,
     /// A card whose acceptance text is open.
@@ -562,12 +572,10 @@ impl App {
             settings,
             home,
             questions: Vec::new(),
-            answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             tasks: None,
-            task_drafts: BTreeMap::new(),
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
@@ -634,11 +642,9 @@ impl App {
             settings: crate::theme::Settings::default(),
             home: std::path::PathBuf::new(),
             questions: Vec::new(),
-            answers: BTreeMap::new(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             tasks: None,
-            task_drafts: BTreeMap::new(),
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
@@ -729,7 +735,7 @@ impl App {
                 Cmd::TaskCreate {
                     project, request, ..
                 } => {
-                    if let Some(draft) = self.task_drafts.get_mut(&project)
+                    if let Some(draft) = self.shell.task_drafts.get_mut(&project)
                         && draft.sending == Some(request)
                     {
                         draft.sending = None;
@@ -988,7 +994,7 @@ impl App {
                 Msg::TaskCreated(project, request, result) => {
                     // Only the filing this reply answers: a draft typed
                     // since, after a refusal, keeps its text.
-                    if let Some(draft) = self.task_drafts.get_mut(&project)
+                    if let Some(draft) = self.shell.task_drafts.get_mut(&project)
                         && draft.sending == Some(request)
                     {
                         draft.sending = None;
@@ -997,6 +1003,7 @@ impl App {
                                 draft.title.clear();
                                 draft.acceptance.clear();
                                 draft.error = None;
+                                self.shell.drafts.changed();
                             }
                             Err(error) => draft.error = Some(error),
                         }
@@ -1040,16 +1047,22 @@ impl App {
                     // more, so the map does not grow with the session — but
                     // not one still in flight, whose question the daemon
                     // has already forgotten.
-                    self.answers.retain(|id, _| {
+                    let before = self.shell.answers.len();
+                    self.shell.answers.retain(|id, _| {
                         self.sending.contains(id) || questions.iter().any(|q| q.id == *id)
                     });
+                    if self.shell.answers.len() != before {
+                        self.shell.drafts.changed();
+                    }
                     self.questions = questions;
                 }
                 Msg::Answered(id, result) => {
                     self.sending.remove(&id);
                     match result {
                         Ok(()) => {
-                            self.answers.remove(&id);
+                            if self.shell.answers.remove(&id).is_some() {
+                                self.shell.drafts.changed();
+                            }
                             if self.shell.file_review.as_ref() == Some(&id) {
                                 self.shell.file_review = None;
                             }
@@ -1263,8 +1276,9 @@ impl App {
                     let conversation = conversation.to_owned();
                     let draft = self.shell.conversation_drafts.entry(key).or_default();
                     match result {
-                        Ok(_) => {
+                        Ok(receipt) => {
                             draft.complete(Ok(()));
+                            draft.readiness = receipt.readiness;
                             self.send(Cmd::History(conversation, self.history_epoch));
                             if let Some(root) = self.shell.thread.clone() {
                                 self.send(Cmd::Thread(root, self.history_epoch));
@@ -1279,7 +1293,8 @@ impl App {
                     if let Some(entry) = self.shell.session_drafts.get_mut(&id) {
                         match result {
                             Ok(receipt) => {
-                                entry.queued = Some(receipt);
+                                entry.queued = Some(receipt.message);
+                                entry.draft.readiness = receipt.readiness;
                                 entry.draft.complete(Ok(()));
                             }
                             Err(error) => entry.draft.complete(Err(error)),
@@ -1341,6 +1356,7 @@ impl App {
                         Ok(message) => {
                             let sent = draft.sending.clone();
                             draft.complete(Ok(()));
+                            draft.readiness = message.readiness;
                             if let Some(sent) = sent {
                                 let mut receipt = agentdocker_core::Envelope::new(
                                     agentdocker_core::HUMAN,
@@ -1350,7 +1366,7 @@ impl App {
                                     None,
                                     Utc::now(),
                                 );
-                                receipt.id = message;
+                                receipt.id = message.message;
                                 self.sent_channels.push_back(receipt);
                                 while self.sent_channels.len() > SENT_CHANNEL_LIMIT
                                     || self
@@ -1463,6 +1479,7 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
+            EventKind::RoleSet { .. } => self.send(Cmd::Agents),
             EventKind::LeaseClaimed { .. }
             | EventKind::LeaseRenewed { .. }
             | EventKind::LeaseReleased { .. }
@@ -1667,22 +1684,6 @@ impl App {
             .find(|p| p.id().as_str() == id)
             .map_or_else(|| id.to_owned(), |p| p.root.to_string_lossy().into_owned())
     }
-    /// The selected project's card draft, made on first use; bounded
-    /// like the other drafts so a long life of switching projects does
-    /// not keep text for every one of them.
-    pub(crate) fn task_draft_mut(&mut self) -> Option<&mut TaskDraft> {
-        let project = self.selected_project_root()?;
-        if !self.task_drafts.contains_key(&project) && self.task_drafts.len() >= 128 {
-            let stale = self
-                .task_drafts
-                .iter()
-                .find(|(_, d)| !d.sending() && d.title.is_empty() && d.acceptance.is_empty())
-                .map(|(k, _)| k.clone())?;
-            self.task_drafts.remove(&stale);
-        }
-        Some(self.task_drafts.entry(project).or_default())
-    }
-
     /// Read the selected project's board, when there is one and the
     /// daemon is there: as many cards as are on view, so a board
     /// expanded past its first page stays expanded through a refresh.
@@ -2828,7 +2829,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 links: Vec::new(),
             })?;
             let result = match response {
-                Response::Sent { message, .. } => Ok(message),
+                Response::Sent {
+                    message,
+                    recipient_readiness,
+                    ..
+                } => Ok(QueuedSend {
+                    message,
+                    readiness: recipient_readiness,
+                }),
                 other => Err(format!("Unexpected send response: {other:?}")),
             };
             Some(Msg::ConversationSent(draft, result))
@@ -2843,7 +2851,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 links: Vec::new(),
             })?;
             let result = match response {
-                Response::Sent { message, .. } => Ok(message),
+                Response::Sent {
+                    message,
+                    recipient_readiness,
+                    ..
+                } => Ok(QueuedSend {
+                    message,
+                    readiness: recipient_readiness,
+                }),
                 _ => Err("Unexpected message response".into()),
             };
             Some(Msg::SessionSent(agent, result))
@@ -2858,7 +2873,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 links: Vec::new(),
             })?;
             let result = match response {
-                Response::Sent { message, .. } => Ok(message),
+                Response::Sent {
+                    message,
+                    recipient_readiness,
+                    ..
+                } => Ok(QueuedSend {
+                    message,
+                    readiness: recipient_readiness,
+                }),
                 _ => Err("Unexpected message response".into()),
             };
             Some(Msg::SessionSent(agent, result))
@@ -2873,7 +2895,14 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 links: Vec::new(),
             })?;
             let result = match response {
-                Response::Sent { message, .. } => Ok(message),
+                Response::Sent {
+                    message,
+                    recipient_readiness,
+                    ..
+                } => Ok(QueuedSend {
+                    message,
+                    readiness: recipient_readiness,
+                }),
                 _ => Err("Unexpected message response".into()),
             };
             Some(Msg::ChannelSent(channel, result))
@@ -3565,7 +3594,7 @@ pub(crate) mod tests {
             messages
                 .send(Msg::ChannelSent(
                     "room".into(),
-                    Ok(MessageId::from(format!("sent-{index}"))),
+                    Ok(MessageId::from(format!("sent-{index}")).into()),
                 ))
                 .unwrap();
             app.drain();
@@ -3725,7 +3754,7 @@ pub(crate) mod tests {
         );
         envelope.id = id.clone();
         app.inbox.push(envelope.clone());
-        app.answers.insert(id.clone(), "unfinished".into());
+        app.shell.answers.insert(id.clone(), "unfinished".into());
         app.dismissing.insert(id.clone());
         messages
             .send(Msg::MessagesDismissed(
@@ -3735,7 +3764,7 @@ pub(crate) mod tests {
             .unwrap();
         app.drain();
         assert_eq!(app.inbox, vec![envelope]);
-        assert_eq!(app.answers[&id], "unfinished");
+        assert_eq!(app.shell.answers[&id], "unfinished");
         assert!(app.dismissing.is_empty());
     }
 
@@ -3762,7 +3791,8 @@ pub(crate) mod tests {
         );
         app.inbox.push(first.clone());
         let question = MessageId::from("pending-question".to_owned());
-        app.answers
+        app.shell
+            .answers
             .insert(question.clone(), "unfinished answer".into());
         let _ = app.update(shell::Message::DismissInbox(vec![first.id.clone()]));
         let _ = app.update(shell::Message::DismissInbox(vec![first.id.clone()]));
@@ -3791,7 +3821,7 @@ pub(crate) mod tests {
             .unwrap();
         app.drain();
         assert_eq!(app.inbox, [second]);
-        assert_eq!(app.answers[&question], "unfinished answer");
+        assert_eq!(app.shell.answers[&question], "unfinished answer");
         assert!(!app.dismissing.contains(&first.id));
     }
 
@@ -3823,7 +3853,8 @@ pub(crate) mod tests {
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(1),
         });
-        app.answers
+        app.shell
+            .answers
             .insert(question.clone(), "unfinished answer".into());
         let _ = app.update(shell::Message::DismissInbox(vec![
             received[1].id.clone(),
@@ -3857,7 +3888,7 @@ pub(crate) mod tests {
                 received[4].clone()
             ]
         );
-        assert_eq!(app.answers[&question], "unfinished answer");
+        assert_eq!(app.shell.answers[&question], "unfinished answer");
         assert!(app.dismissing.is_empty());
     }
 
@@ -3870,10 +3901,10 @@ pub(crate) mod tests {
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         let id = MessageId::from("fixture-question".to_owned());
-        app.answers.insert(id.clone(), "draft".into());
+        app.shell.answers.insert(id.clone(), "draft".into());
         app.sending.insert(id.clone());
         app.send(Cmd::Answer(id.clone(), "draft".into()));
-        assert_eq!(app.answers[&id], "draft");
+        assert_eq!(app.shell.answers[&id], "draft");
         assert!(!app.sending.contains(&id));
         assert!(app.status.contains("queue is full"));
         app.dismissing.insert(id.clone());
@@ -3904,10 +3935,10 @@ pub(crate) mod tests {
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         let id = MessageId::from("fixture-question".to_owned());
-        app.answers.insert(id.clone(), "draft".into());
+        app.shell.answers.insert(id.clone(), "draft".into());
         app.sending.insert(id.clone());
         app.send(Cmd::Answer(id.clone(), "draft".into()));
-        assert_eq!(app.answers[&id], "draft");
+        assert_eq!(app.shell.answers[&id], "draft");
         assert!(!app.sending.contains(&id));
         assert!(app.status.contains("worker stopped"));
     }
@@ -4306,13 +4337,13 @@ pub(crate) mod tests {
         let (commands, _requests) = queue::channel();
         let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.answers.insert(id.clone(), "draft".into());
+        app.shell.answers.insert(id.clone(), "draft".into());
         app.sending.insert(id.clone());
         for message in replies {
             messages.send(message).unwrap();
         }
         app.drain();
-        assert_eq!(app.answers[&id], "draft");
+        assert_eq!(app.shell.answers[&id], "draft");
         assert!(!app.sending.contains(&id));
         assert!(app.connected.is_ok());
         assert!(app.status.contains("question expired"));
@@ -4586,13 +4617,13 @@ pub(crate) mod tests {
         let (commands, _) = queue::channel();
         let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.answers.insert(id.clone(), "draft answer".into());
+        app.shell.answers.insert(id.clone(), "draft answer".into());
         app.sending.insert(id.clone());
         for message in result {
             messages.send(message).unwrap();
         }
         app.drain();
-        assert_eq!(app.answers[&id], "draft answer");
+        assert_eq!(app.shell.answers[&id], "draft answer");
         assert!(!app.sending.contains(&id));
         assert!(app.connected.is_err());
     }
@@ -4743,10 +4774,10 @@ pub(crate) mod tests {
         let mut app = App::bare(commands, results);
         let id = MessageId::from("owned-question".to_owned());
         let answer = "x".repeat(queue::COMMAND_BYTES + 1);
-        app.answers.insert(id.clone(), answer.clone());
+        app.shell.answers.insert(id.clone(), answer.clone());
         app.sending.insert(id.clone());
         app.send(Cmd::Answer(id.clone(), answer.clone()));
-        assert_eq!(app.answers[&id], answer);
+        assert_eq!(app.shell.answers[&id], answer);
         assert!(!app.sending.contains(&id));
         app.console_running = 1;
         app.send(Cmd::Console(answer, None));

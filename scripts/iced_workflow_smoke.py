@@ -545,6 +545,9 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                            and "added terminal-fixture to this channel" in json.dumps(m.get("payload"))]
                 assert len(notices) == 1, notices
                 checks.append("enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members")
+                draft_question = rpc(endpoint, {"op": "post_question", "from": narrow["id"], "to": human["id"],
+                                                "question": "Keep this answer until explicitly submitted?", "timeout_secs": 300})["message"]
+                answer_marker = "Unsent answer café 日本語"
                 # The largest saved columns must not crush the conversation.
                 # Change only this private profile while its window is closed.
                 catalog_path = state / "workspace.json"
@@ -558,6 +561,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("resize", width=1200, height=760),
                         step("click", id=f"project-{project}"), step("click", id="inbox"),
                         step("click", id=f"thread-{narrow['id']}"),
+                        step("fill", id=f"answer-{draft_question}", text=answer_marker),
                         step("fill", id=f"reply-{narrow['id']}", text="Keep this conversation draft"),
                         step("click", id=f"thread-{routed}"),
                         step("wait_control", id=f"reply-{narrow['id']}", present=True),
@@ -595,6 +599,10 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("click", id="projects"), step("click", id=f"project-{project}"),
                         step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
                         step("fill", id="session-message-text", text="Keep this session across reopen"),
+                        step("click", id="projects"), step("click", id=f"project-{project}"),
+                        step("click", id="project-tab-Board"),
+                        step("fill", id="task-title", text="Unfiled card café 日本語"),
+                        step("fill", id="task-acceptance", text="Check reopen without filing"),
                     ]
                     report["constrained_panes_window"] = launch("constrained-panes", pane_steps)
                     kept = json.loads(catalog_path.read_text())["panes"]
@@ -603,7 +611,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 finally:
                     catalog_path.write_text(saved_catalog)
                 # The prior window closes normally immediately after its last edit.
-                # Its close must flush all three kinds, including a hidden thread.
+                # Its close must flush every saved kind, including a hidden thread and answer.
                 draft_paths = list((state / "drafts").glob("*/drafts.json"))
                 assert len(draft_paths) == 1, draft_paths
                 saved_drafts = json.loads(draft_paths[0].read_text())
@@ -611,10 +619,16 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 assert "Keep this conversation draft" in saved_drafts["conversations"].values(), saved_drafts
                 assert "Keep this thread draft" in saved_drafts["conversations"].values(), saved_drafts
                 assert saved_drafts["channels"][room["id"]] == "Keep this channel across reopen", saved_drafts
+                assert saved_drafts["answers"][draft_question] == answer_marker, saved_drafts
+                assert saved_drafts["boards"][str(project)] == {
+                    "title": "Unfiled card café 日本語", "acceptance": "Check reopen without filing"
+                }, saved_drafts
+                cards_before_reopen = rpc(endpoint, {"op": "tasks", "project": str(project), "archived": True})["tasks"]
                 restored_steps = [
                     step("resize", width=1800, height=900),
                     step("click", id=f"project-{project}"), step("click", id="inbox"),
                     step("click", id=f"thread-{narrow['id']}"),
+                    step("wait_text", text=answer_marker),
                     step("wait_text", text="Keep this conversation draft"),
                     step("click", id=f"thread-{routed}"),
                     step("wait_text", text="Keep this thread draft"),
@@ -628,16 +642,27 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                     step("click", id=f"reply-channel-{room['id']}"),
                     step("wait_text", text="Keep this channel across reopen"),
                     step("capture", name="restored-channel"),
+                    step("click", id="projects"), step("click", id=f"project-{project}"),
+                    step("click", id="project-tab-Board"),
+                    step("wait_text", text="Unfiled card café 日本語"),
+                    step("wait_text", text="Check reopen without filing"),
+                    step("capture", name="restored-board-draft"),
                 ]
                 report["restored_drafts_window"] = launch("restored-drafts", restored_steps)
+                cards_after_reopen = rpc(endpoint, {"op": "tasks", "project": str(project), "archived": True})["tasks"]
+                assert cards_after_reopen == cards_before_reopen, (cards_before_reopen, cards_after_reopen)
+                assert not any(c["title"] == "Unfiled card café 日本語" for c in cards_after_reopen)
+                checks.append("unfinished_board_card_reopens_in_its_project_without_filing_or_changing_any_card")
                 retained_input = rpc(endpoint, {"op": "peek_input", "agent": narrow["id"]})["messages"]
-                for marker in ("Keep this conversation draft", "Keep this thread draft", "Keep this session across reopen"):
+                assert any(q["id"] == draft_question for q in rpc(endpoint, {"op": "questions", "agent": human["id"]})["questions"])
+                assert not any(m.get("reply_to") == draft_question and m.get("kind") == "answer" for m in retained_input)
+                for marker in ("Keep this conversation draft", "Keep this thread draft", "Keep this session across reopen", answer_marker):
                     assert not any(marker in json.dumps(m.get("payload")) for m in retained_input), marker
                 channel_inputs = rpc(endpoint, {"op": "peek_input", "agent": agent["id"]})["messages"]
                 assert not any("Keep this channel across reopen" in json.dumps(m.get("payload")) for m in channel_inputs)
                 channel_history = rpc(endpoint, {"op": "history", "conversation": f"channel:{room['id']}", "limit": 100})["messages"]
                 assert not any("Keep this channel across reopen" in json.dumps(m) for m in channel_history)
-                checks.append("normal_close_flushes_hidden_conversation_thread_session_and_channel_drafts_and_reopen_never_sends_them")
+                checks.append("normal_close_flushes_hidden_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them")
                 rpc(endpoint, {"op": "stop", "agent": narrow["id"], "force": False})
                 until(lambda: rpc(endpoint, {"op": "inspect", "agent": narrow["id"]})["agent"]["status"]["state"] == "exited")
 
@@ -655,20 +680,34 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             checks.extend(["folder_pin_has_no_project_files", "same_project_after_launch", "last_project_restore", "quiet_project_retained", "saved_appearance"])
             # Private metadata fixture, not a model or idle-wake assertion.
             receiver = rpc(endpoint, {"op": "register", "spec": {
-                "name": "readiness-fixture", "runtime": "claude-code", "workdir": str(project)},
+                "name": "readiness-fixture", "runtime": "claude-code", "workdir": str(project),
+                "labels": {"session_id": "readiness-fixture-session"}},
                 "pid": os.getpid()})["agent"]
             def now():
                 return datetime.now(timezone.utc).isoformat()
             def readiness_window(name, expected):
                 conversation = "dm:" + ":".join(sorted([human["id"], receiver["id"]]))
                 input_status = "Idle delivery not verified" if name == "readiness-contact" else expected
+                send_probe = []
+                if name == "readiness-activity":
+                    send_probe = [
+                        step("fill", id=f"reply-{receiver['id']}", text="Send readiness acceptance probe"),
+                        step("click", id=f"send-{conversation}"),
+                        step("wait_text", text="Queued · 1 session needs attention"),
+                        step("wait_text_absent", text="claude --resume readiness-fixture-session"),
+                        step("click", id=f"delivery-details-conversation-{conversation}"),
+                        step("wait_text", text="readiness-fixture · No verified input receiver"),
+                        step("wait_text", text="claude --resume readiness-fixture-session"),
+                        step("capture", name="send-readiness-details"),
+                        step("click", id=f"delivery-details-conversation-{conversation}"),
+                    ]
                 return launch(name, [step("click", id="connections"),
                                      step("click", id="connection-details-claude-code"),
                                      step("wait_text", text="readiness-fixture"),
                                      step("wait_text", text=expected), step("capture", name=name),
                                      step("click", id="projects"), step("click", id=f"project-{project}"),
                                      step("click", id="inbox"), step("click", id=f"thread-{receiver['id']}"),
-                                     step("wait_text", text=input_status),
+                                     step("wait_text", text=input_status), *send_probe,
                                      step("fill", id=f"reply-{receiver['id']}", text="Keep the connection draft"),
                                      step("click", id=f"input-connection-{conversation}"),
                                      step("wait_text", text="Tools (MCP)"), step("click", id="inbox"),
@@ -677,6 +716,10 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             rpc(endpoint, {"op": "report_activity", "agent": receiver["id"],
                            "observation": {"activity": "working", "observed_at": now()}})
             report["activity_only_window"] = readiness_window("readiness-activity", "Idle delivery not verified")
+            probes = [m for m in rpc(endpoint, {"op": "inbox", "agent": receiver["id"], "drain": False})["messages"]
+                      if m.get("payload", {}).get("text") == "Send readiness acceptance probe"]
+            assert len(probes) == 1, probes
+            checks.append("send_warns_about_named_unbound_recipient_and_expands_reconnect_guidance_without_resending")
             rpc(endpoint, {"op": "report_adapter", "agent": receiver["id"], "adapter": "mcp",
                            "contact": {"process_started_at": receiver["process_started_at"], "observed_at": now()}})
             report["contact_window"] = readiness_window("readiness-contact", "Connected · messages wait for its next prompt")
@@ -685,10 +728,11 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                "process_started_at": receiver["process_started_at"],
                                "observed_at": now(), "report": value})
             input_report({"state": "ready"})
-            report["ready_window"] = readiness_window("readiness-ready", "Receiver active, awaiting first receipt")
+            # The send probe remains queued: a live receiver is not a receipt.
+            report["ready_window"] = readiness_window("readiness-ready", "Queued · awaiting provider receipt")
             message = rpc(endpoint, {"op": "send", "from": human["id"], "to": receiver["id"],
                                      "kind": "chat", "payload": {"text": "readiness fixture"}})["message"]
-            input_report({"state": "received", "input": {"messages": [message], "receipt": {"provider": "claude_channel"}}})
+            input_report({"state": "received", "input": {"messages": [probes[0]["id"], message], "receipt": {"provider": "claude_channel"}}})
             report["received_window"] = readiness_window("readiness-received", "Delivery verified")
             input_report({"state": "paused", "reason": "Fixture transport is disconnected"})
             report["paused_window"] = readiness_window("readiness-paused", "Delivery paused")

@@ -196,6 +196,14 @@ pub fn event_line(event: &Event) -> String {
                 observation.activity
             )
         }
+        EventKind::RoleSet {
+            agent,
+            role: Some(role),
+            ..
+        } => format!("role set   {} {role}", agent.short()),
+        EventKind::RoleSet {
+            agent, role: None, ..
+        } => format!("role cleared   {}", agent.short()),
         EventKind::AdapterContactReported { agent, adapter, .. } => {
             format!("adapter contact   {} {:?}", agent.short(), adapter)
         }
@@ -834,6 +842,36 @@ fn single_line(text: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Readiness is separate from queue acceptance; keep stdout stable for scripts.
+pub fn send_readiness(readiness: &agentdocker_core::SendReadiness) {
+    if readiness.needs_attention == 0 {
+        return;
+    }
+    eprintln!(
+        "{} session(s) need input attention:",
+        readiness.needs_attention
+    );
+    for recipient in &readiness.details {
+        recipient_readiness(recipient);
+    }
+    if readiness.omitted() > 0 {
+        eprintln!(
+            "  {} more; inspect sessions with agentdocker ps --input-details.",
+            readiness.omitted()
+        );
+    }
+}
+
+pub fn recipient_readiness(recipient: &agentdocker_core::RecipientReadiness) {
+    eprintln!(
+        "  {} ({}): {}",
+        recipient.name,
+        recipient.agent.short(),
+        recipient.issue.label()
+    );
+    eprintln!("    {}", recipient.guidance());
 }
 
 /// A browser extension as an app of the browser's: "Claude in Chrome
