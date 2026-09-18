@@ -826,6 +826,21 @@ pub fn event_line(event: &Event) -> String {
         } => {
             format!("reconciled {} into {}", retired.short(), canonical.short())
         }
+        EventKind::UsageRecorded {
+            generation,
+            samples,
+            gaps,
+        } => format!(
+            "usage recorded   generation {generation}: {samples} sample(s){}",
+            if *gaps > 0 {
+                format!(", {gaps} gap(s)")
+            } else {
+                String::new()
+            }
+        ),
+        EventKind::UsageReconciled { agent, samples } => {
+            format!("usage reconciled {} {samples} sample(s)", agent.short())
+        }
         EventKind::Unknown => "(an event this version does not know)".to_owned(),
     };
     format!("{}  {}", clock(event.at), single_line(&body))

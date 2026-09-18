@@ -1478,6 +1478,13 @@ impl App {
             | EventKind::TaskMoved { .. }
             | EventKind::TaskUpdated { .. }
             | EventKind::TaskArchived { .. } => self.request_tasks(),
+            // Collection moved: the report on view is read again, only
+            // while it is on view.
+            EventKind::UsageRecorded { .. } | EventKind::UsageReconciled { .. } => {
+                if self.screen == Screen::Usage {
+                    self.request_usage();
+                }
+            }
             EventKind::ProjectPaused { .. } | EventKind::ProjectResumed { .. } => {
                 self.send(Cmd::Pauses);
             }
