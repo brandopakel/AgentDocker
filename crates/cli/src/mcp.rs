@@ -1485,7 +1485,7 @@ fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "The recipient: agent id, name, or unique prefix." },
+                    "to": { "type": "string", "description": "The recipient: agent id, name, or unique prefix, or `role:<name>` for the one agent holding that role in this project." },
                     "task": { "type": "string", "description": "What the recipient should continue." },
                     "note": { "type": "string", "description": "Anything the daemon does not already know." },
                     "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } },
@@ -1612,7 +1612,7 @@ fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "to": { "type": "string", "description": "Agent id/name, `project` (this project) or `project:<id|path>`, `topic:<name>`, or `all`." },
+                    "to": { "type": "string", "description": "Agent id/name or `role:<name>` (the one agent holding that role in this project), `project` (this project) or `project:<id|path>`, `topic:<name>`, or `all`." },
                     "text": { "type": "string" },
                     "payload": { "type": "object", "description": "Structured payload instead of text." },
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },

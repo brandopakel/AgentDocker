@@ -461,6 +461,8 @@ enum Command {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: String,
     },
+    /// Give an agent a role, so `role:<name>` names it as a recipient.
+    Role(RoleArgs),
     /// Signal an agent to stop.
     Stop {
         agent: String,
@@ -1110,8 +1112,9 @@ struct SendArgs {
     /// Sender; defaults to this agent's identity, or `user` in a human terminal.
     #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
     from: Option<String>,
-    /// Agent id/name, `project` (everyone working in this directory's
-    /// project) or `project:<id|path>`, `topic:<name>`, or `all`.
+    /// Agent id/name or `role:<name>` (the one agent holding that role in
+    /// the sender's project), `project` (everyone working in this
+    /// directory's project) or `project:<id|path>`, `topic:<name>`, or `all`.
     #[arg(long)]
     to: String,
     /// Message kind: chat, task, handoff, question, answer, notice...
@@ -1162,7 +1165,7 @@ struct HandoffArgs {
     #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
     /// Agent id, name or unique prefix (defaults to this session).
     agent: String,
-    /// The recipient: id, name or unique prefix.
+    /// The recipient: id, name or unique prefix, or `role:<name>` for the one agent holding that role in this project.
     to: String,
     #[arg(long)]
     /// What the recipient should continue.
@@ -1184,6 +1187,22 @@ struct HandoffArgs {
 /// `kind:target` from the command line, checked for its kind's shape.
 fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
     agentdocker_core::Link::parse(text).map_err(str::to_owned)
+}
+
+/// Its own struct, as `RunArgs` is: every field added
+/// straight to `Command` costs the parser's stack, and a test thread has
+/// little of it.
+#[derive(Args)]
+struct RoleArgs {
+    #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+    /// Agent id, name or unique prefix (defaults to this session).
+    agent: String,
+    /// The role: one word of lowercase letters, digits and hyphens (`reviewer`).
+    #[arg(required_unless_present = "clear")]
+    role: Option<String>,
+    /// Take the role away.
+    #[arg(long, conflicts_with = "role")]
+    clear: bool,
 }
 
 #[derive(Args)]
@@ -2362,6 +2381,15 @@ async fn run() -> Result<()> {
         }
         Command::Rm { agent } => {
             client.call(&Request::Remove { agent }).await?;
+        }
+        Command::Role(RoleArgs { agent, role, clear }) => {
+            let role = if clear { None } else { role };
+            if let Response::Agent { agent } = client.call(&Request::Role { agent, role }).await? {
+                match agent.role() {
+                    Some(role) => println!("{} is the {role}", agent.spec.name),
+                    None => println!("{} has no role", agent.spec.name),
+                }
+            }
         }
         Command::Inspect { agent } => {
             if let Response::Agent { agent } = client.call(&Request::Inspect { agent }).await? {

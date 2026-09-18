@@ -85,6 +85,14 @@ pub enum EventKind {
         agent: AgentId,
         observation: crate::ActivityObservation,
     },
+    /// An agent was given a role, or `None` when it was taken away.
+    RoleSet {
+        agent: AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<ProjectId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+    },
     AdapterContactReported {
         agent: AgentId,
         adapter: crate::AdapterKind,

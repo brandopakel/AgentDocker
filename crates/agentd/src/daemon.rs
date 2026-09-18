@@ -515,8 +515,11 @@ fn registry_error(err: RegistryError) -> Response {
     let code = match err {
         RegistryError::IdentityReserved(_) => ErrorCode::Conflict,
         RegistryError::NameTaken(_) => ErrorCode::NameTaken,
-        RegistryError::NotFound(_) => ErrorCode::NotFound,
-        RegistryError::Ambiguous(_) | RegistryError::ProjectAmbiguous(_) => ErrorCode::Ambiguous,
+        RegistryError::NotFound(_) | RegistryError::RoleNotFound(_) => ErrorCode::NotFound,
+        RegistryError::Ambiguous(_)
+        | RegistryError::ProjectAmbiguous(_)
+        | RegistryError::RoleAmbiguous(_)
+        | RegistryError::RoleShadowed(_) => ErrorCode::Ambiguous,
         RegistryError::ProjectNotFound(_) => ErrorCode::NotFound,
     };
     Response::error(code, err.to_string())
@@ -1662,6 +1665,7 @@ impl Daemon {
             Request::ReportActivity { agent, observation } => {
                 lock(&self.state).report_activity(&agent, observation, Utc::now())
             }
+            Request::Role { agent, role } => lock(&self.state).set_role(&agent, role, Utc::now()),
             Request::ReportAdapter {
                 agent,
                 adapter,
@@ -3797,15 +3801,18 @@ impl Daemon {
         from: String,
         to: &str,
     ) -> Result<(String, Destination), Box<Response>> {
-        let from = match lock(&self.state).registry.resolve(&from) {
-            Ok(id) => id.to_string(),
+        let sender = match lock(&self.state).registry.resolve(&from) {
+            Ok(id) => Some(id),
             // An unregistered sender is allowed: `agentd` and a bare
             // `user` both speak without a record of their own.
-            Err(RegistryError::NotFound(_)) => from,
+            Err(RegistryError::NotFound(_)) => None,
             Err(err) => return Err(Box::new(registry_error(err))),
         };
+        let from = sender.as_ref().map_or(from, ToString::to_string);
         let to = match Destination::parse(to) {
-            Destination::Agent(reference) => Destination::Agent(self.resolve(reference.as_str())?),
+            Destination::Agent(reference) => Destination::Agent(
+                lock(&self.state).resolve_from(sender.as_ref(), reference.as_str())?,
+            ),
             Destination::Project(selector) => {
                 Destination::Project(self.resolve_project(selector.as_str()).await?)
             }
@@ -4522,6 +4529,98 @@ impl State {
         self.registry
             .resolve(reference)
             .map_err(|err| Box::new(registry_error(err)))
+    }
+
+    /// Resolve a reference as `from` would: `role:<name>` is the one live
+    /// holder in the sender's project when the sender works in one, so
+    /// "the reviewer" means this project's reviewer; anything else, and
+    /// a sender without a project, resolves as [`State::resolve`] does.
+    pub fn resolve_from(
+        &mut self,
+        from: Option<&AgentId>,
+        reference: &str,
+    ) -> Result<AgentId, Box<Response>> {
+        let project = from
+            .and_then(|from| self.registry.get(from))
+            .and_then(|record| record.project.as_ref())
+            .map(agentdocker_core::ProjectRef::id);
+        match (
+            reference.strip_prefix(agentdocker_core::agent::ROLE_PREFIX),
+            project,
+        ) {
+            (Some(role), Some(project)) => {
+                if let Some(error) = self.storage_failure() {
+                    return Err(Box::new(error));
+                }
+                self.registry
+                    .resolve_role(role, Some(&project))
+                    .map_err(|err| Box::new(registry_error(err)))
+            }
+            _ => self.resolve(reference),
+        }
+    }
+
+    /// Give `reference` a role or take it away. A role is one word
+    /// ([`agentdocker_core::agent::check_role`]), kept as the `role`
+    /// label on a live record and said as `role_set`; the same role again
+    /// is nothing. Several live agents may hold one role — it is at
+    /// resolution that a role must name exactly one.
+    pub(super) fn set_role(
+        &mut self,
+        reference: &str,
+        role: Option<String>,
+        now: DateTime<Utc>,
+    ) -> Response {
+        if let Some(role) = &role
+            && let Err(reason) = agentdocker_core::agent::check_role(role)
+        {
+            return Response::error(ErrorCode::Invalid, reason);
+        }
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let mut record = self.registry.get(&id).expect("resolved agent").clone();
+        if !record.status.is_live() {
+            return Response::error(ErrorCode::Invalid, "a finished agent has no role");
+        }
+        if record.role() == role.as_deref() {
+            return Response::Agent { agent: record };
+        }
+        match &role {
+            Some(role) => {
+                record
+                    .spec
+                    .labels
+                    .insert(agentdocker_core::agent::ROLE_LABEL.to_owned(), role.clone());
+            }
+            None => {
+                record
+                    .spec
+                    .labels
+                    .remove(agentdocker_core::agent::ROLE_LABEL);
+            }
+        }
+        let mut event = agentdocker_core::Event::new(
+            EventKind::RoleSet {
+                agent: id.clone(),
+                project: record
+                    .project
+                    .as_ref()
+                    .map(agentdocker_core::ProjectRef::id),
+                role,
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        let committed = self.persist("role", |store| store.agent_transition(&record, &event));
+        if committed == Persisted::Committed {
+            *self.registry.get_mut(&id).expect("resolved agent") = record.clone();
+            self.next_seq += 1;
+            let _ = self.events.send(event);
+        }
+        self.write_failure()
+            .unwrap_or(Response::Agent { agent: record })
     }
 
     pub fn is_live(&mut self, id: &AgentId) -> bool {
@@ -5996,6 +6095,18 @@ impl State {
             record.spec.labels.insert(
                 agentdocker_core::agent::NAME_LABEL.to_owned(),
                 agentdocker_core::agent::GENERATED_NAME.to_owned(),
+            );
+        }
+        // `role:<name>` is how a role is addressed; a name spelled that
+        // way would be reached as the role or shadow it, never plainly.
+        if record
+            .spec
+            .name
+            .starts_with(agentdocker_core::agent::ROLE_PREFIX)
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "an agent's name cannot start with `role:`; that is how a role is addressed",
             );
         }
         // One process, one agent.

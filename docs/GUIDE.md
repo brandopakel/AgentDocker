@@ -214,6 +214,7 @@ each one by pid.
 | `stop <agent>` | Signal an agent to stop |
 | `restart <agent>` | Replace a managed container after confirming it exited |
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |
+| `role <name>` | Give an agent (`--as`) a role — `reviewer`, `implementer` — so `send --to role:reviewer` and `handoff role:reviewer` reach it; `--clear` takes it away |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml` |
 | `heartbeat` | Report that an agent is alive |
 
@@ -221,7 +222,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `send` | Message an agent, the project, a topic, or everyone A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
+| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
 | `watch` | Stream messages for an agent or matching topics |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer |
@@ -469,6 +470,10 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- Roles: `agentdocker role reviewer --as <agent>` gives an agent a role,
+  and `role:reviewer` names it as the recipient of a `send`, an `ask` or
+  a `handoff` — the one live agent holding that role in the sender's
+  project; none is not found, two are ambiguous. `--clear` takes it away.
 - A project pause: `agentdocker pause "reason"` tells every agent in the
   project to hold — the reason reaches each live one as a `pause` message
   and their new leases are refused with it until `pause --lift`; `pause
