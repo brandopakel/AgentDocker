@@ -370,3 +370,9 @@ a lost reply is an uncertain outcome to check before retrying, not an automatic
 resubmission. The pause reason and actions occupy separate rows on narrow
 windows. A durable pause blocks new agent lease claims but does not stop a model
 process or establish that every recipient has consumed the pause message.
+
+Notification reply recovery forwarding reserves the full JSON byte budget for
+16,000 reply characters, a 512-character reason and validated destination
+metadata. Escaped control characters and Unicode cannot silently reduce that
+limit. Both ends still reject oversized frames. A full recovery list shows a
+200-character excerpt and preserves uncertain-delivery wording.

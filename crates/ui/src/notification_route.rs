@@ -67,10 +67,10 @@ pub fn enqueue(activation: Activation) -> Result<(), String> {
     if let Activation::Open(action) | Activation::ReplyFailed { action, .. } = &activation {
         Action::parse(&serde_json::to_string(action).map_err(|e| e.to_string())?)?;
     }
-    if let Activation::ReplyFailed { text, .. } = &activation
-        && text.chars().count() > RECOVERY_CHARS
+    if let Activation::ReplyFailed { text, reason, .. } = &activation
+        && (text.chars().count() > RECOVERY_CHARS || reason.chars().count() > RECOVERY_REASON_CHARS)
     {
-        return Err("the reply is longer than a draft holds".into());
+        return Err("the reply or its reason exceeds recovery limits".into());
     }
     queue()
         .lock()
@@ -87,6 +87,7 @@ pub const REPLY_CHARS: usize = 4_000;
 /// The most of a failed reply that comes back to the app: what a draft
 /// holds. Longer is cut there and said to be.
 pub const RECOVERY_CHARS: usize = crate::drafts::MAX_TEXT_CHARS;
+pub const RECOVERY_REASON_CHARS: usize = 512;
 
 /// Why a reply did not go, and whether that is known for sure: the
 /// daemon refused it (or nothing was ever sent), or the connection went
@@ -269,7 +270,7 @@ fn report_failure(action: Action, text: String, failure: Failure) {
     let activation = Activation::ReplyFailed {
         action,
         text: text.clone(),
-        reason,
+        reason: reason.chars().take(RECOVERY_REASON_CHARS).collect(),
         certain: failure.certain,
     };
     let kept = if ours {
@@ -292,14 +293,14 @@ fn report_failure(action: Action, text: String, failure: Failure) {
     let (title, body) = if failure.certain {
         (
             "Reply not sent",
-            format!("{}. {where_it_is}", failure.reason),
+            format!("{}. {where_it_is}", excerpt(&failure.reason)),
         )
     } else {
         (
             "Reply may not have been sent",
             format!(
                 "{}. Check the conversation's history before sending again. {where_it_is}",
-                failure.reason
+                excerpt(&failure.reason)
             ),
         )
     };

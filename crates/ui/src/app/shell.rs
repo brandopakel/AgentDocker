@@ -975,8 +975,14 @@ impl App {
                             .is_some_and(|c| c.socket() == action.socket) =>
                     {
                         if self.shell.reply_recoveries.len() >= REPLY_RECOVERIES {
+                            let outcome = if certain {
+                                "was not sent"
+                            } else {
+                                "may not have been sent"
+                            };
                             self.say(format!(
-                                "A reply from a notification was not sent ({reason}) and the window holds as many unplaced replies as it keeps; copy or dismiss one first. You wrote: {text}"
+                                "A reply from a notification {outcome} ({reason}) and the window holds as many unplaced replies as it keeps; copy or dismiss one first. You wrote: {}",
+                                super::view::first_line(&text, 200)
                             ));
                         } else {
                             self.shell.reply_recoveries.push(ReplyRecovery {
@@ -4081,13 +4087,15 @@ mod tests {
         let _ = app.update(Message::Notification(
             crate::notification_route::Activation::ReplyFailed {
                 action,
-                text: "one too many".into(),
-                reason: "refused".into(),
-                certain: true,
+                text: "one too many ".to_owned() + &"🦀".repeat(4000),
+                reason: "connection lost".into(),
+                certain: false,
             },
         ));
         assert_eq!(app.shell.reply_recoveries.len(), REPLY_RECOVERIES);
         assert!(app.status.contains("one too many"));
+        assert!(app.status.contains("may not have been sent"));
+        assert!(app.status.chars().count() < 512);
     }
 
     #[test]
