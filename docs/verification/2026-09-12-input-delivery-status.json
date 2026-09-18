@@ -1931,6 +1931,381 @@
       "A transcript shortened while still longer than the scan offset must reset the cursor; observed length is now retained. The added test failed before the fix.",
       "Concurrent cargo-test forks can retain a just-dropped lock until exec; the source-change regression now allows bounded retry without accepting a later scan offset.",
       "Legacy Claude hooks dropped IDs, routing and non-text payload fields. They now carry complete JSON envelopes and original conversation reply destinations, covered for every destination type and multiline/structured payloads."
-    ]
+    ],
+    "current_main_integration": {
+      "runtime_source": "d27d8acf8625243c0b465bb093954cf40f5377d6",
+      "parent_integration": "6f89f51f3f69a62ae0136c08211f0957db02ae62",
+      "gate": {
+        "result": "passed",
+        "rust_passed": 1264,
+        "rust_skipped": 7,
+        "python_checks": 94,
+        "python_skipped": 1,
+        "includes": [
+          "fmt",
+          "strict clippy",
+          "doctests",
+          "package",
+          "release"
+        ],
+        "log_sha256": "a7fa70c19617c534c3fb5da391193ad9b6043c31cc3335db113274d1251de60c"
+      },
+      "candidate": "8cbae3a97108c35131c9baea83aeeb59294fce91f46a53a1fc2722b80a872af3",
+      "source_input_sha256": "1da8442efdc87cf264527f134e5878e1a45a63e9ed26f0a4443ce0e90107d082",
+      "schema": 23,
+      "source_dirty": false,
+      "installation": "pending; previous-to-candidate and rollback tested under a private prefix only",
+      "native": {
+        "artifact_sha256": "d19ce2d9efec8ac660a1131ffb879d33f7c84fd41349ee2641f41de81a6628eb",
+        "result": {
+          "result": "passed",
+          "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+          "steps": [
+            "an unreceived offer became durably paused after 30 seconds and stayed paused through refresh without inventing a receipt, replaying input or consuming the queue",
+            "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+            "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+            "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+            "without an explicit model ACK, the real hook retained channel input alone and committed receipt before removing its exact head only after the modeled assistant continuation; repeated hooks were harmless",
+            "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+            "project fan-out carried a reply destination that the actual MCP send_message tool routed back to the same everyone conversation with its original message ID",
+            "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+            "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+            "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+            "pre-initialization session fold preserved observations, open memberships and completed card identity references without changing their text or state, retained one channel owner across different agent IDs, and delivered the older queue plus a new room message through the canonical alias",
+            "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+          ],
+          "binary_sha256": {
+            "agentd": "2b1583c0e547aef2642e1eeef4edc8b37c70b2072191d829064d5b99e4ed1f31",
+            "agentdocker": "709015f2c6dcd558e6fc4c802ca7f9d4792650450b207d34d766d14c14af61ca"
+          },
+          "driver_sha256": {
+            "claude_channel_smoke.py": "a1ea5445469db25798306c86a5e3d1e7eb1eca1fc7a1a813e195c265ec38de74",
+            "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+            "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+          },
+          "history_recovery_hook_calls": 3,
+          "remaining_owned_processes": 0,
+          "duration_seconds": 69.86045820795698
+        }
+      },
+      "workflow": {
+        "artifact_sha256": "6873fa461ef19cdba936b2665c50473a687bc2a12d137bf9bb1e62792e557462",
+        "result": {
+          "result": "passed",
+          "checks": [
+            "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+            "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+            "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+            "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+            "rendered_actions",
+            "answer_and_draft_navigation",
+            "native_vt_rendering",
+            "terminal_attach_detach",
+            "channels",
+            "setup_review_apply_undo",
+            "launch_and_confirmed_stop",
+            "focused_control_reveal",
+            "compact_zoom",
+            "current_history_separation",
+            "project_attention",
+            "compact_session_navigation",
+            "folder_pin_has_no_project_files",
+            "same_project_after_launch",
+            "last_project_restore",
+            "quiet_project_retained",
+            "saved_appearance",
+            "send_warns_about_named_unbound_recipient_and_expands_reconnect_guidance_without_resending",
+            "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+            "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+            "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+            "a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived",
+            "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+            "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+            "unfinished_board_card_reopens_in_its_project_without_filing_or_changing_any_card",
+            "normal_close_flushes_hidden_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them"
+          ],
+          "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+          "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+          "architecture": "arm64",
+          "binary_sha256": {
+            "agentd": "2b1583c0e547aef2642e1eeef4edc8b37c70b2072191d829064d5b99e4ed1f31",
+            "agentdocker": "709015f2c6dcd558e6fc4c802ca7f9d4792650450b207d34d766d14c14af61ca",
+            "agentdocker-ui": "4737c67540067f1b71cde52c5b2209840cfaf369289c44789cc33ba0fc5dfad7"
+          },
+          "first_window": {
+            "samples": 350,
+            "elapsed_seconds": 51.80270058300812,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "restored_window": {
+            "samples": 20,
+            "elapsed_seconds": 2.83995520794997,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "activity_only_window": {
+            "samples": 61,
+            "elapsed_seconds": 8.754231749975588,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "contact_window": {
+            "samples": 34,
+            "elapsed_seconds": 4.836065042007249,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "ready_window": {
+            "samples": 34,
+            "elapsed_seconds": 4.8872777500073425,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "received_window": {
+            "samples": 34,
+            "elapsed_seconds": 4.85028258303646,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "paused_window": {
+            "samples": 35,
+            "elapsed_seconds": 4.976588624995202,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "provider_limit_window": {
+            "samples": 30,
+            "elapsed_seconds": 4.251771125011146,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "board_card": "dbcc6a797bf7",
+          "narrow_inbox_window": {
+            "samples": 215,
+            "elapsed_seconds": 31.406815207970794,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "constrained_panes_window": {
+            "samples": 93,
+            "elapsed_seconds": 13.586331084021367,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "restored_drafts_window": {
+            "samples": 56,
+            "elapsed_seconds": 8.114856957981829,
+            "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+          },
+          "idle_resources": {
+            "method": "12 ps RSS/CPU samples one second apart after 3s warmup; ordinary window without smoke polling; CPU is ps-reported, not a battery or power measurement",
+            "samples": [
+              {
+                "window": {
+                  "rss_bytes": 173916160,
+                  "ps_cpu_percent": 0.9
+                },
+                "daemon": {
+                  "rss_bytes": 20561920,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 173916160,
+                  "ps_cpu_percent": 0.0
+                },
+                "daemon": {
+                  "rss_bytes": 20561920,
+                  "ps_cpu_percent": 0.1
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 173916160,
+                  "ps_cpu_percent": 0.7
+                },
+                "daemon": {
+                  "rss_bytes": 20561920,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 173834240,
+                  "ps_cpu_percent": 0.0
+                },
+                "daemon": {
+                  "rss_bytes": 20561920,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 173834240,
+                  "ps_cpu_percent": 0.3
+                },
+                "daemon": {
+                  "rss_bytes": 20561920,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 173948928,
+                  "ps_cpu_percent": 0.0
+                },
+                "daemon": {
+                  "rss_bytes": 20561920,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 173948928,
+                  "ps_cpu_percent": 1.6
+                },
+                "daemon": {
+                  "rss_bytes": 20561920,
+                  "ps_cpu_percent": 0.1
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 173965312,
+                  "ps_cpu_percent": 0.0
+                },
+                "daemon": {
+                  "rss_bytes": 20561920,
+                  "ps_cpu_percent": 0.5
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 173916160,
+                  "ps_cpu_percent": 0.7
+                },
+                "daemon": {
+                  "rss_bytes": 20561920,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 173916160,
+                  "ps_cpu_percent": 15.6
+                },
+                "daemon": {
+                  "rss_bytes": 20561920,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 173916160,
+                  "ps_cpu_percent": 0.3
+                },
+                "daemon": {
+                  "rss_bytes": 20561920,
+                  "ps_cpu_percent": 0.0
+                }
+              },
+              {
+                "window": {
+                  "rss_bytes": 173916160,
+                  "ps_cpu_percent": 23.9
+                },
+                "daemon": {
+                  "rss_bytes": 20594688,
+                  "ps_cpu_percent": 0.1
+                }
+              }
+            ],
+            "summary": {
+              "window": {
+                "median_rss_bytes": 173916160.0,
+                "maximum_rss_bytes": 173965312,
+                "median_ps_cpu_percent": 0.5
+              },
+              "daemon": {
+                "median_rss_bytes": 20561920.0,
+                "maximum_rss_bytes": 20594688,
+                "median_ps_cpu_percent": 0.0
+              }
+            }
+          },
+          "elapsed_seconds": 156.15122487500776
+        }
+      },
+      "install": {
+        "artifact_sha256": "c26c38a7b329bc48a80ac729ea059737049c7c91535bb1650aa96e41499af2d7",
+        "result": {
+          "passed": true,
+          "scenarios": [
+            "preview without writes and pinned initial installation",
+            "same-release repair replaces the old wrapper and preserves activation",
+            "legacy bundle hooks and MCP work through generation 2ed6a55fa28ad810e01c6e14143ad0e4d2903032e881350fdca50c45244a79ea",
+            "activation keeps the existing fixture daemon responsive",
+            "legacy bundle hooks and MCP work through generation 8cbae3a97108c35131c9baea83aeeb59294fce91f46a53a1fc2722b80a872af3",
+            "changed preview payload and active generation are refused",
+            "compatible rollback switches all commands and retains both releases",
+            "legacy bundle hooks and MCP work through generation 2ed6a55fa28ad810e01c6e14143ad0e4d2903032e881350fdca50c45244a79ea",
+            "tampered executable is refused without changing activation",
+            "cleanup retains active, rollback and running or legacy binaries",
+            "uninstall preserves the live daemon and its state",
+            "daemon exit releases its pin and invalidates stale cleanup preview",
+            "unused payloads removed; permanent pins and daemon state retained"
+          ],
+          "synthetic_second_generation": false,
+          "first": {
+            "id": "2ed6a55fa28ad810e01c6e14143ad0e4d2903032e881350fdca50c45244a79ea",
+            "installation_lock": 1,
+            "launcher_redirect": 1,
+            "payload": "AgentDocker.app",
+            "source_commit": "dee2fc815987cf10fea29bdd106254c5c5832b11",
+            "state_schema": 23,
+            "target": "aarch64-apple-darwin",
+            "tree_sha256": "2ed6a55fa28ad810e01c6e14143ad0e4d2903032e881350fdca50c45244a79ea",
+            "version": "0.1.0"
+          },
+          "second": {
+            "id": "8cbae3a97108c35131c9baea83aeeb59294fce91f46a53a1fc2722b80a872af3",
+            "installation_lock": 1,
+            "launcher_redirect": 1,
+            "payload": "AgentDocker.app",
+            "source_commit": "d27d8acf8625243c0b465bb093954cf40f5377d6",
+            "state_schema": 23,
+            "target": "aarch64-apple-darwin",
+            "tree_sha256": "8cbae3a97108c35131c9baea83aeeb59294fce91f46a53a1fc2722b80a872af3",
+            "version": "0.1.0"
+          }
+        }
+      }
+    },
+    "existing_session_read_only_proof": {
+      "mode": "read-only independent metadata validation; no receipt report or queue ACK",
+      "agent": "0180d7615186449087095d7aa15ec0bb",
+      "pid": 53280,
+      "generation": "2026-09-18T00:16:33.787409Z",
+      "session": "b928f782-c8be-4458-99de-bb7baccb57f1",
+      "queued": 72,
+      "head": "fcb1ed18d7244fbf",
+      "head_body_sha256": "dc88875dcff58c6905bd7113b4cbe0c4b9d47522381fdc88cb744f16f9488691",
+      "transcript_size": 18532241,
+      "proof": {
+        "input": {
+          "uuid": "67795399-bccb-413c-87ef-69bc742666af",
+          "type": "attachment",
+          "timestamp": "2026-09-18T00:39:33.003Z",
+          "parentUuid": "0b9aaeb6-b308-448a-a1af-d0f3e17f70d2"
+        },
+        "continuation": {
+          "uuid": "66094700-6184-454d-9bd8-93609f916a42",
+          "type": "assistant",
+          "timestamp": "2026-09-18T00:39:41.623Z",
+          "parentUuid": "c7fa3cc9-b5d1-42e2-a424-5251996dbfb1"
+        }
+      },
+      "records_examined_after_first_candidate": 11
+    },
+    "interrupted_prior_gate": {
+      "source_at_start": "1a48856",
+      "reason": "Stopped owned campaign after integrating the newer saved parent merge; no completed-gate claim for mixed source. Fresh d27d8ac gate passed.",
+      "tests_passed_before_interrupt": 445,
+      "interrupted_test": 1,
+      "not_run": 778,
+      "log_sha256": "1fa19d97d42360f12891d6ca7a6871f8fa6f4db8dac402b5b93b8b02ff7c343e"
+    }
   }
 }

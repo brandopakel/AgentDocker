@@ -22,7 +22,12 @@ original-chat reply routing. Actual isolated Claude idle and busy trials both
 received a project pause, replied in the same chat and committed a receipt without
 an explicit ACK call or another terminal prompt. Bounded historical recovery and
 complete legacy-hook envelopes address old stuck heads and misplaced replies.
-The installed-session pause/reply case remains open until the upgrade passes it. The requested app reconnect/approval button remains
+The combined current-main source `d27d8ac` passed 1,264 Rust tests (seven skipped),
+94 Python checks (one skipped), the full release gate, twelve native channel
+scenarios and thirteen real previous/candidate installation and rollback checks.
+The native UI workflow passed across eleven windows. These private trials do not
+close the installed-session pause/reply case; that remains open until activation
+and actual recovery pass. The requested app reconnect/approval button remains
 part of this work, including detecting a plain restart that lost its channel.
 
 The installed desktop and daemon use reviewed local-preview release `d14610b7`,
