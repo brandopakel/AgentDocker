@@ -455,6 +455,10 @@ mod tests {
         drop(daemon);
         let reopened = Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap();
         let mut state = lock(&reopened.state);
+        assert_eq!(
+            state.registry.provider_block_ids().as_slice(),
+            std::slice::from_ref(&agent.id)
+        );
         assert!(matches!(
             state.delivery_queue(agent.id.as_str()),
             Response::InputWaiting { .. }
@@ -652,6 +656,10 @@ mod tests {
             Response::Ok
         ));
         let snapshot = state.registry.get(&agent.id).unwrap().clone();
+        assert_eq!(
+            state.registry.provider_block_ids().as_slice(),
+            std::slice::from_ref(&agent.id)
+        );
         let mut events = state.events.subscribe();
         state.store.reject_writes_for_test();
         assert!(matches!(
@@ -662,6 +670,10 @@ mod tests {
             }
         ));
         assert_eq!(state.registry.get(&agent.id).unwrap(), &snapshot);
+        assert_eq!(
+            state.registry.provider_block_ids().as_slice(),
+            std::slice::from_ref(&agent.id)
+        );
         assert_eq!(state.store.load_agents().unwrap(), vec![snapshot]);
         assert!(events.try_recv().is_err());
     }

@@ -24,7 +24,7 @@ pub struct RecipientReadiness {
     pub resume_session: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 pub enum SendIssue {
     UnknownSession,
@@ -33,6 +33,38 @@ pub enum SendIssue {
     ReceiverSilent,
     DeliveryPaused,
     ProviderBlocked(ProviderIssueKind),
+    Unknown,
+}
+
+impl<'de> Deserialize<'de> for SendIssue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // An internally tagged wire representation discards an unknown kind's
+        // fields too. An adjacently tagged unit fallback rejects a newer
+        // variant with a non-unit `detail`, even though the send committed.
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "snake_case")]
+        enum Wire {
+            UnknownSession,
+            SessionEnded,
+            NoReceiver,
+            ReceiverSilent,
+            DeliveryPaused,
+            ProviderBlocked {
+                detail: ProviderIssueKind,
+            },
+            #[serde(other)]
+            Unknown,
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::UnknownSession => Self::UnknownSession,
+            Wire::SessionEnded => Self::SessionEnded,
+            Wire::NoReceiver => Self::NoReceiver,
+            Wire::ReceiverSilent => Self::ReceiverSilent,
+            Wire::DeliveryPaused => Self::DeliveryPaused,
+            Wire::ProviderBlocked { detail } => Self::ProviderBlocked(detail),
+            Wire::Unknown => Self::Unknown,
+        })
+    }
 }
 
 impl SendIssue {
@@ -44,6 +76,7 @@ impl SendIssue {
             Self::ReceiverSilent => "No recent input receiver signal",
             Self::DeliveryPaused => "Input delivery paused",
             Self::ProviderBlocked(kind) => kind.label(),
+            Self::Unknown => "Delivery status unavailable",
         }
     }
 }
@@ -117,6 +150,7 @@ impl RecipientReadiness {
 
     pub fn guidance(&self) -> String {
         match self.issue {
+            SendIssue::Unknown => "The message was queued; check delivery details before sending again. This app does not recognize the newer delivery status.".into(),
             SendIssue::UnknownSession => "Check the destination in AgentDocker before sending again; receipt is unconfirmed.".into(),
             SendIssue::ProviderBlocked(_) => "Check the provider limit or sign-in, then explicitly resume input after recovery.".into(),
             SendIssue::DeliveryPaused => "Review this session's delivery error before reconnecting; queued messages are retained.".into(),
@@ -152,6 +186,38 @@ impl SendReadiness {
 mod tests {
     use super::*;
     use crate::{AgentSpec, AgentStatus, InputDelivery};
+
+    #[test]
+    fn newer_readiness_kinds_do_not_turn_a_committed_send_into_a_decode_failure() {
+        for (wire_issue, expected) in [
+            (
+                serde_json::json!({"kind": "future_status", "detail": {"new": true}}),
+                SendIssue::Unknown,
+            ),
+            (
+                serde_json::json!({"kind": "provider_blocked", "detail": "future_limit"}),
+                SendIssue::ProviderBlocked(ProviderIssueKind::Unknown),
+            ),
+        ] {
+            let response: crate::Response = serde_json::from_value(serde_json::json!({
+                "type": "sent", "message": "accepted-id", "subscribers": 0,
+                "recipient_readiness": {"recipients": 1, "needs_attention": 1, "details": [{
+                    "agent": "recipient", "name": "Reviewer", "runtime": "custom", "issue": wire_issue
+                }]}
+            })).unwrap();
+            let crate::Response::Sent {
+                message,
+                recipient_readiness: Some(readiness),
+                ..
+            } = response
+            else {
+                panic!("successful send must remain successful");
+            };
+            assert_eq!(message.as_str(), "accepted-id");
+            assert_eq!(readiness.details[0].issue, expected);
+            assert!(!readiness.details[0].guidance().is_empty());
+        }
+    }
 
     fn agent(runtime: &str) -> AgentRecord {
         let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();

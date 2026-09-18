@@ -4259,6 +4259,168 @@
         },
         "scope": "Disposable prefix and fixture daemon only. No production activation. Synthetic second generation uses the same binaries with different metadata."
       }
+    },
+    "final_review_followup": {
+      "status": "local validation passed; final CI/review and production activation pending",
+      "review_id": 5244533363,
+      "build": {
+        "format": 1,
+        "source_commit": "d2fdf935acd4198ca69580eccc3c12d4b7cb8610",
+        "source_tree": "d853dde0b4bbb8b5b650931e66a53c9275c6bc36",
+        "source_input_sha256": "6be61890bf2d5e8ee2a4273de4d3d4ba1454dd8e01dd22c2016101e085beccea",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 23,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-desktop-integration-20260917/target/release",
+        "binary_sha256": {
+          "agentdocker": "28ddc09c71d3c5a16388b44f3e564d1e2f93adb4f2d8a3e480d7f194c010d448",
+          "agentd": "82dab8797e320c3de72e6dde403ce365551bbb4b3565896c7870ac278e1d5912",
+          "agentdocker-ui": "fc5d446954d10b25e07f0202ade05475c7cf7a0c2ec5085604d7893137f8d548"
+        }
+      },
+      "changes": [
+        "Successful sends tolerate unknown readiness kinds with structured detail and unknown provider limit kinds.",
+        "Notification reply worker-start refusal returns the full bounded draft through normal recovery.",
+        "Unix-only socket test is guarded on Windows.",
+        "Active provider-report index follows registry mutations, restore and retirement, including finished shared-quota sources."
+      ],
+      "standard_gate": {
+        "command": "bash scripts/verify.sh check",
+        "rust_tests": 1205,
+        "rust_skipped": 7,
+        "python_checks": 94,
+        "python_skipped": 1,
+        "format_clippy_doctests_docs_packaging_release": "passed",
+        "artifact": {
+          "path": "/private/tmp/agentdocker-191-final-review-gate-fixed-20260918.log",
+          "sha256": "e68273e19109daf8ff76558566b70403418cc1fdd9609203b5083b7f63a3d466"
+        }
+      },
+      "native_workflow": {
+        "result": "passed",
+        "total_rendered_steps": 507,
+        "windows": {
+          "restored-drafts": 28,
+          "readiness-received": 17,
+          "provider-limit": 14,
+          "readiness-activity": 26,
+          "readiness-ready": 17,
+          "workflows": 187,
+          "restored": 6,
+          "readiness-paused": 17,
+          "readiness-contact": 17,
+          "narrow-inbox": 124,
+          "constrained-panes": 54
+        },
+        "checks": [
+          "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+          "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+          "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+          "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+          "rendered_actions",
+          "answer_and_draft_navigation",
+          "native_vt_rendering",
+          "terminal_attach_detach",
+          "channels",
+          "setup_review_apply_undo",
+          "launch_and_confirmed_stop",
+          "focused_control_reveal",
+          "compact_zoom",
+          "current_history_separation",
+          "project_attention",
+          "compact_session_navigation",
+          "folder_pin_has_no_project_files",
+          "same_project_after_launch",
+          "last_project_restore",
+          "quiet_project_retained",
+          "saved_appearance",
+          "send_warns_about_named_unbound_recipient_and_expands_reconnect_guidance_without_resending",
+          "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+          "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+          "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+          "a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived",
+          "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+          "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+          "unfinished_board_card_reopens_in_its_project_without_filing_or_changing_any_card",
+          "normal_close_flushes_hidden_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them"
+        ],
+        "elapsed_seconds": 136.15671795798698,
+        "idle_resources": {
+          "result": "not_run",
+          "reason": "Explicit --skip-idle-measurement: foreground CPU/RSS sample omitted; no idle performance claim."
+        },
+        "artifact": {
+          "path": "/private/tmp/agentdocker-191-reviewed-workflow-20260918.log",
+          "sha256": "d9fdb20ba9ad2273a0820556900a946cb7461634e86d09acdc284ea205d007be"
+        },
+        "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+        "cleanup": "completed without reported cleanup errors"
+      },
+      "package": {
+        "candidate": {
+          "id": "80a023512da3568e113bc30b296d02182b518e2c2b1bedecac1a47a483ce7b94",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "d2fdf935acd4198ca69580eccc3c12d4b7cb8610",
+          "state_schema": 23,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "80a023512da3568e113bc30b296d02182b518e2c2b1bedecac1a47a483ce7b94",
+          "version": "0.1.0"
+        },
+        "manifest": {
+          "path": "/private/tmp/agentdocker-191-reviewed-package-20260918/manifest.json",
+          "sha256": "ee404731bb33e397d7308a22fd4255d9f376d02c08ab09804b93984aca09582d"
+        },
+        "signing": "ad-hoc local-preview; not notarized"
+      },
+      "private_install_trial": {
+        "result": "passed",
+        "scenarios": [
+          "preview without writes and pinned initial installation",
+          "same-release repair replaces the old wrapper and preserves activation",
+          "legacy bundle hooks and MCP work through generation 80a023512da3568e113bc30b296d02182b518e2c2b1bedecac1a47a483ce7b94",
+          "activation keeps the existing fixture daemon responsive",
+          "legacy bundle hooks and MCP work through generation 24a67553e0cd8096a612f08be4241f310d6de43fc67e43afdf025ecf44ee0b66",
+          "changed preview payload and active generation are refused",
+          "compatible rollback switches all commands and retains both releases",
+          "legacy bundle hooks and MCP work through generation 80a023512da3568e113bc30b296d02182b518e2c2b1bedecac1a47a483ce7b94",
+          "tampered executable is refused without changing activation",
+          "cleanup retains active, rollback and running or legacy binaries",
+          "uninstall preserves the live daemon and its state",
+          "daemon exit releases its pin and invalidates stale cleanup preview",
+          "unused payloads removed; permanent pins and daemon state retained"
+        ],
+        "synthetic_second_generation": true,
+        "artifact": {
+          "path": "/private/tmp/agentdocker-191-reviewed-install-trial-20260918/result.json",
+          "sha256": "356ebd775cd043ecb9104343a004226cfa0a8a826c8c5c5679dc26bf77f88751"
+        }
+      },
+      "retained_failures": [
+        {
+          "path": "/private/tmp/agentdocker-191-final-review-targeted-20260918.log",
+          "sha256": "959c37f978bfa4d6681a64f1116a7e55d2c09a642bd50e21c034fce165449a6d"
+        },
+        {
+          "path": "/private/tmp/agentdocker-191-final-review-gate-20260918.log",
+          "sha256": "fe19bd44a253a9a12ef7276cde923af4b14fcf47ade6a38e3d74361b2bf8b578"
+        },
+        {
+          "path": "/private/tmp/agentdocker-191-reviewed-package-20260918.log",
+          "sha256": "0f753b1f8f6589cac947fc0738b42cfdb030447bdeb76be1b3c8c8383974d4f3"
+        }
+      ],
+      "failure_disposition": "The new test exposed a unit-only fallback rejecting structured future detail; corrected with an internally tagged decoding representation. Clippy caught a cloned reference in the new test. The first package command mistyped the source SHA and was refused before packaging; the corrected command reads the exact build manifest. All corrected checks passed.",
+      "limits": [
+        "No production activation or physical Notification Center Reply in this trial.",
+        "No native Windows acceptance or new sustained resource measurement.",
+        "Source fixes are d2fdf93; following evidence-only commit does not alter runtime inputs."
+      ]
     }
   },
   "codex_usage_limit_recovery_2026_09_18": {

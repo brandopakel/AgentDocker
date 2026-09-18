@@ -15,6 +15,7 @@ pub enum ProviderIssueKind {
     Context,
     Authentication,
     Transport,
+    #[serde(other)]
     Unknown,
 }
 

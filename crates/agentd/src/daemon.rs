@@ -6063,13 +6063,9 @@ impl State {
         let mut readiness = agentdocker_core::SendReadiness::default();
         let blocked_sources: Vec<_> = self
             .registry
-            .all()
-            .filter(|record| {
-                record
-                    .provider_availability
-                    .as_ref()
-                    .is_some_and(|state| state.issue.is_some())
-            })
+            .provider_block_ids()
+            .into_iter()
+            .filter_map(|id| self.registry.get(&id))
             .collect();
         for id in &recipients {
             let issue = self.registry.get(id).map_or_else(
@@ -12808,6 +12804,8 @@ deny = ["send:all"]
                     .insert("provider-quota".into(), "shared".into());
             }
             let agent = state.registry.get_mut(&unrelated.id).unwrap();
+            // Finished sources still carry shared-quota blocks.
+            agent.status = AgentStatus::Exited { code: Some(1) };
             agent.provider_availability = Some(agentdocker_core::ProviderAvailability {
                 process_started_at: Utc::now(),
                 observed_at: Utc::now(),
