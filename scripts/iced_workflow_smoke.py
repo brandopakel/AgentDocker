@@ -466,9 +466,9 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                  step("fill", id="task-acceptance", text="Notes cover the fixture routes"),
                                  step("click", id="task-file-backlog"), step("wait_text", text="Write the fixture notes"),
                                  step("click", id=f"task-{card['id']}"), step("wait_text", text="Login works with SSO and a password"),
-                                 step("wait_text", text="for the taking"), step("capture", name="board-ready")]
+                                 step("wait_text", text="unassigned"), step("capture", name="board-ready")]
                 board_gate = len(narrow_steps)
-                narrow_steps += [step("wait_text_absent", text="for the taking"), step("wait_text", text="narrow-fixture"),
+                narrow_steps += [step("wait_text_absent", text="unassigned"), step("wait_text", text="narrow-fixture"),
                                  step("capture", name="board-pulled"),
                                  # Back is offered in every column but Backlog, so the move to
                                  # Review is awaited by the next step's label changing to Done.

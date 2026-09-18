@@ -129,11 +129,12 @@ wide window, it opens beside the list. **Details** reveals the session ID, proce
 checkout, commit and last-seen time.
 **More → Board** is the project's work: five
 columns — Backlog, Ready, In progress, Review, Done — of cards with a title
-and what done means. **File a card** at the top takes a title and the
-acceptance text and files it **as Ready** (for the next agent to pull) or
-**in Backlog** (yours to think about). A card shows who holds it with a
-presence dot, or *for the taking* in Ready; opening a card shows its
-acceptance text, its typed links (a kind — path, pr, commit, url, task, message,
+and when it counts as done. **Add a task** at the top takes a title and
+*Done when…* (the acceptance text an agent reads before it starts) and adds
+it **to Ready** (for the next agent to take) or keeps it **in Backlog** (yours
+to think about). A card shows who holds it with a presence dot (the name on
+one line, clipped), or *unassigned* in Ready; opening a card shows *Done
+when:* its acceptance text, its typed links (a kind — path, pr, commit, url, task, message,
 memory — and the target, shown as text; the app neither opens nor copies
 them, that is the person's tools' work) and its
 moves: one column back or forward, **Hand to** an agent running here (or
@@ -141,7 +142,7 @@ moves: one column back or forward, **Hand to** an agent running here (or
 card with the `pull_task` tool and the board shows it in progress under that
 agent at once; two agents never get one card. The pull is a `task:<id>`
 lease: a card whose holder's lease has lapsed — expired, released, or the
-agent gone — says *hold lapsed* beside the holder; nobody takes it by a
+agent gone — says *not being worked on* beside the holder; nobody takes it by a
 plain pull, only by naming that holder (`pull_task` with `take_over_from`)
 or by your **Hand to**, which ends the old hold and gives a running agent
 the card's lease in one step. A move back to Ready or Backlog, or to Done,

@@ -2804,7 +2804,7 @@ mod tests {
     /// while another is on view, a move or hand of some other card does
     /// not clear it, a late reply to an earlier filing does not take
     /// newer text, a filing that cannot be queued says so instead of
-    /// staying "Filing…", and a board that cannot be read stays as last
+    /// staying "Adding…", and a board that cannot be read stays as last
     /// read.
     #[test]
     fn a_card_draft_survives_other_board_actions_late_replies_and_refused_queues() {
