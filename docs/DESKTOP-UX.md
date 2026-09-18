@@ -205,12 +205,14 @@ you have typed, and uncertain requests are never retried automatically.
 
 Project tabs provide:
 
-- **Activity:** the recent durable journal, updated from daemon events.
+- **Chat:** the shared project conversation with current agents and terminal actions.
+- **Agents:** current sessions, connection details and reconnect actions.
+- **More → Board / History:** task cards and the recent durable journal.
 - **More → Channels:** project rooms, membership, reviews and queued messages.
   Its label counts messages waiting for you. Each room retains its own draft
   across navigation and failed delivery; viewing does not drain your inbox.
 - **More → Files in use:** current leases and their holders.
-- **More → Command line:** the real bundled `agentdocker` CLI in the selected project folder.
+- **More → AgentDocker commands:** the real bundled `agentdocker` CLI in the selected project folder.
   It keeps command history and output with a bounded execution deadline.
 
 ## Messages, Inbox and tools
