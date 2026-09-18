@@ -3140,6 +3140,30 @@ struct PauseControl {
     error: Option<String>,
 }
 
+/// The one line under a browser extension's name: which browsers have
+/// it, and that its sessions never appear here.
+pub(crate) fn in_browser_word(runtime: &agentdocker_core::runtime::RuntimeInfo) -> String {
+    let mut browsers: Vec<&str> = runtime
+        .extensions
+        .iter()
+        .map(|e| e.browser.as_str())
+        .collect();
+    browsers.dedup();
+    format!(
+        "Installed in {} · works inside the browser, its sessions are not visible here",
+        browsers.join(", ")
+    )
+}
+
+/// "Chrome · Work · 1.0.93": the browser, the profile when there are
+/// several, the version when the manifest says one.
+pub(crate) fn extension_words(extension: &agentdocker_core::runtime::InstalledExtension) -> String {
+    let mut parts = vec![extension.browser.clone()];
+    parts.extend(extension.profile.clone());
+    parts.extend(extension.version.clone());
+    parts.join(" · ")
+}
+
 /// What "needs setup" is missing, for the Tools row: the MCP entry, the
 /// hooks, or the one or two hook events a release began to require.
 pub(crate) fn missing_setup(runtime: &agentdocker_core::runtime::RuntimeInfo) -> String {
@@ -3223,6 +3247,49 @@ pub(crate) mod tests {
     /// The Tools row says what setup is missing: the one hook event a
     /// release began to require, the MCP entry, or both — and only
     /// "hooks" when none of them is wired.
+    /// A browser extension's row says which browsers have it and that no
+    /// session of it can appear here; its details name each profile.
+    #[test]
+    fn the_tools_row_for_a_browser_extension_says_its_sessions_are_elsewhere() {
+        use agentdocker_core::runtime::{InstalledExtension, RuntimeInfo, Wiring};
+        let extension = |browser: &str, profile: Option<&str>| InstalledExtension {
+            label: "Claude".into(),
+            browser: browser.into(),
+            profile: profile.map(str::to_owned),
+            version: Some("1.0.93".into()),
+            bridge: None,
+        };
+        let runtime = RuntimeInfo {
+            name: "claude-browser".into(),
+            vendor: "Anthropic".into(),
+            label: "Claude (browser extension)".into(),
+            cli: None,
+            version: None,
+            apps: vec![],
+            extensions: vec![
+                extension("Chrome", Some("Person 1")),
+                extension("Chrome", Some("Work")),
+                extension("Brave", None),
+            ],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: Wiring::Unsupported,
+            hooks: Wiring::Unsupported,
+            hooks_missing: vec![],
+            running: 0,
+        };
+        assert!(runtime.installed() && runtime.in_browser());
+        assert_eq!(
+            in_browser_word(&runtime),
+            "Installed in Chrome, Brave · works inside the browser, its sessions are not visible here"
+        );
+        assert_eq!(
+            extension_words(&runtime.extensions[1]),
+            "Chrome · Work · 1.0.93"
+        );
+        assert_eq!(extension_words(&runtime.extensions[2]), "Brave · 1.0.93");
+    }
+
     #[test]
     fn the_tools_row_says_which_hook_is_missing() {
         use agentdocker_core::runtime::{RuntimeInfo, Wiring};
@@ -3233,6 +3300,8 @@ pub(crate) mod tests {
             cli: Some("/opt/claude".into()),
             version: None,
             apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
             config_dir: None,
             mcp: Wiring::Wired,
             hooks: Wiring::Missing,
