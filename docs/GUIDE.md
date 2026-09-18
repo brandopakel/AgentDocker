@@ -200,7 +200,7 @@ each one by pid.
 | `inspect <agent>` | Everything known about one agent, as JSON |
 | `logs <agent>` | An agent's captured output; `-f` to follow, `--compress` for an rtk view |
 | `validation <id>` | The retained log of one validation; `--compress` for an rtk view |
-| `events` | The daemon's event stream |
+| `events` | The daemon's event stream; `[[webhooks]]` in `agentd.toml` posts a signed copy of chosen kinds to an address you name (see [webhooks](ARCHITECTURE.md#events)) |
 | `ping` | Check the daemon is reachable |
 
 ### Start, adopt and stop
