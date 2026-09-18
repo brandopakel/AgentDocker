@@ -216,6 +216,18 @@ pub enum Request {
     Run {
         spec: crate::AgentSpec,
     },
+    /// Bring an ended session back as a process this daemon supervises:
+    /// `spec` is the launch — the session's own tool with `--resume` and
+    /// its conversation, in its checkout, on a terminal — and `agent` the
+    /// ended record whose identity, queue, aliases and everything else the
+    /// new process continues. Refused while the old process lives, while
+    /// anything is bound to or subscribed on the record, for another
+    /// checkout or runtime, or for a session id that is not plain. Answers
+    /// `agent`; a launch that fails leaves the record ended with its queue.
+    ResumeSession {
+        agent: String,
+        spec: crate::AgentSpec,
+    },
     /// Launch a command inside a retained immutable image, with optional scoped mounts.
     RunContainer {
         spec: crate::AgentSpec,

@@ -4834,5 +4834,21 @@
         "The desktop's Tools card change (connector state on the in-browser rows) is covered by unit tests of the wording and the worker message, not by a graphical capture."
       ]
     }
+  },
+  "newcomer_first_run_2026_09_18": {
+    "status": "The README's quick start was followed end to end on a fresh state directory with the #199 candidate binaries (source becea18, aarch64-apple-darwin): daemon on demand, runtimes, setup --dry-run, two custom agents, claim/conflict/leases/waiting/activity, send to an agent, a topic and the project, inbox, me, ask/questions/answer, the ledger (changes, blame), journal, release, logs, stop. Every step worked. Not done: a fresh user account (needs the person to create one) and the desktop app on that home.",
+    "home": "/private/tmp/ad-newcomer-20260918 (disposable; daemon stopped afterwards)",
+    "binaries": "/private/tmp/agentdocker-candidate-reconnect-becea18 (native-build.json beside them)",
+    "project": "/private/tmp/newcomer-repo (a one-commit git repository made for the trial)",
+    "what_a_newcomer_trips_on": [
+      "A claim conflict named the holder by id only (\"held by bcda6a8215eb\") where the README promises it \"says by whom\"; the daemon now names the holder (\"held by writer (bcda6a8215eb; exclusive on path:\u2026)\").",
+      "A send to a custom-runtime agent printed 'No verified input receiver \u2026 reconnect a supported input receiver' \u2014 advice that cannot be followed for a runtime with no adapter; the guidance now says such a session has no input receiver and the message waits in its queue for the agent's own read (inbox/watch --as <id>, or read_inbox).",
+      "`agentdocker events` in the quick start is a live stream that blocks the terminal; the README now says so and names --replay N.",
+      "A question asked of `user` by a daemon on another AGENTDOCKER_HOME still reached the Mac's notification center; answering it from the notification opened a second app window on that home with nothing saying it was not the usual one. Left as an observation: a trial daemon should say which home a notification is from, or notifications should be off for a non-default home."
+    ],
+    "trial_limits": [
+      "The shell that ran the commands sits under a Claude Code process, so `agentdocker answer` without --as refused to infer a sender (correct: a provider's shell must not speak as the human); a person in a plain terminal gets the human default. --as user was used.",
+      "Not a fresh macOS user account: ~/.claude and ~/.codex existed, so setup --dry-run reported existing MCP/hook entries rather than a first install."
+    ]
   }
 }

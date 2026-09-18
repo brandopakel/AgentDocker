@@ -196,6 +196,67 @@ pub fn resumed_session<'a>(
     ended
 }
 
+/// Whether a session id is plain enough to be put on a command line and
+/// into a label: one to 128 characters of `A-Za-z0-9_-`, starting with a
+/// letter or digit.
+pub fn plain_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.as_bytes()[0].is_ascii_alphanumeric()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Why `launch` cannot bring `ended` back as this daemon's own process,
+/// or nothing when it can: the record must have ended on this host with a
+/// plain session id, the launch must be the same runtime (one this rule
+/// knows how to resume) in the record's own checkout with `--resume` and
+/// that session, not isolated, paned or restored, and nothing may be
+/// bound to the record. Whether it needs a terminal is the launcher's
+/// business; the process being gone is the host's to check.
+pub fn relaunch_check(ended: &AgentRecord, launch: &crate::AgentSpec) -> Result<(), &'static str> {
+    if ended.status.is_live() {
+        return Err("the session is still live; a live session is not relaunched");
+    }
+    if ended.host != "local" || ended.container.is_some() {
+        return Err("only a session on this host, outside a container, is relaunched here");
+    }
+    if ended.input_binding.is_some() {
+        return Err("the session still has an input binding; release it first");
+    }
+    let Some(session) = session_id(ended) else {
+        return Err("the session has no conversation id to resume");
+    };
+    if !plain_session_id(session) {
+        return Err("the session's conversation id is not a plain identifier");
+    }
+    // Codex resumes as `codex resume <id>`, not `--resume`; until that
+    // route exists this is Claude Code's.
+    if ended.spec.runtime != "claude-code" {
+        return Err("only a Claude Code session is relaunched here");
+    }
+    if launch.runtime != ended.spec.runtime {
+        return Err("the launch is for another runtime than the session's");
+    }
+    if launch.in_pane || launch.isolate || launch.restore {
+        return Err("the launch must be a plain process, not paned, isolated or restored");
+    }
+    match (&launch.workdir, &ended.spec.workdir) {
+        (Some(new), Some(old)) if new == old => {}
+        (_, None) => return Err("the session has no checkout to resume in"),
+        _ => return Err("the launch must run in the session's own checkout"),
+    }
+    let resumes = launch
+        .command
+        .windows(2)
+        .any(|pair| pair[0] == "--resume" && pair[1] == session);
+    if !resumes {
+        return Err("the launch must resume the session's own conversation (--resume <id>)");
+    }
+    Ok(())
+}
+
 /// A record whose process is nobody else's to run: not supervised,
 /// restored, contained or paned, and on this host.
 fn resumable(record: &AgentRecord) -> bool {
@@ -426,5 +487,117 @@ mod tests {
         let mut unknown = fresh.clone();
         unknown.spec.runtime = "gemini-cli".into();
         assert!(resumed_session(all, &unknown).is_empty());
+    }
+
+    /// A relaunch is the session's own tool resuming its own conversation
+    /// on a terminal in its own checkout, of a session that has ended on
+    /// this host with nothing bound to it; each departure from that is
+    /// refused by name.
+    #[test]
+    fn a_relaunch_is_the_sessions_own_tool_in_its_own_checkout_with_its_conversation() {
+        let mut ended = record("ended", Some("session-1"));
+        ended.status = crate::AgentStatus::Exited { code: Some(0) };
+        let launch = || AgentSpec {
+            runtime: "claude-code".into(),
+            command: vec!["claude".into(), "--resume".into(), "session-1".into()],
+            workdir: ended.spec.workdir.clone(),
+            tty: true,
+            ..Default::default()
+        };
+        assert_eq!(relaunch_check(&ended, &launch()), Ok(()));
+        let mut live = ended.clone();
+        live.status = crate::AgentStatus::Running;
+        assert!(
+            relaunch_check(&live, &launch())
+                .unwrap_err()
+                .contains("live")
+        );
+        let mut bound = ended.clone();
+        bound.input_binding = Some(crate::InputBinding {
+            provider: crate::ProviderGeneration {
+                process: crate::ProcessIdentity {
+                    pid: 8,
+                    started_at: ended.created_at,
+                },
+                session: "session-1".into(),
+                profile: String::new(),
+            },
+            controller: crate::ProcessIdentity {
+                pid: 9,
+                started_at: ended.created_at,
+            },
+            controller_since: ended.created_at,
+            token_sha256: String::new(),
+            bound_at: ended.created_at,
+            controller_generations: 1,
+            uncertain: Vec::new(),
+            launch: None,
+            restart: Default::default(),
+        });
+        assert!(
+            relaunch_check(&bound, &launch())
+                .unwrap_err()
+                .contains("binding")
+        );
+        let mut nameless = ended.clone();
+        nameless.spec.labels.remove("session_id");
+        assert!(
+            relaunch_check(&nameless, &launch())
+                .unwrap_err()
+                .contains("no conversation")
+        );
+        let mut odd = ended.clone();
+        odd.spec.labels.insert("session_id".into(), "$(id)".into());
+        assert!(
+            relaunch_check(&odd, &launch())
+                .unwrap_err()
+                .contains("plain")
+        );
+        let mut other = ended.clone();
+        other.spec.runtime = "codex".into();
+        assert!(
+            relaunch_check(&other, &launch())
+                .unwrap_err()
+                .contains("only a Claude Code")
+        );
+        let mut wrong_runtime = launch();
+        wrong_runtime.runtime = "codex".into();
+        assert!(
+            relaunch_check(&ended, &wrong_runtime)
+                .unwrap_err()
+                .contains("another runtime")
+        );
+        let mut elsewhere = launch();
+        elsewhere.workdir = Some("/elsewhere".into());
+        assert!(
+            relaunch_check(&ended, &elsewhere)
+                .unwrap_err()
+                .contains("own checkout")
+        );
+        let mut fresh_start = launch();
+        fresh_start.command = vec!["claude".into()];
+        assert!(
+            relaunch_check(&ended, &fresh_start)
+                .unwrap_err()
+                .contains("--resume")
+        );
+        let mut another = launch();
+        another.command = vec!["claude".into(), "--resume".into(), "session-2".into()];
+        assert!(
+            relaunch_check(&ended, &another)
+                .unwrap_err()
+                .contains("--resume")
+        );
+        let mut paned = launch();
+        paned.in_pane = true;
+        assert!(
+            relaunch_check(&ended, &paned)
+                .unwrap_err()
+                .contains("plain process")
+        );
+        assert!(plain_session_id("218845eb-ba1e-4457-bb5a-e1829f5652dd"));
+        for bad in ["", "-x", "a b", "a;b", &"x".repeat(129)] {
+            assert!(!plain_session_id(bad), "{bad:?}");
+        }
     }
 }

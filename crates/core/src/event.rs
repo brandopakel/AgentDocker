@@ -169,6 +169,13 @@ pub enum EventKind {
         session: String,
         pid: u32,
     },
+    /// An ended session is being brought back by this daemon as a process
+    /// it supervises, under the same record; `agent_started` follows when
+    /// the process is up, `agent_exited`/failed if it never comes.
+    SessionRelaunched {
+        agent: AgentId,
+        session: String,
+    },
     ProviderAvailabilityReported {
         agent: AgentId,
         availability: crate::ProviderAvailability,

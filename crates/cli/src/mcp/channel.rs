@@ -27,6 +27,12 @@ const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_EVERY: Duration = Duration::from_millis(250);
 const RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
+// Claude installs its channel handler after the MCP initialize exchange has
+// completed. A retained head offered on the first immediate polling tick can
+// be dropped during that startup window. Keep control/receipt requests live
+// while giving the provider a bounded settling interval before the first offer.
+// This is a startup mitigation, not a provider receipt or permission signal.
+const FIRST_OFFER_SETTLE: Duration = Duration::from_secs(1);
 
 pub(super) struct Owner {
     _process: lock::Lock,
@@ -129,6 +135,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
     // is done and, for a session that asked to resume an earlier one,
     // once its hooks have said which session runs (or the wait expired).
     let mut ready = false;
+    let mut first_offer_at = None;
     let mut vouch_deadline: Option<tokio::time::Instant> = None;
     let mut vouch_tick = tokio::time::interval(POLL_EVERY);
     vouch_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -161,6 +168,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                                 crate::input_status::report(&server.backend, &server.identity.id, server.identity.host_started_at,
                                     agentdocker_core::InputReport::Ready).await?;
                                 ready = true;
+                                first_offer_at = Some(tokio::time::Instant::now() + FIRST_OFFER_SETTLE);
                             }
                             // The handshake completes now; readiness waits
                             // for the hooks' word, below, or the deadline.
@@ -263,6 +271,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 crate::input_status::report(&server.backend, &server.identity.id, server.identity.host_started_at,
                     agentdocker_core::InputReport::Ready).await?;
                 ready = true;
+                first_offer_at = Some(tokio::time::Instant::now() + FIRST_OFFER_SETTLE);
                 last_report = tokio::time::Instant::now();
             }
             _ = tick.tick(), if ready => {
@@ -320,7 +329,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                     readiness_unavailable = !refreshed;
                     last_report = tokio::time::Instant::now();
                 }
-                if offered.is_some() {
+                if offered.is_some() || first_offer_at.is_some_and(|at| tokio::time::Instant::now() < at) {
                     continue;
                 }
                 if let Some(message) = messages.first() {
@@ -338,6 +347,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                         notification["params"]["meta"]["reply_to"] = json!(question.as_str());
                     }
                     write(&mut output, &notification).await?;
+                    first_offer_at = None;
                     offered = Some((message.id.clone(), tokio::time::Instant::now(), false));
                 }
             }
@@ -1137,7 +1147,7 @@ mod tests {
         assert_eq!(server.backend.reports.get(), 5);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn channel_waits_for_initialization_retains_offers_and_receipts_bypass_waiting_calls() {
         let server = server();
         let ids: Vec<_> = server
@@ -1177,6 +1187,22 @@ mod tests {
             )
             .await
             .unwrap();
+            // A provider whose channel handler is installed shortly after
+            // initialization must not lose the first retained queue item.
+            // Control replies still work during the settling interval.
+            write_line(
+                &mut writer,
+                &json!({"jsonrpc":"2.0","id":99,"method":"ping"}),
+            )
+            .await
+            .unwrap();
+            assert_eq!(receive(&mut reader).await["id"], 99);
+            assert!(
+                tokio::time::timeout(FIRST_OFFER_SETTLE / 2, read_frame(&mut reader, &mut frame))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(server.backend.0.borrow().len(), 2);
             let offered = receive(&mut reader).await;
             assert_eq!(offered["params"]["meta"]["message_id"], ids[0].as_str());
             assert_eq!(offered["params"]["meta"]["from_agent"], "user");

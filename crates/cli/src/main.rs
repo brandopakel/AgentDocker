@@ -470,6 +470,9 @@ enum Command {
     },
     /// Give an agent a role, so `role:<name>` names it as a recipient.
     Role(RoleArgs),
+    /// Bring an ended Claude Code session back under its own record, with
+    /// its conversation and live messages, as a process the daemon runs.
+    Reconnect(ReconnectArgs),
     /// Signal an agent to stop.
     Stop {
         agent: String,
@@ -1203,6 +1206,15 @@ fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
 /// Its own struct, as `RunArgs` is: every field added
 /// straight to `Command` costs the parser's stack, and a test thread has
 /// little of it.
+#[derive(Args)]
+struct ReconnectArgs {
+    /// The ended session: id, name or unique prefix.
+    agent: String,
+    /// The tool's executable when it is not on PATH as `claude`.
+    #[arg(long, value_name = "PATH")]
+    claude: Option<PathBuf>,
+}
+
 #[derive(Args)]
 struct RoleArgs {
     #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -2403,6 +2415,51 @@ async fn run() -> Result<()> {
         }
         Command::Rm { agent } => {
             client.call(&Request::Remove { agent }).await?;
+        }
+        Command::Reconnect(ReconnectArgs { agent, claude }) => {
+            // The record says what to resume and where; this command
+            // says with what, and the daemon checks both against each
+            // other before anything starts.
+            let Response::Agent { agent: record } =
+                client.call(&Request::Inspect { agent }).await?
+            else {
+                bail!("unexpected reply to inspect");
+            };
+            if record.spec.runtime != "claude-code" {
+                bail!("only a Claude Code session is reconnected here");
+            }
+            let session = record
+                .spec
+                .labels
+                .get("session_id")
+                .cloned()
+                .ok_or_else(|| anyhow!("this session has no conversation id to resume"))?;
+            let claude = claude.unwrap_or_else(|| PathBuf::from("claude"));
+            let mut spec = agentdocker_core::AgentSpec {
+                name: record.spec.name.clone(),
+                runtime: record.spec.runtime.clone(),
+                command: vec![
+                    claude.to_string_lossy().into_owned(),
+                    "--resume".into(),
+                    session,
+                ],
+                workdir: record.spec.workdir.clone(),
+                tty: true,
+                ..Default::default()
+            };
+            let me = std::env::current_exe().context("cannot find this executable")?;
+            agentdocker_host::provider_input::enable_claude_channel(&mut spec, &me)
+                .context("cannot enable live messages")?;
+            match client
+                .call(&Request::ResumeSession {
+                    agent: record.id.to_string(),
+                    spec,
+                })
+                .await?
+            {
+                Response::Agent { agent } => println!("{}", agent.id),
+                other => bail!("unexpected reply to reconnect: {other:?}"),
+            }
         }
         Command::Role(RoleArgs { agent, role, clear }) => {
             let role = if clear { None } else { role };

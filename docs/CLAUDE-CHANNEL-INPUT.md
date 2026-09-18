@@ -10,6 +10,15 @@ Claude session must enable the MCP entry as a channel and satisfy its provider
 consent and organization policy. Merely configuring MCP does not enable input.
 See the [official channel contract](https://code.claude.com/docs/en/channels-reference).
 
+After initialization and any session verification, the adapter waits one second
+before its first queue offer. A September 18 real-provider trace found an offer
+written just before Claude registered its channel handler; an uninstrumented
+run lost that offer. This short startup settling interval mitigates that race;
+it is not a readiness guarantee or a receipt. Control and receipt requests
+remain responsive during the wait. Later messages follow the normal polling
+cadence. Missing receipts still retain and visibly pause the queue, without
+automatic replay based only on an absent transcript entry.
+
 ## Launch from AgentDocker
 
 For a new Claude session, open **New session** and choose Claude Code.

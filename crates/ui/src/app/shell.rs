@@ -36,6 +36,15 @@ pub(super) struct State {
     /// control can turn it off; provider consent and policy still apply.
     pub launch_channel: bool,
     pub launching: bool,
+    /// The session whose resume is on its way to the daemon, so its
+    /// button alone says "Reconnecting…" (a launch from the Launch form
+    /// sets `launching` too, and is not a reconnect).
+    pub reconnecting: Option<String>,
+    /// A session just reconnected: its pane opens when the list shows the
+    /// process the daemon started (by its start time) running, and the
+    /// list decides — a session that ended at once stays in the list with
+    /// its exit and no pane opens on it; an older list waits.
+    pub attach_when_listed: Option<(String, Option<chrono::DateTime<chrono::Utc>>)>,
     pub error: Option<String>,
     pub setup_error: Option<String>,
     pub answer_errors: BTreeMap<MessageId, String>,
@@ -633,6 +642,9 @@ pub enum Message {
     LaunchArguments(String),
     LaunchChannel(bool),
     Launch,
+    /// Relaunch an ended Claude Code session here, with its conversation
+    /// and the AgentDocker channel, so it takes messages live.
+    Reconnect(String),
     Attach(String),
     Detach,
     TerminalInput(Vec<u8>),
@@ -1895,6 +1907,7 @@ impl App {
                     }
                 }
             }
+            Message::Reconnect(id) => self.reconnect(&id, sibling_cli()),
             Message::Attach(id) => {
                 if self
                     .agents
@@ -2472,6 +2485,118 @@ impl App {
         };
         enable(&mut spec, &cli)
             .map_err(|error| format!("Cannot enable messages while idle: {error}"))?;
+        Ok(spec)
+    }
+
+    /// Why a session cannot be reconnected here right now, or nothing
+    /// when it can: it must be a Claude Code session with a conversation
+    /// to resume, its process must have ended (the app cannot exit a
+    /// session it does not own, and resuming a conversation a live
+    /// process still holds would start a second one), and its tool must
+    /// be installed. The words are the button's.
+    pub(super) fn reconnect_blocker(
+        &self,
+        agent: &agentdocker_core::AgentRecord,
+    ) -> Option<&'static str> {
+        if agent.spec.runtime != "claude-code" {
+            return Some("Only a Claude Code session can be reconnected here.");
+        }
+        if !agent.spec.labels.contains_key("session_id") {
+            return Some("This session has no conversation id to resume.");
+        }
+        if agent.status.is_live() {
+            return Some(
+                "Exit the session in its terminal first (/exit); this enables when it has.",
+            );
+        }
+        if !self
+            .runtimes
+            .iter()
+            .any(|r| r.name == "claude-code" && r.cli.is_some())
+        {
+            return Some("Claude Code is not installed here.");
+        }
+        None
+    }
+
+    /// One press of **Reconnect here**: the launch goes to the daemon as
+    /// a resume of that record, once. A second press while the first is
+    /// unanswered does nothing, and the daemon's refusal (the list was
+    /// stale: the process is back, the checkout differs, somebody is
+    /// attached) comes back as the error under the button.
+    pub(super) fn reconnect(&mut self, id: &str, cli: Result<PathBuf, String>) {
+        if self.connected.is_ok() && !self.shell.launching {
+            match self.reconnect_spec(id, cli) {
+                Ok(spec) => {
+                    self.shell.launching = true;
+                    self.shell.reconnecting = Some(id.to_owned());
+                    self.shell.error = None;
+                    self.send(Cmd::Resume(id.to_owned(), Box::new(spec)));
+                }
+                Err(error) => self.shell.error = Some(error),
+            }
+        }
+    }
+
+    /// The launch that reconnects an ended Claude Code session: its own
+    /// tool, `--resume` with its conversation, in its own checkout, with
+    /// the AgentDocker channel, under its name. The daemon checks it
+    /// against the record and brings the record back under its own id
+    /// with its queue. Nothing is sent or acknowledged on its behalf;
+    /// consent is Claude's own prompt in the pane this opens.
+    fn reconnect_spec(
+        &self,
+        id: &str,
+        cli: Result<PathBuf, String>,
+    ) -> Result<agentdocker_core::AgentSpec, String> {
+        let agent = self
+            .agents
+            .iter()
+            .find(|a| a.id.as_str() == id)
+            .ok_or("This session is no longer listed")?;
+        if let Some(blocker) = self.reconnect_blocker(agent) {
+            return Err(blocker.to_owned());
+        }
+        let session = agent
+            .spec
+            .labels
+            .get("session_id")
+            .cloned()
+            .ok_or("This session has no conversation id to resume")?;
+        let claude = self
+            .runtimes
+            .iter()
+            .find(|r| r.name == "claude-code")
+            .and_then(|r| r.cli.clone())
+            .ok_or("Claude Code is not installed here")?;
+        let workdir = agent
+            .spec
+            .workdir
+            .clone()
+            .ok_or("This session has no checkout to resume in")?;
+        let mut spec = agentdocker_core::AgentSpec {
+            name: agent.spec.name.clone(),
+            runtime: "claude-code".into(),
+            provider: None,
+            model: None,
+            command: vec![
+                claude.to_string_lossy().into_owned(),
+                "--resume".into(),
+                session,
+            ],
+            workdir: Some(workdir),
+            env: BTreeMap::new(),
+            labels: BTreeMap::new(),
+            isolate: false,
+            tty: true,
+            restore: false,
+            in_pane: false,
+            restart: Default::default(),
+            depends_on: Vec::new(),
+        };
+        let cli = cli.map_err(|error| format!("Cannot enable live messages: {error}"))?;
+        agentdocker_host::provider_input::enable_claude_channel(&mut spec, &cli)
+            .map_err(|error| format!("Cannot enable live messages: {error}"))?;
         Ok(spec)
     }
 
@@ -3942,6 +4067,7 @@ mod tests {
             Cmd::Answer(..)
                 | Cmd::ChannelSend(..)
                 | Cmd::Launch(..)
+                | Cmd::Resume(..)
                 | Cmd::Stop(..)
                 | Cmd::HistoryBefore(..)
         )));
@@ -4259,6 +4385,210 @@ mod tests {
         );
         assert_eq!(app.shell.answers[&action.target.message], "unfinished");
         assert!(app.sending.is_empty());
+    }
+
+    /// Reconnecting an ended Claude Code session launches its own tool
+    /// with `--resume` and its conversation, in its folder, with the
+    /// AgentDocker channel, under its name; a live process, another
+    /// runtime, a missing conversation id or a missing tool is refused
+    /// with the reason, and nothing is launched.
+    #[test]
+    fn reconnect_here_relaunches_an_ended_claude_session_with_its_conversation_and_the_channel() {
+        let (mut app, commands, messages) = app();
+        app.connected = Ok(());
+        let cli = tempfile::NamedTempFile::new().unwrap();
+        let cli_path = cli.path().to_path_buf();
+        app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
+            name: "claude-code".into(),
+            vendor: "fixture".into(),
+            label: "Claude Code".into(),
+            cli: Some("/fixture/claude".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: agentdocker_core::runtime::Wiring::Missing,
+            hooks: agentdocker_core::runtime::Wiring::Missing,
+            hooks_missing: vec![],
+            shell: agentdocker_core::runtime::Wiring::Unsupported,
+            running: 0,
+        }];
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "claude-code-4242".into(),
+                runtime: "claude-code".into(),
+                workdir: Some("/work/repo".into()),
+                labels: BTreeMap::from([(
+                    "session_id".to_owned(),
+                    "218845eb-ba1e-4457-bb5a-e1829f5652dd".to_owned(),
+                )]),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.id = "ended-claude".into();
+        agent.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        app.agents.push(agent.clone());
+        let spec = app
+            .reconnect_spec("ended-claude", Ok(cli_path.clone()))
+            .unwrap();
+        assert_eq!(spec.name, "claude-code-4242");
+        assert_eq!(spec.runtime, "claude-code");
+        assert_eq!(
+            spec.workdir.as_deref(),
+            Some(std::path::Path::new("/work/repo"))
+        );
+        assert!(spec.tty);
+        assert_eq!(spec.command[0], "/fixture/claude");
+        assert!(
+            spec.command
+                .windows(2)
+                .any(|w| w[0] == "--resume" && w[1] == "218845eb-ba1e-4457-bb5a-e1829f5652dd"),
+            "{:?}",
+            spec.command
+        );
+        assert!(
+            spec.command
+                .windows(2)
+                .any(|w| w[0] == "--dangerously-load-development-channels"
+                    && w[1] == "server:agentdocker")
+        );
+        assert_eq!(
+            spec.env
+                .get(agentdocker_host::provider_input::CLAUDE_CHANNEL_ENV),
+            Some(&"1".to_owned())
+        );
+        // Through the message the app's own sibling CLI is required; a
+        // test binary has none, and that is said rather than launched.
+        let _ = app.update(Message::Reconnect("ended-claude".into()));
+        assert!(!app.shell.launching);
+        assert!(
+            app.shell
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("live messages")),
+            "{:?}",
+            app.shell.error
+        );
+        assert_eq!(commands.try_iter().count(), 0);
+
+        // With the CLI beside the app the press is one resume of that
+        // record at the daemon, and a second press while it is unanswered
+        // is nothing: the button waits for the answer.
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        assert!(app.shell.launching);
+        assert_eq!(app.shell.reconnecting.as_deref(), Some("ended-claude"));
+        assert_eq!(app.shell.error, None);
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        let sent: Vec<Cmd> = commands.try_iter().collect();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        match &sent[0] {
+            Cmd::Resume(id, spec) => {
+                assert_eq!(id, "ended-claude");
+                assert_eq!(spec.name, "claude-code-4242");
+                assert!(spec.command.windows(2).any(|w| w[0] == "--resume"));
+            }
+            other => panic!("a reconnect is a resume, not {other:?}"),
+        }
+        // The list was stale: the daemon saw the process back, or the
+        // checkout moved. Its refusal is the error under the button, and
+        // the button is pressable again.
+        messages
+            .send(Msg::Reconnected(Err(
+                "the session is still live; a live session is not relaunched".into(),
+            )))
+            .unwrap();
+        app.drain();
+        assert!(!app.shell.launching);
+        assert_eq!(
+            app.shell.reconnecting, None,
+            "the button says Reconnect here again"
+        );
+        assert!(
+            app.shell
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("still live"))
+        );
+        // The daemon's yes selects the same record, and asks for the list.
+        let generation = Some(Utc::now());
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        assert_eq!(commands.try_iter().count(), 1);
+        messages
+            .send(Msg::Reconnected(Ok(("ended-claude".into(), generation))))
+            .unwrap();
+        app.drain();
+        assert!(!app.shell.launching);
+        assert_eq!(app.shell.error, None);
+        assert_eq!(app.shell.selected.as_deref(), Some("ended-claude"));
+        assert!(commands.try_iter().any(|cmd| matches!(cmd, Cmd::Agents)));
+        // An older list, from before the reconnect, says nothing: the
+        // request waits. The list that shows the process the daemon
+        // started opens the pane when it runs; when it ended at once the
+        // session stays in the list with its exit and no pane opens.
+        messages
+            .send(Msg::Agents(vec![agent.clone()], BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_ne!(app.screen, Screen::Terminal);
+        assert!(app.shell.attach_when_listed.is_some());
+        let mut listed = agent.clone();
+        listed.managed = true;
+        listed.spec.tty = true;
+        listed.process_started_at = generation;
+        listed.status = agentdocker_core::AgentStatus::Exited { code: Some(1) };
+        messages
+            .send(Msg::Agents(vec![listed.clone()], BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_ne!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.attach_when_listed, None);
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        messages
+            .send(Msg::Reconnected(Ok(("ended-claude".into(), generation))))
+            .unwrap();
+        app.drain();
+        listed.status = agentdocker_core::AgentStatus::Running;
+        messages
+            .send(Msg::Agents(vec![listed], BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.attach_when_listed, None);
+        commands.try_iter().count();
+        app.screen = Screen::Agents;
+
+        // A live process is refused with the reason, and nothing launches.
+        app.agents[0].status = agentdocker_core::AgentStatus::Running;
+        assert_eq!(
+            app.reconnect_blocker(&app.agents[0]),
+            Some("Exit the session in its terminal first (/exit); this enables when it has.")
+        );
+        let _ = app.update(Message::Reconnect("ended-claude".into()));
+        assert!(!app.shell.launching);
+        assert!(
+            app.shell
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("Exit the session"))
+        );
+        assert_eq!(commands.try_iter().count(), 0);
+
+        // Another runtime, no conversation id, no installed tool.
+        app.agents[0].status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        app.agents[0].spec.runtime = "codex".into();
+        assert!(app.reconnect_blocker(&app.agents[0]).is_some());
+        app.agents[0].spec.runtime = "claude-code".into();
+        app.agents[0].spec.labels.clear();
+        assert!(app.reconnect_blocker(&app.agents[0]).is_some());
+        app.agents[0]
+            .spec
+            .labels
+            .insert("session_id".into(), "x".into());
+        app.runtimes.clear();
+        assert!(app.reconnect_blocker(&app.agents[0]).is_some());
     }
 
     #[test]
