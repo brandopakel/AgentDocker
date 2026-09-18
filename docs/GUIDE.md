@@ -507,7 +507,9 @@ Newest first. Only what changes how the product is used.
   `external`. `claim`, `renew` and `release` act as this session without
   `--as`. `scripts/verify.sh` takes the machine's `task:local-cargo-campaign`
   lease for its run, keeps one the caller already held, and stops instead of
-  starting on top of another campaign.
+  starting on top of another campaign; the scripts it runs in turn inherit
+  that decision (`AGENTDOCKER_CAMPAIGN_LEASE=off`) rather than negotiating
+  the slot against their own parent.
 - The remote connector: `agentdocker connector serve --public-url <https://…>`
   serves an OAuth-protected MCP endpoint on loopback for a tunnel you run, so
   Claude's or ChatGPT's browser side panel can join a project as a browser

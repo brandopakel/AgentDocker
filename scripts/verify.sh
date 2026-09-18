@@ -16,6 +16,10 @@ campaign_lease=""
 campaign_start() {
   local mode="$1"
   [ "${AGENTDOCKER_CAMPAIGN_LEASE:-on}" = "off" ] && return 0
+  # Whatever this run decides covers the scripts it runs in turn (the
+  # Python suite drives fixture campaigns through this file); a nested
+  # run must not negotiate the slot against its own parent.
+  export AGENTDOCKER_CAMPAIGN_LEASE=off
   [ -n "${AGENTDOCKER_HOME:-}" ] && return 0
   [ -n "${CI:-}" ] && return 0
   command -v agentdocker >/dev/null 2>&1 || return 0
