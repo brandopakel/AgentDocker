@@ -2,6 +2,61 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 python3 scripts/build_storage.py
+
+# One local build campaign at a time. The agents on a shared machine hold
+# the exclusive lease `task:local-cargo-campaign` while their cargo runs;
+# this script takes it for the caller so a run never starts on top of
+# another's. It asks only the machine's own daemon: with AGENTDOCKER_HOME
+# set (a private or test daemon), on CI, or with no daemon answering, it
+# runs without the lease. AGENTDOCKER_CAMPAIGN_LEASE=off skips it too.
+# A lease the caller already holds is kept and never released here; a
+# lease somebody else holds past the wait stops the run before any cargo
+# process exists, and says whose it is.
+campaign_lease=""
+campaign_start() {
+  local mode="$1"
+  [ "${AGENTDOCKER_CAMPAIGN_LEASE:-on}" = "off" ] && return 0
+  [ -n "${AGENTDOCKER_HOME:-}" ] && return 0
+  [ -n "${CI:-}" ] && return 0
+  command -v agentdocker >/dev/null 2>&1 || return 0
+  AGENTDOCKER_NO_AUTOSTART=1 agentdocker ping >/dev/null 2>&1 || return 0
+  # The ids on the resource before asking: a claim by an agent that
+  # already holds it renews that lease and answers with the same id, and
+  # a lease that was the caller's before this run stays the caller's.
+  local before
+  before="$(AGENTDOCKER_NO_AUTOSTART=1 agentdocker leases --resource task:local-cargo-campaign 2>/dev/null | tail -n +2 | awk '{print $1}' || true)"
+  local ttl=1800
+  case "$mode" in bench|coverage|fuzz) ttl=3600 ;; esac
+  local output
+  if output="$(AGENTDOCKER_NO_AUTOSTART=1 agentdocker claim task:local-cargo-campaign \
+      --ttl "$ttl" --wait "${AGENTDOCKER_CAMPAIGN_WAIT:-600}" \
+      --note "scripts/verify.sh $mode in $PWD" 2>&1)"; then
+    if grep -qx "$output" <<<"$before"; then
+      echo "verify.sh: task:local-cargo-campaign was already yours ($output); renewed, not released here" >&2
+      return 0
+    fi
+    campaign_lease="$output"
+    echo "verify.sh: holding task:local-cargo-campaign ($campaign_lease) for this $mode run" >&2
+    return 0
+  fi
+  case "$output" in
+    *"give --as"*|*"specify the sender"*|*"--as <AGENT>"*)
+      echo "verify.sh: cannot tell which agent this is (${output%%$'\n'*}); running without the campaign lease" >&2
+      return 0 ;;
+  esac
+  echo "verify.sh: task:local-cargo-campaign is held by another campaign; not starting cargo on top of it." >&2
+  echo "$output" >&2
+  AGENTDOCKER_NO_AUTOSTART=1 agentdocker leases --resource task:local-cargo-campaign >&2 || true
+  exit 75
+}
+campaign_end() {
+  [ -n "$campaign_lease" ] || return 0
+  AGENTDOCKER_NO_AUTOSTART=1 agentdocker release "$campaign_lease" \
+    --summary "scripts/verify.sh finished (exit $1)" >/dev/null 2>&1 || true
+}
+trap 'campaign_end $?' EXIT
+campaign_start "${1:-check}"
+
 case "${1:-check}" in
   check)
     # The documentation is part of what is verified: the index is complete,

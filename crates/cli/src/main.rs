@@ -103,6 +103,9 @@ enum Command {
         #[arg(long)]
         /// Name of the new branch.
         branch: String,
+        /// Start point: a branch, tag or commit (default: this session's HEAD).
+        #[arg(long)]
+        from: Option<String>,
     },
     /// Commit this agent's checkout, journaled and attributed to it
     Commit {
@@ -690,16 +693,18 @@ enum Command {
     Claim(ClaimArgs),
     /// Extend a lease you hold.
     Renew {
+        /// Agent id, name or unique prefix (defaults to this session).
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
-        agent: String,
+        agent: Option<String>,
         lease: String,
         #[arg(long, default_value_t = DEFAULT_LEASE_TTL_SECS)]
         ttl: u64,
     },
     /// Release a lease you hold, or every lease with --all.
     Release {
+        /// Agent id, name or unique prefix (defaults to this session).
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
-        agent: String,
+        agent: Option<String>,
         #[arg(required_unless_present = "all")]
         lease: Option<String>,
         /// Release every lease this agent holds.
@@ -1232,8 +1237,9 @@ enum ContestCommand {
 
 #[derive(Args)]
 struct ClaimArgs {
+    /// Agent id, name or unique prefix (defaults to this session).
     #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
-    agent: String,
+    agent: Option<String>,
     /// `kind:value`. A bare path becomes `path:<absolute>`; it need not exist yet.
     resource: String,
     /// Allow other shared holders; blocks exclusive ones.
@@ -1489,12 +1495,14 @@ async fn main() -> Result<()> {
             agent,
             path,
             branch,
+            from,
         } => {
             match client
                 .call(&Request::WorktreeCreate {
                     agent,
                     path,
                     branch,
+                    from,
                 })
                 .await?
             {
@@ -2655,8 +2663,11 @@ async fn main() -> Result<()> {
             }
         }
         Command::Claim(args) => {
+            let agent = sender::resolve(&client, args.agent)
+                .await?
+                .context("claim as an agent: give --as, or run from an agent's session")?;
             let request = Request::Claim {
-                agent: args.agent,
+                agent,
                 resource: resource_key(&args.resource),
                 amount: args.amount,
                 mode: if args.shared {
@@ -2673,6 +2684,9 @@ async fn main() -> Result<()> {
             }
         }
         Command::Renew { agent, lease, ttl } => {
+            let agent = sender::resolve(&client, agent)
+                .await?
+                .context("renew as an agent: give --as, or run from an agent's session")?;
             let request = Request::Renew {
                 agent,
                 lease: LeaseId::from(lease.as_str()),
@@ -2688,6 +2702,9 @@ async fn main() -> Result<()> {
             all,
             summary,
         } => {
+            let agent = sender::resolve(&client, agent)
+                .await?
+                .context("release as an agent: give --as, or run from an agent's session")?;
             if all {
                 let request = Request::ReleaseAll {
                     agent,

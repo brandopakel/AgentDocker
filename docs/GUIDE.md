@@ -271,7 +271,7 @@ the flags.
 
 | Command | What it does |
 |---|---|
-| `worktree-create` | A new linked checkout and branch, without touching existing files |
+| `worktree-create --branch <name> [--from <ref>]` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours |
 | `worktree-diff` | Tracked changes in an agent's checkout |
 | `commit` | Commit the agent's checkout, journaled and attributed to it |
 | `validate` | Run a check and retain its command, log and content fingerprints |
@@ -469,6 +469,14 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- Commits in a private checkout are attributed: a worktree made with
+  `agentdocker worktree-create` (now with `--from <ref>`) is remembered as its
+  maker's, and a checkout held under an exclusive `path:` lease is its
+  holder's, so `git commit` there is journaled as that agent's rather than
+  `external`. `claim`, `renew` and `release` act as this session without
+  `--as`. `scripts/verify.sh` takes the machine's `task:local-cargo-campaign`
+  lease for its run, keeps one the caller already held, and stops instead of
+  starting on top of another campaign.
 - The remote connector: `agentdocker connector serve --public-url <https://…>`
   serves an OAuth-protected MCP endpoint on loopback for a tunnel you run, so
   Claude's or ChatGPT's browser side panel can join a project as a browser

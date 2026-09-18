@@ -88,6 +88,10 @@ pub enum Request {
         agent: String,
         path: String,
         branch: String,
+        /// The start point: a branch, tag or commit of the repository;
+        /// the agent's HEAD when absent.
+        #[serde(default)]
+        from: Option<String>,
     },
     WorktreeDiff {
         agent: String,

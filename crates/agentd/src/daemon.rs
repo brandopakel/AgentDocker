@@ -364,6 +364,10 @@ struct State {
     /// a move can be told from a branch switch for a checkout that has
     /// no agent record to remember it.
     last_branch: HashMap<PathBuf, Option<String>>,
+    /// Who asked the daemon for each linked worktree it created, so a
+    /// commit there is theirs without a lease to say so. In memory only:
+    /// a daemon that restarts falls back to the leases.
+    worktree_creators: HashMap<PathBuf, AgentId>,
     /// Every checkout of each project, by project id: the main one and
     /// its linked worktrees. Refreshed off the lock on the same tick as
     /// the VCS sweep, because enumerating them runs git.
@@ -1313,6 +1317,7 @@ impl Daemon {
                 config_notice: None,
                 last_head: HashMap::new(),
                 last_branch: HashMap::new(),
+                worktree_creators: HashMap::new(),
                 project_checkouts: HashMap::new(),
                 committing: std::collections::BTreeSet::new(),
                 reported_duplicates: std::collections::BTreeSet::new(),
@@ -1552,7 +1557,8 @@ impl Daemon {
                 agent,
                 path,
                 branch,
-            } => self.worktree_create(&agent, path, branch).await,
+                from,
+            } => self.worktree_create(&agent, path, branch, from).await,
             Request::WorktreeDiff { agent } => self.worktree_diff(&agent).await,
             Request::Commit {
                 agent,
@@ -2425,9 +2431,12 @@ impl Daemon {
             if path.exists() {
                 continue;
             }
-            match worktrees::add_worktree(root.clone(), &path, &branch).await {
+            match worktrees::add_worktree(root.clone(), &path, &branch, None).await {
                 Ok(()) => {
                     info!(agent = %record.id.short(), path = %path.display(), %branch, "isolated in a worktree");
+                    lock(&self.state)
+                        .worktree_creators
+                        .insert(path.clone(), record.id.clone());
                     self.emit(EventKind::WorktreeCreated {
                         agent: record.id.clone(),
                         path: path.clone(),
@@ -5341,7 +5350,9 @@ impl State {
 
     /// A checkout's HEAD moved: one `commit` entry per checkout and HEAD,
     /// however many agents share it. Attributed to the only agent in that
-    /// checkout, else the holder of its `branch:` lease, else nobody.
+    /// checkout, else the holder of its `branch:` lease, else the live
+    /// agent the daemon created the worktree for, else the holder of an
+    /// exclusive `path:` lease over the checkout, else nobody.
     ///
     /// Takes the checkout rather than an agent, because most checkouts
     /// of a project have no agent registered in them — a `--isolate`
@@ -5401,15 +5412,31 @@ impl State {
             .collect();
         let attributed = match in_checkout.as_slice() {
             [one] => Some(one.clone()),
-            _ => new.branch.as_ref().and_then(|branch| {
-                let key = ResourceKey::new(format!("branch:{branch}"));
-                let holder = self
-                    .leases
-                    .holders_of(&key)
-                    .first()
-                    .map(|l| l.holder.clone())?;
-                self.registry.get(&holder).cloned()
-            }),
+            _ => new
+                .branch
+                .as_ref()
+                .and_then(|branch| {
+                    let key = ResourceKey::new(format!("branch:{branch}"));
+                    let holder = self
+                        .leases
+                        .holders_of(&key)
+                        .first()
+                        .map(|l| l.holder.clone())?;
+                    self.registry.get(&holder).cloned()
+                })
+                .or_else(|| {
+                    // The agent that asked for this worktree, while it lives.
+                    let creator = self.worktree_creators.get(&checkout)?;
+                    self.registry
+                        .get(creator)
+                        .filter(|a| a.status.is_live())
+                        .cloned()
+                })
+                .or_else(|| match self.attribute(&checkout) {
+                    // Holding the checkout is holding what is committed in it.
+                    Attribution::Agent { agent, .. } => self.registry.get(&agent).cloned(),
+                    Attribution::External => None,
+                }),
         };
         // Built here rather than from an agent record: the checkout is
         // what this entry is about, and there may be no agent in it.
@@ -10817,6 +10844,137 @@ deny = ["send:all"]
         );
     }
 
+    /// A commit made with git alone in a private checkout is still
+    /// somebody's: the agent the daemon created the worktree for, or the
+    /// agent holding the checkout under an exclusive `path:` lease. Only a
+    /// checkout nobody made or holds is `external`.
+    #[tokio::test]
+    async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
+        if !have_git() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (daemon, repo) = repo_with_agent(&dir, "writer").await;
+        daemon.expect_watcher();
+        tokio::spawn(crate::watcher::run(
+            daemon.clone(),
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_millis(50),
+        ));
+        // One worktree through the daemon, from the root commit rather
+        // than HEAD; one by hand, held under a path lease; one by hand
+        // that nobody holds.
+        let root_sha = {
+            let out = std::process::Command::new("git")
+                .args(["-C", repo.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap();
+            String::from_utf8(out.stdout).unwrap().trim().to_owned()
+        };
+        let made = dir.path().join("made");
+        let Response::Worktree {
+            path: made_path,
+            branch,
+        } = daemon
+            .handle(Request::WorktreeCreate {
+                agent: "writer".into(),
+                path: made.to_string_lossy().into_owned(),
+                branch: "made-branch".into(),
+                from: Some(root_sha.clone()),
+            })
+            .await
+        else {
+            panic!("worktree_create failed");
+        };
+        assert_eq!(branch, "made-branch");
+        assert!(matches!(
+            daemon
+                .handle(Request::WorktreeCreate {
+                    agent: "writer".into(),
+                    path: dir.path().join("bad").to_string_lossy().into_owned(),
+                    branch: "bad-branch".into(),
+                    from: Some("--output=/tmp/x".into()),
+                })
+                .await,
+            Response::Error { .. }
+        ));
+        let held = dir.path().join("held");
+        let loose = dir.path().join("loose");
+        for (path, branch) in [(&held, "held-branch"), (&loose, "loose-branch")] {
+            assert!(git(
+                dir.path(),
+                &repo,
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    branch,
+                    "--",
+                    path.to_str().unwrap(),
+                    &root_sha
+                ],
+            ));
+        }
+        let Response::Lease { .. } = daemon
+            .handle(Request::Claim {
+                agent: "writer".into(),
+                resource: format!("path:{}", held.canonicalize().unwrap().display()),
+                amount: None,
+                mode: LeaseMode::Exclusive,
+                ttl_secs: 600,
+                note: Some("private checkout".into()),
+                wait_secs: 0,
+            })
+            .await
+        else {
+            panic!("claim failed");
+        };
+        daemon.refresh_project_checkouts().await;
+        // The watcher needs one look at each checkout before a commit
+        // there is a move.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        for (path, text) in [
+            (&made_path, "made by the daemon"),
+            (&held, "held under a lease"),
+            (&loose, "nobody's"),
+        ] {
+            std::fs::write(path.join("kept.txt"), format!("{text}\n")).unwrap();
+            assert!(git(dir.path(), path, &["add", "."]));
+            assert!(git(dir.path(), path, &["commit", "-q", "-m", text]));
+        }
+        let entries = eventually(async || {
+            let Response::Journal { entries, .. } = daemon
+                .handle(Request::Journal {
+                    project: repo.display().to_string(),
+                    agent: None,
+                    since_seq: None,
+                    until_seq: None,
+                    branch: None,
+                    kind: Some("commit".into()),
+                    path: None,
+                    grep: None,
+                    limit: 10,
+                    digest: None,
+                })
+                .await
+            else {
+                panic!("journal failed")
+            };
+            (entries.len() >= 3).then_some(entries)
+        })
+        .await;
+        let who = |text: &str| {
+            entries
+                .iter()
+                .find(|e| e.summary.contains(text))
+                .map(|e| e.agent_name.clone())
+                .unwrap_or_else(|| panic!("no entry for {text}: {entries:?}"))
+        };
+        assert_eq!(who("made by the daemon"), "writer");
+        assert_eq!(who("held under a lease"), "writer");
+        assert_eq!(who("nobody's"), "external");
+    }
+
     // ----- commit ----------------------------------------------------------
 
     /// Set up a repository with one commit and an agent registered in
@@ -13126,6 +13284,7 @@ deny = ["send:all"]
         };
         assert!(agents.iter().all(|a| a.pid != Some(pid)));
         drop(child);
+        assert!(!process_exists(pid), "the guard reaps the fake");
     }
 
     fn drain_vcs(events: &mut broadcast::Receiver<Event>) -> Vec<Option<String>> {
