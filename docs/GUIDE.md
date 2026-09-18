@@ -197,6 +197,7 @@ each one by pid.
 | `ps` | Agents grouped by project, with INPUT readiness; `--input-details` adds reconnect guidance |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
+| `usage` | Tokens the providers reported, one row per agent (`--by model|provider|project|hour`), each count with its coverage (`~` where some samples did not say, `—` where none did), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on, and the overhead AgentDocker injected — *not measured* until it is; `--since 24h`, `--json` |
 | `inspect <agent>` | Everything known about one agent, as JSON |
 | `logs <agent>` | An agent's captured output; `-f` to follow, `--compress` for an rtk view |
 | `validation <id>` | The retained log of one validation; `--compress` for an rtk view |
@@ -328,7 +329,7 @@ turn. A copied instruction is not executed by AgentDocker.
 takes an MCP server. An agent then has these without knowing anything
 about us:
 
-`whoami` · `ping` · `list_agents` · `inspect_agent` · `activity`
+`whoami` · `ping` · `list_agents` · `inspect_agent` · `activity` · `usage`
 
 `send_message` · `read_inbox` · `wait_for_messages` · `acknowledge_messages` ·
 `ask_human` · `open_questions` · `answer_question` · `report_activity`
