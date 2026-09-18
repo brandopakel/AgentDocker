@@ -501,6 +501,7 @@ mod tests {
                 kind: "chat".into(),
                 payload: json!({"text": "for the reviewer"}),
                 reply_to: None,
+                links: Vec::new(),
             })
             .await
     }
@@ -623,6 +624,7 @@ mod tests {
                 note: None,
                 transfer_leases: false,
                 key: None,
+                links: Vec::new(),
             })
             .await
         {
