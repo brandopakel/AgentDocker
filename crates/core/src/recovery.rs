@@ -13,6 +13,10 @@ pub struct Checkpoint {
     pub task: String,
     pub assumptions: Vec<String>,
     pub next_steps: Vec<String>,
+    /// What the work points at, typed: the pull request, the paths, a
+    /// memory for whoever takes it up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<crate::Link>,
     pub reads: Vec<ReadMark>,
     /// Complete ignore-aware checkout identity at the journal barrier.
     pub version: String,

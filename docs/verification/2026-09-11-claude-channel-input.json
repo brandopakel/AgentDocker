@@ -567,6 +567,36 @@
       "status": "passed; final CI, review and installed acceptance pending"
     }
   },
+  "resume_startup_order_2026_09_17": {
+    "pr": 180,
+    "runtime_source": "a45f83150e577c3efc2cc6d98920cd1d76928fae",
+    "installed": false,
+    "behavior": "A requested Claude resume delays readiness until the same known process generation has an authoritative hook session ID, or the bounded wait expires. Control and explicit receipts remain responsive. Prompt text after -- does not select the wait. No command-line session ID is registered as identity.",
+    "gate": {
+      "result": "passed",
+      "rust_passed": 1149,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "format_clippy_doctest_package_release": "passed",
+      "log": "/private/tmp/agentdocker-resume-vouch-final-gate-20260917.log",
+      "log_sha256": "3ad2714af8d27e944380605493ba2c926b394ce6719396e61ae9518a711b3f93"
+    },
+    "cases": [
+      "hook before initialization",
+      "initialization before delayed hook",
+      "hook names a different session from the requested one",
+      "wrong or unknown process generation",
+      "silent daemon and absent hook with deadline",
+      "ping and explicit receipt before readiness",
+      "resume-like prompt text after -- is ignored"
+    ],
+    "limits": [
+      "Local tests use a backend fixture and do not prove real Claude startup ordering.",
+      "Actual provider relaunch, startup consent and peer-only idle receipt remain open.",
+      "After the deadline, a record may remain split; the daemon initialized-input guard is retained."
+    ]
+  },
   "observation_preserving_resume_2026_09_17": {
     "source_commit": "ef369d8289d19b46a83ab93b31096068093b5e58",
     "pr": 179,

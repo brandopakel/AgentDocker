@@ -63,7 +63,7 @@ workflow builds. The release publishes both, and the cask is skipped —
 loudly, not silently — when a release has no packaged app, because a
 cask pointing at a download that is not there is worse than no cask.
 
-The template exists, but as of the September 14 GitHub check the tap's `Casks/`
+The template exists, but as of the September 17 GitHub check the tap's `Casks/`
 directory contains only a README. The install command below becomes available
 only after a release publishes the app cask:
 
