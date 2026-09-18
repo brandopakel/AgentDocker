@@ -128,6 +128,8 @@ pub(super) fn find(
         .as_deref()
         .is_some_and(consumed);
     unchanged(transcript, &before)?;
+    // At the end, retain the final overlap and reread it on later calls: a
+    // response may be appended after the preceding Stop hook returned.
     current.offset = current.offset.saturating_add(limit.saturating_sub(OVERLAP));
     state.seek(SeekFrom::Start(0))?;
     state.set_len(0)?;

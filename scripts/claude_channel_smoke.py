@@ -280,6 +280,38 @@ def run(args):
             assert received["received"]["messages"] == [deferred_message]
             report["steps"].append("a complete text-only response appended after Stop returned was receipted without a new prompt or tool; incomplete input alone stayed queued")
 
+            # A complete proof must not authorize a stale helper generation or
+            # another session. These are real hidden-command invocations.
+            guarded_message = send(peer, "deferred receipt identity guards")
+            guarded_offer = connection.offer()
+            metadata = " ".join(f'{key}="{escape(value)}"' for key, value in guarded_offer["meta"].items())
+            content = f'<channel source="agentdocker" {metadata}>\n{guarded_offer["content"]}\n</channel>'
+            transcript.write_text("\n".join(json.dumps(value) for value in [
+                record("user", "guarded-input", "previous", isMeta=True,
+                    origin={"kind":"channel", "server":"agentdocker"},
+                    message={"role":"user", "content":content}),
+                record("assistant", "guarded-response", "guarded-input", requestId="guarded-request",
+                    message={"id":"guarded-response", "role":"assistant", "model":"claude-fixture",
+                             "content":[{"type":"text", "text":"Noted."}]})]) + "\n")
+            identity = rpc(endpoint, {"op":"inspect", "agent":receiver})["agent"]
+            values = {"--agent":receiver, "--pid":str(identity["pid"]),
+                      "--started-at":identity["process_started_at"],
+                      "--session":"receipt-fixture", "--transcript":str(transcript)}
+            for field, wrong in [("--agent", peer), ("--pid", "0"),
+                                 ("--started-at", "2000-01-01T00:00:00Z"),
+                                 ("--session", "another-session")]:
+                arguments = {**values, field:wrong}
+                checked = subprocess.run([str(output / "agentdocker"), "hook", "claude-receipt",
+                    *[v for pair in arguments.items() for v in pair]],
+                    env=channel_env, cwd=root, capture_output=True, timeout=5)
+                assert checked.returncode == 0, checked.stderr.decode()
+                assert queued() == [guarded_message], f"stale {field} consumed the head"
+            checked = subprocess.run([str(output / "agentdocker"), "hook", "claude-receipt",
+                *[v for pair in values.items() for v in pair]],
+                env=channel_env, cwd=root, capture_output=True, timeout=5)
+            assert checked.returncode == 0 and queued() == []
+            report["steps"].append("deferred helpers with a different agent, PID, generation or session refused a complete transcript proof; the matching helper then receipted only that head")
+
             connection.send({"jsonrpc": "2.0", "id": 200, "method": "tools/call", "params": {
                 "name": "ask_human", "arguments": {"question": "Which fixture route?", "timeout_secs": 120}}})
             posted = json.loads(connection.response(200)["result"]["content"][0]["text"])
