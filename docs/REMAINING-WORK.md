@@ -83,7 +83,11 @@ quota blocks. Index invalidation follows registry mutations after committed
 daemon writes. Targeted regressions include unknown statuses with structured
 details, failed recovery writes, restore/retirement and worker-start refusal.
 The first focused run caught a unit-only fallback rejecting structured details;
-the decoder was corrected. Final gate and review of these changes remain pending.
+the decoder was corrected. Clean runtime `d2fdf93` passed 1,205 Rust tests (seven
+skipped), 94 Python checks (one skipped), the complete release gate, 507 rendered
+steps / 30 checks across 11 windows, and 13 private installation scenarios.
+Package `80a02351` is prepared from that runtime; final CI/review and production
+activation remain pending. The earlier `240eb0e7` package is superseded.
 
 ## Engineering and acceptance still open
 
