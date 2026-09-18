@@ -3618,7 +3618,20 @@
       "Other task-card, pause and command forms remain window-local.",
       "A crash after acceptance but before the clearing save can restore uncertain text; it is never automatically resubmitted.",
       "The repeated macOS terminal timeout remains unexplained."
-    ]
+    ],
+    "main_integration_2026_09_18": {
+      "source": "21b41b2e2d51b4b994f4f0978b83c6f8ee08b8c5",
+      "base": "acbd09df5ab73c4721d3420f9b5a9c373f5b2429",
+      "result": "passed",
+      "rust_passed": 1174,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "full_gate": "fmt, strict Clippy, nextest, doctests, Python, documentation, packaging and release build passed",
+      "log": "/private/tmp/agentdocker-question-drafts-main-integration-20260918.log",
+      "log_sha256": "99e55a78e9585560978e38fce637e68bee80b753f28848f91a5f56e99e33703d",
+      "limits": "Local combined-source gate only; native acceptance above remains pinned to 13dd72c. Final CI and production activation pending."
+    }
   },
   "send_readiness_2026_09_18": {
     "pr": 188,
