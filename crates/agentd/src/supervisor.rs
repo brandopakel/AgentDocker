@@ -558,7 +558,10 @@ impl Spawned {
             match self.controller.next().await? {
                 Some(OwnerReport::Activated) => break,
                 Some(OwnerReport::Exited { status }) => {
-                    anyhow::bail!("command exited before it was activated: {status:?}")
+                    anyhow::bail!(
+                        "command exited before it was activated: {}",
+                        describe_exit(&status)
+                    )
                 }
                 Some(_) => continue,
                 None => anyhow::bail!("session owner closed during activation"),
@@ -843,6 +846,22 @@ pub fn supervise(
     })
 }
 
+/// An exit report as a person reads it in a reason: the code or signal
+/// it ended with, or that the program could not be executed at all (a
+/// wrong path, a missing tool — the report then has neither), never the
+/// report's fields spelled out.
+pub(crate) fn describe_exit(report: &ExitReport) -> String {
+    match (report.code, report.signal) {
+        (Some(code), _) => format!("it ended with exit code {code}"),
+        (None, Some(signal)) => format!("it was ended by signal {signal}"),
+        (None, None) if report.log_flushed => {
+            "the program could not be executed (is the path right and the tool installed?)"
+                .to_owned()
+        }
+        (None, None) => "it could not be waited for".to_owned(),
+    }
+}
+
 pub(crate) fn exit_status(report: &ExitReport) -> AgentStatus {
     match (report.code, report.signal) {
         (None, None) if !report.log_flushed => AgentStatus::Failed {
@@ -868,6 +887,46 @@ pub(crate) fn group_exists(group: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agentdocker_core::session::ChildIdentity;
+
+    /// A launch that ends before it is activated is described as a person
+    /// reads it — its exit code, its signal, or that the program could
+    /// not be executed — and never as the report's fields spelled out.
+    #[test]
+    fn an_exit_before_activation_is_described_in_words() {
+        let now = chrono::Utc::now();
+        let report = |code, signal, log_flushed| ExitReport {
+            agent: AgentId::from("0180d7615186449087095d7aa15ec0bb".to_owned()),
+            owner: SessionOwner {
+                pid: 23152,
+                started_at: now,
+            },
+            child: ChildIdentity {
+                pid: 23153,
+                started_at: now,
+                tty: true,
+            },
+            code,
+            signal,
+            log_flushed,
+            at: now,
+        };
+        assert_eq!(
+            describe_exit(&report(Some(127), None, true)),
+            "it ended with exit code 127"
+        );
+        assert_eq!(
+            describe_exit(&report(None, Some(9), true)),
+            "it was ended by signal 9"
+        );
+        let unexecuted = describe_exit(&report(None, None, true));
+        assert!(unexecuted.contains("could not be executed"), "{unexecuted}");
+        assert!(!unexecuted.contains("ExitReport"), "{unexecuted}");
+        assert_eq!(
+            describe_exit(&report(None, None, false)),
+            "it could not be waited for"
+        );
+    }
 
     /// A frame split across reads, with the read cancelled between the
     /// halves as another select branch winning would cancel it, still

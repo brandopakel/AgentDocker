@@ -669,8 +669,23 @@ impl App {
                 c,
             ));
             if open {
-                for summary in earlier {
+                // A page of the earlier conversations at a time, newest
+                // first; the rest are a click away.
+                let shown = self.shell.earlier_shown.max(super::EARLIER_PAGE);
+                let older = earlier.len().saturating_sub(shown);
+                for summary in earlier.into_iter().take(shown) {
                     list = list.push(self.conversation_row(summary, Some(false), c));
+                }
+                if older > 0 {
+                    list = list.push(
+                        container(crate::controls::button(
+                            "earlier-more",
+                            format!("Show {} older", older.min(super::EARLIER_PAGE)),
+                            Some(Message::MoreEarlier),
+                            false,
+                        ))
+                        .padding([4, 12]),
+                    );
                 }
             }
         }

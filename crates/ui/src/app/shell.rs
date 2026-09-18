@@ -61,6 +61,12 @@ pub(super) struct State {
     /// Whether the collapsed sidebar groups are open.
     pub collisions_open: bool,
     pub earlier_open: bool,
+    /// How many of the Earlier group's entries are on screen: a page, and
+    /// a page more for each *Show older*; closing the group resets it.
+    pub earlier_shown: usize,
+    /// Whether the temporary projects (discovered under /tmp, unpinned)
+    /// are unfolded in the sidebar.
+    pub temporary_open: bool,
     /// Whether the conversations between agents are unfolded.
     pub peers_open: bool,
     /// The project row whose menu is open.
@@ -563,6 +569,9 @@ pub enum Message {
     MessagesSearch(String),
     ToggleCollisions,
     ToggleEarlier,
+    /// One page more of the Earlier group.
+    MoreEarlier,
+    ToggleTemporary,
     TogglePeers,
     /// A divider between the window's columns was dragged, in one grid.
     PaneResized(super::panes::Grid, iced::widget::pane_grid::ResizeEvent),
@@ -1269,7 +1278,18 @@ impl App {
                 self.shell.messages_search = text.chars().take(200).collect();
             }
             Message::ToggleCollisions => self.shell.collisions_open = !self.shell.collisions_open,
-            Message::ToggleEarlier => self.shell.earlier_open = !self.shell.earlier_open,
+            Message::ToggleEarlier => {
+                self.shell.earlier_open = !self.shell.earlier_open;
+                self.shell.earlier_shown = EARLIER_PAGE;
+            }
+            Message::MoreEarlier => {
+                self.shell.earlier_shown = self
+                    .shell
+                    .earlier_shown
+                    .max(EARLIER_PAGE)
+                    .saturating_add(EARLIER_PAGE);
+            }
+            Message::ToggleTemporary => self.shell.temporary_open = !self.shell.temporary_open,
             Message::TogglePeers => self.shell.peers_open = !self.shell.peers_open,
             Message::PaneResized(grid, event) => {
                 if self.panes.resized(grid, event) {
@@ -4385,6 +4405,31 @@ mod tests {
         );
         assert_eq!(app.shell.answers[&action.target.message], "unfinished");
         assert!(app.sending.is_empty());
+    }
+
+    /// The Earlier groups (ended sessions, earlier conversations) open on a
+    /// page of entries and grow a page per *Show older*; closing a group
+    /// forgets how far it was opened, and the temporary projects fold
+    /// opens and closes on its own toggle.
+    #[test]
+    fn earlier_groups_page_and_the_temporary_fold_toggles() {
+        let (mut app, _commands, _) = app();
+        assert!(!app.shell.earlier_open);
+        let _ = app.update(Message::ToggleEarlier);
+        assert!(app.shell.earlier_open);
+        assert_eq!(app.shell.earlier_shown, EARLIER_PAGE);
+        let _ = app.update(Message::MoreEarlier);
+        let _ = app.update(Message::MoreEarlier);
+        assert_eq!(app.shell.earlier_shown, 3 * EARLIER_PAGE);
+        let _ = app.update(Message::ToggleEarlier);
+        assert!(!app.shell.earlier_open);
+        let _ = app.update(Message::ToggleEarlier);
+        assert_eq!(app.shell.earlier_shown, EARLIER_PAGE, "reopened at a page");
+        assert!(!app.shell.temporary_open);
+        let _ = app.update(Message::ToggleTemporary);
+        assert!(app.shell.temporary_open);
+        let _ = app.update(Message::ToggleTemporary);
+        assert!(!app.shell.temporary_open);
     }
 
     /// Reconnecting an ended Claude Code session launches its own tool

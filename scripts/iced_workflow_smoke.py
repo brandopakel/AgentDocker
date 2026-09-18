@@ -759,6 +759,16 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             assert rpc(endpoint, {"op": "delivery_queue", "agent": receiver["id"]})["messages"] == retained
             checks.append("provider_limit_resume_preserves_draft_receipts_and_retained_queue")
             rpc(endpoint, {"op": "deregister", "agent": receiver["id"]})
+            # Ended, with a conversation id and its tool on PATH: the row in
+            # the Earlier group carries Reconnect here itself. A rendered
+            # control, not a relaunch: nothing is pressed.
+            report["row_reconnect_window"] = launch("row-reconnect", [
+                step("click", id="projects"), step("click", id=f"project-{project}"),
+                step("click", id="sessions-earlier"),
+                step("wait_control", id=f"session-{receiver['id']}", present=True),
+                step("wait_control", id=f"row-reconnect-{receiver['id']}", present=True),
+                step("capture", name="row-reconnect")])
+            checks.append("ended_claude_session_row_offers_reconnect")
             narrow_inbox()
             report["idle_resources"] = (
                 {"result": "not_run", "reason": "Explicit --skip-idle-measurement: foreground CPU/RSS sample omitted; no idle performance claim."}

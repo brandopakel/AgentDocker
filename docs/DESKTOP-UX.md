@@ -86,21 +86,30 @@ folder under the per-user temporary directory (where test fixtures come and
 go) is never listed by discovery, only by a pin; a pinned folder stays
 either way. Shared scratch roots such as `/tmp` and `/var/tmp` remain
 discoverable, including when Linux reports one as its default temporary
-directory. Sessions whose project is unknown appear under
-**Other sessions**.
+directory, but a folder discovered there and never pinned is not listed
+among your projects: it sits in a **Temporary (n)** fold under them (a
+fixture's workspace, a trial's worktree), folded while nothing runs in any of
+them and none is selected, open otherwise or by hand, with the live count on
+the fold; pinning one moves it up. Sessions whose project is unknown
+appear under **Other sessions**.
 
 **Current** shows live sessions; **Needs input** shows this project's
 unanswered, unexpired questions, including questions from a session that has
 since finished. Ended sessions are not a tab: they sit in one collapsed
 **Earlier (n)** group under the current ones, including previous runs with the
-same name, and a search that finds one opens the group. When only an earlier
+same name, and a search that finds one opens the group. The group opens on
+its newest eight; **Show older** adds eight more each time, and closing the
+group forgets how far it was opened. When only an earlier
 session matches, its result appears without a contradictory empty-state card.
 Search applies to the
 selected project, both filters and the Earlier group. Switching projects
 returns to Current. Nothing is deleted when a row moves to Earlier.
 
 Session rows show the name, runtime, branch and observed activity. Sessions needing
-input appear first within each project. Select a row for terminal access, reply, or stop. On a narrow
+input appear first within each project. An ended Claude Code session that can
+come back carries **Reconnect here** on its row itself (the same action as in
+Details, which still says why a session cannot be reconnected yet); while its
+resume is on its way the row says **Reconnecting…**. Select a row for terminal access, reply, or stop. On a narrow
 window, the session replaces the list; **Back to sessions** returns to it. On a
 wide window, it opens beside the list. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
@@ -211,7 +220,8 @@ from its task or paths), collision rooms behind **Collisions**, **Direct
 messages** with a presence dot for a live session, conversations two agents
 had with each other behind **Between agents** (read as `Codex ↔ Claude
 Code`), and **AgentDocker → agent** notices per agent; a search box filters by
-name. Ended sessions' conversations sit behind **Earlier (n)**. Every row is
+name. Ended sessions' conversations sit behind **Earlier (n)**, eight at a time
+with **Show older**. Every row is
 one line each for the name and the latest line. Unread counts and the rail
 badge cover what is yours to answer: channels, broadcasts and your own direct
 messages, never what two agents said to each other, what AgentDocker told
