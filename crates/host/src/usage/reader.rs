@@ -114,6 +114,31 @@ pub struct Cursor {
 }
 
 impl Cursor {
+    /// Capture a file identity/high-water mark without parsing transcript bytes.
+    /// Later scans must still validate that same generation and prefix.
+    pub fn capture(path: &Path, runtime: Runtime) -> Result<Self, Error> {
+        let file = crate::files::open_regular(path)?;
+        let generation = Generation::capture(&file)?;
+        if generation != Generation::capture(&crate::files::open_regular(path)?)? {
+            return Err(Error::Changed);
+        }
+        Ok(Self {
+            version: 2,
+            runtime,
+            generation,
+            offset: 0,
+            prefix_digest: [0; 32],
+            codex: Codex::default(),
+            quarantined_at_budget: None,
+        })
+    }
+
+    /// This comparison only selects a candidate cursor. `scan` still verifies
+    /// its complete prefix; matching metadata never establishes coverage.
+    pub fn same_generation(&self, other: &Self) -> bool {
+        self.runtime == other.runtime && self.generation == other.generation
+    }
+
     /// Bytes covered by complete records in this file generation.
     pub fn offset(&self) -> u64 {
         self.offset

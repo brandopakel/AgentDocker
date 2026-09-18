@@ -43,8 +43,13 @@ pub struct CounterReports {
 
 impl CounterReports {
     pub fn new(aggregate: &Aggregate, complete: bool) -> Self {
-        let [input_tokens, cache_read_input_tokens, cache_write_input_tokens, output_tokens, reasoning_output_tokens] =
-            aggregate.counters(complete);
+        let [
+            input_tokens,
+            cache_read_input_tokens,
+            cache_write_input_tokens,
+            output_tokens,
+            reasoning_output_tokens,
+        ] = aggregate.counters(complete);
         Self {
             input_tokens,
             cache_read_input_tokens,

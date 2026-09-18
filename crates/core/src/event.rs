@@ -57,6 +57,17 @@ pub enum WaitOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventKind {
+    /// A bounded usage batch, its accounting and scan progress committed.
+    UsageRecorded {
+        generation: u64,
+        samples: u64,
+        gaps: u64,
+    },
+    /// Retained unattributed contributions moved without re-ingestion.
+    UsageReconciled {
+        agent: AgentId,
+        samples: u64,
+    },
     /// A question's answer route is durable until answered or expired.
     QuestionOpened {
         question: MessageId,
