@@ -1168,6 +1168,15 @@ acceptance remain pending. The CLI uses `--agent` (with `--as` accepted as an
 alias) as an explicit filter; the calling agent identity does not silently
 filter an otherwise project-wide report.
 
+The private real-daemon trial on `a238d4f` processed a 22+ MiB Claude fixture
+but found that replaying an identical Codex snapshot with different prefix
+proof falsely reported an accounting conflict. Sample fingerprints now exclude
+that contextual proof; the first accepted observation still determines baseline
+accounting, and replay cannot retroactively manufacture missing history. The
+restart regression covers both proof directions, earlier draft fingerprints and
+a genuine changed-counter conflict. Its targeted test passed; the corrected
+real-binary trial and combined gate remain pending.
+
 Collector follow-up preserves the committed retention cutoff when configuration
 expands: discarded history stays explicitly truncated, and newly found older
 logs do not make that interval appear restored. Attribution reconciliation saves

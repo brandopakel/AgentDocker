@@ -187,7 +187,13 @@ impl Store {
         let mut samples: Vec<_> = batch.samples.iter().collect();
         samples.sort_by_key(|(sample, _)| sample.at);
         for (sample, attribution) in samples {
-            let hash = fingerprint(sample)?;
+            // The same provider record can be encountered with or without
+            // proof of the preceding file prefix. That evidence controls its
+            // first accounting decision; it is not different accounting on
+            // a replay. Keep compatibility with draft stores that hashed it.
+            let mut accounting = sample.clone();
+            accounting.proves_zero_baseline = false;
+            let hash = fingerprint(&accounting)?;
             let old: Option<String> = self
                 .conn
                 .query_row(
@@ -198,13 +204,16 @@ impl Store {
                 .optional()?;
             if let Some(old) = old {
                 if old != hash {
-                    gaps += self.usage_gap(
-                        &format!("conflict:{}", sample.source_id),
-                        None,
-                        sample.at,
-                        Some((&sample.runtime, &sample.session_id)),
-                        "source identity has conflicting accounting",
-                    )?;
+                    accounting.proves_zero_baseline = true;
+                    if old != fingerprint(&accounting)? {
+                        gaps += self.usage_gap(
+                            &format!("conflict:{}", sample.source_id),
+                            None,
+                            sample.at,
+                            Some((&sample.runtime, &sample.session_id)),
+                            "source identity has conflicting accounting",
+                        )?;
+                    }
                 }
                 continue;
             }
@@ -601,6 +610,65 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM usage_samples", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1, "fingerprint survives aggregate retention");
+    }
+
+    #[test]
+    fn usage_replayed_prefix_proof_is_not_a_conflicting_provider_record() {
+        for initially_proven in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let db = temp.path().join("state.db");
+            let store = Store::open(&db).unwrap();
+            let progress = progress(temp.path());
+            let mut value = sample("first-snapshot", 2, 10, true);
+            value.proves_zero_baseline = initially_proven;
+            ingest(
+                &store,
+                &progress,
+                "original",
+                vec![(value.clone(), Attribution::default())],
+                at(0),
+            )
+            .unwrap();
+            let before = report(&store, 0, 21);
+            // A persisted hash from the earlier draft remains replayable too.
+            store
+                .conn
+                .execute(
+                    "UPDATE usage_samples SET fingerprint=?1 WHERE source_id=?2",
+                    params![fingerprint(&value).unwrap(), value.source_id],
+                )
+                .unwrap();
+            drop(store);
+            let store = Store::open(&db).unwrap();
+            value.proves_zero_baseline = !initially_proven;
+            ingest(
+                &store,
+                &progress,
+                "copy",
+                vec![(value.clone(), Attribution::default())],
+                at(0),
+            )
+            .unwrap();
+            let after = report(&store, 0, 21);
+            assert_eq!(after.rows, before.rows);
+            assert_eq!(after.coverage.source_gaps, before.coverage.source_gaps);
+            // Removing contextual proof must not hide an actual counter change.
+            value.counters.input_tokens = Some(11);
+            ingest(
+                &store,
+                &progress,
+                "conflict",
+                vec![(value, Attribution::default())],
+                at(0),
+            )
+            .unwrap();
+            let conflict = report(&store, 0, 21);
+            assert_eq!(conflict.rows, before.rows);
+            assert_eq!(
+                conflict.coverage.source_gaps,
+                before.coverage.source_gaps + 1
+            );
+        }
     }
 
     #[test]
