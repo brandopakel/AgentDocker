@@ -1042,13 +1042,13 @@ async fn status(client: &Client) -> Result<()> {
     println!("  pairing code: {}", serving.pairing_code);
     match &serving.tunnel {
         Some(t) => println!(
-            "  tunnel:       {}{} (pid {})",
+            "  tunnel:       {}{}{}",
             t.provider,
             t.name
                 .as_deref()
                 .map(|n| format!(" `{n}`"))
                 .unwrap_or_default(),
-            t.pid.unwrap_or(0)
+            t.pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()
         ),
         None => println!("  tunnel:       yours, in front of the listening address"),
     }

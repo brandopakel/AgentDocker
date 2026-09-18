@@ -8,9 +8,10 @@ person consented with the pairing code, and each browser agent delivered a
 message to keel's terminal sessions — first from a terminal-run connector, then
 from the connector installed as a login service with a vendor-egress allowlist
 ([record](verification/2026-09-12-integrated-desktop.json), `remote_connector_2026_09_17`, `vendor_acceptance`
-and `service_acceptance`). A quick tunnel's hostname is ephemeral, and both
-vendors' saved connectors must be re-added when it changes; `--tunnel tailscale`
-(or a named cloudflared tunnel) is the durable setup.
+and `service_acceptance`). The production connector now runs on `--tunnel
+tailscale`, this machine's own `*.ts.net` name, with both vendors connected
+(`stable_host_acceptance`); a quick cloudflared tunnel's hostname is ephemeral
+and both vendors' saved connectors must be re-added when it changes.
 
 ## Why it exists
 
