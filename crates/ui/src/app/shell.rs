@@ -3416,7 +3416,9 @@ mod tests {
                 DraftKind::Session => DeliveryTarget::Session("original".into()),
                 DraftKind::Conversation => DeliveryTarget::Conversation("original".into()),
                 DraftKind::Channel => DeliveryTarget::Channel("original".into()),
-                DraftKind::Answer => unreachable!("message drafts only"),
+                DraftKind::Answer | DraftKind::TaskTitle | DraftKind::TaskAcceptance => {
+                    unreachable!("message drafts only")
+                }
             };
             let mut report = agentdocker_core::SendReadiness::default();
             report.observe(Some(agentdocker_core::RecipientReadiness::unknown(
@@ -3431,7 +3433,9 @@ mod tests {
                     DraftKind::Session => Msg::SessionSent("original".into(), receipt),
                     DraftKind::Conversation => Msg::ConversationSent("original".into(), receipt),
                     DraftKind::Channel => Msg::ChannelSent("original".into(), receipt),
-                    DraftKind::Answer => unreachable!("message drafts only"),
+                    DraftKind::Answer | DraftKind::TaskTitle | DraftKind::TaskAcceptance => {
+                        unreachable!("message drafts only")
+                    }
                 })
                 .unwrap();
             app.drain();
@@ -3439,7 +3443,9 @@ mod tests {
                 DraftKind::Session => &app.shell.session_drafts["original"].draft,
                 DraftKind::Conversation => &app.shell.conversation_drafts["original"],
                 DraftKind::Channel => &app.shell.channel_drafts["original"],
-                DraftKind::Answer => unreachable!("message drafts only"),
+                DraftKind::Answer | DraftKind::TaskTitle | DraftKind::TaskAcceptance => {
+                    unreachable!("message drafts only")
+                }
             };
             assert_eq!(draft.readiness.as_ref(), Some(&report));
             assert!(!draft.readiness_expanded);
