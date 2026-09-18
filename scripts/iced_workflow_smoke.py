@@ -772,6 +772,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             # control, not a relaunch: nothing is pressed.
             report["row_reconnect_window"] = launch("row-reconnect", [
                 step("click", id="projects"), step("click", id=f"project-{project}"),
+                step("click", id="project-tab-Agents"),
                 step("click", id="sessions-earlier"),
                 step("wait_control", id=f"session-{receiver['id']}", present=True),
                 step("wait_control", id=f"row-reconnect-{receiver['id']}", present=True),

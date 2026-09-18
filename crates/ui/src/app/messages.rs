@@ -1696,8 +1696,14 @@ impl App {
             .collect();
         let (direct, folded) = self.fold_direct(direct);
         (
-            direct.into_iter().map(|s| s.conversation.as_str()).collect(),
-            folded.into_iter().map(|s| s.conversation.as_str()).collect(),
+            direct
+                .into_iter()
+                .map(|s| s.conversation.as_str())
+                .collect(),
+            folded
+                .into_iter()
+                .map(|s| s.conversation.as_str())
+                .collect(),
         )
     }
 

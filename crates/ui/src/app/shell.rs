@@ -5155,11 +5155,15 @@ mod tests {
         let _ = app.update(Message::FolderResolved(Ok(project.clone())));
         assert!(app.shell.catalog.selected().unwrap().pinned);
         assert_eq!(app.shell.catalog.selected.as_ref(), Some(&project.root));
-        assert!(
-            commands
-                .try_iter()
-                .all(|cmd| matches!(cmd, Cmd::Journal(_, _) | Cmd::Channels(_, _)))
+        assert_eq!(app.screen, Screen::Chat);
+        assert_eq!(
+            app.shell.conversation,
+            Some(format!("everyone:{}", project.id()))
         );
+        assert!(commands.try_iter().all(|cmd| matches!(
+            cmd,
+            Cmd::Journal(_, _) | Cmd::Channels(_, _) | Cmd::Conversations(_) | Cmd::History(_, _)
+        )));
         assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 0);
     }
     #[test]

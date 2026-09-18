@@ -32,9 +32,10 @@ impl App {
     }
 
     pub(super) fn project_chat_view(&self, c: Colors) -> Element<'_, Message> {
-        let agents = self.project_chat_agents(c);
+        let compact = self.messages_compact();
+        let agents = self.project_chat_agents(c, compact);
         let conversation = self.messages_pane(c);
-        if self.messages_compact() {
+        if compact {
             let body = if self.shell.thread.is_some() {
                 column![
                     action(
@@ -69,7 +70,7 @@ impl App {
             .into()
     }
 
-    fn project_chat_agents(&self, c: Colors) -> Element<'_, Message> {
+    fn project_chat_agents(&self, c: Colors, compact: bool) -> Element<'_, Message> {
         let naming = self.naming();
         let agents: Vec<_> = self
             .agents
@@ -81,7 +82,8 @@ impl App {
                     && self.has_project(a.project.as_ref())
             })
             .collect();
-        let mut body = column![heading(format!("Agents ({})", agents.len()), 16)].spacing(12);
+        let mut body = column![heading(format!("Agents ({})", agents.len()), 16)]
+            .spacing(if compact { 6 } else { 12 });
         let needs_input = self
             .questions
             .iter()
@@ -100,6 +102,27 @@ impl App {
         }
         for agent in agents {
             let id = agent.id.to_string();
+            if compact {
+                body = body.push(
+                    row![
+                        container(action(
+                            format!("chat-agent-{id}"),
+                            self.display_name(agent),
+                            Some(Message::OpenSession(id.clone())),
+                            false,
+                        ))
+                        .width(Fill),
+                        primary(
+                            format!("chat-terminal-{id}"),
+                            "Terminal",
+                            (!self.shell.terminal_opening)
+                                .then_some(Message::OpenAgentTerminal(id)),
+                        ),
+                    ]
+                    .spacing(6),
+                );
+                continue;
+            }
             body = body.push(
                 column![
                     heading(self.display_name(agent), 14),
