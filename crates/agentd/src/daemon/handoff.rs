@@ -32,12 +32,14 @@ impl Daemon {
     /// checkpoint underneath is made through the checkpoint path, so it
     /// has the same barrier, idempotency and release semantics; the bundle
     /// document, the `handoff` message, and the journal entry follow.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn handoff(
         &self,
         reference: &str,
         to: Option<&str>,
         task: Option<String>,
         note: Option<String>,
+        links: Vec<agentdocker_core::Link>,
         transfer_leases: bool,
         key: Option<String>,
     ) -> Response {
@@ -137,6 +139,7 @@ impl Daemon {
                 task,
                 Vec::new(),
                 Vec::new(),
+                links,
                 !transfer_leases,
             )
             .await
@@ -196,6 +199,7 @@ impl Daemon {
             note,
             assumptions: checkpoint.assumptions.clone(),
             next_steps: checkpoint.next_steps.clone(),
+            links: checkpoint.links.clone(),
             checkout: checkpoint.checkout.clone(),
             version: checkpoint.version.clone(),
             environment: checkpoint.environment.clone(),
@@ -288,6 +292,22 @@ impl Daemon {
         if bundle.id.is_empty() || bundle.id.len() > 256 || bundle.task.is_empty() {
             return Response::error(ErrorCode::Invalid, "bundle needs an id and a task");
         }
+        // Links in a bundle from elsewhere — its own, and those on every
+        // message it carries — are held to the same shape and count as
+        // links made here, before anything is written.
+        if let Err(reason) = agentdocker_core::link::check(&bundle.links) {
+            return Response::error(ErrorCode::Invalid, format!("bundle links: {reason}"));
+        }
+        if let Some(reason) = bundle
+            .unread_inbox
+            .iter()
+            .find_map(|message| agentdocker_core::link::check(&message.links).err())
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                format!("bundle message links: {reason}"),
+            );
+        }
         // The bounds this daemon's own bundles and checkpoints keep, before
         // anything is written.
         if bundle.from_name.len() > 256 || bundle.version.len() > 256 || !bundle.fits_import_limit()
@@ -362,6 +382,7 @@ impl Daemon {
             task: bundle.task.clone(),
             assumptions: bundle.assumptions.clone(),
             next_steps: bundle.next_steps.clone(),
+            links: bundle.links.clone(),
             reads: bundle.read_set.clone(),
             version: bundle.version.clone(),
             environment: bundle.environment.clone(),
@@ -490,6 +511,7 @@ mod tests {
                 note: None,
                 transfer_leases: false,
                 key: None,
+                links: Vec::new(),
             })
             .await
         else {
@@ -583,6 +605,35 @@ mod tests {
             panic!("digest failed");
         };
 
+        // A link that is not the shape of its kind refuses the hand-off
+        // before anything is written.
+        assert!(matches!(
+            daemon
+                .handle(Request::Handoff {
+                    agent: "sender".into(),
+                    to: Some("recipient".into()),
+                    task: None,
+                    note: None,
+                    transfer_leases: false,
+                    key: None,
+                    links: vec![agentdocker_core::Link::new(
+                        agentdocker_core::LinkKind::Commit,
+                        "not-a-hash"
+                    )],
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        let links = vec![
+            agentdocker_core::Link::parse("path:src/parser.rs").unwrap(),
+            agentdocker_core::Link::parse(
+                "memory:the grammar file is generated; edit the .peg, not the .rs",
+            )
+            .unwrap(),
+        ];
         let request = Request::Handoff {
             agent: "sender".into(),
             to: Some("recipient".into()),
@@ -590,6 +641,7 @@ mod tests {
             note: Some("tests are in src/parser.rs".into()),
             transfer_leases: true,
             key: Some("parser".into()),
+            links: links.clone(),
         };
         let Response::Handoff { bundle } = daemon.handle(request.clone()).await else {
             panic!("handoff failed");
@@ -597,6 +649,7 @@ mod tests {
         assert_eq!(bundle.from_name, "sender");
         assert_eq!(bundle.task, "finish the parser");
         assert_eq!(bundle.note.as_deref(), Some("tests are in src/parser.rs"));
+        assert_eq!(bundle.links, links, "the links travel with the bundle");
         assert_eq!(bundle.leases.len(), 1);
         assert_eq!(bundle.read_set.len(), 1);
         assert!(
@@ -750,6 +803,7 @@ mod tests {
                 note: None,
                 transfer_leases: false,
                 key: None,
+                links: Vec::new(),
             })
             .await
         else {
@@ -767,6 +821,7 @@ mod tests {
                     note: None,
                     transfer_leases: true,
                     key: None,
+                    links: Vec::new(),
                 })
                 .await,
             Response::Error {
@@ -793,6 +848,7 @@ mod tests {
                     note: None,
                     transfer_leases: false,
                     key: None,
+                    links: Vec::new(),
                 })
                 .await,
             Response::Error {
@@ -863,6 +919,53 @@ mod tests {
                 ..
             }
         ));
+        // A bundle's links are held to the shape and count of links made
+        // here, whatever daemon wrote them.
+        let mut mislinked = bundle.clone();
+        mislinked.links = vec![agentdocker_core::Link {
+            kind: agentdocker_core::LinkKind::Url,
+            target: "not a url".into(),
+            note: None,
+        }];
+        assert!(matches!(
+            elsewhere.import("recipient", mislinked).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        let mut overlinked = bundle.clone();
+        overlinked.links = vec![agentdocker_core::Link::parse("pr:#1").unwrap(); 17];
+        assert!(matches!(
+            elsewhere.import("recipient", overlinked).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        // A message the bundle carries is held to it too.
+        let mut carried = bundle.clone();
+        let mut message = Envelope::new(
+            "sender",
+            Destination::Agent("recipient".into()),
+            "chat",
+            json!({"text": "see"}),
+            None,
+            Utc::now(),
+        );
+        message.links = vec![agentdocker_core::Link {
+            kind: agentdocker_core::LinkKind::Commit,
+            target: "nothex".into(),
+            note: None,
+        }];
+        carried.unread_inbox = vec![message];
+        assert!(matches!(
+            elsewhere.import("recipient", carried).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
         let Response::Handoff { bundle: imported } =
             elsewhere.import("recipient", bundle.clone()).await
         else {
@@ -905,6 +1008,7 @@ mod tests {
                 note: None,
                 transfer_leases: false,
                 key: None,
+                links: Vec::new(),
             })
             .await
         else {
@@ -934,6 +1038,7 @@ mod tests {
                 note: None,
                 transfer_leases: true,
                 key: Some("rollback".into()),
+                links: Vec::new(),
             })
             .await
         else {

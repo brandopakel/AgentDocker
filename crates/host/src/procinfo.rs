@@ -304,6 +304,48 @@ fn claude_runtime(arguments: &[String]) -> Option<&'static str> {
     claude_helper(arguments).is_none().then_some("claude-code")
 }
 
+/// What a Claude Code command line asks for by way of an earlier session:
+/// `--resume <id>` / `-r <id>` / `--resume=<id>` name one, `--resume` alone
+/// opens a picker and `--continue` / `-c` takes the latest, so those name
+/// none. A request is a claim about what the process *asked* for; which
+/// session actually runs is only known once its hooks say so — this is
+/// never an identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResumeRequest {
+    /// The session id the command line named, when it named one.
+    pub session: Option<String>,
+}
+
+/// The resume request on a Claude Code command line, or `None` for a fresh
+/// session or a command line that is not a Claude Code session at all.
+pub fn resume_request(argv: &[String]) -> Option<ResumeRequest> {
+    if runtime_of(argv) != Some("claude-code") {
+        return None;
+    }
+    let mut arguments = argv.iter().skip(1).peekable();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--" => return None,
+            "--continue" | "-c" => return Some(ResumeRequest { session: None }),
+            "--resume" | "-r" => {
+                let session = arguments
+                    .peek()
+                    .filter(|next| !next.starts_with('-') && !next.is_empty())
+                    .map(|next| next.to_string());
+                return Some(ResumeRequest { session });
+            }
+            other => {
+                if let Some(session) = other.strip_prefix("--resume=") {
+                    return Some(ResumeRequest {
+                        session: Some(session.to_owned()).filter(|s| !s.is_empty()),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Codex's interpreter launcher starts a native child and then waits for it. Only
 /// that child is a session. Do not apply a generic parent/child rule: agents
 /// can launch other agents, and those must remain independently discoverable.
@@ -491,6 +533,79 @@ mod windows_identity_tests {
 
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
+    /// A resume is read from the command line the way Claude reads it,
+    /// and only from a Claude Code session: the named id, a picker or the
+    /// latest with no id, and nothing for a fresh session or another tool.
+    #[test]
+    fn a_resume_request_is_read_from_claude_arguments_only() {
+        let argv = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        let named = Some("0042a5aa-1111-2222-3333-444444444444".to_owned());
+        assert_eq!(
+            resume_request(&argv(&["claude", "--resume", named.as_ref().unwrap()])),
+            Some(ResumeRequest {
+                session: named.clone()
+            })
+        );
+        assert_eq!(
+            resume_request(&argv(&[
+                "claude",
+                "-r",
+                named.as_ref().unwrap(),
+                "--verbose"
+            ])),
+            Some(ResumeRequest {
+                session: named.clone()
+            })
+        );
+        assert_eq!(
+            resume_request(&argv(&[
+                "claude",
+                &format!("--resume={}", named.as_ref().unwrap())
+            ])),
+            Some(ResumeRequest {
+                session: named.clone()
+            })
+        );
+        assert_eq!(
+            resume_request(&argv(&["claude", "--resume"])),
+            Some(ResumeRequest { session: None }),
+            "a picker names nothing"
+        );
+        assert_eq!(
+            resume_request(&argv(&["claude", "--resume", "--verbose"])),
+            Some(ResumeRequest { session: None })
+        );
+        assert_eq!(
+            resume_request(&argv(&["claude", "-c"])),
+            Some(ResumeRequest { session: None }),
+            "continue names nothing"
+        );
+        for prompt in ["--resume", "--resume=session", "-r", "--continue", "-c"] {
+            assert_eq!(
+                resume_request(&argv(&["claude", "--", prompt, "session"])),
+                None,
+                "text after the option separator is a prompt"
+            );
+        }
+        assert_eq!(
+            resume_request(&argv(&["claude", "--continue", "--", "--resume"])),
+            Some(ResumeRequest { session: None }),
+            "a resume option before the separator still selects the wait"
+        );
+        assert_eq!(resume_request(&argv(&["claude"])), None);
+        assert_eq!(resume_request(&argv(&["claude", "--verbose"])), None);
+        assert_eq!(
+            resume_request(&argv(&["codex", "resume", "abc"])),
+            None,
+            "not a Claude session"
+        );
+        assert_eq!(
+            resume_request(&argv(&["claude", "daemon", "--resume", "x"])),
+            None,
+            "not a session either"
+        );
+    }
+
     #[test]
     fn claude_browser_hosts_are_not_sessions_or_duplicate_discovery_candidates() {
         let argv = |command: &str| {

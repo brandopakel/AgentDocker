@@ -203,6 +203,27 @@ they said. Run those in a real terminal.
 Every command, by what you are trying to do. `--help` on any of them for
 the flags.
 
+### Exit status
+
+A command ends with a status that says what class of thing went wrong, so
+a script or an agent driving the command line can branch without parsing
+text; the words and any details still go to stderr as `Error: … (Code)`.
+
+| Status | Meaning | Daemon answers |
+| --- | --- | --- |
+| 0 | done | — |
+| 1 | something unexpected: an internal error, or a failure that is not the daemon's answer (no daemon, a broken connection) | `internal` |
+| 2 | a usage error, the argument parser's own; also an invalid request | `invalid` |
+| 3 | nothing by that name, or too many | `not_found`, `ambiguous` |
+| 4 | held or taken by somebody else | `conflict`, `name_taken`, `deadlock` |
+| 5 | refused: not the caller's to do, or the project is paused | `forbidden`, `paused` |
+| 6 | not now: the daemon, its storage, an engine or a build is unavailable, busy, handing over, timed out or cancelled | `storage_unavailable`, `unavailable`, `engine_unavailable`, `build_failed`, `backpressure`, `timeout`, `cancelled`, `transferring`, `event_history_lost` |
+
+The class holds wherever the answer was read — a `daemon reload` refusal, an
+`attach` the daemon refuses or ends with an error — and `adopt --all`, which
+tries every process, ends with the class of the first refusal after naming
+each one by pid.
+
 ### Look at the fleet
 
 | Command | What it does |
@@ -213,7 +234,7 @@ the flags.
 | `inspect <agent>` | Everything known about one agent, as JSON |
 | `logs <agent>` | An agent's captured output; `-f` to follow, `--compress` for an rtk view |
 | `validation <id>` | The retained log of one validation; `--compress` for an rtk view |
-| `events` | The daemon's event stream |
+| `events` | The daemon's event stream; `[[webhooks]]` in `agentd.toml` posts a signed copy of chosen kinds to an address you name (see [webhooks](ARCHITECTURE.md#events)) |
 | `ping` | Check the daemon is reachable |
 
 ### Start, adopt and stop
@@ -234,7 +255,7 @@ the flags.
 
 | Command | What it does |
 |---|---|
-| `send` | Message an agent, the project, a topic, or everyone |
+| `send` | Message an agent, the project, a topic, or everyone A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
 | `watch` | Stream messages for an agent or matching topics |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer |
@@ -254,7 +275,7 @@ the flags.
 | `renew` / `release` | Extend or give up a lease you hold |
 | `leases` | Every lease held right now |
 | `waiting` | Claims waiting for a resource, oldest first |
-| `task` | The board of work: `task create "Fix login" --acceptance "SSO works" --column ready` files a card; `task pull <id> --as <agent>` takes a Ready card once and holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`, naming whom it is expected from); `task move <id> review` (an agent moves only a card it holds; back to Ready or to Done ends the hold), `task update <id> --assignee bob` (a hand ends the old hold and takes the lease for a running agent), `task archive <id>`, `task list [--column ready] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
+| `task` | The board of work: `task create "Fix login" --acceptance "SSO works" --column ready --link pr:#176 --link path:crates/core/src/task.rs` files a card (a `--link` is `kind:target` — path, commit, pr, url, task, message or memory — and `task update --link …` replaces them, `--no-links` clears them); `task pull <id> --as <agent>` takes a Ready card once and holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`, naming whom it is expected from); `task move <id> review` (an agent moves only a card it holds; back to Ready or to Done ends the hold), `task update <id> --assignee bob` (a hand ends the old hold and takes the lease for a running agent), `task archive <id>`, `task list [--column ready] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts) |
 | `pause` | `agentdocker pause "sleeping the laptop"` tells every agent in this directory's project to hold: they get the reason as a `pause` message and their new leases are refused until `agentdocker pause --lift`; `--project` names another project; `pause --list` lists what is paused and why |
 
 ### Know what changed
@@ -283,7 +304,7 @@ the flags.
 | Command | What it does |
 |---|---|
 | `checkpoint` / `checkpoints` | Persist task context and content identity; `checkpoints prune --older-than <duration>` forgets finished sessions' old ones |
-| `handoff` / `handoffs` | Hand an agent's work to another, with everything around it |
+| `handoff` / `handoffs` | Hand an agent's work to another, with everything around it `--link kind:target` names what the recipient should open first; `checkpoint --link` does the same for a replacement session. |
 | `resume` | Inspect or accept a verified handoff |
 | `export` / `import` | Carry a bundle to another host |
 
@@ -306,7 +327,7 @@ the flags.
 
 | Command | What it does |
 |---|---|
-| `runtimes` | Agent tools installed here, and whether we are wired in; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
+| `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches |
@@ -508,6 +529,12 @@ Newest first. Only what changes how the product is used.
   messaged; a runtime's helper such as `claude --chrome-native-host` is never
   discovered and cannot be adopted; `rm` on a live external record says
   `deregister`.
+- The Board's five columns share the width, and an open card's title,
+  acceptance text and moves sit beneath them where there is room to read
+  them (under the card when the window is narrow). A clicked control no
+  longer keeps a focus ring: the ring is the keyboard's.
+- `agentdocker runtimes` heads its last column UNREGISTERED: it counts a
+  tool's processes nobody registered, which `ps` never showed as sessions.
 - A project pause: `agentdocker pause "reason"` tells every agent in the
   project to hold — the reason reaches each live one as a `pause` message
   and their new leases are refused with it until `pause --lift`; `pause

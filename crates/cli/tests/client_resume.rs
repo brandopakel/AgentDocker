@@ -270,7 +270,12 @@ fn reload_reports_a_refusal_at_once() {
         )],
     );
     let output = cli(&socket, &["daemon", "reload"]);
-    assert!(!output.status.success());
+    assert_eq!(
+        output.status.code(),
+        Some(6),
+        "a refusal keeps its class (unavailable): {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(String::from_utf8_lossy(&output.stderr).contains("reload is unavailable"));
     assert!(output.stdout.is_empty());
 }

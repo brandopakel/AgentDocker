@@ -595,9 +595,9 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                 }
                 tokio::time::sleep(Duration::from_millis(500).min(remaining)).await;
             };
-            if let Response::Error { message, code, .. } = response {
-                anyhow::bail!("reload failed: {message} ({code:?})");
-            }
+            // A refusal keeps its class: unavailable or busy ends as such,
+            // with the daemon's details, not as something unexpected.
+            crate::client::into_result(response).context("reload failed")?;
             println!("reloaded: a new agentd is serving; agents kept running");
         }
         DaemonCommand::Status => {

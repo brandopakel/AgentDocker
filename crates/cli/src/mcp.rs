@@ -164,6 +164,43 @@ pub struct McpServer<B> {
     /// runs wherever its service started it, which is no project at all.
     project_root: Option<std::path::PathBuf>,
     last_contact: std::sync::Mutex<Option<Instant>>,
+    /// The parent session asked to resume an earlier one: the channel
+    /// waits, for a bounded time, for the hooks adapter to say which
+    /// session is actually running before it binds input delivery, so
+    /// the daemon can fold this process into that session's record with
+    /// its backlog in order. What was asked for is a claim; only the
+    /// hook's word is identity.
+    resume_vouch: Option<ResumeVouch>,
+}
+
+/// How long the channel waits for the hooks adapter to vouch for a
+/// resumed session before binding input delivery anyway.
+#[derive(Clone, Debug)]
+pub struct ResumeVouch {
+    pub requested: Option<String>,
+    pub wait: std::time::Duration,
+}
+
+impl ResumeVouch {
+    pub const DEFAULT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+}
+
+/// What the parent Claude session asked for on its command line, found
+/// by walking up from this process to the session that started it.
+fn parent_resume_request(start: u32) -> Option<agentdocker_host::procinfo::ResumeRequest> {
+    let table = agentdocker_host::procinfo::processes().ok()?;
+    let mut pid = start;
+    for _ in 0..16 {
+        let process = table.iter().find(|p| p.pid == pid)?;
+        if let Some(request) = agentdocker_host::procinfo::resume_request(&process.argv) {
+            return Some(request);
+        }
+        if agentdocker_host::procinfo::runtime_of(&process.argv).is_some() || process.ppid == pid {
+            return None;
+        }
+        pid = process.ppid;
+    }
+    None
 }
 
 /// What an agent without a checkout can do: find the others, talk to
@@ -205,6 +242,19 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
     server.claude_channel = claude_channel;
     server.codex_input =
         std::env::var(agentdocker_host::provider_input::CODEX_INPUT_ENV).as_deref() == Ok("1");
+    if claude_channel
+        && let Some(request) = server.identity.host_pid.and_then(parent_resume_request)
+    {
+        eprintln!(
+            "agentdocker mcp: the session asked to resume {}; waiting up to {}s for its hooks to say which session runs before binding input",
+            request.session.as_deref().unwrap_or("an earlier session"),
+            ResumeVouch::DEFAULT_WAIT.as_secs()
+        );
+        server.resume_vouch = Some(ResumeVouch {
+            requested: request.session,
+            wait: ResumeVouch::DEFAULT_WAIT,
+        });
+    }
     // Transport shutdown preserves a live provider identity; cleanup below
     // only retires a registration whose owning process has ended.
     // Hold ownership through the final status write so a successor adapter's
@@ -414,6 +464,7 @@ impl<B: Backend> McpServer<B> {
             remote: false,
             project_root: None,
             last_contact: std::sync::Mutex::new(None),
+            resume_vouch: None,
         }
     }
 
@@ -850,6 +901,7 @@ impl<B: Backend> McpServer<B> {
                     kind: args.kind,
                     payload,
                     reply_to: args.reply_to.map(MessageId::from),
+                    links: args.links,
                 })
                 .await
             }
@@ -1162,6 +1214,8 @@ struct SendMessageArgs {
     kind: String,
     #[serde(default)]
     reply_to: Option<String>,
+    #[serde(default)]
+    links: Vec<agentdocker_core::Link>,
 }
 
 #[derive(Deserialize)]
@@ -1524,7 +1578,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({"name":"worktree_diff","description":"Host endpoint only: show tracked uncommitted changes in this session's physical checkout.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({"name":"commit","description":"Host endpoint only: commit this session's checkout. The journal records the commit against this agent with the message given, rather than inferring afterwards who moved HEAD. Nothing is written into the commit itself: the git author is unchanged and no trailer is added. all=true stages tracked modifications and deletions first; push=true pushes the branch afterwards.","inputSchema":{"type":"object","properties":{"message":{"type":"string"},"all":{"type":"boolean"},"push":{"type":"boolean"}},"required":["message"],"additionalProperties":false}}),
         json!({"name":"integrate_worktree","description":"Host endpoint only: preview validated committed source from a linked checkout. apply=true prepares an uncommitted merge and retains a target-checkout lease for review; it never commits automatically.","inputSchema":{"type":"object","properties":{"source":{"type":"string"},"validation":{"type":"string"},"apply":{"type":"boolean"}},"required":["source","validation"],"additionalProperties":false}}),
-        json!({"name":"save_checkpoint","description":"Persist task, assumptions and next steps with current content and retained read versions. A stable key makes retries idempotent. Optionally release leases only after persistence.","inputSchema":{"type":"object","properties":{"key":{"type":"string"},"task":{"type":"string"},"assumptions":{"type":"array","items":{"type":"string"}},"next_steps":{"type":"array","items":{"type":"string"}},"release_leases":{"type":"boolean"}},"required":["key","task"],"additionalProperties":false}}),
+        json!({"name":"save_checkpoint","description":"Persist task, assumptions and next steps with current content and retained read versions. A stable key makes retries idempotent. Optionally release leases only after persistence.","inputSchema":{"type":"object","properties":{"key":{"type":"string"},"task":{"type":"string"},"assumptions":{"type":"array","items":{"type":"string"}},"next_steps":{"type":"array","items":{"type":"string"}},"links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } },"release_leases":{"type":"boolean"}},"required":["key","task"],"additionalProperties":false}}),
         json!({"name":"resume_checkpoint","description":"Review task context, stale assumptions and matching test evidence. Explicit acknowledgement requires unchanged content and binds the handoff to this replacement session; leases move to it only when the accepted handoff bundle asked for that, and a plain checkpoint never transfers them.","inputSchema":{"type":"object","properties":{"checkpoint":{"type":"string"},"acknowledge":{"type":"boolean"}},"required":["checkpoint"],"additionalProperties":false}}),
         json!({"name":"list_checkpoints","description":"List this agent's durable checkpoints.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({
@@ -1536,6 +1590,7 @@ fn tool_definitions() -> Vec<Value> {
                     "to": { "type": "string", "description": "The recipient: agent id, name, or unique prefix." },
                     "task": { "type": "string", "description": "What the recipient should continue." },
                     "note": { "type": "string", "description": "Anything the daemon does not already know." },
+                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } },
                     "transfer_leases": { "type": "boolean", "default": false },
                     "key": { "type": "string", "description": "Retries with the same key return the same bundle." }
                 },
@@ -1663,7 +1718,8 @@ fn tool_definitions() -> Vec<Value> {
                     "text": { "type": "string" },
                     "payload": { "type": "object", "description": "Structured payload instead of text." },
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },
-                    "reply_to": { "type": "string", "description": "Id of the message this answers." }
+                    "reply_to": { "type": "string", "description": "Id of the message this answers." },
+                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                 },
                 "required": ["to"],
                 "additionalProperties": false
@@ -1914,7 +1970,8 @@ fn tool_definitions() -> Vec<Value> {
                     "title": { "type": "string" },
                     "acceptance": { "type": "string", "description": "What done means." },
                     "column": { "type": "string", "enum": ["backlog", "ready", "in_progress", "review", "done"] },
-                    "project": { "type": "string", "description": "Project id or path; your own when absent." }
+                    "project": { "type": "string", "description": "Project id or path; your own when absent." },
+                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                 },
                 "required": ["title"],
                 "additionalProperties": false
@@ -2506,6 +2563,7 @@ mod tests {
                 kind: "chat".into(),
                 payload: json!({ "text": "hi" }),
                 reply_to: None,
+                links: Vec::new(),
             }
         );
     }

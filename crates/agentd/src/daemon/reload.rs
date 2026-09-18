@@ -1863,6 +1863,7 @@ mod fence_tests {
                 kind: "answer".into(),
                 payload: serde_json::json!({"text": "no"}),
                 reply_to: Some(question),
+                links: Vec::new(),
             })
             .await;
         assert!(matches!(answered, Response::Sent { .. }), "{answered:?}");

@@ -3030,5 +3030,89 @@
       },
       "scope": "Clearly labeled Codex-authored CLI test through --from user to project. Both existing model sessions consumed and replied during active tool turns, without a new human prompt. No idle-wake inference."
     }
+  },
+  "active_peer_burst_2026_09_17": {
+    "result": "ordered_delivery_passed_latency_open",
+    "installed_source": "418fbc93c86d1658ab4c5c9975eeb76e581a4915",
+    "installed_release": "f5e298f471dfadf5925558b44fb3f6e2d5d53a0172ce2e8a708af77a4f8dd192",
+    "scope": "One actual Claude-to-Codex three-message burst during an active Codex turn. No new human prompt, provider restart, repeated burst or manual acknowledgement. This is separate from the earlier one-shot idle-wake trial.",
+    "context_records": [
+      {
+        "id": "55eb760789b34b54",
+        "sent_at": "2026-09-17T20:20:00.125314Z",
+        "provider_context_recorded_at": "2026-09-17T20:21:44.314Z",
+        "queue_to_record_seconds": 104.188686,
+        "provider_receipt_sha256": "9d213987aa18381a0660c4bd05c788149080165503ea8c6677d89ef61c6b8610"
+      },
+      {
+        "id": "c87548f7ad534612",
+        "sent_at": "2026-09-17T20:20:00.132120Z",
+        "provider_context_recorded_at": "2026-09-17T20:21:59.314Z",
+        "queue_to_record_seconds": 119.18188,
+        "provider_receipt_sha256": "97cce856a7ad4adb730f92b6802d5e5708fc013e872365bca7a467d014bda93d"
+      },
+      {
+        "id": "2de3196465134a2e",
+        "sent_at": "2026-09-17T20:20:00.139014Z",
+        "provider_context_recorded_at": "2026-09-17T20:21:59.502Z",
+        "queue_to_record_seconds": 119.362986,
+        "provider_receipt_sha256": "fabdb115581a951af212ab29e7775f5e5f98ba1c96413aad7446cf49b143327e"
+      }
+    ],
+    "same_active_turn": true,
+    "original_ids_consumed_once_in_order": true,
+    "timing_method": "Original AgentDocker sent_at compared with the provider rollout response_item timestamp whose item ID exactly matches the retained receiver receipt.",
+    "preceding_system_notice_acknowledgements": [
+      {
+        "seq": 131911,
+        "at": "2026-09-17T20:20:08.587859+00:00",
+        "acked": [
+          {
+            "id": "4c8dd90835c443f8",
+            "archive": [
+              "2026-09-17T20:19:52.188894+00:00",
+              "stale",
+              "agentd"
+            ]
+          }
+        ]
+      },
+      {
+        "seq": 131933,
+        "at": "2026-09-17T20:21:01.183993+00:00",
+        "acked": [
+          {
+            "id": "44209b8112d848a0",
+            "archive": [
+              "2026-09-17T20:19:52.190124+00:00",
+              "channel",
+              "agentd"
+            ]
+          }
+        ]
+      }
+    ],
+    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait. The sanitized tool timeline shows about 50 seconds between tool boundaries and a 45-second coordinator sleep before the first peer context. Attribute the 104\u2013119 seconds to end-to-end context latency, not daemon/polling latency alone.",
+    "acceptance_remaining": "Reduce and measure busy delivery latency and system-notice backlog while preserving FIFO human/peer ordering, exact receipt recovery, unavailable-provider gates and no duplicate execution. Three ordered receipts do not establish prompt-like latency or sustained throughput.",
+    "private_evidence": "/private/tmp/agentdocker-live-active-burst-20260917.json",
+    "provider_route_review": {
+      "official_reference": "https://learn.chatgpt.com/docs/app-server#steer-an-active-turn",
+      "local_schema": "/private/tmp/agentdocker-codex-input-schema-20260917",
+      "queue_add_fields": [
+        "clientUserMessageId",
+        "input",
+        "threadId"
+      ],
+      "managed_control_socket": "Read-only daemon version check found no app-server-control socket for this profile; no daemon was started.",
+      "limit": "The documented turn/steer API requires an active turn on the target thread and a matching expectedTurnId. This independent-terminal bridge has not established a compatible route to steer the terminal active turn through its separate connection; this is a local compatibility limitation, not an additional API ownership requirement."
+    },
+    "tool_boundary_timing": {
+      "previous_tool_completed_at": "2026-09-17T20:20:08.578Z",
+      "next_tool_started_at": "2026-09-17T20:20:58.985Z",
+      "coordinator_sleep_seconds": 45,
+      "sleep_completed_and_first_peer_context_at": "2026-09-17T20:21:44.314Z",
+      "following_tool_started_at": "2026-09-17T20:21:59.161Z",
+      "scope": "The end-to-end delay includes a gap between tools and a 45-second coordinator wait. It does not measure daemon or RPC processing alone."
+    }
   }
 }

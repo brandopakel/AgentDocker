@@ -160,24 +160,7 @@ enum Command {
     /// Revoke container access without prematurely releasing a live writer's leases.
     RevokeAccess { grant: String },
     /// Persist task context and content identity before an optional lease release.
-    Checkpoint {
-        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
-        #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
-        agent: String,
-        key: String,
-        #[arg(long)]
-        #[arg(help = "Task the replacement session should continue.")]
-        task: String,
-        #[arg(long = "assumption")]
-        #[arg(help = "Assumption to review during recovery (repeatable).")]
-        assumptions: Vec<String>,
-        #[arg(long = "next")]
-        #[arg(help = "Next action for the replacement (repeatable).")]
-        next_steps: Vec<String>,
-        #[arg(long)]
-        #[arg(help = "Release this agent’s leases only after saving the checkpoint.")]
-        release_leases: bool,
-    },
+    Checkpoint(CheckpointArgs),
     /// Inspect or explicitly accept a verified session handoff.
     Resume {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -197,25 +180,7 @@ enum Command {
         action: Option<CheckpointAction>,
     },
     /// Hand this agent's work to another: a checkpoint addressed to it, with leases, reads, changes, diff, unread messages and journal bundled around it.
-    Handoff {
-        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
-        /// Agent id, name or unique prefix (defaults to this session).
-        agent: String,
-        /// The recipient: id, name or unique prefix.
-        to: String,
-        #[arg(long)]
-        /// What the recipient should continue.
-        task: Option<String>,
-        #[arg(long)]
-        /// Anything the daemon does not already know.
-        note: Option<String>,
-        #[arg(long)]
-        /// Move this agent's leases to the recipient when it accepts, instead of releasing them now.
-        transfer_leases: bool,
-        #[arg(long)]
-        /// Retries with the same key return the same bundle.
-        key: Option<String>,
-    },
+    Handoff(HandoffArgs),
     /// List handoffs for --as or AGENTDOCKER_AGENT_ID; all when neither is set.
     Handoffs {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -893,6 +858,10 @@ enum TaskAction {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         /// Who files it (defaults to you, or the session this runs in).
         from: Option<String>,
+        /// A typed reference, `kind:target` (repeatable, at most 16):
+        /// path, commit, pr, url, task, message or memory.
+        #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
+        links: Vec<agentdocker_core::Link>,
     },
     /// Take a Ready card nobody holds: yours, in progress. Refused if it
     /// is held or not ready.
@@ -927,6 +896,12 @@ enum TaskAction {
         assignee: Option<String>,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
+        /// Replace the card's links: `kind:target` (repeatable); give
+        /// `--no-links` to clear them.
+        #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
+        links: Vec<agentdocker_core::Link>,
+        #[arg(long, conflicts_with = "links")]
+        no_links: bool,
     },
     /// Take a card off the board, kept for the record.
     Archive {
@@ -1158,6 +1133,65 @@ struct SendArgs {
     /// Raw JSON payload instead of text.
     #[arg(long, conflicts_with = "text")]
     json: Option<String>,
+    /// A typed reference beside the text, `kind:target` (repeatable, at
+    /// most 16): path, commit, pr, url, task, message or memory.
+    #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
+    links: Vec<agentdocker_core::Link>,
+}
+
+/// Its own struct, like `SendArgs`: the top-level command enum is parsed
+/// on a test thread's small stack, and every field added there in place
+/// brings the derived parser nearer to overflowing it.
+#[derive(Args)]
+struct CheckpointArgs {
+    #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+    #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
+    agent: String,
+    key: String,
+    #[arg(long)]
+    #[arg(help = "Task the replacement session should continue.")]
+    task: String,
+    #[arg(long = "assumption")]
+    #[arg(help = "Assumption to review during recovery (repeatable).")]
+    assumptions: Vec<String>,
+    #[arg(long = "next")]
+    #[arg(help = "Next action for the replacement (repeatable).")]
+    next_steps: Vec<String>,
+    /// A typed reference for the replacement to open first, `kind:target` (repeatable).
+    #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
+    links: Vec<agentdocker_core::Link>,
+    #[arg(long)]
+    #[arg(help = "Release this agent’s leases only after saving the checkpoint.")]
+    release_leases: bool,
+}
+
+#[derive(Args)]
+struct HandoffArgs {
+    #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+    /// Agent id, name or unique prefix (defaults to this session).
+    agent: String,
+    /// The recipient: id, name or unique prefix.
+    to: String,
+    #[arg(long)]
+    /// What the recipient should continue.
+    task: Option<String>,
+    #[arg(long)]
+    /// Anything the daemon does not already know.
+    note: Option<String>,
+    /// A typed reference for the recipient to open first, `kind:target` (repeatable).
+    #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
+    links: Vec<agentdocker_core::Link>,
+    #[arg(long)]
+    /// Move this agent's leases to the recipient when it accepts, instead of releasing them now.
+    transfer_leases: bool,
+    #[arg(long)]
+    /// Retries with the same key return the same bundle.
+    key: Option<String>,
+}
+
+/// `kind:target` from the command line, checked for its kind's shape.
+fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
+    agentdocker_core::Link::parse(text).map_err(str::to_owned)
 }
 
 #[derive(Args)]
@@ -1261,8 +1295,18 @@ struct ClaimArgs {
     amount: Option<u64>,
 }
 
+/// A command ends with a status a script can branch on: the daemon's
+/// answer by its class (see [`client::exit_code`]), anything else as
+/// unexpected. The words go to stderr as they always did.
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!("Error: {error:#}");
+        std::process::exit(client::exit_code_for(&error));
+    }
+}
+
+async fn run() -> Result<()> {
     agentdocker_host::installation::redirect_managed_launcher()?;
     let _installation_pin = agentdocker_host::installation::pin_current_executable()?;
     let cli = Cli::parse();
@@ -1323,14 +1367,15 @@ async fn main() -> Result<()> {
         Command::Reads { agent } => {
             print_json(&client.call(&Request::Reads { agent }).await?)?;
         }
-        Command::Checkpoint {
+        Command::Checkpoint(CheckpointArgs {
             agent,
             key,
             task,
             assumptions,
             next_steps,
+            links,
             release_leases,
-        } => {
+        }) => {
             let response = client
                 .call(&Request::Checkpoint {
                     agent,
@@ -1338,6 +1383,7 @@ async fn main() -> Result<()> {
                     task,
                     assumptions,
                     next_steps,
+                    links,
                     release_leases,
                 })
                 .await?;
@@ -1375,14 +1421,15 @@ async fn main() -> Result<()> {
                 }
             }
         },
-        Command::Handoff {
+        Command::Handoff(HandoffArgs {
             agent,
             to,
             task,
             note,
+            links,
             transfer_leases,
             key,
-        } => {
+        }) => {
             let request = Request::Handoff {
                 agent,
                 to: Some(to),
@@ -1390,6 +1437,7 @@ async fn main() -> Result<()> {
                 note,
                 transfer_leases,
                 key,
+                links,
             };
             match client.call(&request).await? {
                 Response::Handoff { bundle } => println!("{}", bundle.id),
@@ -1407,6 +1455,7 @@ async fn main() -> Result<()> {
                 note,
                 transfer_leases: false,
                 key: None,
+                links: Vec::new(),
             };
             match client.call(&request).await? {
                 Response::Handoff { bundle } => print_json(&bundle)?,
@@ -1700,6 +1749,10 @@ async fn main() -> Result<()> {
                 else {
                     bail!("unexpected reply to discover");
                 };
+                // Every process is tried; the status is that of the first
+                // refusal, since a mixed result has no single class of its
+                // own, and each refusal is said with its pid.
+                let mut first: Option<client::RemoteError> = None;
                 let mut failed = 0;
                 for process in processes {
                     match client
@@ -1711,15 +1764,25 @@ async fn main() -> Result<()> {
                         .await?
                     {
                         Response::Agent { agent } => println!("{}", agent.id),
-                        Response::Error { message, .. } => {
+                        Response::Error {
+                            code,
+                            message,
+                            details,
+                        } => {
                             failed += 1;
                             eprintln!("pid {}: {message}", process.pid);
+                            first.get_or_insert(client::RemoteError {
+                                code,
+                                message,
+                                details,
+                            });
                         }
                         _ => {}
                     }
                 }
-                if failed > 0 {
-                    bail!("{failed} process(es) could not be adopted");
+                if let Some(first) = first {
+                    return Err(anyhow::Error::from(first)
+                        .context(format!("{failed} process(es) could not be adopted")));
                 }
             } else if let Some(pid) = pid {
                 let request = Request::Adopt { pid, name, runtime };
@@ -1834,7 +1897,7 @@ async fn main() -> Result<()> {
             };
             let here = || -> Result<String> { Ok(std::env::current_dir()?.display().to_string()) };
             let card_line = |task: &agentdocker_core::Task| {
-                format!(
+                let mut line = format!(
                     "{}  {:<12} {}{}",
                     task.id,
                     task.column.label(),
@@ -1843,7 +1906,11 @@ async fn main() -> Result<()> {
                         .as_ref()
                         .map(|a| format!("  ({})", a.short()))
                         .unwrap_or_default()
-                )
+                );
+                for link in &task.links {
+                    line.push_str(&format!("\n    {link}"));
+                }
+                line
             };
             match args.action {
                 TaskAction::Create {
@@ -1852,6 +1919,7 @@ async fn main() -> Result<()> {
                     column,
                     project,
                     from,
+                    links,
                 } => {
                     let request = Request::TaskCreate {
                         from: sender::resolve(&client, from)
@@ -1861,6 +1929,7 @@ async fn main() -> Result<()> {
                         title,
                         acceptance,
                         column: column_of(column)?,
+                        links,
                     };
                     if let Response::Task { task } = client.call(&request).await? {
                         println!("{}", task.id);
@@ -1909,6 +1978,8 @@ async fn main() -> Result<()> {
                     acceptance,
                     assignee,
                     agent,
+                    links,
+                    no_links,
                 } => {
                     let request = Request::TaskUpdate {
                         agent: sender::resolve(&client, agent)
@@ -1918,6 +1989,13 @@ async fn main() -> Result<()> {
                         title,
                         acceptance,
                         assignee,
+                        links: if no_links {
+                            Some(Vec::new())
+                        } else if links.is_empty() {
+                            None
+                        } else {
+                            Some(links)
+                        },
                     };
                     if let Response::Task { task } = client.call(&request).await? {
                         println!("{}", card_line(&task));
@@ -2395,6 +2473,7 @@ async fn main() -> Result<()> {
                 kind: args.kind,
                 payload,
                 reply_to: args.reply_to.map(MessageId::from),
+                links: args.links,
             };
             if let Response::Sent {
                 message,
@@ -3587,9 +3666,19 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
             ]
         })
         .collect();
+    // The last column counts this runtime's processes that no registered
+    // agent claims — what `discover` would list — not its sessions, which
+    // `ps` shows; the heading says which.
     format::table(
         &[
-            "RUNTIME", "VENDOR", "CLI", "VERSION", "APP", "MCP", "HOOKS", "RUNNING",
+            "RUNTIME",
+            "VENDOR",
+            "CLI",
+            "VERSION",
+            "APP",
+            "MCP",
+            "HOOKS",
+            "UNREGISTERED",
         ],
         &rows,
     );

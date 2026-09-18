@@ -95,6 +95,7 @@ impl Daemon {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn checkpoint(
         &self,
         reference: &str,
@@ -102,8 +103,12 @@ impl Daemon {
         task: String,
         assumptions: Vec<String>,
         next_steps: Vec<String>,
+        links: Vec<agentdocker_core::Link>,
         release: bool,
     ) -> Response {
+        if let Err(reason) = agentdocker_core::link::check(&links) {
+            return Response::error(ErrorCode::Invalid, reason);
+        }
         if key.is_empty()
             || key.len() > 128
             || !key
@@ -188,6 +193,7 @@ impl Daemon {
             task,
             assumptions,
             next_steps,
+            links,
             reads,
             version,
             environment: state
@@ -711,6 +717,7 @@ mod tests {
             assumptions: vec!["file is one".into()],
             next_steps: vec!["add regression".into()],
             release_leases: false,
+            links: Vec::new(),
         };
         let Response::Checkpoint { checkpoint } = daemon.handle(save()).await else {
             panic!()
@@ -768,6 +775,7 @@ mod tests {
                 assumptions: vec![],
                 next_steps: vec![],
                 release_leases: false,
+                links: Vec::new(),
             })
             .await
         else {
@@ -781,6 +789,7 @@ mod tests {
                 note: None,
                 transfer_leases: false,
                 key: Some("step2".into()),
+                links: Vec::new(),
             })
             .await
         else {
@@ -846,6 +855,7 @@ mod tests {
                 assumptions: vec![],
                 next_steps: vec![],
                 release_leases: false,
+                links: Vec::new(),
             })
             .await
         else {
@@ -933,6 +943,7 @@ mod tests {
                 "task".into(),
                 vec![],
                 vec![],
+                vec![],
                 true,
             )
             .await;
@@ -969,6 +980,7 @@ mod tests {
                 "original",
                 "accept-rollback".into(),
                 "task".into(),
+                vec![],
                 vec![],
                 vec![],
                 false,
@@ -1101,6 +1113,7 @@ mod tests {
                     "original",
                     "barrier".into(),
                     "task".into(),
+                    vec![],
                     vec![],
                     vec![],
                     true

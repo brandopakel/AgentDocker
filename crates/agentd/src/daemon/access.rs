@@ -621,6 +621,7 @@ mod tests {
             kind: "chat".into(),
             payload: json!({"text":"hello"}),
             reply_to: None,
+            links: Vec::new(),
         };
         for kind in ["pause", "resume"] {
             let mut request = send("peer");

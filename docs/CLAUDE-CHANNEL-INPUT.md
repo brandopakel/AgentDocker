@@ -70,6 +70,23 @@ also stays separate: it may already have offered its queue head, so folding old
 backlog in front would change delivery order. Its old queue remains retained;
 this ordering does not establish successful existing-session handover.
 
+So that the hooks get there first, the channel waits for them when the
+session asked to resume: the MCP server reads its parent Claude command line
+(`--resume <id>`, `-r <id>`, a bare `--resume` picker or `--continue`) and,
+when it finds one, answers the MCP handshake as usual but does not report its
+readiness — the step that binds input delivery — until the daemon's record for
+this very process (the same pid and process birth, both known) carries the
+`session_id` the hooks registered, or ten seconds have passed. Each look at
+the record is bounded by the transport timeout and cut at the deadline, and is
+polled beside the transport, so a slow daemon neither holds up control or
+receipts nor stretches the wait. The hook's word is followed even
+when it names a different session from the one the command line asked for;
+a command-line id is a claim and is never registered as identity. Arguments after `--` are prompt text and do not select the wait. Past the
+wait, input is bound anyway and the adapter says so on stderr — the daemon's
+guard then keeps the earlier record separate, as before. Control calls, `ping`
+and receipts are served throughout; no message is offered before readiness.
+A session started fresh binds at the handshake as it always did.
+
 This is how a session started plainly is relaunched with channel input
 without becoming a second agent: with the user-level entry carrying
 `--claude-channel` (see above), start the same session again as
@@ -267,6 +284,15 @@ passes the full 1,094-Rust/84-Python gate (seven skipped) and the actual daemon/
 transport regression; the older binary admits a second channel and fails. See
 [existing channel evidence](verification/2026-09-11-claude-channel-input.json).
 Actual Claude relaunch and model idle wake still need separate acceptance.
+
+September 17 startup validation: runtime `a45f831` passed the full gate with
+1,149 Rust tests (seven skipped), 94 Python checks (one skipped), formatting,
+strict Clippy, doctests, packaging and release build. The parser regression
+includes resume-like prompt text after `--`. Local backend fixtures cover both
+startup orders, wrong/missing generations, a silent daemon, timeout, and control
+and explicit receipts before readiness. These do not establish actual provider
+startup/consent or an idle model reply; those remain open in the
+[existing channel record](verification/2026-09-11-claude-channel-input.json).
 
 September 17 resumption follow-up: PR #179 keeps the latest capture per path
 and eligible open channel memberships in the same transaction as the queue and

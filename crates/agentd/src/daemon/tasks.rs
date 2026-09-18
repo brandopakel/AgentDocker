@@ -272,6 +272,7 @@ impl Daemon {
         title: String,
         acceptance: String,
         column: Option<Column>,
+        links: Vec<agentdocker_core::Link>,
     ) -> Response {
         let named = match project {
             Some(selector) => match self.resolve_project(&selector).await {
@@ -288,7 +289,15 @@ impl Daemon {
         let Some(project) = named.or(actor.project) else {
             return Response::error(ErrorCode::Invalid, "the caller is in no project; name one");
         };
-        let task = match Task::new(project, &title, &acceptance, column, &actor.id, Utc::now()) {
+        let task = match Task::new(
+            project,
+            &title,
+            &acceptance,
+            column,
+            &actor.id,
+            links,
+            Utc::now(),
+        ) {
             Ok(task) => task,
             Err(error) => return refused(error),
         };
@@ -511,6 +520,7 @@ impl Daemon {
         title: Option<String>,
         acceptance: Option<String>,
         assignee: Option<String>,
+        links: Option<Vec<agentdocker_core::Link>>,
     ) -> Response {
         let mut state = lock(&self.state);
         let actor = match state.actor(reference) {
@@ -543,9 +553,12 @@ impl Daemon {
         if let Err(error) = task.update(
             &actor.id,
             actor.human,
-            title.as_deref(),
-            acceptance.as_deref(),
-            assignee,
+            agentdocker_core::task::TaskEdit {
+                title: title.as_deref(),
+                acceptance: acceptance.as_deref(),
+                assignee,
+                links,
+            },
             now,
         ) {
             return refused(error);
@@ -734,6 +747,7 @@ mod tests {
                         title,
                         acceptance: "it works".to_owned(),
                         column,
+                        links: Vec::new(),
                     })
                     .await
                 {
@@ -750,6 +764,7 @@ mod tests {
                     title: "  ".to_owned(),
                     acceptance: String::new(),
                     column: None,
+                    links: Vec::new(),
                 })
                 .await,
             Response::Error {
@@ -759,6 +774,136 @@ mod tests {
         ));
         let first = create(&daemon, "Fix login", Some(Column::Ready)).await;
         let second = create(&daemon, "Write the release notes", None).await;
+        // Links: a card is filed with them, checked for their kinds'
+        // shapes, and an update replaces them whole or clears them.
+        assert!(matches!(
+            daemon
+                .handle(Request::TaskCreate {
+                    from: HUMAN.to_owned(),
+                    project: Some(work.display().to_string()),
+                    title: "Linked".to_owned(),
+                    acceptance: String::new(),
+                    column: None,
+                    links: vec![agentdocker_core::Link::new(
+                        agentdocker_core::LinkKind::Url,
+                        "ftp://nope"
+                    )],
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        let links = vec![
+            agentdocker_core::Link::parse("pr:#176").unwrap(),
+            agentdocker_core::Link::parse("path:crates/core/src/task.rs").unwrap(),
+        ];
+        let Response::Task { task: linked } = daemon
+            .handle(Request::TaskCreate {
+                from: HUMAN.to_owned(),
+                project: Some(work.display().to_string()),
+                title: "Linked".to_owned(),
+                acceptance: String::new(),
+                column: None,
+                links: links.clone(),
+            })
+            .await
+        else {
+            panic!("filed with links")
+        };
+        assert_eq!(linked.links, links);
+        let Response::Task { task: relinked } = daemon
+            .handle(Request::TaskUpdate {
+                agent: HUMAN.to_owned(),
+                task: linked.id.to_string(),
+                title: None,
+                acceptance: None,
+                assignee: None,
+                links: Some(vec![
+                    agentdocker_core::Link::parse("commit:3fb678f").unwrap(),
+                ]),
+            })
+            .await
+        else {
+            panic!("relinked")
+        };
+        assert_eq!(relinked.links.len(), 1);
+        assert_eq!(relinked.links[0].to_string(), "commit:3fb678f");
+        let Response::Task { task: unlinked } = daemon
+            .handle(Request::TaskUpdate {
+                agent: HUMAN.to_owned(),
+                task: linked.id.to_string(),
+                title: None,
+                acceptance: None,
+                assignee: None,
+                links: Some(Vec::new()),
+            })
+            .await
+        else {
+            panic!("unlinked")
+        };
+        assert!(unlinked.links.is_empty());
+        assert!(matches!(
+            daemon
+                .handle(Request::TaskArchive {
+                    agent: HUMAN.to_owned(),
+                    task: linked.id.to_string(),
+                })
+                .await,
+            Response::Ok
+        ));
+        // A message carries its links to the reader, and a bad one is
+        // refused before it is routed.
+        assert!(matches!(
+            daemon
+                .handle(Request::Send {
+                    from: HUMAN.to_owned(),
+                    to: "alice".to_owned(),
+                    kind: "chat".to_owned(),
+                    payload: serde_json::json!({"text": "see"}),
+                    reply_to: None,
+                    links: vec![agentdocker_core::Link::new(
+                        agentdocker_core::LinkKind::Task,
+                        "zz"
+                    )],
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        let card_link = agentdocker_core::Link::parse(&format!("task:{}", first.id)).unwrap();
+        assert!(matches!(
+            daemon
+                .handle(Request::Send {
+                    from: HUMAN.to_owned(),
+                    to: "alice".to_owned(),
+                    kind: "chat".to_owned(),
+                    payload: serde_json::json!({"text": "this one is yours"}),
+                    reply_to: None,
+                    links: vec![card_link.clone()],
+                })
+                .await,
+            Response::Sent { .. }
+        ));
+        let Response::Messages { messages } = daemon
+            .handle(Request::Inbox {
+                agent: "alice".to_owned(),
+                drain: false,
+            })
+            .await
+        else {
+            panic!("inbox")
+        };
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.payload["text"] == "this one is yours"
+                    && m.links == vec![card_link.clone()]),
+            "{messages:?}"
+        );
         assert_eq!(
             (first.column, first.created_by.as_str()),
             (Column::Ready, person.id.as_str()),
@@ -886,6 +1031,7 @@ mod tests {
                 title: None,
                 acceptance: Some("Notes for 0.1.1".to_owned()),
                 assignee: Some("bob".to_owned()),
+                links: None,
             })
             .await
         else {
@@ -951,11 +1097,15 @@ mod tests {
             Response::Ok
         ));
         assert_eq!(list(&daemon, false).await.len(), 1);
-        assert_eq!(list(&daemon, true).await.len(), 2);
+        assert_eq!(
+            list(&daemon, true).await.len(),
+            3,
+            "with the archived linked card"
+        );
         drop(daemon);
         let daemon = open(&dir);
         let board = list(&daemon, true).await;
-        assert_eq!(board.len(), 2);
+        assert_eq!(board.len(), 3);
         assert!(
             board
                 .iter()
@@ -982,7 +1132,8 @@ mod tests {
         assert_eq!(
             kinds,
             [
-                "created", "created", "pulled", "moved", "moved", "updated", "archived"
+                "created", "created", "created", "updated", "updated", "archived", "pulled",
+                "moved", "moved", "updated", "archived"
             ]
         );
         let _ = project;
@@ -1012,6 +1163,7 @@ mod tests {
                 title: "Port the parser".to_owned(),
                 acceptance: "tests pass".to_owned(),
                 column: Some(Column::Ready),
+                links: Vec::new(),
             })
             .await
         else {
@@ -1209,6 +1361,7 @@ mod tests {
                 title: None,
                 acceptance: None,
                 assignee: Some("carol".to_owned()),
+                links: None,
             })
             .await
         else {
@@ -1322,6 +1475,7 @@ mod tests {
                 title: "Port the parser".to_owned(),
                 acceptance: "tests pass".to_owned(),
                 column: Some(Column::Ready),
+                links: Vec::new(),
             })
             .await
         else {
@@ -1452,6 +1606,7 @@ mod tests {
                 title: "Port the parser".to_owned(),
                 acceptance: "tests pass".to_owned(),
                 column: Some(Column::Ready),
+                links: Vec::new(),
             })
             .await
         else {
@@ -1502,6 +1657,7 @@ mod tests {
                         title: format!("card {i}"),
                         acceptance: "x".repeat(agentdocker_core::task::ACCEPTANCE_CHARS),
                         column: Some(column),
+                        links: Vec::new(),
                     })
                     .await,
                 Response::Task { .. }

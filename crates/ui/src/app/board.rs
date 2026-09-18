@@ -10,8 +10,14 @@ use crate::controls::{Kind, button as action, custom, input_enabled, primary};
 use agentdocker_core::{Column, Task};
 use iced::{
     Center, Element, Fill, Top,
-    widget::{Space, column, container, row, scrollable, text},
+    widget::{Space, column, container, row, text},
 };
+
+/// The least the five lanes need side by side — a card's words wrap
+/// below this rather than the lanes sharing it — measured against the
+/// page beside the rail, which a wide rail in a small window can leave
+/// far narrower than the window itself.
+const LANES_FIT: f32 = 5.0 * 150.0 + 4.0 * 12.0;
 
 impl App {
     pub(super) fn board_view(&self, c: Colors) -> Element<'_, Message> {
@@ -66,17 +72,15 @@ impl App {
                 c,
             ));
         }
-        let narrow = self.narrow();
-        // Wide, five columns side by side; narrow, one below the other.
-        let mut columns = if narrow {
-            column![].spacing(12).width(Fill)
-        } else {
-            column![].spacing(0).width(Fill)
-        };
-        let mut lane = row![].spacing(12).align_y(Top);
+        let narrow = self.narrow() || self.panes.workspace_width() < LANES_FIT;
+        // Wide, five columns sharing the width, the open card's detail
+        // beneath them where there is room to read it; narrow, one
+        // column below the other with the detail under its card.
+        let mut columns = column![].spacing(12).width(Fill);
+        let mut lane = row![].spacing(12).align_y(Top).width(Fill);
         for column_kind in Column::ALL {
             let cards: Vec<&Task> = tasks.iter().filter(|t| t.column == column_kind).collect();
-            let lane_body = self.lane(column_kind, &cards, c);
+            let lane_body = self.lane(column_kind, &cards, narrow, c);
             if narrow {
                 columns = columns.push(lane_body);
             } else {
@@ -84,14 +88,14 @@ impl App {
             }
         }
         if !narrow {
-            columns = columns.push(
-                scrollable(lane)
-                    .id("board-lanes")
-                    .direction(iced::widget::scrollable::Direction::Horizontal(
-                        iced::widget::scrollable::Scrollbar::default(),
-                    ))
-                    .width(Fill),
-            );
+            columns = columns.push(lane);
+            if let Some(open) = self
+                .task_open
+                .as_ref()
+                .and_then(|id| tasks.iter().find(|t| &t.id == id))
+            {
+                columns = columns.push(self.card_detail(open, c));
+            }
         }
         page.push(columns).into()
     }
@@ -145,7 +149,13 @@ impl App {
         panel(form, c)
     }
 
-    fn lane(&self, kind: Column, cards: &[&Task], c: Colors) -> Element<'_, Message> {
+    fn lane(
+        &self,
+        kind: Column,
+        cards: &[&Task],
+        inline_detail: bool,
+        c: Colors,
+    ) -> Element<'_, Message> {
         let mut lane = column![
             row![eyebrow(kind.label(), c), small(cards.len().to_string(), c),]
                 .spacing(6)
@@ -157,7 +167,7 @@ impl App {
             lane = lane.push(container(small("—", c)).padding([2, 4]));
         }
         for card in cards {
-            lane = lane.push(self.card(card, c));
+            lane = lane.push(self.card(card, inline_detail, c));
         }
         container(lane)
             .padding(8)
@@ -173,9 +183,9 @@ impl App {
             .into()
     }
 
-    /// One card: the title, who holds it, and — opened — what done means
-    /// and the ways it can move.
-    fn card(&self, task: &Task, c: Colors) -> Element<'_, Message> {
+    /// One card: the title, who holds it, and — opened, when the detail
+    /// is inline — what done means and the ways it can move.
+    fn card(&self, task: &Task, inline_detail: bool, c: Colors) -> Element<'_, Message> {
         let id = task.id.clone();
         let open = self.task_open.as_ref() == Some(&id);
         // The holding is the task:<id> lease: while the assignee holds it
@@ -238,17 +248,19 @@ impl App {
         )]
         .spacing(6)
         .width(Fill);
-        if open {
-            let acceptance = if task.acceptance.is_empty() {
-                "No acceptance text. An agent will decide for itself what done means.".to_owned()
-            } else {
-                task.acceptance.clone()
-            };
+        if open && inline_detail {
             body = body.push(
-                container(text(acceptance).size(13).color(c.muted))
+                container(self.acceptance(task, c))
                     .padding([2, 10])
                     .width(Fill),
             );
+            if !task.links.is_empty() {
+                body = body.push(
+                    container(super::view::links(&task.links, c))
+                        .padding([2, 10])
+                        .width(Fill),
+                );
+            }
             body = body.push(container(self.card_actions(task, c)).padding([2, 6]));
         }
         container(body)
@@ -256,13 +268,45 @@ impl App {
             .style(move |_| iced::widget::container::Style {
                 background: Some(c.card.into()),
                 border: iced::Border {
-                    color: c.line,
+                    color: if open { c.accent } else { c.line },
                     width: 1.0,
                     radius: 8.0.into(),
                 },
                 ..Default::default()
             })
             .into()
+    }
+
+    /// What done means, or that nothing says.
+    fn acceptance(&self, task: &Task, c: Colors) -> Element<'_, Message> {
+        let acceptance = if task.acceptance.is_empty() {
+            "No acceptance text. An agent will decide for itself what done means.".to_owned()
+        } else {
+            task.acceptance.clone()
+        };
+        text(acceptance)
+            .size(13)
+            .color(c.muted)
+            .wrapping(iced::widget::text::Wrapping::Word)
+            .into()
+    }
+
+    /// The open card beneath the lanes: its title, what done means and
+    /// its moves, across the width — a column is too narrow to read a
+    /// paragraph in or to lay the moves out.
+    fn card_detail(&self, task: &Task, c: Colors) -> Element<'_, Message> {
+        let detail = column![
+            eyebrow(task.column.label(), c),
+            text(task.title.clone())
+                .size(15)
+                .font(weight(iced::font::Weight::Medium))
+                .wrapping(iced::widget::text::Wrapping::Word),
+            self.acceptance(task, c),
+            self.card_actions(task, c),
+        ]
+        .spacing(8)
+        .width(Fill);
+        panel(detail, c)
     }
 
     /// Where a card may go from here, who it may be handed to, and off
@@ -310,7 +354,7 @@ impl App {
                     .color(c.accent),
                 connected.then_some(Message::TaskAssign(id.clone(), Some(agent.id.clone()))),
                 false,
-                Kind::Quiet,
+                Kind::Inline,
                 [2, 6],
             ));
         }
@@ -322,7 +366,7 @@ impl App {
                 text("nobody").size(12).color(c.muted),
                 connected.then_some(Message::TaskAssign(id.clone(), None)),
                 false,
-                Kind::Quiet,
+                Kind::Inline,
                 [2, 6],
             ));
         }
@@ -339,7 +383,7 @@ impl App {
                     text("Archive").size(12).color(c.muted),
                     connected.then_some(Message::TaskArchive(id)),
                     false,
-                    Kind::Quiet,
+                    Kind::Inline,
                     [2, 6],
                 )
             ]
