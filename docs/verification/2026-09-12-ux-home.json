@@ -801,5 +801,20 @@
     "report_path": "/private/tmp/claude-501/-Users-brandopakel-AgentDocker/56d5bda8-681c-4c32-a4bd-b8a026f8cf7b/scratchpad/2026-09-12-main-verification.json",
     "report_sha256": "b27d97ce06cbff6dbe8e643bbe96d8f561d1c3559a127cc03209ee5cb6dbada2",
     "limit": "The separate quiet idle result in that report uses earlier main binaries, not the current home candidate."
+  },
+  "status": "Home simplification is integrated through #119; the recorded CPU investigation remains historical evidence.",
+  "current_disposition_2026_09_18": {
+    "checked_at": "2026-09-18",
+    "source_main": "acbd09df5ab73c4721d3420f9b5a9c373f5b2429",
+    "merges": [
+      {
+        "pr": 119,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/119",
+        "merge_commit": "aaa1b61f974b42bbb8b546cd2957b529e45b195a",
+        "merged_at": "2026-09-13T01:11:30Z"
+      }
+    ],
+    "verification": "GitHub merge metadata and git ancestry against the recorded main; no test rerun or new installed acceptance claimed.",
+    "limits": "Closed #117 is not itself a merge; its final head and recorded runtime are ancestors of #119. Later quiet UI evidence is in the integrated desktop record; this does not turn earlier loaded samples into passing performance evidence."
   }
 }

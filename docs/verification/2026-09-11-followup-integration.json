@@ -99,5 +99,38 @@
     "CodeRabbit chat inspections pin the actual source heads; rate-limited automatic statuses are not counted as reviews.",
     "PR102 gained only documentation conflict resolution while its standard gate ran; no Rust or Python source changed during that gate.",
     "Final-head CI and PR102 review still gate integration. Production Codex idle wake, safe live daemon replacement, physical notification clicks, signing, overnight and complete Windows/platform acceptance remain open."
-  ]
+  ],
+  "status": "PRs #99–#102 merged; their original local acceptance records and failures remain source-specific.",
+  "current_disposition_2026_09_18": {
+    "checked_at": "2026-09-18",
+    "source_main": "acbd09df5ab73c4721d3420f9b5a9c373f5b2429",
+    "merges": [
+      {
+        "pr": 99,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/99",
+        "merge_commit": "e5579cfebb47c41688b9d957496b24ec38d37114",
+        "merged_at": "2026-09-12T02:18:05Z"
+      },
+      {
+        "pr": 100,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/100",
+        "merge_commit": "e290c7f92ab03dee42da2d075b262e03d4455239",
+        "merged_at": "2026-09-12T02:23:04Z"
+      },
+      {
+        "pr": 101,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/101",
+        "merge_commit": "57a102a932b73bad2bc9b18242f488ccf529bd63",
+        "merged_at": "2026-09-12T02:30:37Z"
+      },
+      {
+        "pr": 102,
+        "url": "https://github.com/brandopakel/AgentDocker/pull/102",
+        "merge_commit": "5a2d23132488bd2d84e027dbc18a268474f6ad61",
+        "merged_at": "2026-09-12T02:49:29Z"
+      }
+    ],
+    "verification": "GitHub merge metadata and git ancestry against the recorded main; no test rerun or new installed acceptance claimed.",
+    "limits": "This closes integration of the recorded changes, not broader native, provider or release acceptance."
+  }
 }

@@ -1,6 +1,6 @@
 # Remaining engineering and release work
 
-Current status: September 17, 2026 UTC. This is the single backlog for the
+Current status: September 18, 2026 UTC. This is the single backlog for the
 requirements already in the project docs. It replaces duplicated progress notes;
 their source pins, failed trials and acceptance limits remain in the existing
 [verification records](verification/), [delivery plan](DELIVERY-PLAN.md) and Git
@@ -111,6 +111,10 @@ the operational sequence is in [local trial](LOCAL-TRIAL.md).
 ## Retained evidence and release configuration
 
 Existing verification reports preserve original sources and failed attempts.
+The September 18 documentation reconciliation adds exact merged-PR dispositions
+to seven older records whose index summaries still said review/CI or installation
+was pending. The historical trial fields remain unchanged; these corrections
+close stale tracking statements, not untested acceptance requirements.
 Later merges close their old integration notes, not every acceptance category.
 The [documentation index](README.md#verification-records) lists all retained
 reports; the [testing crosswalk](DELIVERY-PLAN.md#testing-standard-crosswalk)

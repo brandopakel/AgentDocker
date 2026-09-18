@@ -544,5 +544,7 @@ In Messages, **+** starts a direct message or named channel. Press Enter to send
 mention suggestions only include the current conversation's recipients. In an
 open channel you belong to, **Add members** adds another available agent. The
 CLI equivalent is `agentdocker channel invite --as <member> <channel> <agent>`.
-These Messages additions are in the current review candidate, pending native
-and installed acceptance; they do not change an older running app.
+These Messages additions merged in PR #170 and are included in the recorded
+September 17 installed `d14610b7` preview. Native workflows and a targeted
+synthetic Enter event passed; physical keyboard and IME acceptance remain in
+[Remaining work](REMAINING-WORK.md).
