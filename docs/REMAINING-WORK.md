@@ -34,7 +34,11 @@ then recovered automatically. A following text-only turn still stalled after
 Stop. The deferred follow-up now passes the full gate (1,264 Rust, seven skipped;
 94 Python, one skipped), fourteen native scenarios and an actual Claude text-only
 turn followed by an idle project pause with a same-chat reply and no explicit ACK.
-Its installation remains pending. The existing channel-enabled session was independently
+The follow-up is installed as `652cf6a3` from clean source `e4eae3e`; fourteen
+packaged channel scenarios and thirteen real previous/candidate/rollback checks passed.
+The app reopened, all six provider processes remained unchanged, and the coordinator
+was retained because its binary is byte-identical to the new package.
+The existing channel-enabled session was independently
 relaunched plainly at 20:35 UTC; old-generation evidence was not applied to the new process.
 The plain Claude
 replied to the new canary in the original project during a tool boundary, not

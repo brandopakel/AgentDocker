@@ -1604,7 +1604,7 @@
     ]
   },
   "claude_channel_context_receipt_2026_09_18": {
-    "status": "Deferred follow-up passed full local gate, native delayed-flush and identity-guard trials, and actual Claude text-only then idle project-pause reply. Follow-up installation pending; existing Claude was independently relaunched plainly and needs channel-capable reconnect.",
+    "status": "Receipt/reply fix installed as 652cf6a3 from e4eae3e after full gate, packaged native and rollback trials, and actual private Claude text-only then idle project-pause reply. Six live provider processes preserved. Existing Claude sessions are plain; in-app channel reconnect and their post-reconnect idle acceptance remain open.",
     "runtime_source": "60f2fae",
     "driver_followup": "5d0f52c",
     "scope": "Exact current-session channel body and metadata followed by a real assistant continuation; durable receipt before ACK; one FIFO head; 2 MiB tail plus at most one 2 MiB historical window per hook, 1 MiB overlap and 4096 proof records; unknown/error evidence retains queue. Channel and legacy hooks preserve full envelopes and original app reply destinations.",
@@ -2527,7 +2527,6 @@
         "source_runtime": "ac78019",
         "rust_passed": 1264,
         "rust_skipped": 7,
-        "python_passed": 94,
         "python_skipped": 1,
         "checks": [
           "fmt",
@@ -2538,7 +2537,9 @@
           "cargo package",
           "release build"
         ],
-        "log": "/private/tmp/agentdocker-deferred-receipt-final-gate-20260918.log"
+        "log": "/private/tmp/agentdocker-deferred-receipt-final-gate-20260918.log",
+        "python_checks": 94,
+        "python_passed": 93
       },
       "peer_review": {
         "message": "6ff7e0081cb042da",
@@ -2552,6 +2553,159 @@
         "generation": "2026-09-18T20:35:26.155107Z",
         "mode": "plain claude --resume; no channel flag",
         "receipt_limit": "Old-generation proof was not acknowledged for this new process. Plain idle wake remains unavailable until app-guided reconnect."
+      },
+      "final_package_native": {
+        "result": "passed",
+        "scope": "Test the real AgentDocker Claude-channel transport with private daemon state.\n\nThe fixture speaks MCP; it is not Claude and does not prove model idle wake.\nIt verifies idle transport offers, ordered explicit receipts and recovery.\n",
+        "steps": [
+          "an unreceived offer became durably paused after 30 seconds and stayed paused through refresh without inventing a receipt, replaying input or consuming the queue",
+          "channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner",
+          "eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure",
+          "MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages",
+          "without an explicit model ACK, the real hook retained channel input alone and committed receipt before removing its exact head only after the modeled assistant continuation; repeated hooks were harmless",
+          "a complete text-only response appended after Stop returned was receipted without a new prompt or tool; incomplete input alone stayed queued",
+          "deferred helpers with a different agent, PID, generation or session refused a complete transcript proof; the matching helper then receipted only that head",
+          "a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt",
+          "project fan-out carried a reply destination that the actual MCP send_message tool routed back to the same everyone conversation with its original message ID",
+          "an idle transport offered peer input without another request; broken stdout retained the message for reconnect and receipt",
+          "an unread full stdout pipe exited within its write bound while stdin stayed open; the oversized-pipe message replayed intact",
+          "without the parent-session opt-in the channel entry served the ordinary MCP: no capability, no offer, no owner lock, queue left to hooks",
+          "pre-initialization session fold preserved observations, open memberships and completed card identity references without changing their text or state, retained one channel owner across different agent IDs, and delivered the older queue plus a new room message through the canonical alias",
+          "an initialized channel was not folded behind its already-offered head; both identities and queues stayed intact without acknowledging older backlog"
+        ],
+        "binary_sha256": {
+          "agentd": "91893e92b5c4b5947cf8061148718fa0a72918adf70caf0ccf8d499aa083ca4a",
+          "agentdocker": "efdc76a0e11155b90a56bd834f626ccb16c70d2455426b44d1b4b9cd6cfc3c06"
+        },
+        "driver_sha256": {
+          "claude_channel_smoke.py": "31d89ca9339f75f9ad22161a8547e9ae4ef503679c65bc13d3208cbdeaa4269c",
+          "message_queue_smoke.py": "698e4b64f63430cf8ad22e4236d99dd36196f9201806d6fe9add8961f6021685",
+          "restart_smoke.py": "74c68596c47e159960afe48f8b999f895543f7634bfe4ff00cc3c64d2c54e89f"
+        },
+        "history_recovery_hook_calls": 3,
+        "remaining_owned_processes": 0,
+        "duration_seconds": 70.8691007499583
+      },
+      "final_package_install_rollback": {
+        "passed": true,
+        "scenarios": [
+          "preview without writes and pinned initial installation",
+          "same-release repair replaces the old wrapper and preserves activation",
+          "legacy bundle hooks and MCP work through generation 8cbae3a97108c35131c9baea83aeeb59294fce91f46a53a1fc2722b80a872af3",
+          "activation keeps the existing fixture daemon responsive",
+          "legacy bundle hooks and MCP work through generation 652cf6a38035c71bd3e2e5dc8d17600bb16d947b8e7b59f13ed42515b6e1224f",
+          "changed preview payload and active generation are refused",
+          "compatible rollback switches all commands and retains both releases",
+          "legacy bundle hooks and MCP work through generation 8cbae3a97108c35131c9baea83aeeb59294fce91f46a53a1fc2722b80a872af3",
+          "tampered executable is refused without changing activation",
+          "cleanup retains active, rollback and running or legacy binaries",
+          "uninstall preserves the live daemon and its state",
+          "daemon exit releases its pin and invalidates stale cleanup preview",
+          "unused payloads removed; permanent pins and daemon state retained"
+        ],
+        "synthetic_second_generation": false,
+        "first": {
+          "id": "8cbae3a97108c35131c9baea83aeeb59294fce91f46a53a1fc2722b80a872af3",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "d27d8acf8625243c0b465bb093954cf40f5377d6",
+          "state_schema": 23,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "8cbae3a97108c35131c9baea83aeeb59294fce91f46a53a1fc2722b80a872af3",
+          "version": "0.1.0"
+        },
+        "second": {
+          "id": "652cf6a38035c71bd3e2e5dc8d17600bb16d947b8e7b59f13ed42515b6e1224f",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "e4eae3eb0287da826dea7dec61bf057f67b6e836",
+          "state_schema": 23,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "652cf6a38035c71bd3e2e5dc8d17600bb16d947b8e7b59f13ed42515b6e1224f",
+          "version": "0.1.0"
+        }
+      },
+      "native_build_manifest": {
+        "format": 1,
+        "source_commit": "e4eae3eb0287da826dea7dec61bf057f67b6e836",
+        "source_tree": "05b79bbdfef449349a9d475a854c788fc7ab1bde",
+        "source_input_sha256": "3a67780a6c066f7df4673d91bf53917942314fbd6c8a6553d765f0140aacbfb1",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 23,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-desktop-integration-20260917/target/release",
+        "binary_sha256": {
+          "agentdocker": "0fac6c2663121c366492f824f2c4ba7ca219e6743ec57bb864ee6e0cb9c43227",
+          "agentd": "2b1583c0e547aef2642e1eeef4edc8b37c70b2072191d829064d5b99e4ed1f31",
+          "agentdocker-ui": "4737c67540067f1b71cde52c5b2209840cfaf369289c44789cc33ba0fc5dfad7"
+        }
+      },
+      "installed_activation": {
+        "integrity_check": "ok",
+        "live_provider_records": [
+          {
+            "id": "0a68fb5752f742b2b7a7d56ffd191758",
+            "pid": null,
+            "process_started_at": null
+          },
+          {
+            "id": "50fd100f4310452fae0435fd4b6a1981",
+            "pid": 51242,
+            "process_started_at": "2026-09-12T23:36:03.055103Z"
+          },
+          {
+            "id": "ac5c138c2b3f4d8f90c5924988419055",
+            "pid": 95454,
+            "process_started_at": "2026-09-18T19:12:35.279696Z"
+          },
+          {
+            "id": "0180d7615186449087095d7aa15ec0bb",
+            "pid": 72986,
+            "process_started_at": "2026-09-18T20:35:26.155107Z"
+          },
+          {
+            "id": "b81122731f6b496ca00a3784bbf52d5b",
+            "pid": 1285,
+            "process_started_at": "2026-09-10T05:03:01.003345Z"
+          },
+          {
+            "id": "d6d6879cb8ab4cc491dd6f84c7864047",
+            "pid": 73929,
+            "process_started_at": "2026-09-17T23:37:08.273629Z"
+          },
+          {
+            "id": "d19c8a4eb8094f6b9a99963989135c0c",
+            "pid": 74455,
+            "process_started_at": "2026-09-17T23:37:19.090658Z"
+          },
+          {
+            "id": "227cf0d9930a4cd199fa24a6002c1e99",
+            "pid": null,
+            "process_started_at": null
+          },
+          {
+            "id": "7989f804168d463292944dc6f1fc8d8c",
+            "pid": null,
+            "process_started_at": null
+          }
+        ],
+        "state_bytes": 118861824,
+        "provider_identity_check": "passed",
+        "live_provider_count": 6,
+        "daemon_restart": "Not needed: serving daemon is byte-identical to candidate; preserved existing process.",
+        "daemon_pid": 35298,
+        "candidate": "652cf6a38035c71bd3e2e5dc8d17600bb16d947b8e7b59f13ed42515b6e1224f",
+        "backup": "/private/tmp/agentdocker-before-deferred-activation-20260918",
+        "at": "2026-09-18T20:52:09.646529+00:00",
+        "at_precision": "installer result file modification time",
+        "app_pid": 33866,
+        "native_codex_receiver_pid": 18735
       }
     }
   }
