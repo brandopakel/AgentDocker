@@ -3494,5 +3494,54 @@
       "purpose": "Track the existing throughput defect on the actual installed Board, not a fixture or a new project requirement.",
       "scope": "Filed the existing throughput defect through installed Board controls; CLI listing and durable task record confirmed exact title/acceptance and project. The card remains Backlog; no claim that its engineering is complete."
     }
+  },
+  "browser_extension_inventory_2026_09_17": {
+    "date": "2026-09-17",
+    "status": "Passed at b300bea on release binaries built from the committed source (state schema 23), against this Mac's real Chrome profile and the real `claude --chrome-native-host` bridge (pid 1072): `runtimes` lists `claude-browser` as `Claude in Chrome 1.0.93` with the sentence that its sessions run in the browser and cannot be listed, messaged or leased for; `discover` lists the five real Claude/Codex sessions and never the bridge; `adopt 1072` is refused with `pid 1072 is Claude Code's bridge for the browser extension, not a session; there is nothing to adopt` both without a runtime and with `--runtime claude-code`; `rm` on a live external record says to `deregister --as` instead of `stop`, after which `deregister` and `rm` succeed; `setup claude-browser --dry-run` says there is nothing on this machine to set up. The side-panel agent itself remains unrepresented: nothing local speaks for it, and this record establishes only that AgentDocker now says so instead of showing a phantom.",
+    "scope": "Vendor-neutral inventory of browser-extension agents (Claude, ChatGPT; per Chromium-family profile, bridge matched by allowed_origins), refusal to adopt a known runtime's helper processes, and the rm/deregister wording, on release binaries in a private AGENTDOCKER_HOME. ChatGPT's extension is not installed on this machine, so its row reads not installed; Linux and Windows profile layouts are covered by unit tests only. The desktop Tools row is covered by UI unit tests, not a rendered capture.",
+    "build": {
+      "source_commit": "b300beae8033f9d3818b34c6aa5321b85072be66",
+      "source_tree": "73618b1f2053ee131423165dfe9b7e10947a9d4f",
+      "source_dirty": false,
+      "binary_directory": "<worktree>/target/release",
+      "binary_sha256": {
+        "agentdocker": "4fa4b9b05b45bb1c66af8b02a4b595d1c794e977bc4a97b4dc6be459f386e15a",
+        "agentd": "5129a0477ec61a0553c71b616d139e49acc1290fe2325929a9b4040c1fb09faf"
+      },
+      "build_info": {
+        "arch": "aarch64",
+        "format": 1,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "os": "macos",
+        "state_schema": 23,
+        "version": "0.1.0"
+      }
+    },
+    "method": "scripts: a private home under the session scratchpad, `agentd` started from the release directory with AGENTDOCKER_NO_AUTOSTART=1, then in order: `agentd --build-info`, `ps` on the bridge pid, `agentdocker runtimes`, `discover`, `adopt 1072`, `adopt 1072 --runtime claude-code`, `ps -a`, `register --name external-trial --pid <sleep>` followed by `rm external-trial` (refused), `deregister --as external-trial`, `rm external-trial`, and `setup claude-browser --dry-run`; the daemon was then stopped. The machine's real Chrome profile (`~/Library/Application Support/Google/Chrome/Default`) holds the Claude extension fcoeoabgfenejglbffodgkkbkcdhcgfn 1.0.93 and a NativeMessagingHosts manifest naming it, installed by Claude Code, whose bridge process has run since login.",
+    "gate": "bash scripts/verify.sh check on the same tree before the commit: 1,172 Rust tests (seven skipped), 94 Python checks (one skipped), formatting, strict Clippy, doctests, packaging and the release build passed.",
+    "bridge_process": " 1072 /Users/brandopakel/.local/bin/claude --chrome-native-host",
+    "runtimes_rows": [
+      "RUNTIME           VENDOR        CLI                                    VERSION                 APP                        MCP   HOOKS               RUNNING",
+      "claude-code       Anthropic     /Users/brandopakel/.local/bin/claude   2.1.274 (Claude Code)   -                          yes   yes                 3",
+      "claude-browser    Anthropic     -                                      -                       Claude in Chrome 1.0.93    -     -                   0",
+      "chatgpt-browser   OpenAI        -                                      -                       -                          -     -                   0"
+    ],
+    "runtimes_note": "Claude (browser extension) is installed in the browser. Sessions in the browser run there and on the vendor's side; nothing on this machine speaks for them, so AgentDocker cannot list, message or lease for them. A bridge the browser launches for a command-line tool is that tool's helper, not a session, and adopting it is refused.",
+    "discover": "PID     RUNTIME       PROJECT       CWD                                              STARTED   COMMAND\n18563   claude-code   AgentDocker   /Users/brandopakel/AgentDocker                   4h ago    claude --resume 218845eb-ba1e-4457-bb5a-e1829f5652dd\n51242   codex         AgentDocker   /Users/brandopakel/AgentDocker                   4d ago    /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@o\u2026\n74334   claude-code   AgentDocker   /Users/brandopakel/AgentDocker                   32m ago   claude\n1285    codex         aistor        /Users/brandopakel/dev/minio-lab/source/aistor   7d ago    /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@o\u2026\n48719   claude-code   keel          /Users/brandopakel/keel                          3h ago    claude",
+    "adopt_refusals": {
+      "no_runtime": "Error: pid 1072 is Claude Code's bridge for the browser extension, not a session; there is nothing to adopt (Invalid)\nexit=1",
+      "runtime_claude_code": "Error: pid 1072 is Claude Code's bridge for the browser extension, not a session; there is nothing to adopt (Invalid)\nexit=1"
+    },
+    "rm_while_live": "registered 9761b6b35d754544988a90a2f91e7b08\nError: agent is still live and AgentDocker did not start it; `deregister --as external-trial` marks it finished without signalling the process, then `rm` forgets it (Invalid)\nexit=1",
+    "deregister_then_rm": "exit=0\nexit=0",
+    "setup_dry_run": "claude-browser: works inside the browser; there is nothing on this machine to set up for it",
+    "limits": [
+      "The Chrome side-panel agent the person had open is not registered, listed, messaged or leased for; no vendor exposes such a session to the machine.",
+      "Only Claude's and ChatGPT's extension ids are in the table; other vendors are added as their ids are confirmed.",
+      "Bridges are read from user-level NativeMessagingHosts manifests; system-level manifests and the Windows registry are not consulted.",
+      "The real sessions appear as unadopted in the private daemon because it is a separate home; the production daemon keeps their registrations."
+    ],
+    "folded_from": "2026-09-17-browser-extension-inventory.json (folded into this record at review's request; the section keeps that record's fields)"
   }
 }

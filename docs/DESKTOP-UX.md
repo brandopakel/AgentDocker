@@ -20,6 +20,15 @@ Inbox. The first three items are shown; **Show more** expands the same list and
 **Connect** for discovered processes and **Set up** for installed tools. Tools
 also keeps the full setup controls.
 
+A vendor's browser extension (Claude, ChatGPT) has its own Tools row, marked
+**Installed in Chrome · works inside the browser, its sessions are not visible
+here**, with the browser, profile and version of each copy under **Details** and
+the bridge the browser launches for a command-line tool, when one is registered.
+The row offers no **Set up** and never lists a session: what the extension is
+doing runs in the browser and on the vendor's side, and nothing on this machine
+speaks for it. The bridge is that tool's helper; **Connect** never offers it and
+adopting it by pid is refused with what it is.
+
 The sidebar remembers projects found through agents and folders you add yourself.
 **Add project…** lets you browse or enter an existing folder. It pins the project
 without starting an agent, changing integrations or creating files. Later sessions

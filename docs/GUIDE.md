@@ -59,6 +59,19 @@ and in the app — but it cannot tell the daemon what it is holding or
 reading, so it reports nothing it is doing. See
 [Why an agent reads "idle"](#why-an-agent-reads-idle).
 
+An agent that works **inside the browser** — Claude's or ChatGPT's extension
+in its side panel, whichever vendor's — is a different case. `runtimes` finds
+the extension in each Chrome, Brave, Edge, Arc, Chromium or Vivaldi profile
+(`Claude in Chrome 1.0.93`) and says under the table that its sessions run in
+the browser and on the vendor's side: nothing on this machine speaks for them,
+so AgentDocker cannot list, message or lease for them, and no setup changes
+that. What *is* on this machine is at most a bridge the browser launches for a
+command-line tool (`claude --chrome-native-host`, for a terminal Claude Code
+that drives the browser). That bridge is the tool's helper, not a session:
+`discover` never lists it and `adopt <pid>` refuses it by name, because
+registered it would sit in a project called `chrome` looking like your browser
+agent, connected — and it is neither.
+
 Everything respects `AGENTDOCKER_HOME`, so a throwaway daemon for
 experiments costs nothing:
 
@@ -213,7 +226,7 @@ each one by pid.
 | `adopt <pid>` | Register one of them; `--all` for all |
 | `stop <agent>` | Signal an agent to stop |
 | `restart <agent>` | Replace a managed container after confirming it exited |
-| `deregister` / `rm` | Mark an external agent finished / forget a finished one |
+| `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml` |
 | `heartbeat` | Report that an agent is alive |
 
@@ -293,7 +306,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those |
+| `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches |

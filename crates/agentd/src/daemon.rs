@@ -2812,6 +2812,18 @@ impl Daemon {
         let Some((process, cwd)) = found else {
             return Response::error(ErrorCode::NotFound, format!("no process with pid {pid}"));
         };
+        // A known runtime's helper is not a session, whatever runtime the
+        // caller names: registering it would show an agent nobody can
+        // reach, in a project named after the helper's directory.
+        if let Some(helper) = procinfo::helper_of(&process.argv) {
+            return Response::error(
+                ErrorCode::Invalid,
+                format!(
+                    "pid {pid} is {}, not a session; there is nothing to adopt",
+                    helper.role
+                ),
+            );
+        }
         let runtime = runtime
             .or_else(|| procinfo::runtime_of(&process.argv).map(str::to_owned))
             .unwrap_or_else(|| "custom".to_owned());
@@ -4598,7 +4610,20 @@ impl State {
             Err(response) => return *response,
         };
         if self.is_live(&id) {
-            return Response::error(ErrorCode::Invalid, "agent is still live; stop it first");
+            // `stop` signals the process. For one AgentDocker did not
+            // start, that is not the person's intent when forgetting
+            // its record; `deregister` marks it finished untouched.
+            let managed = self.registry.get(&id).is_some_and(|a| a.managed);
+            return Response::error(
+                ErrorCode::Invalid,
+                if managed {
+                    "agent is still live; stop it first".to_owned()
+                } else {
+                    format!(
+                        "agent is still live and AgentDocker did not start it; `deregister --as {reference}` marks it finished without signalling the process, then `rm` forgets it"
+                    )
+                },
+            );
         }
         if self.registry.get(&id).is_some_and(|a| {
             a.provider_availability
@@ -13066,6 +13091,98 @@ deny = ["send:all"]
                 ..
             }
         ));
+    }
+
+    /// The bridge a browser launches for Claude Code is that CLI's
+    /// helper: discovery never lists it, and adopting it by pid is refused
+    /// with what it is, whichever runtime the caller names. Registered, it
+    /// would be an agent nobody can reach in a project named after the
+    /// helper's directory, which is what a person reads as "my browser
+    /// agent is connected". The process here is `node` running a script
+    /// under the package path, which is how an npm-installed Claude Code
+    /// appears in the process table; without `node` there is no way to
+    /// stage that command line, and the classifier's own tests cover it.
+    #[tokio::test]
+    async fn a_runtime_helper_is_not_discovered_and_cannot_be_adopted() {
+        let Some(node) = std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("node"))
+                .find(|candidate| candidate.is_file())
+        }) else {
+            return;
+        };
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let package = dir.path().join("node_modules/@anthropic-ai/claude-code");
+        std::fs::create_dir_all(&package).unwrap();
+        let script = package.join("cli.js");
+        std::fs::write(&script, "setTimeout(() => {}, 60000);\n").unwrap();
+        /// The fake ends with the test, passed or failed: an assertion
+        /// that fails must not leave a sixty-second child behind.
+        struct Reaped(std::process::Child);
+        impl Drop for Reaped {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let child = Reaped(
+            std::process::Command::new(node)
+                .arg(&script)
+                .arg("--chrome-native-host")
+                .current_dir(dir.path())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let pid = child.0.id();
+        // Give the process table time to show the interpreter's argv.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let found = match daemon.handle(Request::Discover).await {
+            Response::Processes { processes } => processes,
+            other => panic!("unexpected {other:?}"),
+        };
+        assert!(
+            found.iter().all(|p| p.pid != pid),
+            "a helper is not a session"
+        );
+        for runtime in [
+            None,
+            Some("claude-code".to_owned()),
+            Some("custom".to_owned()),
+        ] {
+            match daemon
+                .handle(Request::Adopt {
+                    pid,
+                    name: None,
+                    runtime,
+                })
+                .await
+            {
+                Response::Error { code, message, .. } => {
+                    assert_eq!(code, ErrorCode::Invalid);
+                    assert!(
+                        message.contains("bridge for the browser extension")
+                            && message.contains("not a session"),
+                        "{message}"
+                    );
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        let Response::Agents { agents, .. } = daemon
+            .handle(Request::List {
+                all: true,
+                project: None,
+                labels: Default::default(),
+            })
+            .await
+        else {
+            panic!("list failed");
+        };
+        assert!(agents.iter().all(|a| a.pid != Some(pid)));
+        drop(child);
     }
 
     fn drain_vcs(events: &mut broadcast::Receiver<Event>) -> Vec<Option<String>> {

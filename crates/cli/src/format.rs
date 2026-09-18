@@ -836,6 +836,31 @@ fn single_line(text: &str) -> String {
         .collect()
 }
 
+/// A browser extension as an app of the browser's: "Claude in Chrome
+/// 1.0.93", with the profile when the browser has more than one.
+pub fn extension(extension: &agentdocker_core::runtime::InstalledExtension) -> String {
+    let mut text = format!("{} in {}", extension.label, extension.browser);
+    if let Some(profile) = &extension.profile {
+        text.push_str(&format!(" ({profile})"));
+    }
+    if let Some(version) = &extension.version {
+        text.push(' ');
+        text.push_str(version);
+    }
+    text
+}
+
+/// What the runtimes listing says under a browser extension, so that
+/// nobody waits for a session that cannot appear.
+pub fn in_browser_note(labels: &[&str]) -> String {
+    format!(
+        "{} {} installed in the browser. {}",
+        labels.join(" and "),
+        if labels.len() == 1 { "is" } else { "are" },
+        agentdocker_core::runtime::IN_BROWSER,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -881,5 +906,28 @@ mod tests {
         let text = super::event_line(&event);
         assert!(!text.chars().any(char::is_control));
         assert!(text.contains("\\n"));
+    }
+    #[test]
+    fn extensions_read_as_apps_of_the_browser() {
+        use agentdocker_core::runtime::InstalledExtension;
+        let mut claude = InstalledExtension {
+            label: "Claude".into(),
+            browser: "Chrome".into(),
+            profile: None,
+            version: Some("1.0.93".into()),
+            bridge: None,
+        };
+        assert_eq!(super::extension(&claude), "Claude in Chrome 1.0.93");
+        claude.profile = Some("Work".into());
+        claude.version = None;
+        assert_eq!(super::extension(&claude), "Claude in Chrome (Work)");
+        let note = super::in_browser_note(&["Claude (browser extension)"]);
+        assert!(
+            note.starts_with("Claude (browser extension) is installed in the browser. Sessions")
+        );
+        let note =
+            super::in_browser_note(&["Claude (browser extension)", "ChatGPT (browser extension)"]);
+        assert!(note.contains("and ChatGPT (browser extension) are installed in the browser."));
+        assert!(note.ends_with("adopting it is refused."));
     }
 }
