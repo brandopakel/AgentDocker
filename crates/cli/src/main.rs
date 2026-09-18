@@ -484,6 +484,9 @@ enum Command {
         /// Print a machine-readable plan or health report without configuration secrets.
         #[arg(long, requires = "guided")]
         json: bool,
+        /// Make every `claude` typed in a terminal carry the channel flag that lets AgentDocker wake it: a marked block in your shell's startup file, previewed like every other change.
+        #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health", "list", "show"])]
+        shell: bool,
     },
     /// Launch a command as a supervised agent and print its id.
     Run(RunArgs),
@@ -2119,8 +2122,16 @@ async fn main() -> Result<()> {
             list,
             show,
             json,
+            shell,
         } => {
-            if preview || apply.is_some() || undo.is_some() || health || list || show.is_some() {
+            if preview
+                || shell
+                || apply.is_some()
+                || undo.is_some()
+                || health
+                || list
+                || show.is_some()
+            {
                 use setup::guided::Action;
                 let action = if let Some(id) = apply.as_deref() {
                     Action::Apply(id)
@@ -2135,7 +2146,7 @@ async fn main() -> Result<()> {
                 } else {
                     Action::Preview
                 };
-                setup::guided::run(socket, &runtimes, action, json).await?;
+                setup::guided::run(socket, &runtimes, action, json, shell).await?;
             } else {
                 setup::run(&client, &runtimes, dry_run).await?;
             }
@@ -3570,6 +3581,22 @@ fn print_runtimes(runtimes: &[agentdocker_core::RuntimeInfo]) {
         println!(
             "\n`agentdocker setup --preview` reviews missing or unverified integrations; `agentdocker setup --health` explains connection issues."
         );
+    }
+    if let Some(claude) = runtimes
+        .iter()
+        .find(|r| r.name == "claude-code" && r.installed())
+    {
+        match claude.shell {
+            agentdocker_core::runtime::Wiring::Missing
+            | agentdocker_core::runtime::Wiring::Unverified => println!(
+                "\nA `claude` started in a terminal sees messages at its next prompt. `agentdocker setup --shell` makes every terminal launch carry the channel flag that lets AgentDocker wake it (previewed first; `setup --undo` takes it back)."
+            ),
+            agentdocker_core::runtime::Wiring::Unsupported => println!(
+                "\nA `claude` started in a terminal sees messages at its next prompt; your shell is not one setup knows, so start it as `claude {}` to be woken.",
+                agentdocker_host::runtimes::shell::CLAUDE_CHANNEL_FLAG
+            ),
+            agentdocker_core::runtime::Wiring::Wired => {}
+        }
     }
     let in_browser: Vec<&str> = runtimes
         .iter()

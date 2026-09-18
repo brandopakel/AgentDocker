@@ -82,9 +82,57 @@ pub struct McpArgs {
 }
 
 /// Whether the parent session was launched for channel input: Claude Code,
-/// with the input-mode variable the managed launch sets on it.
+/// either with the input-mode variable the managed launch sets on it, or
+/// — for a session the person started in their own terminal — with the
+/// channel flag visible on the `claude` process itself. The flag is what
+/// makes Claude Code honour the channel, so the flag is the truth; the
+/// variable remains for launches that cannot show it.
 fn channel_opted_in(runtime: &str) -> bool {
-    runtime == "claude-code" && std::env::var(CLAUDE_CHANNEL_INPUT).as_deref() == Ok("1")
+    runtime == "claude-code"
+        && (std::env::var(CLAUDE_CHANNEL_INPUT).as_deref() == Ok("1") || channel_flag_on_parent())
+}
+
+/// The channel flag on the nearest `claude` ancestor, as Claude Code
+/// spells it during the research preview.
+fn channel_flag_on_parent() -> bool {
+    let Ok(table) = agentdocker_host::procinfo::processes() else {
+        return false;
+    };
+    let mut pid = parent_id();
+    for _ in 0..16 {
+        let Some(process) = table.iter().find(|p| p.pid == pid) else {
+            return false;
+        };
+        if agentdocker_host::procinfo::runtime_of(&process.argv) == Some("claude-code") {
+            return channel_flag_names_us(&process.argv);
+        }
+        if process.ppid == pid || process.ppid <= 1 {
+            return false;
+        }
+        pid = process.ppid;
+    }
+    false
+}
+
+/// `--dangerously-load-development-channels server:agentdocker`, as one
+/// argument or two, before any `--` that ends the flags. A prompt that
+/// mentions the words is after `--` or is not a flag position.
+pub(crate) fn channel_flag_names_us(argv: &[String]) -> bool {
+    const FLAG: &str = "--dangerously-load-development-channels";
+    let mut arguments = argv.iter().skip(1).take_while(|a| a.as_str() != "--");
+    while let Some(argument) = arguments.next() {
+        let value = if argument.as_str() == FLAG {
+            arguments.next().map(String::as_str)
+        } else {
+            argument
+                .strip_prefix(FLAG)
+                .and_then(|rest| rest.strip_prefix('='))
+        };
+        if value.is_some_and(|value| value.split(',').any(|entry| entry == "server:agentdocker")) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Who this MCP session is, from agentd's point of view.
@@ -140,7 +188,7 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
     let claude_channel = args.claude_channel && channel_opted_in(&args.runtime);
     if args.claude_channel && !claude_channel {
         eprintln!(
-            "agentdocker mcp: --claude-channel needs --runtime claude-code and a parent session launched with {CLAUDE_CHANNEL_INPUT}=1 and its channel opt-in; this session was not, so its inbox is delivered by the hooks adapter and the tools as usual"
+            "agentdocker mcp: --claude-channel needs --runtime claude-code and a parent session launched with `--dangerously-load-development-channels server:agentdocker` (or {CLAUDE_CHANNEL_INPUT}=1 from a managed launch); this session was not, so its inbox is delivered by the hooks adapter and the tools as usual. `agentdocker setup --shell` makes every terminal launch carry the flag."
         );
     }
     let identity = establish_identity(&client, &args).await?;
@@ -1964,6 +2012,35 @@ mod tests {
             s.backend.requests().is_empty(),
             "nothing reached the daemon"
         );
+    }
+
+    /// The flag on the parent `claude` is what makes the channel real: one
+    /// argument or two, only before `--`, and only naming our server.
+    #[test]
+    fn the_channel_flag_is_read_from_the_parents_arguments() {
+        let argv = |command: &str| {
+            command
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        for command in [
+            "claude --dangerously-load-development-channels server:agentdocker",
+            "claude --resume 1234 --dangerously-load-development-channels server:agentdocker",
+            "claude --dangerously-load-development-channels=server:agentdocker",
+            "claude --dangerously-load-development-channels plugin:x@y,server:agentdocker",
+        ] {
+            assert!(channel_flag_names_us(&argv(command)), "{command}");
+        }
+        for command in [
+            "claude",
+            "claude --dangerously-load-development-channels server:other",
+            "claude --channels plugin:agentdocker@x",
+            "claude -- --dangerously-load-development-channels server:agentdocker",
+            "claude --dangerously-load-development-channels",
+        ] {
+            assert!(!channel_flag_names_us(&argv(command)), "{command}");
+        }
     }
 
     #[tokio::test]

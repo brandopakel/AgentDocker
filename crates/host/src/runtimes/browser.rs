@@ -322,6 +322,7 @@ mod tests {
                     path: tmp.path().join("absent"),
                 },
             ],
+            shell: None,
             versions: false,
         };
         (tmp, roots)

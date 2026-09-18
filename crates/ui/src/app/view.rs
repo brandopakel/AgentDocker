@@ -3308,6 +3308,25 @@ impl App {
                     ])),
                 ));
             }
+            // A `claude` typed in a terminal only sees messages at its next
+            // prompt unless the shell adds the channel flag; one reviewed
+            // change does that, and this is where the person looks for it.
+            let terminal_wake = runtime.name == "claude-code"
+                && installed
+                && matches!(
+                    runtime.shell,
+                    agentdocker_core::runtime::Wiring::Missing
+                        | agentdocker_core::runtime::Wiring::Unverified
+                );
+            if terminal_wake {
+                actions = actions.push(action(
+                    "setup-shell",
+                    "Wake terminal sessions",
+                    (!self.setup_busy)
+                        .then_some(Message::Setup(vec!["--shell".into(), "--preview".into()])),
+                    false,
+                ));
+            }
             actions = actions.push(action(
                 format!("connection-details-{}", runtime.name),
                 if expanded { "Hide details" } else { "Details" },
@@ -3342,6 +3361,26 @@ impl App {
                     kv("Live activity (hooks)", wiring(runtime.hooks), c),
                 ]
                 .spacing(6);
+                if runtime.name == "claude-code" {
+                    facts = facts.push(kv(
+                        "Terminal launches",
+                        match runtime.shell {
+                            agentdocker_core::runtime::Wiring::Wired => {
+                                "wake on messages (shell startup file carries the channel flag)"
+                            }
+                            agentdocker_core::runtime::Wiring::Missing => {
+                                "see messages at their next prompt; Wake terminal sessions adds the channel flag to every `claude`"
+                            }
+                            agentdocker_core::runtime::Wiring::Unverified => {
+                                "an older agentdocker block is in the shell startup file; Wake terminal sessions replaces it"
+                            }
+                            agentdocker_core::runtime::Wiring::Unsupported => {
+                                "your shell is not one setup knows (zsh, bash, fish); start claude with --dangerously-load-development-channels server:agentdocker yourself"
+                            }
+                        },
+                        c,
+                    ));
+                }
                 for app in &runtime.apps {
                     facts = facts.push(kv("Application", app.label.clone(), c));
                 }
@@ -3558,7 +3597,14 @@ impl App {
             .map(|change| value(change, "runtime"))
             .and_then(|name| self.runtimes.iter().find(|r| r.name == name))
             .map(|r| r.label.clone());
+        let shell_plan = changes
+            .into_iter()
+            .flatten()
+            .any(|change| value(change, "channel") == "shell");
         let title_text = match (&tool, phase.as_str()) {
+            (Some(_), "applied") if shell_plan => "Terminal launches will wake".to_owned(),
+            (Some(_), "undone") if shell_plan => "Shell change undone".to_owned(),
+            (Some(_), _) if shell_plan => "Wake terminal sessions".to_owned(),
             (Some(tool), "applied") => format!("{tool} setup saved"),
             (Some(tool), "undone") => format!("{tool} setup undone"),
             (Some(tool), _) => format!("Connect {tool}"),
@@ -3585,6 +3631,7 @@ impl App {
             let what = match value(change, "channel").as_str() {
                 "mcp" => "Tools (MCP)".to_owned(),
                 "activity hooks" | "hooks" => "Live activity (hooks)".to_owned(),
+                "shell" => "Terminal launches wake (shell startup file)".to_owned(),
                 other => other.to_owned(),
             };
             body = body.push(

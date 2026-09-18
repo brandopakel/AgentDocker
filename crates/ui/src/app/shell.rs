@@ -3355,6 +3355,7 @@ mod tests {
                 mcp: agentdocker_core::runtime::Wiring::Missing,
                 hooks: agentdocker_core::runtime::Wiring::Missing,
                 hooks_missing: vec![],
+                shell: agentdocker_core::runtime::Wiring::Unsupported,
                 running: 0,
             }];
             app.shell.launch_runtime = Some(runtime.into());

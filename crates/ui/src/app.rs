@@ -3240,6 +3240,7 @@ pub(crate) mod tests {
             mcp: Wiring::Unsupported,
             hooks: Wiring::Unsupported,
             hooks_missing: vec![],
+            shell: Wiring::Unsupported,
             running: 0,
         };
         assert!(runtime.installed() && runtime.in_browser());
@@ -3269,6 +3270,7 @@ pub(crate) mod tests {
             mcp: Wiring::Wired,
             hooks: Wiring::Missing,
             hooks_missing: vec!["StopFailure".into()],
+            shell: Wiring::Unsupported,
             running: 0,
         };
         assert_eq!(

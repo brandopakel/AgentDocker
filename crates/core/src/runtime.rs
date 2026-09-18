@@ -317,11 +317,12 @@ pub fn spec(name: &str) -> Option<&'static RuntimeSpec> {
 }
 
 /// Whether AgentDocker is wired into one of a runtime's channels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Wiring {
     /// The runtime has no such channel, or AgentDocker has no adapter for
     /// it yet.
+    #[default]
     Unsupported,
     Missing,
     /// Configuration exists but is invalid, disabled or conflicts with the adapter.
@@ -394,6 +395,12 @@ pub struct RuntimeInfo {
     pub config_dir: Option<PathBuf>,
     pub mcp: Wiring,
     pub hooks: Wiring,
+    /// Whether the person's shell starts this runtime with what lets
+    /// AgentDocker wake an idle session — for Claude Code, the channel
+    /// flag on every terminal `claude` (`setup --shell`). Unsupported for
+    /// every other runtime, and for a shell we do not know.
+    #[serde(default)]
+    pub shell: Wiring,
     /// The hook events our command is not wired for, when `hooks` is
     /// `Missing`: what setup would add. A release that requires a new
     /// event turns a wired machine into a missing one, and this is what
