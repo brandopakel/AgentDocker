@@ -20,11 +20,11 @@ Windows — and those open items live only in [Remaining work](REMAINING-WORK.md
 ### Current integration and installation (September 19 UTC)
 
 The [current component table](REMAINING-WORK.md#delivered-source-and-current-desktop)
-is authoritative: main `14f1c519`, installed shared-chat app/CLI `9e75e834`
+is authoritative: main `16bf69a`, installed shared-chat app/CLI `9e75e834`
 from `ce82d06`, retained coordinator `6bd97894`/PID 92608/schema 23, and
 Codex receiver `486c5dd0`/PID 60959. The different versions preserve active
 provider sessions; usage collection is merged but not active on that coordinator.
-#200/#203/#204 remain integration work. Source-specific packaged acceptance
+#203 is merged; #200/#204 remain integration work. Source-specific packaged acceptance
 passed 545 rendered steps/31 checks and 13 install/rollback scenarios;
 physical-input and independent-machine acceptance remain.
 

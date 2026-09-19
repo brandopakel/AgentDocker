@@ -4,6 +4,13 @@ Windows is an intended native platform. The Windows implementation is an incompl
 is not a downloadable Windows product. It does not use WSL, a browser server or
 a required container engine to substitute for native execution.
 
+The user confirmed native Windows, alongside macOS and Linux, for the **first
+coworker rollout** on September 19 UTC. This port is therefore a delivery
+requirement for that rollout, not a deferred platform enhancement. Track its
+completion in [Remaining work](REMAINING-WORK.md) and use the same
+[first-run acceptance](LOCAL-TRIAL.md#stage-5--other-machines-and-systems) as the
+other platforms. Keep the public support matrix truthful until it passes.
+
 The first boundary is core and host I/O: full-resolution process identities,
 same-user process inventory without reading environments or requesting extra
 privileges, nonblocking exclusive file locks, explicit protected user/SYSTEM

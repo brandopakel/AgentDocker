@@ -6063,7 +6063,18 @@
       "Full Windows support",
       "Signed or already published current desktop",
       "Production daemon restart or provider interruption"
-    ]
+    ],
+    "coworker_platform_confirmation": {
+      "required_platforms": [
+        "macOS",
+        "Linux",
+        "native Windows"
+      ],
+      "confirmed_by": "user, September 19 UTC",
+      "scope": "First coworker rollout; Windows completion and target Linux desktop acceptance are required, not deferred. Each platform requires its own candidate and real-provider first-run/lifecycle/update evidence.",
+      "implementation_claim": "No new Windows implementation or cross-platform acceptance is claimed by this documentation update.",
+      "later_integration": "#203 merged16bf69a; original gate/benchmark remain pinned to14f1c519 runtime."
+    }
   },
   "first_install_configuration_2026_09_19": {
     "date": "2026-09-19T03:14:41Z to 2026-09-19T03:18:45Z (trial root created 03:14:41Z; the private daemon's first and last log lines 03:15:00Z and 03:18:45Z; the earlier value 03:30Z was written by hand and wrong)",

@@ -35,6 +35,10 @@ If you know [herdr](https://github.com/herdrdev/herdr), the two are complements 
 
 > Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The latest public download, [v0.1.0](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0), predates the current desktop. A current desktop release for coworkers is not published yet. macOS has local acceptance; Linux has CLI and graphical CI coverage; the full Windows app remains unfinished.
 
+The first coworker rollout targets **macOS, Linux and native Windows**. Each
+platform needs a downloadable candidate and its own first-run acceptance; the
+Windows foundations alone do not satisfy that requirement.
+
 Projects are moving to shared chat first, with clearly named agents and terminal
 access beside the conversation. That interface is installed as a local preview
 and awaits final integration. Board, history and technical activity remain

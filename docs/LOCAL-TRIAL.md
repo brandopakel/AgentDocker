@@ -71,6 +71,17 @@ Test sleep/wake, logout/login, app closure, daemon crash and planned upgrade sep
 
 ## Stage 5 — Other machines and systems
 
+The first coworker rollout explicitly covers **macOS, Linux and native Windows**
+(user confirmation, September 19 UTC). This stage is required for that rollout.
+Record each tested OS version, architecture, candidate checksum and provider
+version; a pass on one platform does not complete another platform's row.
+
+| Coworker platform | Required candidate and trial |
+| --- | --- |
+| macOS | Downloaded desktop on an independent Mac/account; signing/Gatekeeper status, first provider setup/consent, native terminals and Stage 2–4 acceptance. |
+| Linux | Downloaded desktop on the declared target distributions/architectures; graphical session, user service, provider setup, terminals and Stage 2–4 acceptance. |
+| Windows | Complete the [native port](WINDOWS-PORT.md), then test the actual Windows installer, named-pipe daemon/client, ConPTY, provider setup, startup/update and Stage 2–4 acceptance. Foundations CI and WSL do not qualify. |
+
 Transfer the same verified candidate to the second Mac and repeat startup/inventory, one Claude hooks or Codex MCP trial and shutdown. Record architecture and OS version. It has its own registry; do not expect automatic federation. Execute on Intel hardware before claiming Intel runtime validation.
 
 Repeat the graphical and user-service scenarios on target Linux distributions and ARM64/x86-64. Build Windows support before offering a Windows install; then run the same semantic scenarios against Windows IPC/process/terminal/service adapters. WSL running Linux code is not evidence of native Windows desktop support.
