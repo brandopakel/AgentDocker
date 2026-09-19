@@ -86,31 +86,46 @@ folder under the per-user temporary directory (where test fixtures come and
 go) is never listed by discovery, only by a pin; a pinned folder stays
 either way. Shared scratch roots such as `/tmp` and `/var/tmp` remain
 discoverable, including when Linux reports one as its default temporary
-directory. Sessions whose project is unknown appear under
-**Other sessions**.
+directory, but a folder discovered there and never pinned is not listed
+among your projects: it sits in a **Temporary (n)** fold under them (a
+fixture's workspace, a trial's worktree). Until you toggle it the fold is
+automatic — open while one of them has a live session or is the selected
+project, closed otherwise — and from then on it is as you left it, closable
+even while one runs or is selected; the live count sits on the fold. Pinning
+one moves it up. Sessions whose project is unknown
+appear under **Other sessions**.
 
 **Current** shows live sessions; **Needs input** shows this project's
 unanswered, unexpired questions, including questions from a session that has
 since finished. Ended sessions are not a tab: they sit in one collapsed
 **Earlier (n)** group under the current ones, including previous runs with the
-same name, and a search that finds one opens the group. When only an earlier
+same name, and a search that finds one opens the group. The group opens on
+its newest eight; **Show older** adds eight more each time, and closing the
+group forgets how far it was opened. The Earlier group of conversations in
+Messages has its own fold and page: neither moves the other. When only an earlier
 session matches, its result appears without a contradictory empty-state card.
 Search applies to the
 selected project, both filters and the Earlier group. Switching projects
 returns to Current. Nothing is deleted when a row moves to Earlier.
 
-Session rows show the name, runtime, branch and observed activity. Sessions needing
-input appear first within each project. Select a row for terminal access, reply, or stop. On a narrow
+Session rows show the name, branch and observed activity, with the runtime as a
+pill only when the name is one somebody chose (a generated name already reads
+as the tool). Sessions needing
+input appear first within each project. An ended Claude Code session that can
+come back carries **Reconnect here** on its row itself (the same action as in
+Details, which still says why a session cannot be reconnected yet); while its
+resume is on its way the row says **Reconnecting…**. Select a row for terminal access, reply, or stop. On a narrow
 window, the session replaces the list; **Back to sessions** returns to it. On a
 wide window, it opens beside the list. **Details** reveals the session ID, process,
 checkout, commit and last-seen time.
 **Board**, between Sessions and Activity, is the project's work: five
 columns — Backlog, Ready, In progress, Review, Done — of cards with a title
-and what done means. **File a card** at the top takes a title and the
-acceptance text and files it **as Ready** (for the next agent to pull) or
-**in Backlog** (yours to think about). A card shows who holds it with a
-presence dot, or *for the taking* in Ready; opening a card shows its
-acceptance text, its typed links (a kind — path, pr, commit, url, task, message,
+and when it counts as done. **Add a task** at the top takes a title and
+*Done when…* (the acceptance text an agent reads before it starts) and adds
+it **to Ready** (for the next agent to take) or keeps it **in Backlog** (yours
+to think about). A card shows who holds it with a presence dot (the name on
+one line, clipped), or *unassigned* in Ready; opening a card shows *Done
+when:* its acceptance text, its typed links (a kind — path, pr, commit, url, task, message,
 memory — and the target, shown as text; the app neither opens nor copies
 them, that is the person's tools' work) and its
 moves: one column back or forward, **Hand to** an agent running here (or
@@ -118,7 +133,7 @@ moves: one column back or forward, **Hand to** an agent running here (or
 card with the `pull_task` tool and the board shows it in progress under that
 agent at once; two agents never get one card. The pull is a `task:<id>`
 lease: a card whose holder's lease has lapsed — expired, released, or the
-agent gone — says *hold lapsed* beside the holder; nobody takes it by a
+agent gone — says *not being worked on* beside the holder; nobody takes it by a
 plain pull, only by naming that holder (`pull_task` with `take_over_from`)
 or by your **Hand to**, which ends the old hold and gives a running agent
 the card's lease in one step. A move back to Ready or Backlog, or to Done,
@@ -235,7 +250,8 @@ AgentDocker itself writes: the rooms it opens between two checkouts, named
 **AgentDocker → agent** notices per agent; conversations two agents had with
 each other sit behind **Between agents** (read as `Codex · 0180d761 ↔ Claude Code`,
 so two pairs of the same tools are told apart); a search box filters by
-name. Ended sessions' conversations sit behind **Earlier (n)**. Every row is
+name. Ended sessions' conversations sit behind **Earlier (n)**, eight at a time
+with **Show older**. Every row is
 one line each for the name and the latest line. Unread counts and the rail
 badge cover what is yours to answer: channels, broadcasts and your own direct
 messages, never what two agents said to each other, what AgentDocker told

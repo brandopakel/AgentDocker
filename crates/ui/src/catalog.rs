@@ -261,6 +261,19 @@ fn is_temporary_under(root: &Path, temp: &Path) -> bool {
         || root.starts_with("/var/folders")
 }
 
+/// Whether a folder is scratch: under the per-user temporary directory
+/// (see [`is_temporary`]) or under the shared scratch roots — `/tmp`,
+/// `/var/tmp` and their `/private` spellings. A discovered folder there
+/// is listed (people do put checkouts in `/tmp` on purpose), but not among
+/// the person's projects: the sidebar keeps it in its collapsed
+/// *Temporary* group until it is pinned. Never under the home directory.
+pub fn is_scratch(root: &Path) -> bool {
+    is_temporary(root)
+        || ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"]
+            .iter()
+            .any(|scratch| root.starts_with(scratch))
+}
+
 pub fn resolve(folder: &Path) -> anyhow::Result<ProjectRef> {
     anyhow::ensure!(folder.is_dir(), "Choose an existing project folder");
     Ok(agentdocker_host::project::discover(folder))
@@ -329,6 +342,31 @@ mod tests {
 
     /// A discovered folder that no longer exists leaves the list; a pinned
     /// one stays, unavailable, and the selection moves off a vanished one.
+    /// A checkout under /tmp or /private/tmp is scratch — a fixture's
+    /// workspace, a trial's worktree — and so is anything the temporary
+    /// filter hides; a checkout under the home directory is not, whatever
+    /// its name.
+    #[test]
+    fn scratch_is_the_shared_temporary_roots_and_the_private_ones() {
+        for scratch in [
+            "/tmp/agentdocker-newcomer",
+            "/private/tmp/agentdocker-channel-live-receipt-20260918/workspace",
+            "/var/tmp/x",
+            "/private/var/tmp/x",
+            "/private/var/folders/t1/abc/T/fixture",
+        ] {
+            assert!(is_scratch(Path::new(scratch)), "{scratch}");
+        }
+        for kept in [
+            "/Users/somebody/AgentDocker",
+            "/Users/somebody/tmp/notes",
+            "/home/somebody/src/tmpfs-tools",
+            "/tmpx/y",
+        ] {
+            assert!(!is_scratch(Path::new(kept)), "{kept}");
+        }
+    }
+
     #[test]
     fn vanished_discovered_folders_leave_the_list_and_pinned_ones_stay() {
         let dir = tempfile::tempdir().unwrap();

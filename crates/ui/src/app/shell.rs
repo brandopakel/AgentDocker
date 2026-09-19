@@ -64,6 +64,18 @@ pub(super) struct State {
     /// Whether the collapsed sidebar groups are open.
     pub collisions_open: bool,
     pub earlier_open: bool,
+    /// How many of the Earlier group's entries are on screen: a page, and
+    /// a page more for each *Show older*; closing the group resets it.
+    pub earlier_shown: usize,
+    /// The same two for the earlier conversations in Messages: its own
+    /// fold and page, so the two screens' groups do not move each other.
+    pub earlier_conversations_open: bool,
+    pub earlier_conversations_shown: usize,
+    /// Whether the temporary projects (discovered under /tmp, unpinned)
+    /// are unfolded in the sidebar: the person's choice once they have
+    /// toggled it, until then automatic (open while one of them has a
+    /// live session).
+    pub temporary_open: Option<bool>,
     /// Whether the conversations between agents are unfolded.
     pub peers_open: bool,
     /// The project row whose menu is open.
@@ -570,6 +582,12 @@ pub enum Message {
     MessagesSearch(String),
     ToggleCollisions,
     ToggleEarlier,
+    /// One page more of the Earlier group.
+    MoreEarlier,
+    /// The earlier conversations in Messages: their own fold and page.
+    ToggleEarlierConversations,
+    MoreEarlierConversations,
+    ToggleTemporary,
     TogglePeers,
     /// A divider between the window's columns was dragged, in one grid.
     PaneResized(super::panes::Grid, iced::widget::pane_grid::ResizeEvent),
@@ -1287,7 +1305,32 @@ impl App {
                 self.shell.messages_search = text.chars().take(200).collect();
             }
             Message::ToggleCollisions => self.shell.collisions_open = !self.shell.collisions_open,
-            Message::ToggleEarlier => self.shell.earlier_open = !self.shell.earlier_open,
+            Message::ToggleEarlier => {
+                self.shell.earlier_open = !self.shell.earlier_open;
+                self.shell.earlier_shown = EARLIER_PAGE;
+            }
+            Message::MoreEarlier => {
+                self.shell.earlier_shown = self
+                    .shell
+                    .earlier_shown
+                    .max(EARLIER_PAGE)
+                    .saturating_add(EARLIER_PAGE);
+            }
+            Message::ToggleEarlierConversations => {
+                self.shell.earlier_conversations_open = !self.shell.earlier_conversations_open;
+                self.shell.earlier_conversations_shown = EARLIER_PAGE;
+            }
+            Message::MoreEarlierConversations => {
+                self.shell.earlier_conversations_shown = self
+                    .shell
+                    .earlier_conversations_shown
+                    .max(EARLIER_PAGE)
+                    .saturating_add(EARLIER_PAGE);
+            }
+            Message::ToggleTemporary => {
+                let open = self.temporary_fold_open();
+                self.shell.temporary_open = Some(!open);
+            }
             Message::TogglePeers => self.shell.peers_open = !self.shell.peers_open,
             Message::PaneResized(grid, event) => {
                 if self.panes.resized(grid, event) {
@@ -2726,7 +2769,7 @@ mod tests {
     /// while another is on view, a move or hand of some other card does
     /// not clear it, a late reply to an earlier filing does not take
     /// newer text, a filing that cannot be queued says so instead of
-    /// staying "Filing…", and a board that cannot be read stays as last
+    /// staying "Adding…", and a board that cannot be read stays as last
     /// read.
     #[test]
     fn a_card_draft_survives_other_board_actions_late_replies_and_refused_queues() {
@@ -4403,6 +4446,87 @@ mod tests {
         );
         assert_eq!(app.shell.answers[&action.target.message], "unfinished");
         assert!(app.sending.is_empty());
+    }
+
+    /// The Earlier groups (ended sessions, earlier conversations) open on a
+    /// page of entries and grow a page per *Show older*; closing a group
+    /// forgets how far it was opened, and the temporary projects fold
+    /// opens and closes on its own toggle.
+    #[test]
+    fn earlier_groups_page_and_the_temporary_fold_toggles() {
+        let (mut app, _commands, _) = app();
+        assert!(!app.shell.earlier_open);
+        let _ = app.update(Message::ToggleEarlier);
+        assert!(app.shell.earlier_open);
+        assert_eq!(app.shell.earlier_shown, EARLIER_PAGE);
+        let _ = app.update(Message::MoreEarlier);
+        let _ = app.update(Message::MoreEarlier);
+        assert_eq!(app.shell.earlier_shown, 3 * EARLIER_PAGE);
+        let _ = app.update(Message::ToggleEarlier);
+        assert!(!app.shell.earlier_open);
+        let _ = app.update(Message::ToggleEarlier);
+        assert_eq!(app.shell.earlier_shown, EARLIER_PAGE, "reopened at a page");
+        // The conversations' group is its own: untouched by the sessions'
+        // toggle and page, and the other way round.
+        assert!(!app.shell.earlier_conversations_open);
+        let _ = app.update(Message::ToggleEarlierConversations);
+        let _ = app.update(Message::MoreEarlierConversations);
+        assert!(app.shell.earlier_conversations_open);
+        assert_eq!(app.shell.earlier_conversations_shown, 2 * EARLIER_PAGE);
+        assert_eq!(app.shell.earlier_shown, EARLIER_PAGE);
+        let _ = app.update(Message::ToggleEarlier);
+        assert!(app.shell.earlier_conversations_open);
+        // The temporary fold is automatic until toggled: closed with
+        // nothing running in a scratch project, and a toggle is the
+        // person's choice from then on — closable even while one runs.
+        assert_eq!(app.shell.temporary_open, None);
+        assert!(!app.temporary_fold_open());
+        let _ = app.update(Message::ToggleTemporary);
+        assert_eq!(app.shell.temporary_open, Some(true));
+        assert!(app.temporary_fold_open());
+        let mut scratch = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "claude-code-77".into(),
+                runtime: "claude-code".into(),
+                workdir: Some("/private/tmp/fixture/workspace".into()),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        scratch.id = "scratch-live".into();
+        scratch.status = agentdocker_core::AgentStatus::Running;
+        scratch.project = Some(agentdocker_core::ProjectRef::directory(
+            "/private/tmp/fixture/workspace",
+        ));
+        app.agents.push(scratch);
+        app.shell.catalog.remember(
+            agentdocker_core::ProjectRef::directory("/private/tmp/fixture/workspace"),
+            false,
+        );
+        let _ = app.update(Message::ToggleTemporary);
+        assert_eq!(app.shell.temporary_open, Some(false));
+        assert!(
+            !app.temporary_fold_open(),
+            "closable while a scratch session runs"
+        );
+        app.shell.temporary_open = None;
+        assert!(app.temporary_fold_open(), "automatic: open while one runs");
+        // A selected scratch project with nothing running opens the fold
+        // by itself, and one click closes it: the click negates the fold
+        // as drawn, selection included.
+        app.agents.clear();
+        app.shell.catalog.selected = Some("/private/tmp/fixture/workspace".into());
+        app.screen = Screen::Agents;
+        assert!(
+            app.temporary_fold_open(),
+            "automatic: open for the project on view"
+        );
+        let _ = app.update(Message::ToggleTemporary);
+        assert_eq!(app.shell.temporary_open, Some(false));
+        assert!(!app.temporary_fold_open(), "one click closes it");
+        let _ = app.update(Message::ToggleTemporary);
+        assert!(app.temporary_fold_open());
     }
 
     /// Reconnecting an ended Claude Code session launches its own tool
