@@ -21,9 +21,11 @@ handles while creating state. Existing owned broad-read state can be narrowed;
 foreign-writable state is refused. Administrators and SYSTEM remain machine
 administrators, as root does on Unix.
 
-The Windows workflow runs these crates on a real Windows runner, including
-ACL refusal, process identity and command descendant cancellation. A successful
-cross-compile alone is not runtime acceptance. Unix CI remains required.
+The Windows workflow runs core/host on a real Windows runner, including
+ACL refusal, process identity and command descendant cancellation, and compiles
+the UI binary. At main `16bf69a`, it does not build/test the complete daemon or
+CLI; the native graphical and release workflows have no Windows target. A
+successful cross-compile alone is not runtime acceptance. Unix CI remains required.
 
 File observations on Windows track native read-only attributes and change
 metadata; Windows has no Unix executable permission bits. Captured Windows
@@ -34,9 +36,15 @@ on Windows until a checked named-pipe/VM transport is implemented.
 
 Work still required before platform support can be claimed:
 
-- Integrate the shared named-pipe listener/clients into a full native daemon.
-  Native core/host CI has exercised peer verification, bounded streams,
-  admission and desktop cancellation; it does not constitute a running Windows product.
+- Build the full daemon and CLI natively. Their transport call sites already
+  use the shared `agentdocker_host::ipc` API, but process supervision, session
+  owners/live reload, permissions, parent-process lookup and terminal paths
+  still contain unconditional Unix dependencies. Complete portable process and
+  filesystem handling; unsupported features must return explicit unavailability.
+  Keep PID/birth checks and the same-user/ACL boundary on Windows. Add real
+  Windows daemon/CLI checks and a named-pipe ping/register/send/inbox smoke.
+  Existing core/host peer verification, bounded streams, admission and desktop
+  cancellation tests do not establish that full-product boundary.
 - Native supervised processes, ConPTY terminal input/output/resize, same-user
   identity checks for stopping adopted processes, and restart recovery.
 - Windows provider configuration and desktop application inventory.
