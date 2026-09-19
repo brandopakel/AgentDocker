@@ -210,7 +210,12 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                 step("wait_control", id=f"answer-deny-{deny}", present=False),
                                 step("wait_text", text="Keep this draft until I choose"), step("capture", name="question-choices"),
                                 step("click", id=f"answer-choice-{choice}-0"), step("wait_control", id=f"answer-choice-{choice}-0", present=False)]
-                steps = [step("click", id=f"project-{project}"), step("wait_text", text="terminal-fixture"), step("wait_control", id=f"session-{agent['id']}", present=True),
+                steps = [step("click", id=f"project-{project}"),
+                         step("wait_control", id="project-terminal", present=True),
+                         step("wait_control", id=f"chat-terminal-{agent['id']}", present=True),
+                         step("wait_control", id="project-tab-Board", present=False),
+                         step("wait_text", text="#everyone"), step("capture", name="project-chat-default"),
+                         step("click", id="project-tab-Agents"), step("wait_text", text="terminal-fixture"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("wait_control", id=f"session-{previous['id']}", present=False), step("capture", name="projects-live"),
                          step("click", id="pause-project"),
                          step("fill", id="pause-reason", text="Fixture pause · preserve this reason 日本語"),
@@ -226,7 +231,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("click", id=f"project-menu-{project}"), step("click", id=f"project-rename-start-{project}"),
                          step("fill", id=f"project-rename-{project}", text="Renamed Project"), step("click", id=f"project-rename-save-{project}"),
                          step("click", id="projects"), step("wait_text", text="RENAMED PROJECT"), step("capture", name="renamed-all-projects"),
-                         step("click", id=f"project-{project}"),
+                         step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                          step("click", id=f"project-menu-{project}"), step("click", id=f"project-rename-start-{project}"),
                          step("fill", id=f"project-rename-{project}", text=""), step("click", id=f"project-rename-save-{project}"),
                          # Ended sessions are one collapsed group under the current ones,
@@ -274,7 +279,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("click", id="project-more"), step("click", id="project-tab-Channels"), step("click", id=f"reply-channel-{room['id']}"),
                          step("fill", id="channel-message", text="Fixture channel message"), step("click", id="send-channel"),
                          step("wait_text", text="Message sent"), step("wait_text", text="Fixture channel message"), step("capture", name="channels"),
-                         step("click", id="project-tab-Journal"), step("capture", name="activity"),
+                         step("click", id="project-more"), step("click", id="project-tab-Journal"), step("capture", name="activity"),
                          step("click", id="project-more"), step("click", id="project-tab-Channels"), step("wait_text", text="Fixture channel message"),
                          step("click", id="project-more"), step("click", id="project-tab-Leases"), step("capture", name="coordination"),
                          step("click", id="connections"), step("capture", name="connections"),
@@ -301,7 +306,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("wait_text", text="Idle messages: Off"),
                          # This fake CLI is a terminal fixture, not a provider input server.
                          step("fill", id="launch-name", text="launched-from-iced"), step("click", id="confirm-launch"),
-                         step("wait_text", text="Agent launched"), step("click", id="attach-session"),
+                         step("wait_text", text="Agent launched"), step("click", id="project-tab-Agents"), step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="launched-terminal"), step("click", id="detach-terminal"),
                          step("click", id="stop-session"), step("wait_text", text="Confirm stop"), step("click", id="stop-session"),
                          step("click", id="project-more"), step("click", id="project-tab-Console"), step("fill", id="console-command", text="ps --all"),
@@ -317,11 +322,14 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                     script = root / f"{name}.json"
                     script.write_text(json.dumps(scenario))
                     capture = output / name
+                    # Bound each complete workflow by its action count. The expanded
+                    # chat/navigation path is longer than the old fixed 150 s window.
+                    deadline = max(150, len(scenario) * 2)
                     with (output / f"{name}.log").open("w") as log:
                         window = subprocess.Popen([str(binary_dir / "agentdocker-ui"), "--smoke-test", str(capture),
-                                                   "--smoke-scenario", str(script), "--smoke-deadline", "150"],
+                                                   "--smoke-scenario", str(script), "--smoke-deadline", str(deadline)],
                                                   cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
-                        observation = wait_window(daemon, window, capture, timeout=180)
+                        observation = wait_window(daemon, window, capture, timeout=deadline + 30)
                     result = json.loads((capture / "result.json").read_text())
                     assert result["scenario_steps_completed"] == len(scenario), result
                     return observation
@@ -373,10 +381,10 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 route = {"home": str(state), "socket": str(endpoint),
                          "target": {"message": routed, "agent": narrow["id"], "project": room["project"], "channel": None}}
                 narrow_steps = [step("resize", width=720, height=540),
-                                step("click", id=f"project-{project}"), step("click", id="pause-project"),
+                                step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="pause-project"),
                                 step("fill", id="pause-reason", text="Narrow pause draft 日本語"),
                                 step("capture", name="narrow-pause-draft"), step("click", id="pause-cancel"),
-                                step("click", id="inbox"),
+                                step("click", id="inbox"), step("click", id="thread-back"),
                                 step("wait_control", id=f"thread-{agent['id']}", present=True),
                                 step("wait_control", id="thread-back", present=False), step("capture", name="narrow-inbox-list"),
                                 step("click", id=f"thread-{agent['id']}"), step("wait_control", id="thread-back", present=True),
@@ -451,7 +459,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                  # action below) and the card shows its holder; the person
                                  # opens it, reads what done means, moves it on and archives it.
                                  step("resize", width=1180, height=760), step("click", id="projects"),
-                                 step("click", id=f"project-{project}"), step("click", id="project-tab-Board"),
+                                 step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="project-more"), step("click", id="project-tab-Board"),
                                  step("wait_control", id="task-title", present=True),
                                  step("wait_control", id=f"task-{card['id']}", present=True),
                                  step("fill", id="task-title", text="Write the fixture notes"),
@@ -559,7 +567,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 try:
                     pane_steps = [
                         step("resize", width=1200, height=760),
-                        step("click", id=f"project-{project}"), step("click", id="inbox"),
+                        step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="inbox"),
                         step("click", id=f"thread-{narrow['id']}"),
                         step("fill", id=f"answer-{draft_question}", text=answer_marker),
                         step("fill", id=f"reply-{narrow['id']}", text="Keep this conversation draft"),
@@ -592,15 +600,15 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("wait_text", text="Keep this conversation draft"),
                         step("wait_text", text="Keep this thread draft"),
                         step("capture", name="expanded-columns"),
-                        step("click", id="projects"), step("click", id=f"project-{project}"),
+                        step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                         step("click", id="project-more"), step("click", id="project-tab-Channels"),
                         step("click", id=f"reply-channel-{room['id']}"),
                         step("fill", id="channel-message", text="Keep this channel across reopen"),
-                        step("click", id="projects"), step("click", id=f"project-{project}"),
+                        step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                         step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
                         step("fill", id="session-message-text", text="Keep this session across reopen"),
-                        step("click", id="projects"), step("click", id=f"project-{project}"),
-                        step("click", id="project-tab-Board"),
+                        step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
+                        step("click", id="project-more"), step("click", id="project-tab-Board"),
                         step("fill", id="task-title", text="Unfiled card café 日本語"),
                         step("fill", id="task-acceptance", text="Check reopen without filing"),
                     ]
@@ -626,24 +634,24 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 cards_before_reopen = rpc(endpoint, {"op": "tasks", "project": str(project), "archived": True})["tasks"]
                 restored_steps = [
                     step("resize", width=1800, height=900),
-                    step("click", id=f"project-{project}"), step("click", id="inbox"),
+                    step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="inbox"),
                     step("click", id=f"thread-{narrow['id']}"),
                     step("wait_text", text=answer_marker),
                     step("wait_text", text="Keep this conversation draft"),
                     step("click", id=f"thread-{routed}"),
                     step("wait_text", text="Keep this thread draft"),
                     step("capture", name="restored-conversation-and-thread"),
-                    step("click", id="projects"), step("click", id=f"project-{project}"),
+                    step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                     step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
                     step("wait_text", text="Keep this session across reopen"),
                     step("capture", name="restored-session"),
-                    step("click", id="projects"), step("click", id=f"project-{project}"),
+                    step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                     step("click", id="project-more"), step("click", id="project-tab-Channels"),
                     step("click", id=f"reply-channel-{room['id']}"),
                     step("wait_text", text="Keep this channel across reopen"),
                     step("capture", name="restored-channel"),
-                    step("click", id="projects"), step("click", id=f"project-{project}"),
-                    step("click", id="project-tab-Board"),
+                    step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
+                    step("click", id="project-more"), step("click", id="project-tab-Board"),
                     step("wait_text", text="Unfiled card café 日本語"),
                     step("wait_text", text="Check reopen without filing"),
                     step("capture", name="restored-board-draft"),
@@ -676,7 +684,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             assert any(m.get("payload") == "Fixture channel message" for m in messages), messages
             launched = [a for a in rpc(endpoint, {"op": "list", "all": True})["agents"] if a["spec"]["name"] == "launched-from-iced"]
             assert len(launched) == 1 and launched[0]["status"]["state"] == "exited", launched
-            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_text", text="No agents in this project"), step("capture", name="restored-last-project"), step("click", id="sessions-earlier"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-earlier")])
+            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_control", id="project-terminal", present=True), step("click", id="project-tab-Agents"), step("wait_text", text="No agents in this project"), step("capture", name="restored-last-project"), step("click", id="sessions-earlier"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-earlier")])
             checks.extend(["folder_pin_has_no_project_files", "same_project_after_launch", "last_project_restore", "quiet_project_retained", "saved_appearance"])
             # Private metadata fixture, not a model or idle-wake assertion.
             receiver = rpc(endpoint, {"op": "register", "spec": {
@@ -705,8 +713,20 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                      step("click", id="connection-details-claude-code"),
                                      step("wait_text", text="readiness-fixture"),
                                      step("wait_text", text=expected), step("capture", name=name),
-                                     step("click", id="projects"), step("click", id=f"project-{project}"),
-                                     step("click", id="inbox"), step("click", id=f"thread-{receiver['id']}"),
+                                     step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
+                                     # Selecting a project opens its shared chat. On a
+                                     # compact display, Messages keeps that conversation
+                                     # and hides the list until Conversations is pressed.
+                                     # Establish that layout on every runner rather than
+                                     # assume its display can show the wide sidebar.
+                                     step("resize", width=720, height=540),
+                                     step("click", id="inbox"),
+                                     step("wait_control", id="thread-back", present=True),
+                                     step("click", id="thread-back"),
+                                     step("wait_control", id=f"thread-{receiver['id']}", present=True),
+                                     step("click", id=f"thread-{receiver['id']}"),
+                                     step("wait_control", id="thread-back", present=True),
+                                     step("wait_control", id=f"reply-{receiver['id']}", present=True),
                                      step("wait_text", text=input_status), *send_probe,
                                      step("fill", id=f"reply-{receiver['id']}", text="Keep the connection draft"),
                                      step("click", id=f"input-connection-{conversation}"),
@@ -744,7 +764,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             retained = rpc(endpoint, {"op": "inbox", "agent": receiver["id"], "drain": False})["messages"]
             assert rpc(endpoint, {"op": "delivery_queue", "agent": receiver["id"]})["type"] == "input_waiting"
             report["provider_limit_window"] = launch("provider-limit", [
-                step("click", id="projects"), step("click", id=f"project-{project}"),
+                step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                 step("wait_text", text="readiness-fixture: Usage limit"),
                 step("wait_control", id=f"needs-you-review-{receiver['id']}", present=False),
                 step("click", id=f"needs-you-provider-{receiver['id']}"),
@@ -764,6 +784,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             # control, not a relaunch: nothing is pressed.
             report["row_reconnect_window"] = launch("row-reconnect", [
                 step("click", id="projects"), step("click", id=f"project-{project}"),
+                step("click", id="project-tab-Agents"),
                 step("click", id="sessions-earlier"),
                 step("wait_control", id=f"session-{receiver['id']}", present=True),
                 step("wait_control", id=f"row-reconnect-{receiver['id']}", present=True),

@@ -197,6 +197,12 @@ instrumentation is implemented.
 
 ### Terminal and settings
 
+**Project terminal** in the project header opens a shell in that project’s folder.
+Each current agent also has a **Terminal** action: a managed agent opens its live
+PTY inside AgentDocker; an external macOS Terminal session brings its existing
+tab forward after checking the process identity. Other terminal hosts report
+when focusing is unavailable.
+
 **Open terminal** attaches to a managed live PTY. **Detach** leaves the agent
 running. Copy uses the selected terminal range, or the visible screen when nothing is selected; paste respects bracketed-paste mode,
 F6 leaves terminal focus, and Control+] detaches. Rejected input is reported;
@@ -212,7 +218,7 @@ exact changes and preserve running releases; see [desktop distribution](DESKTOP-
 
 ## The console
 
-Open **Projects → More → Command line** to run a bundled `agentdocker` subcommand
+Open **Projects → More → AgentDocker commands** to run a bundled `agentdocker` subcommand
 in the selected project. Output stays in the window; **Previous** and **Next**
 recall commands. This field runs CLI arguments without a shell.
 

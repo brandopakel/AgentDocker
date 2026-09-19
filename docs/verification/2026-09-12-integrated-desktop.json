@@ -6074,6 +6074,11 @@
       "scope": "First coworker rollout; Windows completion and target Linux desktop acceptance are required, not deferred. Each platform requires its own candidate and real-provider first-run/lifecycle/update evidence.",
       "implementation_claim": "No new Windows implementation or cross-platform acceptance is claimed by this documentation update.",
       "later_integration": "#203 merged16bf69a; original gate/benchmark remain pinned to14f1c519 runtime."
+    },
+    "integration": {
+      "pr": 205,
+      "merge_commit": "046824822c7aa1a8286675de5deba26936c0327d",
+      "status": "Merged after final-head CI and substantive CodeRabbit review of 0d6d3de; original runtime/benchmark provenance retained."
     }
   },
   "first_install_configuration_2026_09_19": {
@@ -6107,5 +6112,492 @@
     "timestamp_reconciliation": "Use the observed trial interval and correlated archive messages; the peer report recorded_at is a handwritten approximation, not clock evidence.",
     "report_file_modified_at": "2026-09-19T03:22:11.881143+00:00",
     "binary_hashes_independently_checked": true
+  },
+  "chat_first_workspace_2026_09_18": {
+    "scope": "Combined project Chat, naming201, session/Board UX203, native terminal access and receiver202; installation pending.",
+    "workflow": {
+      "report_sha256": "d1f751c1f928cf111b26faa2ec3663932e33ad4ec4372031e90aefef50329a60",
+      "result": "passed",
+      "binary_sha256": {
+        "agentd": "74ed35d9c3e66a4a3d0d1e8dba65a65d6f848e51b5a85361853888d7e19418cf",
+        "agentdocker": "5e58f5fddae20c7e60e55d667bafc21c4d9c1bdcfb136fa4c1541f82aa3fd9e1",
+        "agentdocker-ui": "1accc3a8713bc5dc2616b3f594d50c05c48f62ed590b23ea16a58043d782d915"
+      },
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "send_warns_about_named_unbound_recipient_and_expands_reconnect_guidance_without_resending",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "ended_claude_session_row_offers_reconnect",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived",
+        "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+        "unfinished_board_card_reopens_in_its_project_without_filing_or_changing_any_card",
+        "normal_close_flushes_hidden_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them"
+      ],
+      "steps": null,
+      "windows": 12,
+      "rendered_steps": 545,
+      "checks_passed": 31,
+      "source": "95d21ce",
+      "scope": "Full native workflow before adding IDs for keyboard scroll reveal; idle resource sample deliberately omitted."
+    },
+    "focused_chat": {
+      "report_sha256": "35d20b16446cc2bb1dd10da8c5d724b53c43ad62ae7ab4ea717bb129da5659a9",
+      "result": "passed",
+      "binary_sha256": {
+        "agentd": "74ed35d9c3e66a4a3d0d1e8dba65a65d6f848e51b5a85361853888d7e19418cf",
+        "agentdocker": "5e58f5fddae20c7e60e55d667bafc21c4d9c1bdcfb136fa4c1541f82aa3fd9e1",
+        "agentdocker-ui": "1accc3a8713bc5dc2616b3f594d50c05c48f62ed590b23ea16a58043d782d915"
+      },
+      "checks": [
+        "compact chat composer",
+        "compact and medium thread return",
+        "wide thread composer",
+        "separate drafts",
+        "managed terminal from chat",
+        "removed project retargets send"
+      ],
+      "steps": 37
+    },
+    "large_text": {
+      "report_sha256": "10f7457f7204d6b8ee5f89a2532319ac25089d470e77ad943d15c5cfdfb3108a",
+      "result": "passed",
+      "binary_sha256": {
+        "agentd": "74ed35d9c3e66a4a3d0d1e8dba65a65d6f848e51b5a85361853888d7e19418cf",
+        "agentdocker": "5e58f5fddae20c7e60e55d667bafc21c4d9c1bdcfb136fa4c1541f82aa3fd9e1",
+        "agentdocker-ui": "edd4f45c7cd68925e798d2fa48296ef37be2705eadc59f2c860ac6468858364a"
+      },
+      "checks": [
+        "18-point compact chat input remains visible",
+        "expanded delivery feedback scrolls",
+        "keyboard focus reveals bottom delivery action"
+      ],
+      "steps": 10,
+      "scope": "18-point minimum-window layout; focus reveals Copy instructions at the bottom of expanded delivery feedback while input stays visible. Includes final scroll IDs."
+    },
+    "project_terminal": {
+      "result": "passed",
+      "ui_sha256": "1accc3a8713bc5dc2616b3f594d50c05c48f62ed590b23ea16a58043d782d915",
+      "correct_cwd": true,
+      "scope": "Rendered Open project terminal action opens one fresh Terminal.app shell in exact directory containing Unicode, spaces, single quote and semicolon; only owned shell closed. Four rendered steps."
+    },
+    "peer_review": "Two Claude reviews of terminal targeting passed; internal review found hidden alias histories, fixed04784f2 and integrated.",
+    "limits": [
+      "External agent focus supports macOS Terminal.app; other terminal hosts remain explicit unsupported cases.",
+      "Native Linux terminal launch not accepted on this Mac.",
+      "No physical keyboard/IME or screen-reader acceptance claim.",
+      "Earlier retained DM histories remain reachable; live sessions are not merged by provider name."
+    ],
+    "failures_retained": [
+      "Pre-cleanup compact agent controls clipped; fixed single-row controls.",
+      "Expanded feedback initially clipped; fixed remaining-height scroll and keyboard reveal IDs.",
+      "First probe assumed project removal chooses Beta despite unrelated discovered projects; fixture ordering corrected.",
+      "First archive assertion used envelope wrapper instead of flattened JSON; corrected.",
+      "Parallel cargo-test terminal detach fixture set timeout after peer shutdown and got macOS EINVAL; moved timeout before thread release.",
+      "Workflow row-reconnect initially assumed sessions default; now explicitly enters Agents."
+    ],
+    "final_gate": {
+      "source": "932b566d01383dbd79996e0ed16b2f62f9e95394",
+      "command": "AGENTDOCKER_CAMPAIGN_LEASE=off bash scripts/verify.sh check",
+      "log": "/private/tmp/agentdocker-chat-final2-gate-20260918.log",
+      "result": "passed",
+      "rust_passed": 1284,
+      "rust_skipped": 7,
+      "python_checks": 94,
+      "python_skipped": 1,
+      "includes": [
+        "format",
+        "strict clippy",
+        "nextest with zero retries",
+        "doctests",
+        "Python checks",
+        "packaging",
+        "release build"
+      ],
+      "note": "Explicit Cargo lease b02f8b244281 held. Subsequent changes before packaging update documentation only."
+    },
+    "status": "implemented and installed as local preview; final CI/review and unlocked installed-window visual review remain",
+    "plain_ui_suite": {
+      "source": "ce82d06e4782f26fd6e18bcadd595b5920957653",
+      "result": "passed",
+      "tests": 205,
+      "log": "/private/tmp/agentdocker-chat-plain-ui-final-20260918.log",
+      "note": "Confirms the detach fixture read-timeout setup is safe under the parallel cargo-test harness as well as nextest."
+    },
+    "packaged_acceptance": {
+      "source": "ce82d06e4782f26fd6e18bcadd595b5920957653",
+      "source_dirty": false,
+      "candidate": "9e75e83411405444f8772fcf3a51f9d56c40441eb3e5df5f363d96d2eea19ece",
+      "build_manifest": {
+        "format": 1,
+        "source_commit": "ce82d06e4782f26fd6e18bcadd595b5920957653",
+        "source_tree": "237d7d4dd2133e59c06b3319fa4d7579d6141fc3",
+        "source_input_sha256": "90ba9fe74d85111005d8d21c1a9195abc159525a6bebb5dcf30da41568210b88",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 23,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-chat-first-20260918/target/release",
+        "binary_sha256": {
+          "agentdocker": "5e58f5fddae20c7e60e55d667bafc21c4d9c1bdcfb136fa4c1541f82aa3fd9e1",
+          "agentd": "74ed35d9c3e66a4a3d0d1e8dba65a65d6f848e51b5a85361853888d7e19418cf",
+          "agentdocker-ui": "edd4f45c7cd68925e798d2fa48296ef37be2705eadc59f2c860ac6468858364a"
+        }
+      },
+      "package": "/private/tmp/agentdocker-chat-package-20260918/AgentDocker.app",
+      "workflow": {
+        "result": "passed",
+        "checks": [
+          "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+          "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+          "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+          "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+          "rendered_actions",
+          "answer_and_draft_navigation",
+          "native_vt_rendering",
+          "terminal_attach_detach",
+          "channels",
+          "setup_review_apply_undo",
+          "launch_and_confirmed_stop",
+          "focused_control_reveal",
+          "compact_zoom",
+          "current_history_separation",
+          "project_attention",
+          "compact_session_navigation",
+          "folder_pin_has_no_project_files",
+          "same_project_after_launch",
+          "last_project_restore",
+          "quiet_project_retained",
+          "saved_appearance",
+          "send_warns_about_named_unbound_recipient_and_expands_reconnect_guidance_without_resending",
+          "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+          "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+          "ended_claude_session_row_offers_reconnect",
+          "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+          "a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived",
+          "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+          "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+          "unfinished_board_card_reopens_in_its_project_without_filing_or_changing_any_card",
+          "normal_close_flushes_hidden_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them"
+        ],
+        "scope": "Exercise production Iced controls in owned fixture state, then reopen the app.\n\nScenarios invoke callbacks collected from the actual rendered controls. This checks\nnative rendering and action wiring; it is not physical keyboard or screen-reader testing.\n",
+        "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+        "architecture": "arm64",
+        "binary_sha256": {
+          "agentd": "20235c8ea0bb928438fe463b9ef46f5669203be55f0e0eb6d31165d8cad33142",
+          "agentdocker": "47232d12a928e48f5f0a1e70b08b9c808ffe4f95592786d387d939569cce7d21",
+          "agentdocker-ui": "bfb1bd133aa7b399eb5156af22ba078e607817ad3147ea2ac70b999f37ab61cb"
+        },
+        "first_window": {
+          "samples": 348,
+          "elapsed_seconds": 50.81323229102418,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "restored_window": {
+          "samples": 23,
+          "elapsed_seconds": 3.2544190420303494,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "activity_only_window": {
+          "samples": 51,
+          "elapsed_seconds": 7.320182458031923,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "contact_window": {
+          "samples": 35,
+          "elapsed_seconds": 4.994361916964408,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "ready_window": {
+          "samples": 35,
+          "elapsed_seconds": 4.980291042011231,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "received_window": {
+          "samples": 36,
+          "elapsed_seconds": 5.135710415954236,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "paused_window": {
+          "samples": 35,
+          "elapsed_seconds": 5.1868172499816865,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "provider_limit_window": {
+          "samples": 29,
+          "elapsed_seconds": 4.433256666001398,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "row_reconnect_window": {
+          "samples": 18,
+          "elapsed_seconds": 2.4986116670188494,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "board_card": "f8947428a08f",
+        "narrow_inbox_window": {
+          "samples": 219,
+          "elapsed_seconds": 32.00767120800447,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "constrained_panes_window": {
+          "samples": 100,
+          "elapsed_seconds": 14.504026667040307,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "restored_drafts_window": {
+          "samples": 63,
+          "elapsed_seconds": 9.057990958972368,
+          "method": "lsof polling through window exit; short-lived sockets between samples may be missed"
+        },
+        "idle_resources": {
+          "result": "not_run",
+          "reason": "Explicit --skip-idle-measurement: foreground CPU/RSS sample omitted; no idle performance claim."
+        },
+        "elapsed_seconds": 144.69077608297812
+      },
+      "installation": {
+        "passed": true,
+        "scenarios": [
+          "preview without writes and pinned initial installation",
+          "same-release repair replaces the old wrapper and preserves activation",
+          "legacy bundle hooks and MCP work through generation 486c5dd04fbe96b102dac08d2e223e72049f8f651926f87fd3c55352626ca268",
+          "activation keeps the existing fixture daemon responsive",
+          "legacy bundle hooks and MCP work through generation 9e75e83411405444f8772fcf3a51f9d56c40441eb3e5df5f363d96d2eea19ece",
+          "changed preview payload and active generation are refused",
+          "compatible rollback switches all commands and retains both releases",
+          "legacy bundle hooks and MCP work through generation 486c5dd04fbe96b102dac08d2e223e72049f8f651926f87fd3c55352626ca268",
+          "tampered executable is refused without changing activation",
+          "cleanup retains active, rollback and running or legacy binaries",
+          "uninstall preserves the live daemon and its state",
+          "daemon exit releases its pin and invalidates stale cleanup preview",
+          "unused payloads removed; permanent pins and daemon state retained"
+        ],
+        "synthetic_second_generation": false,
+        "first": {
+          "id": "486c5dd04fbe96b102dac08d2e223e72049f8f651926f87fd3c55352626ca268",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "c0a7c56688fff19f51b449c607baded420c94218",
+          "state_schema": 23,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "486c5dd04fbe96b102dac08d2e223e72049f8f651926f87fd3c55352626ca268",
+          "version": "0.1.0"
+        },
+        "second": {
+          "id": "9e75e83411405444f8772fcf3a51f9d56c40441eb3e5df5f363d96d2eea19ece",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "ce82d06e4782f26fd6e18bcadd595b5920957653",
+          "state_schema": 23,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "9e75e83411405444f8772fcf3a51f9d56c40441eb3e5df5f363d96d2eea19ece",
+          "version": "0.1.0"
+        }
+      }
+    },
+    "installed_activation": {
+      "backup": "/private/tmp/agentdocker-before-chat-20260918",
+      "backup_integrity": "ok",
+      "activation": {
+        "activation": "not reloaded (live daemon reload is unavailable: session owners, the coordinator fence and the successor handover are in place, but their acceptance matrix is still being recorded; set AGENTDOCKER_EXPERIMENTAL_RELOAD=1 on the daemon to allow it; the current daemon and agents remain running); agentd 0.1.0 keeps serving from /Users/brandopakel/.local/share/agentdocker/desktop/versions/6bd97894a4d57348fa6e6907d72f5984994dca403510580f1308eed004978716/AgentDocker.app/Contents/MacOS/agentd until `agentdocker daemon reload` succeeds or it is restarted",
+        "application": "/Applications/AgentDocker.app",
+        "bin": "/Users/brandopakel/.local/bin",
+        "candidate": {
+          "id": "9e75e83411405444f8772fcf3a51f9d56c40441eb3e5df5f363d96d2eea19ece",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "ce82d06e4782f26fd6e18bcadd595b5920957653",
+          "state_schema": 23,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "9e75e83411405444f8772fcf3a51f9d56c40441eb3e5df5f363d96d2eea19ece",
+          "version": "0.1.0"
+        },
+        "daemon": {
+          "answered": true,
+          "refusal": {
+            "code": "unavailable",
+            "message": "live daemon reload is unavailable: session owners, the coordinator fence and the successor handover are in place, but their acceptance matrix is still being recorded; set AGENTDOCKER_EXPERIMENTAL_RELOAD=1 on the daemon to allow it; the current daemon and agents remain running"
+          },
+          "reloaded": false,
+          "serving": {
+            "executable": "/Users/brandopakel/.local/share/agentdocker/desktop/versions/6bd97894a4d57348fa6e6907d72f5984994dca403510580f1308eed004978716/AgentDocker.app/Contents/MacOS/agentd",
+            "pid": 92608,
+            "version": "0.1.0"
+          },
+          "summary": "not reloaded (live daemon reload is unavailable: session owners, the coordinator fence and the successor handover are in place, but their acceptance matrix is still being recorded; set AGENTDOCKER_EXPERIMENTAL_RELOAD=1 on the daemon to allow it; the current daemon and agents remain running); agentd 0.1.0 keeps serving from /Users/brandopakel/.local/share/agentdocker/desktop/versions/6bd97894a4d57348fa6e6907d72f5984994dca403510580f1308eed004978716/AgentDocker.app/Contents/MacOS/agentd until `agentdocker daemon reload` succeeds or it is restarted"
+        },
+        "local_preview": true,
+        "preview": false,
+        "previous": {
+          "id": "486c5dd04fbe96b102dac08d2e223e72049f8f651926f87fd3c55352626ca268",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "c0a7c56688fff19f51b449c607baded420c94218",
+          "state_schema": 23,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "486c5dd04fbe96b102dac08d2e223e72049f8f651926f87fd3c55352626ca268",
+          "version": "0.1.0"
+        },
+        "source": "/private/tmp/agentdocker-chat-package-20260918/AgentDocker.app",
+        "versions": "/Users/brandopakel/.local/share/agentdocker/desktop/versions"
+      },
+      "after": {
+        "at": "2026-09-18T23:32:01.848940+00:00",
+        "preserved_live_ids": [
+          "0a68fb5752f742b2b7a7d56ffd191758",
+          "50fd100f4310452fae0435fd4b6a1981",
+          "ac5c138c2b3f4d8f90c5924988419055",
+          "0180d7615186449087095d7aa15ec0bb",
+          "b81122731f6b496ca00a3784bbf52d5b",
+          "d6d6879cb8ab4cc491dd6f84c7864047",
+          "227cf0d9930a4cd199fa24a6002c1e99",
+          "7989f804168d463292944dc6f1fc8d8c"
+        ],
+        "preserved_provider_processes": [
+          {
+            "id": "50fd100f4310452fae0435fd4b6a1981",
+            "pid": 51242,
+            "birth": "2026-09-12T23:36:03.055103Z"
+          },
+          {
+            "id": "ac5c138c2b3f4d8f90c5924988419055",
+            "pid": 95454,
+            "birth": "2026-09-18T19:12:35.279696Z"
+          },
+          {
+            "id": "0180d7615186449087095d7aa15ec0bb",
+            "pid": 23973,
+            "birth": "2026-09-18T21:59:51.778048Z"
+          },
+          {
+            "id": "b81122731f6b496ca00a3784bbf52d5b",
+            "pid": 1285,
+            "birth": "2026-09-10T05:03:01.003345Z"
+          },
+          {
+            "id": "d6d6879cb8ab4cc491dd6f84c7864047",
+            "pid": 73929,
+            "birth": "2026-09-17T23:37:08.273629Z"
+          }
+        ],
+        "daemon_pid": 92608,
+        "codex_receiver_pid": 60959,
+        "new_ui_pid": 4324,
+        "state_schema": 23,
+        "installed_visual_review": "pending while macOS display is locked",
+        "package": "9e75e83411405444f8772fcf3a51f9d56c40441eb3e5df5f363d96d2eea19ece",
+        "source": "ce82d06e4782f26fd6e18bcadd595b5920957653"
+      },
+      "limitations": [
+        "macOS display is locked (IOConsoleUsers CGSSessionScreenIsLocked=Yes); installed visual review is pending",
+        "The live daemon remains source705f924/candidate6bd97894, schema23, PID92608; experimental reload was not enabled",
+        "Codex receiver60959 remains on486c5dd0; five provider PID/birth pairs and all eight live registry IDs were preserved",
+        "This is an ad-hoc signed local preview, not Developer ID/notarized distribution",
+        "Native fixtures invoke actual rendered controls, not physical keyboard/IME/screen-reader input"
+      ]
+    },
+    "compact_readiness_ci_fix_2026_09_19": {
+      "result": "Corrected driver passed against the exact failed CI package; final-head CI/review pending",
+      "failure": {
+        "run_id": 35420253536,
+        "artifact_id": 10577841862,
+        "prior_run_id": 35406146275,
+        "step": "readiness-activity: Click thread-<receiver>, after nine completed steps",
+        "diagnosis": "Project selection retains the everyone conversation; compact Messages renders its composer and Conversations back control, not the DM sidebar. Fixture assumed a wide display. No off-screen hit-test or timeout defect was established."
+      },
+      "runtime": {
+        "pr_head": "d2461a6ff10c92b9e1a28c484b24269b2a6e1b49",
+        "ci_merge_commit": "7d6b0e9cd52745ad0c1224b7cf127caf2e271d91",
+        "tree": "664deff08e611470012677f72cd683044b6fb8ec",
+        "tree_matches_pr_head": true,
+        "source_input_sha256": "d015a2cf1c064253d09ca7b7bd249fc9a639c2c17fba6164c528d54e0e9c4f40",
+        "archive_sha256": "649ca67fae9f9c8b9d3edabbbd9750248e51c3692d45aba868255765acecd818",
+        "binary_sha256": {
+          "agentd": "79abb2998ab826fad3c25b16543c9b79307dfb9a488e6e8eb1333a1f9756951a",
+          "agentdocker": "4f8c8911ec71f852457c655d8da0eb5e4a8eeaf5fb9bceeaff9896c67e56e940",
+          "agentdocker-ui": "f9f6e0ac1d6eb27bf7bd78b0d82f187bd64db1a88ee36bb2f5dd014904993e73"
+        }
+      },
+      "driver_commit": "3397f9f3",
+      "driver_change": "Explicit 720x540 layout; open Messages, assert/back to Conversations, assert/select DM, assert destination composer and back control. All five readiness cases exercise this route on every runner; no deadlines or assertions removed.",
+      "native_workflow": {
+        "result": "passed",
+        "checks": 31,
+        "steps": 575,
+        "windows": {
+          "restored-drafts": 33,
+          "row-reconnect": 7,
+          "readiness-received": 24,
+          "provider-limit": 15,
+          "readiness-activity": 33,
+          "readiness-ready": 24,
+          "workflows": 196,
+          "restored": 8,
+          "readiness-paused": 24,
+          "readiness-contact": 24,
+          "narrow-inbox": 128,
+          "constrained-panes": 59
+        },
+        "elapsed_seconds": 154.9129761660006,
+        "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+        "architecture": "arm64",
+        "result_sha256": "182421060129c3d6dde0d979fcff35bab9e7c4288cd0785b8c2751bbf21bdc2e"
+      },
+      "full_gate": {
+        "result": "passed",
+        "runtime_source": "d2461a6",
+        "driver_commit": "3397f9f3",
+        "rust_passed": 1304,
+        "rust_skipped": 7,
+        "python_checks": 94,
+        "python_skipped": 1,
+        "includes": [
+          "fmt",
+          "strict Clippy",
+          "nextest with zero retries",
+          "doctests",
+          "Python checks",
+          "packaging",
+          "release build"
+        ],
+        "log_sha256": "711337ab295c17f3c08de095f58cda502c88f5a06d9ee64ce0307007bf723d18"
+      },
+      "limits": [
+        "Exact runtime binaries reused from CI; only the driver changed for the native workflow.",
+        "Controls invoke rendered production actions; not physical keyboard, IME or screen-reader acceptance.",
+        "Explicit --skip-idle-measurement; no foreground idle CPU/RSS performance claim.",
+        "No installed app update, production daemon restart or provider interruption.",
+        "Subsequent merge of main0468248 changes documentation only; no runtime change."
+      ]
+    }
   }
 }
