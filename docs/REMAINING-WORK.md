@@ -42,6 +42,34 @@ release notes. Those items stay open below either way.
 
 ## Delivered source and current desktop
 
+A September 18 installed-session audit found an ordinary peer `answer` retained
+at the Codex native queue head because active hooks rejected every answer kind.
+The source correction shares the receiver's ordinary-input classification with
+hooks, allowing peer replies and daemon-routed human input while retaining
+uncertain offers and human answers awaiting exact MCP receipts. A focused policy
+regression test and `native_codex_queue_smoke.py --scenario active-hook
+--active-peer-kind answer` cover the intended boundary. The full gate passed on `ee7bb1a`: 1,271 Rust tests (seven skipped), 94 Python
+checks (one skipped), formatting, strict lint, doctests, packaging and release.
+With actual Codex 0.154.0 and a private loopback model fixture, the old binary
+(`10bc183`) timed out behind the peer reply; binaries from fixed `ee7bb1a`
+delivered that reply and two human messages in order in the same active turn in
+8.63 seconds. The `ee7bb1a` lost-hook-output trial retained all three messages
+without a false receipt or blind replay. See the
+[existing native queue record](verification/2026-09-15-native-codex-queue.json).
+The immutable `486c5dd0` package (clean source `c0a7c56`; Rust inputs unchanged
+from the gated `ee7bb1a`) is installed. Receiver 18735 became 60959
+without restarting Codex51242, managed Claude23973 or daemon92608. The original
+blocking peer reply `724bf89e7e794f29` then reached this active model turn, followed
+by queued chats, and received correlated reply `0d2e4b3979704ea6`. Thirteen
+previous/candidate/rollback checks passed with that `c0a7c56` package. The
+actual current-format receiver replacement used the same packaged binary and
+the `6a532d9` fixture against the previously installed `d14610b7` receiver; it
+preserved the provider, token, binding and ordered receipts. That fixture adds
+an explicit format-3 initial-ledger option. A full gate of standalone `6a532d9`
+has not been recorded: its current-head CI remains pending. The gate and
+provider trial above certify their named revisions, not this later fixture edit. No production queue entries were manually acknowledged, removed or
+replayed. Final GitHub review remains pending; the shared-chat UI is separate.
+
 The September 18 resumed delivery investigation confirmed a separate queue stall:
 Claude processed a channel offer but omitted its explicit ACK, blocking later
 pause requests. PR #196 adds bounded provider-transcript receipt recovery and

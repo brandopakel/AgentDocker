@@ -99,6 +99,13 @@ pub(super) fn classify(
     Ok(Route::Waiting)
 }
 
+/// Ordinary queue input needs no MCP history lookup. The daemon's explicit
+/// routing flag admits asynchronous human answers; other human answers still
+/// require their exact question receipt. Peer messages may use `answer` too.
+pub(super) fn is_input(origin: &Origin, envelope: &Envelope, queue_route: bool) -> bool {
+    queue_route || envelope.kind != "answer" || envelope.from.as_str() != origin.human
+}
+
 pub(super) async fn route(
     provider: &mut Provider,
     origin: &Origin,
@@ -107,7 +114,7 @@ pub(super) async fn route(
     agent: &str,
     queue_route: bool,
 ) -> Result<Route> {
-    if queue_route || envelope.kind != "answer" || envelope.from.as_str() != origin.human {
+    if is_input(origin, envelope, queue_route) {
         return Ok(Route::Input);
     }
     tokio::time::timeout(std::time::Duration::from_secs(60), async {

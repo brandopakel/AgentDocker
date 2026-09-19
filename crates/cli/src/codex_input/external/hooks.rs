@@ -2,8 +2,9 @@
 //! A live provider hook holds the TUI at a tool boundary. The controller reserves
 //! its offer, removes only its own queued submission, then returns context.
 //! Output is not a receipt: only the exact persisted hookPrompt permits ACK.
-use super::{Binding, Client, Ledger, Provider, identity, ledger, queue, receipts};
-use agentdocker_core::{AgentRecord, ProcessIdentity};
+use super::super::mcp_answers::Origin;
+use super::{Binding, Client, Ledger, Provider, answers, identity, ledger, queue, receipts};
+use agentdocker_core::{AgentRecord, Envelope, MessageId, ProcessIdentity};
 use agentdocker_host::{dirs, procinfo};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -188,6 +189,7 @@ pub(super) async fn serve(
     client: &Client,
     provider: &mut Provider,
     ledger: &mut Ledger,
+    origin: &Origin,
 ) -> Result<()> {
     timeout(Duration::from_secs(2), async {
         let request = authenticated_request(&mut stream).await?;
@@ -196,7 +198,7 @@ pub(super) async fn serve(
             "native hook belongs to another provider generation"
         );
         identity(client, &ledger.record().binding).await?;
-        let text = offer(&request, client, provider, ledger).await?;
+        let text = offer(&request, client, provider, ledger, origin).await?;
         let mut response = serde_json::to_vec(&json!({"nonce":request.nonce,"context":text}))?;
         response.push(b'\n');
         stream.write_all(&response).await?;
@@ -206,11 +208,24 @@ pub(super) async fn serve(
     .context("native hook offer timed out; input retained")?
 }
 
+fn can_offer(
+    envelope: &Envelope,
+    origin: &Origin,
+    uncertain: &[MessageId],
+    answers_routed: bool,
+) -> bool {
+    // An earlier reader's uncertain offer is never fresh input, even when the
+    // daemon routes answers. Human answers without routing proof stay on the
+    // service loop's MCP receipt path instead of entering hook context.
+    !uncertain.contains(&envelope.id) && answers::is_input(origin, envelope, answers_routed)
+}
+
 async fn offer(
     request: &Request,
     client: &Client,
     provider: &mut Provider,
     ledger: &mut Ledger,
+    origin: &Origin,
 ) -> Result<Option<String>> {
     if let Some(attempt) = &ledger.record().attempt {
         // A previous uncertain hook must never be emitted again. The ordinary
@@ -219,11 +234,11 @@ async fn offer(
             return Ok(None);
         }
     }
-    let (messages, uncertain, _) = queue(client, ledger, Vec::new()).await?;
+    let (messages, uncertain, answers_routed) = queue(client, ledger, Vec::new()).await?;
     let Some(envelope) = messages.first() else {
         return Ok(None);
     };
-    if uncertain.contains(&envelope.id) || envelope.kind == "answer" {
+    if !can_offer(envelope, origin, &uncertain, answers_routed) {
         return Ok(None);
     }
     if ledger
@@ -301,6 +316,44 @@ async fn offer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hook_answers_share_queue_routing_without_replaying_uncertain_offers() {
+        let origin = Origin {
+            human: "person".into(),
+            servers: vec!["coordination".into()],
+        };
+        for (from, kind, routed, uncertain, expected) in [
+            ("peer", "answer", false, false, true),
+            ("peer", "answer", true, false, true),
+            ("person", "answer", true, false, true),
+            ("person", "answer", false, false, false),
+            ("person", "answer", true, true, false),
+            ("person", "answer", false, true, false),
+            ("peer", "answer", true, true, false),
+            ("peer", "chat", true, true, false),
+            ("person", "chat", false, false, true),
+        ] {
+            let envelope = Envelope::new(
+                from,
+                agentdocker_core::Destination::parse("agent"),
+                kind,
+                json!({"text":"Reply"}),
+                Some("question".to_owned().into()),
+                chrono::Utc::now(),
+            );
+            let uncertain_ids = if uncertain {
+                vec![envelope.id.clone()]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(
+                can_offer(&envelope, &origin, &uncertain_ids, routed),
+                expected,
+                "from={from}, kind={kind}, routed={routed}, uncertain={uncertain}"
+            );
+        }
+    }
 
     #[test]
     fn only_generated_stale_repetition_is_summarized() {
