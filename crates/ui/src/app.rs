@@ -16,6 +16,7 @@ mod send_readiness;
 mod sessions;
 mod shell;
 pub(crate) mod style;
+mod usage;
 mod view;
 use queue::{Receiver as CommandReceiver, Sender as CommandSender};
 pub use shell::Message;
@@ -75,6 +76,7 @@ const STATUS_FOR: Duration = Duration::from_secs(20);
 pub enum Screen {
     Agents,
     Board,
+    Usage,
     Questions,
     Channels,
     Terminal,
@@ -108,6 +110,14 @@ enum Cmd {
         request: u64,
         offset: usize,
         limit: usize,
+    },
+    /// The selected project's usage report: what the providers said,
+    /// one row per `by`, over the window `since`.
+    Usage {
+        project: String,
+        request: u64,
+        since: &'static str,
+        by: agentdocker_core::usage::report::Group,
     },
     /// The person files a card.
     TaskCreate {
@@ -287,6 +297,12 @@ enum Msg {
     ),
     /// A filing's outcome, for the draft that made it.
     TaskCreated(String, u64, Result<(), String>),
+    /// The usage report read for a project, or why it could not be.
+    Usage(
+        String,
+        u64,
+        Result<agentdocker_core::usage::report::Report, String>,
+    ),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
     Pauses(Vec<agentdocker_core::Pause>),
@@ -452,6 +468,17 @@ pub struct App {
     activity: BTreeMap<String, Activity>,
     /// The board on view.
     tasks: Option<Board>,
+    /// The usage report on view: which project's, and the report — kept
+    /// as last read when a read fails, with the failure said beside it.
+    usage: Option<(String, agentdocker_core::usage::report::Report)>,
+    usage_error: Option<String>,
+    usage_requests: u64,
+    usage_pending: Option<(
+        u64,
+        String,
+        &'static str,
+        agentdocker_core::usage::report::Group,
+    )>,
     /// Board asks on their way, by number: which project's, and from
     /// what offset. A reply answers one ask; a reply to none — an ask
     /// cancelled by a later refresh, or made for a project no longer on
@@ -582,6 +609,10 @@ impl App {
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             tasks: None,
+            usage: None,
+            usage_error: None,
+            usage_requests: 0,
+            usage_pending: None,
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
@@ -651,6 +682,10 @@ impl App {
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             tasks: None,
+            usage: None,
+            usage_error: None,
+            usage_requests: 0,
+            usage_pending: None,
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
@@ -750,6 +785,13 @@ impl App {
                 }
                 // A page asked for by hand that could not be queued is
                 // told so; a refresh is not.
+                Cmd::Usage { request, .. } => {
+                    if self.usage_pending.as_ref().is_some_and(|p| p.0 == request) {
+                        self.usage_pending = None;
+                        self.usage_error = Some(reason.into());
+                    }
+                    return;
+                }
                 Cmd::Tasks {
                     project,
                     request,
@@ -1015,6 +1057,28 @@ impl App {
                         // person is told why it is not newer.
                         Err(error) => {
                             self.say(format!("The board could not be read: {error}"));
+                        }
+                    }
+                }
+                Msg::Usage(project, request, result) => {
+                    // A later range/group selection supersedes the old read,
+                    // even when both asks concern the same project.
+                    if self
+                        .usage_pending
+                        .as_ref()
+                        .is_some_and(|p| p.0 == request && p.1 == project)
+                    {
+                        self.usage_pending = None;
+                    } else {
+                        continue;
+                    }
+                    if self.selected_project_root().as_deref() == Some(project.as_str()) {
+                        match result {
+                            Ok(report) => {
+                                self.usage = Some((project, report));
+                                self.usage_error = None;
+                            }
+                            Err(error) => self.usage_error = Some(error),
                         }
                     }
                 }
@@ -1494,6 +1558,13 @@ impl App {
             | EventKind::TaskMoved { .. }
             | EventKind::TaskUpdated { .. }
             | EventKind::TaskArchived { .. } => self.request_tasks(),
+            // Collection moved: the report on view is read again, only
+            // while it is on view.
+            EventKind::UsageRecorded { .. } | EventKind::UsageReconciled { .. } => {
+                if self.screen == Screen::Usage {
+                    self.request_usage();
+                }
+            }
             EventKind::ProjectPaused { .. } | EventKind::ProjectResumed { .. } => {
                 self.send(Cmd::Pauses);
             }
@@ -1728,6 +1799,42 @@ impl App {
     /// Read the selected project's board, when there is one and the
     /// daemon is there: as many cards as are on view, so a board
     /// expanded past its first page stays expanded through a refresh.
+    /// Read the selected project's usage as the screen is set: its
+    /// window and grouping.
+    pub(crate) fn request_usage(&mut self) {
+        if self.connected.is_ok()
+            && let Some(project) = self.selected_project_root()
+        {
+            let since = if self.shell.usage_since.is_empty() {
+                usage::DEFAULT_SINCE
+            } else {
+                self.shell.usage_since
+            };
+            let by = self.shell.usage_by;
+            if self
+                .usage_pending
+                .as_ref()
+                .is_some_and(|p| p.1 == project && p.2 == since && p.3 == by)
+            {
+                return;
+            }
+            let Some(request) = self.usage_requests.checked_add(1) else {
+                self.usage_error =
+                    Some("Usage request counter exhausted; reopen the window".into());
+                return;
+            };
+            self.usage_requests = request;
+            self.usage_pending = Some((request, project.clone(), since, by));
+            self.usage_error = None;
+            self.send(Cmd::Usage {
+                project,
+                request,
+                since,
+                by,
+            });
+        }
+    }
+
     pub(crate) fn request_tasks(&mut self) {
         if self.connected.is_ok()
             && let Some(project) = self.selected_project_root()
@@ -2518,6 +2625,26 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::Tasks(project, request, result))
+        }
+        Cmd::Usage {
+            project,
+            request,
+            since,
+            by,
+        } => {
+            let result = match client.call(&Request::Usage {
+                project: Some(project.clone()),
+                agent: None,
+                since: Some(since.to_owned()),
+                until: None,
+                by,
+            }) {
+                Ok(Response::Usage { report }) => Ok(report),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Usage(project, request, result))
         }
         Cmd::TaskCreate {
             project,

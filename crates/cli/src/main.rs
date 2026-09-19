@@ -602,6 +602,8 @@ enum Command {
         /// The answer.
         text: String,
     },
+    /// Tokens the providers reported, with what the totals cover.
+    Usage(UsageArgs),
     /// What each agent is doing: working, idle, or blocked on a named
     /// resource held by a named agent.
     Activity {
@@ -1201,6 +1203,30 @@ struct HandoffArgs {
 /// `kind:target` from the command line, checked for its kind's shape.
 fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
     agentdocker_core::Link::parse(text).map_err(str::to_owned)
+}
+
+#[derive(Args)]
+struct UsageArgs {
+    /// Only this agent (id, name or unique prefix); explicit query filter.
+    // This selects whose usage is included, not the request's sender identity.
+    // Inheriting AGENTDOCKER_AGENT_ID would silently hide other agents' totals.
+    #[arg(long = "agent", visible_alias = "as")]
+    agent: Option<String>,
+    /// Only agents in this project.
+    #[arg(long, value_name = "ID|PATH")]
+    project: Option<String>,
+    /// From when: a duration back from now (`30m`, `24h`, `7d`) or an RFC 3339 time.
+    #[arg(long)]
+    since: Option<String>,
+    /// Until when, RFC 3339; now when not given.
+    #[arg(long)]
+    until: Option<chrono::DateTime<chrono::Utc>>,
+    /// One row per agent, model, provider, project or hour.
+    #[arg(long, default_value = "agent", value_parser = ["agent", "model", "provider", "project", "hour"])]
+    by: String,
+    /// The report as JSON, as the daemon answered it.
+    #[arg(long)]
+    json: bool,
 }
 
 /// Its own struct, as `RunArgs` is: every field added
@@ -2686,6 +2712,28 @@ async fn run() -> Result<()> {
             };
             if let Response::Activity { activity } = client.call(&request).await? {
                 print_activity(&client, &activity).await;
+            }
+        }
+        Command::Usage(args) => {
+            use agentdocker_core::usage::report::Group;
+            let by = match args.by.as_str() {
+                "model" => Group::Model,
+                "provider" => Group::Provider,
+                "project" => Group::Project,
+                "hour" => Group::Hour,
+                _ => Group::Agent,
+            };
+            let request = Request::Usage {
+                project: args.project.as_deref().map(project_selector),
+                agent: args.agent,
+                since: args.since,
+                until: args.until,
+                by,
+            };
+            match client.call(&request).await? {
+                Response::Usage { report } if args.json => print_json(&report)?,
+                Response::Usage { report } => format::usage_report(&report),
+                other => bail!("unexpected reply to usage: {other:?}"),
             }
         }
         Command::Top => top::run(&client).await?,
