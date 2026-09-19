@@ -33,14 +33,18 @@ It is bare metal: a native per-user daemon and a native CLI talking over a Unix 
 
 If you know [herdr](https://github.com/herdrdev/herdr), the two are complements rather than rivals: herdr owns the terminals agents live in, AgentDocker owns what they may touch, what they changed, and who else needs to know. See [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits). The same goes for [Dax](https://getdax.app/) (a macOS menu-bar companion whose Shepherd window embeds herdr) and [Paprika](https://paprika.ai/) (a hosted Kanban board where agents pull cards over MCP): they say what the work is and where it lives; AgentDocker helps agents coordinate their work, surfaces conflicts, and records what happened. What is shared today, what is designed and what is only an idea is in the [landscape notes](docs/LANDSCAPE-2026-09-11.md) and the [herdr bridge](docs/HERDR-BRIDGE.md): a herdr, tmux, screen or zellij session is recognised and shown with the agent; a local board of cards with acceptance text, pulled once over a `task:<id>` lease, is in the app (the shape taken from Paprika); the herdr prompt/focus bridge and a Paprika card-to-lease bridge are proposals.
 
-> Status: **beta, single host, heading for v1.** Main includes the native desktop app, runtime inventory and guided setup, background discovery, human questions and notifications that open their message (and take a reply), PTY sessions, working-state recovery, fair leases/activity, channels, contests, multiplexer adapters, a Messages workspace (archived conversations, named channels, threads, search, mentions, drafts that survive a reopen), a project pause, same-session reconnect, a board of work with typed links, roles, signed webhooks, exit statuses for agents driving the CLI, and per-recipient delivery readiness on every send. The published [v0.1.0 release](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0) predates nearly all of it; the next tag is v1, proposed as the macOS-first milestone for early testers (the scope is the maintainer's call): the Mac desktop and daemon are what has been used and tried by people, Linux ships the CLI, daemon and a packaged desktop with CI evidence only, and Windows is not in it. Signed desktop downloads, Linux desktop acceptance on real distributions and full native Windows support remain unfinished. The [road to v1](docs/REMAINING-WORK.md#the-road-to-v1-a-release-other-people-can-install-and-try) lists exactly what stands between main and a release you can hand to somebody else.
+> Status: **beta, single host.** The native desktop, messaging, agent terminals, reconnect, task board and usage collection are implemented. The latest public download, [v0.1.0](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0), predates the current desktop. A current desktop release for coworkers is not published yet. macOS has local acceptance; Linux has CLI and graphical CI coverage; the full Windows app remains unfinished.
 
-The [current remaining-work tracker](docs/REMAINING-WORK.md) separates engineering
-gaps from release setup and manual acceptance. Selecting a project opens its
-shared chat, with current agents and terminal access nearby. **Open project
-terminal** starts a shell in that folder. **Agents** shows sessions; Board and
-History are under **More**. The tracker distinguishes these source changes from
-the installed desktop and records the remaining acceptance work.
+The first coworker rollout targets **macOS, Linux and native Windows**. Each
+platform needs a downloadable candidate and its own first-run acceptance; the
+Windows foundations alone do not satisfy that requirement.
+
+Projects are moving to shared chat first, with clearly named agents and terminal
+access beside the conversation. **Open project terminal** starts a shell in the
+project folder; **Agents** opens the session list. That interface is installed as a local preview
+and awaits final integration. Board, history and technical activity remain
+available under More. The [remaining-work tracker](docs/REMAINING-WORK.md)
+separates completed implementation, unmerged changes and release acceptance.
 
 ## The Docker analogy
 
@@ -64,6 +68,12 @@ Idle message delivery needs a provider input adapter as well. Managed Claude cha
 
 ## Install
 
+**Trying the current desktop with coworkers:** use a release explicitly identified
+as a desktop preview when one is published. The commands below currently fetch
+v0.1.0; they do not install the desktop shown in current development screenshots.
+For a source trial today, follow [the local build instructions](docs/LOCAL-BUILD.md)
+at an agreed commit. The release checklist is in [Remaining work](docs/REMAINING-WORK.md#the-road-to-v1-a-release-other-people-can-install-and-try).
+
 End users download native executables; Rust build caches are only development
 files. The next release separates CLI/daemon tarballs from self-contained desktop
 archives, with no duplicate app copy in the CLI download. Packaging enforces a
@@ -77,7 +87,12 @@ curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/instal
 agentdocker daemon install    # optional: run agentd as a login service (launchd / systemd)
 ```
 
-**macOS Gatekeeper:** the app is not yet signed with a Developer ID, so a downloaded copy is quarantined and macOS says it "cannot be opened". Either right-click the app and choose **Open** once, or clear the quarantine flag on the installed bundle: `xattr -dr com.apple.quarantine ~/Applications/AgentDocker.app`. A build from source on your own machine is not quarantined.
+**macOS previews:** stable releases require Developer ID signing and notarization;
+those credentials are not configured on this development Mac. An unsigned
+prerelease must be labeled as such and may need a per-app exception in
+**System Settings → Privacy & Security → Open Anyway**, following
+[Apple's instructions](https://support.apple.com/102445). Company policy may
+prevent that exception. Stable signed downloads remain a release requirement.
 
 The script downloads the verified desktop archive and runs the app's own installer from inside it, so rollback and `agentdocker desktop update` work from the first install; on Linux it installs the two commands unless `AGENTDOCKER_INSTALL=desktop`. A release without a desktop archive (v0.1.0) installs the commands and says so. The Homebrew routes are `brew install brandopakel/tap/agentdocker` (commands) and, once a release publishes it, `brew install --cask brandopakel/tap/agentdocker-app` (the app, with its commands linked); each route is one installation and is updated by its own tool. See [every route, one installation](docs/DISTRIBUTION-SETUP.md#every-route-one-installation).
 
@@ -90,24 +105,29 @@ Then wire in the agents you already have:
 ```sh
 agentdocker runtimes          # what is installed: Claude Code, Codex, Gemini CLI, Cursor, ... — CLI, version, app, and whether AgentDocker is wired in
 agentdocker setup --dry-run   # preview supported MCP, hooks and coordination skills
-agentdocker setup codex       # apply only the selected integration when ready for the trial
+agentdocker setup codex --preview  # save a reviewable plan for only the chosen integration
+agentdocker setup --apply PLAN_ID # apply that exact plan; --undo PLAN_ID can undo it
 agentdocker discover          # agent processes running right now that nobody registered; `adopt --all` brings them in
 agentdocker ui                # the desktop app: the same, live, in a window
 ```
+
+Use saved **preview → apply** when you want scoped undo. A plain
+`setup <runtime>` is the legacy direct route with backups; it does not create
+an undoable saved plan.
 
 Supported provider setup also installs a portable coordination skill, shared with
 MCP onboarding, so agents can discover the workflow without a repeated reminder.
 `agentdocker skill` exports it for other skill-capable tools. See
 [skill setup and discovery limits](docs/GUIDED-SETUP.md#shared-coordination-skill).
 
-The daemon and the CLI build on Rust 1.87; the desktop app needs 1.95, which is what its graphics stack requires. Released macOS archives carry all three binaries; elsewhere, build the app with `cargo install --path crates/ui --locked`.
+The daemon and the CLI build on Rust 1.87; the desktop app needs 1.95, which is what its graphics stack requires. Current packaging separates commands-only archives from desktop archives containing the app and its two companion commands. From source, build the app with `cargo install --path crates/ui --locked`.
 
 The daemon keeps scanning for agent processes on its own and announces them as `agent_discovered` and `agent_vanished` events, so nothing has to be typed for a running Claude Code or Codex session to show up.
 
 ### Known limitations for early testers
 
 - **One host.** Agents on two machines do not see each other; a hand-off bundle carries work across, a shared registry does not.
-- **Waking an idle Claude Code session.** A Claude session takes a message the moment it is next at a prompt, or live if it was launched with the AgentDocker channel (`agentdocker setup claude-code` writes the MCP entry; the session must start with `--dangerously-load-development-channels server:agentdocker` and accept the consent prompt, or be relaunched so — the app tells you when a recipient cannot be woken). An in-app action that does the relaunch for you is on the [road to v1](docs/REMAINING-WORK.md#the-road-to-v1-a-release-other-people-can-install-and-try). Codex sessions take messages live once wired.
+- **Waking an idle Claude Code session.** A Claude session takes a message the moment it is next at a prompt, or live if it was launched with the AgentDocker channel (`agentdocker setup claude-code` writes the MCP entry; the session must start with `--dangerously-load-development-channels server:agentdocker` and accept the consent prompt, or be relaunched so — the app tells you when a recipient cannot be woken). **Reconnect here** now resumes an eligible ended Claude session in the app with its conversation and queue; Claude displays its own consent. **Wake terminal sessions** in Tools (or `agentdocker setup --shell`) previews the shell configuration for future Claude launches. Existing plain sessions need a normal exit/reconnect. Codex uses its separate [input adapter](docs/CODEX-INPUT.md), whose startup and version limits remain explicit.
 - **Linux:** the CLI and daemon are exercised in CI on x86-64 and ARM64 and the desktop app builds and packages there, but no release has been tried on a real distribution by a person yet. **Windows:** the core and host crates build and test; there is no daemon, service or desktop.
 - **Provider limits and account resets** are detected and recovered in bounded trials, not over days of real use.
 
