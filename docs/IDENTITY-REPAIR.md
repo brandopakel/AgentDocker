@@ -80,7 +80,7 @@ is bounded to 50,000 rows per operational table, 64 MiB of source data and a
 16 MiB before-image archive; a larger installation needs a separately reviewed
 migration, not an unbounded in-memory rewrite.
 
-## Acceptance still required
+## Acceptance and optional maintenance
 
 The [recorded standard gate](verification/2026-09-11-identity-repair.json) passed
 753 Rust tests (six skipped), 54 Python checks, lint,

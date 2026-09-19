@@ -33,16 +33,18 @@ its successor 13 ms after launch and asserted cleanup prematurely; the original
 failure is retained, followed by bounded completion at the same binary. The later distinct-source `880e111` → `5120f03` trial also passed: batch/PTY
 children survived a 12-second owner outage with unchanged identities/lease,
 40 FIFO messages, 100 ordered log lines per child and exact exit codes 7/3.
-All owners and fixture daemons exited. The full coordinated reload sequence
-below remains separate work.
+All owners and fixture daemons exited. The coordinated reload boundaries
+below are implemented behind the experimental gate; their broader provider,
+terminal, replay and platform acceptance remains separate work.
 
 The earlier [output-drain checkpoint](verification/2026-09-12-output-drain.json)
 remains evidence for the predecessor implementation's pipe/PTY EOF and final
 flush behavior, not a current cross-process ownership gap.
 
 The Codex question-event worker now has bounded checked reconnect with
-[actual event-only cut evidence](verification/2026-09-12-provider-event-reconnect.json). Other daemon RPC failures still pause delivery and shut its provider
-down; a reconnecting event stream cannot reconcile an uncertain accepted write. Child/descriptor transfer alone therefore
+[actual event-only cut evidence](verification/2026-09-12-provider-event-reconnect.json). Read-only provider-inbox RPC reconnection also has bounded acceptance in
+[Codex input](CODEX-INPUT.md). That does not permit blind retry of uncertain
+accepted writes; a reconnecting event stream alone cannot reconcile them. Child/descriptor transfer alone therefore
 cannot preserve a connected conversation. Reconnection needs verifiable durable
 event continuity, not just a new socket or a readiness marker.
 

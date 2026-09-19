@@ -43,8 +43,9 @@ before launch. Provider consent and organization policy still apply.
 
 Fresh setup generates `--claude-channel` in the Claude MCP entry, and the
 inventory/setup checks recognize that exact form. The flag makes the adapter
-available; it does not enable the parent input-mode variable or accept provider
-consent. Existing plain MCP entries remain valid and are preserved. Before
+available; it does not add a channel flag to an already running parent or accept
+provider consent. The adapter also recognizes the opted-in parent launch flag;
+`agentdocker setup --shell` previews a shell block for future terminal launches. Existing plain MCP entries remain valid and are preserved. Before
 relaunching an existing session for idle input, ensure its actual entry includes
 `--claude-channel`; the provider launch flag alone cannot enable a plain adapter.
 
@@ -163,9 +164,11 @@ development flag bypasses its channel allowlist for this entry; it does not
 bypass organization policy or general tool permissions. The `--strict-mcp-config`
 option limits which MCP entries load; it does not isolate the provider profile.
 Existing sessions must be relaunched normally to load another configuration.
-That alone does not transfer an old AgentDocker record's queue to the resumed
-process. A safe existing-session handover remains open; do not restart a working
-session merely to make the connection indicator green.
+Plain reconfiguration alone does not prove an old AgentDocker record's queue
+was transferred. The **Reconnect here** flow described above resumes an eligible
+ended record with its conversation and queue; it refuses live or unsafe cases.
+Installed consent and idle receipt passed for the recorded managed session.
+Do not restart a working session merely to make the indicator green.
 
 Actual-provider acceptance uses an owned `CLAUDE_CONFIG_DIR` and private daemon
 home/socket, monitors existing provider configuration for changes, and reuses
@@ -345,7 +348,8 @@ input, a second MCP entry still cannot acquire another channel under the new
 canonical ID. Hooks check the process lock too. `claude_channel_smoke.py --resume`
 checks this boundary and the initialized-receiver refusal using real daemon/MCP
 processes with fixture provider processes. It does not prove model idle wake or
-actual Claude startup ordering. Verification of this follow-up is pending.
+actual Claude startup ordering. The following dated gates record the subsequent
+transport verification; September 18 actual reconnect/idle evidence is separate.
 
 September 17 reconnect review: a provider-generation owner lock supplements the
 agent-ID lock when SessionStart folds an MCP-first registration. A channel that
@@ -353,7 +357,9 @@ has already initialized is not folded behind its offered head. Source `b5ea76c`
 passes the full 1,094-Rust/84-Python gate (seven skipped) and the actual daemon/MCP
 transport regression; the older binary admits a second channel and fails. See
 [existing channel evidence](verification/2026-09-11-claude-channel-input.json).
-Actual Claude relaunch and model idle wake still need separate acceptance.
+At this September 17 checkpoint actual Claude relaunch/model idle wake was
+not tested. The September 18 **Reconnect here** evidence above later covers
+those cases for its named provider session and candidate.
 
 September 17 startup validation: runtime `a45f831` passed the full gate with
 1,149 Rust tests (seven skipped), 94 Python checks (one skipped), formatting,

@@ -8,7 +8,7 @@ not provide idle wake. The opt-in [managed Codex bridge](CODEX-INPUT.md)
 app-server conversation; it does not attach to an existing Codex TUI. The enabled
 [Claude channel adapter](CLAUDE-CHANNEL-INPUT.md) (`--claude-channel`) can also
 deliver input while idle. Existing Codex CLI terminals can also use the
-[verified-hook native receiver](CODEX-INPUT.md#existing-codex-terminals-native-queue-candidate-september-15),
+[verified-hook native receiver](CODEX-INPUT.md#existing-codex-terminals-native-queue),
 which submits through Codex's own input queue; installed auto-bootstrap, peer
 wake and exact receipt passed for one existing 0.154.0 session. Each guide
 records its source-specific acceptance limits.
@@ -91,7 +91,7 @@ replaces the provider's tool approval decisions.
 
 A session that registered itself through hooks or MCP has no single consumer:
 whichever hook or explicit read takes the queue delivers. An **input binding**
-(`bind_input`, see the [protocol table](ARCHITECTURE.md#protocol)) gives such a
+(`bind_input`, see the [protocol table](ARCHITECTURE.md#wire-protocol)) gives such a
 session one: an external controller process, bound to the exact provider
 generation (the registered pid and birth, the registered `session_id`, an
 absolute profile path) and identified by a token the controller made and

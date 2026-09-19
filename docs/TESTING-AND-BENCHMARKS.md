@@ -32,12 +32,27 @@ Every result includes commit SHA, dirty-content identity if applicable, Rust/too
 
 ## Rollout
 
-1. Add nextest configuration, meaningful Proptest models and coverage reporting to the reviewed foundation.
-2. Add Criterion and the native protocol load harness; emit local artifacts and Bencher-compatible metrics.
-3. Upload source-verified benchmark artifacts through private Bencher configuration; keep credentials outside GitHub as requested.
-4. Add fuzz campaigns and Docker/Podman E2E jobs, then calibrate performance gates from collected baselines.
+1. Implemented: nextest configuration, Proptest scenarios and coverage reporting. Broader reference-model and uncovered failure-branch work remains in T02–T03 of the delivery crosswalk.
+2. Implemented: Criterion, the native socket harness, provenance and Bencher-compatible metrics. Dedicated stale/restart latency and wider workloads remain.
+3. Completed for recorded campaigns: source-verified benchmark artifacts uploaded through private Bencher configuration. Keep credentials outside GitHub; each new campaign still needs its own provenance.
+4. Implemented: bounded fuzz and separate Docker/Podman jobs. Repeated final-candidate/platform baseline calibration remains before performance thresholds become blocking.
 
 References: [nextest configuration](https://nexte.st/docs/configuring-nextest/), [Criterion](https://bheisler.github.io/criterion.rs/book/), [Bencher GitHub Actions](https://bencher.dev/docs/how-to/github-actions/), [Proptest](https://proptest-rs.github.io/proptest/), [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov), [cargo-fuzz](https://rust-fuzz.github.io/book/cargo-fuzz.html), [Loom](https://github.com/tokio-rs/loom), [k6 protocols](https://grafana.com/docs/k6/latest/using-k6/protocols/).
+
+## September 19 local baseline
+
+The clean `72942b0e` documentation audit (runtime source `14f1c519`) passed
+`verify.sh bench` on macOS ARM64: Criterion lease/fingerprint samples and all
+six shared/disjoint 1/10/100-client socket cases. The 100-client disjoint case
+completed 10,000 claim/release cycles with p95 29.17 ms and p99 34.90 ms.
+Before/after source and executable manifests matched. The
+[existing integrated record](verification/2026-09-12-integrated-desktop.json)
+retains every case's counts, timing, provenance and the private artifact hash.
+
+The build campaign had an exclusive lease; actual provider sessions remained
+running. This is one local baseline, not model-message latency, repeated
+calibration, overnight acceptance or validation of later integration commits.
+The earlier socket timeout/errno-35 failures below remain unexplained.
 
 ## Repository commands and installation
 

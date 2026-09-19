@@ -5822,5 +5822,290 @@
       "The shell that ran the commands sits under a Claude Code process, so `agentdocker answer` without --as refused to infer a sender (correct: a provider's shell must not speak as the human); a person in a plain terminal gets the human default. --as user was used.",
       "Not a fresh macOS user account: ~/.claude and ~/.codex existed, so setup --dry-run reported existing MCP/hook entries rather than a first install."
     ]
+  },
+  "documentation_closeout_2026_09_19": {
+    "status": "Existing-document audit and source/release reconciliation complete; full local gate passed; final PR review/CI and coworker release acceptance remain",
+    "source": "14f1c519bf072a09b942d7a94eeeef59c8cf3e15",
+    "scope": {
+      "markdown_files": 40,
+      "existing_verification_records": 67,
+      "new_documents": 0,
+      "historical_failures_preserved": true
+    },
+    "checks": {
+      "docs_check": "passed; 40 Markdown files / 67 verification records",
+      "diff_check": "passed",
+      "full_gate": {
+        "result": "passed",
+        "runtime_source": "14f1c519bf072a09b942d7a94eeeef59c8cf3e15",
+        "changes": "documentation only",
+        "rust_passed": 1294,
+        "rust_skipped": 7,
+        "python_checks": 94,
+        "python_skipped": 1,
+        "includes": [
+          "fmt",
+          "strict Clippy",
+          "nextest, zero retries",
+          "doctests",
+          "Python checks",
+          "package",
+          "release build"
+        ],
+        "log_sha256": "9832891ce7fd2085a4493231d0e04916d90a7e617823cc8534a02040ca64ff78"
+      },
+      "local_markdown_fragments": "Independent bounded audit: all 40 tracked Markdown files, including explicit HTML anchors; zero unresolved targets.",
+      "independent_diff_review": "No concrete blockers; outstanding requirements and source/installed/published distinctions preserved.",
+      "local_benchmark": {
+        "result": "passed",
+        "command": "bash scripts/verify.sh bench",
+        "manifest": {
+          "commit": "72942b0eeccfd5ccdaebe6d8497bafbe272d0644",
+          "source_sha256": "eb5f98cdc6f570392cf1a1d0a4078b44539d5f1c9f259d09eb80b41d2d4f725c",
+          "dirty": false,
+          "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+          "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+          "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+          "architecture": "arm64",
+          "processor": "arm",
+          "cpu_count": 12,
+          "profile": "release",
+          "container_engine": null,
+          "workloads": {
+            "lease_counts": [
+              1,
+              100,
+              1000
+            ],
+            "fingerprint_files": 100,
+            "fingerprint_bytes_per_file": 4096,
+            "socket_clients": [
+              1,
+              10,
+              100
+            ],
+            "socket_checkout_kind": "plain-unwatched",
+            "socket_format": 2,
+            "socket_workloads": [
+              "shared",
+              "disjoint"
+            ],
+            "socket_state_timing": false,
+            "socket_outcomes": [
+              "claim_release",
+              "claim_conflict"
+            ],
+            "socket_iterations_per_client": 100
+          }
+        },
+        "source_and_binary_manifests_identical_before_after": true,
+        "binaries": [
+          {
+            "path": "/private/tmp/agentdocker-docs-closeout-20260919/target/release/agentd",
+            "sha256": "2cb97cb98e1fd5f01e039293b57c1025227e2f1aa35cbfba38ef443b5f009059"
+          },
+          {
+            "path": "/private/tmp/agentdocker-docs-closeout-20260919/target/release/examples/socket_load",
+            "sha256": "44497533c54647347964ceefb04ab33f3389c6841325972488a4325165affb21"
+          }
+        ],
+        "socket_cases": [
+          {
+            "workload": "shared",
+            "clients": 1,
+            "iterations_per_client": 100,
+            "exit": 0,
+            "attempts": 100,
+            "claim_release_cycles": 100,
+            "expected_conflicts": 0,
+            "elapsed_seconds": 0.031662084,
+            "claim_release_p95_ms": 0.379,
+            "claim_release_p99_ms": 0.634084
+          },
+          {
+            "workload": "disjoint",
+            "clients": 1,
+            "iterations_per_client": 100,
+            "exit": 0,
+            "attempts": 100,
+            "claim_release_cycles": 100,
+            "expected_conflicts": 0,
+            "elapsed_seconds": 0.033399458,
+            "claim_release_p95_ms": 0.491666,
+            "claim_release_p99_ms": 0.735625
+          },
+          {
+            "workload": "shared",
+            "clients": 10,
+            "iterations_per_client": 100,
+            "exit": 0,
+            "attempts": 1000,
+            "claim_release_cycles": 157,
+            "expected_conflicts": 843,
+            "elapsed_seconds": 0.098923458,
+            "claim_release_p95_ms": 2.302666,
+            "claim_release_p99_ms": 2.903583
+          },
+          {
+            "workload": "disjoint",
+            "clients": 10,
+            "iterations_per_client": 100,
+            "exit": 0,
+            "attempts": 1000,
+            "claim_release_cycles": 1000,
+            "expected_conflicts": 0,
+            "elapsed_seconds": 0.173004375,
+            "claim_release_p95_ms": 2.908917,
+            "claim_release_p99_ms": 3.669375
+          },
+          {
+            "workload": "shared",
+            "clients": 100,
+            "iterations_per_client": 100,
+            "exit": 0,
+            "attempts": 10000,
+            "claim_release_cycles": 129,
+            "expected_conflicts": 9871,
+            "elapsed_seconds": 0.730146,
+            "claim_release_p95_ms": 19.391958,
+            "claim_release_p99_ms": 20.830708
+          },
+          {
+            "workload": "disjoint",
+            "clients": 100,
+            "iterations_per_client": 100,
+            "exit": 0,
+            "attempts": 10000,
+            "claim_release_cycles": 10000,
+            "expected_conflicts": 0,
+            "elapsed_seconds": 1.757082208,
+            "claim_release_p95_ms": 29.174833,
+            "claim_release_p99_ms": 34.898834
+          }
+        ],
+        "criterion": "lease conflict at 1/100/1000 held leases and fingerprinting 100 files/400 KiB passed; samples retained in private artifact",
+        "artifact": {
+          "path": "/private/tmp/agentdocker-benchmark-72942b0e-20260919.tar.gz",
+          "sha256": "a1e696f3caf1829909290d247b0adffe92665acad549bfd8fa88776045cd6b3f"
+        },
+        "host": "Exclusive Cargo/build/benchmark lease held; real provider sessions and the production daemon remained running. No concurrent Cargo campaign was observed. This is one local run, not idle-host calibration.",
+        "scope_limits": [
+          "Lease socket operations, not model delivery latency",
+          "Single run, not overnight/sleep/reboot or repeated regression calibration",
+          "Main runtime14f1c519; not final #200/#203 integration",
+          "Prior errno35/timeout failures remain unexplained; passing trial does not diagnose them"
+        ]
+      }
+    },
+    "release_read_only": {
+      "latest_published_tag": "v0.1.0",
+      "published_at": "2026-09-06T23:00:18Z",
+      "valid_local_codesigning_identities": 0,
+      "ruleset": {
+        "id": 22372972,
+        "target": "refs/tags/v*",
+        "enforcement": "active",
+        "rules": [
+          "deletion",
+          "non_fast_forward"
+        ],
+        "creation_restricted": false
+      },
+      "stable_macos_requires_signing_and_notarization": true,
+      "unsigned_prerelease_supported": true,
+      "unsigned_prerelease_updates_stable_feed_or_tap": false,
+      "repository_macos_secret_names": [],
+      "secret_values_read": false
+    },
+    "components": {
+      "main": "14f1c519",
+      "installed_app_cli": {
+        "candidate": "9e75e834",
+        "source": "ce82d06"
+      },
+      "serving_daemon": {
+        "candidate": "6bd97894",
+        "source": "705f924",
+        "pid": 92608,
+        "schema": 23
+      },
+      "codex_receiver": {
+        "candidate": "486c5dd0",
+        "source": "c0a7c56",
+        "pid": 60959
+      }
+    },
+    "closed_tracking_items": [
+      "Merged #191 roles/readiness/notification replies/question and Board drafts",
+      "Merged #194 initial usage collector/CLI/MCP/UI; activation remains separate",
+      "Merged #196 receipt repair, #199 app reconnect, #201 naming and #202 Codex peer-answer delivery",
+      "Recorded existing-session Claude consent and peer-only idle receipt",
+      "Trial issue template on main",
+      "Reference/historical documents inventoried; original trials retain their own source pins"
+    ],
+    "remaining_integrations": [
+      200,
+      203,
+      204
+    ],
+    "coworker_release_gaps": [
+      "Final integrated candidate and actual downloadable desktop publication",
+      "Actual fresh-provider authentication/trust/consent/delivery and independent OS-account first run; empty-profile configuration passed",
+      "Signing/notarization for stable Mac distribution; preview must be explicit",
+      "Hosted update/rollback and target OS acceptance",
+      "Physical keyboard/IME/screen-reader acceptance",
+      "Current-provider sleep/wake/reboot and sustained-use matrix"
+    ],
+    "not_claimed": [
+      "All project requirements complete",
+      "Universal-provider idle wake",
+      "New-source benchmark acceptance from historical results",
+      "Full Windows support",
+      "Signed or already published current desktop",
+      "Production daemon restart or provider interruption"
+    ],
+    "coworker_platform_confirmation": {
+      "required_platforms": [
+        "macOS",
+        "Linux",
+        "native Windows"
+      ],
+      "confirmed_by": "user, September 19 UTC",
+      "scope": "First coworker rollout; Windows completion and target Linux desktop acceptance are required, not deferred. Each platform requires its own candidate and real-provider first-run/lifecycle/update evidence.",
+      "implementation_claim": "No new Windows implementation or cross-platform acceptance is claimed by this documentation update.",
+      "later_integration": "#203 merged16bf69a; original gate/benchmark remain pinned to14f1c519 runtime."
+    }
+  },
+  "first_install_configuration_2026_09_19": {
+    "date": "2026-09-19T03:14:41Z to 2026-09-19T03:18:45Z (trial root created 03:14:41Z; the private daemon's first and last log lines 03:15:00Z and 03:18:45Z; the earlier value 03:30Z was written by hand and wrong)",
+    "scope": "First-install provider setup in an isolated home (fresh ~/.claude, ~/.claude.json, ~/.codex, ~/.zshrc; private AGENTDOCKER_HOME under it), with the installed desktop's binaries put into the trial prefix by its own installer. The real ~/.claude/settings.json and ~/.codex/* were not written (mtimes unchanged); the real ~/.claude.json changed only in Claude's own bookkeeping fields (mcpServers identical to Claude's backup) because a stray `claude` invocation was made while writing this record, not by the trial. No provider session was run against the configuration, no credentials copied, no provider restarted.",
+    "installed_source": "ce82d06 (desktop 9e75e834, the active version)",
+    "binary_sha256": {
+      "agentd": "20235c8ea0bb928438fe463b9ef46f5669203be55f0e0eb6d31165d8cad33142",
+      "agentdocker": "47232d12a928e48f5f0a1e70b08b9c808ffe4f95592786d387d939569cce7d21",
+      "agentdocker-ui": "bfb1bd133aa7b399eb5156af22ba078e607817ad3147ea2ac70b999f37ab61cb"
+    },
+    "steps": [
+      "desktop --prefix <trial home> install --from <active AgentDocker.app> --local-preview: launchers under <home>/.local/bin (agentd, agentdocker, agentdocker-ui) and <home>/Applications/AgentDocker.app; the trial's own agentdocker is used from here, since the versioned binary under the real home refuses a trial home ('a trial installation cannot use the system Applications folder').",
+      "runtimes from the fresh home: claude-code 2.1.278 and codex-cli 0.154.0 found on PATH, MCP no / HOOKS no for both \u2014 a first install; browser-extension inventory empty because Chrome profiles live under the real home.",
+      "setup claude-code codex --dry-run names six writes (.claude.json MCP entry, .claude/settings.json hooks, .claude/skills/agentdocker/SKILL.md, .codex/config.toml, .codex/hooks.json, .codex/skills/agentdocker/SKILL.md); nothing written.",
+      "setup --preview --json then setup --apply <id>: all six created. .claude.json mcpServers.agentdocker = <home>/.local/bin/agentdocker mcp --runtime claude-code --claude-channel, registered through Claude's own `mcp add --scope user` with a setup-receipt marker (Claude left .claude/backups/.claude.json.backup.*); .claude/settings.json: seven hook events (PreToolUse with the edit/read matcher, PostToolUse, SessionStart, SessionEnd, Stop, StopFailure async, UserPromptSubmit), each `agentdocker hook claude-code`, timeout 15; .codex/config.toml [mcp_servers.agentdocker] = agentdocker mcp --runtime codex; .codex/hooks.json eight events (Interrupt, PostCompact, PostToolUse, PreCompact, PreToolUse, SessionStart, Stop, UserPromptSubmit), each `agentdocker hook codex`; both skills with the same front matter.",
+      "setup --health: daemon reachable, per-runtime mcp/hooks checks name the files; runtimes after: claude-code MCP yes HOOKS yes, codex MCP yes HOOKS unverified \u2014 the apply output says Codex requires the person to review/trust the new hooks in /hooks.",
+      "setup --shell --preview then --apply: <home>/.zshrc created with the marked block (a `claude` function adding AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 and --dangerously-load-development-channels server:agentdocker); setup --undo removed the file it had created.",
+      "setup --undo <applied plan id>: settings.json, config.toml, hooks.json and both SKILL.md removed; the .claude.json MCP entry removed (the file stays, mcpServers {} \u2014 Claude's own remove leaves it)."
+    ],
+    "found": [
+      "Undo covers only a plan applied as that plan. Plain `agentdocker setup <runtimes>` (no --preview/--apply) writes the same files but records no plan of its own, and undoing the preview taken just before it is refused with '<file> changed after the last setup step; plan retained' \u2014 a coworker who runs plain setup has no undo. Either plain setup saves its receipt, or GUIDE/GUIDED-SETUP say undo needs preview + apply.",
+      "Codex receiver on a new machine: setup codex installs hooks.json with SessionStart; the receiver (`agentdocker codex-queue`, codex_input/external/bootstrap.rs) is started detached by that verified hook on the session's first turn once the person has trusted the hooks in Codex's /hooks \u2014 no maintainer step. CODEX-INPUT.md says this in history form, not as a first-install instruction.",
+      "The desktop's versioned binary cannot drive a trial home; a trial installs into its prefix first. Right for a real coworker (their install is their prefix); one line for LOCAL-TRIAL.md."
+    ],
+    "not_claimed": "No Claude or Codex session was started against this configuration, so tool consumption, hook delivery, Codex /hooks trust and the channel consent are not shown; the isolated home has no Chrome profile, keychain or notification center of its own.",
+    "trial_root": "/private/tmp/ad-firstinstall.B3YGDA",
+    "reported_by": "0180d7615186449087095d7aa15ec0bb; correlated reply 55360dd5dc354f89, timestamp correction f67aefacc23d4971",
+    "private_report_sha256": "347487d146e0d465f41bca712e5139d2ba4b6ba5fb8ea925c853b8a023e1f525",
+    "reported_recorded_at": "2026-09-19T03:20Z, then corrected 03:25Z",
+    "timestamp_reconciliation": "Use the observed trial interval and correlated archive messages; the peer report recorded_at is a handwritten approximation, not clock evidence.",
+    "report_file_modified_at": "2026-09-19T03:22:11.881143+00:00",
+    "binary_hashes_independently_checked": true
   }
 }
