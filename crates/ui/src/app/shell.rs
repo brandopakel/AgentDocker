@@ -67,6 +67,10 @@ pub(super) struct State {
     /// How many of the Earlier group's entries are on screen: a page, and
     /// a page more for each *Show older*; closing the group resets it.
     pub earlier_shown: usize,
+    /// The same two for the earlier conversations in Messages: its own
+    /// fold and page, so the two screens' groups do not move each other.
+    pub earlier_conversations_open: bool,
+    pub earlier_conversations_shown: usize,
     /// Whether the temporary projects (discovered under /tmp, unpinned)
     /// are unfolded in the sidebar: the person's choice once they have
     /// toggled it, until then automatic (open while one of them has a
@@ -580,6 +584,9 @@ pub enum Message {
     ToggleEarlier,
     /// One page more of the Earlier group.
     MoreEarlier,
+    /// The earlier conversations in Messages: their own fold and page.
+    ToggleEarlierConversations,
+    MoreEarlierConversations,
     ToggleTemporary,
     TogglePeers,
     /// A divider between the window's columns was dragged, in one grid.
@@ -1306,6 +1313,17 @@ impl App {
                 self.shell.earlier_shown = self
                     .shell
                     .earlier_shown
+                    .max(EARLIER_PAGE)
+                    .saturating_add(EARLIER_PAGE);
+            }
+            Message::ToggleEarlierConversations => {
+                self.shell.earlier_conversations_open = !self.shell.earlier_conversations_open;
+                self.shell.earlier_conversations_shown = EARLIER_PAGE;
+            }
+            Message::MoreEarlierConversations => {
+                self.shell.earlier_conversations_shown = self
+                    .shell
+                    .earlier_conversations_shown
                     .max(EARLIER_PAGE)
                     .saturating_add(EARLIER_PAGE);
             }
@@ -4448,6 +4466,16 @@ mod tests {
         assert!(!app.shell.earlier_open);
         let _ = app.update(Message::ToggleEarlier);
         assert_eq!(app.shell.earlier_shown, EARLIER_PAGE, "reopened at a page");
+        // The conversations' group is its own: untouched by the sessions'
+        // toggle and page, and the other way round.
+        assert!(!app.shell.earlier_conversations_open);
+        let _ = app.update(Message::ToggleEarlierConversations);
+        let _ = app.update(Message::MoreEarlierConversations);
+        assert!(app.shell.earlier_conversations_open);
+        assert_eq!(app.shell.earlier_conversations_shown, 2 * EARLIER_PAGE);
+        assert_eq!(app.shell.earlier_shown, EARLIER_PAGE);
+        let _ = app.update(Message::ToggleEarlier);
+        assert!(app.shell.earlier_conversations_open);
         // The temporary fold is automatic until toggled: closed with
         // nothing running in a scratch project, and a toggle is the
         // person's choice from then on — closable even while one runs.

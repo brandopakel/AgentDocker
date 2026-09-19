@@ -1089,7 +1089,13 @@ impl App {
             let selected_here = temporary
                 .iter()
                 .any(|e| project_page && self.selected_root() == Some(e.project.root.as_path()));
-            let open = self.temporary_fold_open() || selected_here;
+            // The person's own choice wins, both ways; until they have
+            // made one, the fold opens by itself for a live or selected
+            // scratch project.
+            let open = self
+                .shell
+                .temporary_open
+                .unwrap_or_else(|| self.temporary_fold_open() || selected_here);
             let label = format!("Temporary ({})", temporary.len());
             let mut fold = row![
                 text(if open { "▾" } else { "▸" }).size(11).color(c.muted),
@@ -1674,6 +1680,7 @@ impl App {
             // Ended sessions are not a tab: one collapsed group under the
             // current ones, opened by a search that finds something there.
             let open = self.shell.earlier_open || !self.shell.search.trim().is_empty();
+            let shown = self.shell.earlier_shown.max(EARLIER_PAGE);
             let mut group = column![custom(
                 "sessions-earlier",
                 format!("Earlier ({})", earlier.len()),
@@ -1692,7 +1699,6 @@ impl App {
             if open {
                 // The newest first, a page at a time: an ended session
                 // from last week is a click away, not on every screen.
-                let shown = self.shell.earlier_shown.max(EARLIER_PAGE);
                 let page: Vec<&AgentRecord> = earlier.iter().copied().take(shown).collect();
                 let older = earlier.len().saturating_sub(page.len());
                 group = group.push(panel(self.session_rows(&page, c), c));

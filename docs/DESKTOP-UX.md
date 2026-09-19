@@ -89,10 +89,10 @@ discoverable, including when Linux reports one as its default temporary
 directory, but a folder discovered there and never pinned is not listed
 among your projects: it sits in a **Temporary (n)** fold under them (a
 fixture's workspace, a trial's worktree). Until you toggle it the fold is
-automatic — open while one of them has a live session, closed otherwise — and
-from then on it is as you left it, closable even while one runs; selecting one
-of them shows it either way, and the live count sits on the fold. Pinning one
-moves it up. Sessions whose project is unknown
+automatic — open while one of them has a live session or is the selected
+project, closed otherwise — and from then on it is as you left it, closable
+even while one runs or is selected; the live count sits on the fold. Pinning
+one moves it up. Sessions whose project is unknown
 appear under **Other sessions**.
 
 **Current** shows live sessions; **Needs input** shows this project's
@@ -101,7 +101,8 @@ since finished. Ended sessions are not a tab: they sit in one collapsed
 **Earlier (n)** group under the current ones, including previous runs with the
 same name, and a search that finds one opens the group. The group opens on
 its newest eight; **Show older** adds eight more each time, and closing the
-group forgets how far it was opened. When only an earlier
+group forgets how far it was opened. The Earlier group of conversations in
+Messages has its own fold and page: neither moves the other. When only an earlier
 session matches, its result appears without a contradictory empty-state card.
 Search applies to the
 selected project, both filters and the Earlier group. Switching projects

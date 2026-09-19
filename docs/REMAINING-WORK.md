@@ -23,7 +23,7 @@ per-recipient delivery readiness). What separates the repository from a
 release a stranger can install on their own Mac and try against their own
 projects is short, and it is this table, in order:
 
-| # | Needed for v1 | State on September 18 | What remains |
+| # | Needed for v1 | State (September 18–19 UTC) | What remains |
 | --- | --- | --- | --- |
 | 1 | Every open integration on main | Merged September 19 UTC, each on green final-head CI with its review: #191 (`abec6ec`, drafts, readiness, roles, notification replies, docs reconciliation), #196 (`bfd79ff`, channel receipt stall and startup settle), #194 (`615ae79`, usage), #199 (`7022ead`, Reconnect here), #198 (`181d78b`, this audit), #201 (`57a9d4e`, session names); the connector stack #193/#195/#197 landed on September 18. Open: the chat-first UX cleanup (#203 sessions list, #202 peer answers through active hooks, #200 shared chat and the project terminal) and #204 (the verify.sh campaign wrapper). | Merge the four on green with their reviews; nothing else waits on them. |
 | 2 | A published release built from current main | The only published release is [v0.1.0](https://github.com/brandopakel/AgentDocker/releases/tag/v0.1.0), source `52fd88d`, from before sessions, the desktop, messaging and everything above; `install.sh` and the Homebrew formula still point there. The release workflow builds four archives, checksums and the formula from a protected `v*` tag. | After row 1: tag `v1.0.0` on main and push it (the person's step — tags are protected); watch the release workflow; check the archives, `install.sh` and the tap's formula from a clean machine or a fresh user account. |
