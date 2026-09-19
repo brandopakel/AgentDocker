@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 import traceback
+from datetime import datetime, timezone
 
 from message_queue_smoke import rpc
 from restart_smoke import digest, eventually
@@ -114,7 +115,8 @@ def run(args):
             daemon = start_daemon()
             human = rpc(endpoint, {"op": "me", "workdir": str(root)})["agent"]["id"]
             receiver, peer = [rpc(endpoint, {"op": "register", "spec": {
-                "name": name, "runtime": "claude-code", "workdir": str(root)},
+                "name": name, "runtime": "claude-code", "workdir": str(root),
+                "labels": {"session_id": "receipt-fixture"} if name == "receiver" else {}},
                 "pid": os.getpid() if name == "receiver" else None})["agent"]["id"]
                 for name in ["receiver", "peer"]]
             channel_env = {**env, "AGENTDOCKER_AGENT_ID": receiver, "AGENTDOCKER_CLAUDE_CHANNEL_INPUT": "1"}
@@ -152,13 +154,24 @@ def run(args):
             heartbeat_deadline = time.monotonic() + 36
             while True:
                 refreshed = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]
-                if refreshed["reported_at"] > initial_ready["reported_at"]:
+                if refreshed["paused"]:
                     break
-                assert time.monotonic() < heartbeat_deadline, "idle receiver did not refresh readiness"
+                assert time.monotonic() < heartbeat_deadline, "unreceived offer did not expose its delivery pause"
                 assert connection.read(0.25) is None, "heartbeat duplicated an unacknowledged offer"
-            assert refreshed["paused"] is False and refreshed.get("received") is None
+            assert refreshed["reported_at"] > initial_ready["reported_at"]
+            assert refreshed.get("received") is None
+            assert accepted[0] in refreshed["pause_reason"]
+            paused_at = refreshed["reported_at"]
+            heartbeat_deadline = time.monotonic() + 36
+            while True:
+                refreshed = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]
+                assert refreshed["paused"] is True and refreshed.get("received") is None
+                if refreshed["reported_at"] > paused_at:
+                    break
+                assert time.monotonic() < heartbeat_deadline, "missing-receipt pause did not refresh"
+                assert connection.read(0.25) is None, "paused channel duplicated an offer"
             assert queued() == accepted
-            report["steps"].append("idle receiver refreshed readiness without a new request, invented receipt, duplicate offer or queue consumption")
+            report["steps"].append("an unreceived offer became durably paused after 30 seconds and stayed paused through refresh without inventing a receipt, replaying input or consuming the queue")
             duplicate = spawn(command, channel_env)
             assert duplicate.wait(timeout=5) != 0 and queued() == accepted
             report["steps"].append("channel waited for initialization, retained its offer, bounded delivery to one unacknowledged head and refused a second owner")
@@ -176,6 +189,8 @@ def run(args):
             connection.ack(102, accepted[:1])
             assert connection.offer()["meta"]["message_id"] == accepted[1]
             assert queued() == accepted[1:]
+            recovered = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]
+            assert recovered["paused"] is False and recovered["received"]["messages"] == accepted[:1]
             report["steps"].append("eight waiting calls did not block ping or explicit receipt; excess work received visible backpressure")
 
             connection.process.kill()
@@ -187,10 +202,115 @@ def run(args):
             daemon = start_daemon()
             assert queued() == accepted[1:]
             connection.ack(103, accepted[:2])
-            assert connection.offer()["meta"]["message_id"] == accepted[2]
-            connection.ack(104, accepted[2:])
+            last_offer = connection.offer()
+            assert last_offer["meta"]["message_id"] == accepted[2]
+            assert last_offer["meta"]["reply_destination"] == human
+
+            # Actual CLI hook against the actual private daemon. This models
+            # Claude's transcript grammar, not a live provider response.
+            transcript = root / "receipt-fixture.jsonl"
+            def record(kind, uuid, parent, **fields):
+                return {"type": kind, "uuid": uuid, "parentUuid": parent,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "sessionId": "receipt-fixture", "isSidechain": False, **fields}
+            def escape(value):
+                return value.replace("&", "&amp;").replace('"', "&quot;")
+            metadata = " ".join(f'{key}="{escape(value)}"' for key, value in last_offer["meta"].items())
+            content = f'<channel source="agentdocker" {metadata}>\n{last_offer["content"]}\n</channel>'
+            recorded = [record("user", "input", "previous", isMeta=True,
+                               origin={"kind": "channel", "server": "agentdocker"},
+                               message={"role": "user", "content": content})]
+            padding = ""
+            def receipt_hook(write=True):
+                if write:
+                    transcript.write_text(padding + "\n".join(json.dumps(value) for value in recorded) + "\n" + padding)
+                result = subprocess.run([str(output / "agentdocker"), "hook", "claude-code"],
+                    env=channel_env, cwd=root, input=json.dumps({"hook_event_name": "PreToolUse",
+                    "session_id": "receipt-fixture", "cwd": str(root), "transcript_path": str(transcript),
+                    "tool_name": "Bash", "tool_input": {}}).encode(), capture_output=True, timeout=3)
+                assert result.returncode == 0, result.stderr.decode()
+            receipt_hook()
+            assert queued() == accepted[2:], "a channel record without a model response was acknowledged"
+            recorded.append(record("attachment", "context", "input"))
+            recorded.append(record("assistant", "response", "context", requestId="fixture-request",
+                message={"id": "fixture-response", "role": "assistant", "model": "claude-fixture",
+                         "content": [{"type": "tool_use", "name": "Bash"}]}))
+            # Move the proof outside the fast suffix and first history window.
+            # Recovery must advance its private offset across hook invocations.
+            padding = (json.dumps({"type": "progress", "padding": "x" * 1024}) + "\n") * 3100
+            receipt_hook()
+            assert queued() == accepted[2:], "history fixture unexpectedly fit the fast window"
+            history_hooks = 1
+            while queued() and history_hooks < 8:
+                receipt_hook(write=False)
+                history_hooks += 1
+            assert queued() == [] and history_hooks > 1
+            received = rpc(endpoint, {"op": "inspect", "agent": receiver})["agent"]["input_delivery"]
+            assert received["received"]["messages"] == accepted[2:]
+            assert received["received"]["receipt"]["provider"] == "claude_channel"
+            receipt_hook(write=False)
             assert queued() == []
             report["steps"].append("MCP reconnect replayed the same ID; daemon crash retained order and duplicate receipts preserved later messages")
+            report["steps"].append("without an explicit model ACK, the real hook retained channel input alone and committed receipt before removing its exact head only after the modeled assistant continuation; repeated hooks were harmless")
+            report["history_recovery_hook_calls"] = history_hooks
+
+            # A text-only turn may flush its final provider record after the
+            # Stop hook has returned. No future prompt/tool should be needed.
+            deferred_message = send(peer, "text-only response flushed after Stop")
+            deferred_offer = connection.offer()
+            assert deferred_offer["meta"]["message_id"] == deferred_message
+            metadata = " ".join(f'{key}="{escape(value)}"' for key, value in deferred_offer["meta"].items())
+            deferred_content = f'<channel source="agentdocker" {metadata}>\n{deferred_offer["content"]}\n</channel>'
+            input_record = record("user", "deferred-input", "previous", isMeta=True,
+                origin={"kind": "channel", "server": "agentdocker"},
+                message={"role": "user", "content": deferred_content})
+            transcript.write_text(json.dumps(input_record) + "\n")
+            stopped = subprocess.run([str(output / "agentdocker"), "hook", "claude-code"],
+                env=channel_env, cwd=root, input=json.dumps({"hook_event_name":"Stop",
+                "session_id":"receipt-fixture", "cwd":str(root), "transcript_path":str(transcript),
+                "stop_hook_active":True}).encode(), capture_output=True, timeout=3)
+            assert stopped.returncode == 0, stopped.stderr.decode()
+            assert queued() == [deferred_message], "Stop invented proof before the response was written"
+            with transcript.open("a") as stream:
+                stream.write(json.dumps(record("assistant", "deferred-response", "deferred-input",
+                    requestId="late-request", message={"id":"late-response", "role":"assistant",
+                    "model":"claude-fixture", "content":[{"type":"text", "text":"Noted."}]})) + "\n")
+            eventually(lambda: queued() == [])
+            received = rpc(endpoint, {"op":"inspect", "agent":receiver})["agent"]["input_delivery"]
+            assert received["received"]["messages"] == [deferred_message]
+            report["steps"].append("a complete text-only response appended after Stop returned was receipted without a new prompt or tool; incomplete input alone stayed queued")
+
+            # A complete proof must not authorize a stale helper generation or
+            # another session. These are real hidden-command invocations.
+            guarded_message = send(peer, "deferred receipt identity guards")
+            guarded_offer = connection.offer()
+            metadata = " ".join(f'{key}="{escape(value)}"' for key, value in guarded_offer["meta"].items())
+            content = f'<channel source="agentdocker" {metadata}>\n{guarded_offer["content"]}\n</channel>'
+            transcript.write_text("\n".join(json.dumps(value) for value in [
+                record("user", "guarded-input", "previous", isMeta=True,
+                    origin={"kind":"channel", "server":"agentdocker"},
+                    message={"role":"user", "content":content}),
+                record("assistant", "guarded-response", "guarded-input", requestId="guarded-request",
+                    message={"id":"guarded-response", "role":"assistant", "model":"claude-fixture",
+                             "content":[{"type":"text", "text":"Noted."}]})]) + "\n")
+            identity = rpc(endpoint, {"op":"inspect", "agent":receiver})["agent"]
+            values = {"--agent":receiver, "--pid":str(identity["pid"]),
+                      "--started-at":identity["process_started_at"],
+                      "--session":"receipt-fixture", "--transcript":str(transcript)}
+            for field, wrong in [("--agent", peer), ("--pid", "0"),
+                                 ("--started-at", "2000-01-01T00:00:00Z"),
+                                 ("--session", "another-session")]:
+                arguments = {**values, field:wrong}
+                checked = subprocess.run([str(output / "agentdocker"), "hook", "claude-receipt",
+                    *[v for pair in arguments.items() for v in pair]],
+                    env=channel_env, cwd=root, capture_output=True, timeout=5)
+                assert checked.returncode == 0, checked.stderr.decode()
+                assert queued() == [guarded_message], f"stale {field} consumed the head"
+            checked = subprocess.run([str(output / "agentdocker"), "hook", "claude-receipt",
+                *[v for pair in values.items() for v in pair]],
+                env=channel_env, cwd=root, capture_output=True, timeout=5)
+            assert checked.returncode == 0 and queued() == []
+            report["steps"].append("deferred helpers with a different agent, PID, generation or session refused a complete transcript proof; the matching helper then receipted only that head")
 
             connection.send({"jsonrpc": "2.0", "id": 200, "method": "tools/call", "params": {
                 "name": "ask_human", "arguments": {"question": "Which fixture route?", "timeout_secs": 120}}})
@@ -206,6 +326,25 @@ def run(args):
             connection.ack(201, [answered])
             assert queued() == [] and connection.read(0.35) is None
             report["steps"].append("a posted human question returns before its answer, which arrives once through the channel with its reply relationship and explicit receipt")
+
+            project_pause = rpc(endpoint, {"op": "send", "from": "user", "to": f"project:{root}",
+                "kind": "message", "payload": {"text": "FIXTURE: pause in everyone"}})["message"]
+            offered = connection.offer()
+            assert offered["meta"]["message_id"] == project_pause
+            project = json.loads(offered["meta"]["destination"])["value"]
+            assert offered["meta"]["reply_destination"] == f"project:{project}"
+            connection.send({"jsonrpc": "2.0", "id": 202, "method": "tools/call", "params": {
+                "name": "send_message", "arguments": {"to": offered["meta"]["reply_destination"],
+                "reply_to": project_pause, "text": "FIXTURE: response in the same everyone chat"}}})
+            reply = json.loads(connection.response(202)["result"]["content"][0]["text"])
+            assert reply["sent"] is True
+            peer_queue = rpc(endpoint, {"op": "inbox", "agent": peer, "drain": False})["messages"]
+            matching = [message for message in peer_queue if message["id"] == reply["message_id"]]
+            assert len(matching) == 1 and matching[0]["reply_to"] == project_pause
+            assert matching[0]["to"] == {"kind": "project", "value": project}
+            connection.ack(203, [project_pause])
+            assert queued() == []
+            report["steps"].append("project fan-out carried a reply destination that the actual MCP send_message tool routed back to the same everyone conversation with its original message ID")
 
             idle = send(peer, "IDLE-TRANSPORT-OFFER")
             assert connection.offer()["meta"]["message_id"] == idle

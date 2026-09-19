@@ -183,7 +183,8 @@ its comments are our channel, its Memory link is our `journal_note`.
 5. **Rules that only comment or move**, never run commands — the same line we
    draw around policies.
 6. **`--json` everywhere with documented exit codes** for agents driving the
-   CLI; ours has `--json` on most commands and no exit-code contract yet.
+   CLI; ours has `--json` on most commands, and the exit-code contract
+   is merged (#181) and included in the current desktop preview.
 
 ### Combining rather than competing
 
@@ -231,13 +232,13 @@ a card with acceptance text and an atomic pull over the `task:<id>` lease,
 with a Board tab in the app — is in source (PR #176), as are roles (a `role`
 label an agent is given, and `role:<name>` as the recipient of a message or
 a hand-off); typed links (#182), webhooks (#183) and the exit-code contract (#181)
-are merged, with installation pending in the current desktop batch,
+are merged and included in the current desktop preview;
 comment-only rules are not started, and the card-to-lease bridge to Paprika
 itself remains a proposal.
 
 Assessed September 17, against the [product direction](PRODUCT-DIRECTION.md):
-what is still worth taking is small and agent-facing — an exit-code contract
-for the command line (agents drive the CLI; PR #181), typed links on a card,
+the adopted work is small and agent-facing — the merged CLI exit-code contract
+(PR #181, included in the current desktop preview), typed links on a card,
 message or hand-off (in source: `links` on cards, messages, checkpoints and
 hand-off bundles, shown in the app) (a path, a PR, a memory note; the data already exists), webhooks
 as a signed sink on the event stream (a team channel hears `question_asked`

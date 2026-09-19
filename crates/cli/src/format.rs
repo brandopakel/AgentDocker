@@ -4,6 +4,18 @@ use agentdocker_core::{Activity, Envelope, Event, EventKind, Question, ResourceK
 use chrono::{DateTime, Local, Utc};
 use serde_json::Value;
 
+/// Answer where the original conversation happened, using complete IDs.
+pub(crate) fn reply_destination(message: &Envelope) -> String {
+    use agentdocker_core::Destination;
+    match &message.to {
+        Destination::Agent(_) => message.from.clone(),
+        Destination::Project(project) => format!("project:{project}"),
+        Destination::Channel(channel) => format!("channel:{channel}"),
+        Destination::Topic(topic) => format!("topic:{topic}"),
+        Destination::Broadcast => "all".into(),
+    }
+}
+
 /// Print rows as left-aligned columns, `docker ps` style.
 pub fn table(headers: &[&str], rows: &[Vec<String>]) {
     table_dimming(headers, rows, |_| false);

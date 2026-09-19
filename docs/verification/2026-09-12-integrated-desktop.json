@@ -3595,7 +3595,7 @@
       },
       {
         "source": "9ca3c5f",
-        "result": "macOS CI: 1171 passed, unchanged terminal writer-failure test timed out at90s. Unresolved historical failure; 500 isolated local repetitions passed without reproducing it. Later clean gates do not explain the timeout.",
+        "result": "macOS CI: 1171 passed, unchanged terminal writer-failure test timed out at 90s. Unresolved historical failure; 500 isolated local repetitions passed without reproducing it. Later clean gates do not explain the timeout.",
         "url": "https://github.com/brandopakel/AgentDocker/actions/runs/35277860301/job/105392682069",
         "log": "/private/tmp/agentdocker-question-drafts-resume-ci-20260917.log",
         "log_sha256": "88751169e8b033d21650435ad75736fd59da5ff2496e130db44d965e66a6614f",
@@ -3609,7 +3609,7 @@
       },
       {
         "source": "67f0728",
-        "result": "Full local gate1172/7 and Python94/1 passed before peer review found full storage blocked structured choices; final13dd72c fixes that with a new regression."
+        "result": "Full local gate 1172/7 and Python 94/1 passed before peer review found full storage blocked structured choices; final 13dd72c fixes that with a new regression."
       }
     ],
     "review": "Peer review found that full draft storage blocked structured choices. 13dd72c sends an already validated choice directly and adds exact-command, full-capacity and failed-delivery snapshot assertions; final review and CI pending.",
@@ -3985,7 +3985,7 @@
         }
       },
       "changes": [
-        "Integrate merged Board layout189 and notification replies190 while retaining question/Board drafts, role routing and exact-recipient readiness.",
+        "Integrate merged Board layout #189 and notification replies #190 while retaining question/Board drafts, role routing and exact-recipient readiness.",
         "Handoff retries return the saved bundle before resolving changed roles or recipient liveness.",
         "Failed notification replies preserve full bounded Unicode/escaped text across workspace windows; uncertain outcomes remain uncertain and full recovery status is bounded.",
         "Exclude unregistered Usage screen source from this desktop integration; retain it for the separate Usage feature."
@@ -4223,7 +4223,7 @@
           "path": "/private/tmp/agentdocker-191-handoff-retry-gate-20260918.log",
           "sha256": "07e9ae090984db137bbcc5dbbb2ac228957e2078fa5665fca11b642b5e567aa3"
         },
-        "reason": "Intentionally interrupted owned gate to incorporate189/190; not counted as passing."
+        "reason": "Intentionally interrupted owned gate to incorporate #189/#190; not counted as passing."
       },
       "physical_notification_reply": "not tested",
       "installation": "not activated by this trial",
@@ -4440,7 +4440,6 @@
       "task_completed": false
     },
     "confirmed_availability": {
-      "cleared_observation": "2026-09-18T02:17:19.707659Z",
       "observed_at": "2026-09-18T04:10:37.811285Z",
       "process_started_at": "2026-09-12T23:36:03.055103Z"
     },

@@ -10,6 +10,15 @@ Claude session must enable the MCP entry as a channel and satisfy its provider
 consent and organization policy. Merely configuring MCP does not enable input.
 See the [official channel contract](https://code.claude.com/docs/en/channels-reference).
 
+After initialization and any session verification, the adapter waits one second
+before its first queue offer. A September 18 real-provider trace found an offer
+written just before Claude registered its channel handler; an uninstrumented
+run lost that offer. This short startup settling interval mitigates that race;
+it is not a readiness guarantee or a receipt. Control and receipt requests
+remain responsive during the wait. Later messages follow the normal polling
+cadence. Missing receipts still retain and visibly pause the queue, without
+automatic replay based only on an absent transcript entry.
+
 ## Launch from AgentDocker
 
 For a new Claude session, open **New session** and choose Claude Code.
@@ -48,6 +57,27 @@ for channel input. Only the launch decides.
 
 ## Resuming a session
 
+The installed September 18 preview (`6bd97894`, source `705f924`) provides
+**Reconnect here** in a Claude session's **Details**. Exit that session normally
+with `/exit`, select it under **Earlier sessions**, and press the button. The
+app resumes the same conversation under its existing agent record, retaining
+its queue, aliases, questions and cards. Its terminal opens in the app for
+Claude's own channel consent. The matching inline MCP entry and launch flags
+are supplied by the app; no handwritten environment command is needed.
+The CLI alternative is `agentdocker reconnect <agent>`. A still-live process,
+conflicting subscriber or uncertain persistence refuses the relaunch.
+
+Three sequential actual-Claude trials and one additional final-package trial
+preserved the ended identity, delivered its retained message, and answered an
+idle project pause in the same chat with verified receipts and no explicit ACK.
+The final package passed thirteen installation/rollback checks and is installed
+with all six external provider processes unchanged. These bounded private
+trials do not certify the user's still-plain sessions: each needs reconnect and
+provider consent before its own idle-pause acceptance. Exact sources, receipts,
+earlier failed trials and activation are in the
+[existing delivery record](verification/2026-09-12-input-delivery-status.json).
+
+For an external relaunch outside the app, the registration path below applies.
 A session that comes back as a new process takes up the record it ended
 with: the hooks adapter names the session, and the daemon joins the new
 process to the ended records of that session in the same checkout, once
@@ -157,13 +187,53 @@ tool call; broader ordering, approval, cancellation and starvation cases remain.
 
 The adapter waits for MCP initialization, then offers one queued envelope with
 its complete JSON payload and stable `message_id`, `from_agent`, `kind`,
-`sent_at`, `destination` and optional `reply_to` metadata. The model must acknowledge received IDs
-using `acknowledge_messages`. That receipt frees the queue head; it confirms
-receipt, not task completion. A reply remains a separate `send_message` call.
+`sent_at`, `destination` and optional `reply_to` metadata. The model can acknowledge
+received IDs using `acknowledge_messages`. Lifecycle hooks also recover a forgotten
+ACK when the current session's provider transcript records the exact complete
+channel body and metadata followed by a real assistant response in its parent
+chain. This accepts both idle channel input and a busy `queued_command` attachment;
+an attachment without that continuation is insufficient. The receipt commits
+before removing the queue head. It confirms input receipt, not task completion.
+Replies use `send_message` to the envelope's `reply_destination` with
+`reply_to=message_id`, so project/channel responses appear in their original chat.
+A terminal-only response is not an app reply.
+The legacy lifecycle-hook path carries the same complete envelope and reply
+destination; it no longer strips IDs and routing down to a display-name/text
+summary. Hooks alone still require a provider prompt/tool boundary and cannot
+wake a plain idle session.
 
-A stdout write never removes an inbox message. Until an explicit receipt,
+Automatic recovery first reads a 2 MiB suffix, then at most one additional
+2 MiB history window if the head's evidence is older. A private per-agent cursor
+keeps only the file identity, process/session generation, head ID and offset;
+successive hook boundaries advance with a 1 MiB overlap. Changes of head,
+generation or source, and truncation, reset the scan. No historical proof is
+trusted without rereading it. Each proof is limited to 4,096 records after its
+candidate ID, within a 250 ms recovery budget inside the existing one-second
+hook budget. It requires the
+current process generation and session, and rejects provider errors, synthetic
+responses, unrelated turns, sidechains, changed bodies and malformed metadata.
+No transcript content is retained. Missing hooks, unknown provider formats,
+ambiguous UUIDs and proof chains too large for a window keep the explicit-ACK
+fallback and queued input. Recovery clears at most one verified head per hook
+boundary; a deep backlog is not consumed in a burst.
+
+A final text-only response may not be visible when `Stop` runs. The hook schedules
+one bounded receipt helper after returning control: a per-agent lock, three-second
+lifetime and three delayed proof attempts. Each attempt rechecks the actual PID
+birth time, registered generation, session and channel ownership. It uses the
+same exact-body proof and receipt-before-ACK ordering; it neither submits a prompt
+nor fabricates a hook/contact/activity event. Unknown or absent proof stays queued.
+This closes the deferred-flush path; installed text-only acceptance is tracked
+separately from the earlier tool-call trials.
+
+A stdout write never removes an inbox message. Until a verified receipt,
 delivery is unconfirmed. Claude may silently ignore a channel that was not
-enabled; after 30 seconds without a receipt the adapter reports a diagnostic.
+enabled; after 30 seconds without a receipt the adapter reports a durable
+delivery pause naming the outstanding message. That state appears in session
+details and send-readiness warnings. It stays paused through periodic refreshes
+until that message leaves the queue; fresh transport contact alone does not
+clear it. A failed or stalled diagnostic write is bounded and retried, without
+blocking the receipt/control path or offering the message again.
 The message remains recoverable through a non-draining CLI inbox read.
 The channel MCP hides and refuses `read_inbox` and `wait_for_messages` so the
 model receives input through the channel queue. Reconnects offer the same
