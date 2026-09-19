@@ -177,6 +177,49 @@ class VerifyCampaign(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("release lease-known --as abc", "\n".join(calls), "the finisher ended the campaign")
 
+    def test_a_lost_slot_during_a_bench_workload_ends_the_campaign(self):
+        # The six socket workloads are steps too: the one in flight is
+        # ended, no further one starts, the status file says which ran and
+        # how it ended, the finisher still runs and the lease is released.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            (root / "scripts").mkdir()
+            shutil.copy2(Path(__file__).parents[1] / "scripts/verify.sh", root / "scripts/verify.sh")
+            (root / "scripts/build_storage.py").write_text("print('{}')\n")
+            (root / "scripts/benchmark_manifest.py").write_text('print(\'{"source":"fixture"}\')\n')
+            binary = root / "bin"; binary.mkdir()
+            cli = binary / "agentdocker"; cli.write_text(FAKE_CLI); cli.chmod(0o700)
+            log = root / "calls.log"
+            cargo = binary / "cargo"
+            cargo.write_text("#!/usr/bin/env python3\nimport json, os, pathlib, sys\n"
+                "root = pathlib.Path(os.environ['CARGO_TARGET_DIR']) / 'release'\n"
+                "for flag, name, path in [('--bin', 'agentd', root / 'agentd'), "
+                "('--example', 'socket_load', root / 'examples/socket_load')]:\n"
+                "    if flag in sys.argv:\n"
+                "        print(json.dumps({'reason': 'compiler-artifact', 'target': {'name': name}, 'executable': str(path)}))\n")
+            cargo.chmod(0o700)
+            build = root / "build"
+            target = build / "release/examples"; target.mkdir(parents=True)
+            (target.parent / "agentd").write_text("fixture daemon")
+            workload = target / "socket_load"
+            workload.write_text("#!/bin/sh\nprintf '%s %s\\n' \"$2\" \"$4\" >> calls\nsleep 3\necho '{}'\n")
+            workload.chmod(0o700)
+            (root / "artifacts").mkdir()
+            env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_") and k != "CI"}
+            env.update(PATH=str(binary) + os.pathsep + os.environ["PATH"], FAKE_LOG=str(log),
+                       FAKE_MODE="renew-fails", CARGO_TARGET_DIR=str(build), HOME=str(root),
+                       AGENTDOCKER_AGENT_ID="abc", AGENTDOCKER_CAMPAIGN_RENEW_SECS="1")
+            result = subprocess.run(["bash", "scripts/verify.sh", "bench"], cwd=root, env=env,
+                                    capture_output=True, text=True, timeout=40)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("the remaining workloads do not run", result.stderr)
+            self.assertEqual((root / "calls").read_text().splitlines(), ["1 shared"], "only the first workload started")
+            status = (root / "artifacts/benchmark-status.tsv").read_text()
+            self.assertIn("shared\t1\t75", status)
+            self.assertEqual(len(status.splitlines()), 1)
+            self.assertTrue((root / "artifacts/benchmark-manifest-after.json").exists(), "the finisher ran")
+            self.assertIn("release lease-known --as abc", log.read_text())
+
     @staticmethod
     def alive(pid):
         try:

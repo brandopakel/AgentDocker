@@ -305,11 +305,19 @@ PY
     for clients in 1 10 100; do
       for workload in shared disjoint; do
         workload_status=0
-        "$bench_workload" "$bench_daemon" "$clients" 100 "$workload" > "artifacts/socket-${workload}-${clients}.json" 2> "artifacts/socket-${workload}-${clients}.log" || workload_status=$?
+        # A workload is a step too: a lost slot ends the one in flight and
+        # refuses the rest, each recorded as the 75 it was.
+        step "$bench_workload" "$bench_daemon" "$clients" 100 "$workload" > "artifacts/socket-${workload}-${clients}.json" 2> "artifacts/socket-${workload}-${clients}.log" || workload_status=$?
         printf '%s\t%s\t%s\n' "$workload" "$clients" "$workload_status" >> artifacts/benchmark-status.tsv
         if (( workload_status != 0 )); then
           bench_status=1
           cat "artifacts/socket-${workload}-${clients}.log" >&2
+        fi
+        # A lost slot ends the campaign, not just this workload: the
+        # finisher still records what ran, and nothing more starts.
+        if (( workload_status == 75 )) && [ -e "$campaign_dir/lost" ]; then
+          echo "verify.sh: the build slot was lost; the remaining workloads do not run" >&2
+          break 2
         fi
       done
     done
