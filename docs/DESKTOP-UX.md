@@ -203,11 +203,18 @@ Project tabs provide:
 Sessions are shown by name. Default app launches and adapter-generated names
 carry the same generated-name marker. A name generated from a runtime and
 an identifier (the record says so, or it is exactly that adapter's form for the
-record's own pid or session) reads as the tool and the branch it is on,
-`Codex · main`; a number is added only while two live sessions of one tool
-share a branch, and an ended session is never numbered. A name somebody chose
-is shown as chosen, whatever it looks like. An author the window has no record
-of reads as an unknown session. The session id stays under Details. In a
+record's own pid or session) reads as the tool — `Codex`, `Claude Code` —
+and, once the project holds another session of that tool, with the first
+eight characters of the session's own id: `Claude Code · 0180d761`. The id
+is the session's for good, so nothing renames it: not a peer ending, not a
+branch switch — the branch is shown under the name (`on main`, and in the
+sessions list beside what the session is doing), never in it — and pruning
+old records can only shorten a name back to the tool. A former id after a
+reconciliation reads under the id it stands for now and is not listed as an
+agent of its own; two records that merely share a generated name stay two
+records. A name somebody chose is shown as chosen, whatever it looks like,
+and is the way to give a session a word for a name. An author the window has no
+record of reads as an unknown session. The session id stays under Details. In a
 narrow window Messages and Inbox show either the conversation list or one
 conversation; choosing one, a notification, or the next question opens that
 conversation, and **Conversations** returns to the list.
@@ -217,11 +224,17 @@ opens against a daemon that keeps conversations (schema 21 and later); an
 older daemon still gets the inbox below. It is shaped like a chat workspace.
 The sidebar lists **Channels** (`#everyone` for the selected project, or
 `#everyone · project` when every project is on view, `#all`, and named
-channels; a room opened before names or a collision room gets a short name
-from its task or paths), collision rooms behind **Collisions**, **Direct
-messages** with a presence dot for a live session, conversations two agents
-had with each other behind **Between agents** (read as `Codex ↔ Claude
-Code`), and **AgentDocker → agent** notices per agent; a search box filters by
+channels; a room opened before names gets a short name from its task),
+**Direct messages** with a presence dot for a live session — one row per
+live agent, by its stable name, and one row for an identity however many
+ids it has had: the conversation written in last is the row, and its
+conversations under former ids sit under **Earlier**, each with its own
+unread, draft and history — then, folded behind **From AgentDocker (n)**, what
+AgentDocker itself writes: the rooms it opens between two checkouts, named
+`Contested paths (303)` by how many paths they are about, and the
+**AgentDocker → agent** notices per agent; conversations two agents had with
+each other sit behind **Between agents** (read as `Codex · 0180d761 ↔ Claude Code`,
+so two pairs of the same tools are told apart); a search box filters by
 name. Ended sessions' conversations sit behind **Earlier (n)**. Every row is
 one line each for the name and the latest line. Unread counts and the rail
 badge cover what is yours to answer: channels, broadcasts and your own direct
