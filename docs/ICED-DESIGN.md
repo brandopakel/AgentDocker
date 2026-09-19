@@ -362,6 +362,14 @@ and a second launch. Daemon and on-disk assertions verify outcomes. macOS also
 probes the app's native NSAccessibility hierarchy. The driver does not claim
 physical keyboard injection, provider consumption or a screen-reader trial.
 
+Readiness trials explicitly enter the compact Messages layout and use its
+**Conversations** back control before selecting a direct message. Opening a
+project selects shared chat; Messages preserves that conversation, so the list
+is hidden on a compact display until the person goes back. The fixture asserts
+both the list entry and destination composer instead of assuming a wide sidebar
+or changing the saved conversation. This covers the Mac ARM CI failure at
+`Click thread-<receiver>` without extending deadlines or skipping the case.
+
 The standard suite includes strict lint, nextest, doctests, installer/package
 checks and release builds. Desktop CI packages and runs native workflow acceptance
 on macOS and Linux; Windows compiles the desktop/adapters and tests its existing

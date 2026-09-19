@@ -714,7 +714,19 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                      step("wait_text", text="readiness-fixture"),
                                      step("wait_text", text=expected), step("capture", name=name),
                                      step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
-                                     step("click", id="inbox"), step("click", id=f"thread-{receiver['id']}"),
+                                     # Selecting a project opens its shared chat. On a
+                                     # compact display, Messages keeps that conversation
+                                     # and hides the list until Conversations is pressed.
+                                     # Establish that layout on every runner rather than
+                                     # assume its display can show the wide sidebar.
+                                     step("resize", width=720, height=540),
+                                     step("click", id="inbox"),
+                                     step("wait_control", id="thread-back", present=True),
+                                     step("click", id="thread-back"),
+                                     step("wait_control", id=f"thread-{receiver['id']}", present=True),
+                                     step("click", id=f"thread-{receiver['id']}"),
+                                     step("wait_control", id="thread-back", present=True),
+                                     step("wait_control", id=f"reply-{receiver['id']}", present=True),
                                      step("wait_text", text=input_status), *send_probe,
                                      step("fill", id=f"reply-{receiver['id']}", text="Keep the connection draft"),
                                      step("click", id=f"input-connection-{conversation}"),
