@@ -3092,7 +3092,7 @@
         ]
       }
     ],
-    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait. The sanitized tool timeline shows about 50 seconds between tool boundaries and a 45-second coordinator sleep before the first peer context. Attribute the 104–119 seconds to end-to-end context latency, not daemon/polling latency alone.",
+    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait. The sanitized tool timeline shows about 50 seconds between tool boundaries and a 45-second coordinator sleep before the first peer context. Attribute the 104\u2013119 seconds to end-to-end context latency, not daemon/polling latency alone.",
     "acceptance_remaining": "Reduce and measure busy delivery latency and system-notice backlog while preserving FIFO human/peer ordering, exact receipt recovery, unavailable-provider gates and no duplicate execution. Three ordered receipts do not establish prompt-like latency or sustained throughput.",
     "private_evidence": "/private/tmp/agentdocker-live-active-burst-20260917.json",
     "provider_route_review": {
@@ -3141,5 +3141,199 @@
     ],
     "verification": "GitHub merge metadata and git ancestry against the recorded main; no test rerun or new installed acceptance claimed.",
     "limits": "Top-level installed=false and scope describe the original trial. Later installed-session, receiver-upgrade and active-input sections plus the integrated desktop record carry subsequent activation evidence. Long busy turns, zero-prompt reopen and other providers remain separate."
+  },
+  "peer_answer_active_hook_2026_09_18": {
+    "scope": "Actual Codex 0.154.0 with loopback Responses fixture, private daemon/profile. No external model service or saved provider policy changes. Separate from installed-session acceptance.",
+    "source": "ee7bb1a1bb3026a8fab607835652ce3066092b67",
+    "gate": {
+      "rust_passed": 1271,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_packaging_release": "passed"
+    },
+    "peer_review": "Claude 0180d761 read-only review c4c00e57a577420c found no blockers; GitHub final review pending.",
+    "trials": {
+      "before": {
+        "report_sha256": "e10f47c227d45bcc4abe437c86f2fd9e1650b19127048335d027782a1a808c55",
+        "result": "failed",
+        "source": {
+          "commit": "ee7bb1a1bb3026a8fab607835652ce3066092b67",
+          "dirty": false,
+          "rust_and_driver_sha256": "7a28ef2e0b4c1d9adaf8b6ab542b3534c9a04c39ef372a9ec07012c403e61873"
+        },
+        "cli_sha256": "175569ba06b39c2666458e16d417a40021a090e7224e34bdde578a37a074c59f",
+        "daemon_sha256": "cda975dde3fad145c68dcb4cc2e9efabda0edbe7e233e443c1415f33c3e65e21",
+        "provider_version": "codex-cli 0.154.0",
+        "cleanup_errors": [],
+        "idle_wake_seconds": 6.136617792013567,
+        "automatic_receiver_restart_no_replay": true,
+        "binary_provenance": "CLI/daemon built from chat-first 10bc183, CLI source equivalent to 705f924. Source field identifies the ee7bb1a driver checkout, not the old binaries. Active-hook expected failure: peer-answer head timed out after 45 seconds."
+      },
+      "after": {
+        "report_sha256": "cf9d76430f8bce130e094a69cba320658ed6c0a17accf19c60895ccb1742138f",
+        "result": "passed",
+        "source": {
+          "commit": "ee7bb1a1bb3026a8fab607835652ce3066092b67",
+          "dirty": false,
+          "rust_and_driver_sha256": "7a28ef2e0b4c1d9adaf8b6ab542b3534c9a04c39ef372a9ec07012c403e61873"
+        },
+        "cli_sha256": "a7643f457820d7c58a753f5d5b7053b12349806b82ce2c432e72592a452115dd",
+        "daemon_sha256": "704917e631ee67d2e3ac6910e034ac172470eb274140f8dca3f2a389ebdbee25",
+        "provider_version": "codex-cli 0.154.0",
+        "cleanup_errors": [],
+        "active_hook": {
+          "messages": [
+            "84a7573fafc64a77",
+            "76e80ff549014633",
+            "ce53bb65565b4685"
+          ],
+          "receipts": [
+            {
+              "message": "84a7573fafc64a77",
+              "receipt": {
+                "thread": "01a0b6c0-7c65-7460-bff0-c8e41faaf678",
+                "turn": "01a0b6c1-44da-79a0-8cdd-8a6f6a471722",
+                "item": "msg_01a0b6c1-4598-7253-a515-2b965fd6bafe"
+              }
+            },
+            {
+              "message": "76e80ff549014633",
+              "receipt": {
+                "thread": "01a0b6c0-7c65-7460-bff0-c8e41faaf678",
+                "turn": "01a0b6c1-44da-79a0-8cdd-8a6f6a471722",
+                "item": "msg_01a0b6c1-51f1-7d30-96a6-b97322f8875e"
+              }
+            },
+            {
+              "message": "ce53bb65565b4685",
+              "receipt": {
+                "thread": "01a0b6c0-7c65-7460-bff0-c8e41faaf678",
+                "turn": "01a0b6c1-44da-79a0-8cdd-8a6f6a471722",
+                "item": "msg_01a0b6c1-5ec9-7672-9ead-1ec39b5cf3e6"
+              }
+            }
+          ],
+          "seconds": 8.632462750014383,
+          "same_turn": true,
+          "model_requests": 3,
+          "original_provider_pid": 66023
+        },
+        "idle_wake_seconds": 7.149625084013678,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "automatic_receiver_restart_no_replay": true
+      },
+      "lost_hook": {
+        "report_sha256": "14a0f9803d856121451719603a12a12f191c1af25091e72f400205e2a1fb8746",
+        "result": "passed",
+        "source": {
+          "commit": "ee7bb1a1bb3026a8fab607835652ce3066092b67",
+          "dirty": false,
+          "rust_and_driver_sha256": "7a28ef2e0b4c1d9adaf8b6ab542b3534c9a04c39ef372a9ec07012c403e61873"
+        },
+        "cli_sha256": "a7643f457820d7c58a753f5d5b7053b12349806b82ce2c432e72592a452115dd",
+        "daemon_sha256": "704917e631ee67d2e3ac6910e034ac172470eb274140f8dca3f2a389ebdbee25",
+        "provider_version": "codex-cli 0.154.0",
+        "cleanup_errors": [],
+        "lost_hook_output": {
+          "retained_messages": [
+            "8f72f39e49074c79",
+            "ed8f0f0cccb943b9",
+            "83edbe7bf95342d7"
+          ],
+          "paused": true,
+          "no_provider_receipt": true,
+          "no_blind_resubmission": true
+        },
+        "idle_wake_seconds": 7.451436790986918,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "automatic_receiver_restart_no_replay": true
+      }
+    },
+    "installed": {
+      "release": "486c5dd04fbe96b102dac08d2e223e72049f8f651926f87fd3c55352626ca268",
+      "source": "c0a7c56688fff19f51b449c607baded420c94218",
+      "receiver_before": 18735,
+      "receiver_after": 60959,
+      "provider_pid_preserved": 51242,
+      "daemon_pid_preserved": 92608,
+      "managed_claude_pid_preserved": 23973,
+      "thread_preserved": "01a089b2-c485-7361-b64c-a72f724e00a4",
+      "token_preserved": true,
+      "original_peer_answer_delivered": "724bf89e7e794f29",
+      "correlated_model_reply": "0d2e4b3979704ea6",
+      "receipt_window": "Bounded128; after six new receipts the prior122-entry suffix remained in order; six oldest entries aged out normally. No manual queue ACK/drain/replay.",
+      "ui": "Existing window unchanged; shared-chat UI activation separate.",
+      "backup_integrity": "ok; regular receiver files saved; live hook socket excluded"
+    },
+    "packaged_upgrade": {
+      "result": "passed",
+      "cli_sha256": "24335ae0c0c26971c2d0b8ad2cbf9fdb241b90d5b6c940aa2946e0dfd55184d1",
+      "daemon_sha256": "df3389bb9d4b37c67b301336b1cc4f3e60504d0c50603bdc08665a08567e63ff",
+      "driver_sha256": "0c95bc5d28c7d1cb7a8dd0f4f14a8f7bdc3f8d633a66f0832afba4af203479f7",
+      "receiver_upgrade": {
+        "before": {
+          "pid": 54104,
+          "started_at": "2026-09-18T23:17:05.994974Z"
+        },
+        "after": {
+          "pid": 55527,
+          "started_at": "2026-09-18T23:17:16.995026Z"
+        },
+        "initial_ledger_version": 3,
+        "provider_preserved": true,
+        "token_and_binding_preserved": true,
+        "prior_completed_receipts": 6,
+        "pending_native_queue_id": "01a0b6cf-4f12-79f1-96d1-120fc27d6486",
+        "initial_cli_sha256": "b93a755783f2fc07b01f26dadc627a221e1e6296e7590743bbad73abcd6e8ccc"
+      },
+      "active_hook": {
+        "messages": [
+          "12079702d30546b4",
+          "611dad8595954af7",
+          "c2d17beb1d084b29"
+        ],
+        "receipts": [
+          {
+            "message": "12079702d30546b4",
+            "receipt": {
+              "thread": "01a0b6ce-8648-7030-93c6-8ac2ebeb428d",
+              "turn": "01a0b6cf-4e88-7013-8c90-efc3e97e00a1",
+              "item": "msg_01a0b6cf-5b86-72b1-81fa-0e41402e9b38"
+            }
+          },
+          {
+            "message": "611dad8595954af7",
+            "receipt": {
+              "thread": "01a0b6ce-8648-7030-93c6-8ac2ebeb428d",
+              "turn": "01a0b6cf-4e88-7013-8c90-efc3e97e00a1",
+              "item": "msg_01a0b6cf-6879-7d52-a8d4-811d125add56"
+            }
+          },
+          {
+            "message": "c2d17beb1d084b29",
+            "receipt": {
+              "thread": "01a0b6ce-8648-7030-93c6-8ac2ebeb428d",
+              "turn": "01a0b6cf-4e88-7013-8c90-efc3e97e00a1",
+              "item": "msg_01a0b6cf-7550-70b0-adb4-e95c0f7c967b"
+            }
+          }
+        ],
+        "seconds": 11.908495749987196,
+        "same_turn": true,
+        "model_requests": 4,
+        "original_provider_pid": 48880
+      },
+      "cleanup_errors": [],
+      "scope": "Current-format3 receiver replacement with the actual installed d14610b7 initial binary. Earlier attempt used legacy-format2 driver default and failed that prerequisite before replacement; rerun explicitly required3."
+    },
+    "installation_trial": {
+      "scenarios": 13,
+      "previous": "6bd97894",
+      "candidate": "486c5dd04fbe96b102dac08d2e223e72049f8f651926f87fd3c55352626ca268",
+      "result": "passed"
+    }
   }
 }

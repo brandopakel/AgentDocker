@@ -151,10 +151,22 @@ their existing route. Hooks do not type into the terminal, resume another thread
 or choose permission decisions. This is delivery at tool boundaries; a provider
 that performs no tool call still controls when the next input is consumed.
 
+The hook shares the receiver's ordinary-input classification: a peer message
+whose kind is `answer` is ordinary input, and a human answer may enter hook
+context only when the daemon confirms native-queue routing. An uncertain prior
+offer is never eligible. Human answers without routing proof remain on the
+exact MCP receipt path; the fix does not replay synchronous tool answers.
+This September 18 source correction addresses a peer answer that otherwise
+blocked later active-turn input. Its focused policy test and actual-provider
+acceptance variant are present; Rust execution, native acceptance and installed
+receiver activation remain pending.
+
 Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human
 project and human global input during one busy TUI turn and requires exact
 receipts, FIFO order and no later replay after baseline idle/draft/crash tests.
+Add `--active-peer-kind answer` to put a peer answer ahead of those human
+messages and require the same exact receipts and same-turn delivery.
 `--scenario active-hook-lost` discards one offered hook output and requires the
 original queued IDs to remain paused without receipt or automatic resubmission.
 Source `5545697` passed 14 focused tests, the full 1,093-Rust/84-Python gate
