@@ -4478,7 +4478,10 @@ mod tests {
         );
         let _ = app.update(Message::ToggleTemporary);
         assert_eq!(app.shell.temporary_open, Some(false));
-        assert!(!app.temporary_fold_open(), "closable while a scratch session runs");
+        assert!(
+            !app.temporary_fold_open(),
+            "closable while a scratch session runs"
+        );
         app.shell.temporary_open = None;
         assert!(app.temporary_fold_open(), "automatic: open while one runs");
     }
