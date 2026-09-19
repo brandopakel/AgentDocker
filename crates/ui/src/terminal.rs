@@ -569,6 +569,9 @@ mod tests {
         let terminal = unserved_terminal();
         let shared = terminal.shared.clone();
         let (stream, mut peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
+        // Configure the socket before releasing the thread that shuts its
+        // other end down. macOS may reject setsockopt after that shutdown.
+        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let (ready, started) = std::sync::mpsc::sync_channel(0);
         let (resume, blocked) = std::sync::mpsc::sync_channel(0);
         let session = spawn_connected(
@@ -584,7 +587,6 @@ mod tests {
         started.recv_timeout(Duration::from_secs(3)).unwrap();
         drop(terminal);
         resume.send(()).unwrap();
-        peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
         let observed = peer.read(&mut [0]);
         // Clean up the original failing behavior before asserting its result.
         close_peer(&peer);

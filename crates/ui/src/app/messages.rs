@@ -19,7 +19,7 @@ use agentdocker_core::{
 };
 use iced::{
     Center, Element, Fill,
-    widget::{Space, column, container, row, scrollable, text},
+    widget::{Space, column, container, responsive, row, scrollable, text},
 };
 
 impl App {
@@ -222,6 +222,27 @@ impl App {
         let conversation = agentdocker_core::ConversationId::from(open.to_owned());
         let kind = conversation.kind()?;
         let (name, title, members) = match kind {
+            ConversationKind::Everyone => {
+                let project = self.shell.catalog.selected()?;
+                if conversation.everyone_project()?.as_str() != project.project.id().as_str() {
+                    return None;
+                }
+                (
+                    None,
+                    project.name(),
+                    self.agents
+                        .iter()
+                        .filter(|a| {
+                            a.status.is_live()
+                                && a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
+                                && a.project
+                                    .as_ref()
+                                    .is_some_and(|p| p.id() == project.project.id())
+                        })
+                        .map(|a| a.id.clone())
+                        .collect(),
+                )
+            }
             ConversationKind::Dm => {
                 let (a, b) = conversation.dm_parties()?;
                 let other = if self.is_human(a) { b } else { a };
@@ -265,6 +286,18 @@ impl App {
     }
 
     pub(super) fn messages_compact(&self) -> bool {
+        if self.screen == Screen::Chat {
+            // Chat has a different pair of side panes from Messages. Reserve
+            // the same usable composer width before showing them together.
+            let side_width = 250.0
+                + 18.0
+                + if self.shell.thread.is_some() {
+                    318.0
+                } else {
+                    0.0
+                };
+            return self.narrow() || self.panes.workspace_width() < side_width + 320.0;
+        }
         self.narrow() || self.panes.compact_messages()
     }
 
@@ -932,6 +965,7 @@ impl App {
         placeholder: String,
         can_send: bool,
         c: Colors,
+        available_height: f32,
     ) -> Element<'_, Message> {
         let key = super::draft_key(conversation, root);
         let draft = self.shell.conversation_drafts.get(&key);
@@ -952,26 +986,24 @@ impl App {
         };
         // Enter sends, as it does everywhere people type to each other;
         // the button beside it is the same action for the pointer.
-        let mut composer = column![
-            row![
-                input_submitting(
-                    input_id,
-                    &placeholder,
-                    &text_now,
-                    move |t| Message::ConversationDraft(owner.clone(), t),
-                    can_send && !sending,
-                    submit.clone(),
-                ),
-                primary(
-                    format!("send-{key}"),
-                    if sending { "Sending…" } else { "Send" },
-                    submit,
-                )
-            ]
-            .spacing(8)
-            .align_y(Center)
+        let input = row![
+            input_submitting(
+                input_id,
+                &placeholder,
+                &text_now,
+                move |t| Message::ConversationDraft(owner.clone(), t),
+                can_send && !sending,
+                submit.clone(),
+            ),
+            primary(
+                format!("send-{key}"),
+                if sending { "Sending…" } else { "Send" },
+                submit,
+            )
         ]
-        .spacing(4);
+        .spacing(8)
+        .align_y(Center);
+        let mut composer = column![].spacing(4);
         // Mention suggestions include only the conversation's recipients.
         // Inserting a name does not change the Send destination or membership.
         if let Some(prefix) = mention_prefix(&text_now) {
@@ -1020,7 +1052,7 @@ impl App {
             composer = composer.push(text(error.clone()).size(13).color(c.amber));
         }
         if let Some(notice) = draft.and_then(|draft| {
-            super::send_readiness::notice(
+            super::send_readiness::composer_notice(
                 draft,
                 super::shell::DeliveryTarget::Conversation(key.clone()),
                 c,
@@ -1085,7 +1117,19 @@ impl App {
             }
             composer = composer.push(readiness);
         }
-        composer.into()
+        // The pane supplies its actual remaining height after headers and
+        // compact agent controls. Keep typing visible while feedback scrolls.
+        column![
+            input,
+            container(
+                scrollable(composer)
+                    .height(iced::Shrink)
+                    .id(format!("composer-feedback-{key}")),
+            )
+            .max_height((available_height - 48.0).clamp(0.0, 180.0)),
+        ]
+        .spacing(4)
+        .into()
     }
 
     /// The live agents the person can talk to, in the project the sidebar
@@ -1322,7 +1366,7 @@ impl App {
         panel(body, c)
     }
 
-    fn messages_pane(&self, c: Colors) -> Element<'_, Message> {
+    pub(super) fn messages_pane(&self, c: Colors) -> Element<'_, Message> {
         let mention_names = self.mention_names();
         let Some(summary) = self.open_summary() else {
             return empty(
@@ -1341,7 +1385,7 @@ impl App {
         let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
         let topic = match summary.kind {
             ConversationKind::Everyone => {
-                format!("{} · {}", summary.title, plural(members, "live agent"))
+                format!("{} · {}", summary.title, plural(members, "participant"))
             }
             ConversationKind::All => "every agent on this machine".to_owned(),
             ConversationKind::Channel => {
@@ -1527,7 +1571,18 @@ impl App {
         };
         // The conversation's own composer, whatever thread is open beside
         // it: the thread has one of its own.
-        let composer = self.composer(&key, None, placeholder, can_send, c);
+        let composer_key = key.clone();
+        let composer = responsive(move |size| {
+            self.composer(
+                &composer_key,
+                None,
+                placeholder.clone(),
+                can_send,
+                c,
+                size.height,
+            )
+        })
+        .height(iced::Shrink);
         column![
             header,
             rule(c),
@@ -1552,7 +1607,7 @@ impl App {
         .into()
     }
 
-    fn thread_pane(&self, c: Colors) -> Element<'_, Message> {
+    pub(super) fn thread_pane(&self, c: Colors) -> Element<'_, Message> {
         let mention_names = self.mention_names();
         let Some(root_id) = self.shell.thread.as_ref() else {
             return Space::new().into();
@@ -1612,13 +1667,25 @@ impl App {
                 .height(Fill)
                 .padding([6, 0]),
             rule(c),
-            container(self.composer(&key, Some(root_id), placeholder.to_owned(), can_send, c))
-                .padding(iced::Padding {
-                    top: 8.0,
-                    right: 0.0,
-                    bottom: 0.0,
-                    left: 0.0
-                }),
+            container(
+                responsive(move |size| {
+                    self.composer(
+                        &key,
+                        Some(root_id),
+                        placeholder.to_owned(),
+                        can_send,
+                        c,
+                        size.height,
+                    )
+                })
+                .height(iced::Shrink)
+            )
+            .padding(iced::Padding {
+                top: 8.0,
+                right: 0.0,
+                bottom: 0.0,
+                left: 0.0
+            }),
         ]
         .spacing(6)
         .height(Fill)
