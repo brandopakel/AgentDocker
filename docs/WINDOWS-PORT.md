@@ -50,8 +50,11 @@ start` brings one up on demand for the home (the ordinary first run: a
 client with nothing to talk to starts the daemon and waits for it to
 listen), `daemon stop` ends that one too, and on a home no daemon has made
 yet a plain `ping` creates it and starts a daemon. Its report is the run's
-`windows-daemon-smoke` artifact; the same script runs on macOS and Linux,
-so it is checked before the runner sees it — there it ends its private
+`windows-daemon-smoke` artifact — on `7b3fd108` all 17 steps passed on
+Windows Server 2025, the [record](verification/2026-09-19-windows-slice-one.json)
+carries the report and the three failed runs before it; the same script
+runs on macOS and Linux, so it is checked before the runner sees it —
+there it ends its private
 daemon directly when the user has a daemon service installed, since
 `daemon stop` on macOS and Linux also drives that service, which is filed
 per user and not per home.
@@ -99,8 +102,12 @@ Administrators group, not the user — and the daemon refused it by design
 (`state or ancestor belongs to an untrusted Windows principal`); a home the
 daemon made under such a directory was refused as writable by another
 principal, so nothing the daemon owns sits under one, and the report
-records what a directory made there inherits. What the daemon creates is
-owned by the user. The same held
+records what a directory made there carries: CPython's
+`os.mkdir(mode=0o700)` gives it an explicit DACL of SYSTEM, Administrators
+and `OWNER RIGHTS` (S-1-3-4), and the check does not yet count `OWNER
+RIGHTS` as the owner it has already validated — open, small, and recorded
+in [Remaining work](REMAINING-WORK.md). What the daemon creates is owned
+by the user. The same held
 for the CLI: a client starting the daemon on demand made the home with a
 plain directory creation, which from an elevated shell belongs to
 Administrators and was then refused by the daemon it started — the client
