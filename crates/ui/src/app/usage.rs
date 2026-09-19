@@ -421,6 +421,59 @@ mod tests {
         assert_eq!(app.usage.as_ref().unwrap().1, latest);
     }
 
+    /// The usage on view follows the project and the connection: another
+    /// project selected while Usage is on view is read at once; a screen
+    /// opened while the daemon was away asks when it is back; a read that
+    /// was on its way when the daemon went is not waited for.
+    #[test]
+    fn usage_follows_the_project_on_view_and_the_connection() {
+        let (tx, commands) = queue::channel();
+        let (messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        let dir = tempfile::tempdir().unwrap();
+        let first = agentdocker_core::ProjectRef::directory(dir.path().join("first"));
+        let second = agentdocker_core::ProjectRef::directory(dir.path().join("second"));
+        app.shell.catalog.remember(first.clone(), true);
+        app.shell.catalog.remember(second.clone(), true);
+        app.shell.catalog.selected = Some(first.root.clone());
+        app.screen = Screen::Usage;
+        app.request_usage();
+        let Some(Cmd::Usage { project, .. }) = commands.try_iter().next() else {
+            panic!("the first project's usage is read")
+        };
+        assert_eq!(project, first.root.display().to_string());
+        // Another project on view: its usage is read without a filter
+        // being touched.
+        app.shell.catalog.selected = Some(second.root.clone());
+        app.refresh_project_context();
+        let read: Vec<String> = commands
+            .try_iter()
+            .filter_map(|cmd| match cmd {
+                Cmd::Usage { project, .. } => Some(project),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            read,
+            vec![second.root.display().to_string()],
+            "the second project's usage is read on selection, once"
+        );
+        // The daemon goes while that read is on its way: the read is not
+        // waited for, and the reconnect asks again for the screen on view.
+        messages.send(Msg::Disconnected("gone".into())).unwrap();
+        app.drain();
+        assert!(app.usage_pending.is_none());
+        messages.send(Msg::Connected).unwrap();
+        app.drain();
+        assert!(
+            commands
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::Usage { ref project, .. } if *project == second.root.display().to_string())),
+            "asked again on reconnect"
+        );
+    }
+
     /// A count shows as the report knows it and never as an invented
     /// zero; overhead that was not measured says so; collection that
     /// never ran is off, not "no usage".
