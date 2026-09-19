@@ -143,7 +143,7 @@ agentdocker changes               # the ledger: files that changed in this proje
 agentdocker blame src/parser.rs   # the same for one file
 agentdocker journal               # what happened and why, one line per release, note, or commit
 agentdocker release --as writer --all --summary "rewrote the tokenizer"   # your line in the journal
-agentdocker events
+agentdocker events --replay 20   # the last 20, then live until Ctrl-C (`events` alone streams from now)
 agentdocker logs -f writer
 agentdocker stop writer
 

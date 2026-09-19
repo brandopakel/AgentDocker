@@ -777,6 +777,14 @@ pub fn supervise(
                 .controller
                 .send(&OwnerCommand::Stop { force: true })
                 .await;
+            // A command that could not be executed left an exit report the
+            // owner waits to have acknowledged, holding the id's lock while
+            // it waits: this failure is the record's now, so the owner may
+            // go at once rather than at its own deadline, and a relaunch
+            // under the same id (a session brought back after a wrong
+            // path) is not answered "did not answer" meanwhile. An owner
+            // whose command never ran ignores it.
+            let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
             Outcome::Failed(reason)
         } else {
             let mut keystrokes = spawned.keystrokes.take();

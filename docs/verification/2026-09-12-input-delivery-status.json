@@ -2993,5 +2993,78 @@
         "limits": "All nine live identities and six provider PID/birth pairs were unchanged. Existing plain Claude sessions still require normal exit, Reconnect here and provider consent before an installed idle-pause trial; this activation does not grant channel consent or establish those sessions' idle delivery."
       }
     }
+  },
+  "reconnect_here_actual_ui_2026_09_18": {
+    "status": "Passed on candidate 6e5b665 (PR #199): an owned, ended real Claude session was brought back under its own record by the rendered Reconnect here action into the app's pane, its held message reached the resumed model with a receipt and an idle project pause got a same-project reply with a receipt, with no explicit ACK and no terminal input after the dev-channel consent. Physical keyboard acceptance is not claimed. The follow-up candidate 96d5d7d adds the failed-owner acknowledgement (supervisor) and passed the same gate; its packaged reconnect rerun before activation is codex's next step.",
+    "run_by": "codex-51242 (private daemon state and workspace; no user provider session restarted)",
+    "workspace": "/private/tmp/agentdocker-channel-live-text-only-20260918",
+    "driver": "/private/tmp/agentdocker-reconnect-live-ui-20260918.py",
+    "driver_sha256": "34685fe0728cc9117b78f1cab759a7c28a848cba6a4004a0854b5e2285b4a992",
+    "result_file": "/private/tmp/agentdocker-reconnect-live-ui-20260918/result.json",
+    "trial_binaries": {
+      "source_commit": "6e5b665c631df761ddd9842c5155103ae4c6dbc0",
+      "sha256": {
+        "agentd": "a03c016421882d9b444eed7d6e1de498b954b0ede78d0836bbaa0b3cbeb21296",
+        "agentdocker": "d2cb6dd55c9936dce11f0f6116abd6697305bd37fc8aa4aed4cfeae8e34bdac6",
+        "agentdocker-ui": "cd25ec65c2e4156f31bd8a18838882cf063918cc8beef84160b6ecb00efc755e"
+      }
+    },
+    "session": "25570c4c-c097-40b4-a3a9-4ff68b081eb8",
+    "agent": "bb179b2ef11c43e899d7fa7d241c9092",
+    "resumed_process": {
+      "pid": 97340,
+      "started_at": "2026-09-18T21:09:52.277860Z"
+    },
+    "held_message": "f103b1fbcdcb4392",
+    "held_reply": "706ef50528c24d00",
+    "held_receipt": {
+      "messages": [
+        "f103b1fbcdcb4392"
+      ],
+      "receipt": {
+        "provider": "claude_channel"
+      }
+    },
+    "pause": "9bae314aa56c43ae",
+    "pause_reply": "cb80c415f9ca470a",
+    "pause_receipt": {
+      "messages": [
+        "9bae314aa56c43ae"
+      ],
+      "receipt": {
+        "provider": "claude_channel"
+      }
+    },
+    "steps": [
+      "one message queued under the ended canonical identity",
+      "rendered reconnect action relaunched the same identity/session under a new managed PTY",
+      "the old queued message reached the resumed model and was receipted without explicit ACK",
+      "after idle, a project pause got a same-project reply and receipt with no further terminal input"
+    ],
+    "fixture_limits": "Provider wrapper only constrains tools/settings; it executes the real Claude CLI with the actual UI-generated resume/channel arguments. Native control callbacks are not physical keyboard testing.",
+    "native_ui": {
+      "connected": true,
+      "elapsed_seconds": 130.007268625,
+      "renderer": "iced tiny-skia",
+      "fixture_discovered": true,
+      "capture_attempts": 1,
+      "error": null
+    },
+    "observed": "The pane capture (resumed-pane.png) showed the consent prompt with one long line wrapped for a wider terminal than the pane: the driver's second observer Attach set 120x35 while the app owned another size, so the artifact is attributed to two attachers resizing one PTY and is not reproduced with a single attach; left open.",
+    "gates": {
+      "6e5b665": "scripts/verify.sh check: 1,267 Rust tests passed (7 skipped), doctests, fmt, clippy, installer, packaging, release build; exit 0",
+      "96d5d7d": "scripts/verify.sh check: 1,268 Rust tests passed (7 skipped), same stages; exit 0"
+    },
+    "candidate_96d5d7d": {
+      "path": "/private/tmp/agentdocker-candidate-reconnect-96d5d7d",
+      "build_info": {
+        "raw": ""
+      }
+    },
+    "not_claimed": [
+      "physical keyboard input in the pane",
+      "a person's own idle wake on this Mac's production sessions",
+      "Codex reconnect (route not built)"
+    ]
   }
 }

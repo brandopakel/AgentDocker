@@ -1974,6 +1974,35 @@ impl App {
                 super::send_readiness::reconnect(agent, &self.agents, "inspector", c)
             {
                 details = details.push(guidance);
+                // The relaunch the guidance describes, done here: the
+                // session's own tool, its conversation, its folder and the
+                // channel, in a pane of this window where Claude's own
+                // consent prompt appears. Until its terminal process has
+                // ended the button says why it waits.
+                if agent.spec.runtime == "claude-code" {
+                    let blocker = self.reconnect_blocker(agent);
+                    let mut reconnect = row![primary(
+                        format!("reconnect-{}", agent.id),
+                        if self.shell.reconnecting.as_deref() == Some(agent.id.as_str()) {
+                            "Reconnecting…"
+                        } else {
+                            "Reconnect here"
+                        },
+                        (blocker.is_none() && !self.shell.launching && self.connected.is_ok())
+                            .then_some(Message::Reconnect(agent.id.to_string())),
+                    )]
+                    .spacing(8)
+                    .align_y(Center);
+                    if let Some(why) = blocker {
+                        reconnect = reconnect.push(small(why, c));
+                    } else {
+                        reconnect = reconnect.push(small(
+                            "Opens the session in a pane here, with its conversation and live messages; accept Claude's prompt there.",
+                            c,
+                        ));
+                    }
+                    details = details.push(reconnect);
+                }
             }
             body = body.push(details);
         }

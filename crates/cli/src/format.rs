@@ -838,6 +838,9 @@ pub fn event_line(event: &Event) -> String {
         } => {
             format!("reconciled {} into {}", retired.short(), canonical.short())
         }
+        EventKind::SessionRelaunched { agent, session } => {
+            format!("session relaunched {} ({session})", agent.short())
+        }
         EventKind::UsageRecorded {
             generation,
             samples,
