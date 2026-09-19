@@ -4226,7 +4226,39 @@
         "reason": "Intentionally interrupted owned gate to incorporate #189/#190; not counted as passing."
       },
       "physical_notification_reply": "not tested",
-      "installation": "not activated by this trial"
+      "installation": "not activated by this trial",
+      "packaging_and_private_install_trial": {
+        "source_commit": "22e81bd21f84de3c99edcdc744a7413eabab2aff",
+        "candidate_id": "240eb0e78ac9aa2aa729fc94d69bbfbdd3342939489b10e9978911ac368abb99",
+        "schema": 23,
+        "signing": "local-preview",
+        "notarized": false,
+        "installation_trial_passed": true,
+        "scenarios": [
+          "preview without writes and pinned initial installation",
+          "same-release repair replaces the old wrapper and preserves activation",
+          "legacy bundle hooks and MCP work through generation 240eb0e78ac9aa2aa729fc94d69bbfbdd3342939489b10e9978911ac368abb99",
+          "activation keeps the existing fixture daemon responsive",
+          "legacy bundle hooks and MCP work through generation 8413387f98a0b73e5d9504fc1a6d9220b7d3a4cc2991594915642eb327c55ea5",
+          "changed preview payload and active generation are refused",
+          "compatible rollback switches all commands and retains both releases",
+          "legacy bundle hooks and MCP work through generation 240eb0e78ac9aa2aa729fc94d69bbfbdd3342939489b10e9978911ac368abb99",
+          "tampered executable is refused without changing activation",
+          "cleanup retains active, rollback and running or legacy binaries",
+          "uninstall preserves the live daemon and its state",
+          "daemon exit releases its pin and invalidates stale cleanup preview",
+          "unused payloads removed; permanent pins and daemon state retained"
+        ],
+        "manifest": {
+          "path": "/private/tmp/agentdocker-191-package-20260918/manifest.json",
+          "sha256": "5a102d259eb93d4068c776cf98eff33434b6c80c51ee193a8c7e3ea81c97bab6"
+        },
+        "trial": {
+          "path": "/private/tmp/agentdocker-191-install-trial-20260918/result.json",
+          "sha256": "9797e4b09a2a4b0e732d0b7aa17f27a196b8fddc206e83dab5ed413d60ba83c4"
+        },
+        "scope": "Disposable prefix and fixture daemon only. No production activation. Synthetic second generation uses the same binaries with different metadata."
+      }
     },
     "final_review_followup": {
       "status": "local validation passed; final CI/review and production activation pending",
@@ -4427,6 +4459,946 @@
       "A status report is neither provider input receipt nor task completion.",
       "Does not establish automatic reset detection, all-message consumption, or parity across providers."
     ]
+  },
+  "usage_collection_and_presentation_2026_09_18": {
+    "result": "initial fixtures and corrected frozen actual-session corpus passed; remaining engineering/review/acceptance tracked separately",
+    "build": {
+      "format": 1,
+      "source_commit": "889ea35c41d74344c362b1a97a03183d0ebe1e0c",
+      "source_tree": "4cb0e40295922684b5af99b0e3450f1a39b2f8c2",
+      "source_input_sha256": "81271d7cba391abeec203cafb0bc5f8cee81072aa950acbfeb7bf3c2af8282e9",
+      "source_dirty": false,
+      "target": "aarch64-apple-darwin",
+      "version": "0.1.0",
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "state_schema": 23,
+      "installation_lock": 1,
+      "launcher_redirect": 1,
+      "binary_directory": "/private/tmp/agentdocker-desktop-integration-20260917/target/release",
+      "binary_sha256": {
+        "agentdocker": "e40de9d3f3637c636cbc15968ad8a7e5765800c9e4caafa0cea90508515f12ea",
+        "agentd": "64cc6889e421d82261eb36099f399a7b99266011517cdf4e992fa691a1362371",
+        "agentdocker-ui": "ec1c7f288cb8711cce7e2cb6493688b3cb5120b732d8ada8b4c8d8484ac992bf"
+      }
+    },
+    "standard_gate": {
+      "passed": true,
+      "rust_passed": 1219,
+      "rust_skipped": 7,
+      "python_run": 94,
+      "python_skipped": 1,
+      "fmt": true,
+      "strict_clippy": true,
+      "doctests": true,
+      "cargo_package": true,
+      "release_build": true,
+      "log": {
+        "path": "/private/tmp/agentdocker-usage-accounting-layout-gate-20260918.log",
+        "sha256": "ed4c6d3848f22dcfd2cd7991edc2211ad9d1a1fbb08d51b0798d2bc178f87e06"
+      }
+    },
+    "runtime_trial": {
+      "result": "passed",
+      "checks": [
+        "collection_off_is_unknown_not_zero",
+        "large_claude_log_and_duplicate_codex_snapshot_account_once",
+        "restart_append_and_copied_log_do_not_recount_accepted_samples",
+        "cli_json_matches_real_daemon_report",
+        "retention_shrink_restart_and_expansion_do_not_restore_discarded_history",
+        "no_transcript_body_in_usage_storage"
+      ],
+      "elapsed_seconds": 37.86005341698183,
+      "fixture_bytes": 24494890,
+      "claude_samples_after_append_and_copy": 4001,
+      "claude_input_after_append_and_copy": 8002,
+      "codex_samples_after_duplicate_snapshot": 1,
+      "codex_input_after_duplicate_snapshot": 100,
+      "final_source_gaps": 0,
+      "collection_generations": 4,
+      "retention_expansion_preserved_cutoff": "2026-09-17T05:00:00Z",
+      "report": {
+        "path": "/private/tmp/agentdocker-usage-final-runtime-20260918/result.json",
+        "sha256": "826b8449f1e9a3af3da6fc9f7d1e3b78b2d87fe8312e897ed81fc9fa9de3812f"
+      },
+      "driver": {
+        "path": "/private/tmp/agentdocker-usage-runtime-trial-20260918.py",
+        "sha256": "c303d2a02b4f767989ddcbff9733e147fbd2b0f03f89ac07bfb51aa56252628b"
+      }
+    },
+    "coordination_observation": {
+      "count": 592,
+      "median_ms": 0.19977102056145668,
+      "maximum_ms": 1.7785419477149844,
+      "method": "592 sequential ping samples while enabling and collecting fixtures, including the initial wait for the 30-second worker interval. Same-machine GUI trial also ran briefly. Not isolated throughput, sustained-use or provider latency acceptance."
+    },
+    "native_usage_trial": {
+      "result": "passed",
+      "steps": 25,
+      "elapsed_seconds": 8.127101125021,
+      "widths": [
+        1440,
+        720
+      ],
+      "larger_text_steps": 2,
+      "visually_checked": [
+        "wide table",
+        "narrow model card",
+        "narrow agent card at increased text size"
+      ],
+      "report": {
+        "path": "/private/tmp/agentdocker-usage-final-ui-20260918/result.json",
+        "sha256": "fb58c2a7c05a15e6cec0392bc19da066294ab540adce9765899fee24f7d98e40"
+      },
+      "driver": {
+        "path": "/private/tmp/agentdocker-usage-ui-trial-20260918.py",
+        "sha256": "0348cafb24a37acf63ea05f5807b5987f8af107b825449b2b0867ab75bc5f0e4"
+      },
+      "captures": {
+        "usage-wide": {
+          "path": "/private/tmp/agentdocker-usage-final-ui-20260918/window/usage-wide.png",
+          "sha256": "c0fd03e7602e076dbddeefcc56a193d0ef6c6fa4c912baf13311ec23fd9104cc"
+        },
+        "usage-narrow": {
+          "path": "/private/tmp/agentdocker-usage-final-ui-20260918/window/usage-narrow.png",
+          "sha256": "fc585c9dd4eaf66a472da496c8dd7a741f9d48a234a397b10e20fe7c9381f4fc"
+        },
+        "usage-agent-narrow": {
+          "path": "/private/tmp/agentdocker-usage-final-ui-20260918/window/usage-agent-narrow.png",
+          "sha256": "149f6e6caa9c8fb9e0043cf5431e1101400df28a79e1e7c857ae002704d24e10"
+        },
+        "usage-zoom-narrow": {
+          "path": "/private/tmp/agentdocker-usage-final-ui-20260918/window/usage-zoom-narrow.png",
+          "sha256": "2cf1f72869c7f7dbf528d6feb734212814bbfb0bbd92e723442f5a6d63b8ee14"
+        }
+      }
+    },
+    "retained_failures": [
+      {
+        "kind": "compiler lint",
+        "source": "b812a59",
+        "observed": "Clippy rejected test declarations before later production items; declarations moved in a238d4f.",
+        "log": {
+          "path": "/private/tmp/agentdocker-usage-combined-gate-20260918.log",
+          "sha256": "3febc2fb334ff5c4a6bcb005d82fdfb6ff0fde60a0eeec8c3d9318e2360e1d95"
+        }
+      },
+      {
+        "kind": "accounting coverage defect",
+        "source": "a238d4f108893360fe5e35bd84a6043ae7e627b7",
+        "observed": "Identical Codex cumulative replay with changed contextual prefix proof caused one false accounting-conflict gap. Totals did not double-count. Fixed in 152c49d; restart and legacy-fingerprint regression covers both proof directions and genuine changed counters.",
+        "report": {
+          "path": "/private/tmp/agentdocker-usage-before-dedupe-trial-20260918/result.json",
+          "sha256": "6af3ffa816f1a5b8209a6e69f6c5a33aaa0bd2a7dcf9dd9dd65d430ecda8afaf"
+        },
+        "log": {
+          "path": "/private/tmp/agentdocker-usage-before-dedupe-trial-20260918.log",
+          "sha256": "81854ec46042fdabf290a49622a4c22782221df281db6fc1a08378527d2b26b8"
+        }
+      },
+      {
+        "kind": "UI fixture expectation",
+        "observed": "Fixture incorrectly expected 12000 input tokens; Claude input normalization includes 4000 cache-read and 2000 cache-write, so the correct total is 18000. Only fixture corrected.",
+        "report": {
+          "path": "/private/tmp/agentdocker-usage-ui-before-20260918/result.json",
+          "sha256": "ee2251748b48acbc9617d88146f0d4dea5dfcc922614dad66e68febcf6bb6397"
+        }
+      },
+      {
+        "kind": "rendered layout defect",
+        "source": "a238d4f108893360fe5e35bd84a6043ae7e627b7",
+        "observed": "At 720px, model names and output/reasoning columns were clipped, despite callback smoke passing. Fixed by cards and stacked filters in 889ea35.",
+        "capture": {
+          "path": "/private/tmp/agentdocker-usage-ui-before2-20260918/window/usage-narrow.png",
+          "sha256": "9f8ce7b4a5b67cfe034010da7fbe035828149cfcad53caee8becec11a0bb0a20"
+        }
+      },
+      {
+        "kind": "actual-session corpus defect",
+        "source": "889ea35c41d74344c362b1a97a03183d0ebe1e0c",
+        "observed": "Initial frozen actual-log trial timed out; cursor quarantine stopped progress.",
+        "error": "AssertionError('collection did not finish')",
+        "elapsed_seconds": 152.4243105839705,
+        "gap_reasons": null,
+        "report": {
+          "path": "/private/tmp/agentdocker-usage-corpus-before-20260918/result.json",
+          "sha256": "5e2d7a533df876ad3acf9f783d544e66ca6e9a71ec0fccbf8105191cc074796b"
+        }
+      },
+      {
+        "kind": "actual-session corpus defect",
+        "source": "889ea35c41d74344c362b1a97a03183d0ebe1e0c",
+        "observed": "Read-only trial diagnosed unsupported Claude patch versions, repeated-response timestamp conflicts, oversized context loss and cursor quarantine. Both partial trial records are preserved; temporary raw copies and databases were cleaned.",
+        "error": "AssertionError('collection did not finish')",
+        "elapsed_seconds": 47.14338766701985,
+        "gap_reasons": [
+          {
+            "reason": "Codex usage has no supported format context",
+            "count": 839
+          },
+          {
+            "reason": "record exceeds the configured size limit",
+            "count": 15
+          },
+          {
+            "reason": "source identity has conflicting accounting",
+            "count": 573
+          },
+          {
+            "reason": "unsupported Claude transcript version",
+            "count": 5070
+          },
+          {
+            "reason": "usage source scan or prefix validation is incomplete",
+            "count": 1
+          }
+        ],
+        "report": {
+          "path": "/private/tmp/agentdocker-usage-corpus-diagnostic-20260918/result.json",
+          "sha256": "296d611e7d5e015cf5218f12d280535dd4f350019266e524290dba200c93f870"
+        }
+      }
+    ],
+    "limits": [
+      "Fixtures exercise real local binaries, not provider service consumption or billed usage.",
+      "No production transcript collection was enabled and these Usage binaries were not installed.",
+      "Persistent discovery resumption, bounded long-term dedupe/baseline resources, standalone scans and separate emitted-byte overhead remain open.",
+      "Additional provider formats, long-running CPU/memory/battery acceptance, external final review and integration remain open. The follow-up below exercises the observed current session formats.",
+      "Large/growing files are verified through ephemeral bounded passes; standalone whole-prefix validation still refuses beyond 16 MiB."
+    ],
+    "actual_log_followup": {
+      "result": "passed within the recorded two-log and private fixture scope; final review and installed acceptance pending",
+      "build": {
+        "format": 1,
+        "source_commit": "e6d95f882fb18aa49363f5411824468375b298d3",
+        "source_tree": "f0ad46d6324cae978c91e0c2481d4c0c45fd6856",
+        "source_input_sha256": "13ff4b772732dca62508ce051ea0a705e8feff63f22cf1c39cd953552c06c123",
+        "source_dirty": false,
+        "target": "aarch64-apple-darwin",
+        "version": "0.1.0",
+        "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "state_schema": 23,
+        "installation_lock": 1,
+        "launcher_redirect": 1,
+        "binary_directory": "/private/tmp/agentdocker-desktop-integration-20260917/target/release",
+        "binary_sha256": {
+          "agentdocker": "9c3ba4902236480edcd0a805afac7b88243fd3d4b1cbc8c6c545c8b1bd824701",
+          "agentd": "d46b58ff7d0dbd0702b1ff8c9ae7c2affb55a70ad0ee1e59a245281caaf4f63b",
+          "agentdocker-ui": "aa7dac7ebb1bc7987cd66a60df473890251657bc552ff593930b02d32ed87279"
+        }
+      },
+      "corrections": [
+        "Ignore response-fragment timestamps when deduplicating the same accounting identity, retain its first accepted hour, recognize legacy fingerprints, and still report changed counters.",
+        "Support observed Claude patch formats 2.1.271\u2013276 and replay old cursors so earlier unsupported records can be revisited.",
+        "Give a large complete record a fresh bounded batch instead of permanently quarantining it after an earlier prefix consumed that batch.",
+        "Validate complete oversized non-accounting records without retaining their payload; preserve context through supported Codex compacted/response/item-completed records and report malformed or unknown accounting records.",
+        "Report configuration explicitly: enabled before first discovery is starting, a disabled collector may retain totals, and older-daemon configuration is unknown."
+      ],
+      "standard_gate": {
+        "passed": true,
+        "rust_passed": 1225,
+        "rust_skipped": 7,
+        "python_run": 94,
+        "python_skipped": 1,
+        "fmt": true,
+        "strict_clippy": true,
+        "doctests": true,
+        "cargo_package": true,
+        "release_build": true,
+        "log": {
+          "path": "/private/tmp/agentdocker-usage-real-corpus-gate-20260918.log",
+          "sha256": "801d2b0b4093b425098bc0f2f67ca3d3714d5f129fac9a16835677c4c19eebb0"
+        }
+      },
+      "actual_session_corpus": {
+        "result": "passed",
+        "scope": "Frozen complete-record prefixes of only the two current project session logs. Temporary transcript copies and database removed after trial; retained report contains accounting metadata only. Not provider billing or fresh-turn acceptance.",
+        "sources": {
+          "codex": {
+            "bytes": 612697157,
+            "sha256": "e2d6c2f821a499eebe19612b8fb8586070833ef7782fe1fa1ed2a4756f9fda32",
+            "versions": {
+              "0.153.4": 1
+            },
+            "usage_records": 7887
+          },
+          "claude": {
+            "bytes": 79534551,
+            "sha256": "ae92c6302c1facc68621dc2e136cd7c88ee91e850b2d1cdaf1da56c5b470df93",
+            "versions": {
+              "2.1.270": 1652,
+              "2.1.271": 2,
+              "2.1.272": 2281,
+              "2.1.273": 647,
+              "2.1.274": 1603,
+              "2.1.275": 528,
+              "2.1.276": 14
+            },
+            "usage_records": 6727,
+            "unique_responses": 4703,
+            "changed_counter_replays": 0,
+            "expected_input_tokens": 2368381375,
+            "expected_output_tokens": 3383551
+          }
+        },
+        "binary_sha256": {
+          "agentd": "d46b58ff7d0dbd0702b1ff8c9ae7c2affb55a70ad0ee1e59a245281caaf4f63b",
+          "agentdocker": "9c3ba4902236480edcd0a805afac7b88243fd3d4b1cbc8c6c545c8b1bd824701"
+        },
+        "collection_seconds": 13.777583791990764,
+        "coordination_pings": {
+          "samples": 66,
+          "median_ms": 0.17227049102075398,
+          "maximum_ms": 2.8752920334227383,
+          "p95_ms": 0.23870798759162426
+        },
+        "resources": {
+          "samples": 14,
+          "peak_rss_bytes": 52936704,
+          "median_ps_cpu_percent": 24.15,
+          "scope": "ps snapshots during this two-log fixture; includes parsing and SQLite writes; not sustained-use, power, or battery acceptance"
+        },
+        "gap_reasons": [
+          {
+            "reason": "unknown initial history or counter reset",
+            "count": 1
+          }
+        ],
+        "sample_count": 12590,
+        "files": [
+          {
+            "runtime": "codex",
+            "offset": 612697157,
+            "length": 612697157,
+            "stop": "complete"
+          },
+          {
+            "runtime": "claude",
+            "offset": 79534551,
+            "length": 79534551,
+            "stop": "complete"
+          }
+        ],
+        "claude_observed": {
+          "samples": 4703,
+          "input": 2368381375,
+          "output": 3383551
+        },
+        "elapsed_seconds": 15.838071167003363
+      },
+      "corpus_artifact": {
+        "path": "/private/tmp/agentdocker-usage-corpus-fixed-trial-20260918/result.json",
+        "sha256": "1c6c5e75393c0660c637528421258b84c2c09f25e1e44c7c94de8ed50d4df011"
+      },
+      "corpus_driver": {
+        "path": "/private/tmp/agentdocker-usage-corpus-trial-20260918.py",
+        "sha256": "1889bccbc8a85ca24ac749a87dffcbdfe3fa7dc8582b590a419c2e49bf8e5eb7"
+      },
+      "runtime_trial": {
+        "passed": true,
+        "checks": [
+          "collection_off_is_unknown_not_zero",
+          "large_claude_log_and_duplicate_codex_snapshot_account_once",
+          "restart_append_and_copied_log_do_not_recount_accepted_samples",
+          "cli_json_matches_real_daemon_report",
+          "retention_shrink_restart_and_expansion_do_not_restore_discarded_history",
+          "no_transcript_body_in_usage_storage"
+        ],
+        "elapsed_seconds": 37.64954970800318,
+        "report": {
+          "path": "/private/tmp/agentdocker-usage-corpus-fixed-runtime-20260918/result.json",
+          "sha256": "55cb28cc8f0a57d7f8266a71c665a6983d4696b022d43252f600682833eb2b12"
+        }
+      },
+      "native_trial": {
+        "passed": true,
+        "steps": 25,
+        "elapsed_seconds": 8.29089100001147,
+        "widths": [
+          1440,
+          720
+        ],
+        "increased_text_steps": 2,
+        "visually_checked": [
+          "narrow agent card at increased text size"
+        ],
+        "report": {
+          "path": "/private/tmp/agentdocker-usage-corpus-fixed-ui-20260918/result.json",
+          "sha256": "c873087e705a85b3618b47a7a543ceff227f615ce96df95c3f54f2198edada65"
+        },
+        "capture": {
+          "path": "/private/tmp/agentdocker-usage-corpus-fixed-ui-20260918/window/usage-zoom-narrow.png",
+          "sha256": "1b6158e71bc16a1751e9d780937092ec19fe981900c404212bfd2c01c4b22899"
+        }
+      },
+      "limits": [
+        "Only frozen complete-record prefixes of two current project logs were tested. No raw transcript text or private trial database was retained; no production collection was enabled.",
+        "The one Codex initial-history/counter-reset gap remains explicit. This is supported-format accounting, not provider billing validation or a new-model-turn acceptance test.",
+        "The short quiet local collector trial does not establish sustained CPU, memory, battery, or throughput behavior.",
+        "Persistent discovery resumption, bounded long-term fingerprint/baseline resources, standalone whole-prefix scans, emitted-byte overhead, final review/integration and installed acceptance remain open."
+      ]
+    },
+    "review_and_windows_followup": {
+      "reviewed_source": "4cc4e08ea8ce726ca0098ec7d92766e4bd617713",
+      "corrections": [
+        "Move the Activity command description off Usage; keep agent selection an explicit query filter rather than inheriting the sender identity.",
+        "Escape table pipes and replace stale pending-corpus wording with the completed, bounded evidence.",
+        "Allow the oversized-record regression to follow up to 32 serialized budget continuations with the ordinary 100 ms production bound; preserve accounting and no-transcript-retention assertions."
+      ],
+      "retained_windows_failure": {
+        "run": 35313942751,
+        "job": 105501484084,
+        "failure": "The oversized-record test expected Complete on its first bounded scan, but a slower Windows host correctly returned Budget.",
+        "log": {
+          "path": "/private/tmp/agentdocker-usage-windows-failure-20260918.log",
+          "sha256": "1ad8da0f596d0aa2bdcca589f1ca4ca11ca5e787afdfd685794a981d0ca6095f"
+        }
+      },
+      "local_validation": {
+        "reader_tests_passed": 14,
+        "strict_clippy": true,
+        "generated_help": {
+          "passed": true,
+          "binary_sha256": "abc12a9043cc3b8f48095daea3503df426b49c3fb13788ffcb18520baa3458e3",
+          "usage_help": "Tokens the providers reported, with what the totals cover\n\nUsage: agentdocker usage [OPTIONS]\n\nOptions:\n      --agent <AGENT>      Only this agent (id, name or unique prefix); explicit query filter [alias: --as]\n      --socket <SOCKET>    Socket of the agentd daemon [env: AGENTDOCKER_SOCKET=]\n      --project <ID|PATH>  Only agents in this project\n      --since <SINCE>      From when: a duration back from now (`30m`, `24h`, `7d`) or an RFC 3339 time\n      --until <UNTIL>      Until when, RFC 3339; now when not given\n      --by <BY>            One row per agent, model, provider, project or hour [default: agent] [possible values: agent, model, provider, project, hour]\n      --json               The report as JSON, as the daemon answered it\n  -h, --help               Print help\n  -V, --version            Print version\n",
+          "activity_help": "What each agent is doing: working, idle, or blocked on a named resource held by a named agent\n\nUsage: agentdocker activity [OPTIONS]\n\nOptions:\n      --as <AGENT>         Only this agent [env: AGENTDOCKER_AGENT_ID=]\n      --socket <SOCKET>    Socket of the agentd daemon [env: AGENTDOCKER_SOCKET=]\n      --project <ID|PATH>  Only agents in this project\n  -a, --all                Include agents that have finished\n  -h, --help               Print help\n  -V, --version            Print version\n"
+        },
+        "test_log": {
+          "path": "/private/tmp/agentdocker-usage-windows-targeted-20260918.log",
+          "sha256": "104d6aa50d6ca6494258acf1897646303209f5117a70e533c6438e7bc989f34a"
+        },
+        "clippy_log": {
+          "path": "/private/tmp/agentdocker-usage-review-clippy-20260918.log",
+          "sha256": "ae67c9dbed253fddef2d8671ff9af6f24326d2770a14e93ae245d329417f809f"
+        }
+      },
+      "query_filter_trial": {
+        "passed": true,
+        "scope": "A private real-daemon CLI query with AGENTDOCKER_AGENT_ID set to an unrelated caller still returns the unfiltered fleet totals; this variable identifies senders elsewhere, not this explicit query filter.",
+        "runtime_source": "e6d95f882fb18aa49363f5411824468375b298d3",
+        "report": {
+          "path": "/private/tmp/agentdocker-usage-query-review-trial-20260918/result.json",
+          "sha256": "d7b1947acaaa7f94155420360c789850d51ab5fadbfdceeeb8043e46ff930c58"
+        },
+        "driver": {
+          "path": "/private/tmp/agentdocker-usage-review-runtime-20260918.py",
+          "sha256": "22fcbca37e18c419adb83ebdcb4ec1226b677a210e60cbd5f9c2d23f0b95faea"
+        }
+      },
+      "remaining": [
+        "Fresh Windows CI on the corrected test",
+        "Final source review and integration",
+        "Installed billing and sustained-resource acceptance"
+      ]
+    },
+    "current_main_annotation_regression": {
+      "source": "418f482",
+      "result": "failed",
+      "rust_passed": 1272,
+      "rust_failed": 1,
+      "rust_skipped": 7,
+      "failure": "mcp::tests::every_tool_is_annotated_and_the_reads_are_read_only: newly merged tool annotations omitted usage, assigning the conservative unknown-tool destructive/open-world defaults.",
+      "fix": "Classify usage as read-only, idempotent, non-destructive and local; extend the existing semantic annotation regression.",
+      "log_sha256": "426988a490e220c226b7261c7ad13bf28c79f7170c8525108ab4d62aa3cdb007",
+      "rerun": {
+        "result": "passed",
+        "source": "449e9036d7b4b8502278025cbde3989bc1160504",
+        "rust_passed": 1273,
+        "rust_skipped": 7,
+        "python_checks": 94,
+        "python_skipped": 1,
+        "checks": [
+          "fmt",
+          "strict Clippy",
+          "nextest",
+          "doctests",
+          "Python",
+          "cargo package",
+          "release build"
+        ],
+        "log_sha256": "8aa4b6a26b6e8442ec195438505ce03576392123617ace9fbb82d36cc7ad71d8"
+      }
+    },
+    "retained_queue_pressure_trial": {
+      "result": "failed",
+      "scope": "Twenty private collection/queue epochs on a shared machine with another Cargo campaign. Synthetic supported logs, no actual model input or billing; latency samples are descriptive, not a performance threshold.",
+      "runtime_source": "e6d95f882fb18aa49363f5411824468375b298d3",
+      "binary_sha256": {
+        "agentd": "d46b58ff7d0dbd0702b1ff8c9ae7c2affb55a70ad0ee1e59a245281caaf4f63b",
+        "agentdocker": "9c3ba4902236480edcd0a805afac7b88243fd3d4b1cbc8c6c545c8b1bd824701"
+      },
+      "driver_sha256": "e826a2f55abd5f313e67f366eced19a6d79cfc325024e941a10845dd4a507d8f",
+      "epochs": [
+        {
+          "epoch": 0,
+          "samples": 2000,
+          "generation": 2,
+          "retained_messages": 20,
+          "collection_seconds": 31.323342540999874
+        },
+        {
+          "epoch": 1,
+          "samples": 4000,
+          "generation": 3,
+          "retained_messages": 20,
+          "collection_seconds": 31.402248582977336
+        },
+        {
+          "epoch": 2,
+          "samples": 6000,
+          "generation": 4,
+          "retained_messages": 20,
+          "collection_seconds": 31.58520137501182
+        },
+        {
+          "epoch": 3,
+          "samples": 8000,
+          "generation": 5,
+          "retained_messages": 20,
+          "collection_seconds": 32.3260380839929
+        },
+        {
+          "epoch": 4,
+          "samples": 10000,
+          "generation": 6,
+          "retained_messages": 20,
+          "collection_seconds": 32.31337316596182
+        }
+      ],
+      "restarts": [
+        {
+          "after_epoch": 4,
+          "kind": "forced",
+          "seconds": 0.058418957982212305,
+          "queue_preserved": true
+        }
+      ],
+      "error": "AssertionError({'retained_since': '2026-08-19T06:00:00Z', 'history_truncated': False, 'future_until_clamped': False, 'includes_current_hour': True, 'source_gaps': 1, 'collection': {'enabled': True, 'state': 'caught_up', 'discovery_generation': 8, 'snapshot_at': '2026-09-18T06:48:02.066555Z', 'completed_at': '2026-09-18T06:48:03.547222Z', 'discovery_complete': True, 'pending_files': 0, 'pending_tail_files': 0, 'scope': {'roots': ['/private/tmp/ad-usage-soak-_qfbxwxt/absent', '/private/tmp/ad-usage-soak-_qfbxwxt/claude'], 'formats': ['codex-rollout-0.153.4-0.154.0-v1', 'claude-transcript-2.1.268-270-v1', 'claude-transcript-2.1.271-276-v1']}}})",
+      "elapsed_seconds": 192.27484545804327,
+      "ping_latency": {
+        "count": 3690,
+        "median_ms": 0.17879149527288973,
+        "p95_ms": 0.9945000056177378,
+        "maximum_ms": 33.27183402143419
+      },
+      "usage_latency": {
+        "count": 1513,
+        "median_ms": 0.41512498864904046,
+        "p95_ms": 1.4932079939171672,
+        "maximum_ms": 27.481291035655886
+      },
+      "rpc_errors": [],
+      "resource_samples": [
+        {
+          "elapsed_seconds": 31.38251087500248,
+          "rss_bytes": 21970944,
+          "ps_cpu_percent": 8.7
+        },
+        {
+          "elapsed_seconds": 62.78515758301364,
+          "rss_bytes": 22904832,
+          "ps_cpu_percent": 10.8
+        },
+        {
+          "elapsed_seconds": 94.37057095800992,
+          "rss_bytes": 23216128,
+          "ps_cpu_percent": 9.9
+        },
+        {
+          "elapsed_seconds": 126.69686470803572,
+          "rss_bytes": 24641536,
+          "ps_cpu_percent": 17.3
+        },
+        {
+          "elapsed_seconds": 159.01084266602993,
+          "rss_bytes": 24854528,
+          "ps_cpu_percent": 9.8
+        }
+      ],
+      "remaining_owned_processes": 0,
+      "remaining_client_threads": 0,
+      "disposition": "Failed; exact queue counts survived but the strict zero-gap assertion failed after restart. This is not a completed sustained-use acceptance run."
+    },
+    "retained_queue_pressure_followups": {
+      "agentdocker-usage-queue-diagnostic-20260918": {
+        "result": "failed",
+        "scope": "Twenty private collection/queue epochs on a shared machine with another Cargo campaign. Synthetic supported logs, no actual model input or billing; latency samples are descriptive, not a performance threshold.",
+        "runtime_source": "e6d95f882fb18aa49363f5411824468375b298d3",
+        "binary_sha256": {
+          "agentd": "d46b58ff7d0dbd0702b1ff8c9ae7c2affb55a70ad0ee1e59a245281caaf4f63b",
+          "agentdocker": "9c3ba4902236480edcd0a805afac7b88243fd3d4b1cbc8c6c545c8b1bd824701"
+        },
+        "driver_sha256": "d2bb38fb39f1e6c291b5cec0b787c56621c6e0e308f2e5ce83cc3c534e521c34",
+        "epochs": [
+          {
+            "epoch": 0,
+            "samples": 2000,
+            "generation": 2,
+            "retained_messages": 20,
+            "collection_seconds": 31.339926915999968
+          }
+        ],
+        "restarts": [
+          {
+            "after_epoch": 0,
+            "kind": "forced",
+            "seconds": 0.056435916980262846,
+            "queue_preserved": true
+          }
+        ],
+        "error": "AssertionError({'retained_since': '2026-08-19T06:00:00Z', 'history_truncated': False, 'future_until_clamped': False, 'includes_current_hour': True, 'source_gaps': 1, 'collection': {'enabled': True, 'state': 'caught_up', 'discovery_generation': 4, 'snapshot_at': '2026-09-18T06:51:47.235028Z', 'completed_at': '2026-09-18T06:51:47.623512Z', 'discovery_complete': True, 'pending_files': 0, 'pending_tail_files': 0, 'scope': {'roots': ['/private/tmp/ad-usage-soak-dmdyuarx/absent', '/private/tmp/ad-usage-soak-dmdyuarx/claude'], 'formats': ['codex-rollout-0.153.4-0.154.0-v1', 'claude-transcript-2.1.268-270-v1', 'claude-transcript-2.1.271-276-v1']}}})",
+        "gap_diagnostics": [
+          {
+            "reason": "usage source changed or prefix verification failed; replay deduplicates accepted sources",
+            "count": 1
+          }
+        ],
+        "failed_report": {
+          "type": "usage",
+          "rows": [
+            {
+              "key": "soak-model",
+              "samples": 4000,
+              "counters": {
+                "input_tokens": {
+                  "sum": 8000,
+                  "known_samples": 4000,
+                  "coverage": "partial"
+                },
+                "cache_read_input_tokens": {
+                  "sum": 0,
+                  "known_samples": 4000,
+                  "coverage": "partial"
+                },
+                "cache_write_input_tokens": {
+                  "sum": 0,
+                  "known_samples": 4000,
+                  "coverage": "partial"
+                },
+                "output_tokens": {
+                  "sum": 12000,
+                  "known_samples": 4000,
+                  "coverage": "partial"
+                },
+                "reasoning_output_tokens": {
+                  "sum": null,
+                  "known_samples": 0,
+                  "coverage": "unknown"
+                }
+              }
+            }
+          ],
+          "by": "model",
+          "as_of": "2026-09-18T06:51:47.670963Z",
+          "effective_since": "2026-09-17T06:00:00Z",
+          "effective_until": "2026-09-18T07:00:00Z",
+          "coverage": {
+            "retained_since": "2026-08-19T06:00:00Z",
+            "history_truncated": false,
+            "future_until_clamped": false,
+            "includes_current_hour": true,
+            "source_gaps": 1,
+            "collection": {
+              "enabled": true,
+              "state": "caught_up",
+              "discovery_generation": 4,
+              "snapshot_at": "2026-09-18T06:51:47.235028Z",
+              "completed_at": "2026-09-18T06:51:47.623512Z",
+              "discovery_complete": true,
+              "pending_files": 0,
+              "pending_tail_files": 0,
+              "scope": {
+                "roots": [
+                  "/private/tmp/ad-usage-soak-dmdyuarx/absent",
+                  "/private/tmp/ad-usage-soak-dmdyuarx/claude"
+                ],
+                "formats": [
+                  "codex-rollout-0.153.4-0.154.0-v1",
+                  "claude-transcript-2.1.268-270-v1",
+                  "claude-transcript-2.1.271-276-v1"
+                ]
+              }
+            }
+          },
+          "overhead": {
+            "injected_bytes": null,
+            "known_events": 0,
+            "coverage": "unknown",
+            "estimated_tokens": null
+          }
+        },
+        "elapsed_seconds": 62.97048520902172,
+        "ping_latency": {
+          "count": 1215,
+          "median_ms": 0.15129201347008348,
+          "p95_ms": 0.30633300775662065,
+          "maximum_ms": 22.60854101041332
+        },
+        "usage_latency": {
+          "count": 498,
+          "median_ms": 0.3579159965738654,
+          "p95_ms": 0.6739160162396729,
+          "maximum_ms": 15.570291026961058
+        },
+        "rpc_errors": [],
+        "resource_samples": [
+          {
+            "elapsed_seconds": 31.400355542020407,
+            "rss_bytes": 21954560,
+            "ps_cpu_percent": 7.6
+          }
+        ],
+        "remaining_owned_processes": 0,
+        "remaining_client_threads": 0
+      },
+      "agentdocker-usage-queue-bounded-20260918": {
+        "result": "interrupted_by_user_pause",
+        "scope": "Twenty private collection/queue epochs on a shared machine with another Cargo campaign. Synthetic supported logs, no actual model input or billing; latency samples are descriptive, not a performance threshold.",
+        "runtime_source": "e6d95f882fb18aa49363f5411824468375b298d3",
+        "binary_sha256": {
+          "agentd": "d46b58ff7d0dbd0702b1ff8c9ae7c2affb55a70ad0ee1e59a245281caaf4f63b",
+          "agentdocker": "9c3ba4902236480edcd0a805afac7b88243fd3d4b1cbc8c6c545c8b1bd824701"
+        },
+        "driver_sha256": "d4a89b156270f715e2c01e8d7c5604ef3ddb9029b4dcde32222526734273a654",
+        "epochs": [
+          {
+            "epoch": 0,
+            "samples": 2000,
+            "generation": 2,
+            "retained_messages": 20,
+            "source_gaps": 0,
+            "collection_seconds": 31.315289666003082
+          },
+          {
+            "epoch": 1,
+            "samples": 4000,
+            "generation": 3,
+            "retained_messages": 20,
+            "source_gaps": 0,
+            "collection_seconds": 31.281413249962498
+          },
+          {
+            "epoch": 2,
+            "samples": 6000,
+            "generation": 4,
+            "retained_messages": 20,
+            "source_gaps": 0,
+            "collection_seconds": 31.59618837502785
+          },
+          {
+            "epoch": 3,
+            "samples": 8000,
+            "generation": 5,
+            "retained_messages": 20,
+            "source_gaps": 0,
+            "collection_seconds": 32.317084416979924
+          },
+          {
+            "epoch": 4,
+            "samples": 10000,
+            "generation": 6,
+            "retained_messages": 20,
+            "source_gaps": 0,
+            "collection_seconds": 32.22180091700284
+          },
+          {
+            "epoch": 5,
+            "samples": 12000,
+            "generation": 8,
+            "retained_messages": 20,
+            "source_gaps": 1,
+            "collection_seconds": 33.132980499998666
+          },
+          {
+            "epoch": 6,
+            "samples": 14000,
+            "generation": 9,
+            "retained_messages": 20,
+            "source_gaps": 1,
+            "collection_seconds": 32.679381707974244
+          },
+          {
+            "epoch": 7,
+            "samples": 16000,
+            "generation": 10,
+            "retained_messages": 20,
+            "source_gaps": 1,
+            "collection_seconds": 33.965898959024344
+          },
+          {
+            "epoch": 8,
+            "samples": 18000,
+            "generation": 11,
+            "retained_messages": 20,
+            "source_gaps": 1,
+            "collection_seconds": 33.807400416000746
+          },
+          {
+            "epoch": 9,
+            "samples": 20000,
+            "generation": 12,
+            "retained_messages": 20,
+            "source_gaps": 1,
+            "collection_seconds": 33.99523695901735
+          }
+        ],
+        "restarts": [
+          {
+            "after_epoch": 4,
+            "kind": "forced",
+            "seconds": 0.055846375005785376,
+            "queue_preserved": true
+          },
+          {
+            "after_epoch": 9,
+            "kind": "graceful",
+            "seconds": 0.05981912498828024,
+            "queue_preserved": true
+          }
+        ],
+        "elapsed_seconds": 338.130204999994,
+        "ping_latency": {
+          "count": 6513,
+          "median_ms": 0.1784160267561674,
+          "p95_ms": 0.5778329796157777,
+          "maximum_ms": 34.78862502379343
+        },
+        "usage_latency": {
+          "count": 2662,
+          "median_ms": 0.3977919986937195,
+          "p95_ms": 1.3062909711152315,
+          "maximum_ms": 20.967125019524246
+        },
+        "rpc_errors": [],
+        "resource_samples": [
+          {
+            "elapsed_seconds": 31.37555620801868,
+            "rss_bytes": 22396928,
+            "ps_cpu_percent": 10.6
+          },
+          {
+            "elapsed_seconds": 62.65745641599642,
+            "rss_bytes": 22921216,
+            "ps_cpu_percent": 12.6
+          },
+          {
+            "elapsed_seconds": 94.25389020796865,
+            "rss_bytes": 23543808,
+            "ps_cpu_percent": 9.2
+          },
+          {
+            "elapsed_seconds": 126.57121933298185,
+            "rss_bytes": 23871488,
+            "ps_cpu_percent": 13.1
+          },
+          {
+            "elapsed_seconds": 158.7961437079939,
+            "rss_bytes": 24084480,
+            "ps_cpu_percent": 9.8
+          },
+          {
+            "elapsed_seconds": 191.98593629099196,
+            "rss_bytes": 22593536,
+            "ps_cpu_percent": 9.3
+          },
+          {
+            "elapsed_seconds": 224.66594641597476,
+            "rss_bytes": 22691840,
+            "ps_cpu_percent": 13.4
+          },
+          {
+            "elapsed_seconds": 258.6323061659932,
+            "rss_bytes": 23429120,
+            "ps_cpu_percent": 9.2
+          },
+          {
+            "elapsed_seconds": 292.44005083298543,
+            "rss_bytes": 23478272,
+            "ps_cpu_percent": 16.2
+          },
+          {
+            "elapsed_seconds": 326.43555212498177,
+            "rss_bytes": 23511040,
+            "ps_cpu_percent": 10.9
+          }
+        ],
+        "remaining_owned_processes": 0,
+        "remaining_client_threads": 0,
+        "pause_message_id": "a1213051025745f8",
+        "limits": [
+          "This twenty-epoch trial was stopped for laptop sleep before completion; partial epochs do not establish sustained-use acceptance.",
+          "Deliberate restart/append overlap retains explicit source-change coverage gaps; initial zero-gap fixture failure and diagnostic are preserved."
+        ]
+      },
+      "disposition": "The diagnostic repeated the conservative restart-gap report; the next bounded run retained exact counts and queue through ten epochs and two restarts but ended on the user pause. Neither is a passing sustained-use acceptance run."
+    },
+    "current_queue_pressure_trial": {
+      "result": "passed",
+      "scope": "Twenty private collection/queue epochs on a shared machine with another Cargo campaign. Synthetic supported logs, no actual model input or billing; latency samples are descriptive, not a performance threshold.",
+      "runtime_source": "449e9036d7b4b8502278025cbde3989bc1160504",
+      "binary_sha256": {
+        "agentd": "df6cfebb2b35d0bf591ac0ccfeea19a2f0f416b0bef0825626197c268e355666",
+        "agentdocker": "41feb052eda20eeeadc4a4dc9c005d600195035d5f47c8d32eb5a43235a8774c"
+      },
+      "driver_sha256": "757046642dd4622152ef734c2d43027c9d10e3677dc4f97b56712617cd479c7c",
+      "restarts": [
+        {
+          "after_epoch": 4,
+          "kind": "forced",
+          "seconds": 0.05920050002168864,
+          "queue_preserved": true
+        },
+        {
+          "after_epoch": 9,
+          "kind": "graceful",
+          "seconds": 0.06127020803978667,
+          "queue_preserved": true
+        },
+        {
+          "after_epoch": 14,
+          "kind": "forced",
+          "seconds": 0.05823699996108189,
+          "queue_preserved": true
+        }
+      ],
+      "integrity": "ok",
+      "table_rows": {
+        "usage_samples": 40000,
+        "usage_buckets": 1,
+        "usage_baselines": 0,
+        "usage_files": 6,
+        "usage_gaps": 3
+      },
+      "limits": [
+        "An append deliberately overlaps the collector immediately after each restart. A retained source-change/prefix-verification gap is allowed for that boundary, rather than falsely claiming uninterrupted source coverage; exact eventual sample/counter totals and FIFO IDs are still required.",
+        "The earlier zero-gap fixture expectation failed and is retained separately; this workload does not establish billing, model idle wake, overnight operation or hard latency guarantees."
+      ],
+      "elapsed_seconds": 711.4326030830271,
+      "ping_latency": {
+        "count": 13695,
+        "median_ms": 0.2229579840786755,
+        "p95_ms": 0.6285829585976899,
+        "maximum_ms": 53.07533300947398
+      },
+      "usage_latency": {
+        "count": 5594,
+        "median_ms": 0.5293124995660037,
+        "p95_ms": 1.4296669978648424,
+        "maximum_ms": 31.38270799536258
+      },
+      "rpc_errors": [],
+      "remaining_owned_processes": 0,
+      "remaining_client_threads": 0,
+      "report": {
+        "path": "/private/tmp/agentdocker-usage-current-queue-soak-20260918/result.json",
+        "sha256": "24f22575923fccae3a31613dee4d6526b795f314571fb0ddef849c5bb84d72cc"
+      },
+      "epochs": 20,
+      "final_samples": 40000,
+      "source_gaps": 3,
+      "final_input_tokens": 80000,
+      "final_output_tokens": 120000,
+      "maximum_sampled_rss_bytes": 24395776
+    }
   },
   "browser_extension_inventory_2026_09_17": {
     "date": "2026-09-17",
