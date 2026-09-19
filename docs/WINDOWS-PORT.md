@@ -45,9 +45,16 @@ through it. The Windows workflow builds both, lints them strictly and runs
 on a private home answers `ping`, two agents register with their pids, `ps`
 lists them, a direct message and a project broadcast are read from an inbox,
 a lease is held and a second claim refused, `stop` ends a registered process
-whose identity matches its record, and `daemon stop` ends the daemon. Its
-report is the run's `windows-daemon-smoke` artifact; the same script runs on
-macOS and Linux, so it is checked before the runner sees it.
+whose identity matches its record, `daemon stop` ends the daemon, `daemon
+start` brings one up on demand for the home (the ordinary first run: a
+client with nothing to talk to starts the daemon and waits for it to
+listen), `daemon stop` ends that one too, and on a home no daemon has made
+yet a plain `ping` creates it and starts a daemon. Its report is the run's
+`windows-daemon-smoke` artifact; the same script runs on macOS and Linux,
+so it is checked before the runner sees it — there it ends its private
+daemon directly when the user has a daemon service installed, since
+`daemon stop` on macOS and Linux also drives that service, which is filed
+per user and not per home.
 
 What the slice changes in the shared code, on every platform:
 
@@ -75,13 +82,24 @@ What the slice changes in the shared code, on every platform:
   until touched.
 
 What the first real runner taught, kept in the smoke: the daemon creates
-its home itself, as it does on a person's first run. A directory the smoke
-made first was foreign-owned state — objects an administrator creates on
-Windows belong to the Administrators group, not the user — and the daemon
-refused it by design (`state or ancestor belongs to an untrusted Windows
-principal`); what the daemon creates is owned by the user. A person who
-points `AGENTDOCKER_HOME` at a directory made from an elevated shell sees
-the same refusal, in those words, and the fix is to let the daemon make it.
+its home itself, directly under the temporary directory, as it does on a
+person's first run. A directory the smoke made first was foreign-owned
+state — objects an administrator creates on Windows belong to the
+Administrators group, not the user — and the daemon refused it by design
+(`state or ancestor belongs to an untrusted Windows principal`); a home the
+daemon made under such a directory was refused as writable by another
+principal, so nothing the daemon owns sits under one, and the report
+records what a directory made there inherits. What the daemon creates is
+owned by the user. The same held
+for the CLI: a client starting the daemon on demand made the home with a
+plain directory creation, which from an elevated shell belongs to
+Administrators and was then refused by the daemon it started — the client
+now makes the home the way the daemon does. A person who points
+`AGENTDOCKER_HOME` at a directory they made from an elevated shell sees the
+refusal, which names the path and the principal, and the fix is to let
+the daemon make it. On a refusal the smoke records the owner and the
+access-control entries of the home and its ancestors, since the runner is
+the only place to observe them.
 
 What the slice refuses on Windows, in words rather than with a hang or a
 crash, and what that means for a person:
@@ -99,8 +117,12 @@ crash, and what that means for a person:
   daemon holds no descriptors a successor could inherit; stop and start it.
 - Container workspace transport and grants: the endpoint is a Unix socket.
 - The desktop installer (`desktop install`, updates, rollback) and the daemon
-  and connector services (launchd, systemd): a later slice; run the daemon
-  and CLI from the archive meanwhile.
+  and connector services: `daemon install` and `uninstall` say there is no
+  service on Windows yet, a later slice. The subcommands that only speak to
+  a daemon still work there: `daemon start` starts one on demand for the
+  home, `stop` asks it to exit, `status` reports it (and that no service
+  exists), `vacuum` compacts its store, and `reload` carries the daemon's
+  own refusal.
 - A validation command is ended on a timeout, but only the command itself:
   there is no process group and no Job Object around it yet, so whether its
   descendants survived is not reported.

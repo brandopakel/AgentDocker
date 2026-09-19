@@ -208,9 +208,9 @@ impl Protection {
         let _allocated = LocalAllocation(descriptor);
         let owner = unsafe { sid_text(owner)? };
         if owner != self.sid && !(access == Access::Ancestor && trusted_system(&owner)) {
-            return Err(denied(
-                "state or ancestor belongs to an untrusted Windows principal",
-            ));
+            return Err(denied(&format!(
+                "state or ancestor belongs to an untrusted Windows principal ({owner})"
+            )));
         }
         if acl.is_null() {
             return Err(denied("state has an unrestricted DACL"));
@@ -262,7 +262,9 @@ impl Protection {
             let trustee = unsafe { sid_text(sid.cast())? };
             // Administrators can already take ownership, as root can on Unix.
             if trustee != self.sid && !trusted_system(&trustee) {
-                return Err(denied("state is writable by another Windows principal"));
+                return Err(denied(&format!(
+                    "state is writable by another Windows principal ({trustee})"
+                )));
             }
         }
         Ok(())
@@ -346,11 +348,20 @@ fn guard_ancestors(path: &Path, protection: &Protection) -> io::Result<Vec<File>
             return Err(error);
         }
         let file = unsafe { File::from_raw_handle(handle) };
-        check_kind(&file, true)?;
-        protection.validate_access(file.as_raw_handle(), Access::Ancestor)?;
+        check_kind(&file, true).map_err(|error| at(ancestor, error))?;
+        protection
+            .validate_access(file.as_raw_handle(), Access::Ancestor)
+            .map_err(|error| at(ancestor, error))?;
         guards.push(file);
     }
     Ok(guards)
+}
+
+/// A refusal says which path it is about: a person told that state is
+/// foreign-owned or writable by another principal needs the directory
+/// and the principal to act on it.
+fn at(path: &Path, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{}: {error}", path.display()))
 }
 
 fn check_kind(file: &File, directory: bool) -> io::Result<()> {
@@ -376,7 +387,7 @@ fn open(
     create: bool,
     append: bool,
 ) -> io::Result<File> {
-    let path = wide(path)?;
+    let raw = wide(path)?;
     let attributes = protection.attributes();
     let access = READ_CONTROL
         | WRITE_DAC
@@ -396,7 +407,7 @@ fn open(
     let disposition = if create { CREATE_NEW } else { OPEN_EXISTING };
     let handle = unsafe {
         CreateFileW(
-            path.as_ptr(),
+            raw.as_ptr(),
             access,
             FILE_SHARE_READ | FILE_SHARE_WRITE | if directory { 0 } else { FILE_SHARE_DELETE },
             &attributes,
@@ -409,8 +420,10 @@ fn open(
         return Err(io::Error::last_os_error());
     }
     let file = unsafe { File::from_raw_handle(handle) };
-    check_kind(&file, directory)?;
-    protection.validate_and_narrow(file.as_raw_handle())?;
+    check_kind(&file, directory).map_err(|error| at(path, error))?;
+    protection
+        .validate_and_narrow(file.as_raw_handle())
+        .map_err(|error| at(path, error))?;
     Ok(file)
 }
 
@@ -448,8 +461,10 @@ fn open_existing_read(path: &Path, directory: bool) -> io::Result<File> {
         return Err(io::Error::last_os_error());
     }
     let file = unsafe { File::from_raw_handle(handle) };
-    check_kind(&file, directory)?;
-    protection.validate_access(file.as_raw_handle(), Access::State)?;
+    check_kind(&file, directory).map_err(|error| at(path, error))?;
+    protection
+        .validate_access(file.as_raw_handle(), Access::State)
+        .map_err(|error| at(path, error))?;
     Ok(file)
 }
 

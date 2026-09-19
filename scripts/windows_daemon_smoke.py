@@ -12,6 +12,8 @@ import hashlib
 import json
 import os
 import platform
+import secrets
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,13 +37,20 @@ def main():
         "steps": [],
         "result": "failed",
     }
-    # The daemon creates its home itself, as it does on a person's first run.
-    # A directory made here first would be foreign-owned state on an elevated
-    # Windows runner (objects an administrator creates belong to the
-    # Administrators group, not the user), and the daemon refuses that by
-    # design; what it creates is owned by the user.
+    # The daemon creates its home itself, as it does on a person's first run,
+    # directly under the temporary directory. A directory made here first
+    # would be foreign-owned state on an elevated Windows runner (objects an
+    # administrator creates belong to the Administrators group, not the
+    # user), and the daemon refuses that by design; what it creates is owned
+    # by the user. The first runner also refused a home the daemon made under
+    # a directory made here as "writable by another principal": what such a
+    # directory inherits there is recorded in the report (`root_acl`) and
+    # nothing the daemon owns sits under one.
+    base = Path(tempfile.gettempdir()).resolve()
+    token = secrets.token_hex(4)
+    home = base / f"agentdocker-smoke-{token}"
+    fresh = base / f"agentdocker-smoke-{token}-fresh"
     root = Path(tempfile.mkdtemp(prefix="agentdocker-smoke-")).resolve()
-    home = root / "home"
     project = root / "project"
     project.mkdir()
     daemon_log = root / "smoke-daemon.log"
@@ -49,17 +58,51 @@ def main():
     env["AGENTDOCKER_HOME"] = str(home)
     env["AGENTDOCKER_NO_AUTOSTART"] = "1"
     daemon = None
+    log = None
 
     def step(name, ok, detail=""):
-        report["steps"].append({"step": name, "ok": bool(ok), "detail": str(detail)[:600]})
+        report["steps"].append({"step": name, "ok": bool(ok), "detail": str(detail)[:4000]})
         if not ok:
             raise AssertionError(f"{name}: {detail}")
 
-    def run(*argv, check=True, timeout=30):
-        result = subprocess.run([str(cli), *argv], cwd=project, env=env, capture_output=True, text=True, timeout=timeout)
+    def run(*argv, check=True, timeout=30, extra_env=None):
+        run_env = dict(env, **(extra_env or {}))
+        result = subprocess.run([str(cli), *argv], cwd=project, env=run_env, capture_output=True, text=True, timeout=timeout)
         if check and result.returncode != 0:
             raise AssertionError(f"{argv}: exit {result.returncode}: {result.stderr.strip()}")
         return result
+
+    # `daemon stop`/`start` on macOS and Linux also drive an installed user
+    # service, which is filed per user, not per home: on a developer machine
+    # that has one, the smoke must not touch it, so it stops its private
+    # daemon directly there and says so. Windows has no service yet.
+    user_service = None
+    if os.name != "nt":
+        for candidate in (Path.home() / "Library/LaunchAgents/dev.agentdocker.agentd.plist", Path.home() / ".config/systemd/user/agentd.service"):
+            if candidate.is_file():
+                user_service = candidate
+
+    def acl_report(path):
+        """On Windows, what the daemon saw: the owner and the access-control
+        entries of the path and its ancestors, for a refusal the runner is
+        the only place to observe."""
+        if os.name != "nt":
+            return ""
+        lines = []
+        for candidate in [path, *path.parents]:
+            if not candidate.exists():
+                continue
+            listing = subprocess.run(["icacls", str(candidate)], capture_output=True, text=True, timeout=20)
+            owner = subprocess.run(["powershell", "-NoProfile", "-Command", f"(Get-Acl -LiteralPath '{candidate}').Owner"], capture_output=True, text=True, timeout=30)
+            lines.append(f"{candidate} owner={owner.stdout.strip()}\n{listing.stdout.strip()}")
+        return "\n" + "\n".join(lines)
+
+    def wait_exit(process, seconds=10):
+        for _ in range(int(seconds * 10)):
+            if process.poll() is not None:
+                return True
+            time.sleep(0.1)
+        return False
 
     try:
         subprocess.run(["git", "init", "-q"], cwd=project, check=True)
@@ -73,6 +116,7 @@ def main():
         detail = probe.stderr.strip()
         if daemon.poll() is not None:
             detail = f"the daemon exited with {daemon.returncode} before answering; ping said: {detail}"
+            detail += f"; daemon log: {daemon_log.read_text(errors='replace').strip()[-600:]}" + acl_report(home)
         step("the daemon answers ping over the local transport", probe.returncode == 0, detail)
         status = run("daemon", "status")
         step("daemon status names the serving executable", str(daemon_binary.name) in status.stdout, status.stdout.strip())
@@ -93,6 +137,8 @@ def main():
         step("a lease is held and a second claim is refused", lease.returncode == 0 and conflict.returncode != 0, conflict.stderr.strip())
         run("release", lease.stdout.strip(), "--as", "smoke-one", "--summary", "smoke done")
         if os.name == "nt":
+            install = run("daemon", "install", check=False, timeout=20)
+            step("daemon install is refused on Windows in words", install.returncode != 0 and "not available on Windows" in install.stderr, install.stderr.strip())
             attach = run("attach", "smoke-one", check=False, timeout=20)
             step("attach is refused on Windows in words, not with a hang", attach.returncode != 0 and "not available on Windows" in attach.stderr, attach.stderr.strip())
             reload = run("daemon", "reload", check=False, timeout=20)
@@ -113,12 +159,29 @@ def main():
             if helper.poll() is None:
                 helper.kill()
                 helper.wait()
-        stop = run("daemon", "stop")
-        for _ in range(100):
-            if daemon.poll() is not None:
-                break
-            time.sleep(0.1)
-        step("daemon stop ends the daemon", daemon.poll() is not None, stop.stdout.strip())
+        if user_service is None:
+            stop = run("daemon", "stop")
+            step("daemon stop ends the daemon", wait_exit(daemon), stop.stdout.strip())
+            # The ordinary first run: a client with nothing to talk to starts
+            # the daemon itself and waits for it to listen.
+            started = run("daemon", "start", extra_env={"AGENTDOCKER_NO_AUTOSTART": ""}, timeout=30)
+            step("daemon start brings up a daemon on demand for this home", started.returncode == 0 and "agentd" in started.stdout, started.stdout.strip())
+            stop = run("daemon", "stop")
+            step("daemon stop ends the daemon a client started", "stopped" in stop.stdout and run("ping", check=False, timeout=10).returncode != 0, stop.stdout.strip())
+            # A fresh home that no daemon has made yet: the first command a
+            # person runs creates it and starts the daemon, and the home it
+            # makes is the daemon's own (private, user-owned) so the daemon
+            # accepts it — on an elevated Windows shell a plain directory
+            # would belong to Administrators and be refused.
+            fresh_env = {"AGENTDOCKER_HOME": str(fresh), "AGENTDOCKER_NO_AUTOSTART": ""}
+            pinged = run("ping", check=False, extra_env=fresh_env, timeout=30)
+            step("the first command on a fresh home creates it and starts a daemon", pinged.returncode == 0, (pinged.stderr + pinged.stdout).strip() + acl_report(fresh))
+            stop = run("daemon", "stop", extra_env=fresh_env)
+            gone = run("ping", check=False, extra_env=dict(fresh_env, AGENTDOCKER_NO_AUTOSTART="1"), timeout=10)
+            step("that daemon is ended too", "stopped" in stop.stdout and gone.returncode != 0, stop.stdout.strip())
+        else:
+            daemon.terminate()
+            step("the private daemon is ended directly, since this user has a service installed", wait_exit(daemon), str(user_service))
         report["result"] = "passed"
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
@@ -126,10 +189,18 @@ def main():
         if daemon is not None and daemon.poll() is None:
             daemon.kill()
             daemon.wait()
+        if log is not None:
+            log.close()
+        if os.name == "nt":
+            report["root_acl"] = acl_report(root).strip()
+            report["home_acl"] = acl_report(home).strip()
+        for made in (home, fresh):
+            shutil.rmtree(made, ignore_errors=True)
         try:
             report["daemon_log_tail"] = daemon_log.read_text(errors="replace")[-2000:]
         except OSError:
             pass
+        shutil.rmtree(root, ignore_errors=True)
         args.output.mkdir(parents=True, exist_ok=True)
         (args.output / "windows-daemon-smoke.json").write_text(json.dumps(report, indent=2))
         print(json.dumps(report, indent=2))

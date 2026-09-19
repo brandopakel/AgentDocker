@@ -149,7 +149,14 @@ impl Client {
         let home = dirs::home();
         let lock_path = paths::daemon_lock(&home, &self.socket);
         if let Some(parent) = lock_path.parent() {
-            if parent == paths::socket_dir(&home) && parent != home {
+            if parent == home {
+                // The home is state, so it is made the way the daemon makes
+                // it: private, and on Windows owned by the user — a plain
+                // creation from an elevated shell belongs to the
+                // Administrators group, which the daemon then refuses.
+                dirs::secure_state_dir(&home)
+                    .with_context(|| format!("home {} is unusable", home.display()))?;
+            } else if parent == paths::socket_dir(&home) {
                 dirs::ensure_private_dir(parent).with_context(|| {
                     format!("socket directory {} is unusable", parent.display())
                 })?;
