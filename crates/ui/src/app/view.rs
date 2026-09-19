@@ -994,15 +994,21 @@ impl App {
     }
 
     /// Whether the Temporary fold is open: the person's choice once made,
-    /// otherwise open while a scratch project has a live session.
+    /// otherwise open while a scratch project has a live session or is the
+    /// project on view. One rule for the fold as drawn and for what a
+    /// click on it negates, so one click always closes an open fold.
     pub(super) fn temporary_fold_open(&self) -> bool {
         self.shell.temporary_open.unwrap_or_else(|| {
+            let on_view = self.in_project();
             self.shell
                 .catalog
                 .projects
                 .iter()
                 .filter(|e| !e.pinned && crate::catalog::is_scratch(&e.project.root))
-                .any(|e| self.live_in(&e.project.root) > 0)
+                .any(|e| {
+                    self.live_in(&e.project.root) > 0
+                        || (on_view && self.selected_root() == Some(e.project.root.as_path()))
+                })
         })
     }
 
@@ -1086,16 +1092,10 @@ impl App {
                 .iter()
                 .map(|e| self.live_in(&e.project.root))
                 .sum::<usize>();
-            let selected_here = temporary
-                .iter()
-                .any(|e| project_page && self.selected_root() == Some(e.project.root.as_path()));
             // The person's own choice wins, both ways; until they have
             // made one, the fold opens by itself for a live or selected
-            // scratch project.
-            let open = self
-                .shell
-                .temporary_open
-                .unwrap_or_else(|| self.temporary_fold_open() || selected_here);
+            // scratch project — the one rule in `temporary_fold_open`.
+            let open = self.temporary_fold_open();
             let label = format!("Temporary ({})", temporary.len());
             let mut fold = row![
                 text(if open { "▾" } else { "▸" }).size(11).color(c.muted),

@@ -4512,6 +4512,21 @@ mod tests {
         );
         app.shell.temporary_open = None;
         assert!(app.temporary_fold_open(), "automatic: open while one runs");
+        // A selected scratch project with nothing running opens the fold
+        // by itself, and one click closes it: the click negates the fold
+        // as drawn, selection included.
+        app.agents.clear();
+        app.shell.catalog.selected = Some("/private/tmp/fixture/workspace".into());
+        app.screen = Screen::Agents;
+        assert!(
+            app.temporary_fold_open(),
+            "automatic: open for the project on view"
+        );
+        let _ = app.update(Message::ToggleTemporary);
+        assert_eq!(app.shell.temporary_open, Some(false));
+        assert!(!app.temporary_fold_open(), "one click closes it");
+        let _ = app.update(Message::ToggleTemporary);
+        assert!(app.temporary_fold_open());
     }
 
     /// Reconnecting an ended Claude Code session launches its own tool
