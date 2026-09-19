@@ -24,9 +24,14 @@ If you want the reasoning instead of the instructions, read
 curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/install.sh | sh
 ```
 
-That installs the released CLI and daemon under `~/.local/bin`. Older macOS
-release archives also include the desktop app; current packaging separates the
-CLI archive and desktop download. From a checkout:
+On a Mac that installs the desktop app — with the `agentdocker` command and
+the daemon inside it — through the app's own installer, so `agentdocker desktop
+update` and rollback work from the first install; on Linux, or with
+`AGENTDOCKER_INSTALL=cli`, it puts the two commands under `~/.local/bin`. A
+release that has no desktop archive yet (v0.1.0) falls back to the commands and
+says so. Until the app is signed with a Developer ID, macOS quarantines a
+downloaded copy: right-click it and choose **Open** once, or
+`xattr -dr com.apple.quarantine ~/Applications/AgentDocker.app`. From a checkout:
 
 ```sh
 cargo install --path crates/cli --locked   # agentdocker + agentd
@@ -693,7 +698,7 @@ In Messages, **+** starts a direct message or named channel. Press Enter to send
 mention suggestions only include the current conversation's recipients. In an
 open channel you belong to, **Add members** adds another available agent. The
 CLI equivalent is `agentdocker channel invite --as <member> <channel> <agent>`.
-These Messages additions merged in PR #170 and are included in the recorded
-September 17 installed `d14610b7` preview. Native workflows and a targeted
+These Messages additions merged in PR #170 and have been installed since the
+September 17 `d14610b7` preview (the current installation is `652cf6a3`). Native workflows and a targeted
 synthetic Enter event passed; physical keyboard and IME acceptance remain in
 [Remaining work](REMAINING-WORK.md).

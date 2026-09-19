@@ -3065,6 +3065,29 @@
       "physical keyboard input in the pane",
       "a person's own idle wake on this Mac's production sessions",
       "Codex reconnect (route not built)"
-    ]
+    ],
+    "user_session_idle_wake_2026_09_18": {
+      "status": "Passed on the person's own session: the plain Claude Code session 0180d7615186 (conversation b928f782\u2026) was exited normally by its operator (codex-51242, with the person's authorization, after verifying an empty prompt on its terminal), brought back through the installed Reconnect here route (managed pid 23973, process born 2026-09-18T21:59:51.778048Z, channel env on, matching inline MCP entry); the person accepted Claude's development-channel consent in the app's pane; the session was reported idle at 22:10:35 UTC, and a project message sent at 22:11:25 UTC (91b30d039e3c4d09) started its turn with no keyboard input \u2014 its reply 77976146612248b9 at 22:11:32 UTC says so in its own words. One operator error on the way: the first relaunch named /opt/homebrew/bin/claude, which does not exist here; it failed safely (the record ended with its queue) and the immediate retry with ~/.local/bin/claude worked.",
+      "installed": "candidate 6bd97894 from source 705f924 (PR #199 head), schema 23; previous 652cf6a3 retained",
+      "probe": {
+        "message": "91b30d039e3c4d09",
+        "sent_at": "2026-09-18T22:11:25Z",
+        "reply": "77976146612248b9",
+        "replied_at": "2026-09-18T22:11:32Z",
+        "idle_reported_at": "2026-09-18T22:10:35Z"
+      },
+      "session": {
+        "agent": "0180d7615186449087095d7aa15ec0bb",
+        "conversation": "b928f782-c8be-4458-99de-bb7baccb57f1",
+        "old_pid": 72986,
+        "new_pid": 23973,
+        "new_process_started_at": "2026-09-18T21:59:51.778048Z"
+      },
+      "private_summary": "/private/tmp/agentdocker-installed-claude-handoff-20260918.json",
+      "not_claimed": [
+        "the primary session claude-code-74231 (this writer) is still a plain --resume without the channel and needed a typed terminal bootstrap for the same handoff; it is not idle-capable",
+        "physical keyboard input in the pane"
+      ]
+    }
   }
 }
