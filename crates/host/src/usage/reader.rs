@@ -15,7 +15,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod session;
+pub use session::{Preparation, Session};
+
 const MAX_BATCH: u64 = 16 * 1024 * 1024;
+// Revisit prior unsupported Claude patch versions and old quarantine decisions.
+// The collector replays an older cursor with source-ID deduplication.
+const CURSOR_VERSION: u32 = 3;
 const MAX_RECORD: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 4096;
 const PREFIX_DEADLINE: Duration = Duration::from_secs(1);
@@ -114,6 +120,31 @@ pub struct Cursor {
 }
 
 impl Cursor {
+    /// Capture a file identity/high-water mark without parsing transcript bytes.
+    /// Later scans must still validate that same generation and prefix.
+    pub fn capture(path: &Path, runtime: Runtime) -> Result<Self, Error> {
+        let file = crate::files::open_regular(path)?;
+        let generation = Generation::capture(&file)?;
+        if generation != Generation::capture(&crate::files::open_regular(path)?)? {
+            return Err(Error::Changed);
+        }
+        Ok(Self {
+            version: CURSOR_VERSION,
+            runtime,
+            generation,
+            offset: 0,
+            prefix_digest: [0; 32],
+            codex: Codex::default(),
+            quarantined_at_budget: None,
+        })
+    }
+
+    /// This comparison only selects a candidate cursor. `scan` still verifies
+    /// its complete prefix; matching metadata never establishes coverage.
+    pub fn same_generation(&self, other: &Self) -> bool {
+        self.runtime == other.runtime && self.generation == other.generation
+    }
+
     /// Bytes covered by complete records in this file generation.
     pub fn offset(&self) -> u64 {
         self.offset
@@ -144,21 +175,33 @@ impl Cursor {
     }
 
     fn validate_file(&self, file: &mut File, elapsed: Duration) -> Result<u64, Error> {
-        if self.version != 2 || self.offset > self.generation.length {
+        self.validate_suffix(file, 0, [0; 32], elapsed)
+    }
+
+    fn validate_suffix(
+        &self,
+        file: &mut File,
+        start: u64,
+        mut prefix: [u8; 32],
+        elapsed: Duration,
+    ) -> Result<u64, Error> {
+        if self.version != CURSOR_VERSION
+            || self.offset > self.generation.length
+            || start > self.offset
+        {
             return Err(Error::Cursor);
         }
         if self.generation != Generation::capture(file)? {
             return Err(Error::Changed);
         }
-        if self.offset > MAX_BATCH {
+        if self.offset - start > MAX_BATCH {
             return Err(Error::ValidationIncomplete);
         }
         let started = Instant::now();
-        file.seek(SeekFrom::Start(0))?;
-        let mut reader = BufReader::with_capacity(8192, file.take(self.offset));
-        let mut prefix = [0; 32];
+        file.seek(SeekFrom::Start(start))?;
+        let mut reader = BufReader::with_capacity(8192, file.take(self.offset - start));
         let mut line = Vec::new();
-        let mut covered = 0;
+        let mut covered = start;
         while covered < self.offset {
             if started.elapsed() >= elapsed {
                 return Err(Error::ValidationIncomplete);
@@ -188,7 +231,7 @@ impl Cursor {
         if self.generation != Generation::capture(reader.get_ref().get_ref())? {
             return Err(Error::Changed);
         }
-        Ok(covered)
+        Ok(covered - start)
     }
 }
 
@@ -258,6 +301,18 @@ pub fn scan(
     previous: Option<&Cursor>,
     budget: Budget,
 ) -> Result<Batch, Error> {
+    scan_checked(path, runtime, previous, budget, false)
+}
+
+// `prepared` is private: only Session may supply its retained, byte-verified
+// prefix. Public standalone scans continue to verify the entire prefix.
+fn scan_checked(
+    path: &Path,
+    runtime: Runtime,
+    previous: Option<&Cursor>,
+    budget: Budget,
+    prepared: bool,
+) -> Result<Batch, Error> {
     if budget.record_bytes == 0
         || budget.record_bytes > MAX_RECORD
         || budget.bytes <= budget.record_bytes as u64 + 1
@@ -271,7 +326,7 @@ pub fn scan(
     let mut validation_bytes_read = 0;
     let mut cursor = match previous {
         Some(prior) => {
-            if prior.version != 2
+            if prior.version != CURSOR_VERSION
                 || prior.runtime != runtime
                 || prior.offset > prior.generation.length
             {
@@ -280,7 +335,9 @@ pub fn scan(
             if prior.generation != generation {
                 return Err(Error::Changed);
             }
-            validation_bytes_read += prior.validate_file(&mut file, PREFIX_DEADLINE)?;
+            if !prepared {
+                validation_bytes_read += prior.validate_file(&mut file, PREFIX_DEADLINE)?;
+            }
             if prior
                 .quarantined_at_budget
                 .is_some_and(|bytes| budget.bytes <= bytes)
@@ -294,7 +351,7 @@ pub fn scan(
             next
         }
         None => Cursor {
-            version: 2,
+            version: CURSOR_VERSION,
             runtime,
             generation: generation.clone(),
             offset: 0,
@@ -321,6 +378,7 @@ pub fn scan(
     let mut gaps = Vec::new();
     let mut line = Vec::new();
     let mut records = 0;
+    let starting_offset = cursor.offset;
     let stop = loop {
         if cursor.offset == generation.length {
             break Stop::Complete;
@@ -341,6 +399,12 @@ pub fn scan(
                 reader.read_until(b'\n', &mut line)?;
             }
             if line.last() != Some(&b'\n') {
+                // An earlier complete prefix consumed part of this pass. Try
+                // this record once with the full budget before quarantining;
+                // even the maximum budget may have only a small remainder.
+                if cursor.offset > starting_offset {
+                    break Stop::Budget;
+                }
                 cursor.quarantined_at_budget = Some(budget.bytes);
                 break Stop::Quarantined;
             }
@@ -352,7 +416,9 @@ pub fn scan(
                 Stop::Budget
             };
         }
-        let parsed = if oversized {
+        let parsed = if oversized && context_neutral_record(&line, runtime) {
+            Ok(None)
+        } else if oversized {
             Err("record exceeds the configured size limit".to_owned())
         } else {
             serde_json::from_slice(&line)
@@ -386,7 +452,21 @@ pub fn scan(
     if generation != Generation::capture(reader.get_ref().get_ref())? {
         return Err(Error::Changed);
     }
-    validation_bytes_read += cursor.validate_counted(path)?;
+    if prepared {
+        let prior = previous.ok_or(Error::Cursor)?;
+        let mut check = crate::files::open_regular(path)?;
+        validation_bytes_read += cursor.validate_suffix(
+            &mut check,
+            prior.offset,
+            prior.prefix_digest,
+            PREFIX_DEADLINE,
+        )?;
+        if generation != Generation::capture(&crate::files::open_regular(path)?)? {
+            return Err(Error::Changed);
+        }
+    } else {
+        validation_bytes_read += cursor.validate_counted(path)?;
+    }
     Ok(Batch {
         cursor,
         samples,
@@ -395,6 +475,41 @@ pub fn scan(
         validation_bytes_read,
         stop,
     })
+}
+
+/// Ignore large prompt/tool bodies only after validating the complete JSON
+/// envelope. Serde skips unknown fields without retaining their values. A
+/// prefix that merely looks like a non-accounting record is never sufficient.
+fn context_neutral_record(line: &[u8], runtime: Runtime) -> bool {
+    #[derive(Deserialize)]
+    struct Payload {
+        #[serde(rename = "type")]
+        kind: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Envelope {
+        #[serde(rename = "type")]
+        kind: String,
+        payload: Option<Payload>,
+    }
+    let Ok(record) = serde_json::from_slice::<Envelope>(line) else {
+        return false;
+    };
+    match runtime {
+        Runtime::Codex => {
+            matches!(record.kind.as_str(), "response_item" | "compacted")
+                || (record.kind == "event_msg"
+                    && record
+                        .payload
+                        .as_ref()
+                        .and_then(|payload| payload.kind.as_deref())
+                        == Some("item_completed"))
+        }
+        Runtime::Claude => matches!(
+            record.kind.as_str(),
+            "user" | "progress" | "system" | "summary" | "file-history-snapshot"
+        ),
+    }
 }
 
 fn record_digest(prefix: [u8; 32], line: &[u8]) -> [u8; 32] {
@@ -744,7 +859,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_tail_quarantines_with_complete_prefix_and_recovers_without_replaying_it() {
+    fn oversized_tail_gets_the_full_budget_after_the_complete_prefix() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("log");
         let first = row(0);
@@ -754,17 +869,21 @@ mod tests {
         };
         std::fs::write(&path, format!("{first}{}\n{}", "x".repeat(1000), row(1))).unwrap();
         let blocked = scan(&path, Runtime::Claude, None, limits).unwrap();
-        assert_eq!(blocked.stop, Stop::Quarantined);
+        assert_eq!(blocked.stop, Stop::Budget);
         assert_eq!(blocked.samples.len(), 1);
         assert_eq!(blocked.cursor.offset(), first.len() as u64);
         blocked.cursor.validate(&path).unwrap();
         let saved = serde_json::to_string(&blocked.cursor).unwrap();
         assert!(!saved.contains("PRIVATE_TRANSCRIPT"));
         let restored: Cursor = serde_json::from_str(&saved).unwrap();
-        assert!(
-            matches!(scan(&path, Runtime::Claude, Some(&restored), limits),
-            Err(Error::Oversized { offset }) if offset == first.len() as u64)
-        );
+        let retry = scan(&path, Runtime::Claude, Some(&restored), limits).unwrap();
+        assert_eq!(retry.stop, Stop::Budget);
+        assert!(retry.samples.is_empty());
+        assert_eq!(retry.gaps.len(), 1);
+        assert_eq!(retry.cursor.offset(), first.len() as u64 + 1001);
+        let next = scan(&path, Runtime::Claude, Some(&retry.cursor), limits).unwrap();
+        assert_eq!(next.stop, Stop::Complete);
+        assert_eq!(next.samples.len(), 1);
         let larger = Budget {
             bytes: 4000,
             ..budget()
@@ -792,7 +911,7 @@ mod tests {
         };
         std::fs::write(&path, format!("{first}{}\n", "x".repeat(1000))).unwrap();
         let blocked = scan(&path, Runtime::Claude, None, limits).unwrap();
-        assert_eq!(blocked.stop, Stop::Quarantined);
+        assert_eq!(blocked.stop, Stop::Budget);
         std::fs::write(&path, format!("{}{}\n", row(1), "x".repeat(1000))).unwrap();
         let mut restored = blocked.cursor;
         restored.generation = Generation::capture(&File::open(&path).unwrap()).unwrap();
@@ -800,6 +919,74 @@ mod tests {
             scan(&path, Runtime::Claude, Some(&restored), limits),
             Err(Error::Changed)
         ));
+    }
+
+    #[test]
+    fn large_valid_non_accounting_bodies_keep_supported_context_but_malformed_ones_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        let metadata =
+            json!({"type":"session_meta","payload":{"id":"thread-a","cli_version":"0.154.0"}})
+                .to_string()
+                + "\n";
+        let counts = json!({"input_tokens":5,"output_tokens":3});
+        let usage = json!({"type":"event_msg","timestamp":"2026-09-16T12:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":counts,"last_token_usage":counts}}}).to_string()+"\n";
+        let content = "PRIVATE".repeat(MAX_RECORD / 3);
+        // A slow host may use the ordinary 100 ms pass on the large body.
+        // Follow serialized cursors exactly as the collector does rather than
+        // treating a valid continuation as an accounting failure.
+        let scan_all = |runtime| {
+            let mut cursor = None;
+            let mut samples = Vec::new();
+            let mut gaps = Vec::new();
+            for _ in 0..32 {
+                let batch = scan(&path, runtime, cursor.as_ref(), Budget::default()).unwrap();
+                let saved = serde_json::to_string(&batch.cursor).unwrap();
+                assert!(!saved.contains("PRIVATE"));
+                samples.extend(batch.samples);
+                gaps.extend(batch.gaps);
+                if batch.stop == Stop::Complete {
+                    return (samples, gaps);
+                }
+                assert_eq!(batch.stop, Stop::Budget);
+                cursor = Some(serde_json::from_str(&saved).unwrap());
+            }
+            panic!("bounded fixture continuations did not finish");
+        };
+        for record in [
+            json!({"type":"response_item","payload":{"content":content}}),
+            json!({"type":"compacted","payload":{"replacement_history":content}}),
+            json!({"type":"event_msg","payload":{"type":"item_completed","item":content}}),
+        ] {
+            let body = record.to_string();
+            assert!(body.len() > MAX_RECORD);
+            std::fs::write(&path, format!("{metadata}{body}\n{usage}")).unwrap();
+            let (samples, gaps) = scan_all(Runtime::Codex);
+            assert!(gaps.is_empty());
+            assert_eq!(samples.len(), 1);
+            assert!(samples[0].proves_zero_baseline);
+        }
+        let body = json!({"type":"response_item","payload":{"content":content}}).to_string();
+        let invalid = &body[..body.len() - 1];
+        std::fs::write(&path, format!("{metadata}{invalid}\n{usage}")).unwrap();
+        let (samples, gaps) = scan_all(Runtime::Codex);
+        assert!(samples.is_empty());
+        assert_eq!(gaps.len(), 2);
+        // Accounting envelopes and future event kinds are never silently
+        // skipped merely because a large body looks like transcript content.
+        for kind in ["token_count", "future_event"] {
+            let body = json!({"type":"event_msg","payload":{"type":kind,"content":content}});
+            std::fs::write(&path, format!("{metadata}{body}\n{usage}")).unwrap();
+            let (samples, gaps) = scan_all(Runtime::Codex);
+            assert!(samples.is_empty());
+            assert_eq!(gaps.len(), 2);
+        }
+        let body = json!({"type":"user","message":{"content":"PRIVATE".repeat(MAX_RECORD / 3)}})
+            .to_string();
+        std::fs::write(&path, format!("{body}\n{}", row(1))).unwrap();
+        let (samples, gaps) = scan_all(Runtime::Claude);
+        assert!(gaps.is_empty());
+        assert_eq!(samples.len(), 1);
     }
 
     #[test]
