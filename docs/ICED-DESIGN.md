@@ -38,9 +38,28 @@ appearance preferences are read when no new appearance has been saved.
 
 ## Navigation and visual decisions
 
+The September 18 user review chose shared chat as the default project workspace.
+Project switches preserve each conversation's draft and thread history without
+marking hidden messages read. **Open project terminal** opens a fresh native shell
+in the selected physical project folder, not the AgentDocker command console.
+On macOS the directory is passed to Terminal as a file argument, never typed into
+an existing prompt. Agent **Terminal** attaches an app-managed PTY for any runtime;
+for external macOS sessions it brings the matching Terminal tab forward after
+checking the provider's PID and birth time. It sends no keystrokes. Sessions in
+other terminal applications show an actionable failure rather than opening a
+second agent. Linux project-terminal launching is implemented; native Linux
+acceptance and external-terminal focus beyond macOS Terminal remain open.
+The chat composer stays in the viewport while long headers/forms scroll above it.
+Compact threads have **Back to chat**; side panes collapse before the composer
+loses its minimum width. Removing a project, including a vanished folder, selects
+the replacement project's chat as well as its heading and preserves other drafts.
+External Terminal focus allows 30 seconds for macOS Automation consent and explains
+where to check the permission if the action times out.
+
+
 | Destination | Everyday purpose |
 | --- | --- |
-| Projects | All projects home with the Needs you strip; per project: Sessions, Activity, and under More (Advanced) Channels, Files in use, Command line |
+| Projects | All projects home; selecting a project opens its shared Chat with a compact list of current agents. Agents is the second tab; Board, History, Channels, Files in use and AgentDocker commands are under More. Open project terminal is visible in the project header. |
 | Inbox | Questions, retained answer drafts and messages addressed to the user; Messages (conversations, threads, read cursors) against a daemon that keeps them |
 | Tools (rail id `connections`) | Installed tools and connection status. **Set up** appears for an installed tool missing MCP or hooks when no active session report exists. Expanded Details offers **Review setup**, health and history; setup plans use **Connect**, and applied plans offer **Undo** |
 | Settings | Appearance, installation, retained versions and diagnostics |
@@ -197,12 +216,14 @@ Blue marks selection and primary actions; status always has words. Session
 actions sit beside a wide list and replace a narrow one, with an explicit
 return button. Long content scrolls; focused controls are revealed.
 Socket paths and installation internals live in diagnostics and detailed reports.
-Current sessions are the default; finished runs sit in the collapsed Earlier
+Shared Chat is the project default. The Agents tab defaults to current sessions;
+finished runs sit in the collapsed Earlier
 group under them (`sessions-earlier`) and unanswered questions have a
 project-scoped Needs input filter. Current rows prioritize
 questions, then newest sessions, with ID as a stable tie-breaker. Search includes
 name, runtime, branch and session ID. Filter counts reflect that search.
-Channels, Files in use, Command line and project management live under More, the one Advanced door. Tools shows
+Board, History, Channels, Files in use, AgentDocker commands and project management
+live under More. The project terminal remains visible in the header. Tools shows
 installed tools first and expands technical details on request. Full daemon
 records remain intact: these are view filters, not registry deletion or migration.
 Discovery suppresses known Codex Node launchers with a native child; the UI also
@@ -340,6 +361,14 @@ folder pinning, agent launch/stop, CLI commands, focus reveal, resizing, appeara
 and a second launch. Daemon and on-disk assertions verify outcomes. macOS also
 probes the app's native NSAccessibility hierarchy. The driver does not claim
 physical keyboard injection, provider consumption or a screen-reader trial.
+
+Readiness trials explicitly enter the compact Messages layout and use its
+**Conversations** back control before selecting a direct message. Opening a
+project selects shared chat; Messages preserves that conversation, so the list
+is hidden on a compact display until the person goes back. The fixture asserts
+both the list entry and destination composer instead of assuming a wide sidebar
+or changing the saved conversation. This covers the Mac ARM CI failure at
+`Click thread-<receiver>` without extending deadlines or skipping the case.
 
 The standard suite includes strict lint, nextest, doctests, installer/package
 checks and release builds. Desktop CI packages and runs native workflow acceptance

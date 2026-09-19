@@ -11,6 +11,7 @@ pub(super) struct State {
     pub search: String,
     pub session_filter: super::sessions::Filter,
     pub more: bool,
+    pub terminal_opening: bool,
     /// The usage screen's window and grouping: this window's, not saved.
     pub usage_since: &'static str,
     pub usage_by: agentdocker_core::usage::report::Group,
@@ -672,6 +673,9 @@ pub enum Message {
     Reconnect(String),
     Attach(String),
     Detach,
+    OpenProjectTerminal,
+    OpenAgentTerminal(String),
+    NativeTerminalOpened(Result<(), String>),
     TerminalInput(Vec<u8>),
     TerminalResize(u16, u16),
     TerminalScroll(i32),
@@ -1086,6 +1090,9 @@ impl App {
                 self.shell.notification_message = None;
                 self.screen = screen;
                 self.shell.more = false;
+                if screen == Screen::Chat {
+                    self.open_project_chat();
+                }
                 if screen == Screen::Board {
                     self.request_tasks();
                 }
@@ -1163,9 +1170,9 @@ impl App {
                     self.shell.selected = None;
                     self.shell.search.clear();
                     self.reset_session_view();
-                    self.screen = Screen::Agents;
                     self.shell.changed();
                     self.refresh_project_context();
+                    self.open_project_chat();
                 }
             }
             Message::OpenSession(id) => {
@@ -1196,6 +1203,7 @@ impl App {
                         tasks.push(self.update(Message::Unassigned));
                     }
                 }
+                self.screen = Screen::Agents;
                 tasks.push(self.update(Message::SelectSession(id)));
             }
             Message::SelectSession(id) => {
@@ -1745,7 +1753,7 @@ impl App {
                         self.shell.add_path.clear();
                         self.shell.selected = None;
                         self.reset_session_view();
-                        self.screen = Screen::Agents;
+                        self.open_project_chat();
                         self.shell.changed();
                         self.refresh_project_context();
                     }
@@ -1985,6 +1993,48 @@ impl App {
             Message::Detach => {
                 self.terminal = None;
                 self.screen = Screen::Agents;
+            }
+            Message::OpenProjectTerminal => {
+                if !self.shell.terminal_opening
+                    && let Some(path) = self.shell.catalog.selected.as_ref()
+                {
+                    let path = path.clone();
+                    self.shell.terminal_opening = true;
+                    self.say("Opening terminal…");
+                    tasks.push(open_native_terminal(
+                        crate::native_terminal::Request::Project(path),
+                    ));
+                }
+            }
+            Message::OpenAgentTerminal(id) => {
+                if let Some(agent) = self
+                    .agents
+                    .iter()
+                    .find(|a| a.id.as_str() == id && a.status.is_live())
+                {
+                    if agent.managed && agent.spec.tty {
+                        tasks.push(self.update(Message::Attach(id)));
+                    } else if !self.shell.terminal_opening {
+                        if let (Some(pid), Some(started_at)) = (agent.pid, agent.process_started_at)
+                        {
+                            self.shell.terminal_opening = true;
+                            self.say("Opening terminal…");
+                            tasks.push(open_native_terminal(
+                                crate::native_terminal::Request::Agent { pid, started_at },
+                            ));
+                        } else {
+                            self.shell.error = Some("This agent has not reported its terminal process. Open the app where it started.".into());
+                        }
+                    }
+                }
+            }
+            Message::NativeTerminalOpened(result) => {
+                self.shell.terminal_opening = false;
+                self.status.clear();
+                match result {
+                    Ok(()) => self.say("Terminal opened"),
+                    Err(error) => self.shell.error = Some(error),
+                }
             }
             Message::TerminalInput(bytes) => {
                 if let Some(terminal) = &mut self.terminal {
@@ -2248,6 +2298,16 @@ impl App {
                 }
                 return Task::batch(tasks);
             }
+        }
+        // Catalog removal and missing-folder cleanup can choose another
+        // project too. Its header must never accompany the previous queue.
+        if self.screen == Screen::Chat
+            && self.shell.conversation
+                != self
+                    .selected_project_id()
+                    .map(|id| format!("everyone:{id}"))
+        {
+            self.open_project_chat();
         }
         if self.shell.catalog.selected != self.shell.checked_project {
             self.shell.checked_project = self.shell.catalog.selected.clone();
@@ -2725,6 +2785,17 @@ fn sibling_cli() -> Result<PathBuf, String> {
         .filter(|cli| cli.canonicalize().ok() != me.canonicalize().ok())
         .ok_or("The agentdocker command-line tool is not installed beside this app")?;
     Ok(cli)
+}
+
+fn open_native_terminal(request: crate::native_terminal::Request) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || crate::native_terminal::open(request))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+        },
+        Message::NativeTerminalOpened,
+    )
 }
 
 fn resolve_folder(path: PathBuf) -> Task<Message> {
@@ -5145,11 +5216,15 @@ mod tests {
         let _ = app.update(Message::FolderResolved(Ok(project.clone())));
         assert!(app.shell.catalog.selected().unwrap().pinned);
         assert_eq!(app.shell.catalog.selected.as_ref(), Some(&project.root));
-        assert!(
-            commands
-                .try_iter()
-                .all(|cmd| matches!(cmd, Cmd::Journal(_, _) | Cmd::Channels(_, _)))
+        assert_eq!(app.screen, Screen::Chat);
+        assert_eq!(
+            app.shell.conversation,
+            Some(format!("everyone:{}", project.id()))
         );
+        assert!(commands.try_iter().all(|cmd| matches!(
+            cmd,
+            Cmd::Journal(_, _) | Cmd::Channels(_, _) | Cmd::Conversations(_) | Cmd::History(_, _)
+        )));
         assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 0);
     }
     #[test]

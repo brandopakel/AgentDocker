@@ -16,6 +16,24 @@ pub(super) fn notice(
     target: DeliveryTarget,
     c: Colors,
 ) -> Option<Element<'static, Message>> {
+    notice_content(draft, target, c, true)
+}
+
+/// A composer already scrolls all its feedback within the available pane.
+pub(super) fn composer_notice(
+    draft: &ChannelDraft,
+    target: DeliveryTarget,
+    c: Colors,
+) -> Option<Element<'static, Message>> {
+    notice_content(draft, target, c, false)
+}
+
+fn notice_content(
+    draft: &ChannelDraft,
+    target: DeliveryTarget,
+    c: Colors,
+    scroll_details: bool,
+) -> Option<Element<'static, Message>> {
     let report = draft.readiness.as_ref()?;
     if report.needs_attention == 0 {
         return None;
@@ -93,7 +111,11 @@ pub(super) fn notice(
                 c,
             ));
         }
-        body = body.push(scrollable(details).height(180));
+        body = if scroll_details {
+            body.push(scrollable(details).height(180))
+        } else {
+            body.push(details)
+        };
     }
     Some(body.into())
 }
