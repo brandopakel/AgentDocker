@@ -115,9 +115,21 @@ impl Plan {
 
 /// Read bounded UTF-8 configuration without hanging on a special file.
 pub(crate) fn read_config(path: &Path) -> Result<Option<String>> {
-    // A regular file, opened without blocking on a special one, on every
-    // platform.
-    let mut file = match agentdocker_host::files::open_regular(path) {
+    // A configuration file may be a symlink the person keeps (a dotfiles
+    // checkout), so the link is followed; what must not happen is a block
+    // on a special file, which O_NONBLOCK prevents on Unix and the kind
+    // check below refuses everywhere.
+    let opened = {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        options.open(path)
+    };
+    let mut file = match opened {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
