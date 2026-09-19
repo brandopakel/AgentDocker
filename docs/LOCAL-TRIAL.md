@@ -49,6 +49,12 @@ The existing suite covers many protocol/core cases; a checkbox here becomes comp
 
 Use a disposable project and a fresh test session, not all current work. First preview `setup claude-code --dry-run` and `setup codex --dry-run`, inspect only the relevant planned entries, and preserve configuration backups privately. An isolated `AGENTDOCKER_HOME` does **not** relocate the vendor's configuration files: setup uses the actual user/vendor configuration roots.
 
+When using an installed, versioned desktop binary for a private-prefix trial,
+first use `desktop --prefix <trial-prefix> install --from <candidate-app>
+--local-preview`, then run the trial prefix's own CLI. The production versioned
+launcher can refuse a trial home because its installation points at the system
+Applications folder. This is separate from the source-built Stage 1 route.
+
 For candidates containing the guided setup stack, use `setup --preview`, inspect the saved plan, then `--apply PLAN_ID`; the native window uses **Review setup** and **Apply changes**. Use the scoped `--undo PLAN_ID` flow after checking for later user edits. Older candidates may have only direct setup and backups; record which behavior is under test. See [GUIDED-SETUP.md](GUIDED-SETUP.md).
 
 Apply only the chosen adapter when the trial is ready. Ensure the launched hook/MCP server targets the trial endpoint; setting the environment only in a testing terminal does not prove a desktop vendor host inherits it. Verify registry identity, inbox delivery, read observation/stale detection, lease conflict behavior and journal continuity end to end. A `wired` inventory flag alone is not acceptance. Preserve existing unrelated MCP servers/hooks, validate the vendor's actual tool/version, and inspect the diff before restoring a backup so later user changes are not overwritten.
@@ -64,6 +70,17 @@ Run a few hours of supervised work, then an overnight soak with 1/10/100 synthet
 Test sleep/wake, logout/login, app closure, daemon crash and planned upgrade separately. Snapshot command relaunch does not restore model context or terminal state; each vendor conversation-resume integration needs its own acceptance test. Keep Bencher uploads private, with matching before/after manifests and exact source identity.
 
 ## Stage 5 — Other machines and systems
+
+The first coworker rollout explicitly covers **macOS, Linux and native Windows**
+(user confirmation, September 19 UTC). This stage is required for that rollout.
+Record each tested OS version, architecture, candidate checksum and provider
+version; a pass on one platform does not complete another platform's row.
+
+| Coworker platform | Required candidate and trial |
+| --- | --- |
+| macOS | Downloaded desktop on an independent Mac/account; signing/Gatekeeper status, first provider setup/consent, native terminals and Stage 2–4 acceptance. |
+| Linux | Downloaded desktop on the declared target distributions/architectures; graphical session, user service, provider setup, terminals and Stage 2–4 acceptance. |
+| Windows | Complete the [native port](WINDOWS-PORT.md), then test the actual Windows installer, named-pipe daemon/client, ConPTY, provider setup, startup/update and Stage 2–4 acceptance. Foundations CI and WSL do not qualify. |
 
 Transfer the same verified candidate to the second Mac and repeat startup/inventory, one Claude hooks or Codex MCP trial and shutdown. Record architecture and OS version. It has its own registry; do not expect automatic federation. Execute on Intel hardware before claiming Intel runtime validation.
 

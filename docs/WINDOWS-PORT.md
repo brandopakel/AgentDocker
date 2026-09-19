@@ -1,9 +1,15 @@
 # Native Windows delivery work
 
-Windows is an intended native platform and, since the person's first
-coworkers use all three platforms, a first-rollout requirement. The port is
-incomplete and is not a downloadable Windows product. It does not use WSL, a browser server or
+Windows is an intended native platform. The Windows implementation is an incomplete port and
+is not a downloadable Windows product. It does not use WSL, a browser server or
 a required container engine to substitute for native execution.
+
+The user confirmed native Windows, alongside macOS and Linux, for the **first
+coworker rollout** on September 19 UTC. This port is therefore a delivery
+requirement for that rollout, not a deferred platform enhancement. Track its
+completion in [Remaining work](REMAINING-WORK.md) and use the same
+[first-run acceptance](LOCAL-TRIAL.md#stage-5--other-machines-and-systems) as the
+other platforms. Keep the public support matrix truthful until it passes.
 
 The first boundary is core and host I/O: full-resolution process identities,
 same-user process inventory without reading environments or requesting extra
@@ -15,9 +21,11 @@ handles while creating state. Existing owned broad-read state can be narrowed;
 foreign-writable state is refused. Administrators and SYSTEM remain machine
 administrators, as root does on Unix.
 
-The Windows workflow runs these crates on a real Windows runner, including
-ACL refusal, process identity and command descendant cancellation. A successful
-cross-compile alone is not runtime acceptance. Unix CI remains required.
+The Windows workflow runs core/host on a real Windows runner, including
+ACL refusal, process identity and command descendant cancellation, and compiles
+the UI binary. At main `16bf69a`, it does not build/test the complete daemon or
+CLI; the native graphical and release workflows have no Windows target. A
+successful cross-compile alone is not runtime acceptance. Unix CI remains required.
 
 File observations on Windows track native read-only attributes and change
 metadata; Windows has no Unix executable permission bits. Captured Windows

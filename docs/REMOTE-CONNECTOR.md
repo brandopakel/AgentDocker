@@ -22,7 +22,7 @@ against a real account (`any_project_and_cimd`).
 
 Claude's and ChatGPT's browser extensions run an agent in the browser's side
 panel. Those sessions run on the vendor's side; nothing on this machine speaks
-for them ([the inventory](GUIDE.md#bring-in-the-agents-already-on-the-machine)
+for them ([the inventory](GUIDE.md#the-machine)
 finds the extension and says so). When such an agent learns something a terminal
 agent should know, the only way in is the one the vendors offer hosted agents:
 a remote MCP server over public HTTPS with OAuth. The connector is that server,
@@ -171,7 +171,8 @@ OAuth flow is the only gate.
 - The desktop's Tools screen reads `serve.json` (with its process alive) and
   says on each in-browser runtime's card whether the connector is serving, its
   MCP URL, the pairing code and where to add it; it does not start or install
-  the service yet, since the installed CLI predates `connector`.
+  the service yet. The installed CLI now includes `connector`; desktop service
+start/install is still an implementation gap, not an old-binary limitation.
 - Not yet exercised against a real account: the vendors' Client ID Metadata
   Document path (both vendors used DCR when they connected; the next connection
   a vendor makes after this metadata is served is the trial).

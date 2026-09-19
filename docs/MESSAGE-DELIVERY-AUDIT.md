@@ -27,9 +27,11 @@ receipt without explicit ACK calls or another terminal prompt. The initial
 installed repair woke an existing channel session after a one-head, evidence-checked
 legacy recovery; a later text-only response exposed a Stop flush race, now covered
 by the bounded deferred helper and an old-build-fails/new-build-passes regression.
-Both existing Claude sessions are currently plain after independent relaunches;
-app-guided channel reconnect and their resulting idle #everyone acceptance remain
-open. Parser and transport fixtures alone are not model pause evidence. See the
+#196/#199 are now merged. After the September 18 in-app consent, the
+person's managed Claude session received project probe `91b30d039e3c4d09`
+from idle and replied `77976146612248b9` without keyboard input. That recorded
+trial closes the app-guided reconnect/idle case for that session; a separate
+plain Claude process and other runtime/version acceptance remain open. Parser and transport fixtures alone are not model pause evidence. See the
 [source-pinned outcomes](verification/2026-09-12-input-delivery-status.json).
 
 ## September 16: live Claude idle-wake gap reproduced
@@ -46,9 +48,10 @@ retains provider consent, and exposes recipient readiness beside direct and thre
 composers. Unsupported tools disclose the missing automatic route at launch.
 Source `e417ca5` passed the full 1,009-Rust/77-Python gate and 338 rendered
 native workflow steps, including composer readiness and retained drafts.
-It does not retrofit the live Claude process. Safe same-session reconnect with
-old queue/receipt/draft preservation, other providers' input adapters, and installed
-acceptance remain open. No live provider was restarted for this finding.
+It did not retrofit the live Claude process at that checkpoint. Same-session
+reconnect/retained state and the installed managed-Claude idle trial subsequently
+passed through #199/#196; other providers' input adapters and broader installed
+acceptance remain open. No live provider was restarted for this original finding.
 
 ## September 16: CLI broadcast pause did not reach the active Codex turn
 
@@ -917,6 +920,7 @@ MCP transport trial held the pause through refresh, kept the queue unchanged,
 and recovered on a late explicit receipt. The same driver fails against the
 previous binary, which keeps advertising readiness. The [existing delivery
 record](verification/2026-09-12-input-delivery-status.json) retains both outcomes
-and the corrected heartbeat-fixture failure. Review, installation and actual
-session recovery remain pending; this is not an idle-wake or provider-consent
-completion claim.
+and the corrected heartbeat-fixture failure. Review/installation subsequently
+completed through #196, and actual managed-Claude recovery/consent/idle trials
+are recorded separately above; the original transport fixture alone does not
+establish model delivery or universal-provider completion.

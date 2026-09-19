@@ -179,3 +179,24 @@ were removed; monitored user configurations stayed unchanged. Run
 `scripts/claude_setup_smoke.py --binary PATH --manifest PATH --output NEW_DIRECTORY`
 with an installed Claude CLI to repeat this configuration-only trial. It does
 not invoke a model or prove automatic inbox consumption.
+
+## First-install configuration acceptance (September 19)
+
+The installed `9e75e834` package (source `ce82d06`) was installed into a private
+trial prefix and exercised against empty provider configuration. Saved preview,
+apply, health and undo covered Claude/Codex MCP entries, hooks and both shared
+skills; shell setup/undo also passed. Codex hook trust correctly remained
+unverified. The private daemon was stopped after the trial. Details and the
+original operator bookkeeping side effect are retained in the existing
+[integrated record](verification/2026-09-12-integrated-desktop.json).
+
+For an undoable setup, apply the saved plan with `setup --apply <plan-id>`.
+The legacy direct `setup <runtime>` route keeps backups but does not record an
+applied plan. A preview created before a direct write cannot undo that write;
+changed configuration is correctly refused. The native Review setup / Apply
+changes flow uses the saved plan.
+
+This closes configuration-only first-install acceptance at that candidate.
+No provider session used the test profile; authentication, hook trust, startup
+consent, actual idle receipt, independent OS-user behavior and Gatekeeper remain
+separate acceptance.
