@@ -9,7 +9,10 @@
 //! stdio rather than a dependency on a full MCP SDK. Everything written to
 //! stdout is protocol; diagnostics go to stderr.
 
+#[cfg(windows)]
+use agentdocker_host::procinfo::parent_id;
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::os::unix::process::parent_id;
 use std::time::{Duration, Instant};
 

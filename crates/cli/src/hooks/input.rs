@@ -2,11 +2,43 @@
 
 use anyhow::{Context, Result, ensure};
 
+const MAX_INPUT: usize = 1024 * 1024;
+
+/// Windows has no `poll` on a console or pipe handle: a thread reads stdin
+/// to its end and the deadline is kept by waiting for that thread. A read
+/// that outlives the deadline is abandoned with the process, which exits
+/// right after; nothing partial is ever acknowledged.
+#[cfg(windows)]
 pub(super) fn read<T: serde::de::DeserializeOwned>(
     fd: i32,
     timeout: std::time::Duration,
 ) -> Result<T> {
-    const MAX_INPUT: usize = 1024 * 1024;
+    use std::io::Read;
+    ensure!(fd == 0, "hook input is read from stdin only");
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let outcome = std::io::stdin()
+            .lock()
+            .take(MAX_INPUT as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes);
+        let _ = sender.send(outcome);
+    });
+    let bytes = match receiver.recv_timeout(timeout) {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => anyhow::bail!("hook input failed: {error}"),
+        Err(_) => anyhow::bail!("hook input timed out or is unavailable"),
+    };
+    ensure!(bytes.len() <= MAX_INPUT, "hook input exceeds 1 MiB");
+    serde_json::from_slice(&bytes).context("invalid provider hook event")
+}
+
+#[cfg(unix)]
+pub(super) fn read<T: serde::de::DeserializeOwned>(
+    fd: i32,
+    timeout: std::time::Duration,
+) -> Result<T> {
     let deadline = std::time::Instant::now() + timeout;
     let mut bytes = Vec::new();
     loop {
@@ -49,7 +81,7 @@ pub(super) fn read<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(&bytes).context("invalid provider hook event")
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::Write;

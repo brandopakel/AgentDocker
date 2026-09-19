@@ -190,7 +190,10 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     }
     let observed_at = Utc::now();
     let table = agentdocker_host::procinfo::processes().context("cannot inspect hook parent")?;
+    #[cfg(unix)]
     let mut pid = std::os::unix::process::parent_id();
+    #[cfg(windows)]
+    let mut pid = agentdocker_host::procinfo::parent_id();
     let mut host = None;
     for _ in 0..12 {
         let Some(process) = table.iter().find(|p| p.pid == pid) else {

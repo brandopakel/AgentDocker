@@ -2,7 +2,8 @@
 //! Each file is replaced atomically. A multi-file plan can be resumed after
 //! interruption; it never claims a filesystem-wide transaction.
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -114,11 +115,21 @@ impl Plan {
 
 /// Read bounded UTF-8 configuration without hanging on a special file.
 pub(crate) fn read_config(path: &Path) -> Result<Option<String>> {
-    let mut file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(path)
-    {
+    // A configuration file may be a symlink the person keeps (a dotfiles
+    // checkout), so the link is followed; what must not happen is a block
+    // on a special file, which O_NONBLOCK prevents on Unix and the kind
+    // check below refuses everywhere.
+    let opened = {
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        options.open(path)
+    };
+    let mut file = match opened {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
@@ -676,9 +687,15 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
     if !undo {
         let executable = std::fs::metadata(&plan.executable)
             .context("the previewed agentdocker executable is no longer available")?;
+        #[cfg(unix)]
         ensure!(
             executable.is_file() && executable.permissions().mode() & 0o111 != 0,
             "the previewed agentdocker path is not executable"
+        );
+        #[cfg(windows)]
+        ensure!(
+            executable.is_file(),
+            "the previewed agentdocker path is not a file"
         );
     }
     // Prepared/applied/completed receipts have one exact expected state.

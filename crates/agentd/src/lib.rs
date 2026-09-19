@@ -10,11 +10,19 @@
 //! binary is [`main`] and nothing else.
 
 pub mod daemon;
+#[cfg(unix)]
 mod owner;
 pub mod reconcile;
 mod server;
 mod store;
+// Managed sessions (owner processes, PTYs, descriptor handover) are Unix
+// today; Windows gets the same supervisor surface answering `unavailable`.
+#[cfg(unix)]
 mod supervisor;
+#[cfg(windows)]
+#[path = "supervisor_windows.rs"]
+mod supervisor;
+#[cfg(unix)]
 mod takeover;
 mod watcher;
 
@@ -25,8 +33,11 @@ use std::time::Duration;
 use agentdocker_core::{EventKind, paths};
 use agentdocker_host::lock;
 use clap::Parser;
+#[cfg(unix)]
 use tokio::signal::unix::{SignalKind, signal};
-use tracing::{info, warn};
+use tracing::info;
+#[cfg(unix)]
+use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
 use crate::daemon::Daemon;
@@ -103,10 +114,25 @@ pub struct Args {
     take_over: Option<i32>,
 }
 
+/// Stack for the thread the daemon runs on: its one future is large in a
+/// debug build, and a Windows main thread has 1 MiB against 8 on Unix
+/// (the CLI's parser overflowed one on the first Windows runner, #206).
+/// Reserving this costs nothing until it is touched.
+const MAIN_STACK: usize = 32 << 20;
+
 /// Parse the command line and run the daemon until SIGTERM or Ctrl-C.
 pub fn main() -> anyhow::Result<()> {
     agentdocker_host::installation::redirect_managed_launcher()?;
-    run(Args::parse())
+    let args = Args::parse();
+    let worker = std::thread::Builder::new()
+        .name("agentd".into())
+        .stack_size(MAIN_STACK)
+        .spawn(move || run(args))
+        .map_err(|error| anyhow::anyhow!("cannot start the daemon's thread: {error}"))?;
+    match worker.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 /// Run the daemon until SIGTERM or Ctrl-C. Exits at once, successfully,
@@ -114,10 +140,17 @@ pub fn main() -> anyhow::Result<()> {
 /// daemon when they cannot connect, and two may race to do so.
 pub fn run(args: Args) -> anyhow::Result<()> {
     if args.session_owner {
-        let launch: owner::Launch = serde_json::from_reader(std::io::stdin().lock())
-            .map_err(|error| anyhow::anyhow!("session owner expects a launch on stdin: {error}"))?;
-        let code = owner::main(launch)?;
-        std::process::exit(code);
+        #[cfg(unix)]
+        {
+            let launch: owner::Launch =
+                serde_json::from_reader(std::io::stdin().lock()).map_err(|error| {
+                    anyhow::anyhow!("session owner expects a launch on stdin: {error}")
+                })?;
+            let code = owner::main(launch)?;
+            std::process::exit(code);
+        }
+        #[cfg(windows)]
+        anyhow::bail!("session owners are not available on Windows yet");
     }
     serve(args)
 }
@@ -164,9 +197,19 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     }
     // A successor receives the lock and listener from its predecessor
     // instead of taking them; an ordinary daemon takes both itself. Either
-    // way the daemon keeps a copy of each to hand on in its turn.
+    // way the daemon keeps a copy of each to hand on in its turn. Windows
+    // hands nothing over: a daemon there always takes both.
+    #[cfg(windows)]
+    anyhow::ensure!(
+        args.take_over.is_none(),
+        "a daemon handover is not available on Windows"
+    );
+    #[cfg(unix)]
     let takeover = args.take_over.map(takeover::receive).transpose()?;
+    #[cfg(windows)]
+    let takeover: Option<std::convert::Infallible> = None;
     let own_lock = match &takeover {
+        #[cfg(unix)]
         Some(handover) => {
             anyhow::ensure!(
                 handover.handover.home == home && handover.handover.socket == socket,
@@ -174,6 +217,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             );
             None
         }
+        #[cfg(windows)]
+        Some(never) => match *never {},
         None => {
             let Some(lock) = lock::try_exclusive(&lock_path)? else {
                 info!(lock = %lock_path.display(), "another agentd holds the lock; exiting");
@@ -195,6 +240,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     daemon.pin_controllers();
     // Bind before any restored command can execute. Poll serving alongside
     // restoration so an agent's first hook/MCP request can receive a reply.
+    #[cfg(unix)]
     let (listener, predecessor, inherited_restricted, owners_reattached) = match takeover {
         Some(handover) => {
             let listener = handover.tokio_listener()?;
@@ -246,6 +292,19 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             (listener, None, None, false)
         }
     };
+    #[cfg(windows)]
+    let (listener, predecessor, inherited_restricted, owners_reattached): (
+        agentdocker_host::ipc::Listener,
+        Option<std::convert::Infallible>,
+        Option<agentdocker_host::ipc::Listener>,
+        bool,
+    ) = {
+        let listener = server::bind(&daemon).await?;
+        if own_lock.is_some() {
+            daemon.hold(daemon::reload::Held {});
+        }
+        (listener, None, None, false)
+    };
     daemon.expect_watcher();
     watcher::spawn(daemon.clone());
     daemon.notify_desktop();
@@ -294,6 +353,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     // accepted, owners are reattached, and the inherited listener is
     // bound with its queue drained by the accept loop polled alongside.
     let announcer = async {
+        #[cfg(unix)]
         if let Some(socket) = predecessor {
             let answered =
                 daemon::reload::answer_async(socket, daemon::reload::Ready::Serving).await;
@@ -304,6 +364,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 );
             }
         }
+        #[cfg(windows)]
+        let _ = predecessor;
         std::future::pending::<()>().await
     };
     let result = tokio::select! {
@@ -335,12 +397,20 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     result
 }
 
+#[cfg(unix)]
 async fn shutdown_signal() {
     let mut terminate = signal(SignalKind::terminate()).expect("install SIGTERM handler");
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = terminate.recv() => {}
     }
+}
+
+/// Windows has no SIGTERM; a console control event (Ctrl-C, Ctrl-Break, a
+/// closing console) is what stops the daemon, besides a `daemon stop`.
+#[cfg(windows)]
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 #[cfg(test)]

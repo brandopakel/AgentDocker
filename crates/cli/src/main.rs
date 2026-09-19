@@ -1,7 +1,22 @@
 //! `agentdocker`: command-line client for `agentd`.
 
 mod agentfile;
+// Attaching a terminal is a PTY relay; Windows has no ConPTY relay yet
+// and says so.
+#[cfg(unix)]
 mod attach;
+#[cfg(windows)]
+mod attach {
+    use anyhow::Result;
+
+    use crate::client::Client;
+
+    pub async fn run(_client: &Client, agent: &str) -> Result<()> {
+        anyhow::bail!(
+            "attaching a terminal is not available on Windows yet; {agent} still receives messages and answers questions through its own tools"
+        )
+    }
+}
 mod client;
 mod codex_input;
 mod connector;
@@ -1355,14 +1370,35 @@ struct ClaimArgs {
     amount: Option<u64>,
 }
 
+/// Stack for the thread that does the work. Clap's derived parser for
+/// this many commands and the one future behind every command want more
+/// than a Windows main thread has (1 MiB, against 8 on Unix): a debug
+/// build overflowed it on `ping` on the first Windows runner (#206).
+/// Reserving this costs nothing until it is touched.
+const MAIN_STACK: usize = 32 << 20;
+
 /// A command ends with a status a script can branch on: the daemon's
 /// answer by its class (see [`client::exit_code`]), anything else as
 /// unexpected. The words go to stderr as they always did.
-#[tokio::main]
-async fn main() {
-    if let Err(error) = run().await {
-        eprintln!("Error: {error:#}");
-        std::process::exit(client::exit_code_for(&error));
+fn main() {
+    let worker = std::thread::Builder::new()
+        .name("agentdocker".into())
+        .stack_size(MAIN_STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime")
+                .block_on(run())
+        })
+        .expect("a thread with room to run the command");
+    match worker.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            eprintln!("Error: {error:#}");
+            std::process::exit(client::exit_code_for(&error));
+        }
+        Err(panic) => std::panic::resume_unwind(panic),
     }
 }
 
@@ -1660,13 +1696,16 @@ async fn run() -> Result<()> {
             token_file,
         } => {
             use std::io::Write;
+            #[cfg(unix)]
             use std::os::unix::fs::OpenOptionsExt;
-            // Reserve the private output before creating a credential.
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&token_file)?;
+            // Reserve the private output before creating a credential: a
+            // mode on Unix, the containing directory's ACL on Windows
+            // (where a workspace grant is refused by the daemon anyway).
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut file = options.open(&token_file)?;
             let response = client
                 .call(&Request::GrantAccess {
                     agent,
@@ -4106,7 +4145,7 @@ mod tests {
     fn parse_cli<const N: usize>(args: [&'static str; N]) -> Result<super::Cli, clap::Error> {
         use clap::Parser;
         std::thread::Builder::new()
-            .stack_size(32 << 20)
+            .stack_size(super::MAIN_STACK)
             .spawn(move || super::Cli::try_parse_from(args))
             .expect("a parsing thread")
             .join()

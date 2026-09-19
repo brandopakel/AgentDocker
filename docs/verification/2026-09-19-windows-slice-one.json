@@ -1,0 +1,138 @@
+{
+  "status": "passed: the first native Windows daemon/CLI slice on a real windows-latest runner (Windows Server 2025, AMD64): agentd and agentdocker built from 7b3fd108 answered all 17 smoke steps over the named pipe, including three refusals in words and two on-demand starts. Not a person's machine and not a Windows candidate build.",
+  "date": "2026-09-19",
+  "platform": "Windows 2025Server AMD64",
+  "pr": "#206 claude/windows-daemon-cli",
+  "method": "The Windows native foundations workflow built both binaries natively (cargo build --locked -p agentdocker, rustc 1.98.1 stable-x86_64-pc-windows-msvc, debug profile) and ran scripts/windows_daemon_smoke.py, whose report is the run's windows-daemon-smoke artifact and is copied here. The smoke drives a private daemon on a home the daemon creates itself under the runner's temporary directory, captures every command through pipes as a script would (bounded: exit in time, pipes closed after exit), and asks each daemon it started to exit.",
+  "runs": [
+    {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35425880682",
+      "job": "https://github.com/brandopakel/AgentDocker/actions/runs/35425880682/job/105851611061",
+      "head": "7b3fd108c0fa47e545c0cdc026e3d19574875b50",
+      "started_at": "2026-09-19T06:10:18Z",
+      "completed_at": "2026-09-19T06:15:24Z",
+      "runner": "GitHub Actions 1000016583 (windows-latest)",
+      "binary_sha256": {
+        "agentdocker.exe": "220556cb0cb62b2ea4772b8771d1e4a37758f7f73d7e1995015d41d1ae65a0b1",
+        "agentd.exe": "02ef1559247787f19f0b30b2c64f647fafcac553695c7303b8b4ecc44fbbd646"
+      },
+      "steps": [
+        {
+          "step": "the daemon answers ping over the local transport",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "step": "daemon status names the serving executable",
+          "ok": true,
+          "detail": "service   none on Windows yet (run `agentd` yourself, or `agentdocker daemon start` starts one)\ndaemon    agentd 0.1.0 up 0s at \\\\.\\pipe\\agentdocker-cae632cf34775d8388add6b3cab10f90-host (pid 1876)\nserving   D:\\a\\AgentDocker\\AgentDocker\\target\\debug\\agentd.exe\ncontainer \\\\.\\pipe\\agentdocker-cae632cf34775d8388add6b3cab10f90-restricted\nlog       \\\\?\\C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-3f1d1752\\agentd.log"
+        },
+        {
+          "step": "two agents register with their pids",
+          "ok": true,
+          "detail": "('9ccbd4365a9b47ccb0e2d89155103180', '06c2fcf4397a44259ab688def3efd3c2')"
+        },
+        {
+          "step": "ps lists both as running",
+          "ok": true,
+          "detail": "AGENT ID       NAME        PROJECT   BRANCH   HEAD   RUNTIME   MODEL   STATUS    INPUT                        DOING     PID    CREATED\n9ccbd4365a9b   smoke-one   project   master   -      custom    -       running   Idle delivery not verified   unknown   1912   0s ago\n06c2fcf4397a   smoke-two   project   master   -      custom    -       running   Idle delivery not verified   unknown   1876   0s ago"
+        },
+        {
+          "step": "a message sent to an agent is read from its inbox",
+          "ok": true,
+          "detail": "06:15:07  8c1998892cae4fb5  9ccbd4365a9b \u00e2\u2020\u2019 06c2fcf4397a  [chat]  hello from one"
+        },
+        {
+          "step": "a project broadcast reaches the other agent",
+          "ok": true,
+          "detail": "06:15:07  16db61d6f40443f6  9ccbd4365a9b \u00e2\u2020\u2019 project:95d52663036f  [chat]  hello everyone"
+        },
+        {
+          "step": "a lease is held and a second claim is refused",
+          "ok": true,
+          "detail": "Error: path:\\\\?\\C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-kg7qbst1\\project\\file.txt is held by smoke-one (9ccbd4365a9b; exclusive on path:\\\\?\\C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-kg7qbst1\\project\\file.txt) (Conflict)\n{\n  \"held_by\": [\n    {\n      \"acquired_at\": \"2026-09-19T06:15:07.148760900Z\",\n      \"change_seq\": 0,\n      \"expires_at\": \"2026-09-19T06:16:07.148760900Z\",\n      \"holder\": \"9ccbd4365a9b47ccb0e2d89155103180\",\n      \"id\": \"b6246905e1b2\",\n      \"mode\": \"exclusive\",\n      \"resource\": \"path:\\\\\\\\?\\\\C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\agentdocker-smoke-kg7qbst1\\\\project\\\\file.txt\"\n    }\n  ]\n}"
+        },
+        {
+          "step": "daemon install is refused on Windows in words",
+          "ok": true,
+          "detail": "Error: the daemon service is not available on Windows yet: run `agentd` yourself, or `agentdocker daemon start` starts one for this home and `daemon stop` asks it to exit"
+        },
+        {
+          "step": "attach is refused on Windows in words, not with a hang",
+          "ok": true,
+          "detail": "Error: attaching a terminal is not available on Windows yet; smoke-one still receives messages and answers questions through its own tools"
+        },
+        {
+          "step": "daemon reload is refused on Windows in words",
+          "ok": true,
+          "detail": "Error: reload failed: live daemon reload is not available on Windows; stop and start the daemon instead, and its agents reconnect (Unavailable)"
+        },
+        {
+          "step": "a managed launch is refused on Windows in words",
+          "ok": true,
+          "detail": "Error: managed sessions are not available on Windows yet; register or adopt a process you run yourself (Internal)"
+        },
+        {
+          "step": "stop ends a registered process whose identity matches its record",
+          "ok": true,
+          "detail": "bbcc008346e940f9a0594d7de490101e"
+        },
+        {
+          "step": "daemon stop ends the daemon",
+          "ok": true,
+          "detail": "stopped the running agentd"
+        },
+        {
+          "step": "daemon start brings up a daemon on demand for this home",
+          "ok": true,
+          "detail": "agentd 0.1.0 up 0s"
+        },
+        {
+          "step": "daemon stop ends the daemon a client started",
+          "ok": true,
+          "detail": "stopped the running agentd"
+        },
+        {
+          "step": "the first command on a fresh home creates it and starts a daemon",
+          "ok": true,
+          "detail": "agentd 0.1.0 up 0s\nC:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-3f1d1752-fresh owner=\nC:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-3f1d1752-fresh NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                                                         runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData\\Local\\Temp owner=\nC:\\Users\\runneradmin\\AppData\\Local\\Temp NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                        BUILTIN\\Administrators:(OI)(CI)(F)\n                                        runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData\\Local owner=\nC:\\Users\\runneradmin\\AppData\\Local NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                   BUILTIN\\Administrators:(OI)(CI)(F)\n                                   runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData owner=\nC:\\Users\\runneradmin\\AppData NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                             BUILTIN\\Administrators:(OI)(CI)(F)\n                             runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin owner=\nC:\\Users\\runneradmin NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                     BUILTIN\\Administrators:(OI)(CI)(F)\n                     runnervmvmocb\\runneradmin:(OI)(CI)(F)\n                     S-1-15-3-65536-599108337-2355189375-1353122160-3480128286-3345335107-485756383-4087318168-230526575:(S,X)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users owner=\nC:\\Users NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n         BUILTIN\\Administrators:(OI)(CI)(F)\n         BUILTIN\\Users:(RX)\n         BUILTIN\\Users:(OI)(CI)(IO)(GR,GE)\n         Everyone:(RX)\n         Everyone:(OI)(CI)(IO)(GR,GE)\n         S-1-15-3-65536-4045685566-1323397456-4055816110-285687253-194181-4019357623-1925838800-191844675:(S,RD,X)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\ owner=\nC:\\ S-1-15-3-65536-1888954469-739942743-1668119174-2468466756-4239452838-1296943325-355587736-700089176:(S,RD,X,RA)\n    NT AUTHORITY\\Authenticated Users:(AD)\n    NT AUTHORITY\\Authenticated Users:(OI)(CI)(IO)(M)\n    NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n    BUILTIN\\Administrators:(OI)(CI)(F)\n    BUILTIN\\Users:(OI)(CI)(RX)\n    Mandatory Label\\High Mandatory Level:(OI)(NP)(IO)(NW)\n\nSuccessfully processed 1 files; Failed processing 0 files"
+        },
+        {
+          "step": "that daemon is ended too",
+          "ok": true,
+          "detail": "stopped the running agentd"
+        }
+      ],
+      "root_acl": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-kg7qbst1 owner=\nC:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-kg7qbst1 NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                                                   BUILTIN\\Administrators:(OI)(CI)(F)\n                                                                   OWNER RIGHTS:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData\\Local\\Temp owner=\nC:\\Users\\runneradmin\\AppData\\Local\\Temp NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                        BUILTIN\\Administrators:(OI)(CI)(F)\n                                        runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData\\Local owner=\nC:\\Users\\runneradmin\\AppData\\Local NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                   BUILTIN\\Administrators:(OI)(CI)(F)\n                                   runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData owner=\nC:\\Users\\runneradmin\\AppData NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                             BUILTIN\\Administrators:(OI)(CI)(F)\n                             runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin owner=\nC:\\Users\\runneradmin NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                     BUILTIN\\Administrators:(OI)(CI)(F)\n                     runnervmvmocb\\runneradmin:(OI)(CI)(F)\n                     S-1-15-3-65536-599108337-2355189375-1353122160-3480128286-3345335107-485756383-4087318168-230526575:(S,X)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users owner=\nC:\\Users NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n         BUILTIN\\Administrators:(OI)(CI)(F)\n         BUILTIN\\Users:(RX)\n         BUILTIN\\Users:(OI)(CI)(IO)(GR,GE)\n         Everyone:(RX)\n         Everyone:(OI)(CI)(IO)(GR,GE)\n         S-1-15-3-65536-4045685566-1323397456-4055816110-285687253-194181-4019357623-1925838800-191844675:(S,RD,X)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\ owner=\nC:\\ S-1-15-3-65536-1888954469-739942743-1668119174-2468466756-4239452838-1296943325-355587736-700089176:(S,RD,X,RA)\n    NT AUTHORITY\\Authenticated Users:(AD)\n    NT AUTHORITY\\Authenticated Users:(OI)(CI)(IO)(M)\n    NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n    BUILTIN\\Administrators:(OI)(CI)(F)\n    BUILTIN\\Users:(OI)(CI)(RX)\n    Mandatory Label\\High Mandatory Level:(OI)(NP)(IO)(NW)\n\nSuccessfully processed 1 files; Failed processing 0 files",
+      "home_acl": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-3f1d1752 owner=\nC:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-3f1d1752 NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                                                   runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData\\Local\\Temp owner=\nC:\\Users\\runneradmin\\AppData\\Local\\Temp NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                        BUILTIN\\Administrators:(OI)(CI)(F)\n                                        runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData\\Local owner=\nC:\\Users\\runneradmin\\AppData\\Local NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                   BUILTIN\\Administrators:(OI)(CI)(F)\n                                   runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData owner=\nC:\\Users\\runneradmin\\AppData NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                             BUILTIN\\Administrators:(OI)(CI)(F)\n                             runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin owner=\nC:\\Users\\runneradmin NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                     BUILTIN\\Administrators:(OI)(CI)(F)\n                     runnervmvmocb\\runneradmin:(OI)(CI)(F)\n                     S-1-15-3-65536-599108337-2355189375-1353122160-3480128286-3345335107-485756383-4087318168-230526575:(S,X)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users owner=\nC:\\Users NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n         BUILTIN\\Administrators:(OI)(CI)(F)\n         BUILTIN\\Users:(RX)\n         BUILTIN\\Users:(OI)(CI)(IO)(GR,GE)\n         Everyone:(RX)\n         Everyone:(OI)(CI)(IO)(GR,GE)\n         S-1-15-3-65536-4045685566-1323397456-4055816110-285687253-194181-4019357623-1925838800-191844675:(S,RD,X)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\ owner=\nC:\\ S-1-15-3-65536-1888954469-739942743-1668119174-2468466756-4239452838-1296943325-355587736-700089176:(S,RD,X,RA)\n    NT AUTHORITY\\Authenticated Users:(AD)\n    NT AUTHORITY\\Authenticated Users:(OI)(CI)(IO)(M)\n    NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n    BUILTIN\\Administrators:(OI)(CI)(F)\n    BUILTIN\\Users:(OI)(CI)(RX)\n    Mandatory Label\\High Mandatory Level:(OI)(NP)(IO)(NW)\n\nSuccessfully processed 1 files; Failed processing 0 files",
+      "result": "passed"
+    }
+  ],
+  "earlier_runs_on_this_branch": [
+    {
+      "head": "baa1e8e1",
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35422131261",
+      "result": "failed",
+      "what": "the daemon refused the smoke's pre-created home: 'state or ancestor belongs to an untrusted Windows principal' (an elevated runner's objects belong to the Administrators group; Access::State requires the user's SID); and 'agentdocker ping' died with 'thread main has overflowed its stack' (1 MiB Windows main thread against the CLI's parser and main future in a debug build)"
+    },
+    {
+      "head": "b167ebef",
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35423586032",
+      "result": "failed",
+      "what": "the daemon refused a home it made under a directory Python's mkdtemp made: 'state is writable by another Windows principal'. This run's root_acl shows why: CPython's os.mkdir(mode=0o700) on Windows gives the directory an explicit DACL of SYSTEM, Administrators and OWNER RIGHTS (S-1-3-4), and the ACL check does not count OWNER RIGHTS as the (already validated) owner"
+    },
+    {
+      "head": "5251cf4e",
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35424179909",
+      "result": "cancelled after 26 minutes in 'daemon start'",
+      "what": "the on-demand agentd inherited the CLI's captured stdout/stderr pipe (Windows children inherit every inheritable handle), so the capture never saw EOF; command::detach now makes the client's standard handles non-inheritable"
+    }
+  ],
+  "not_covered": [
+    "a person's Windows machine, an installed candidate, and the desktop: this is a CI runner running debug binaries built in the job",
+    "managed sessions, attach (ConPTY), the native Codex queue, daemon reload, container transport, the installer and the services: refused in words on Windows, as the steps show",
+    "the daemon and CLI test suites on Windows (only core and host run there)",
+    "OWNER RIGHTS (S-1-3-4) as the validated owner in the Windows ACL check: a home under a Python-made temporary directory is still refused; recorded as open in REMAINING-WORK",
+    "real providers, sustained use, sleep/reboot"
+  ]
+}

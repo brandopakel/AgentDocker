@@ -140,17 +140,17 @@ impl Layout {
         if let Some(socket) = socket {
             validate_service_socket(socket)?;
         }
+        let agentd_binary = format!("agentd{}", std::env::consts::EXE_SUFFIX);
         let agentd = agentdocker_host::procinfo::executable_path()
             .ok()
-            .and_then(|me| me.parent().map(|dir| dir.join("agentd")))
+            .and_then(|me| me.parent().map(|dir| dir.join(&agentd_binary)))
             .filter(|sibling| sibling.is_file())
-            .or_else(|| which("agentd"))
+            .or_else(|| which(&agentd_binary))
             .context("cannot find the agentd binary beside agentdocker or on PATH")?;
         let home = agentdocker_host::dirs::home();
         // Discovery is also used by status/dry-run; neither creates state.
         // Service ownership is the caller's identity, not a directory's owner.
-        // SAFETY: geteuid has no preconditions.
-        let uid = unsafe { libc::geteuid() };
+        let uid = current_uid();
         let user_home = std::env::home_dir().context("no home directory")?;
         let home = home.canonicalize().unwrap_or(home);
         let socket = service_socket(&home, socket);
@@ -203,10 +203,8 @@ impl Layout {
 }
 
 fn which(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")?
-        .to_str()?
-        .split(':')
-        .map(|dir| Path::new(dir).join(name))
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(name))
         .find(|candidate| candidate.is_file())
 }
 
@@ -373,8 +371,12 @@ pub fn stop_plan(layout: &Layout, macos: bool) -> Plan {
     }
 }
 
-/// Is the service definition on disk?
+/// Is the service definition on disk? Never on a platform without a
+/// service manager.
 fn installed(layout: &Layout, macos: bool) -> bool {
+    if !SERVICE_MANAGER {
+        return false;
+    }
     if macos {
         layout.plist_path().is_file()
     } else {
@@ -384,6 +386,9 @@ fn installed(layout: &Layout, macos: bool) -> bool {
 
 /// Does the service manager consider it loaded / active?
 fn loaded(layout: &Layout, macos: bool) -> bool {
+    if !SERVICE_MANAGER {
+        return false;
+    }
     let status = if macos {
         Command::new("launchctl")
             .args(["print", &layout.target()])
@@ -482,10 +487,24 @@ async fn wait_for_daemon(client: &Client) -> Result<()> {
     }
 }
 
+/// Whether this platform has a user service manager the daemon can be
+/// filed under: launchd on macOS, systemd on Linux. On Windows there is
+/// none yet, so `install` and `uninstall` say so, and the subcommands
+/// that only speak to a daemon over its transport (`start` on demand,
+/// `stop`, `restart`, `status`, `vacuum`, `reload`) still do.
+const SERVICE_MANAGER: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+
 pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
     let macos = cfg!(target_os = "macos");
-    if !macos && !cfg!(target_os = "linux") {
-        bail!("service management is supported on macOS (launchd) and Linux (systemd) only");
+    if !SERVICE_MANAGER
+        && matches!(
+            &args.command,
+            DaemonCommand::Install { .. } | DaemonCommand::Uninstall { .. }
+        )
+    {
+        bail!(
+            "the daemon service is not available on Windows yet: run `agentd` yourself, or `agentdocker daemon start` starts one for this home and `daemon stop` asks it to exit"
+        );
     }
     // Service commands always use the canonical layout socket.
     let layout = Layout::discover(socket.as_deref())?;
@@ -607,7 +626,11 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                 layout.unit_path()
             };
             let manager = if macos { "launchd" } else { "systemd" };
-            if installed(&layout, macos) {
+            if !SERVICE_MANAGER {
+                println!(
+                    "service   none on Windows yet (run `agentd` yourself, or `agentdocker daemon start` starts one)"
+                );
+            } else if installed(&layout, macos) {
                 let state = if loaded(&layout, macos) {
                     "loaded"
                 } else {
@@ -660,6 +683,24 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The effective user id a launchd or systemd unit is filed under; on
+/// Windows there is neither, and no service is installed (see `install`).
+pub(crate) fn current_uid_for_service() -> u32 {
+    current_uid()
+}
+
+fn current_uid() -> u32 {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions.
+        unsafe { libc::geteuid() }
+    }
+    #[cfg(windows)]
+    {
+        0
+    }
 }
 
 #[cfg(test)]
