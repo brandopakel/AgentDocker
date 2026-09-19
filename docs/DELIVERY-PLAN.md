@@ -17,26 +17,24 @@ Windows — and those open items live only in [Remaining work](REMAINING-WORK.md
 ## Product and engineering requirements
 
 
-### Current integration and installation (September 18 UTC)
+### Current integration and installation (September 19 UTC)
 
-The desktop and stable CLI/hooks now use local-preview `652cf6a3`, clean source
-`e4eae3e` (PR #196), schema 23; `8cbae3a9` is retained. The app reopened and all
-six live provider identities and processes were preserved. The serving coordinator
-was not restarted: its signed binary is byte-identical to the candidate's.
-The new receipt recovery passed 1,264 Rust tests (seven skipped), 94 Python
-checks (one skipped), fourteen packaged channel scenarios and thirteen real
-previous/candidate/rollback scenarios. Actual private Claude idle, busy and
-text-only-then-idle trials replied to project pauses in the same chat without
-an explicit ACK or another terminal prompt. The initial installed repair exposed
-the final-response flush race; the deferred Stop helper fixes that tested case.
-Exact sources and failures remain in the [input-delivery record](verification/2026-09-12-input-delivery-status.json).
+The [current component table](REMAINING-WORK.md#delivered-source-and-current-desktop)
+is authoritative: main `14f1c519`, installed shared-chat app/CLI `9e75e834`
+from `ce82d06`, retained coordinator `6bd97894`/PID 92608/schema 23, and
+Codex receiver `486c5dd0`/PID 60959. The different versions preserve active
+provider sessions; usage collection is merged but not active on that coordinator.
+#200/#203/#204 remain integration work. Source-specific packaged acceptance
+passed 545 rendered steps/31 checks and 13 install/rollback scenarios;
+physical-input and independent-machine acceptance remain.
 
-Existing Claude sessions were relaunched plainly and currently have no input
-channel. App-guided same-session reconnect, preserved identity/queue and provider
-consent in the app terminal remain the immediate work, followed by their actual
-idle #everyone pause/reply acceptance. Other-provider parity and broader release
-acceptance are not closed by these Claude trials. Final GitHub review and CI for
-#196 remain separate from this tested local-preview installation.
+#196/#199 reconnect and #202 peer-answer delivery are merged. The person's
+in-app Claude consent was followed by a peer-only idle project input and reply
+(`91b30d039e3c4d09` → `77976146612248b9`) on the recorded managed session.
+This closes that bounded case, not idle wake for plain sessions or every provider.
+Historical September 18 source/installation episodes and failures remain in the
+[existing input-delivery record](verification/2026-09-12-input-delivery-status.json)
+and [native queue record](verification/2026-09-15-native-codex-queue.json).
 
 ### Historical integration and installation (September 17 UTC)
 
@@ -553,7 +551,7 @@ Each finding records: ID, invariant, source/PR, reproduction and original output
 
 ## Testing-standard crosswalk
 
-This checklist covers every category in [TESTING-AND-BENCHMARKS.md](TESTING-AND-BENCHMARKS.md). Status is audited against `aaa1b61` and the linked source-specific evidence. **Passed** applies only to the stated scope; **partial** means an existing requirement is still untested or unfinished. Release acceptance must use the final candidate on applicable platforms.
+This checklist covers every category in [TESTING-AND-BENCHMARKS.md](TESTING-AND-BENCHMARKS.md). The original baseline was `aaa1b61`; dispositions were reconciled on September 19 against current source and the linked source-specific evidence. **Passed** applies only to the stated scope; **partial** means an existing requirement is still untested or unfinished. Release acceptance must use the final candidate on applicable platforms.
 
 | ID | Required work | Existing evidence requirements | Audited status and remaining evidence |
 |---|---|---|---|
@@ -567,7 +565,7 @@ This checklist covers every category in [TESTING-AND-BENCHMARKS.md](TESTING-AND-
 | T08 | Independent engine acceptance | Docker and Podman builds, lifecycle, crash recovery, scoped auth, image-bound validation, checkout/socket mappings; separate Linux jobs and actual macOS Docker Desktop/Podman VM trials. Record engine/image/source versions and stop only fixture resources. | Partial: independent Docker/Podman lifecycle/workspace/relay CI passes. Older Mac Podman evidence is separate; current macOS Docker Desktop/Podman and final-candidate acceptance remain. |
 | T09 | Crash and failure injection | Before/after SQLite commit and spawn; failed/slow output and storage; lost watcher; expired/revoked token; unavailable engine; timeout and surviving descendant. Assert no unprotected/duplicate writer or invented durable success. | Partial: retained failing-before/passing-after restore, launch, output, queue and cleanup regressions exist. Live-transfer faults, broader storage failures, sleep/reboot and uncertain-write acceptance remain. |
 | T10 | Latency and resource baselines | p50/p95/p99 request/hook latency, throughput, stale-warning delay/misses/false alerts, restart/handoff time, watcher gaps, fingerprint throughput, SQLite latency, RSS/CPU/FD/disk/log growth. Hook coordination/output has a one-second deadline; input and activity have separate phase budgets. | Partial: source-bound short resource, quiet 100-agent UI, hour-long daemon and provider-queue measurements exist. Full hook/stale/restart/handoff, FD/disk growth and platform budgets remain. |
-| T11 | Workload breadth and soaks | 1/10/100 agents; small/medium/large checkouts; cold and warm runs separately; repeated baselines, hours then overnight. Performance initially advisory, correctness blocking. No sustained-use claim from a short test. | Partial: [one-hour 100-agent/10,000-file trial](verification/2026-09-11-hour-sustained-use.json) and [30-minute Codex trial](verification/2026-09-12-thirty-minute-codex-queue.json) pass at their recorded sources. Overnight, sleep/reboot, repeated size/platform workloads remain. |
+| T11 | Workload breadth and soaks | 1/10/100 agents; small/medium/large checkouts; cold and warm runs separately; repeated baselines, hours then overnight. Performance initially advisory, correctness blocking. No sustained-use claim from a short test. | Partial: [one-hour 100-agent/10,000-file trial](verification/2026-09-11-hour-sustained-use.json) and [30-minute Codex trial](verification/2026-09-12-thirty-minute-codex-queue.json) pass at their recorded sources. The later 7.5-hour synthetic campaign is recorded in `2026-09-14-overnight-sustained-use.json`. Overnight current-provider, sleep/reboot and repeated size/platform workloads remain. |
 | T12 | Evidence and cleanup | Source/dirty identity, compiler/tools, OS/CPU/architecture, workload/engine/image, originals of failures and every attempted diagnosis, JUnit/coverage/BMF/fuzz artifacts. Verify owned descendants and fixture daemons exit; retain needed failure state privately. | Implemented procedure, ongoing per campaign: provenance, original failures, private diagnostics, sanitized reports, process and storage cleanup exist. Prior branch cleanup is complete. Do not discard unexplained failures or treat historical binaries as new-source evidence. |
 
 ## Local-trial crosswalk
@@ -578,18 +576,18 @@ Execute [LOCAL-TRIAL.md](LOCAL-TRIAL.md) in order. Every Stage 2 row below requi
 |---|---|---|---|
 | L01 / 1 | Isolated build and launch | Matching CLI/daemon/GUI binaries from a pinned source, private state/socket/repository, standard gate, safe fixture-only ownership and cleanup. | Passed for PR #119: pinned CLI/daemon/GUI, isolated fixtures, standard gate, package validation and owned-process cleanup. The installed main provenance is recorded in its final PR comment. |
 | L02 / 2 | Startup and GUI | Normal/CLI/repeated launch, reopen, unavailable socket, long/missing/symlinked home; responsive native window, automatic refresh and no required TCP or engine throughout the trial. | Partial: four-target native CI plus final-source local window/workflow and Launch Services checks pass. Retained incomplete captures and broader installed/platform startup acceptance remain. |
-| L03 / 2 | Inventory and discovery | Idle CLI and desktop app, process start/change/exit/PID reuse, scan failure, app without shell PATH; preserve last good scan and distinguish actual capabilities. | Partial: discovery/identity/configuration fixtures pass; helpers are excluded in current source. Old production daemon still exposes a Chrome helper. Actual capability proof, production reconciliation, current-version and Windows inventory remain. |
+| L03 / 2 | Inventory and discovery | Idle CLI and desktop app, process start/change/exit/PID reuse, scan failure, app without shell PATH; preserve last good scan and distinguish actual capabilities. | Partial: discovery/identity/configuration fixtures pass; helpers are excluded in current source. The historical Chrome-helper record was removed and helper adoption is refused by current source. Actual capability proof, production reconciliation, current-version and Windows inventory remain. |
 | L04 / 2 | Managed processes | Batch/PTY input/output, attach/detach/resize, no-newline/noisy output, natural exit and stop/force-stop including descendants; preserve leases until verified exit. | Passed bounded Unix fixtures: [output-drain and pipe/PTY evidence](verification/2026-09-12-output-drain.json), desktop terminal and CLI lifecycle scenarios. This does not cover live ownership transfer or Windows ConPTY. |
 | L05 / 2 | Coordination | Two writers through physical aliases, shared readers, FIFO waiting, timeout/disconnect and deadlock; actual blocker attribution. Include Windows spelling/case/reparse behavior. | Partial: native lease/FIFO/deadlock/stale/alias regressions and engine fixtures pass. Full Windows physical-path and process-lifetime integration remains. |
 | L06 / 2 | Working state | Read/observe/edit/stale/reread, watcher outage and gaps, journal cursor/reconnect; stale data cannot be accepted as fresh. | Partial: observation/journal tests and [100-repeat watcher regressions](verification/2026-09-11-macos-watcher-recovery.json) pass. Verify installed daemon after switching; longer outage/retention workloads remain. |
 | L07 / 2 | Handoff and validation | Source/image changes, timeout/survivors, checkpoint, addressed acceptance and lease transfer, wrong recipient and cross-host import; evidence and identity must match. | Partial: source/image validation, owned-fixture timeout/cleanup and addressed handoff regressions pass. Broad final-candidate/platform and provider-conversation restoration remain separate acceptance. |
 | L08 / 2 | Channels and contests | Membership, review/approval, wrong owner/checkout validation, reported metrics, ties/noise floor; no implied automatic merge. | Partial: channel/contest protocol and native workflow tests pass, and current peers exchange actual project/direct messages. That does not prove all actual review/verdict/closure and noise-floor scenarios on every platform. |
-| L09 / 2 | Human interaction | Questions/answers, timeout/disconnect, missing/denied notifications, GUI answer failures; delivery failure cannot imply the user saw a notification. | Partial: durable questions, exact provider-answer receipts, native routes and bounded installed Notification Center message/question/stale-target clicks pass. Fully closed-app launch, signed-release posting and accessibility/IME remain. |
+| L09 / 2 | Human interaction | Questions/answers, timeout/disconnect, missing/denied notifications, GUI answer failures; delivery failure cannot imply the user saw a notification. | Partial: durable questions, exact provider-answer receipts, native routes and bounded installed Notification Center message/question/stale-target clicks pass. Zero-GUI-process launch passed on the recorded September 17 local preview; signed-release posting, later-candidate physical input and accessibility/IME remain. |
 | L10 / 2 | Multiplexers | Owned existing tmux session and new pane, invalid combinations, name collision and immediate exit; exact session and clear ownership/log limits. | Partial: environment/ancestry and owned tmux launch fixtures exist. Broad installed/platform acceptance remains; herdr focus/input bridge is an optional deferred design. |
 | L11 / 2 | Storage and restart | Graceful stop, forced death, write failure, missing executable/cwd, reboot/sleep/wake; no duplicate/unprotected launch, explicit stop retained. Exercise unresolved spawn/commit gap. | Partial: crash/restart/schema/restore failure fixtures pass; automatic journal/checkpoint retention is implemented with injected-failure and clock-skew tests. Sleep/wake, login/reboot and live replacement remain. |
 | L12 / 2 | Installation and update | Move/rename bundle, distinct-source update, rollback/uninstall, service preview, collision/tamper/stale input, schema and interrupted activation; stable references and explicit live-session behavior. | Passed local installation scope: PR #119 package activation/rollback/uninstall, legacy hooks/MCP and actual /Applications launch. Hosted signed updates, second-machine/service and live daemon replacement remain partial. |
 | L13 / 3 | Fresh actual providers | One Claude Code hooks session then one Codex MCP session; inspect preview, scoped config change/undo, registry, consumed inbox, stale read, lease conflict and journal continuity. Record runtime versions and original failures; configuration health is insufficient. | Partial: actual Claude/Codex queue, identity, question and bounded interruption trials pass at recorded source/runtime versions. September 14 peer audit messages were consumed and answered through the app. Broader versions/reviews/soaks remain. |
-| L14 / 4 | Installed sustained use | After blockers and Stage 2 pass, explicit installation, on-demand startup first, hours then overnight; sleep/wake, login/logout, app closure, daemon crash and planned upgrade separately. Vendor context resumption needs separate proof. | Partial: installed app is in active use; bounded 30-minute provider and hour-long synthetic daemon trials exist. Hours-to-overnight, sleep/wake/login, actual daemon switch and successive live upgrades remain. |
+| L14 / 4 | Installed sustained use | After blockers and Stage 2 pass, explicit installation, on-demand startup first, hours then overnight; sleep/wake, login/logout, app closure, daemon crash and planned upgrade separately. Vendor context resumption needs separate proof. | Partial: installed app is in active use; bounded 30-minute provider and hour-long synthetic daemon trials exist. The 7.5-hour synthetic run and reviewed explicit coordinator switches have separate evidence. Current-provider overnight, sleep/wake/login and successive live upgrades remain. |
 | L15 / 5 | Second Mac and other systems | Same candidate and independent registry on second Mac; Intel hardware acceptance distinct from Rosetta. Linux target distributions/ARM64/x86-64 graphical and service trials. Native Windows equivalent after full implementation; WSL is Linux evidence. | Partial: native Mac/Linux ARM64/x86-64 CI passes; Windows foundations pass. Independent second Mac, physical Intel, target Linux services/packages and complete native Windows product remain. |
 
 ## Exit criteria

@@ -49,6 +49,12 @@ The existing suite covers many protocol/core cases; a checkbox here becomes comp
 
 Use a disposable project and a fresh test session, not all current work. First preview `setup claude-code --dry-run` and `setup codex --dry-run`, inspect only the relevant planned entries, and preserve configuration backups privately. An isolated `AGENTDOCKER_HOME` does **not** relocate the vendor's configuration files: setup uses the actual user/vendor configuration roots.
 
+When using an installed, versioned desktop binary for a private-prefix trial,
+first use `desktop --prefix <trial-prefix> install --from <candidate-app>
+--local-preview`, then run the trial prefix's own CLI. The production versioned
+launcher can refuse a trial home because its installation points at the system
+Applications folder. This is separate from the source-built Stage 1 route.
+
 For candidates containing the guided setup stack, use `setup --preview`, inspect the saved plan, then `--apply PLAN_ID`; the native window uses **Review setup** and **Apply changes**. Use the scoped `--undo PLAN_ID` flow after checking for later user edits. Older candidates may have only direct setup and backups; record which behavior is under test. See [GUIDED-SETUP.md](GUIDED-SETUP.md).
 
 Apply only the chosen adapter when the trial is ready. Ensure the launched hook/MCP server targets the trial endpoint; setting the environment only in a testing terminal does not prove a desktop vendor host inherits it. Verify registry identity, inbox delivery, read observation/stale detection, lease conflict behavior and journal continuity end to end. A `wired` inventory flag alone is not acceptance. Preserve existing unrelated MCP servers/hooks, validate the vendor's actual tool/version, and inspect the diff before restoring a backup so later user changes are not overwritten.

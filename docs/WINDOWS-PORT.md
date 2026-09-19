@@ -1,6 +1,6 @@
 # Native Windows delivery work
 
-Windows is an intended native platform. This branch is an incomplete port and
+Windows is an intended native platform. The Windows implementation is an incomplete port and
 is not a downloadable Windows product. It does not use WSL, a browser server or
 a required container engine to substitute for native execution.
 

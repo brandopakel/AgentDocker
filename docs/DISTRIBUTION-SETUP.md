@@ -63,7 +63,7 @@ workflow builds. The release publishes both, and the cask is skipped —
 loudly, not silently — when a release has no packaged app, because a
 cask pointing at a download that is not there is worse than no cask.
 
-The template exists, but as of the September 17 GitHub check the tap's `Casks/`
+The template exists, but as of the last recorded September 17 GitHub check the tap's `Casks/`
 directory contains only a README. The install command below becomes available
 only after a release publishes the app cask:
 
@@ -82,10 +82,11 @@ copy: `agentdocker desktop update` reports a Homebrew installation and points
 at `brew upgrade --cask agentdocker-app` rather than installing a second copy
 beside it.
 
-Until a release is signed with a Developer ID and notarized, the cask's app is
-ad-hoc signed and its caveat names `--no-quarantine` as the way to open it.
-The caveat and the flag go the day the signature arrives; nothing else in the
-cask changes.
+Stable tagged releases require Developer ID signing and notarization before
+publishing a cask. Unsigned prereleases leave the stable tap unchanged. The
+current cask template still contains a legacy unsigned-app caveat; reconcile it
+with the final signed release before publication, rather than promising an
+unsigned stable cask.
 
 ## Every route, one installation
 

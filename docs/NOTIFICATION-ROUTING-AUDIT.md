@@ -214,7 +214,7 @@ page-back path), and the same on a signed release and on the next candidate.
    reaches AgentDocker. If a platform cannot provide actionable notifications,
    expose that limitation and retain the inbox entry; do not report working
    click routing from a successful notification post.
-5. (Partial: installed foreground/background message, pending-question, stale-message and private-origin clicks pass; candidate explicit-Hide restoration also passes, while installed-release Hide acceptance remains open.) Complete real Notification Center clicks with the app hidden and fully closed;
+5. (Partial: installed foreground/background message, pending-question, stale-message and private-origin clicks pass; installed explicit-Hide and zero-GUI-process launch passed on September 17 at the revision recorded above. Physical mouse, page-back, signed-release and subsequent-candidate acceptance remain open.) Complete real Notification Center clicks with the app hidden and fully closed;
    multiple projects/agents; pending and expired questions; retained history;
    stale notifications; old/new app installations; denied notification access;
    unsigned/local-preview and signed release candidates. Assert the correct
