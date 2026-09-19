@@ -18,6 +18,8 @@ pub const RETENTION_BATCH: usize = 1_000;
 #[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
     #[serde(default)]
+    pub usage: UsageConfig,
+    #[serde(default)]
     pub journal: JournalConfig,
     #[serde(default)]
     pub messages: MessagesConfig,
@@ -25,6 +27,57 @@ pub struct DaemonConfig {
     /// posted anywhere unless the person writes a sink here.
     #[serde(default)]
     pub webhooks: Vec<WebhookConfig>,
+}
+
+/// Local accounting roots only; transcript text is parsed but never retained.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Empty uses the provider's ordinary local sessions/projects directories.
+    #[serde(default)]
+    pub codex_roots: Vec<std::path::PathBuf>,
+    #[serde(default)]
+    pub claude_roots: Vec<std::path::PathBuf>,
+    #[serde(default = "usage_retention_days")]
+    pub retention_days: u32,
+}
+
+fn usage_retention_days() -> u32 {
+    30
+}
+
+impl Default for UsageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            codex_roots: Vec::new(),
+            claude_roots: Vec::new(),
+            retention_days: 30,
+        }
+    }
+}
+
+impl UsageConfig {
+    pub fn check(&self) -> Result<(), String> {
+        if !(1..=3650).contains(&self.retention_days) {
+            return Err("usage.retention_days must be 1–3650".into());
+        }
+        if self.codex_roots.len() + self.claude_roots.len() > 16
+            || self
+                .codex_roots
+                .iter()
+                .chain(&self.claude_roots)
+                .any(|path| !path.is_absolute() || path.to_str().is_none_or(|s| s.len() > 8192))
+        {
+            return Err(
+                "usage roots must be at most sixteen absolute UTF-8 paths of at most 8192 bytes"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// At most this many sinks; each carries its own bounded queue and its

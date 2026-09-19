@@ -175,7 +175,7 @@ fn hint<'a>(
     .into()
 }
 /// A track holding `segment` choices.
-fn segmented<'a>(choices: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
+pub(super) fn segmented<'a>(choices: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
     let mut track = row![].spacing(2);
     for choice in choices {
         track = track.push(choice);
@@ -685,6 +685,7 @@ impl App {
                         | Screen::Channels
                         | Screen::Leases
                         | Screen::Console
+                        | Screen::Usage
                 );
             tabs = tabs.push(tab(
                 "project-more",
@@ -761,6 +762,12 @@ impl App {
                     Some(Message::Navigate(Screen::Console)),
                     self.screen == Screen::Console
                 ),
+                action(
+                    "project-tab-Usage",
+                    "Usage",
+                    Some(Message::Navigate(Screen::Usage)),
+                    self.screen == Screen::Usage
+                ),
             ]
             .spacing(6);
             if let Some(entry) = self.shell.catalog.selected() {
@@ -821,6 +828,7 @@ impl App {
             Screen::Chat => self.project_chat_view(c),
             Screen::Agents => self.sessions(c),
             Screen::Board => self.board_view(c),
+            Screen::Usage => self.usage_view(c),
             Screen::Questions if self.has_conversations() => self.messages_view(c),
             Screen::Questions => self.questions(c),
             Screen::Runtimes => self.connections(c),
@@ -1047,15 +1055,21 @@ impl App {
     }
 
     /// Whether the Temporary fold is open: the person's choice once made,
-    /// otherwise open while a scratch project has a live session.
+    /// otherwise open while a scratch project has a live session or is the
+    /// project on view. One rule for the fold as drawn and for what a
+    /// click on it negates, so one click always closes an open fold.
     pub(super) fn temporary_fold_open(&self) -> bool {
         self.shell.temporary_open.unwrap_or_else(|| {
+            let on_view = self.in_project();
             self.shell
                 .catalog
                 .projects
                 .iter()
                 .filter(|e| !e.pinned && crate::catalog::is_scratch(&e.project.root))
-                .any(|e| self.live_in(&e.project.root) > 0)
+                .any(|e| {
+                    self.live_in(&e.project.root) > 0
+                        || (on_view && self.selected_root() == Some(e.project.root.as_path()))
+                })
         })
     }
 
@@ -1139,10 +1153,10 @@ impl App {
                 .iter()
                 .map(|e| self.live_in(&e.project.root))
                 .sum::<usize>();
-            let selected_here = temporary
-                .iter()
-                .any(|e| project_page && self.selected_root() == Some(e.project.root.as_path()));
-            let open = self.temporary_fold_open() || selected_here;
+            // The person's own choice wins, both ways; until they have
+            // made one, the fold opens by itself for a live or selected
+            // scratch project — the one rule in `temporary_fold_open`.
+            let open = self.temporary_fold_open();
             let label = format!("Temporary ({})", temporary.len());
             let mut fold = row![
                 text(if open { "▾" } else { "▸" }).size(11).color(c.muted),
@@ -1727,6 +1741,7 @@ impl App {
             // Ended sessions are not a tab: one collapsed group under the
             // current ones, opened by a search that finds something there.
             let open = self.shell.earlier_open || !self.shell.search.trim().is_empty();
+            let shown = self.shell.earlier_shown.max(EARLIER_PAGE);
             let mut group = column![custom(
                 "sessions-earlier",
                 format!("Earlier ({})", earlier.len()),
@@ -1745,7 +1760,6 @@ impl App {
             if open {
                 // The newest first, a page at a time: an ended session
                 // from last week is a click away, not on every screen.
-                let shown = self.shell.earlier_shown.max(EARLIER_PAGE);
                 let page: Vec<&AgentRecord> = earlier.iter().copied().take(shown).collect();
                 let older = earlier.len().saturating_sub(page.len());
                 group = group.push(panel(self.session_rows(&page, c), c));

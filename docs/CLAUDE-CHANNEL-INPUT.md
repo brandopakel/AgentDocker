@@ -57,6 +57,27 @@ for channel input. Only the launch decides.
 
 ## Resuming a session
 
+The installed September 18 preview (`6bd97894`, source `705f924`) provides
+**Reconnect here** in a Claude session's **Details**. Exit that session normally
+with `/exit`, select it under **Earlier sessions**, and press the button. The
+app resumes the same conversation under its existing agent record, retaining
+its queue, aliases, questions and cards. Its terminal opens in the app for
+Claude's own channel consent. The matching inline MCP entry and launch flags
+are supplied by the app; no handwritten environment command is needed.
+The CLI alternative is `agentdocker reconnect <agent>`. A still-live process,
+conflicting subscriber or uncertain persistence refuses the relaunch.
+
+Three sequential actual-Claude trials and one additional final-package trial
+preserved the ended identity, delivered its retained message, and answered an
+idle project pause in the same chat with verified receipts and no explicit ACK.
+The final package passed thirteen installation/rollback checks and is installed
+with all six external provider processes unchanged. These bounded private
+trials do not certify the user's still-plain sessions: each needs reconnect and
+provider consent before its own idle-pause acceptance. Exact sources, receipts,
+earlier failed trials and activation are in the
+[existing delivery record](verification/2026-09-12-input-delivery-status.json).
+
+For an external relaunch outside the app, the registration path below applies.
 A session that comes back as a new process takes up the record it ended
 with: the hooks adapter names the session, and the daemon joins the new
 process to the ended records of that session in the same checkout, once

@@ -4,8 +4,9 @@ The target is an installed agentdocker desktop app that discovers and coordinate
 
 The [active delivery plan](DELIVERY-PLAN.md) now requires a renewed review of recent commits, every open PR, engineering contracts and all project documentation. Its testing crosswalk covers every category in the testing standard and local trial. The [September 7 ledger](REVIEW-2026-09-07.md) records the initial source scope, known gaps and evidence; the review and full acceptance program remain in progress.
 
-Current open work is consolidated in [Remaining work](REMAINING-WORK.md), including
-the Iced simplification, release setup, and acceptance still required.
+Current open work is consolidated in [Remaining work](REMAINING-WORK.md); the
+Iced simplification is delivered, and what stands between main and a release
+for other people is its [road to v1](REMAINING-WORK.md#the-road-to-v1-a-release-other-people-can-install-and-try).
 
 ## Restore and private state
 

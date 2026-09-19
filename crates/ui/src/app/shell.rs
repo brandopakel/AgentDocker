@@ -12,6 +12,9 @@ pub(super) struct State {
     pub session_filter: super::sessions::Filter,
     pub more: bool,
     pub terminal_opening: bool,
+    /// The usage screen's window and grouping: this window's, not saved.
+    pub usage_since: &'static str,
+    pub usage_by: agentdocker_core::usage::report::Group,
     pub session_details: bool,
     pub review_delivery: bool,
     pub session_message: bool,
@@ -65,6 +68,10 @@ pub(super) struct State {
     /// How many of the Earlier group's entries are on screen: a page, and
     /// a page more for each *Show older*; closing the group resets it.
     pub earlier_shown: usize,
+    /// The same two for the earlier conversations in Messages: its own
+    /// fold and page, so the two screens' groups do not move each other.
+    pub earlier_conversations_open: bool,
+    pub earlier_conversations_shown: usize,
     /// Whether the temporary projects (discovered under /tmp, unpinned)
     /// are unfolded in the sidebar: the person's choice once they have
     /// toggled it, until then automatic (open while one of them has a
@@ -311,6 +318,7 @@ impl State {
             dpi: 1.0,
             width: 1180.0,
             height: 760.0,
+            usage_since: super::usage::DEFAULT_SINCE,
             ..Default::default()
         }
     }
@@ -532,6 +540,9 @@ pub enum Message {
     CloseWithoutDraftSave,
     Notification(crate::notification_route::Activation),
     Navigate(Screen),
+    /// The usage screen's window (`24h`, `7d`, `30d`) or grouping.
+    UsageSince(&'static str),
+    UsageBy(agentdocker_core::usage::report::Group),
     SelectProject(PathBuf),
     /// Every project at once: the home view.
     AllProjects,
@@ -574,6 +585,9 @@ pub enum Message {
     ToggleEarlier,
     /// One page more of the Earlier group.
     MoreEarlier,
+    /// The earlier conversations in Messages: their own fold and page.
+    ToggleEarlierConversations,
+    MoreEarlierConversations,
     ToggleTemporary,
     TogglePeers,
     /// A divider between the window's columns was dragged, in one grid.
@@ -1082,6 +1096,9 @@ impl App {
                 if screen == Screen::Board {
                     self.request_tasks();
                 }
+                if screen == Screen::Usage {
+                    self.request_usage();
+                }
                 if screen == Screen::Runtimes {
                     self.send(Cmd::Runtimes);
                     self.send(Cmd::Connector);
@@ -1089,6 +1106,14 @@ impl App {
                 if screen == Screen::Desktop {
                     self.send(Cmd::Desktop(self.desktop.command("status")));
                 }
+            }
+            Message::UsageSince(since) => {
+                self.shell.usage_since = since;
+                self.request_usage();
+            }
+            Message::UsageBy(by) => {
+                self.shell.usage_by = by;
+                self.request_usage();
             }
             Message::RetryProject => self.shell.checked_project = None,
             Message::ToggleNeedsYou => {
@@ -1296,6 +1321,17 @@ impl App {
                 self.shell.earlier_shown = self
                     .shell
                     .earlier_shown
+                    .max(EARLIER_PAGE)
+                    .saturating_add(EARLIER_PAGE);
+            }
+            Message::ToggleEarlierConversations => {
+                self.shell.earlier_conversations_open = !self.shell.earlier_conversations_open;
+                self.shell.earlier_conversations_shown = EARLIER_PAGE;
+            }
+            Message::MoreEarlierConversations => {
+                self.shell.earlier_conversations_shown = self
+                    .shell
+                    .earlier_conversations_shown
                     .max(EARLIER_PAGE)
                     .saturating_add(EARLIER_PAGE);
             }
@@ -4501,6 +4537,16 @@ mod tests {
         assert!(!app.shell.earlier_open);
         let _ = app.update(Message::ToggleEarlier);
         assert_eq!(app.shell.earlier_shown, EARLIER_PAGE, "reopened at a page");
+        // The conversations' group is its own: untouched by the sessions'
+        // toggle and page, and the other way round.
+        assert!(!app.shell.earlier_conversations_open);
+        let _ = app.update(Message::ToggleEarlierConversations);
+        let _ = app.update(Message::MoreEarlierConversations);
+        assert!(app.shell.earlier_conversations_open);
+        assert_eq!(app.shell.earlier_conversations_shown, 2 * EARLIER_PAGE);
+        assert_eq!(app.shell.earlier_shown, EARLIER_PAGE);
+        let _ = app.update(Message::ToggleEarlier);
+        assert!(app.shell.earlier_conversations_open);
         // The temporary fold is automatic until toggled: closed with
         // nothing running in a scratch project, and a toggle is the
         // person's choice from then on — closable even while one runs.
@@ -4537,6 +4583,21 @@ mod tests {
         );
         app.shell.temporary_open = None;
         assert!(app.temporary_fold_open(), "automatic: open while one runs");
+        // A selected scratch project with nothing running opens the fold
+        // by itself, and one click closes it: the click negates the fold
+        // as drawn, selection included.
+        app.agents.clear();
+        app.shell.catalog.selected = Some("/private/tmp/fixture/workspace".into());
+        app.screen = Screen::Agents;
+        assert!(
+            app.temporary_fold_open(),
+            "automatic: open for the project on view"
+        );
+        let _ = app.update(Message::ToggleTemporary);
+        assert_eq!(app.shell.temporary_open, Some(false));
+        assert!(!app.temporary_fold_open(), "one click closes it");
+        let _ = app.update(Message::ToggleTemporary);
+        assert!(app.temporary_fold_open());
     }
 
     /// Reconnecting an ended Claude Code session launches its own tool

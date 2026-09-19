@@ -838,6 +838,33 @@ impl<B: Backend> McpServer<B> {
                     .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
                 self.forward(request).await
             }
+            "usage" => {
+                // Tokens are read for anyone; the caller's project is the
+                // default, as for the board.
+                let mut object = arguments
+                    .as_object()
+                    .cloned()
+                    .ok_or((INVALID_PARAMS, "arguments must be an object".to_owned()))?;
+                object.insert("op".into(), json!("usage"));
+                if !object.contains_key("project") && !object.contains_key("agent") {
+                    let project = match self
+                        .backend
+                        .call(Request::Inspect { agent: me.clone() })
+                        .await
+                    {
+                        Ok(Response::Agent { agent }) => {
+                            agent.project.as_ref().map(|p| p.id().as_str().to_owned())
+                        }
+                        _ => None,
+                    };
+                    if let Some(project) = project {
+                        object.insert("project".into(), json!(project));
+                    }
+                }
+                let request = serde_json::from_value(Value::Object(object))
+                    .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+                self.forward(request).await
+            }
             "pull_task" | "move_task" => {
                 let op = if name == "pull_task" {
                     "task_pull"
@@ -1587,7 +1614,7 @@ fn annotations(name: &str) -> Value {
         "whoami" | "list_agents" | "inspect_agent" | "list_leases" | "activity" | "overlap"
         | "open_questions" | "read_journal" | "wait_for_messages" | "check_stale" | "read_set"
         | "list_checkpoints" | "list_handoffs" | "list_channels" | "contests" | "list_tasks"
-        | "worktree_diff" | "validation_results" => (true, false, true, false),
+        | "worktree_diff" | "validation_results" | "usage" => (true, false, true, false),
         // Saying and recording: additive, repeatable.
         "report_activity" | "report_provider_status" | "observe_paths" | "renew" => {
             (false, false, true, false)
@@ -2002,6 +2029,21 @@ fn bare_tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "usage",
+            "description": "Tokens the providers reported for this project's sessions, one row per agent (or model, provider, project, hour), each count with its coverage: a sum only where samples said, marked partial otherwise. The report says what it covers — the range answered, retention, gaps in the sources, whether collection is on and where it stands — and the overhead AgentDocker injected, which is 'not measured' until it is. Collection is off until agentd.toml enables it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Project id or path; your own when neither project nor agent is given." },
+                    "agent": { "type": "string", "description": "Only this agent: id, name or unique prefix." },
+                    "since": { "type": "string", "description": "From when: a duration back from now (30m, 24h, 7d) or an RFC 3339 time." },
+                    "until": { "type": "string", "format": "date-time", "description": "Until when, RFC 3339; now when absent." },
+                    "by": { "type": "string", "enum": ["agent", "model", "provider", "project", "hour"], "description": "One row per what; agent by default." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
             "name": "pull_task",
             "description": "Take a Ready card nobody holds: it becomes yours, in progress, and you hold its task:<id> lease (four hours; renew it during long work — an exit releases it; pulling your own held card renews it). Refused if somebody holds it or it is not ready, so two agents never work the same card. A card whose holder's lease lapsed is refused too, with hold: lapsed: take it over only by naming that holder in take_over_from, when you know they are gone or the person said so. Read its acceptance text before you start.",
             "inputSchema": {
@@ -2236,6 +2278,8 @@ mod tests {
         };
         assert_eq!(by("list_agents")["readOnlyHint"], true);
         assert_eq!(by("read_journal")["readOnlyHint"], true);
+        assert_eq!(by("usage")["readOnlyHint"], true);
+        assert_eq!(by("usage")["idempotentHint"], true);
         assert_eq!(by("send_message")["readOnlyHint"], false);
         assert_eq!(by("send_message")["destructiveHint"], false);
         assert_eq!(by("claim")["destructiveHint"], false);
@@ -2459,6 +2503,7 @@ mod tests {
                 "read_journal",
                 "list_leases",
                 "list_tasks",
+                "usage",
                 "pull_task",
                 "move_task",
                 "create_task"

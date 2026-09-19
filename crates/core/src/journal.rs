@@ -175,9 +175,15 @@ pub fn readable_failure(text: &str) -> std::borrow::Cow<'_, str> {
         let close = value.find(')')?;
         value[..close].trim().parse().ok().map(Some)
     };
+    // The same words as `supervisor::describe_exit` gives a fresh report,
+    // the wait failure included: neither code nor signal with the log
+    // unflushed is a command that could not be waited for, not one that
+    // could not be executed.
+    let unflushed = dump.contains("log_flushed: false");
     let words = match (field("code"), field("signal")) {
         (Some(Some(code)), _) => format!("it ended with exit code {code}"),
         (Some(None), Some(Some(signal))) => format!("it was ended by signal {signal}"),
+        (Some(None), Some(None)) if unflushed => "it could not be waited for".to_owned(),
         (Some(None), Some(None)) => {
             "the program could not be executed (is the path right and the tool installed?)"
                 .to_owned()
@@ -728,15 +734,21 @@ mod tests {
     /// text is untouched.
     #[test]
     fn a_stored_exit_report_dump_reads_as_words() {
-        let dump = |code: &str, signal: &str| {
+        let dumped = |code: &str, signal: &str, flushed: bool| {
             format!(
                 "left (failed: command could not be launched: command exited before it was activated: \
                  ExitReport {{ agent: AgentId(\"0180d7615186449087095d7aa15ec0bb\"), owner: SessionOwner {{ pid: 23152, \
                  started_at: 2026-09-18T21:59:30.123Z }}, child: ChildIdentity {{ pid: 23153, started_at: \
-                 2026-09-18T21:59:30.223Z, tty: true }}, code: {code}, signal: {signal}, log_flushed: true, \
+                 2026-09-18T21:59:30.223Z, tty: true }}, code: {code}, signal: {signal}, log_flushed: {flushed}, \
                  at: 2026-09-18T21:59:31.000Z }})"
             )
         };
+        let dump = |code: &str, signal: &str| dumped(code, signal, true);
+        assert_eq!(
+            readable_failure(&dumped("None", "None", false)),
+            "left (failed: command could not be launched: command exited before it was activated: \
+             it could not be waited for)"
+        );
         assert_eq!(
             readable_failure(&dump("None", "None")),
             "left (failed: command could not be launched: command exited before it was activated: \

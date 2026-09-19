@@ -20,6 +20,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 pub(crate) mod event_replay;
 pub(crate) mod reconcile;
+pub(crate) mod usage;
 pub(crate) use event_replay::EventReplay;
 
 // v9 retains pending questions. v10 retains addressed messages while subscribed
@@ -158,6 +159,37 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS messages_conversation ON messages (conversation, seq);
 CREATE INDEX IF NOT EXISTS messages_reply ON messages (reply_to);
+CREATE TABLE IF NOT EXISTS usage_samples (
+    source_id TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    at TEXT NOT NULL,
+    contribution TEXT
+);
+CREATE INDEX IF NOT EXISTS usage_samples_at ON usage_samples (at);
+CREATE TABLE IF NOT EXISTS usage_buckets (
+    key TEXT PRIMARY KEY,
+    hour TEXT NOT NULL,
+    agent TEXT,
+    project TEXT,
+    json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS usage_buckets_scope ON usage_buckets (hour, project, agent);
+CREATE TABLE IF NOT EXISTS usage_baselines (
+    key TEXT PRIMARY KEY,
+    json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS usage_files (
+    key TEXT PRIMARY KEY,
+    json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS usage_gaps (
+    key TEXT PRIMARY KEY,
+    since TEXT,
+    until TEXT NOT NULL,
+    runtime TEXT,
+    session TEXT,
+    reason TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS read_cursors (
     reader       TEXT NOT NULL,
     conversation TEXT NOT NULL,

@@ -101,10 +101,10 @@ discoverable, including when Linux reports one as its default temporary
 directory, but a folder discovered there and never pinned is not listed
 among your projects: it sits in a **Temporary (n)** fold under them (a
 fixture's workspace, a trial's worktree). Until you toggle it the fold is
-automatic — open while one of them has a live session, closed otherwise — and
-from then on it is as you left it, closable even while one runs; selecting one
-of them shows it either way, and the live count sits on the fold. Pinning one
-moves it up. Sessions whose project is unknown
+automatic — open while one of them has a live session or is the selected
+project, closed otherwise — and from then on it is as you left it, closable
+even while one runs or is selected; the live count sits on the fold. Pinning
+one moves it up. Sessions whose project is unknown
 appear under **Other sessions**.
 
 **Current** shows live sessions; **Needs input** shows this project's
@@ -113,7 +113,8 @@ since finished. Ended sessions are not a tab: they sit in one collapsed
 **Earlier (n)** group under the current ones, including previous runs with the
 same name, and a search that finds one opens the group. The group opens on
 its newest eight; **Show older** adds eight more each time, and closing the
-group forgets how far it was opened. When only an earlier
+group forgets how far it was opened. The Earlier group of conversations in
+Messages has its own fold and page: neither moves the other. When only an earlier
 session matches, its result appears without a contradictory empty-state card.
 Search applies to the
 selected project, both filters and the Earlier group. Switching projects
@@ -214,6 +215,17 @@ Project tabs provide:
 - **More → Files in use:** current leases and their holders.
 - **More → AgentDocker commands:** the real bundled `agentdocker` CLI in the selected project folder.
   It keeps command history and output with a bounded execution deadline.
+- **More → Usage:** the tokens the providers reported for this project's
+  sessions over the last 24 hours, 7 or 30 days, one row per agent, model,
+  provider or hour: input, cache read, cache write, output and reasoning
+  tokens, each shown only where samples said (`~` where some did not, `—`
+  where none did) and never as an invented zero. Under the table: the range
+  actually answered, whether the current hour is still filling, retention
+  and gaps in the sources, where collection stands, and the overhead
+  AgentDocker injected — *not measured yet* until it is. Collection is off
+  until `agentd.toml` enables it, and the screen says so rather than showing
+  an empty table. A failed read keeps the last report with the failure beside
+  it.
 
 ## Messages, Inbox and tools
 
