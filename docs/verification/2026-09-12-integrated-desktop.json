@@ -5855,7 +5855,147 @@
         "log_sha256": "9832891ce7fd2085a4493231d0e04916d90a7e617823cc8534a02040ca64ff78"
       },
       "local_markdown_fragments": "Independent bounded audit: all 40 tracked Markdown files, including explicit HTML anchors; zero unresolved targets.",
-      "independent_diff_review": "No concrete blockers; outstanding requirements and source/installed/published distinctions preserved."
+      "independent_diff_review": "No concrete blockers; outstanding requirements and source/installed/published distinctions preserved.",
+      "local_benchmark": {
+        "result": "passed",
+        "command": "bash scripts/verify.sh bench",
+        "manifest": {
+          "commit": "72942b0eeccfd5ccdaebe6d8497bafbe272d0644",
+          "source_sha256": "eb5f98cdc6f570392cf1a1d0a4078b44539d5f1c9f259d09eb80b41d2d4f725c",
+          "dirty": false,
+          "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+          "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+          "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+          "architecture": "arm64",
+          "processor": "arm",
+          "cpu_count": 12,
+          "profile": "release",
+          "container_engine": null,
+          "workloads": {
+            "lease_counts": [
+              1,
+              100,
+              1000
+            ],
+            "fingerprint_files": 100,
+            "fingerprint_bytes_per_file": 4096,
+            "socket_clients": [
+              1,
+              10,
+              100
+            ],
+            "socket_checkout_kind": "plain-unwatched",
+            "socket_format": 2,
+            "socket_workloads": [
+              "shared",
+              "disjoint"
+            ],
+            "socket_state_timing": false,
+            "socket_outcomes": [
+              "claim_release",
+              "claim_conflict"
+            ],
+            "socket_iterations_per_client": 100
+          }
+        },
+        "source_and_binary_manifests_identical_before_after": true,
+        "binaries": [
+          {
+            "path": "/private/tmp/agentdocker-docs-closeout-20260919/target/release/agentd",
+            "sha256": "2cb97cb98e1fd5f01e039293b57c1025227e2f1aa35cbfba38ef443b5f009059"
+          },
+          {
+            "path": "/private/tmp/agentdocker-docs-closeout-20260919/target/release/examples/socket_load",
+            "sha256": "44497533c54647347964ceefb04ab33f3389c6841325972488a4325165affb21"
+          }
+        ],
+        "socket_cases": [
+          {
+            "workload": "shared",
+            "clients": 1,
+            "iterations_per_client": 100,
+            "exit": 0,
+            "attempts": 100,
+            "claim_release_cycles": 100,
+            "expected_conflicts": 0,
+            "elapsed_seconds": 0.031662084,
+            "claim_release_p95_ms": 0.379,
+            "claim_release_p99_ms": 0.634084
+          },
+          {
+            "workload": "disjoint",
+            "clients": 1,
+            "iterations_per_client": 100,
+            "exit": 0,
+            "attempts": 100,
+            "claim_release_cycles": 100,
+            "expected_conflicts": 0,
+            "elapsed_seconds": 0.033399458,
+            "claim_release_p95_ms": 0.491666,
+            "claim_release_p99_ms": 0.735625
+          },
+          {
+            "workload": "shared",
+            "clients": 10,
+            "iterations_per_client": 100,
+            "exit": 0,
+            "attempts": 1000,
+            "claim_release_cycles": 157,
+            "expected_conflicts": 843,
+            "elapsed_seconds": 0.098923458,
+            "claim_release_p95_ms": 2.302666,
+            "claim_release_p99_ms": 2.903583
+          },
+          {
+            "workload": "disjoint",
+            "clients": 10,
+            "iterations_per_client": 100,
+            "exit": 0,
+            "attempts": 1000,
+            "claim_release_cycles": 1000,
+            "expected_conflicts": 0,
+            "elapsed_seconds": 0.173004375,
+            "claim_release_p95_ms": 2.908917,
+            "claim_release_p99_ms": 3.669375
+          },
+          {
+            "workload": "shared",
+            "clients": 100,
+            "iterations_per_client": 100,
+            "exit": 0,
+            "attempts": 10000,
+            "claim_release_cycles": 129,
+            "expected_conflicts": 9871,
+            "elapsed_seconds": 0.730146,
+            "claim_release_p95_ms": 19.391958,
+            "claim_release_p99_ms": 20.830708
+          },
+          {
+            "workload": "disjoint",
+            "clients": 100,
+            "iterations_per_client": 100,
+            "exit": 0,
+            "attempts": 10000,
+            "claim_release_cycles": 10000,
+            "expected_conflicts": 0,
+            "elapsed_seconds": 1.757082208,
+            "claim_release_p95_ms": 29.174833,
+            "claim_release_p99_ms": 34.898834
+          }
+        ],
+        "criterion": "lease conflict at 1/100/1000 held leases and fingerprinting 100 files/400 KiB passed; samples retained in private artifact",
+        "artifact": {
+          "path": "/private/tmp/agentdocker-benchmark-72942b0e-20260919.tar.gz",
+          "sha256": "a1e696f3caf1829909290d247b0adffe92665acad549bfd8fa88776045cd6b3f"
+        },
+        "host": "Exclusive Cargo/build/benchmark lease held; real provider sessions and the production daemon remained running. No concurrent Cargo campaign was observed. This is one local run, not idle-host calibration.",
+        "scope_limits": [
+          "Lease socket operations, not model delivery latency",
+          "Single run, not overnight/sleep/reboot or repeated regression calibration",
+          "Main runtime14f1c519; not final #200/#203 integration",
+          "Prior errno35/timeout failures remain unexplained; passing trial does not diagnose them"
+        ]
+      }
     },
     "release_read_only": {
       "latest_published_tag": "v0.1.0",

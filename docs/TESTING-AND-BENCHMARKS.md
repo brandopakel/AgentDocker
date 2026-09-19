@@ -39,6 +39,21 @@ Every result includes commit SHA, dirty-content identity if applicable, Rust/too
 
 References: [nextest configuration](https://nexte.st/docs/configuring-nextest/), [Criterion](https://bheisler.github.io/criterion.rs/book/), [Bencher GitHub Actions](https://bencher.dev/docs/how-to/github-actions/), [Proptest](https://proptest-rs.github.io/proptest/), [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov), [cargo-fuzz](https://rust-fuzz.github.io/book/cargo-fuzz.html), [Loom](https://github.com/tokio-rs/loom), [k6 protocols](https://grafana.com/docs/k6/latest/using-k6/protocols/).
 
+## September 19 local baseline
+
+The clean `72942b0e` documentation audit (runtime source `14f1c519`) passed
+`verify.sh bench` on macOS ARM64: Criterion lease/fingerprint samples and all
+six shared/disjoint 1/10/100-client socket cases. The 100-client disjoint case
+completed 10,000 claim/release cycles with p95 29.17 ms and p99 34.90 ms.
+Before/after source and executable manifests matched. The
+[existing integrated record](verification/2026-09-12-integrated-desktop.json)
+retains every case's counts, timing, provenance and the private artifact hash.
+
+The build campaign had an exclusive lease; actual provider sessions remained
+running. This is one local baseline, not model-message latency, repeated
+calibration, overnight acceptance or validation of later integration commits.
+The earlier socket timeout/errno-35 failures below remain unexplained.
+
 ## Repository commands and installation
 
 `bash scripts/verify.sh check` runs the PR gate. `test` runs nextest and doctests; `coverage` writes `artifacts/coverage.lcov`; `bench` runs Criterion and the native socket workload at 1/10/100 clients; `fuzz` runs four bounded nightly campaigns (`FUZZ_SECONDS`, default 60 per target). The native load workload runs shared-path contention and disjoint per-client paths separately. The `socket_v2` series separates successful claim/release cycles (two requests) from claim conflicts (one request), including connection setup. Each outcome records sample count and throughput over the same campaign duration; empty outcomes omit latency percentiles. Attempts, elapsed seconds and conflict ratio accompany each workload. These series must not be compared as continuations of the older `socket_claim_release` series, which mixed both outcomes. Stale detection/restart scenarios remain correctness integration tests until dedicated latency workloads are added. Custom counts use [Bencher Metric Format measures](https://bencher.dev/docs/reference/bencher-metric-format/).
