@@ -40,6 +40,9 @@ const REFRESH: Duration = Duration::from_secs(2);
 /// How often the runtime inventory is re-read (it asks each CLI).
 const RUNTIMES_REFRESH: Duration = Duration::from_secs(30);
 const JOURNAL_WINDOW: usize = 200;
+/// How many entries of an *Earlier* group (ended sessions, earlier
+/// conversations) show at once; *Show older* adds a page.
+const EARLIER_PAGE: usize = 8;
 /// One page of a conversation's archive, and of a thread's replies.
 const HISTORY_PAGE: usize = 200;
 /// The most of one conversation's archive the window keeps: the daemon's
