@@ -60,6 +60,7 @@ mod restarts;
 mod restore;
 mod tasks;
 mod transport;
+mod usage;
 mod waiting;
 mod webhooks;
 mod working;
@@ -216,6 +217,7 @@ fn mutates(request: &Request) -> bool {
             | Request::SearchMessages { .. }
             | Request::Leases { .. }
             | Request::Tasks { .. }
+            | Request::Usage { .. }
             | Request::Events { .. }
             | Request::ResumeEvents { .. }
             | Request::Logs { .. }
@@ -1618,6 +1620,22 @@ impl Daemon {
                 ttl_secs,
             } => self.grant_access(&agent, container_root, ttl_secs),
             Request::RevokeAccess { grant } => self.revoke_access(&grant),
+            Request::Usage {
+                project,
+                agent,
+                since,
+                until,
+                by,
+            } => {
+                self.usage(agentdocker_core::usage::report::Query {
+                    project,
+                    agent,
+                    since,
+                    until,
+                    by,
+                })
+                .await
+            }
             Request::Ping => Response::Pong {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
                 uptime_secs: self.started.elapsed().as_secs(),

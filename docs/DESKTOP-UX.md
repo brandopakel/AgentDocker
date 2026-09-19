@@ -171,6 +171,17 @@ Project tabs provide:
 - **More → Files in use:** current leases and their holders.
 - **More → Command line:** the real bundled `agentdocker` CLI in the selected project folder.
   It keeps command history and output with a bounded execution deadline.
+- **More → Usage:** the tokens the providers reported for this project's
+  sessions over the last 24 hours, 7 or 30 days, one row per agent, model,
+  provider or hour: input, cache read, cache write, output and reasoning
+  tokens, each shown only where samples said (`~` where some did not, `—`
+  where none did) and never as an invented zero. Under the table: the range
+  actually answered, whether the current hour is still filling, retention
+  and gaps in the sources, where collection stands, and the overhead
+  AgentDocker injected — *not measured yet* until it is. Collection is off
+  until `agentd.toml` enables it, and the screen says so rather than showing
+  an empty table. A failed read keeps the last report with the failure beside
+  it.
 
 ## Messages, Inbox and tools
 

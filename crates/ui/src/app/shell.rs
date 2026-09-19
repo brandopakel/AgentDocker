@@ -11,6 +11,9 @@ pub(super) struct State {
     pub search: String,
     pub session_filter: super::sessions::Filter,
     pub more: bool,
+    /// The usage screen's window and grouping: this window's, not saved.
+    pub usage_since: &'static str,
+    pub usage_by: agentdocker_core::usage::report::Group,
     pub session_details: bool,
     pub review_delivery: bool,
     pub session_message: bool,
@@ -293,6 +296,7 @@ impl State {
             dpi: 1.0,
             width: 1180.0,
             height: 760.0,
+            usage_since: super::usage::DEFAULT_SINCE,
             ..Default::default()
         }
     }
@@ -514,6 +518,9 @@ pub enum Message {
     CloseWithoutDraftSave,
     Notification(crate::notification_route::Activation),
     Navigate(Screen),
+    /// The usage screen's window (`24h`, `7d`, `30d`) or grouping.
+    UsageSince(&'static str),
+    UsageBy(agentdocker_core::usage::report::Group),
     SelectProject(PathBuf),
     /// Every project at once: the home view.
     AllProjects,
@@ -1052,6 +1059,9 @@ impl App {
                 if screen == Screen::Board {
                     self.request_tasks();
                 }
+                if screen == Screen::Usage {
+                    self.request_usage();
+                }
                 if screen == Screen::Runtimes {
                     self.send(Cmd::Runtimes);
                     self.send(Cmd::Connector);
@@ -1059,6 +1069,14 @@ impl App {
                 if screen == Screen::Desktop {
                     self.send(Cmd::Desktop(self.desktop.command("status")));
                 }
+            }
+            Message::UsageSince(since) => {
+                self.shell.usage_since = since;
+                self.request_usage();
+            }
+            Message::UsageBy(by) => {
+                self.shell.usage_by = by;
+                self.request_usage();
             }
             Message::RetryProject => self.shell.checked_project = None,
             Message::ToggleNeedsYou => {
