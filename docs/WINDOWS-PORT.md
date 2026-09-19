@@ -59,6 +59,21 @@ What the slice changes in the shared code, on every platform:
 - Private state reads (`read_private_file`, `check_private_dir`,
   `open_private`) exist on Windows, opening read-only with the kind and the
   ACL checked and nothing narrowed: a read is never a write.
+- Both binaries do their work on a thread with a 32 MiB stack. A Windows
+  main thread has 1 MiB (Unix has 8), and the first Windows runner
+  overflowed it in the CLI on `ping` (`thread 'main' has overflowed its
+  stack`) — clap's derived parser for this many commands and the one future
+  behind every command are large in a debug build. The reservation is address space
+  until touched.
+
+What the first real runner taught, kept in the smoke: the daemon creates
+its home itself, as it does on a person's first run. A directory the smoke
+made first was foreign-owned state — objects an administrator creates on
+Windows belong to the Administrators group, not the user — and the daemon
+refused it by design (`state or ancestor belongs to an untrusted Windows
+principal`); what the daemon creates is owned by the user. A person who
+points `AGENTDOCKER_HOME` at a directory made from an elevated shell sees
+the same refusal, in those words, and the fix is to let the daemon make it.
 
 What the slice refuses on Windows, in words rather than with a hang or a
 crash, and what that means for a person:

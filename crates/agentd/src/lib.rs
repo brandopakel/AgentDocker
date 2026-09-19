@@ -114,10 +114,25 @@ pub struct Args {
     take_over: Option<i32>,
 }
 
+/// Stack for the thread the daemon runs on: its one future is large in a
+/// debug build, and a Windows main thread has 1 MiB against 8 on Unix
+/// (the CLI's parser overflowed one on the first Windows runner, #206).
+/// Reserving this costs nothing until it is touched.
+const MAIN_STACK: usize = 32 << 20;
+
 /// Parse the command line and run the daemon until SIGTERM or Ctrl-C.
 pub fn main() -> anyhow::Result<()> {
     agentdocker_host::installation::redirect_managed_launcher()?;
-    run(Args::parse())
+    let args = Args::parse();
+    let worker = std::thread::Builder::new()
+        .name("agentd".into())
+        .stack_size(MAIN_STACK)
+        .spawn(move || run(args))
+        .map_err(|error| anyhow::anyhow!("cannot start the daemon's thread: {error}"))?;
+    match worker.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 /// Run the daemon until SIGTERM or Ctrl-C. Exits at once, successfully,

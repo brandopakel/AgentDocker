@@ -1370,14 +1370,35 @@ struct ClaimArgs {
     amount: Option<u64>,
 }
 
+/// Stack for the thread that does the work. Clap's derived parser for
+/// this many commands and the one future behind every command want more
+/// than a Windows main thread has (1 MiB, against 8 on Unix): a debug
+/// build overflowed it on `ping` on the first Windows runner (#206).
+/// Reserving this costs nothing until it is touched.
+const MAIN_STACK: usize = 32 << 20;
+
 /// A command ends with a status a script can branch on: the daemon's
 /// answer by its class (see [`client::exit_code`]), anything else as
 /// unexpected. The words go to stderr as they always did.
-#[tokio::main]
-async fn main() {
-    if let Err(error) = run().await {
-        eprintln!("Error: {error:#}");
-        std::process::exit(client::exit_code_for(&error));
+fn main() {
+    let worker = std::thread::Builder::new()
+        .name("agentdocker".into())
+        .stack_size(MAIN_STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime")
+                .block_on(run())
+        })
+        .expect("a thread with room to run the command");
+    match worker.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            eprintln!("Error: {error:#}");
+            std::process::exit(client::exit_code_for(&error));
+        }
+        Err(panic) => std::panic::resume_unwind(panic),
     }
 }
 
@@ -4124,7 +4145,7 @@ mod tests {
     fn parse_cli<const N: usize>(args: [&'static str; N]) -> Result<super::Cli, clap::Error> {
         use clap::Parser;
         std::thread::Builder::new()
-            .stack_size(32 << 20)
+            .stack_size(super::MAIN_STACK)
             .spawn(move || super::Cli::try_parse_from(args))
             .expect("a parsing thread")
             .join()

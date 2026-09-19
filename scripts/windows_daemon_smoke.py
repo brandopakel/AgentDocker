@@ -35,8 +35,16 @@ def main():
         "steps": [],
         "result": "failed",
     }
-    home = Path(tempfile.mkdtemp(prefix="agentdocker-smoke-")).resolve()
-    project = Path(tempfile.mkdtemp(prefix="agentdocker-smoke-project-")).resolve()
+    # The daemon creates its home itself, as it does on a person's first run.
+    # A directory made here first would be foreign-owned state on an elevated
+    # Windows runner (objects an administrator creates belong to the
+    # Administrators group, not the user), and the daemon refuses that by
+    # design; what it creates is owned by the user.
+    root = Path(tempfile.mkdtemp(prefix="agentdocker-smoke-")).resolve()
+    home = root / "home"
+    project = root / "project"
+    project.mkdir()
+    daemon_log = root / "smoke-daemon.log"
     env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_")}
     env["AGENTDOCKER_HOME"] = str(home)
     env["AGENTDOCKER_NO_AUTOSTART"] = "1"
@@ -55,14 +63,17 @@ def main():
 
     try:
         subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-        log = open(home / "smoke-daemon.log", "wb")
+        log = open(daemon_log, "wb")
         daemon = subprocess.Popen([str(daemon_binary)], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
         for _ in range(100):
             time.sleep(0.1)
             probe = run("ping", check=False, timeout=10)
-            if probe.returncode == 0:
+            if probe.returncode == 0 or daemon.poll() is not None:
                 break
-        step("the daemon answers ping over the local transport", probe.returncode == 0, probe.stderr.strip())
+        detail = probe.stderr.strip()
+        if daemon.poll() is not None:
+            detail = f"the daemon exited with {daemon.returncode} before answering; ping said: {detail}"
+        step("the daemon answers ping over the local transport", probe.returncode == 0, detail)
         status = run("daemon", "status")
         step("daemon status names the serving executable", str(daemon_binary.name) in status.stdout, status.stdout.strip())
         first = run("register", "--name", "smoke-one", "--runtime", "custom", "--pid", str(os.getpid()))
@@ -116,7 +127,7 @@ def main():
             daemon.kill()
             daemon.wait()
         try:
-            report["daemon_log_tail"] = (home / "smoke-daemon.log").read_text(errors="replace")[-2000:]
+            report["daemon_log_tail"] = daemon_log.read_text(errors="replace")[-2000:]
         except OSError:
             pass
         args.output.mkdir(parents=True, exist_ok=True)
