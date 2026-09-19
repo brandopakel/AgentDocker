@@ -1,7 +1,22 @@
 //! `agentdocker`: command-line client for `agentd`.
 
 mod agentfile;
+// Attaching a terminal is a PTY relay; Windows has no ConPTY relay yet
+// and says so.
+#[cfg(unix)]
 mod attach;
+#[cfg(windows)]
+mod attach {
+    use anyhow::Result;
+
+    use crate::client::Client;
+
+    pub async fn run(_client: &Client, agent: &str) -> Result<()> {
+        anyhow::bail!(
+            "attaching a terminal is not available on Windows yet; {agent} still receives messages and answers questions through its own tools"
+        )
+    }
+}
 mod client;
 mod codex_input;
 mod connector;
@@ -1660,13 +1675,16 @@ async fn run() -> Result<()> {
             token_file,
         } => {
             use std::io::Write;
+            #[cfg(unix)]
             use std::os::unix::fs::OpenOptionsExt;
-            // Reserve the private output before creating a credential.
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&token_file)?;
+            // Reserve the private output before creating a credential: a
+            // mode on Unix, the containing directory's ACL on Windows
+            // (where a workspace grant is refused by the daemon anyway).
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut file = options.open(&token_file)?;
             let response = client
                 .call(&Request::GrantAccess {
                     agent,

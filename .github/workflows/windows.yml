@@ -39,10 +39,26 @@ jobs:
         run: cargo nextest run --locked -p agentdocker-core -p agentdocker-host --profile ci
       - name: Native doctests
         run: cargo test --locked -p agentdocker-core -p agentdocker-host --doc
+      # The first daemon/CLI slice: both build and lint natively, and a
+      # daemon on a private home answers the CLI over a named pipe. Their
+      # test suites still carry Unix-only fixtures and run elsewhere.
+      - name: Native daemon and CLI lint
+        run: cargo clippy --locked -p agentd -p agentdocker -- -D warnings
+      - name: Native daemon and CLI build
+        run: cargo build --locked -p agentdocker
+      - name: Native daemon and CLI smoke
+        run: python scripts/windows_daemon_smoke.py --binary-dir target/debug --output artifacts/windows-daemon-smoke
       - name: Preserve test report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-native-foundations-tests
           path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
+      - name: Preserve daemon smoke report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-daemon-smoke
+          path: artifacts/windows-daemon-smoke/windows-daemon-smoke.json
           if-no-files-found: warn

@@ -175,6 +175,7 @@ impl Client {
     /// Send one request and hand back the raw connection, for a caller
     /// that then speaks a duplex protocol on it. Nothing has been read
     /// yet, so no buffered bytes are lost.
+    #[cfg_attr(windows, allow(dead_code))] // the attach relay's stream, Unix only today
     pub async fn open(&self, request: &Request) -> Result<Stream> {
         Ok(self.connect(request).await?.into_inner())
     }

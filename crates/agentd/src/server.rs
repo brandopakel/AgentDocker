@@ -619,7 +619,12 @@ pub async fn serve_restricted(
     };
     info!(socket = %socket.display(), "restricted endpoint listening");
     daemon.restricted_listening(socket.clone());
+    // The listener is kept for a handover on Unix; Windows hands nothing
+    // over and keeps nothing.
+    #[cfg(unix)]
     daemon.hold_restricted(listener_fd(&listener));
+    #[cfg(windows)]
+    daemon.hold_restricted(Ok(()));
     loop {
         let (stream, _) = listener.accept().await?;
         let daemon = daemon.clone();
@@ -634,7 +639,18 @@ pub async fn serve_restricted(
     }
 }
 
+/// Whether an accept failed for want of descriptors, which passes: a
+/// Unix errno pair, and on Windows the handle limit's own error.
+#[cfg(unix)]
+fn descriptors_exhausted(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(nix::libc::ENFILE | nix::libc::EMFILE)
+    )
+}
+
 /// A directory-mounted proxy reconnects to the restricted socket after daemon restart.
+#[cfg(unix)]
 pub(crate) async fn serve_workspace(listener: Listener, target: std::path::PathBuf) {
     let mut delay = Duration::from_millis(10);
     loop {
@@ -649,10 +665,7 @@ pub(crate) async fn serve_workspace(listener: Listener, target: std::path::PathB
                     io::ErrorKind::Interrupted
                         | io::ErrorKind::WouldBlock
                         | io::ErrorKind::ConnectionAborted
-                ) || matches!(
-                    error.raw_os_error(),
-                    Some(nix::libc::ENFILE | nix::libc::EMFILE)
-                ) =>
+                ) || descriptors_exhausted(&error) =>
             {
                 debug!(%error,"temporary workspace accept failure; retrying");
                 tokio::time::sleep(delay).await;

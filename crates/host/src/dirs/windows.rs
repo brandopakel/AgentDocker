@@ -414,6 +414,59 @@ fn open(
     Ok(file)
 }
 
+/// Existing state opened read-only for inspection: the kind is checked, a
+/// reparse point or a hard-linked file is refused, and foreign ownership or
+/// untrusted write access is refused, without creating anything or
+/// narrowing an ACL — a read must never be a write.
+fn open_existing_read(path: &Path, directory: bool) -> io::Result<File> {
+    let protection = Protection::new()?;
+    let raw = wide(path)?;
+    let access = READ_CONTROL
+        | if directory {
+            FILE_READ_ATTRIBUTES
+        } else {
+            GENERIC_READ
+        };
+    let flags = FILE_FLAG_OPEN_REPARSE_POINT
+        | if directory {
+            FILE_FLAG_BACKUP_SEMANTICS
+        } else {
+            FILE_ATTRIBUTE_NORMAL
+        };
+    let handle = unsafe {
+        CreateFileW(
+            raw.as_ptr(),
+            access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | if directory { 0 } else { FILE_SHARE_DELETE },
+            null(),
+            OPEN_EXISTING,
+            flags,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let file = unsafe { File::from_raw_handle(handle) };
+    check_kind(&file, directory)?;
+    protection.validate_access(file.as_raw_handle(), Access::State)?;
+    Ok(file)
+}
+
+/// Validate and open existing state for reading; nothing is created or
+/// changed (the Unix twin refuses a symlink and a shared link the same way).
+pub fn read_private_file(path: &Path) -> io::Result<File> {
+    open_existing_read(path, false)
+}
+
+pub fn open_private(path: &Path) -> io::Result<File> {
+    open_existing_read(path, false)
+}
+
+pub fn check_private_dir(path: &Path) -> io::Result<()> {
+    open_existing_read(path, true).map(|_| ())
+}
+
 pub fn private_file(path: &Path, create: bool, append: bool) -> io::Result<File> {
     let protection = Protection::new()?;
     let _ancestors = guard_ancestors(path, &protection)?;

@@ -149,8 +149,7 @@ impl Layout {
         let home = agentdocker_host::dirs::home();
         // Discovery is also used by status/dry-run; neither creates state.
         // Service ownership is the caller's identity, not a directory's owner.
-        // SAFETY: geteuid has no preconditions.
-        let uid = unsafe { libc::geteuid() };
+        let uid = current_uid();
         let user_home = std::env::home_dir().context("no home directory")?;
         let home = home.canonicalize().unwrap_or(home);
         let socket = service_socket(&home, socket);
@@ -660,6 +659,24 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The effective user id a launchd or systemd unit is filed under; on
+/// Windows there is neither, and no service is installed (see `install`).
+pub(crate) fn current_uid_for_service() -> u32 {
+    current_uid()
+}
+
+fn current_uid() -> u32 {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions.
+        unsafe { libc::geteuid() }
+    }
+    #[cfg(windows)]
+    {
+        0
+    }
 }
 
 #[cfg(test)]

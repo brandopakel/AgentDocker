@@ -39,7 +39,6 @@ pub fn repair(
 }
 
 fn quiescent(records: &[AgentRecord]) -> Result<()> {
-    use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
     for record in records {
         if record.spec.runtime == HUMAN_RUNTIME {
             continue;
@@ -50,21 +49,20 @@ fn quiescent(records: &[AgentRecord]) -> Result<()> {
             record.id
         );
         if let Some(pid) = record.pid {
-            let raw = i32::try_from(pid)
+            i32::try_from(pid)
                 .ok()
                 .filter(|pid| *pid > 0)
                 .context("stored process ID is invalid")?;
-            match kill(Pid::from_raw(raw), None) {
-                Err(Errno::ESRCH) => (),
-                Ok(()) | Err(Errno::EPERM) => {
-                    let current = agentdocker_host::procinfo::start_time(pid);
-                    ensure!(
-                        matches!((record.process_started_at,current),(Some(old),Some(now)) if old!=now),
-                        "session {} still has a live or unverifiable process; no process was signalled",
-                        record.id
-                    );
-                }
-                Err(error) => return Err(error.into()),
+            // A pid that exists (ours or not: `alive` says yes to EPERM
+            // too) must be a different process from the recorded one —
+            // same pid, different birth — or the session is not over.
+            if agentdocker_host::procinfo::alive(pid) {
+                let current = agentdocker_host::procinfo::start_time(pid);
+                ensure!(
+                    matches!((record.process_started_at,current),(Some(old),Some(now)) if old!=now),
+                    "session {} still has a live or unverifiable process; no process was signalled",
+                    record.id
+                );
             }
         }
         ensure!(
