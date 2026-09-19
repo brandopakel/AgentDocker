@@ -841,6 +841,21 @@ pub fn event_line(event: &Event) -> String {
         EventKind::SessionRelaunched { agent, session } => {
             format!("session relaunched {} ({session})", agent.short())
         }
+        EventKind::UsageRecorded {
+            generation,
+            samples,
+            gaps,
+        } => format!(
+            "usage recorded   generation {generation}: {samples} sample(s){}",
+            if *gaps > 0 {
+                format!(", {gaps} gap(s)")
+            } else {
+                String::new()
+            }
+        ),
+        EventKind::UsageReconciled { agent, samples } => {
+            format!("usage reconciled {} {samples} sample(s)", agent.short())
+        }
         EventKind::Unknown => "(an event this version does not know)".to_owned(),
     };
     format!("{}  {}", clock(event.at), single_line(&body))
@@ -857,6 +872,167 @@ fn single_line(text: &str) -> String {
             }
         })
         .collect()
+}
+
+/// A token count as the report knows it: the sum when every sample in
+/// the row said, the sum marked `~` when some did not, `—` when none
+/// did. A number never stands where the report has none.
+pub fn counter(report: &agentdocker_core::usage::CounterReport) -> String {
+    use agentdocker_core::usage::Coverage;
+    match (report.sum, report.coverage) {
+        (None, _) | (_, Coverage::Unknown) => "—".to_owned(),
+        (Some(sum), Coverage::Complete) => thousands(sum),
+        (Some(sum), Coverage::Partial) => format!("{}~", thousands(sum)),
+    }
+}
+
+/// `12345678` as `12,345,678`.
+pub fn thousands(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The table of a usage report and, under it, what the totals cover:
+/// the range actually answered, retention, gaps, whether collection is
+/// on and where it stands, and the overhead — never zero when it is
+/// simply not measured.
+pub fn usage_report(report: &agentdocker_core::usage::report::Report) {
+    use agentdocker_core::usage::report::{CollectionState, Group};
+    let key = match report.by {
+        Group::Agent => "AGENT",
+        Group::Model => "MODEL",
+        Group::Provider => "PROVIDER",
+        Group::Project => "PROJECT",
+        Group::Hour => "HOUR",
+    };
+    let collection = &report.coverage.collection;
+    let off = collection.enabled == Some(false);
+    if report.rows.is_empty() {
+        if off {
+            println!(
+                "Collection is off. Enable it in agentd.toml ([usage] enabled = true) to read the providers' local usage logs. Existing totals remain available."
+            );
+        } else {
+            println!("No usage in this range.");
+        }
+    } else {
+        let rows: Vec<Vec<String>> = report
+            .rows
+            .iter()
+            .map(|row| {
+                vec![
+                    row.key
+                        .clone()
+                        .unwrap_or_else(|| "(unattributed)".to_owned()),
+                    thousands(row.samples),
+                    counter(&row.counters.input_tokens),
+                    counter(&row.counters.cache_read_input_tokens),
+                    counter(&row.counters.cache_write_input_tokens),
+                    counter(&row.counters.output_tokens),
+                    counter(&row.counters.reasoning_output_tokens),
+                ]
+            })
+            .collect();
+        table(
+            &[
+                key,
+                "SAMPLES",
+                "INPUT",
+                "CACHE READ",
+                "CACHE WRITE",
+                "OUTPUT",
+                "REASONING",
+            ],
+            &rows,
+        );
+        println!("~ some samples did not say; — none did");
+    }
+    println!(
+        "Range {} to {}{}{}; retained since {}{}",
+        report
+            .effective_since
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        report
+            .effective_until
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        if report.coverage.includes_current_hour {
+            " (the current hour is still filling)"
+        } else {
+            ""
+        },
+        if report.coverage.future_until_clamped {
+            ", until clamped to now"
+        } else {
+            ""
+        },
+        report
+            .coverage
+            .retained_since
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        if report.coverage.history_truncated {
+            "; older history is gone"
+        } else {
+            ""
+        },
+    );
+    if report.coverage.source_gaps > 0 {
+        println!(
+            "{} gap(s) in the sources: totals are lower bounds",
+            report.coverage.source_gaps
+        );
+    }
+    let state = match collection.state {
+        CollectionState::Unknown if off => "off".to_owned(),
+        CollectionState::Unknown
+            if collection.enabled == Some(true) && collection.discovery_generation.is_none() =>
+        {
+            "starting".to_owned()
+        }
+        CollectionState::Unknown => "unknown".to_owned(),
+        CollectionState::Scanning => {
+            let pending = collection
+                .pending_files
+                .map(|n| format!(", {n} file(s) to read"))
+                .unwrap_or_default();
+            format!("scanning{pending}")
+        }
+        CollectionState::CaughtUp => match collection.completed_at {
+            Some(at) => format!("caught up {}", ago(at)),
+            None => "caught up".to_owned(),
+        },
+    };
+    println!(
+        "Collection: {state}{}",
+        if collection.scope.roots.is_empty() {
+            String::new()
+        } else {
+            format!(" ({} root(s))", collection.scope.roots.len())
+        }
+    );
+    let overhead = &report.overhead;
+    let overhead_line = match (&overhead.estimated_tokens, overhead.injected_bytes) {
+        (Some(estimate), _) => format!(
+            "Overhead: about {} tokens injected by AgentDocker ({} {}), from {} known event(s)",
+            thousands(estimate.value),
+            estimate.algorithm,
+            estimate.version,
+            overhead.known_events
+        ),
+        (None, Some(bytes)) => format!(
+            "Overhead: {} bytes injected by AgentDocker over {} known event(s); tokens not estimated",
+            thousands(bytes),
+            overhead.known_events
+        ),
+        (None, None) => "Overhead: not measured yet".to_owned(),
+    };
+    println!("{overhead_line}");
 }
 
 /// Readiness is separate from queue acceptance; keep stdout stable for scripts.
@@ -916,6 +1092,33 @@ pub fn in_browser_note(labels: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A count shows as the report knows it: whole, marked partial, or
+    /// a dash — a dash and not a zero when no sample said. Overhead that
+    /// was not measured is said so, never shown as nothing.
+    #[test]
+    fn usage_counts_show_their_coverage_and_never_invent_a_zero() {
+        use agentdocker_core::usage::{CounterReport, Coverage};
+        let report = |sum: Option<u64>, coverage| CounterReport {
+            sum,
+            known_samples: sum.map_or(0, |_| 1),
+            coverage,
+        };
+        assert_eq!(
+            super::counter(&report(Some(1_234_567), Coverage::Complete)),
+            "1,234,567"
+        );
+        assert_eq!(
+            super::counter(&report(Some(900), Coverage::Partial)),
+            "900~"
+        );
+        assert_eq!(super::counter(&report(None, Coverage::Unknown)), "—");
+        assert_eq!(super::counter(&report(Some(0), Coverage::Unknown)), "—");
+        assert_eq!(super::thousands(0), "0");
+        assert_eq!(super::thousands(999), "999");
+        assert_eq!(super::thousands(1_000), "1,000");
+        assert_eq!(super::thousands(10_000_000), "10,000,000");
+    }
+
     #[test]
     fn transfer_event_ids_can_contain_multibyte_text() {
         use agentdocker_core::{Event, EventKind};

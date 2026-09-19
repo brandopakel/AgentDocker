@@ -24,9 +24,14 @@ If you want the reasoning instead of the instructions, read
 curl -fsSL https://raw.githubusercontent.com/brandopakel/AgentDocker/main/install.sh | sh
 ```
 
-That installs the released CLI and daemon under `~/.local/bin`. Older macOS
-release archives also include the desktop app; current packaging separates the
-CLI archive and desktop download. From a checkout:
+On a Mac that installs the desktop app — with the `agentdocker` command and
+the daemon inside it — through the app's own installer, so `agentdocker desktop
+update` and rollback work from the first install; on Linux, or with
+`AGENTDOCKER_INSTALL=cli`, it puts the two commands under `~/.local/bin`. A
+release that has no desktop archive yet (v0.1.0) falls back to the commands and
+says so. Until the app is signed with a Developer ID, macOS quarantines a
+downloaded copy: right-click it and choose **Open** once, or
+`xattr -dr com.apple.quarantine ~/Applications/AgentDocker.app`. From a checkout:
 
 ```sh
 cargo install --path crates/cli --locked   # agentdocker + agentd
@@ -161,6 +166,35 @@ of the inventory. **Review setup**, **Apply reviewed changes**, and **Undo this
 setup** use saved plans. **Check connections** provides bounded diagnostics;
 actual provider delivery requires a real round trip.
 
+### Usage
+
+The #194 candidate adds **Projects → Usage** and `agentdocker usage`. Check the
+[installed-build status](REMAINING-WORK.md) before expecting this in an older app.
+Choose the last day, week or month and group reported tokens by agent, model,
+provider, project or hour. `~` marks a partial count; `—` means the source did
+not report that counter. These are token totals, not a bill. The report shows
+the available time range, gaps and whether collection has caught up.
+The MCP `usage` tool reads the same stored report and advertises that it is
+read-only; querying usage does not enable collection or change its settings.
+
+Collection is off by default. To enable it, add this section to your existing
+`~/.agentdocker/agentd.toml` (or the file under `AGENTDOCKER_HOME`), preserving its
+other settings:
+
+```toml
+[usage]
+enabled = true
+retention_days = 30
+```
+
+The running daemon picks it up on its next collection cycle. It reads supported
+local Codex and Claude Code logs; it retains accounting metadata, not message
+text. Optional `codex_roots` and `claude_roots` are arrays of absolute directories;
+empty arrays use the provider defaults. Turning collection off retains available
+totals. Increasing retention does not restore previously discarded history.
+AgentDocker's own injected overhead remains **not measured** until that separate
+instrumentation is implemented.
+
 ### Terminal and settings
 
 **Open terminal** attaches to a managed live PTY. **Detach** leaves the agent
@@ -234,6 +268,7 @@ each one by pid.
 | `ps` | Agents grouped by project, with INPUT readiness; `--input-details` adds reconnect guidance |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
+| `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour`), each count with its coverage (`~` where some samples did not say, `—` where none did), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on, and the overhead AgentDocker injected — *not measured* until it is; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
 | `inspect <agent>` | Everything known about one agent, as JSON |
 | `logs <agent>` | An agent's captured output; `-f` to follow, `--compress` for an rtk view |
 | `validation <id>` | The retained log of one validation; `--compress` for an rtk view |
@@ -373,7 +408,7 @@ turn. A copied instruction is not executed by AgentDocker.
 takes an MCP server. An agent then has these without knowing anything
 about us:
 
-`whoami` · `ping` · `list_agents` · `inspect_agent` · `activity`
+`whoami` · `ping` · `list_agents` · `inspect_agent` · `activity` · `usage`
 
 `send_message` · `read_inbox` · `wait_for_messages` · `acknowledge_messages` ·
 `ask_human` · `open_questions` · `answer_question` · `report_activity`
@@ -603,9 +638,10 @@ Newest first. Only what changes how the product is used.
 - The Messages workspace: **+** for a new direct message or channel,
   invitations, `@` mentions with counts, Enter to send, resizable panes,
   an Earlier group for ended sessions' conversations.
-- A bounded reader of local Codex rollouts and Claude transcripts for
-  token usage, with explicit gaps; the `usage` command and screen are not
-  built yet.
+- Opt-in local token collection, hourly accounting and the `usage` command and
+  screen are implemented in candidate #194, with explicit unknown/partial
+  coverage. Final integration and sustained acceptance remain tracked in
+  [Remaining work](REMAINING-WORK.md).
 - Conversations: every message is archived in the one conversation its
   destination names (`everyone:<project>`, `all`, `channel:<id>`,
   `dm:<a>:<b>`, `notices:<agent>`), beside the queue it is delivered to and
@@ -662,7 +698,7 @@ In Messages, **+** starts a direct message or named channel. Press Enter to send
 mention suggestions only include the current conversation's recipients. In an
 open channel you belong to, **Add members** adds another available agent. The
 CLI equivalent is `agentdocker channel invite --as <member> <channel> <agent>`.
-These Messages additions merged in PR #170 and are included in the recorded
-September 17 installed `d14610b7` preview. Native workflows and a targeted
+These Messages additions merged in PR #170 and have been installed since the
+September 17 `d14610b7` preview (the current installation is `652cf6a3`). Native workflows and a targeted
 synthetic Enter event passed; physical keyboard and IME acceptance remain in
 [Remaining work](REMAINING-WORK.md).

@@ -293,6 +293,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `task_update {agent, task, title?, acceptance?, assignee?, links?}` | `task {task}`, `error(forbidden\|invalid\|storage_unavailable)` | an agent edits only a card it holds with a live lease (`forbidden`, `details.hold: lapsed` otherwise). A hand by the person is a confirmed reassignment: the old holder's lease ends and, for a running agent, the new holder's `task:<id>` lease is taken in the same commit (`lease_released`/`lease_claimed` follow `task_updated`); handed to an agent that is not running, or taken away (`assignee: ""`), the card has no hold until somebody pulls it by name. Otherwise: the person edits any card's words and hands it to an agent (`assignee` an id, name or prefix; `""` takes it away); an agent edits only the words of a card it holds. Emits `task_updated`. |
 | `task_archive {agent, task}` | `ok`, `error(forbidden\|storage_unavailable)` | releases the card's leases in the same commit; an agent archives only a card it holds with a live lease. off the board, kept for the record: the person's to do, or the assignee's for a card in `done`. Archiving twice is `ok`. Emits `task_archived`. |
 | `tasks {project?, column?, archived?, offset?, limit?}` | `tasks {tasks: Task[], more}`, `error(storage_unavailable)` | one page of the board, Backlog to Done and oldest first within a column, from `offset`, at most `limit` cards (1–500; 100 by default) and within a page's byte budget (768 KiB of serialised cards; a page holds at least one card whatever its size), with `more` when the board goes on past them — the next page starts at `offset + tasks.len()`, so every card is reachable without a mutation. Read as a page from the store, so a board of long cards never fills a frame or holds the lock; archived cards only when asked; every project's when none is named. A read: served during a coordinator transfer. |
+| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage, overhead}` | Initial collector branch: read hourly local usage grouped by agent/model/provider/project/hour with explicit collection and counter coverage. Defaults to the last 24 hours; strict duration/RFC3339 bounds, retention rounding and unknown counters follow the contract below. More than 10,000 buckets or an overflowing grouped total refuses the query without disabling coordination. Served through the transfer fence. |
 | `pause {from, project?, reason}` | `pause {pause: {project, by, reason, at}}`, `error(invalid\|forbidden\|not_found\|ambiguous\|backpressure\|storage_unavailable)` | the person tells a project's agents to hold: one `pause` message from `from` reaches every live agent in the project (archived under `#everyone`, payload `{text: "Pause: <reason>", reason}`) and the pause is written as a document in the same transaction — neither exists without the other, and a refused send (backpressure, storage) pauses nothing. Until it is lifted, `claim` from an agent in that project answers `paused` with the reason, a waiter queued before the pause included (what an agent holds, it keeps; the person's own claims are not held). A declared human sender may pause (`forbidden` for a nonhuman identity); the host socket trusts its owning OS user and `--from user` is not proof of human presence. The authenticated restricted/container endpoint cannot pause or resume a project; the reason is 1–400 characters; `project` is an id, root or unique prefix, the caller's own when absent; a second pause replaces the reason. The document is schema 23's: a daemon older than that refuses to open the database rather than open it and quietly not hold anyone, so rollback requires restoring a compatible pre-upgrade state backup while stopped, or retaining the newer daemon. Lifting a pause does not downgrade schema23 and does not make that state readable by schema22 — tried on real binaries in [the rollback refusal record](verification/2026-09-12-integrated-desktop.json): the installed schema-22 daemon exited with both numbers in its reason, the file unchanged, and the schema-23 daemon still listed the hold. Emits `project_paused`. |
 | `resume_project {from, project?}` | `ok`, `error(forbidden\|not_found\|ambiguous\|backpressure\|storage_unavailable)` | the person lifts the pause: a `resume` message reaches the project's live agents in the same transaction as the document's removal, and their leases are theirs again. `ok` for a project that is not paused. Emits `project_resumed`. |
 | `pauses` | `pauses {pauses: Pause[]}` | the projects that are paused, and why, oldest first |
@@ -959,9 +960,16 @@ Each PR changes `protocol.rs`, the wire-protocol table above, the CLI, and tests
 | 31 | ✅ notification routing: a click opens the message — question, inbox row or archived conversation — with the routing action in the notification itself, a running app receiving it directly and a cold start carrying it; an archived message is scrolled to, paging back a bounded number of pages | 5 | 14, 30 |
 | 32 | ✅ session reconnect: a provider session that comes back as a new process is folded into its ended record by `session_id` under the transfer fence (`session_resumed`); records with retained observations are refused today, and carrying their reads across is in progress | 5 | 27 |
 | 33 | ✅ project pause: the person tells a project's agents to hold with a reason (`pause`, `resume_project`, `pauses`), the daemon refuses their new leases while it holds, and the reason reaches every live agent as a reserved `pause` message; schema 23 | 5 | 13 |
-| 34 | ⏳ token usage: the bounded reader of local Codex rollouts and Claude transcripts with explicit gaps is merged (#165/#167); the collector, `usage` protocol, CLI and Usage screen are not | 5 | — |
+| 34 | ⏳ token usage: reader merged (#165/#167); initial collector, store, protocol, CLI/MCP and responsive Usage screen integrated in draft #194 with bounded real-binary acceptance; final review, persistent discovery, long-term resources, standalone scans and overhead remain | 5 | — |
 | 35 | ✅ a board of work: cards with acceptance text pulled once over a `task:<id>` lease, moved by their holder or the person, paged; PR #176 merged and installed; actual card creation verified | 5 | 13 |
 | 36 | ✅ persisted message drafts: text-only, bounded, restored as unsent; PR #178 merged and installed; actual conversation draft close/reopen verified; question-answer drafts retain original IDs with no restored approval/send state (#185: full gate and native reopen passed at `13dd72c`; review/integration pending); Board-card text now joins the shared private snapshot under its original project, with version-1/2 migration to version 3, shared storage limits and no restored filing state (full gate and 507 native steps/30 checks passed at `720fa72`; review/integration pending); other forms remain window-local | 5 | 30 |
+| 37 | ✅ command-line exit statuses: the `agentdocker` command ends with a status by the class of the daemon's answer (2 invalid, 3 not found/ambiguous, 4 held, 5 refused/paused, 6 unavailable, 1 unexpected); PR #181 merged | 5 | — |
+| 38 | ✅ typed links on cards, messages, checkpoints and hand-off bundles (`links`, checked for their kind's shape, shown in the app, never opened by the daemon); PR #182 merged | 5 | 35 |
+| 39 | ✅ webhooks: `[[webhooks]]` sinks in `agentd.toml`, signed (HMAC-SHA256 over timestamp and body), bounded, best effort, `webhook_failed` at most once a minute; PR #183 merged | 5 | — |
+| 40 | ✅ roles: a `role` label an agent is given, `role:<name>` as the recipient of `send`, `ask` and `handoff`, resolved to the one live holder in the sender's project; PR #186 merged through #191 (`abec6ec`) | 5 | — |
+| 41 | ✅ reply from the notification: a Reply field on macOS message notifications, sent as the person's reply to where the message went, the words kept as the conversation's draft when it did not go; PR #190 merged through #191 (`abec6ec`) | 5 | 31 |
+| 42 | ✅ per-recipient delivery readiness on `sent` (`recipient_readiness`): which queued sessions cannot be woken and how to relaunch them; PR #188 merged through #191 (`abec6ec`) | 5 | 30 |
+| 43 | ⏳ live messages for an idle Claude session without a hand-typed relaunch: an in-app **Enable live messages** / **Reconnect** action that performs the channel relaunch and consent, with the CLI relaunch kept as the alternative; receipt of a channel-delivered message acknowledged so a later one is never blocked (PR #196) | 5 | 42 |
 
 Priority is [PRODUCT-DIRECTION.md](PRODUCT-DIRECTION.md#delivery-order): verify restore/privacy through the staged trial, complete native packaging and onboarding, then deliver Linux desktop and native Windows parity. Policy/quotas (15), restart policy (16), `commit` (10) and the rtk view (26) are implemented and covered by the integrated verification recorded on PR #119; what is still open is in [REMAINING-WORK.md](REMAINING-WORK.md). Live daemon replacement (28) has process/I/O ownership in the session owner, the coordinator fence, successor handover, connected-client resumption and installation-triggered reload in source behind `AGENTDOCKER_EXPERIMENTAL_RELOAD`. Broader provider input acceptance, attached-terminal drafts across a switch, uncertain-write reconciliation, replay retention limits, Windows and removal of the gate remain open. Windows (20) requires full native process, terminal, IPC, service and installer acceptance. Federation (17) follows a dependable single-host product.
 
@@ -974,10 +982,44 @@ Of the original list, `diff` shipped as `worktree_diff {agent}` → `diff` and `
 | Request | Response | Phase |
 |---|---|---|
 | Additional execution adapters (Apple `container`, others) | capability-specific | 4 |
-| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage, overhead}` | 5 |
+
+Initial collector and CLI/MCP/UI are integrated on `codex/usage-collection`
+for existing draft #194. Clean source `889ea35` passed 1,219 Rust tests
+(seven skipped), 94 Python checks (one skipped), lint, packaging and release.
+Final source review and integration remain pending. The opt-in `[usage]` section in
+`agentd.toml` accepts `enabled = true`, `retention_days = 30` (1–3650), and
+optional absolute `codex_roots` / `claude_roots`. Empty lists use the standard
+provider log directories. Disabled collection reports unknown coverage and never
+scans transcripts in a private test daemon implicitly.
+
+A separate worker discovers at most 100,000 entries and 10,000 files per
+snapshot, with bounded directory pages/depth, prioritizes filenames matching
+live session IDs, captures each file generation, and reads outside the daemon
+state lock. File cursors, dedupe fingerprints, cumulative baselines, hourly
+buckets, gaps and `usage_recorded {generation, samples, gaps}` commit together
+under the coordinator fence. `usage_reconciled {agent, samples}` moves retained
+unattributed contributions only after unique runtime/session resolution;
+previously attributed history does not follow a moved agent. Replay fingerprints
+and baselines survive aggregate retention. New tables are additive and preserve
+the existing schema-23 meanings. No transcript text is retained.
+
+Private real binaries processed a 24,494,890-byte Claude fixture, deduplicated
+copied logs and identical Codex snapshots, resumed after append/restart, and
+preserved the committed retention cutoff through shrink/restart/expansion.
+Four discovery generations completed with no source gaps. The native Usage
+screen passed 25 rendered steps at 1440/720 pixels and increased text size.
+These are supported-format fixtures, not actual provider billing acceptance.
+See the [existing integrated record](verification/2026-09-12-integrated-desktop.json)
+for exact source, failures, hashes and short coordination observations.
+Discovery restarts after a daemon restart; file scan progress is durable.
+Persistent discovery resumption, bounded long-term fingerprint/baseline storage,
+sustained resource acceptance, standalone scans and overhead instrumentation
+remain open. The collector's ephemeral prefix session handles large/growing
+files in bounded passes; the standalone reader retains its 16 MiB validation
+limit. Overhead is returned as unknown until instrumented.
 
 **Token usage by agent, model and provider** (requested September 15;
-the bounded log reader with explicit gaps is merged in #165/#167; the collector, protocol, CLI and Usage screen are not delivered). The initial adapters read local Codex rollouts
+the bounded log reader is merged in #165/#167; initial collector/protocol/CLI/MCP/UI are integrated in draft #194 with bounded acceptance; the remaining engineering and final integration above stay open). The initial adapters read local Codex rollouts
 and Claude Code transcripts. These are versioned runtime formats: an adapter
 must identify a supported usage record and model context, rather than assume
 every turn or runtime reports every counter. Missing or unsupported counters
@@ -1092,7 +1134,8 @@ are unknown, never zero. The design:
   `retained_since` (UTC hour), `history_truncated`, `future_until_clamped` and
   `includes_current_hour` (booleans), plus `source_gaps` (a nonnegative integer
   count of known unreadable/unsupported/reset intervals in the requested scope).
-  `coverage.collection` contains `state` (`unknown`, `scanning`, `caught_up`),
+  `coverage.collection` contains `enabled` (boolean or null for an older report,
+  read from current configuration), `state` (`unknown`, `scanning`, `caught_up`),
   `discovery_generation` (u64 or null), `snapshot_at` and `completed_at` (UTC
   timestamps or null), `discovery_complete` (boolean), `pending_files` (u64 or
   null while enumeration is incomplete), `pending_tail_files` (nonnegative
@@ -1137,6 +1180,78 @@ are unknown, never zero. The design:
   estimate. These estimates are neither additional provider tokens nor a precise
   measure of billed overhead; never add them to the provider total.
 
+The collector now holds an ephemeral reader session that verifies a saved prefix
+in bounded passes (up to 4 MiB / 100 ms each) before parsing. A scan rechecks its
+new bounded suffix and generation before committing; a restart discards the
+proof and rehashes the saved prefix. An appended generation of the same file may
+retain parser state only after all accepted prefix bytes match. Rewrites,
+replacement, truncation or a changing snapshot keep coverage incomplete and
+require an explicit gap/replay. No transcript bytes enter durable cursors; only
+one incomplete verification record is buffered in memory, at most 16 MiB.
+The standalone reader API retains its earlier 16 MiB whole-prefix limit.
+The 22+ MiB reader regression and the updated daemon partial-tail/restart trial
+passed in the 29-test host/daemon usage campaign. The later real-binary
+restart/append/copy trial passed; sustained resource acceptance remains open. The CLI uses `--agent` (with `--as` accepted as an
+alias) as an explicit filter; the calling agent identity does not silently
+filter an otherwise project-wide report.
+
+The private real-daemon trial on `a238d4f` processed a 22+ MiB Claude fixture
+but found that replaying an identical Codex snapshot with different prefix
+proof falsely reported an accounting conflict. Sample fingerprints now exclude
+that contextual proof; the first accepted observation still determines baseline
+accounting, and replay cannot retroactively manufacture missing history. The
+restart regression covers both proof directions, earlier draft fingerprints and
+a genuine changed-counter conflict. Its targeted test, the corrected
+real-binary trial and the 1,219-Rust-test combined gate passed.
+
+The frozen 602 MB Codex corpus exposed a quarantine error: an oversized record
+that received only the remainder of a batch was marked as unable to fit that
+entire budget. At the maximum budget this permanently stalled collection.
+A completed prefix now returns ordinary budget exhaustion so the next record
+gets one full bounded pass; only failure with that full allowance quarantines.
+Complete oversized non-accounting JSON envelopes can be skipped without losing
+Codex session metadata: the whole JSON structure is validated while unknown
+fields are discarded. This includes observed `response_item`, `compacted` and
+`event_msg/item_completed` bodies; accounting and unknown event types are not
+silently skipped. Malformed or accounting envelopes still create gaps.
+Cursor format 3 causes old cursors to replay through source-ID deduplication,
+revisiting both old quarantine decisions and previously unsupported Claude
+versions. The original 152-second failed corpus trial is retained privately.
+Thirty-two focused reader/store/collector regressions pass after integration
+with #191's final review fixes. Clean runtime `e6d95f8` then passed the full gate
+(1,225 Rust tests, seven skipped; 94 Python checks, one skipped), the repeated
+runtime/native fixtures and a frozen 692 MB two-session corpus. Collection
+finished in 13.8 seconds; all 4,703 unique Claude responses matched their counters,
+and one Codex counter-reset/history gap remained explicit. The existing integrated
+verification record retains the source, binaries, failed trials and scope limits.
+
+Actual-session metadata follow-up found equal Claude response counters repeated
+under different content-record timestamps (1,916 repeated message IDs), and the
+installed provider now writes versions 2.1.271–2.1.276 with the same supported
+counter shape. The adapter accepts those observed patch versions while keeping
+its original accounting-family identity stable. Response replay ignores fragment
+observation times and keeps the first accepted hour, including earlier draft
+fingerprints; genuinely changed counters still report a gap. The validation
+above covers these format, replay and cursor changes. Final source review,
+installed/provider-billing acceptance and sustained resource trials remain open.
+Only accounting metadata was retained; temporary raw transcript copies and the
+private trial databases were removed.
+
+Collection configuration is separate from scan progress: enabling collection or
+changing roots can leave a scan waiting to start, without meaning collection is
+off. The CLI and desktop use the explicit optional `enabled` field, and preserve
+unknown for older reports. A disabled collector retains existing totals.
+
+Collector follow-up preserves the committed retention cutoff when configuration
+expands: discarded history stays explicitly truncated, and newly found older
+logs do not make that interval appear restored. Attribution reconciliation saves
+its scheduling cursor, moved contributions and event in one transaction, so any
+failure leaves all three unchanged. The sixteen-root/absolute-path limit applies
+after environment/default roots are expanded as well as to explicit settings.
+
+The following dated reader milestones preserve their original acceptance scope;
+the integrated collector/presentation status is recorded above.
+
 Initial source work adds pure optional counters, reset-aware deltas and strict
 hourly query bounds and checked aggregates that move sums and coverage together,
 plus local format normalization for Codex 0.153.4/0.154.0 and
@@ -1164,7 +1279,7 @@ and check a cooperative time deadline between bounded reads. A trailing partial
 record does not advance the offset. Both the open object and current path are
 checked after reading, and the caller must validate again before committing.
 
-The cursor format is now version 2. An oversized record whose newline cannot
+The earlier cursor format was version 2. An oversized record whose newline cannot
 fit in the bounded batch returns `Stop::Quarantined`, retaining only verified
 complete records before it and recording the attempted byte budget in the
 cursor. Commit those samples, gaps and the quarantined cursor together; the
@@ -1241,7 +1356,8 @@ crash/replay/rotation/truncation and partial-line trials; cache/reasoning overla
 checks; unfinished/failed discovery and bounded scans with growing files;
 unregistered and retired-session attribution; hour-boundary/retention
 checks; and actual CLI/desktop acceptance showing coverage and effective ranges.
-This proposal does not mark the collector, protocol, CLI or Usage screen built.
+The original proposal does not itself establish completion; the current source
+and bounded acceptance are recorded above, with remaining work kept open.
 
 Registration resumption refuses a fresh record once it has input-delivery
 evidence: a receiver may already have offered its head, and merging older

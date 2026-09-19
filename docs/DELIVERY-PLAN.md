@@ -4,8 +4,15 @@ Audited September 14, 2026 against merged `aaa1b61` (PR #119). This is the exist
 
 
 For current engineering, acceptance and manual release work, start with
-[Remaining work](REMAINING-WORK.md). The dated checkpoints below retain historical
-evidence; an old “pending” entry is not by itself a current implementation gap.
+[Remaining work](REMAINING-WORK.md) — its [road to v1](REMAINING-WORK.md#the-road-to-v1-a-release-other-people-can-install-and-try)
+is the short list between main and a release other people can install. The
+dated checkpoints below retain historical evidence; an old “pending” entry is
+not by itself a current implementation gap, and this plan is not extended
+further after September 18. It stays as the historical record of how the native
+product was delivered and what each checkpoint verified; it certifies nothing
+that is still open — actual provider idle wake for every runtime, physical
+keyboard and IME input, Linux desktop acceptance on real distributions and
+Windows — and those open items live only in [Remaining work](REMAINING-WORK.md).
 
 ## Product and engineering requirements
 

@@ -6,6 +6,8 @@
 use chrono::{DateTime, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 
+pub mod report;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Counters {
@@ -202,6 +204,28 @@ impl Aggregate {
 
     pub fn samples(&self) -> u64 {
         self.samples
+    }
+
+    /// Merge disjoint hourly buckets while preserving unknown/sample counts.
+    /// Overflow refuses the entire proposal; neither input is changed.
+    pub fn merge(&self, other: &Self) -> Result<Self, &'static str> {
+        let mut next = self.clone();
+        next.samples = next
+            .samples
+            .checked_add(other.samples)
+            .ok_or("usage bucket arithmetic is out of range")?;
+        for (total, added) in next.totals.iter_mut().zip(other.totals) {
+            total.sum = total
+                .sum
+                .checked_add(added.sum)
+                .ok_or("usage bucket arithmetic is out of range")?;
+            total.known_samples = total
+                .known_samples
+                .checked_add(added.known_samples)
+                .ok_or("usage bucket arithmetic is out of range")?;
+        }
+        next.validate()?;
+        Ok(next)
     }
 
     /// Return a proposed replacement; an overflow/invalid removal cannot

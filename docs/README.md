@@ -57,11 +57,17 @@ sessions and all 128 retained receipts. Actual installed conversation-draft
 restoration passed without submitting the text. Remaining acceptance is not an
 open implementation claim.
 
+Later on September 18 the September landscape items landed — typed links #182,
+webhooks #183, the Board layout #189, and through the combined #191 roles #186,
+reply from the notification #190, delivery readiness #188 and question drafts
+#185 — and [Remaining work](REMAINING-WORK.md) gained the road to v1, the short
+list between main and a release other people can install.
+
 The September 18 reconciliation checked GitHub merge metadata and ancestry for
 older records that still said final review/CI or installation was pending. Their
 original trial fields remain intact; a dated disposition now supplies the index
 summary. PRs #181/#182 are also merged and included in the current desktop preview. The
-current inventory is 39 Markdown files and 67 verification records.
+current inventory is 39 Markdown files (the connector's document joined on September 18) and 67 verification records.
 
 **Reference** means the document describes an implemented workflow or engineering
 rule; it is not a release certificate. **Partial** means named implementation or
@@ -78,7 +84,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Delivery plan](DELIVERY-PLAN.md) | Partial: current sequence and T01–T12/L01–L15 status, with a current-installation section per switch; old checkpoints are historical. |
 | [Remote connector](REMOTE-CONNECTOR.md) | Partial: `agentdocker connector` is in source with unit tests, a loopback real-binary trial and an acceptance against a real Claude account through a quick tunnel; ChatGPT, a durable tunnel, egress allowlisting, CIMD and desktop status remain. |
 | [Product direction](PRODUCT-DIRECTION.md) | Partial: single-host implementation exists, including the Messages workspace, notification routing, project pause, reconnect and the usage reader; delivery-order steps 1–2 and the maintenance part of 5 are done; signed release, Linux/Windows delivery and federation remain. |
-| [Architecture](ARCHITECTURE.md) | Partial: protocol/phase inventory (delivery rows 1–36: 17 federation and 20 Windows remain incomplete; 28 reload needs broader acceptance, 34 usage needs its collector and UI, 35 board and 36 message drafts are merged and installed on the current Mac with bounded acceptance), journal/checkpoint maintenance and an environment-free core exist; live replacement is in source behind `AGENTDOCKER_EXPERIMENTAL_RELOAD` with provider-side acceptance still ahead, and Windows is incomplete. The usage collector/protocol/CLI/screen and federation remain proposals. |
+| [Architecture](ARCHITECTURE.md) | Partial: protocol/phase inventory (delivery rows 1–36: 17 federation and 20 Windows remain incomplete; 28 reload needs broader acceptance, 34 usage has a combined collector/CLI/UI candidate with bounded acceptance and further engineering pending, 35 board and 36 message drafts are merged and installed on the current Mac with bounded acceptance), journal/checkpoint maintenance and an environment-free core exist; live replacement is in source behind `AGENTDOCKER_EXPERIMENTAL_RELOAD` with provider-side acceptance still ahead, and Windows is incomplete. The initial usage collector/protocol/CLI/screen are implemented in draft #194; persistent discovery, long-term resource limits, standalone scans and overhead remain open. Federation remains deferred. |
 | [Implementation notes](IMPLEMENTATION-NOTES.md) | Reference: implemented coordination/recovery contracts; distinguish command relaunch from conversation restoration. |
 | [Guide](GUIDE.md) | Reference: command/tool inventory and current Tools/terminal navigation reconciled with source. |
 | [Desktop UX](DESKTOP-UX.md) | Implemented home/Tools simplification and capability evidence. The Messages workspace (#150/#152/#160/#163/#170), the project header's Pause…/Resume (#173), notification clicks that reveal an archived message (#175) and the channel-capable Claude launch (#177) are merged and installed in `d14610b7`. The Board tab (#176) and persisted message drafts (#178) are installed; an actual conversation-draft close/reopen trial passed without submission. Physical Enter/IME and broader installed-candidate acceptance remain. |
