@@ -426,7 +426,7 @@ enum Command {
         /// Agent id, name or unique prefix.
         agent: String,
     },
-    /// Wire AgentDocker into the agent tools installed here: the MCP server registered with each runtime that takes one, hooks for Claude Code.
+    /// Connect installed agent tools, retaining a private receipt for review and undo.
     #[command(group(clap::ArgGroup::new("guided").args(["preview", "apply", "undo", "health", "list", "show"])))]
     Setup {
         /// Runtimes to set up (default: every installed one); see `runtimes`.
@@ -453,7 +453,7 @@ enum Command {
         #[arg(long, conflicts_with_all = ["dry_run", "runtimes"])]
         show: Option<String>,
         /// Print a machine-readable plan or health report without configuration secrets.
-        #[arg(long, requires = "guided")]
+        #[arg(long, conflicts_with = "dry_run")]
         json: bool,
         /// Make every `claude` typed in a terminal carry the channel flag that lets AgentDocker wake it: a marked block in your shell's startup file, previewed like every other change.
         #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health", "list", "show"])]
@@ -2303,6 +2303,7 @@ async fn run() -> Result<()> {
             shell,
         } => {
             if preview
+                || !dry_run
                 || shell
                 || apply.is_some()
                 || undo.is_some()
@@ -2321,8 +2322,10 @@ async fn run() -> Result<()> {
                     Action::Health
                 } else if list {
                     Action::List
-                } else {
+                } else if preview || shell {
                     Action::Preview
+                } else {
+                    Action::Install
                 };
                 setup::guided::run(socket, &runtimes, action, json, shell).await?;
             } else {
