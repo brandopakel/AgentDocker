@@ -10,12 +10,14 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 mod board;
 mod icons;
 mod messages;
+mod naming;
 pub(crate) mod panes;
 pub(crate) mod queue;
 mod send_readiness;
 mod sessions;
 mod shell;
 pub(crate) mod style;
+mod usage;
 mod view;
 use queue::{Receiver as CommandReceiver, Sender as CommandSender};
 pub use shell::Message;
@@ -75,6 +77,7 @@ const STATUS_FOR: Duration = Duration::from_secs(20);
 pub enum Screen {
     Agents,
     Board,
+    Usage,
     Questions,
     Channels,
     Terminal,
@@ -108,6 +111,14 @@ enum Cmd {
         request: u64,
         offset: usize,
         limit: usize,
+    },
+    /// The selected project's usage report: what the providers said,
+    /// one row per `by`, over the window `since`.
+    Usage {
+        project: String,
+        request: u64,
+        since: &'static str,
+        by: agentdocker_core::usage::report::Group,
     },
     /// The person files a card.
     TaskCreate {
@@ -287,6 +298,12 @@ enum Msg {
     ),
     /// A filing's outcome, for the draft that made it.
     TaskCreated(String, u64, Result<(), String>),
+    /// The usage report read for a project, or why it could not be.
+    Usage(
+        String,
+        u64,
+        Result<agentdocker_core::usage::report::Report, String>,
+    ),
     /// A change to the board, done (the board is read again) or refused.
     TaskChanged(Result<(), String>),
     Pauses(Vec<agentdocker_core::Pause>),
@@ -452,6 +469,17 @@ pub struct App {
     activity: BTreeMap<String, Activity>,
     /// The board on view.
     tasks: Option<Board>,
+    /// The usage report on view: which project's, and the report — kept
+    /// as last read when a read fails, with the failure said beside it.
+    usage: Option<(String, agentdocker_core::usage::report::Report)>,
+    usage_error: Option<String>,
+    usage_requests: u64,
+    usage_pending: Option<(
+        u64,
+        String,
+        &'static str,
+        agentdocker_core::usage::report::Group,
+    )>,
     /// Board asks on their way, by number: which project's, and from
     /// what offset. A reply answers one ask; a reply to none — an ask
     /// cancelled by a later refresh, or made for a project no longer on
@@ -582,6 +610,10 @@ impl App {
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             tasks: None,
+            usage: None,
+            usage_error: None,
+            usage_requests: 0,
+            usage_pending: None,
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
@@ -651,6 +683,10 @@ impl App {
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             tasks: None,
+            usage: None,
+            usage_error: None,
+            usage_requests: 0,
+            usage_pending: None,
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
@@ -750,6 +786,13 @@ impl App {
                 }
                 // A page asked for by hand that could not be queued is
                 // told so; a refresh is not.
+                Cmd::Usage { request, .. } => {
+                    if self.usage_pending.as_ref().is_some_and(|p| p.0 == request) {
+                        self.usage_pending = None;
+                        self.usage_error = Some(reason.into());
+                    }
+                    return;
+                }
                 Cmd::Tasks {
                     project,
                     request,
@@ -1015,6 +1058,28 @@ impl App {
                         // person is told why it is not newer.
                         Err(error) => {
                             self.say(format!("The board could not be read: {error}"));
+                        }
+                    }
+                }
+                Msg::Usage(project, request, result) => {
+                    // A later range/group selection supersedes the old read,
+                    // even when both asks concern the same project.
+                    if self
+                        .usage_pending
+                        .as_ref()
+                        .is_some_and(|p| p.0 == request && p.1 == project)
+                    {
+                        self.usage_pending = None;
+                    } else {
+                        continue;
+                    }
+                    if self.selected_project_root().as_deref() == Some(project.as_str()) {
+                        match result {
+                            Ok(report) => {
+                                self.usage = Some((project, report));
+                                self.usage_error = None;
+                            }
+                            Err(error) => self.usage_error = Some(error),
                         }
                     }
                 }
@@ -1494,6 +1559,13 @@ impl App {
             | EventKind::TaskMoved { .. }
             | EventKind::TaskUpdated { .. }
             | EventKind::TaskArchived { .. } => self.request_tasks(),
+            // Collection moved: the report on view is read again, only
+            // while it is on view.
+            EventKind::UsageRecorded { .. } | EventKind::UsageReconciled { .. } => {
+                if self.screen == Screen::Usage {
+                    self.request_usage();
+                }
+            }
             EventKind::ProjectPaused { .. } | EventKind::ProjectResumed { .. } => {
                 self.send(Cmd::Pauses);
             }
@@ -1625,47 +1697,16 @@ impl App {
             .unwrap_or_else(|| "an unknown session".to_owned())
     }
 
-    /// The name a person reads for an agent. Adapters register sessions as
-    /// `<runtime>-<pid or session id>`; the record says when its name was
-    /// generated like that, and then the tool's label is shown instead,
-    /// with the branch it works on (*Claude Code · main*), because that is
-    /// what tells two sessions of one tool apart. Only when two live
-    /// sessions of one tool share a branch, or neither has one, does an
-    /// ordinal by first appearance follow (*Codex · main (2)*); an ended
-    /// session keeps no number, its branch is enough in the Earlier
-    /// group. A name somebody chose is shown as chosen.
+    /// The name a person reads for an agent: the tool, with the session's
+    /// own id once the project holds another session of that tool
+    /// (*Claude Code · 0180d761*), or the name somebody chose. See `naming`.
     fn display_name(&self, agent: &AgentRecord) -> String {
-        if !agent.name_is_generated() {
-            return agent.spec.name.clone();
-        }
-        let tool = runtime_label(&agent.spec.runtime);
-        let branch = agent.vcs.as_ref().and_then(|v| v.branch.clone());
-        let base = match &branch {
-            Some(branch) => format!("{tool} · {branch}"),
-            None => tool,
-        };
-        if !agent.status.is_live() {
-            return base;
-        }
-        let mut peers: Vec<&AgentRecord> = self
-            .agents
-            .iter()
-            .filter(|a| {
-                a.name_is_generated()
-                    && a.status.is_live()
-                    && a.spec.runtime == agent.spec.runtime
-                    && a.project.as_ref().map(|p| p.id()) == agent.project.as_ref().map(|p| p.id())
-                    && a.vcs.as_ref().and_then(|v| v.branch.as_deref()) == branch.as_deref()
-            })
-            .collect();
-        if peers.len() < 2 {
-            return base;
-        }
-        peers.sort_by_key(|a| (a.created_at, a.id.to_string()));
-        match peers.iter().position(|a| a.id == agent.id) {
-            Some(index) => format!("{base} ({})", index + 1),
-            None => base,
-        }
+        self.naming().display(agent)
+    }
+
+    /// The names of the current snapshot of records.
+    pub(crate) fn naming(&self) -> naming::Naming<'_> {
+        naming::Naming::new(&self.agents, &self.aliases)
     }
 
     /// Journal lines name agents as they registered; show them as people
@@ -1728,6 +1769,42 @@ impl App {
     /// Read the selected project's board, when there is one and the
     /// daemon is there: as many cards as are on view, so a board
     /// expanded past its first page stays expanded through a refresh.
+    /// Read the selected project's usage as the screen is set: its
+    /// window and grouping.
+    pub(crate) fn request_usage(&mut self) {
+        if self.connected.is_ok()
+            && let Some(project) = self.selected_project_root()
+        {
+            let since = if self.shell.usage_since.is_empty() {
+                usage::DEFAULT_SINCE
+            } else {
+                self.shell.usage_since
+            };
+            let by = self.shell.usage_by;
+            if self
+                .usage_pending
+                .as_ref()
+                .is_some_and(|p| p.1 == project && p.2 == since && p.3 == by)
+            {
+                return;
+            }
+            let Some(request) = self.usage_requests.checked_add(1) else {
+                self.usage_error =
+                    Some("Usage request counter exhausted; reopen the window".into());
+                return;
+            };
+            self.usage_requests = request;
+            self.usage_pending = Some((request, project.clone(), since, by));
+            self.usage_error = None;
+            self.send(Cmd::Usage {
+                project,
+                request,
+                since,
+                by,
+            });
+        }
+    }
+
     pub(crate) fn request_tasks(&mut self) {
         if self.connected.is_ok()
             && let Some(project) = self.selected_project_root()
@@ -2518,6 +2595,26 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::Tasks(project, request, result))
+        }
+        Cmd::Usage {
+            project,
+            request,
+            since,
+            by,
+        } => {
+            let result = match client.call(&Request::Usage {
+                project: Some(project.clone()),
+                agent: None,
+                since: Some(since.to_owned()),
+                until: None,
+                by,
+            }) {
+                Ok(Response::Usage { report }) => Ok(report),
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Err(error) => Err(format!("{error:#}")),
+            };
+            Some(Msg::Usage(project, request, result))
         }
         Cmd::TaskCreate {
             project,
@@ -6003,47 +6100,39 @@ pub(crate) mod tests {
         assert!(app.shell.thread.is_none());
     }
 
+    /// The window's names are the naming module's: the tool, with the
+    /// session's own id in company, never the branch. The rules themselves
+    /// are tested there.
     #[test]
-    fn sessions_are_named_by_tool_and_branch_and_numbered_only_when_that_is_not_enough() {
+    fn sessions_are_named_by_tool_and_their_own_id() {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
         let now = Utc::now();
-        let on = |branch: &str| {
-            Some(agentdocker_core::VcsState {
-                branch: Some(branch.into()),
-                head: None,
-                dirty: None,
-                updated_at: now,
-            })
-        };
         let mut first = record("codex-5124", "codex", Some(5124));
+        first.id = agentdocker_core::AgentId::from("0180d7615186449087095d7aa15ec0bb");
         first.created_at = now;
-        first.vcs = on("main");
+        first.vcs = Some(agentdocker_core::VcsState {
+            branch: Some("main".into()),
+            head: None,
+            dirty: None,
+            updated_at: now,
+        });
         let mut second = record("codex-6250", "codex", Some(6250));
-        second.id = agentdocker_core::AgentId::from("second-id");
+        second.id = agentdocker_core::AgentId::from("ac5c138c2b3f4d8f90c5924988419055");
         second.created_at = now + chrono::Duration::seconds(1);
-        second.vcs = on("feature/x");
         app.agents = vec![second.clone(), first.clone()];
-        // Different branches: the branch is the name, no number.
-        assert_eq!(app.display_name(&first), "Codex · main");
-        assert_eq!(app.display_name(&second), "Codex · feature/x");
-        // Two live sessions on one branch: numbered by first appearance.
-        second.vcs = on("main");
-        app.agents = vec![second.clone(), first.clone()];
-        assert_eq!(app.display_name(&first), "Codex · main (1)");
-        assert_eq!(app.display_name(&second), "Codex · main (2)");
-        // The first one ends: it drops its number, the second is alone
-        // among the live ones and drops its number too.
+        assert_eq!(app.display_name(&first), "Codex · 0180d761");
+        assert_eq!(app.display_name(&second), "Codex · ac5c138c");
         first.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
         app.agents = vec![second.clone(), first.clone()];
-        assert_eq!(app.display_name(&first), "Codex · main");
-        assert_eq!(app.display_name(&second), "Codex · main");
-        // No branch at all: the tool alone, numbered only in company.
-        let mut bare = record("codex-7000", "codex", Some(7000));
-        bare.id = agentdocker_core::AgentId::from("third-id");
-        app.agents = vec![bare.clone()];
-        assert_eq!(app.display_name(&bare), "Codex");
+        assert_eq!(
+            app.display_name(&second),
+            "Codex · ac5c138c",
+            "nobody is renamed"
+        );
+        app.agents = vec![first.clone()];
+        assert_eq!(app.display_name(&first), "Codex", "alone: the tool");
     }
 
     #[test]
@@ -6064,7 +6153,7 @@ pub(crate) mod tests {
         }))
         .unwrap();
         let line = app.journal_line(&entry);
-        assert!(line.contains("Codex (2)"), "{line}");
+        assert!(line.contains("Codex · newer-id"), "{line}");
         assert!(!line.contains("codex-2"), "{line}");
         // A line whose author is not on record is left as it is.
         let unknown: agentdocker_core::JournalEntry = serde_json::from_value(serde_json::json!({

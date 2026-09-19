@@ -145,6 +145,8 @@ system, which is drawn from the mark:
   `new-kind-direct`/`new-kind-channel`, `new-direct-<agent>`,
   `new-channel-name`, `new-channel-purpose`, `new-member-<agent>`,
   `new-channel-create`; a mention offer `mention-<agent>`. On the Board
+  Usage under More (`project-tab-Usage`): `usage-since-24h|7d|30d`,
+  `usage-by-Agent|Model|Provider|Hour`. On the Board
   tab (`project-tab-Board`): `task-title`, `task-acceptance`,
   `task-file-ready`, `task-file-backlog`, a card `task-<id>` (opens it),
   its moves `task-back-<id>`/`task-next-<id>`, `task-hand-<id>-<agent>`,
@@ -376,3 +378,12 @@ Notification reply recovery forwarding reserves the full JSON byte budget for
 metadata. Escaped control characters and Unicode cannot silently reduce that
 limit. Both ends still reject oversized frames. A full recovery list shows a
 200-character excerpt and preserves uncertain-delivery wording.
+
+Usage reads carry request identities across project, range and grouping changes.
+Duplicate refreshes share the outstanding read; superseded replies are ignored,
+and a refused queue leaves the last totals visible with an explicit error.
+Usage filters stack and totals become labelled cards when the workspace cannot
+fit the table, including a wide project rail or increased text size. Each card
+keeps all five counter categories and the unknown/partial markers visible;
+the wide table remains available when at least 940 logical pixels fit beside
+the rail.
