@@ -17,8 +17,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def main():
@@ -66,8 +68,38 @@ def main():
             raise AssertionError(f"{name}: {detail}")
 
     def run(*argv, check=True, timeout=30, extra_env=None):
+        """The command with its output captured through pipes, as a script
+        or a shell captures it. Bounded twice: the command must exit within
+        `timeout`, and its pipes must close when it exits — a daemon it
+        started that inherited them would keep a capture waiting for as
+        long as it runs (the second runner sat 26 minutes in `daemon
+        start` that way), so a pipe still open shortly after the exit fails
+        the command here instead of hanging the run."""
         run_env = dict(env, **(extra_env or {}))
-        result = subprocess.run([str(cli), *argv], cwd=project, env=run_env, capture_output=True, text=True, timeout=timeout)
+        process = subprocess.Popen([str(cli), *argv], cwd=project, env=run_env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        captured = {}
+
+        def drain(name, stream):
+            captured[name] = stream.read()
+
+        pumps = [threading.Thread(target=drain, args=(name, stream), daemon=True) for name, stream in (("stdout", process.stdout), ("stderr", process.stderr))]
+        for pump in pumps:
+            pump.start()
+        timed_out = False
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            process.kill()
+            process.wait()
+        for pump in pumps:
+            pump.join(timeout=5)
+        held = [name for name, pump in zip(("stdout", "stderr"), pumps) if pump.is_alive()]
+        result = SimpleNamespace(returncode=process.returncode, stdout=captured.get("stdout", ""), stderr=captured.get("stderr", ""))
+        if timed_out:
+            raise AssertionError(f"{argv}: did not exit within {timeout} s; stderr so far: {result.stderr.strip()[:600]}")
+        if held:
+            raise AssertionError(f"{argv}: exited {process.returncode} but its {' and '.join(held)} pipe is still held open by another process (a daemon it started inherited it)")
         if check and result.returncode != 0:
             raise AssertionError(f"{argv}: exit {result.returncode}: {result.stderr.strip()}")
         return result
@@ -191,6 +223,14 @@ def main():
             daemon.wait()
         if log is not None:
             log.close()
+        # A daemon a client started for either home outlives the client;
+        # ask it to exit so nothing of this run is left behind (never where
+        # `daemon stop` would reach the user's own service).
+        for made in (home, fresh) if user_service is None else ():
+            try:
+                run("daemon", "stop", check=False, timeout=15, extra_env={"AGENTDOCKER_HOME": str(made), "AGENTDOCKER_NO_AUTOSTART": "1"})
+            except Exception as error:
+                report.setdefault("cleanup", []).append(f"{made}: {error}")
         if os.name == "nt":
             report["root_acl"] = acl_report(root).strip()
             report["home_acl"] = acl_report(home).strip()

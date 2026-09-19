@@ -74,6 +74,16 @@ What the slice changes in the shared code, on every platform:
 - Private state reads (`read_private_file`, `check_private_dir`,
   `open_private`) exist on Windows, opening read-only with the kind and the
   ACL checked and nothing narrowed: a read is never a write.
+- A daemon the CLI starts on demand does not hold the client's standard
+  handles: on Windows a child inherits every inheritable handle of its
+  parent, and a script's or shell's capture of `agentdocker` output is
+  such a handle, so the daemon kept the capture open for as long as it
+  ran — the third runner sat 26 minutes in `daemon start` that way, until
+  the job's own timeout. `command::detach` makes the client's standard
+  handles non-inheritable before the daemon is started; the daemon gets
+  its own stdio from the command. The smoke captures every command through
+  pipes as a script would and fails a command whose pipes are still held
+  after it exits, so this cannot come back silently.
 - Both binaries do their work on a thread with a 32 MiB stack. A Windows
   main thread has 1 MiB (Unix has 8), and the first Windows runner
   overflowed it in the CLI on `ping` (`thread 'main' has overflowed its

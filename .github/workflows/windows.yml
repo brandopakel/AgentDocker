@@ -47,6 +47,8 @@ jobs:
       - name: Native daemon and CLI build
         run: cargo build --locked -p agentdocker
       - name: Native daemon and CLI smoke
+        # Every command in it is bounded; a hang is a finding, not a wait.
+        timeout-minutes: 10
         run: python scripts/windows_daemon_smoke.py --binary-dir target/debug --output artifacts/windows-daemon-smoke
       - name: Preserve test report
         if: always()
