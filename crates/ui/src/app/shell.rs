@@ -2417,7 +2417,7 @@ impl App {
         }
     }
 
-    fn refresh_project_context(&mut self) {
+    pub(super) fn refresh_project_context(&mut self) {
         let selected = self
             .shell
             .catalog
@@ -2439,6 +2439,11 @@ impl App {
             self.board_asks.clear();
             if self.screen == Screen::Board {
                 self.request_tasks();
+            }
+            // The usage on view is the old project's: read the new one's
+            // now rather than say "Reading…" until a filter is touched.
+            if self.screen == Screen::Usage {
+                self.request_usage();
             }
         }
     }

@@ -1209,13 +1209,21 @@ impl App {
                         if let Some(project) = &self.journal_project {
                             self.request_journal(project.clone());
                         }
+                        // A usage screen opened while the daemon was away
+                        // has asked nothing; it asks now.
+                        if self.screen == Screen::Usage {
+                            self.request_usage();
+                        }
                     }
                 }
                 Msg::Disconnected(reason) => {
                     self.connected = Err(reason);
                     // A page asked for will not come: a notification's
-                    // search ends rather than wait on it.
+                    // search ends rather than wait on it, and a usage read
+                    // on its way is not waited for either — the next
+                    // request is not deduplicated against it.
                     self.cancel_reveal();
+                    self.usage_pending = None;
                 }
                 Msg::Status(text) => self.say(text),
                 Msg::Desktop(result) => self.desktop.receive(result),
