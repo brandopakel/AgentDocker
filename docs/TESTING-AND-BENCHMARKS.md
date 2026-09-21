@@ -54,6 +54,28 @@ running. This is one local baseline, not model-message latency, repeated
 calibration, overnight acceptance or validation of later integration commits.
 The earlier socket timeout/errno-35 failures below remain unexplained.
 
+## September 21 desktop refresh cost
+
+The installed `ff4efc61` shared-chat window consumed 10.22 CPU seconds over
+60.07 seconds with no UI input (17.01% of one core). The window was 1180×792;
+the live coordinator and provider sessions remained active, so this is an
+observed populated-project baseline, not an isolated-machine benchmark.
+Sampling showed periodic full-window presentation work while worker threads
+mostly waited.
+
+Snapshot-only batching did not improve that observation (17.66% on `e609a334`)
+and was removed. The smaller follow-up publishes routine accessibility snapshots
+through the task stream directly, preserving the native accessibility tree without
+sending a second application message that would rebuild/redraw the window. Explicit
+focus/reveal completion and the smoke snapshot path remain unchanged. The installed follow-up measured 8.10% of one core over 60.14 seconds with the
+same shared-chat screen and window size. A task-stream regression verifies published
+control actions and scaled bounds without an application message. Both CPU observations occurred with the desktop locked since 18:26 UTC, so they
+do not establish foreground interaction or power use. External macOS AX inspection
+was unavailable in that state: both previews and a plain AppKit control exposed
+only application/menu nodes. This does not establish an AgentDocker defect. Repeat
+external accessibility checks on an unlocked desktop; in-process smoke does not
+certify screen-reader support.
+
 ## Repository commands and installation
 
 `bash scripts/verify.sh check` runs the PR gate. `test` runs nextest and doctests; `coverage` writes `artifacts/coverage.lcov`; `bench` runs Criterion and the native socket workload at 1/10/100 clients; `fuzz` runs four bounded nightly campaigns (`FUZZ_SECONDS`, default 60 per target). The native load workload runs shared-path contention and disjoint per-client paths separately. The `socket_v2` series separates successful claim/release cycles (two requests) from claim conflicts (one request), including connection setup. Each outcome records sample count and throughput over the same campaign duration; empty outcomes omit latency percentiles. Attempts, elapsed seconds and conflict ratio accompany each workload. These series must not be compared as continuations of the older `socket_claim_release` series, which mixed both outcomes. Stale detection/restart scenarios remain correctness integration tests until dedicated latency workloads are added. Custom counts use [Bencher Metric Format measures](https://bencher.dev/docs/reference/bencher-metric-format/).
@@ -242,3 +264,9 @@ for the idle CPU/RSS sample. The report marks `idle_resources` as `not_run`;
 this mode supplies no idle performance evidence. The default command and CI
 continue to run that measurement. Smoke workflow windows remain behind the
 user's real app.
+
+The September 21 snapshot-only candidate `e609a334` passed the full gate and
+580 rendered workflow steps, but its installed 60-second observation was 17.66%
+of one core versus the prior 17.01%. Keep that unsuccessful comparison in the
+existing [integrated record](verification/2026-09-12-integrated-desktop.json);
+passing correctness tests does not establish a CPU improvement.
