@@ -399,6 +399,27 @@
       "python_skipped": 1,
       "fmt_clippy_doctests_packaging_release": "passed",
       "log": "/private/tmp/agentdocker-windows-sqlite-final-gate-20260921.log"
+    },
+    "native_dd801656_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35654650597",
+      "source": "dd801656",
+      "result": "failed",
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "284",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "a9039b9a-4efd-4b92-8b9b-3e3bb59d9911",
+        "timestamp": "2026-09-21T21:03:59.136+00:00",
+        "time": "5.973"
+      },
+      "binary_sha256": {
+        "agentdocker.exe": "a65a7979fb92b57d2e307f488ca9ec0192e2d3dd480b8e7a82b20439bba9c8e8",
+        "agentd.exe": "959ae13fe6c2628cb8fac34239776166ab4f910bebfe90cbd436a822ba947b93"
+      },
+      "error": "AssertionError: SQLite state.db is user-owned and protected before the crash: O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)",
+      "interpretation": "PowerShell 7 read permissions successfully. The assertion wrongly compared SDDL owner alias LA with the canonical user SID; this is a test-observer mismatch, not proof of foreign ownership. Follow-up compares GetOwner(SecurityIdentifier).Value and AreAccessRulesProtected directly. Crash recovery was not reached."
     }
   }
 }

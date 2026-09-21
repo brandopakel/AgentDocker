@@ -14,7 +14,6 @@ import hashlib
 import json
 import os
 import platform
-import re
 import secrets
 import shutil
 import subprocess
@@ -338,19 +337,27 @@ def main():
         def close(self):
             self.api.CloseHandle(self.handle)
 
-    def windows_sddl(path):
+    def windows_security(path):
         quoted = str(path).replace("'", "''")
         # The workflow runs in PowerShell 7; keep its module environment and
         # host together rather than starting legacy Windows PowerShell inside it.
         host = shutil.which("pwsh") or "powershell"
         result = subprocess.run(
             [host, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
-             f"$ErrorActionPreference='Stop'; (Get-Acl -LiteralPath '{quoted}').Sddl"],
+             f"$ErrorActionPreference='Stop'; $acl=Get-Acl -LiteralPath '{quoted}'; "
+             "[ordered]@{owner_sid=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value; "
+             "protected=$acl.AreAccessRulesProtected; sddl=$acl.Sddl} | ConvertTo-Json -Compress"],
             capture_output=True, text=True, timeout=15,
         )
         if result.returncode != 0 or not result.stdout.strip():
             raise RuntimeError(f"cannot inspect ACL of {path}: host={host}; exit={result.returncode}; stdout={result.stdout[:1000]!r}; stderr={result.stderr[:3000]!r}")
-        return result.stdout.strip()
+        observed = json.loads(result.stdout)
+        if not isinstance(observed, dict) or not isinstance(observed.get("owner_sid"), str) or type(observed.get("protected")) is not bool or not isinstance(observed.get("sddl"), str):
+            raise RuntimeError(f"invalid ACL observation for {path}: {observed!r}")
+        return observed
+
+    def windows_sddl(path):
+        return windows_security(path)["sddl"]
 
     def check_sqlite_security(phase):
         current = subprocess.run(
@@ -359,12 +366,14 @@ def main():
             capture_output=True, text=True, timeout=15, check=True,
         ).stdout.strip()
         assert current.startswith("S-1-"), current
-        descriptors = {name: windows_sddl(home / name)
+        descriptors = {name: windows_security(home / name)
                        for name in ("state.db", "state.db-wal", "state.db-shm")}
         for name, descriptor in descriptors.items():
-            owner = re.search(r"^O:(.*?)(?:G:|D:|S:|$)", descriptor)
+            # SDDL can abbreviate a user SID (for example LA for the local
+            # Administrator account). Compare canonical SIDs from GetOwner,
+            # never display aliases, and read the ACL protection flag directly.
             step(f"SQLite {name} is user-owned and protected {phase}",
-                 owner is not None and owner.group(1) == current and "D:P" in descriptor,
+                 descriptor["owner_sid"] == current and descriptor["protected"],
                  descriptor)
 
     def agent_status(name):
