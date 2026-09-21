@@ -7214,5 +7214,35 @@
         "source": "CGSessionCopyCurrentDictionary (read-only)"
       }
     }
+  },
+  "external_accessibility_unlocked_2026_09_21": {
+    "date_utc": "2026-09-21T20:33:00Z",
+    "candidate": "30ce582a5c5657c1dd6ad8c6a107f1346592bf587ba2445e5ace73f5ab9c6bc0",
+    "binary_source": "e33a45bd",
+    "app_pid": 14485,
+    "trusted_inspector": true,
+    "desktop_locked": false,
+    "result": "passed bounded external AX traversal and navigation actions",
+    "initial_tree": {
+      "bounded": true,
+      "node_count": 716,
+      "pid": 14485,
+      "roles": {
+        "AXButton": 212,
+        "AXGroup": 3,
+        "AXStaticText": 499,
+        "AXTextArea": 1,
+        "AXWindow": 1
+      },
+      "terminal_buttons": 4
+    },
+    "actions": [
+      "AXPress More exposes Board, History, Channels, Files in use, Usage controls",
+      "AXPress More collapses advanced controls",
+      "AXPress Agents exposes Current, Needs input, session rows and Open terminal",
+      "AXPress Chat restores original shared chat; 716 nodes and four terminal buttons remain"
+    ],
+    "actions_return": "AXError.success for all four presses",
+    "scope": "External ApplicationServices AXUIElement APIs against installed app; no message sent, draft edited, terminal command typed, provider or daemon restarted. Does not establish human VoiceOver, physical keyboard or IME acceptance."
   }
 }
