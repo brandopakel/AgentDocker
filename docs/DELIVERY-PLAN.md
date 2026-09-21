@@ -33,14 +33,15 @@ Agents/Chat navigation passed. This establishes the bounded AX path, while
 physical keyboard, VoiceOver, IME and independent-machine acceptance remain.
 The latest public download is still `v0.1.0`, which predates the current desktop.
 
-Windows #210 remains open for integration. Native `cadf3d58` passed 284 core/host
-tests and all 50 daemon/CLI/desktop steps in run `35656352287`: ConPTY input/final
+Windows #210 remains open for integration. Native `cadf3d58` and final code `e3ada9db` each passed 284 core/host
+tests and all 50 daemon/CLI/desktop steps (final run `35657437544`): ConPTY input/final
 output, owner-death cleanup, bounded backpressure stop, surviving daemon crash,
 protected SQLite ownership through recovery, and OWNER RIGHTS ancestry. A fresh
-native window started its private daemon and captured in 3.61 seconds. Earlier
+native window started its private daemon and captured in 4.27 seconds on the repeat. Earlier
 failures remain in the [existing Windows record](verification/2026-09-19-windows-slice-one.json).
-Physical attach, broader graphical/input acceptance (including the captured
-missing Inbox/Messages label), service, installer and real-provider acceptance
+The final capture includes the Messages label after redraw settling corrected
+the earlier screenshot timing defect. Physical attach, broader graphical/input
+acceptance, service, installer and real-provider acceptance
 remain open; there is no Windows desktop download.
 
 <a id="current-integration-and-installation-september-19-utc"></a>

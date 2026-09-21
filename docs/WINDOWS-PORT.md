@@ -290,7 +290,9 @@ The retained image has an unlabeled Inbox/Messages navigation row. Review
 traced this to capture ordering: a snapshot changes Inbox to Messages and
 screenshot reads the previous primitives before their text is redrawn. Default
 capture now waits 400 ms after readiness, matching the existing scenario capture
-settling. A native repeat must verify the resulting label. This bounded startup pass does not establish physical input, broad
+settling. Final code `e3ada9db` repeated all 284 tests and 50 steps successfully
+in run `35657437544`; the inspected PNG includes Messages. Startup/capture took
+4.27 seconds and full-input stop took 2.062 seconds on that repeat. This bounded startup pass does not establish physical input, broad
 visual acceptance, installation, real-provider or clean-machine behavior.
 Opening an external project terminal or focusing an external agent terminal is
 not implemented on Windows. Provider inventory, services and the desktop

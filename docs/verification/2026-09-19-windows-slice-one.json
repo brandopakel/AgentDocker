@@ -136,7 +136,7 @@
     "real providers, sustained use, sleep/reboot"
   ],
   "managed_session_lifetime_follow_up_2026_09_21": {
-    "status": "passed bounded native acceptance on cadf3d58: 284 core/host tests and 50 daemon/CLI/desktop steps; integration and broader product acceptance remain",
+    "status": "passed bounded native acceptance twice, final code e3ada9db: 284 core/host tests and 50 daemon/CLI/desktop steps; integration and broader product acceptance remain",
     "base": "91ba99a1dc0c0ffcb408a16fba2e3026ac24b70c",
     "first_fix": "bc17c81e0766aff6db00db7a2d6a5d36c69393fe",
     "cross_validation": {
@@ -766,6 +766,164 @@
         "daemon_log_tail": "m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:44.778315Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:44.807569Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:44.835037Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:44.895719Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:44.927777Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:44.988341Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:45.017273Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:45.259218Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2magentd::daemon\u001b[0m\u001b[2m:\u001b[0m agent finished \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2 \u001b[3mname\u001b[0m\u001b[2m=\u001b[0msmoke-input-full \u001b[3mstatus\u001b[0m\u001b[2m=\u001b[0mexited (-1073741510)\n\u001b[2m2026-09-21T21:23:45.615036Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2magentd::daemon\u001b[0m\u001b[2m:\u001b[0m agent finished \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m24d6e2b73258 \u001b[3mname\u001b[0m\u001b[2m=\u001b[0msmoke-helper \u001b[3mstatus\u001b[0m\u001b[2m=\u001b[0mexited (signal)\n"
       },
       "visual_review": "Fresh native window renders and connects. The Inbox/Messages navigation row shows its envelope icon but its text label is absent in the retained PNG; broader visual/input acceptance remains open. This is not a real-provider, installer or independent-machine trial."
+    },
+    "native_e3ada9db_result": {
+      "source": "e3ada9db91a12934735b2905957900cf6b8f3df0",
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35657437544",
+      "result": "passed",
+      "platform": "Windows 2025Server AMD64",
+      "binary_sha256": {
+        "agentdocker.exe": "b12ef26a5289c070a050438fa3deecb82e39e8242267fb1eddaab3ea9619b906",
+        "agentd.exe": "46c21d6a40d2857f8249b53a938265d537755b23b9672cf2df9fbdbcb5acc3f9",
+        "agentdocker-ui.exe": "9da95f19254c8484abfaab96f234cfd4ecadb93e7c1b677df9cfcbe587daea28"
+      },
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "284",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "132c40ee-230b-486a-8cb9-7abb272b7ffe",
+        "timestamp": "2026-09-21T21:31:17.508+00:00",
+        "time": "5.909"
+      },
+      "passed_step_names": [
+        "the daemon answers ping over the local transport",
+        "daemon status names the serving executable",
+        "the desktop trial starts with no prior home or capture",
+        "the desktop endpoint is absent with CLI autostart disabled",
+        "the native desktop exits within its smoke deadline",
+        "the native desktop connects and captures a ready window",
+        "the native renderer retains a nonempty PNG",
+        "the UI-started private daemon answers after the window exits",
+        "two agents register with their pids",
+        "ps lists both as running",
+        "a message sent to an agent is read from its inbox",
+        "a project broadcast reaches the other agent",
+        "a lease is held and a second claim is refused",
+        "attach without a terminal is refused in words, not with a hang",
+        "daemon install is refused on Windows in words",
+        "daemon reload is refused on Windows in words",
+        "a piped managed command runs under a session owner and its output reaches its log",
+        "a terminal managed command is running on its own console",
+        "the attach wire answers events_ready for a terminal session",
+        "what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen",
+        "terminal output reaches End with its final partial line before the deadline",
+        "the terminal session ends and its final partial line is in its log",
+        "stop ends a managed terminal session through its owner",
+        "the owner and both piped descendants are alive before the owner crash",
+        "abrupt owner death ends the piped child and grandchild without Rust cleanup",
+        "native keyboard backpressure was observed",
+        "stop remains bounded when the child ignores Ctrl-C and never reads its full keyboard",
+        "the daemon still answers after terminal backpressure",
+        "stop ends a registered process whose identity matches its record",
+        "a terminal session is running before the daemon dies",
+        "SQLite state.db is user-owned and protected before the crash",
+        "SQLite state.db-wal is user-owned and protected before the crash",
+        "SQLite state.db-shm is user-owned and protected before the crash",
+        "the daemon is ended abruptly, leaving the session to its owner",
+        "SQLite state.db is user-owned and protected after the crash",
+        "SQLite state.db-wal is user-owned and protected after the crash",
+        "SQLite state.db-shm is user-owned and protected after the crash",
+        "daemon start brings up a daemon on demand for this home",
+        "the new daemon finds the session still running under its owner",
+        "SQLite state.db is user-owned and protected after recovery",
+        "SQLite state.db-wal is user-owned and protected after recovery",
+        "SQLite state.db-shm is user-owned and protected after recovery",
+        "the reattached session is stopped through its owner",
+        "daemon stop ends the daemon a client started",
+        "the first command on a fresh home creates it and starts a daemon",
+        "that daemon is ended too",
+        "the Python private parent has an OWNER RIGHTS permission entry",
+        "first run works below the private OWNER RIGHTS parent without changing its owner or ACL",
+        "the new child state has a protected ACL",
+        "the OWNER RIGHTS trial daemon is ended too"
+      ],
+      "step_count": 50,
+      "backpressure_stop_seconds": 2.062,
+      "sqlite_security": [
+        {
+          "step": "SQLite state.db is user-owned and protected before the crash",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db-wal is user-owned and protected before the crash",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db-shm is user-owned and protected before the crash",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db is user-owned and protected after the crash",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db-wal is user-owned and protected after the crash",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db-shm is user-owned and protected after the crash",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db is user-owned and protected after recovery",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db-wal is user-owned and protected after recovery",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db-shm is user-owned and protected after recovery",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        }
+      ],
+      "desktop": {
+        "scope": "source-built native Windows window, fresh-home UI daemon autostart, connection, runtime rows and renderer capture",
+        "tcp_observation": "not_measured",
+        "capture_directory": "desktop",
+        "result": "passed",
+        "pid": 10120,
+        "exit_code": 0,
+        "elapsed_seconds": 4.2660000000000196,
+        "native_result": {
+          "capture_attempts": 1,
+          "connected": true,
+          "elapsed_seconds": 4.2081096,
+          "error": null,
+          "fixture_discovered": true,
+          "native_accessibility_nodes": null,
+          "renderer": "iced tiny-skia",
+          "result": "passed",
+          "runtime_rows": 16,
+          "scenario_steps_completed": null,
+          "scenario_steps_total": null,
+          "screenshot_requested": true,
+          "ticks": 65
+        },
+        "screenshot_sha256": "c85e71948d07ad34926a2bcfd2a9aff60fab54f36a7138f031561b9aa822a00b"
+      },
+      "cleanup_errors": [],
+      "visual_review": "Retained PNG inspected: Messages label is present, with Projects/Tools/settings/project labels and the connected fresh window. Confirms the earlier missing label was resolved by capture redraw settling in this trial; not broad physical-input/GUI/provider acceptance."
+    },
+    "final_capture_local_gate": {
+      "source": "e3ada9db91a12934735b2905957900cf6b8f3df0",
+      "rust_passed": 1332,
+      "rust_skipped": 7,
+      "python_run": 106,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_packaging_release": "passed",
+      "log": "/private/tmp/agentdocker-windows-startup-capture-final-gate-20260921.log"
     }
   }
 }

@@ -441,4 +441,5 @@ The default startup smoke capture waits for a redraw after its first ready
 snapshot, as scenario captures already do. Capturing in the same update that
 changes Inbox to Messages can otherwise retain the old frame with its text
 missing. This affects capture evidence; it does not establish a persistent
-interactive-window defect. The Windows startup repeat checks the new image.
+interactive-window defect. Native Windows repeat `35657437544` on `e3ada9db`
+passed and its inspected image includes the Messages label.
