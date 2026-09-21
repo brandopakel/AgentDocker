@@ -309,6 +309,8 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("wait_text", text="Agent launched"), step("click", id="project-tab-Agents"), step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="launched-terminal"), step("click", id="detach-terminal"),
                          step("click", id="stop-session"), step("wait_text", text="Confirm stop"), step("click", id="stop-session"),
+                         # A click can re-arm an expired confirmation; require the actual exit.
+                         step("wait_control", id="stop-session", present=False),
                          step("click", id="project-more"), step("click", id="project-tab-Console"), step("fill", id="console-command", text="ps --all"),
                          step("click", id="run-command"), step("wait_text", text="launched-from-iced"), step("capture", name="commands"),
                          step("click", id="settings"), step("click", id="dark-theme"), step("capture", name="settings-dark"),

@@ -369,7 +369,9 @@ settle than release builds and are for review, not for the acceptance report.
 It drives the rendered controls' callbacks through question delivery, draft
 navigation, terminal attachment, channel messaging, setup preview/apply/undo,
 folder pinning, agent launch/stop, CLI commands, focus reveal, resizing, appearance
-and a second launch. Daemon and on-disk assertions verify outcomes. macOS also
+and a second launch. The Stop sequence waits for its control to disappear after confirmation, then
+checks that the exact launched record exited; two clicks alone are not success.
+Daemon and on-disk assertions verify outcomes. macOS also
 probes the app's native NSAccessibility hierarchy. The driver does not claim
 physical keyboard injection, provider consumption or a screen-reader trial.
 
