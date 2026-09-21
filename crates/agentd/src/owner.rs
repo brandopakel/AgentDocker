@@ -246,7 +246,17 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
     let lock_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let _owner_lock = loop {
         match lock::try_exclusive(&lock_path).context("cannot lock the session")? {
-            Some(held) => break held,
+            // A stopping daemon's sweep may have unlinked the file between
+            // our open and our lock: a lock on that file excludes nobody,
+            // so it is taken again on the file the name has now.
+            Some(held)
+                if held
+                    .is_at(&lock_path)
+                    .context("cannot check the session lock")? =>
+            {
+                break held;
+            }
+            Some(_) => continue,
             None if tokio::time::Instant::now() >= lock_deadline => {
                 anyhow::bail!("another session owner holds this agent")
             }
