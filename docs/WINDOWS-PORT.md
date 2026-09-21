@@ -161,7 +161,7 @@ Work still required before platform support can be claimed:
   real-provider integration and sustained lifecycle trials.
 
 The supported download/platform matrix remains unchanged until those acceptance
-stages pass. See native delivery (in git history) for the macOS/Linux stack.
+stages pass. See [ARCHITECTURE.md](ARCHITECTURE.md#process-supervision) for the macOS/Linux stack and [verification/INDEX.md](verification/INDEX.md) for its trials.
 
 ## Local connection boundary
 

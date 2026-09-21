@@ -392,7 +392,7 @@ on macOS and Linux; Windows builds and exercises the daemon/CLI over its native
 named pipe and tests the core/host foundations. ConPTY, full desktop/service
 packaging and real-provider Windows acceptance remain separate platform work. Equivalent package size, launch time, memory and CPU
 measurements must accompany release decisions, using exact binary provenance.
-See distribution and signing (in git history) for public release gates.
+See [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md) for public release gates.
 
 Messages review (September 17): mentioning an agent does not change recipients
 or grant channel membership. Suggestions only name current recipients. A late

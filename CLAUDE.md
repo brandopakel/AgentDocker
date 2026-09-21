@@ -1,6 +1,6 @@
 # AgentDocker — notes for coding agents
 
-Native local orchestration for AI agents: a per-host daemon (`agentd`) plus a CLI (`agentdocker`) that give agents of any vendor a registry, supervised processes, messaging, and time-limited leases on shared resources. Read `docs/PRODUCT-DIRECTION.md` for the native desktop target and delivery order, `README.md` for the model and `docs/ARCHITECTURE.md` for the protocol and semantics.
+Native local orchestration for AI agents: a per-host daemon (`agentd`) plus a CLI (`agentdocker`) that give agents of any vendor a registry, supervised processes, messaging, and time-limited leases on shared resources. Read `README.md` for the model, `docs/README.md` for what each document is for, `docs/ARCHITECTURE.md` for the protocol and semantics and `docs/REMAINING-WORK.md` for the road to v1.
 
 ## Layout
 

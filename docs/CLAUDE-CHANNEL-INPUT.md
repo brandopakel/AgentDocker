@@ -301,7 +301,7 @@ trial covers the checkbox; it does not replace this actual-provider evidence.
 The [owned Codex input adapter](CODEX-INPUT.md) and durable desktop receipt
 status are implemented. Actual-provider reconnect/ambiguous receipt,
 additional versions/policies and sustained-use acceptance remain in the
-message delivery audit (in git history).
+message delivery audit (MESSAGE-DELIVERY-AUDIT.md in git history).
 
 
 ### September 12: Claude questions use the normal channel queue

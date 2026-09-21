@@ -183,7 +183,7 @@ It is not woken. A message to a browser agent waits in its inbox until the
 hosted model calls `read_inbox` — which it does only when the person's prompt
 leads it to. Nothing in the vendors' connector model lets a server start a
 turn. Terminal agents, by contrast, can be woken through their own adapters
-(the message audit (in git history)).
+(MESSAGE-DELIVERY-AUDIT.md in git history).
 
 One more thing to know: a connector added to a Claude account appears in every
 Claude surface of that account, Claude Code sessions included, as that

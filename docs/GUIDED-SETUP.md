@@ -4,7 +4,7 @@ Codex plans include MCP and a separate lifecycle `hooks.json`, respecting
 `CODEX_HOME`. Both files use the same private receipt and preflight rules.
 Existing hooks are preserved; review and trust new definitions in Codex `/hooks`.
 Hooks deliver queued messages at prompt/tool/Stop boundaries with acknowledgement
-after output. See activity and messaging (in git history).
+after output. See [messaging](ARCHITECTURE.md#messaging).
 
 In the native agentdocker window, open **Tools**, expand **Details**, choose **Review setup**, inspect the tool, configuration path and executable, then **Apply changes**. The window also offers **Undo this setup**, **Setup history**, and **Check connections**. Applying a plan does not reconfigure an already-running provider session; start a fresh session to use it.
 
@@ -102,7 +102,7 @@ Show setup, waiting for consent, receiver contact and verified delivery
 separately; close the flow only after a real receipt. Test actual idle wake as
 well as reconnect, retained drafts and queued-message order for each supported
 provider. This is requested engineering work, not a shipped button yet; see the
-delivery plan (in git history) and [remaining work](REMAINING-WORK.md).
+[remaining work](REMAINING-WORK.md).
 
 ## What a connection check proves
 
@@ -141,7 +141,7 @@ prompt, and its exact receipt/queue acknowledgement. Hook and Claude settings
 were unchanged. See the [native input record](verification/INDEX.md);
 zero-prompt startup/reopen and broader platform acceptance remain separate.
 
-Provider configuration follows the installed CLI capabilities and the official [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and [Claude Code hooks reference](https://code.claude.com/docs/en/hooks). Private raw trial records remain outside the repository. Packaging and signing are documented in DESKTOP-DISTRIBUTION.md (in git history).
+Provider configuration follows the installed CLI capabilities and the official [Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and [Claude Code hooks reference](https://code.claude.com/docs/en/hooks). Private raw trial records remain outside the repository. Packaging and signing are documented in [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md).
 
 
 CLI inventory also checks standard installation directories when a native app inherits a minimal PATH. Connection checks continue to use the inspecting process's actual PATH; finding a CLI in an inventory fallback does not validate a bare MCP command. Selecting a runtime explicitly inspects only that target, so an unrelated malformed desktop launcher does not block its setup preview. Codex desktop and ChatGPT have independent inventory rows without a supported setup adapter; the Codex CLI configuration is not treated as their connection health.

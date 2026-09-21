@@ -83,7 +83,7 @@ and ambiguous-submission recovery. The schema-20 historical-answer migration pas
 The later `2a7656c` binary source passed the full
 964-Rust/70-Python gate. Zero-prompt reopen, final CI and installation remain open;
 see the
-delivery audit (in git history). Repeat the trials with
+delivery audit (MESSAGE-DELIVERY-AUDIT.md in git history). Repeat the trials with
 `python3 scripts/native_codex_queue_smoke.py --help` for the required binary paths
 and scenario choices. Each run saves a sanitized result beside private traces.
 `--reload --scenario question` additionally hands the private daemon over while
@@ -678,7 +678,7 @@ changing the draft. Paused exited sessions remain in **Needs input**. The latest
 UI receipt covers ordinary inputs; native question and MCP answer receipts keep
 their existing ledger paths. The [status checkpoint](verification/INDEX.md)
 records actual Codex receipt/late-answer acceptance and native restart checks.
-PR #108 merged after final CI and actual source inspection at `5778212`. The delivery audit (in git history)
+PR #108 merged after final CI and actual source inspection at `5778212`. The delivery audit (MESSAGE-DELIVERY-AUDIT.md in git history)
 retains the other open review surfaces and acceptance cases.
 The existing installation and active sessions have not been switched.
 

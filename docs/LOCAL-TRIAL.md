@@ -1,6 +1,6 @@
 # Local native trial
 
-Yes: use this development Mac for a controlled alpha trial now. Begin with the audited code in private state and a disposable repository; use a candidate containing the restore/privacy fixes (in git history) and verify their regression scenarios before enabling automatic restore or integrating existing sessions. The test tools and local preview already allow useful native testing without a global service install.
+Yes: use this development Mac for a controlled alpha trial now. Begin with the audited code in private state and a disposable repository; use a candidate containing the restore/privacy fixes (the September 6 audit, AUDIT-2026-09-06.md in git history) and verify their regression scenarios before enabling automatic restore or integrating existing sessions. The test tools and local preview already allow useful native testing without a global service install.
 
 ## Stage 1 — Isolated candidate
 

@@ -5,7 +5,10 @@ Checks, each of which fails the gate when it does not hold:
 
 1. Every Markdown file under docs/ is linked from docs/README.md, the index.
 2. Every relative link in every Markdown file resolves to a file that exists.
-3. With --base <ref>: a change under crates/, scripts/, packaging/,
+3. Every `docs/<Name>.md` named anywhere else in the tree (a source comment,
+   an error message, the front page's HTML anchors) exists, unless the text
+   says it is in git history.
+4. With --base <ref>: a change under crates/, scripts/, packaging/,
    install.sh, Makefile or .github/ is accompanied by a change under docs/,
    README.md or CLAUDE.md, or a commit in the range says why not with a
    line starting `Docs:` (for example `Docs: unchanged, a refactor with no
@@ -30,10 +33,16 @@ CODE_FILES = ("install.sh", "Makefile", "Cargo.toml", "Cargo.lock")
 DOC_PATHS = ("docs/",)
 DOC_FILES = ("README.md", "CLAUDE.md")
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+# The documents are named in capitals; a lower-case `docs/x.md` in a test is an example, not a pointer.
+POINTER = re.compile(r"docs/((?:verification/)?[A-Z][A-Z0-9-]*\.md)")
 
 
 def markdown_files():
-    tracked = subprocess.check_output(["git", "ls-files", "-z", "--", "*.md"], cwd=ROOT).split(b"\0")
+    return tracked_files("*.md")
+
+
+def tracked_files(*patterns):
+    tracked = subprocess.check_output(["git", "ls-files", "-z", "--", *patterns], cwd=ROOT).split(b"\0")
     return sorted(ROOT / name.decode() for name in tracked if name)
 
 
@@ -60,6 +69,24 @@ def links_resolve():
             resolved = (path.parent / target).resolve()
             if not resolved.exists():
                 problems.append(f"{path.relative_to(ROOT)} links to {target}, which does not exist")
+    return problems
+
+
+def pointers_resolve():
+    """A document named outside the docs tree, by path, must exist: the
+    Markdown link check does not see a source comment, an error message or
+    the front page's HTML anchors."""
+    problems = []
+    for path in tracked_files("*.md", "*.py", "*.rs", "*.toml", "*.sh", "*.yml", "*.yaml", "Makefile"):
+        if path.is_relative_to(DOCS):
+            continue
+        text = path.read_text(errors="replace")
+        for match in POINTER.finditer(text):
+            name = match.group(1)
+            if "in git history" in text[match.end():match.end() + 40]:
+                continue
+            if not (ROOT / "docs" / name).exists():
+                problems.append(f"{path.relative_to(ROOT)} names docs/{name}, which does not exist")
     return problems
 
 
@@ -99,7 +126,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--base", help="git ref to diff against for the docs-considered check")
     args = parser.parse_args()
-    problems = index_completeness() + links_resolve()
+    problems = index_completeness() + links_resolve() + pointers_resolve()
     if args.base:
         problems += docs_considered(args.base)
     for problem in problems:
