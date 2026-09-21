@@ -214,7 +214,10 @@ The regression smoke demands an `End` frame and final unterminated log line,
 kills a piped session owner and checks the child and grandchild through retained
 process handles, and fills a nonreading console's input before requiring stop
 within ten seconds. Its async runtime has one worker; wire writes are bounded.
-Native execution of these new checks is pending; cross-compilation is not runtime
+All fallible process/job handle clones are acquired before the suspended child
+is resumed. Test teardown stops managed sessions before its daemon, and uses
+verified owner process handles as a fallback; the disown test owns its sole
+process directly. Native execution of these new checks is pending; cross-compilation is not runtime
 acceptance. The broader daemon/CLI test fixtures still contain Unix-only APIs
 and do not yet compile as native Windows tests.
 

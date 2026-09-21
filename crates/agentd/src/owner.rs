@@ -90,8 +90,8 @@ fn resize_terminal(terminal: &Terminal, cols: u16, rows: u16) -> std::io::Result
 struct Group(Pid, u32);
 #[cfg(unix)]
 impl Group {
-    fn of(child: &OwnedChild, _input: Option<&mpsc::Sender<Vec<u8>>>) -> anyhow::Result<Self> {
-        Ok(Self(Pid::from_raw(-(child.id() as i32)), child.id()))
+    fn of(child: &Pending, _input: Option<&mpsc::Sender<Vec<u8>>>) -> anyhow::Result<Self> {
+        Ok(Self(Pid::from_raw(-(child.pid as i32)), child.pid))
     }
     fn ask(&self) {
         let _ = kill(self.0, Signal::SIGTERM);
@@ -110,7 +110,7 @@ struct Group {
 }
 #[cfg(windows)]
 impl Group {
-    fn of(child: &OwnedChild, input: Option<&mpsc::Sender<Vec<u8>>>) -> anyhow::Result<Self> {
+    fn of(child: &Pending, input: Option<&mpsc::Sender<Vec<u8>>>) -> anyhow::Result<Self> {
         Ok(Self {
             job: child.job().context("cannot hold the agent's job")?,
             input: input.cloned(),
@@ -519,6 +519,17 @@ async fn supervise(
         tracing::info!(agent = %shared.launch.agent, "launch was never activated; exec denied");
         return 3;
     }
+    // Acquire every fallible ownership handle before activation. Reporting
+    // a failed group clone after starting the child would publish Exited
+    // while the unowned command was still allowed to run.
+    let group = match Group::of(&pending, shared.input.as_ref()) {
+        Ok(group) => group,
+        Err(error) => {
+            drop(pending);
+            return finish_failed(&shared, &child, format!("{error:#}"), &mut acknowledgement)
+                .await;
+        }
+    };
     let mut owned = match tokio::task::spawn_blocking(move || pending.activate()).await {
         Ok(Ok(child)) => child,
         Ok(Err(error)) => {
@@ -593,13 +604,6 @@ async fn supervise(
         }
     }
 
-    let group = match Group::of(&owned, shared.input.as_ref()) {
-        Ok(group) => group,
-        Err(error) => {
-            return finish_failed(&shared, &child, format!("{error:#}"), &mut acknowledgement)
-                .await;
-        }
-    };
     let mut stopping = false;
     let mut deadline = tokio::time::Instant::now();
     let mut output_error: Option<String> = None;

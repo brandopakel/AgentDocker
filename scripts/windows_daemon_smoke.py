@@ -64,6 +64,8 @@ def main():
     env["TOKIO_WORKER_THREADS"] = "1"
     daemon = None
     log = None
+    managed_names = []
+    owner_handles = []
 
     def write_report():
         args.output.mkdir(parents=True, exist_ok=True)
@@ -87,6 +89,9 @@ def main():
         start` that way), so a pipe still open shortly after the exit fails
         the command here instead of hanging the run."""
         run_env = dict(env, **(extra_env or {}))
+        managed_name = argv[argv.index("--name") + 1] if argv and argv[0] == "run" and "--name" in argv else None
+        if managed_name is not None:
+            managed_names.append(managed_name)
         process = subprocess.Popen([str(cli), *argv], cwd=project, env=run_env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         captured = {}
 
@@ -113,6 +118,18 @@ def main():
             raise AssertionError(f"{argv}: exited {process.returncode} but its {' and '.join(held)} pipe is still held open by another process (a daemon it started inherited it)")
         if check and result.returncode != 0:
             raise AssertionError(f"{argv}: exit {result.returncode}: {result.stderr.strip()}")
+        if managed_name is not None and result.returncode == 0 and os.name == "nt":
+            record = inspect_agent(managed_name)
+            owner = record.get("owner")
+            if owner and record["status"]["state"] in ("created", "running"):
+                try:
+                    owner_handles.append(WindowsProcess(owner["pid"], owner["started_at"]))
+                except OSError:
+                    # A short command can finish and be acknowledged during
+                    # inspection; an owner missing while still live is a bug.
+                    current = inspect_agent(managed_name)
+                    if current["status"]["state"] in ("created", "running"):
+                        raise
         return result
 
     # `daemon stop`/`start` on macOS and Linux also drive an installed user
@@ -406,7 +423,7 @@ def main():
             # closing should end this otherwise long-lived process tree.
             marker = project / "owner-death-processes.json"
             child_script = "import time; time.sleep(120)"
-            leader_script = "import json,os,pathlib,subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c',sys.argv[2]]); pathlib.Path(sys.argv[1]).write_text(json.dumps([os.getpid(),p.pid])); time.sleep(120)"
+            leader_script = "import json,os,pathlib,subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c',sys.argv[2]]); path=pathlib.Path(sys.argv[1]); staged=path.with_suffix('.staging'); staged.write_text(json.dumps([os.getpid(),p.pid])); staged.replace(path); time.sleep(120)"
             run("run", "--name", "smoke-owner-death", "--runtime", "custom", "--", sys.executable, "-c", leader_script, str(marker), child_script)
             deadline = time.monotonic() + 10
             while not marker.exists() and time.monotonic() < deadline:
@@ -533,6 +550,42 @@ def main():
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
     finally:
+        # An owner deliberately outlives its daemon. End fixture sessions
+        # while the daemon can still reach them, before killing the daemon
+        # or removing its state. If the crash trial lost its replacement,
+        # start a private daemon directly, never the person's user service.
+        rescue = None
+        if managed_names:
+            try:
+                if run("ping", check=False, timeout=5).returncode != 0:
+                    rescue = subprocess.Popen([str(daemon_binary)], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline and rescue.poll() is None:
+                        if run("ping", check=False, timeout=3).returncode == 0:
+                            break
+                        time.sleep(0.1)
+                for name in reversed(managed_names):
+                    try:
+                        run("stop", name, check=False, timeout=8)
+                    except Exception as error:
+                        report.setdefault("cleanup", []).append(f"stop {name}: {error}")
+            except Exception as error:
+                report.setdefault("cleanup", []).append(f"session cleanup: {error}")
+        # These are process handles captured from this fixture's verified
+        # owner records, not broad PID searches or job clones. They are the
+        # fallback when the very stop/daemon path under test is broken.
+        for owner in owner_handles:
+            try:
+                owner.end()
+                if not owner.exited(5000):
+                    raise AssertionError("fixture owner did not exit")
+            except Exception as error:
+                report.setdefault("cleanup", []).append(f"owner cleanup: {error}")
+            finally:
+                owner.close()
+        if rescue is not None and rescue.poll() is None:
+            rescue.kill()
+            rescue.wait(timeout=10)
         if daemon is not None and daemon.poll() is None:
             daemon.kill()
             daemon.wait()
@@ -556,6 +609,9 @@ def main():
         except OSError:
             pass
         shutil.rmtree(root, ignore_errors=True)
+        if report.get("cleanup"):
+            report["result"] = "failed"
+            report.setdefault("error", "fixture cleanup did not complete cleanly")
         write_report()
         print(json.dumps(report, indent=2))
     return 0 if report["result"] == "passed" else 1

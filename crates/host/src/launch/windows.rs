@@ -156,8 +156,17 @@ impl Drop for OwnedChild {
 }
 
 impl Pending {
+    /// Acquire supervision ownership while the child still cannot run.
+    pub fn job(&self) -> io::Result<Job> {
+        Ok(Job(self.job.try_clone()?))
+    }
+
     /// Let the process run, now that the record is durable.
     pub fn activate(mut self) -> io::Result<OwnedChild> {
+        // Clone before ResumeThread. Failure must leave the launch gate
+        // closed so Pending::drop still terminates the suspended child.
+        let process = self.process.try_clone()?;
+        let job = self.job.try_clone()?;
         let thread = self
             .thread
             .take()
@@ -176,8 +185,8 @@ impl Pending {
         }
         Ok(OwnedChild {
             pid: self.pid,
-            process: self.process.try_clone()?,
-            job: self.job.try_clone()?,
+            process,
+            job,
             stdout: self.stdout.take(),
             stderr: self.stderr.take(),
             reaped: false,
@@ -742,8 +751,10 @@ mod tests {
 
     #[test]
     fn disown_clears_crash_protection_before_the_last_job_handle_closes() {
-        let mut command = Command::new("cmd");
-        command.args(["/c", "ping -n 31 127.0.0.1 > nul"]);
+        // Direct executable: cleanup of this deliberately disowned test
+        // must not strand a shell's descendant outside our process handle.
+        let mut command = Command::new("ping.exe");
+        command.args(["-n", "31", "127.0.0.1"]);
         let child = prepare(command).unwrap().activate().unwrap();
         // Keep only a process handle, never a job clone that would mask a
         // missing flag clear by preventing last-job-handle close.

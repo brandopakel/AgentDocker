@@ -134,5 +134,43 @@
     "the daemon and CLI test suites on Windows (only core and host run there)",
     "OWNER RIGHTS (S-1-3-4) as the validated owner in the Windows ACL check: a home under a Python-made temporary directory is still refused; recorded as open in REMAINING-WORK",
     "real providers, sustained use, sleep/reboot"
-  ]
+  ],
+  "managed_session_lifetime_follow_up_2026_09_21": {
+    "status": "implementation under validation; no native managed-session pass claimed",
+    "base": "91ba99a1dc0c0ffcb408a16fba2e3026ac24b70c",
+    "first_fix": "bc17c81e0766aff6db00db7a2d6a5d36c69393fe",
+    "cross_validation": {
+      "target": "x86_64-pc-windows-gnu",
+      "host_all_targets_clippy": "passed",
+      "daemon_cli_lib_bins_clippy": "passed",
+      "broader_daemon_cli_test_build": "failed: existing Unix-only fixtures; remains open"
+    },
+    "superseded_run": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35646876334",
+      "result": "cancelled by the author before acceptance; independent review identified fixture cleanup and pre-activation ownership fixes"
+    },
+    "local_interrupted_gate": {
+      "rust_passed_before_interrupt": 490,
+      "interrupted_test": 1,
+      "not_run": 840,
+      "reason": "author stopped owned test campaign to address review; not a completed gate"
+    },
+    "review_follow_up": [
+      "clone supervision and child handles before resuming the suspended process",
+      "disown fixture launches ping directly so cleanup owns its only process",
+      "fixture sessions stop before daemon teardown; verified owner handles provide Windows fallback",
+      "publish fixture PID marker atomically rather than racing a partial JSON write"
+    ],
+    "required_native_evidence": [
+      "terminal End frame, exited record and final partial log line with one Tokio worker",
+      "piped owner crash ends leader and grandchild through the final job handle",
+      "backpressured nonreading Ctrl-C-ignoring terminal stops within ten seconds",
+      "normal daemon crash still preserves a managed terminal under its owner"
+    ],
+    "not_covered": [
+      "physical Windows console attach and provider interactions",
+      "Windows installer, service and GUI acceptance",
+      "full daemon/CLI test-suite portability"
+    ]
+  }
 }
