@@ -39,10 +39,11 @@ The first coworker rollout targets **macOS, Linux and native Windows**. Each
 platform needs a downloadable candidate and its own first-run acceptance; the
 Windows foundations alone do not satisfy that requirement.
 
-Projects are moving to shared chat first, with clearly named agents and terminal
+Projects open to shared chat first, with clearly named agents and terminal
 access beside the conversation. **Open project terminal** starts a shell in the
-project folder; **Agents** opens the session list. That interface is installed as a local preview
-and awaits final integration. Board, history and technical activity remain
+project folder; **Agents** opens the session list. The shared-chat interface is merged
+and installed as an earlier local preview. Message composers now support multiple
+lines: **Enter** sends, **Shift+Enter** adds a line. Board, history and technical activity remain
 available under More. The [remaining-work tracker](docs/REMAINING-WORK.md)
 separates completed implementation, unmerged changes and release acceptance.
 
@@ -111,9 +112,10 @@ agentdocker discover          # agent processes running right now that nobody re
 agentdocker ui                # the desktop app: the same, live, in a window
 ```
 
-Use saved **preview → apply** when you want scoped undo. A plain
-`setup <runtime>` is the legacy direct route with backups; it does not create
-an undoable saved plan.
+Both ordinary `setup <runtime>` and **preview → apply** retain a private receipt
+for scoped undo. Ordinary setup prints its plan ID and the undo command; use
+`setup --show PLAN_ID` to review it or `setup --undo PLAN_ID` to reverse unchanged
+configuration. **Preview** lets you inspect the changes before applying them.
 
 Supported provider setup also installs a portable coordination skill, shared with
 MCP onboarding, so agents can discover the workflow without a repeated reminder.
@@ -128,7 +130,7 @@ The daemon keeps scanning for agent processes on its own and announces them as `
 
 - **One host.** Agents on two machines do not see each other; a hand-off bundle carries work across, a shared registry does not.
 - **Waking an idle Claude Code session.** A Claude session takes a message the moment it is next at a prompt, or live if it was launched with the AgentDocker channel (`agentdocker setup claude-code` writes the MCP entry; the session must start with `--dangerously-load-development-channels server:agentdocker` and accept the consent prompt, or be relaunched so — the app tells you when a recipient cannot be woken). **Reconnect here** now resumes an eligible ended Claude session in the app with its conversation and queue; Claude displays its own consent. **Wake terminal sessions** in Tools (or `agentdocker setup --shell`) previews the shell configuration for future Claude launches. Existing plain sessions need a normal exit/reconnect. Codex uses its separate [input adapter](docs/CODEX-INPUT.md), whose startup and version limits remain explicit.
-- **Linux:** the CLI and daemon are exercised in CI on x86-64 and ARM64 and the desktop app builds and packages there, but no release has been tried on a real distribution by a person yet. **Windows:** the core and host crates build and test; there is no daemon, service or desktop.
+- **Linux:** the CLI and daemon are exercised in CI on x86-64 and ARM64 and the desktop app builds and packages there, but no release has been tried on a real distribution by a person yet. **Windows:** the daemon and CLI now build and answer over native named pipes in CI. Supervised terminals, the desktop/service and installer path remain incomplete.
 - **Provider limits and account resets** are detected and recovered in bounded trials, not over days of real use.
 
 ### Report what you find

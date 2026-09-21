@@ -22,14 +22,57 @@ use tokio::{
 
 const LIMIT: usize = 6000;
 const BUDGET: Duration = Duration::from_secs(3);
+const PROTOCOL: u32 = 2;
+const OUTPUT_RESERVE: Duration = Duration::from_millis(200);
+
+// These endpoints run on one host. CLOCK_MONOTONIC carries the client's real
+// deadline across processes without a wall-clock jump or a fresh server budget.
+fn monotonic_millis() -> Result<u64> {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    ensure!(
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) } == 0,
+        "native hook monotonic clock unavailable"
+    );
+    let seconds = u64::try_from(now.tv_sec)?;
+    seconds
+        .checked_mul(1000)
+        .and_then(|s| s.checked_add((now.tv_nsec / 1_000_000) as u64))
+        .context("native hook deadline overflow")
+}
+
+#[derive(Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum Scope {
+    Root,
+    Subagent,
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
+    // Mandatory: old clients discarded Codex's child identity and cannot
+    // safely offer additionalContext, even with the right parent PID/session.
+    protocol: u32,
+    scope: Scope,
+    expires_ms: u64,
     process: ProcessIdentity,
     session: String,
     event: String,
     nonce: String,
+}
+
+impl Request {
+    fn remaining(&self) -> Result<Duration> {
+        let millis = self.expires_ms.saturating_sub(monotonic_millis()?);
+        ensure!(
+            millis > 0 && millis <= BUDGET.as_millis() as u64,
+            "native hook deadline expired or invalid"
+        );
+        Ok(Duration::from_millis(millis))
+    }
 }
 
 pub(super) struct Listener {
@@ -77,30 +120,49 @@ async fn frame(stream: &mut UnixStream, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub async fn context(agent: &AgentRecord, event: &str, session: &str) -> Result<Option<String>> {
+pub async fn context(
+    agent: &AgentRecord,
+    event: &str,
+    session: &str,
+    outer_deadline: tokio::time::Instant,
+) -> Result<Option<String>> {
     if !matches!(event, "PreToolUse" | "PostToolUse") {
         return Ok(None);
     }
-    let path = ledger::directory(&dirs::home(), agent.id.as_str())?.join("hook.sock");
-    let mut stream = match UnixStream::connect(path).await {
-        Ok(stream) => stream,
-        Err(e)
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-            ) =>
-        {
-            return Ok(None);
-        }
-        Err(e) => return Err(e.into()),
+    let available = outer_deadline.saturating_duration_since(tokio::time::Instant::now());
+    let Some(budget) = available
+        .checked_sub(OUTPUT_RESERVE)
+        .filter(|b| !b.is_zero())
+    else {
+        return Ok(None);
     };
-    timeout(BUDGET, async {
+    let budget = budget.min(BUDGET);
+    timeout(budget, async {
+        let expires_ms = monotonic_millis()?
+            .checked_add(budget.as_millis() as u64)
+            .context("native hook deadline overflow")?;
+        let path = ledger::directory(&dirs::home(), agent.id.as_str())?.join("hook.sock");
+        let mut stream = match UnixStream::connect(path).await {
+            Ok(stream) => stream,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(e) => return Err(e.into()),
+        };
         let process = ProcessIdentity {
             pid: std::process::id(),
             started_at: procinfo::start_time(std::process::id())
                 .context("hook process birth unavailable")?,
         };
         let request = Request {
+            protocol: PROTOCOL,
+            scope: Scope::Root,
+            expires_ms,
             process,
             event: event.into(),
             session: session.into(),
@@ -127,7 +189,10 @@ pub async fn context(agent: &AgentRecord, event: &str, session: &str) -> Result<
 }
 
 fn verified(request: &Request, binding: &Binding) -> Result<bool> {
-    if request.session != binding.provider.session
+    if request.protocol != PROTOCOL
+        || request.scope != Scope::Root
+        || request.remaining().is_err()
+        || request.session != binding.provider.session
         || !matches!(request.event.as_str(), "PreToolUse" | "PostToolUse")
         || request.nonce.len() != 32
         || !request.nonce.bytes().all(|b| b.is_ascii_hexdigit())
@@ -177,6 +242,11 @@ async fn authenticated_request(stream: &mut UnixStream) -> Result<Request> {
         .context("native hook peer credentials unavailable")?;
     let request: Request = serde_json::from_slice(&frame(stream, 2048).await?)?;
     ensure!(
+        request.protocol == PROTOCOL && request.scope == Scope::Root,
+        "native hook requires a root-scoped client"
+    );
+    request.remaining()?;
+    ensure!(
         peer.uid() == unsafe { libc::geteuid() }
             && peer.pid().and_then(|pid| u32::try_from(pid).ok()) == Some(request.process.pid),
         "native hook process does not match its socket peer"
@@ -191,8 +261,16 @@ pub(super) async fn serve(
     ledger: &mut Ledger,
     origin: &Origin,
 ) -> Result<()> {
-    timeout(Duration::from_secs(2), async {
-        let request = authenticated_request(&mut stream).await?;
+    // Two bounds, each on its own step: authentication gets two seconds
+    // of ours; the offer and its response get the client's own remaining
+    // budget (up to three seconds), never cut short by the outer bound —
+    // an offer already persisted must not lose its response to a cap
+    // that was meant for the handshake.
+    let request = timeout(Duration::from_secs(2), authenticated_request(&mut stream))
+        .await
+        .context("native hook authentication timed out; input retained")??;
+    let remaining = request.remaining()?;
+    timeout(remaining, async {
         ensure!(
             verified(&request, &ledger.record().binding)?,
             "native hook belongs to another provider generation"
@@ -205,7 +283,7 @@ pub(super) async fn serve(
         Ok(())
     })
     .await
-    .context("native hook offer timed out; input retained")?
+    .context("native hook client's deadline expired; input retained")?
 }
 
 fn can_offer(
@@ -227,6 +305,11 @@ async fn offer(
     ledger: &mut Ledger,
     origin: &Origin,
 ) -> Result<Option<String>> {
+    if ledger.resolved_hook_request(&request.nonce) {
+        // A delayed/retried hook that was explicitly resolved must not reserve
+        // a different queue head now that its original attempt is gone.
+        return Ok(None);
+    }
     if let Some(attempt) = &ledger.record().attempt {
         // A previous uncertain hook must never be emitted again. The ordinary
         // receipt loop will reconcile it before another message is offered.
@@ -396,6 +479,9 @@ mod tests {
         for claimed in [pid, pid + 1] {
             let (mut sender, mut receiver) = UnixStream::pair().unwrap();
             let request = Request {
+                protocol: PROTOCOL,
+                scope: Scope::Root,
+                expires_ms: monotonic_millis().unwrap() + 1000,
                 process: ProcessIdentity {
                     pid: claimed,
                     started_at: procinfo::start_time(pid).unwrap(),
@@ -411,6 +497,50 @@ mod tests {
             assert_eq!(result.is_ok(), claimed == pid);
             // Authentication happens before generation lookup, offer reservation,
             // queue deletion or returning any queued message body.
+        }
+    }
+
+    #[tokio::test]
+    async fn child_legacy_and_expired_requests_stop_before_offer_access() {
+        let pid = std::process::id();
+        let base = json!({"protocol":PROTOCOL,"scope":"root", "expires_ms":monotonic_millis().unwrap()+1000,
+            "process":{"pid":pid,"started_at":procinfo::start_time(pid).unwrap()},
+            "session":"parent", "event":"PostToolUse", "nonce":"a".repeat(32)});
+        for change in [
+            "child",
+            "legacy",
+            "old_protocol",
+            "expired",
+            "future",
+            "delayed_accept",
+            "root",
+        ] {
+            let mut request = base.clone();
+            match change {
+                "child" => request["scope"] = json!("subagent"),
+                "legacy" => {
+                    request.as_object_mut().unwrap().remove("scope");
+                }
+                "old_protocol" => request["protocol"] = json!(1),
+                "expired" => request["expires_ms"] = json!(monotonic_millis().unwrap() - 1),
+                "future" => request["expires_ms"] = json!(monotonic_millis().unwrap() + 60_000),
+                "delayed_accept" => request["expires_ms"] = json!(monotonic_millis().unwrap() + 20),
+                _ => (),
+            }
+            let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+            let mut data = serde_json::to_vec(&request).unwrap();
+            data.push(b'\n');
+            sender.write_all(&data).await.unwrap();
+            if change == "delayed_accept" {
+                tokio::time::sleep(Duration::from_millis(40)).await;
+            }
+            // No daemon/provider/ledger is passed to authentication. Invalid
+            // requests cannot inspect, reserve, delete or acknowledge a head.
+            assert_eq!(
+                authenticated_request(&mut receiver).await.is_ok(),
+                change == "root",
+                "{change}"
+            );
         }
     }
 

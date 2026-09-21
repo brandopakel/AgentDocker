@@ -168,7 +168,7 @@ impl Operation<Snapshot> for Collect {
             }
             let enabled = match semantic.role {
                 Role::Button => semantic.action.is_some(),
-                Role::TextInput => semantic.change.is_some(),
+                Role::TextInput | Role::MultilineTextInput => semantic.change.is_some(),
                 _ => true,
             };
             if enabled {

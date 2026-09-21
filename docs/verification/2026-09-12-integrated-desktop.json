@@ -6599,5 +6599,220 @@
         "Subsequent merge of main0468248 changes documentation only; no runtime change."
       ]
     }
+  },
+  "ordinary_setup_receipts_2026_09_19": {
+    "status": "Implemented and local validation passed; final-head CI/review and release installation remain",
+    "source_commit": "53ce092802352c28b9f03b90ecfeb10341f85665",
+    "problem": "The recorded first-install trial on ce82d06 found that ordinary setup wrote provider configuration but retained no saved undo plan.",
+    "behavior": [
+      "Ordinary setup persists a prepared receipt, then applies through the existing guarded saved-plan path. It prints a plan ID and undo command; --json returns a redacted plan.",
+      "Later user edits refuse undo before any provider files change; repeated setup owns no previous installation changes. Failed apply retains the saved plan for review/resume or undo.",
+      "Plain Claude setup refuses unverified MCP or a missing CLI required for registration instead of silently installing hooks alone. Explicit hooks-only preview remains available.",
+      "Explicit preview and --shell remain review-before-apply; --dry-run stays read-only. Older direct writes do not acquire retroactive receipts."
+    ],
+    "full_gate": {
+      "result": "passed",
+      "rust_passed": 1303,
+      "rust_skipped": 7,
+      "python_checks": 94,
+      "python_skipped": 1,
+      "includes": [
+        "fmt",
+        "strict Clippy",
+        "nextest, zero retries",
+        "doctests",
+        "Python checks",
+        "package",
+        "release build"
+      ],
+      "log_sha256": "211c3ddad8be32aa65c21a83bab39a197a2ee376a6b5ed3953995ea8cb857ef8"
+    },
+    "focused_regressions": {
+      "native_cli_tests": 4,
+      "result": "passed",
+      "cases": [
+        "Receipt/redaction/private permissions, repeated ownership, user-edit refusal and exact undo",
+        "Malformed Codex configuration leaves hooks/skills unchanged",
+        "Malformed or foreign Claude MCP refuses before hooks/skills changes",
+        "Explicit preview and shell setup remain prepared and do not write provider configuration"
+      ],
+      "additional_unit_test": "Injected roots with missing Claude CLI refuse ordinary setup while allowing an explicit hooks preview"
+    },
+    "configuration_contention": {
+      "result": "passed",
+      "checks": [
+        "different_homes_and_symlink_alias_contend_before_receipt_or_file_writes",
+        "standalone_hook_install_contends_with_guided_apply",
+        "legacy_setup_contends_with_guided_provider_registration",
+        "undo_contention_preserves_applied_receipt_and_provider_entry",
+        "both_saved_plans_apply_and_undo_after_lock_release",
+        "standalone_hook_install_remains_idempotent_after_contention"
+      ],
+      "driver_sha256": "fcf78670022cfb6ce242aaa4e3eee6d419c63d592bed582ac0e86dbe66745431",
+      "binary_sha256": {
+        "agentdocker": "81565ed3eb44c3d95a1c0b1d448ced7834552b11cc51b972f2db764bd9e795be",
+        "agentd": "feb14d1a172322cc7e2363588ef0a89805670b8c1f8b28ba63b0940bd23f47aa"
+      },
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0
+      }
+    },
+    "contention_report_sha256": "a103fedf0bd7b8ee9c9fdc9c12b19f7aabdea62be972693d96fefb05b1184cbf",
+    "independent_review": "Initial reviewer found a Claude MCP omission path; preflight refusal and regressions added, follow-up review found no concrete blockers.",
+    "limits": [
+      "Private provider/state profiles and a stand-in provider registration command; no real account authentication, trust or model receipt trial.",
+      "Mac arm64 local validation only; Windows source integration and native acceptance remain separate.",
+      "No production configuration changes, installed-app update, daemon restart or live provider interruption.",
+      "Subsequent documentation/evidence changes do not alter the tested runtime."
+    ]
+  },
+  "multiline_composer_2026_09_21": {
+    "date": "2026-09-21",
+    "status": "Multiline composer implemented; native-event and release graphical acceptance passed on 5f30e3fe. Integration, installation and physical keyboard/IME trials remain separate.",
+    "runtime_build": {
+      "source": "5f30e3fee55a81a9d3a95375875abfe938e56cc4",
+      "dirty": false,
+      "profile": "release",
+      "binaries": {
+        "agentd": "b86428b98de7b7d7907f14282a4030089fb57ccd8b7afadf5a9dbf1a0cb6b2f7",
+        "agentdocker": "69570423569cb084a8b82d566a5fd5e96be4fdf7a8b2b77fb76c8e9b4a1a9705",
+        "agentdocker-ui": "b51ab1d1e0953e6647329804800ca106e40771465c65b1c674e5c8f26a59ac00"
+      }
+    },
+    "standard_gate": {
+      "runtime_source": "5f30e3fee55a81a9d3a95375875abfe938e56cc4",
+      "result": "passed",
+      "rust_passed": 1314,
+      "rust_skipped": 7,
+      "python_checks": 94,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_package_release": "passed",
+      "log_sha256": "d3633f4083484fa0a2050ea8edfd29c2ed4537979b905113a2fa2a3ee002d2c0"
+    },
+    "native_widget_events": {
+      "passed": 9,
+      "scope": [
+        "focused Enter submits once; Shift-Enter inserts a newline",
+        "held Enter and IME preedit do not submit; Unicode commit preserves text",
+        "clipboard/copy/select-all retain multiline text",
+        "oversized insertion is refused without losing the existing suffix",
+        "recipient changes reset focus even with a static accessibility id",
+        "native cursor/selection/scroll actions reshape the viewport",
+        "drawn glyphs remain alive through unchanged view rebuilds; resize invalidates shape"
+      ]
+    },
+    "native_acceptance": {
+      "result": "passed",
+      "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+      "architecture": "arm64",
+      "steps": 580,
+      "windows": {
+        "restored-drafts": 37,
+        "row-reconnect": 7,
+        "readiness-received": 24,
+        "provider-limit": 15,
+        "readiness-activity": 33,
+        "readiness-ready": 24,
+        "workflows": 197,
+        "restored": 8,
+        "readiness-paused": 24,
+        "readiness-contact": 24,
+        "narrow-inbox": 128,
+        "constrained-panes": 59
+      },
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "send_warns_about_named_unbound_recipient_and_expands_reconnect_guidance_without_resending",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "ended_claude_session_row_offers_reconnect",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived",
+        "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+        "unfinished_board_card_reopens_in_its_project_without_filing_or_changing_any_card",
+        "normal_close_flushes_multiline_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them"
+      ],
+      "elapsed_seconds": 152.28845991700655,
+      "report_sha256": "2bdb9946a9ffd27a96aae3a6f8d6622fa9ac3dff07b171e6cca07e32a02da567",
+      "timeline_sha256": "012ea36dc5ec5ca0c59e459d8f29b950b71509cebc5e590339e7a93781b1f8e7",
+      "visual_review": {
+        "result": "passed; multiline text and Unicode glyphs visible in conversation/thread/session/channel and retained answer screenshots",
+        "screenshots": {
+          "restored-conversation-and-thread.png": "979ec69662df713880a82dcc699c2d34cbfd56b0b4f8d121caf3917b54783eca",
+          "restored-session.png": "78e706c162b6f7a36b6de852cdad4f428ba70b088fc683e8678c2f7eb4179085",
+          "restored-channel.png": "cc051ec31baff32ff8cde3a990dfdcc119aed0d5ce6a6291506b7c49df94a1c4"
+        }
+      },
+      "scope": "Native rendered callbacks, real fixture daemon/storage, normal close/reopen and visual captures. Does not assert physical key presses, provider consumption or installed acceptance.",
+      "idle_resources": {
+        "result": "not_run",
+        "reason": "Explicit --skip-idle-measurement: foreground CPU/RSS sample omitted; no idle performance claim."
+      }
+    },
+    "retained_failures": [
+      {
+        "source": "cb25f067358397a9b733b8a789495dabba01a6e4",
+        "profile": "debug",
+        "result": "failed",
+        "completed_first_window_steps": 196,
+        "failure": "Launched fixture remained running after two Stop clicks. Slow transitions suggest the five-second confirmation expired; exact click timings were not retained. Driver now waits for the Stop control to disappear and still requires the exact launched record to exit.",
+        "report_sha256": "233d7fb83b101ab42ef8d2b83da748664288a5bcfd7d4a4d8331169ac6bd0577"
+      },
+      {
+        "source": "126d5d3f878c7a177d9a140db8f7aac77bc4442d",
+        "profile": "release",
+        "result": "visual acceptance failed despite 580 rendered steps and 31 action/state checks passing",
+        "failure": "Composer text primitives were invalidated by unchanged layout calls, leaving blank glyphs in captures. No installation or successful visual acceptance was claimed. Fixed by retaining the shape until inputs change.",
+        "report_sha256": "45ede143bc55dd0a01d4972550ff02367d1113fd2d4fda3f3cd82a6911d645c7"
+      },
+      {
+        "result": "controlled regression failed as expected with shape-cache guard disabled; fixed code restored afterward",
+        "assertion": "unchanged layout discarded drawn glyphs",
+        "log_sha256": "9dc8f7832d99d2503e7d169f94e1cf631249a619baace8152aeb3a91178eeef7"
+      }
+    ],
+    "integration": {
+      "main_merged": "7a3e0c251c07087fe7588a7d6bdabc71e0bf3cee",
+      "merge_commit": "9ef54590",
+      "ui_and_native_driver_unchanged_by_merge": true,
+      "combined_gate": {
+        "status": "passed",
+        "source_commit": "a30f5416b2197646a0abfdd20b8e5c4cb38574f1",
+        "rust_passed": 1314,
+        "rust_skipped": 7,
+        "python_checks": 104,
+        "python_skipped": 1,
+        "format_lint_doctests_package_release": "passed",
+        "log": "/private/tmp/agentdocker-multiline-combined-gate-20260921.log"
+      }
+    },
+    "remaining": [
+      "Final integration/CI and installation",
+      "Physical keyboard, IME and supported screen-reader trials",
+      "Other-platform candidate acceptance; no idle performance measurement in this trial"
+    ]
   }
 }

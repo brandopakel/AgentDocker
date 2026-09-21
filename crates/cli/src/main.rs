@@ -426,7 +426,7 @@ enum Command {
         /// Agent id, name or unique prefix.
         agent: String,
     },
-    /// Wire AgentDocker into the agent tools installed here: the MCP server registered with each runtime that takes one, hooks for Claude Code.
+    /// Connect installed agent tools, retaining a private receipt for review and undo.
     #[command(group(clap::ArgGroup::new("guided").args(["preview", "apply", "undo", "health", "list", "show"])))]
     Setup {
         /// Runtimes to set up (default: every installed one); see `runtimes`.
@@ -453,7 +453,7 @@ enum Command {
         #[arg(long, conflicts_with_all = ["dry_run", "runtimes"])]
         show: Option<String>,
         /// Print a machine-readable plan or health report without configuration secrets.
-        #[arg(long, requires = "guided")]
+        #[arg(long, conflicts_with = "dry_run")]
         json: bool,
         /// Make every `claude` typed in a terminal carry the channel flag that lets AgentDocker wake it: a marked block in your shell's startup file, previewed like every other change.
         #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health", "list", "show"])]
@@ -717,6 +717,8 @@ enum Command {
     /// Upgrade only an existing Codex session's receiver to this CLI release.
     #[command(hide = true)]
     CodexQueueUpgrade(codex_input::external::upgrade::Args),
+    /// Review and explicitly resolve a retained Codex hook message after reading it.
+    CodexQueueResolve(codex_input::external::resolve::Args),
     /// Start the agents in an Agentfile.toml that are not already running.
     Up {
         /// Agentfile to read (default: ./Agentfile.toml).
@@ -2327,6 +2329,7 @@ async fn run() -> Result<()> {
             shell,
         } => {
             if preview
+                || !dry_run
                 || shell
                 || apply.is_some()
                 || undo.is_some()
@@ -2345,8 +2348,10 @@ async fn run() -> Result<()> {
                     Action::Health
                 } else if list {
                     Action::List
-                } else {
+                } else if preview || shell {
                     Action::Preview
+                } else {
+                    Action::Install
                 };
                 setup::guided::run(socket, &runtimes, action, json, shell).await?;
             } else {
@@ -3023,6 +3028,9 @@ async fn run() -> Result<()> {
         Command::CodexQueue(args) => codex_input::external::run(client, socket, args).await?,
         Command::CodexQueueUpgrade(args) => {
             codex_input::external::upgrade::run(client, args).await?
+        }
+        Command::CodexQueueResolve(args) => {
+            codex_input::external::resolve::run(client, args).await?
         }
         Command::Up { file, names } => teams::up(&client, file.as_deref(), &names).await?,
         Command::Down { file, names, force } => {

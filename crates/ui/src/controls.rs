@@ -1,6 +1,8 @@
 //! Keyboard-focusable Iced controls with native accessibility metadata.
 use crate::{accessibility::Semantic, app::Message};
 use iced::advanced::Renderer as _;
+mod composer;
+pub use composer::composer;
 
 /// Scroll ancestors just enough to reveal the newly focused control, or,
 /// given a `target`, the container carrying that id. Revealing a target
