@@ -6,6 +6,7 @@ mod hook_receipts;
 pub mod hooks;
 mod ledger;
 mod receipts;
+pub mod resolve;
 mod resume;
 pub mod upgrade;
 pub use bootstrap::ensure_started;
@@ -217,6 +218,7 @@ async fn service(
     provider: &mut Provider,
     ledger: &mut Ledger,
     hooks: &hooks::Listener,
+    resolve: &resolve::Listener,
 ) -> Result<()> {
     let thread = ledger.record().binding.provider.session.clone();
     let human = match call(client, Request::Me { workdir: None }).await? {
@@ -230,6 +232,11 @@ async fn service(
     loop {
         let agent = identity(client, &ledger.record().binding).await?;
         let mut healthy = true;
+        if ledger.pending_manual_read().is_some() {
+            resolve::reconcile(client, provider, ledger).await?;
+            unseen_since = None;
+            continue;
+        }
         if let Some(attempt) = ledger.record().attempt.clone() {
             if attempt.receipt.is_some() {
                 acknowledge(client, ledger).await?;
@@ -270,7 +277,7 @@ async fn service(
         } else {
             if !availability::check(client, provider, ledger, &agent).await? {
                 refresh(client, ledger, &mut last_refresh).await?;
-                wait_for_hook(hooks, client, provider, ledger, &origin).await?;
+                wait_for_hook(hooks, resolve, client, provider, ledger, &origin).await?;
                 continue;
             }
             let (messages, uncertain, answers_routed) = queue(client, ledger, Vec::new()).await?;
@@ -327,18 +334,24 @@ async fn service(
         if healthy {
             refresh(client, ledger, &mut last_refresh).await?;
         }
-        wait_for_hook(hooks, client, provider, ledger, &origin).await?;
+        wait_for_hook(hooks, resolve, client, provider, ledger, &origin).await?;
     }
 }
 
 async fn wait_for_hook(
     hooks: &hooks::Listener,
+    resolve: &resolve::Listener,
     client: &Client,
     provider: &mut Provider,
     ledger: &mut Ledger,
     origin: &super::mcp_answers::Origin,
 ) -> Result<()> {
     tokio::select! {
+        stream = resolve.accept() => {
+            if let Err(error) = resolve::serve(stream?, client, provider, ledger).await {
+                eprintln!("Native input recovery retained: {error:#}");
+            }
+        }
         stream = hooks.accept() => {
             match stream {
                 Ok(stream) => if let Err(error) = hooks::serve(stream, client, provider, ledger, origin).await {
@@ -403,6 +416,7 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
     let agent = identity(&client, &binding).await?;
     let mut ledger = Ledger::open(&home, binding.clone(), agent.input_binding.as_ref())?;
     let hooks = hooks::Listener::bind(&home, &binding.agent)?;
+    let resolve = resolve::Listener::bind(&home, &binding.agent)?;
     // Prove the read-only native queue/history APIs before suppressing legacy
     // delivery. A missing API on an unbound session leaves hooks working. An
     // already bound session retains its queue and reports the incompatibility.
@@ -460,7 +474,7 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
             )?;
             let result = async {
                 verify_provider(&mut provider, &binding).await?;
-                service(&client, &mut provider, &mut ledger, &hooks).await
+                service(&client, &mut provider, &mut ledger, &hooks, &resolve).await
             }
             .await;
             let shutdown = provider.shutdown().await;
@@ -488,7 +502,10 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
         }
         // Retry read-only reconciliation after a transient disconnect, with
         // the same retained attempt and token. Never repeat queue/add.
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        if let Err(error) = resolve::while_paused(&resolve, &client, &mut ledger).await {
+            eprintln!("Native input recovery retained: {error:#}");
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
     }
     Ok(())
 }

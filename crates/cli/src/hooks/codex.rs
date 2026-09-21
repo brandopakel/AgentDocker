@@ -21,6 +21,16 @@ pub(super) struct Input {
     pub cwd: PathBuf,
     #[serde(default)]
     pub stop_hook_active: bool,
+    // Codex deliberately gives child hooks the parent's session_id. A child
+    // must not report activity, bootstrap a receiver or consume that queue.
+    pub agent_id: Option<String>,
+    pub agent_type: Option<String>,
+}
+
+impl Input {
+    fn is_root(&self) -> bool {
+        self.agent_id.is_none() && self.agent_type.is_none()
+    }
 }
 
 pub(super) fn activity(event: &str) -> Option<ReportedActivity> {
@@ -42,6 +52,9 @@ pub(super) async fn report<B: Backend>(
     process_started_at: chrono::DateTime<Utc>,
     observed_at: chrono::DateTime<Utc>,
 ) -> Result<Option<AgentRecord>> {
+    if !input.is_root() {
+        return Ok(None);
+    }
     let activity = activity(&input.hook_event_name);
     if activity.is_none() && input.hook_event_name != "SessionStart" {
         return Ok(None);
@@ -185,6 +198,9 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     // stdin is a provider-owned pipe. Poll before every read, with bounded
     // retained bytes; a malformed or never-closed stream cannot hang a turn.
     let input = read_input(0, std::time::Duration::from_secs(1))?;
+    if !input.is_root() {
+        return Ok(());
+    }
     if activity(&input.hook_event_name).is_none() && input.hook_event_name != "SessionStart" {
         return Ok(());
     }
@@ -243,7 +259,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
             Some(agent) => match crate::codex_input::external::ensure_started(client, &agent).await
             {
                 Ok(true) => {
-                    let context = crate::codex_input::external::hooks::context(&agent, &input.hook_event_name, &input.session_id).await?;
+                    let context = crate::codex_input::external::hooks::context(&agent, &input.hook_event_name, &input.session_id, deadline).await?;
                     Ok(Delivery { output: context.map_or_else(|| json!({}), |text| json!({"hookSpecificOutput": {
                         "hookEventName": input.hook_event_name, "additionalContext": text
                     }})), acknowledgement: None, continuation: None })
@@ -284,10 +300,12 @@ impl Delivery {
 }
 
 async fn prepare<B: Backend>(backend: &B, input: &Input, agent: String) -> Result<Delivery> {
-    if !matches!(
-        input.hook_event_name.as_str(),
-        "UserPromptSubmit" | "PostToolUse" | "Stop"
-    ) || (input.hook_event_name == "Stop" && input.stop_hook_active)
+    if !input.is_root()
+        || !matches!(
+            input.hook_event_name.as_str(),
+            "UserPromptSubmit" | "PostToolUse" | "Stop"
+        )
+        || (input.hook_event_name == "Stop" && input.stop_hook_active)
     {
         return Ok(Delivery::empty());
     }
@@ -398,6 +416,8 @@ mod tests {
             session_id: "fixture".into(),
             cwd: PathBuf::from("/fixture"),
             stop_hook_active: false,
+            agent_id: None,
+            agent_type: None,
         }
     }
 
@@ -410,6 +430,58 @@ mod tests {
             None,
             Utc::now(),
         )
+    }
+
+    #[tokio::test]
+    async fn child_hooks_cannot_report_or_read_the_parent_queue() {
+        // Child hooks intentionally carry the same session_id and cwd as the
+        // root. Either child field, even empty, must fence every entry point.
+        for event in [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "Stop",
+            "Interrupt",
+        ] {
+            for fields in [
+                json!({"agent_id":"child"}),
+                json!({"agent_type":"reviewer"}),
+                json!({"agent_id":""}),
+                json!({"agent_type":""}),
+                json!({"agent_id":"child", "agent_type":"reviewer"}),
+            ] {
+                let mut value = json!({"hook_event_name":event,"session_id":"parent",
+                    "cwd":"/does-not-need-to-exist", "stop_hook_active":false});
+                value
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(fields.as_object().unwrap().clone());
+                let input: Input = serde_json::from_value(value).unwrap();
+                let backend = Mock::default();
+                let now = Utc::now();
+                assert!(
+                    report(&backend, &input, 42, now, now)
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+                let delivery = prepare(&backend, &input, "parent".into()).await.unwrap();
+                assert_eq!(delivery.output, json!({}));
+                assert!(delivery.acknowledgement.is_none());
+                assert!(delivery.continuation.is_none());
+                assert!(backend.requests().is_empty());
+            }
+        }
+        for fields in [json!({}), json!({"agent_id":null,"agent_type":null})] {
+            let mut value =
+                json!({"hook_event_name":"PreToolUse", "session_id":"parent", "cwd":"/root"});
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            assert!(serde_json::from_value::<Input>(value).unwrap().is_root());
+        }
     }
 
     #[tokio::test]
@@ -654,6 +726,8 @@ mod tests {
                     session_id: "test-session".into(),
                     cwd: checkout.path().to_owned(),
                     stop_hook_active: false,
+                    agent_id: None,
+                    agent_type: None,
                 },
                 42,
                 now,
@@ -706,6 +780,8 @@ mod tests {
             session_id: "fixture".into(),
             cwd: checkout.path().to_owned(),
             stop_hook_active: false,
+            agent_id: None,
+            agent_type: None,
         };
         let registered = report(&backend, &input, 42, now, now)
             .await
@@ -763,6 +839,8 @@ mod tests {
             session_id: "fixture".into(),
             cwd: alias,
             stop_hook_active: false,
+            agent_id: None,
+            agent_type: None,
         };
         let backend = Mock::with(vec![
             Response::Agent {

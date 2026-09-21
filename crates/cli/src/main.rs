@@ -732,6 +732,8 @@ enum Command {
     /// Upgrade only an existing Codex session's receiver to this CLI release.
     #[command(hide = true)]
     CodexQueueUpgrade(codex_input::external::upgrade::Args),
+    /// Review and explicitly resolve a retained Codex hook message after reading it.
+    CodexQueueResolve(codex_input::external::resolve::Args),
     /// Start the agents in an Agentfile.toml that are not already running.
     Up {
         /// Agentfile to read (default: ./Agentfile.toml).
@@ -3041,6 +3043,9 @@ async fn run() -> Result<()> {
         Command::CodexQueue(args) => codex_input::external::run(client, socket, args).await?,
         Command::CodexQueueUpgrade(args) => {
             codex_input::external::upgrade::run(client, args).await?
+        }
+        Command::CodexQueueResolve(args) => {
+            codex_input::external::resolve::run(client, args).await?
         }
         Command::Up { file, names } => teams::up(&client, file.as_deref(), &names).await?,
         Command::Down { file, names, force } => {
