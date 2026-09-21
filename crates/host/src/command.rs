@@ -35,13 +35,35 @@ impl Drop for ChildGroup {
 
 /// Detach an explicitly started daemon from the requesting terminal. This is
 /// separate from bounded command jobs: the daemon must survive its client.
+///
+/// On Windows the daemon must also not keep the client's own standard
+/// handles: a child inherits every inheritable handle of its parent, and
+/// the client's stdout and stderr are inheritable when a script or a
+/// shell captured them, so a daemon holding them would keep that pipe
+/// open — and the capture waiting — for as long as it runs. The client's
+/// standard handles are made non-inheritable here, for this process,
+/// before the daemon is started; the daemon gets its own stdio from the
+/// command.
 pub fn detach(command: &mut Command) {
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+        use windows_sys::Win32::System::Console::{
+            GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
         use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            // SAFETY: GetStdHandle and SetHandleInformation have no
+            // preconditions; an absent handle is skipped, and a failure
+            // to change one leaves it as it was.
+            let handle = unsafe { GetStdHandle(which) };
+            if !handle.is_null() && handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                let _ = unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+            }
+        }
         command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
     }
 }

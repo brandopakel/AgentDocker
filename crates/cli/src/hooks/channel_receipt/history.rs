@@ -1,13 +1,12 @@
 //! Incremental recovery for a head whose proof has left the fast tail window.
 //! Keep only source identity and an offset, never transcript/message contents.
 use agentdocker_core::{AgentRecord, Envelope};
-use agentdocker_host::{dirs, lock};
+use agentdocker_host::{dirs, files, lock};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     io::{Read, Seek, SeekFrom, Write},
-    os::unix::fs::MetadataExt,
     path::Path,
 };
 
@@ -17,22 +16,27 @@ const OVERLAP: u64 = WINDOW / 2;
 pub(super) fn tail(path: &Path) -> Result<Option<String>> {
     let mut source = dirs::read_private_file(path)?;
     let before = source.metadata()?;
+    let identity = files::identity(&source)?;
     let text = window(
         &mut source,
         before.len().saturating_sub(WINDOW),
         before.len(),
     )?;
-    unchanged(path, &before)?;
+    unchanged(path, identity, before.len())?;
     Ok(text)
 }
 
-fn unchanged(path: &Path, before: &std::fs::Metadata) -> Result<()> {
-    let after = std::fs::symlink_metadata(path)?;
+/// The file at `path` is still the one that was read — same identity on
+/// its filesystem, no shorter — else the recovery is not trusted.
+fn unchanged(path: &Path, before: files::Identity, length: u64) -> Result<()> {
     ensure!(
-        after.is_file()
-            && after.dev() == before.dev()
-            && after.ino() == before.ino()
-            && after.len() >= before.len(),
+        std::fs::symlink_metadata(path)?.is_file(),
+        "channel transcript changed during receipt recovery"
+    );
+    let again = dirs::read_private_file(path)?;
+    let after = again.metadata()?;
+    ensure!(
+        files::identity(&again)? == before && after.len() >= length,
         "channel transcript changed during receipt recovery"
     );
     Ok(())
@@ -88,6 +92,7 @@ pub(super) fn find(
 ) -> Result<bool> {
     let mut source = dirs::read_private_file(transcript)?;
     let before = source.metadata()?;
+    let identity = files::identity(&source)?;
     let directory = home.join("channel-receipts");
     dirs::ensure_private_dir(&directory)?;
     let key = format!("{:x}", Sha256::digest(agent.id.as_str().as_bytes()));
@@ -107,8 +112,8 @@ pub(super) fn find(
             "{:x}",
             Sha256::digest(transcript.as_os_str().as_encoded_bytes())
         ),
-        device: before.dev(),
-        inode: before.ino(),
+        device: identity.device,
+        inode: identity.inode,
         observed_len: before.len(),
         offset: 0,
     };
@@ -127,7 +132,7 @@ pub(super) fn find(
     let found = window(&mut source, current.offset, before.len())?
         .as_deref()
         .is_some_and(consumed);
-    unchanged(transcript, &before)?;
+    unchanged(transcript, identity, before.len())?;
     // At the end, retain the final overlap and reread it on later calls: a
     // response may be appended after the preceding Stop hook returned.
     current.offset = current.offset.saturating_add(limit.saturating_sub(OVERLAP));

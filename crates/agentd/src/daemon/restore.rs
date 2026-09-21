@@ -206,6 +206,7 @@ impl Daemon {
     /// Recheck after asynchronous log preparation, immediately before spawn.
     /// Restore checks may have yielded while a stop, a storage failure or an
     /// expired/reassigned lease changed whether this writer can start.
+    #[cfg_attr(windows, allow(dead_code))] // only the Unix supervisor spawns
     pub(crate) fn validate_native_launch(&self, expected: &AgentRecord) -> anyhow::Result<()> {
         self.refresh_policy_for(expected.project.as_ref());
         let mut state = lock(&self.state);

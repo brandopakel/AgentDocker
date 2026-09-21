@@ -183,6 +183,9 @@ impl Daemon {
             let socket = self.socket.clone();
             let rollback = record.clone();
             record = match tokio::task::spawn_blocking(move || {
+                // A unit struct on Windows, where nothing is prepared; a
+                // list of created paths on Unix.
+                #[allow(clippy::default_constructed_unit_structs)]
                 let mut preparation = agentdocker_host::transport::Preparation::default();
                 agentdocker_host::transport::prepare(
                     &mut record,

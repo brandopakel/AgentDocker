@@ -29,8 +29,11 @@ use agentdocker_core::{
 };
 use agentdocker_core::{DigestBudget, DigestRequest};
 use chrono::{DateTime, Duration, Utc};
+#[cfg(unix)]
 use nix::errno::Errno;
+#[cfg(unix)]
 use nix::sys::signal::{Signal, kill};
+#[cfg(unix)]
 use nix::unistd::Pid;
 use serde_json::{Value, json};
 use tokio::sync::{Notify, broadcast, mpsc, oneshot, watch};
@@ -557,9 +560,17 @@ fn default_name(id: &AgentId) -> String {
 /// Is there a process with this pid? `EPERM` means it exists but belongs to
 /// someone else, which still counts as alive. Zero and out-of-range values
 /// would address process groups, so they are never alive.
+/// A pid a signal could address: positive, and within the range the OS
+/// uses. Unix keeps the typed pid; Windows only needs the check.
+#[cfg(unix)]
 fn signal_pid(pid: u32) -> Option<Pid> {
     let raw = i32::try_from(pid).ok()?;
     (raw > 0).then(|| Pid::from_raw(raw))
+}
+
+#[cfg(windows)]
+fn signal_pid(pid: u32) -> Option<u32> {
+    i32::try_from(pid).ok().filter(|raw| *raw > 0).map(|_| pid)
 }
 
 /// Whether two records stand for the same agent.
@@ -592,14 +603,10 @@ fn same_agent(a: &AgentRecord, b: &AgentRecord) -> bool {
     agentdocker_core::identity::same_registration(a, b)
 }
 
+/// Whether a process with this pid exists — ours or not; an access
+/// refusal is a yes. Both platforms answer through the host crate.
 fn process_exists(pid: u32) -> bool {
-    let Some(pid) = signal_pid(pid) else {
-        return false;
-    };
-    match kill(pid, None) {
-        Ok(()) | Err(Errno::EPERM) => true,
-        Err(_) => false,
-    }
+    signal_pid(pid).is_some_and(|_| procinfo::alive(pid))
 }
 
 /// Does the pid still belong to the process that registered it? Compared by
@@ -975,23 +982,43 @@ impl Daemon {
                     Err(error) => return *error,
                 }
             };
-            let target = if record.managed && record.process_group == Some(pid) {
-                Pid::from_raw(-target.as_raw())
-            } else {
-                target
-            };
-            if let Err(err) = kill(
-                target,
-                if force {
-                    Signal::SIGKILL
+            // The identity checked above is the identity ended: on Unix a
+            // signal to the pid (or the managed process group it leads);
+            // on Windows the host crate terminates the process through a
+            // handle whose birth it compares first, so a recycled pid is
+            // never ended by mistake.
+            #[cfg(unix)]
+            {
+                let target = if record.managed && record.process_group == Some(pid) {
+                    Pid::from_raw(-target.as_raw())
                 } else {
-                    Signal::SIGTERM
-                },
-            ) {
-                if err != Errno::ESRCH {
+                    target
+                };
+                if let Err(err) = kill(
+                    target,
+                    if force {
+                        Signal::SIGKILL
+                    } else {
+                        Signal::SIGTERM
+                    },
+                ) {
+                    if err != Errno::ESRCH {
+                        return Response::error(
+                            ErrorCode::Forbidden,
+                            format!("cannot signal pid {pid}: {err}"),
+                        );
+                    }
+                }
+            }
+            #[cfg(windows)]
+            {
+                let _ = target;
+                if let Err(err) = procinfo::end(pid, started, force)
+                    && err.kind() != std::io::ErrorKind::NotFound
+                {
                     return Response::error(
                         ErrorCode::Forbidden,
-                        format!("cannot signal pid {pid}: {err}"),
+                        format!("cannot end pid {pid}: {err}"),
                     );
                 }
             }
@@ -4631,6 +4658,7 @@ impl State {
     /// Name the successor once it exists. The offer was made under this
     /// process's own pid as a placeholder; the row is rewritten with the
     /// successor's, still `Offered`, so only that process can accept.
+    #[cfg_attr(windows, allow(dead_code))] // only a Unix handover names a successor
     fn readdress_offer(&mut self, transfer: &str, successor_pid: u32) -> bool {
         let Coordination::Quiescing { transfer: current } = &self.coordination else {
             return false;

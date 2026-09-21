@@ -1,4 +1,7 @@
 //! Reviewed cleanup of owned launchers and unused pinned releases.
+// The installer, updates and retained versions run on macOS and Linux;
+// on Windows only the refusal in `run` is live, and the rest waits its slice.
+#![cfg_attr(windows, allow(dead_code))]
 use super::*;
 use agentdocker_host::{installation, lock};
 

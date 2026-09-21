@@ -99,9 +99,71 @@ pub fn alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+pub fn alive(pid: u32) -> bool {
+    pid > 0 && imp::alive(pid)
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn alive(_pid: u32) -> bool {
     false
+}
+
+/// End the process `pid` names, only if it is the one born at `started_at`.
+/// On Unix that is `SIGTERM` (or `SIGKILL` when `force`) after the birth
+/// is compared; on Windows the birth is read from the handle that is then
+/// terminated, so the check and the act cannot straddle a pid recycling.
+/// `NotFound` means the process is gone or the pid is another's now;
+/// anything else is a refusal.
+pub fn end(pid: u32, started_at: DateTime<Utc>, force: bool) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let raw = i32::try_from(pid)
+            .ok()
+            .filter(|raw| *raw > 0)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid pid"))?;
+        match start_time(pid) {
+            Some(born) if born == started_at => {}
+            Some(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "the pid now belongs to a different process",
+                ));
+            }
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "the process has already exited",
+                ));
+            }
+        }
+        let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+        // SAFETY: kill only reads its scalar arguments.
+        if unsafe { libc::kill(raw, signal) } == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, error));
+        }
+        Err(error)
+    }
+    #[cfg(windows)]
+    {
+        imp::end(pid, started_at, force)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (pid, started_at, force);
+        Err(std::io::Error::other("not supported on this platform"))
+    }
+}
+
+/// This process's parent pid, from the process table: what
+/// `std::os::unix::process::parent_id` answers on Unix.
+#[cfg(windows)]
+pub fn parent_id() -> u32 {
+    inspect(std::process::id()).map(|p| p.ppid).unwrap_or(0)
 }
 
 /// The current working directory of another process of ours.

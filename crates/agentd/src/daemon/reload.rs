@@ -30,13 +30,20 @@
 //! together does the request stop saying no. A partly-working upgrade is
 //! worse than one that admits it cannot go yet.
 
+#[cfg(unix)]
 use std::io;
+#[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
+#[cfg(unix)]
 use agentdocker_host::handoff;
 use serde::{Deserialize, Serialize};
 
@@ -155,12 +162,14 @@ pub enum Ready {
     Failed { reason: String },
 }
 
+#[cfg(unix)]
 /// Send the descriptors and the map that explains them.
 pub fn offer(socket: &UnixStream, handover: &Handover, fds: &[BorrowedFd<'_>]) -> io::Result<()> {
     let payload = serde_json::to_vec(handover).map_err(io::Error::other)?;
     handoff::send(socket, &payload, fds)
 }
 
+#[cfg(unix)]
 /// Take the descriptors and the map, as the successor.
 pub fn accept(socket: &UnixStream) -> io::Result<(Handover, Vec<OwnedFd>)> {
     let (payload, fds) = handoff::receive(socket)?;
@@ -235,6 +244,7 @@ pub fn accept(socket: &UnixStream) -> io::Result<(Handover, Vec<OwnedFd>)> {
     Ok((handover, fds))
 }
 
+#[cfg(unix)]
 /// Say whether the takeover worked, as the successor.
 pub fn answer(socket: &UnixStream, ready: &Ready) -> io::Result<()> {
     socket.set_write_timeout(Some(READY_WITHIN))?;
@@ -242,6 +252,7 @@ pub fn answer(socket: &UnixStream, ready: &Ready) -> io::Result<()> {
     handoff::send(socket, &payload, &[])
 }
 
+#[cfg(unix)]
 /// Both startup outcomes may wait for a predecessor that has stopped reading.
 /// Keep the bounded socket write off the async executor in either case.
 pub async fn answer_async(socket: UnixStream, ready: Ready) -> io::Result<()> {
@@ -250,6 +261,7 @@ pub async fn answer_async(socket: UnixStream, ready: Ready) -> io::Result<()> {
         .map_err(io::Error::other)?
 }
 
+#[cfg(unix)]
 /// Wait for the successor to say it is serving.
 ///
 /// This is the only thing that can authorise giving up the socket, and
@@ -305,6 +317,7 @@ pub fn await_ready(socket: &UnixStream, within: Duration) -> Result<(), String> 
 /// What the predecessor learns about a candidate executable before it
 /// trusts it with the database: `agentd --build-info`, read once.
 #[derive(Debug, Deserialize)]
+#[cfg(unix)]
 struct BuildInfo {
     format: u32,
     os: String,
@@ -314,6 +327,7 @@ struct BuildInfo {
 
 /// The descriptors and lock a daemon needs to hand over, given to it by
 /// its main once serving starts.
+#[cfg(unix)]
 pub struct Held {
     pub listener: std::os::fd::OwnedFd,
     pub lock: std::os::fd::OwnedFd,
@@ -325,6 +339,34 @@ pub struct Held {
     pub restricted_unavailable: Option<String>,
 }
 
+/// On Windows nothing is handed over: the daemon holds no descriptors a
+/// successor could inherit, and `reload` answers `unavailable` up front.
+/// The transfer bookkeeping below is shared, so the store's view of a
+/// transfer reads the same on every platform.
+#[cfg(windows)]
+pub struct Held {}
+
+#[cfg(windows)]
+impl Daemon {
+    pub(super) async fn hand_over(self: &Arc<Self>) -> Response {
+        Response::error(
+            ErrorCode::Unavailable,
+            "live daemon reload is not available on Windows; stop and start the daemon instead, and its agents reconnect",
+        )
+    }
+
+    pub async fn transferred_exit(&self) {
+        self.transferred_exit.notified().await;
+    }
+
+    pub fn hold(&self, held: Held) {
+        *lock(&self.held) = Some(held);
+    }
+
+    pub fn hold_restricted(&self, _fd: std::io::Result<()>) {}
+}
+
+#[cfg(unix)]
 impl Daemon {
     pub(super) async fn hand_over(self: &Arc<Self>) -> Response {
         if !enabled() {
@@ -564,7 +606,9 @@ impl Daemon {
             }
         }
     }
+}
 
+impl Daemon {
     /// Stop writing and offer coordination to `successor_pid`. From here
     /// until [`Daemon::abort_transfer`] or the successor's accept, every
     /// mutating request answers `transferring` and every tick writer
@@ -660,6 +704,7 @@ impl Daemon {
     }
 }
 
+#[cfg(unix)]
 /// `candidate --build-info`, read once, within [`BUILD_INFO_WITHIN`]: the
 /// bounded host runner ends the whole process group on the deadline, so
 /// a candidate that hangs costs a reload, not a thread.
@@ -682,6 +727,7 @@ fn build_info(candidate: &std::path::Path, within: Duration) -> Result<BuildInfo
         .map_err(|e| format!("candidate build info unreadable: {e}"))
 }
 
+#[cfg(unix)]
 /// End a successor that will not serve. It was started in its own
 /// session, so its whole process group goes with it: anything it spawned
 /// while fenced never had authority and must not outlive the attempt.
@@ -694,7 +740,7 @@ fn kill_child(mut child: std::process::Child) -> std::io::Result<()> {
     child.wait().map(|_| ())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::{Read, Seek, Write};
