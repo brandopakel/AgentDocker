@@ -217,7 +217,7 @@ class Handler(BaseHTTPRequestHandler):
         title = "Generate a concise, single-line task title" in json.dumps(body.get("input", []))
         users = [v for v in body.get("input", []) if v.get("role") == "user"]
         scope = None
-        if args.scenario == "subagent-hook":
+        if args.scenario == "subagent-hook" and not title:
             if SCOPE_CHILD_PROMPT in json.dumps(users):
                 scope = "child"
             elif SCOPE_ROOT_PROMPT in json.dumps(users):
@@ -1480,6 +1480,27 @@ try:
             if args.scenario == "subagent-hook":
                 ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
                 wait(lambda: json.loads(ledgerpath.read_text()).get("attempt") is None, 15)
+
+                def root_turn_evidence():
+                    starts, prompts = [], []
+                    with files[0].open() as rollout:
+                        for line in rollout:
+                            if not line.endswith("\n"):
+                                break
+                            record = json.loads(line)
+                            item = record.get("payload", {})
+                            if record.get("type") == "event_msg" and item.get("type") == "task_started":
+                                starts.append(item["turn_id"])
+                            if (record.get("type") == "response_item" and item.get("type") == "message"
+                                    and item.get("role") == "user"
+                                    and "".join(c.get("text", "") for c in item.get("content", [])) == SCOPE_ROOT_PROMPT):
+                                tags = item.get("internal_chat_message_metadata_passthrough") or {}
+                                assert tags.get("content_item_kinds") == ["user.text"]
+                                prompts.append({"item": item["id"], "turn": tags["turn_id"]})
+                    return starts, prompts
+
+                turns_before, prompts_before = root_turn_evidence()
+                assert not prompts_before
                 start = len(report["requests"])
                 os.write(master, SCOPE_ROOT_PROMPT.encode())
                 time.sleep(0.3)
@@ -1520,6 +1541,10 @@ try:
                 child_ids = {h["agent_id"] for h in children}
                 assert len(child_ids) == 1, "fixture unexpectedly spawned multiple children"
                 child_id = next(iter(child_ids))
+                active_turns, active_prompts = root_turn_evidence()
+                assert len(active_prompts) == 1, "root needs one original prompt"
+                active_prompt = active_prompts[0]
+                assert active_turns == turns_before + [active_prompt["turn"]], "unexpected root turn before delivery"
                 scope_root_release.set()
                 wait(scope_root_done.is_set, 30)
                 wait(lambda: not rpc({"op": "peek_input", "agent": aid})["messages"], 15)
@@ -1550,15 +1575,20 @@ try:
                 assert len(child_files) == 1, "child transcript unavailable"
                 assert not hook_items(child_files[0]), "root message has a tagged child receipt"
                 assert root_items == [completed[0]["receipt"]], "root needs one matching tagged receipt"
+                assert completed[0]["receipt"]["turn"] == active_prompt["turn"], "root input became another ordinary turn"
                 root_requests = [r for r in report["requests"][start:] if r["scope"] == "root"]
                 assert json.dumps(root_requests[-1]["body"].get("input", [])).count(SCOPE_MESSAGE) == 1
-                assert all(SCOPE_ROOT_PROMPT in json.dumps([item for item in r["body"]["input"]
-                    if item.get("role") == "user"][-1]) for r in root_requests), "root input became another ordinary turn"
+                # Codex can append a native child-completion notification as a
+                # user item in this same turn. Anchor to the original prompt
+                # identity and actual rollout turn, not the last user item.
+                assert all(sum(item.get("id") == active_prompt["item"] and item.get("role") == "user"
+                    for item in r["body"]["input"]) == 1 for r in root_requests), "root prompt identity changed"
                 assert native_queue_row() is None
                 time.sleep(4)
                 assert json.loads(ledgerpath.read_text())["attempt"] is None
                 assert hook_items(files[0]) == root_items, "root message was replayed"
                 assert not hook_items(child_files[0])
+                assert root_turn_evidence() == (active_turns, active_prompts), "input started another ordinary turn"
                 assert all(r["scope"] in ("root", "child") for r in report["requests"][start:]), "input started another ordinary turn"
                 metadata = [json.loads(line) for line in (out / "hook-input-metadata.jsonl").read_text().splitlines()]
                 root_hooks = [h for h in metadata if h.get("session_id") == tid
@@ -1569,6 +1599,7 @@ try:
                     "child_thread": child_id, "native_queue_id": queue_id,
                     "child_left_native_queue_and_attempt_unchanged": True,
                     "child_received_root_context": False, "root_receipt": completed[0]["receipt"],
+                    "original_root_prompt": active_prompt, "same_root_turn_without_replay": True,
                     "hook_metadata": metadata, "same_live_provider": provider.poll() is None}
             if args.scenario in ("active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade"):
                 ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
