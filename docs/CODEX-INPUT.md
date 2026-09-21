@@ -227,6 +227,9 @@ The repeat showed the old hook could consume that head before replacement. The
 private fixture now holds hook forwarding during the upgrade, leaving the native
 queue entry pending, and releases it after the successor is verified. This holds
 only the fixture's hook; it does not alter the provider's queue or delivery ledger.
+The third run completed replacement and ordered model delivery, then caught the
+short interval between daemon acknowledgement and the receiver's completion
+write. Acceptance now waits for both durable checkpoints before asserting order.
 
 The candidate has targeted scanner, ledger and real socket lost-journal/ACK
 regressions. `--scenario active-hook-resolve` adds actual Codex/loopback-model

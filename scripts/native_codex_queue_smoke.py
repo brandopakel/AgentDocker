@@ -1486,6 +1486,8 @@ try:
                         assert json.loads(repeated.stdout)["already_applied"] is True
                         wait(lambda: not rpc({"op":"peek_input", "agent":aid})["messages"], 45)
                         wait(lambda: all(m in json.dumps(report["requests"][-1]["body"].get("input", [])) for m in markers[1:]), 30)
+                        wait(lambda: set(sent[1:]).issubset(
+                            {r["message"] for r in json.loads(ledgerpath.read_text())["completed"]}), 15)
                         final = json.loads(ledgerpath.read_text())
                         manual = final["manual_reads"]
                         assert len(manual) == 1 and manual[0]["message"] == sent[0] and manual[0]["acknowledged"]
@@ -1502,6 +1504,10 @@ try:
                 else:
                     wait(lambda: all(m in json.dumps(report["requests"][-1]["body"].get("input", [])) for m in markers), 45)
                     wait(lambda: not rpc({"op":"peek_input", "agent":aid})["messages"], 15)
+                    # The daemon ACK precedes the receiver's durable completion
+                    # write. Observe both checkpoints before asserting order.
+                    wait(lambda: set(sent).issubset(
+                        {r["message"] for r in json.loads(ledgerpath.read_text())["completed"]}), 15)
                     visible = json.dumps(report["requests"][-1]["body"].get("input", []))
                     assert all(visible.count(marker) == 1 for marker in markers), "provider context duplicated an input"
                     positions = [visible.index(marker) for marker in markers]
