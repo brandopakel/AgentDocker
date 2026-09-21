@@ -536,6 +536,9 @@ try:
                     + "Path("
                     + repr(str(out / "hook-input.json"))
                     + ").write_text(raw)\n"
+                    + ("if Path(" + repr(str(root / "hold-upgrade-hook"))
+                       + ").exists():\n print('{}')\n sys.exit(0)\n"
+                       if args.scenario == "controller-upgrade" else "")
                     + "p=subprocess.run("
                     + "[Path(" + repr(str(hook_cli_path)) + ").read_text(),"
                     + repr("--socket") + "," + repr(str(sock)) + ", 'hook', 'codex']"
@@ -1375,6 +1378,13 @@ try:
                 report["idle_wake_after_receiver_crash"] = True
             if args.scenario in ("active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade"):
                 ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
+                if args.scenario == "controller-upgrade":
+                    # Hold only this private fixture's hook forwarding while
+                    # the active turn owns a native queue entry. Release after
+                    # replacement, so a fast old hook cannot consume the very
+                    # pending input whose migration this scenario must prove.
+                    (root / "hold-upgrade-hook").touch()
+                    wait(lambda: json.loads(ledgerpath.read_text()).get("attempt") is None, 15)
                 start = len(report["requests"])
                 os.write(master, b"ACTIVE_HOOK_START")
                 time.sleep(0.3)
@@ -1408,6 +1418,7 @@ try:
                         env=daemon_env, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=75)
                     (out / "upgrade-command.log").write_text(upgrade.stdout + upgrade.stderr)
                     assert upgrade.returncode == 0, "receiver upgrade command failed"
+                    (root / "hold-upgrade-hook").unlink()
                     upgraded = rpc({"op":"inspect", "agent":aid})["agent"]["input_binding"]
                     assert upgraded["provider"] == initial["provider"]
                     assert upgraded["controller"] != initial["controller"]
