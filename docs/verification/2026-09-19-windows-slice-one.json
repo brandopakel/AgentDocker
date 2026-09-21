@@ -229,6 +229,30 @@
     "cleanup_regressions": {
       "stopping_is_not_exited": "passed",
       "deadline_preserves_live_status_for_force_fallback": "passed"
+    },
+    "integrated_gate_fixture_failure": {
+      "source": "a624677e",
+      "result": "failed",
+      "rust_passed": 1331,
+      "rust_failed": 1,
+      "rust_skipped": 7,
+      "test": "desktop::tests::activation_rechecks_serving_daemon_after_a_lost_reload_reply_without_replay",
+      "error": "macOS accepted stream inherited O_NONBLOCK; read_line returned WouldBlock in 0.038 seconds despite five-second read timeout",
+      "correction": "explicitly restore blocking mode on the fixture accepted stream before setting its read timeout",
+      "log": "/private/tmp/agentdocker-windows-lifetime-integrated-a624-gate-20260921.log",
+      "targeted_fix_validation": {
+        "repetitions": 25,
+        "passed": 25,
+        "retries": 0,
+        "log": "/private/tmp/agentdocker-windows-lifetime-activation-fixture-stress-20260921.log"
+      }
+    },
+    "overlapped_smoke_client": {
+      "source": "a624677e",
+      "helper_sha256": "da338a015b49f17f096cd834df7fd2357ba4a670666edff73a8796047f8ec863",
+      "contract": "separate read/write OVERLAPPED, bounded connect/read/write/cancel; native buffers are released only after completion; timeout poisons the connection and failed cleanup retains evidence",
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35649616685",
+      "result": "pending"
     }
   }
 }
