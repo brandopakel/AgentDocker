@@ -167,11 +167,27 @@ Work still required before platform support can be claimed:
   line-breaking argument is refused before anything runs, `%` is
   neutralised, arguments are quoted unless made of characters cmd leaves
   alone, and a canonical `\\?\` path is given as the plain path cmd
-  understands. Host tests on the runner: the batch line against the
-  standard library's shape, a `.cmd` shim run through the gate with a
-  space and a `&` intact in its arguments, a refused argument leaving a
-  marker-writing shim unrun, and `PATHEXT` precedence between `shim.exe`
-  and `shim.cmd`. The smoke starts a managed session from a shim on the
+  understands only when the plain path names the same file (a verbatim
+  path the plain rules would rewrite is refused, never run as another
+  file). The lookup uses the child's own `PATH` and `PATHEXT` — the
+  command's overrides over this process's, matched without case — and a
+  relative script is made absolute where it was checked, so cmd.exe running
+  from the child's directory runs that file and not a namesake there. The
+  session's checkout is given to cmd.exe as a plain path too: a canonical
+  Windows path is verbatim, and cmd.exe started in one falls back to the
+  Windows directory ("UNC paths are not supported"), which the first runner
+  showed — a provider would have run in the wrong folder. A cold machine's
+  first start of `agentd.exe` waits on the system's scan of the new
+  executable, so a client starting the daemon on demand allows ten seconds
+  on Windows (three elsewhere). Host
+  tests on the runner: the batch line against the standard library's
+  shape, a `.cmd` shim run through the gate with a space and a `&` intact
+  in its arguments, a refused argument leaving a marker-writing shim
+  unrun, `PATHEXT` precedence between `shim.exe` and `shim.cmd` in both
+  orders from the command's own variables, a relative script run from a
+  different child directory, and a verbatim path refused when its plain
+  form would not round-trip. The smoke's shim also prints its working
+  directory, which must be the session's checkout. The smoke starts a managed session from a shim on the
   daemon's `PATH` by its bare name and reads its arguments back from its
   log. Not established: a real provider's shim (Node under the pseudo
   console) — that is the provider trial.

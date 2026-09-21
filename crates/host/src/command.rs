@@ -80,9 +80,21 @@ pub const LAUNCHER_EXTENSIONS: &[&str] = &["com", "exe", "bat", "cmd"];
 /// directories; relative directories in `dirs` are skipped, so the working
 /// directory is never searched by accident.
 pub fn find_program(dirs: &[std::path::PathBuf], name: &str) -> Option<std::path::PathBuf> {
+    find_program_with(dirs, name, std::env::var_os("PATHEXT").as_deref())
+}
+
+/// `find_program` with the `PATHEXT` the lookup is for — a child's own,
+/// when a command overrides it — rather than this process's. Unix has no
+/// such variable and ignores it.
+pub fn find_program_with(
+    dirs: &[std::path::PathBuf],
+    name: &str,
+    pathext: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        let _ = pathext;
         dirs.iter()
             .filter(|dir| dir.is_absolute())
             .map(|dir| dir.join(name))
@@ -93,7 +105,7 @@ pub fn find_program(dirs: &[std::path::PathBuf], name: &str) -> Option<std::path
     }
     #[cfg(windows)]
     {
-        let names = launcher_names(name)?;
+        let names = launcher_names(name, pathext)?;
         dirs.iter()
             .filter(|dir| dir.is_absolute())
             .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
@@ -103,19 +115,19 @@ pub fn find_program(dirs: &[std::path::PathBuf], name: &str) -> Option<std::path
 
 /// The file names `name` may stand for on Windows, in the order they are
 /// tried: a name with a launcher extension as given; a bare name with
-/// each launcher extension in `PATHEXT`'s order (the shell's precedence),
-/// or the default order when `PATHEXT` is unset. A name with an unknown
-/// extension names no launcher at all — a data file that shares the name
-/// is not a CLI.
+/// each launcher extension in `pathext`'s order (the shell's precedence),
+/// or the default order when it is unset or names none of them. A name
+/// with an unknown extension names no launcher at all — a data file that
+/// shares the name is not a CLI.
 #[cfg(windows)]
-pub fn launcher_names(name: &str) -> Option<Vec<String>> {
+pub fn launcher_names(name: &str, pathext: Option<&std::ffi::OsStr>) -> Option<Vec<String>> {
     match Path::new(name).extension() {
         Some(extension) => LAUNCHER_EXTENSIONS
             .iter()
             .any(|known| extension.eq_ignore_ascii_case(known))
             .then(|| vec![name.to_owned()]),
         None => Some(
-            launcher_order()
+            launcher_order(pathext)
                 .into_iter()
                 .map(|extension| format!("{name}.{extension}"))
                 .collect(),
@@ -123,13 +135,14 @@ pub fn launcher_names(name: &str) -> Option<Vec<String>> {
     }
 }
 
-/// `PATHEXT`'s order restricted to the launchers this host runs; the
+/// `pathext`'s order restricted to the launchers this host runs; the
 /// default order when it is unset or names none of them.
 #[cfg(windows)]
-fn launcher_order() -> Vec<&'static str> {
-    let ordered: Vec<&'static str> = std::env::var("PATHEXT")
+fn launcher_order(pathext: Option<&std::ffi::OsStr>) -> Vec<&'static str> {
+    let ordered: Vec<&'static str> = pathext
         .map(|pathext| {
             pathext
+                .to_string_lossy()
                 .split(';')
                 .filter_map(|entry| {
                     let entry = entry.trim().trim_start_matches('.');

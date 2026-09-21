@@ -18,8 +18,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 mod event_stream;
 
 /// How long the CLI waits for a daemon it started. Hooks use less: they
-/// fail open and must not stall the editor.
-const START_TIMEOUT: Duration = Duration::from_secs(3);
+/// fail open and must not stall the editor. Windows gets longer: the first
+/// start of a fresh `agentd.exe` on a cold machine waits on the system's
+/// own scan of the new executable, and the first runner missed three
+/// seconds with the daemon's log not yet written.
+const START_TIMEOUT: Duration = Duration::from_secs(if cfg!(windows) { 10 } else { 3 });
 
 /// How long a request keeps retrying while the daemon answers
 /// `transferring`: it has offered coordination to a successor, nothing was

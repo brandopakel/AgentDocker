@@ -523,11 +523,15 @@ def main():
         if os.name == "nt":
             # The shape of `claude` after `npm install -g`: a .cmd shim on PATH,
             # started by its bare name, with an argument cmd must not rewrite.
-            (launchers / "smoke-shim.cmd").write_text("@echo off\r\necho shim-ran %1 %2\r\n")
+            (launchers / "smoke-shim.cmd").write_text("@echo off\r\necho shim-ran %1 %2\r\necho shim-cwd %CD%\r\n")
             run("run", "--name", "smoke-shim", "--runtime", "custom", "--", "smoke-shim", "hello world", "a&b")
             line = wait_status("smoke-shim", "exited")
             logs = run("logs", "smoke-shim", check=False)
             step("a managed session starts from an npm-style .cmd launcher by its bare name, with a space and a cmd metacharacter intact in its arguments", "exited (0)" in line and 'shim-ran "hello world" "a&b"' in logs.stdout, (line + " | " + logs.stdout.strip())[-400:])
+            # cmd.exe cannot start in a verbatim directory (it falls back to
+            # the Windows directory, and says so on stderr): the launcher
+            # must run in the session's own checkout.
+            step("the launcher runs in the session's checkout, not the Windows directory", f"shim-cwd {project}".lower() in logs.stdout.lower() and "UNC paths are not supported" not in logs.stdout, logs.stdout.strip()[-400:])
         line = wait_status("smoke-pipes", "exited")
         logs = run("logs", "smoke-pipes", check=False)
         step("a piped managed command runs under a session owner and its output reaches its log", "exited" in line and "piped hello" in logs.stdout and "to stderr" in logs.stdout, (line + " | " + logs.stdout.strip())[:600])

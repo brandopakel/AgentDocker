@@ -235,12 +235,13 @@ pub fn prepare_with(command: Command, console: Option<HPCON>) -> io::Result<Pend
     // SAFETY: a null handler with `false` clears this process's own
     // ignore-Ctrl-C attribute; nothing is registered.
     unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0) };
-    let program = resolve_program(command.get_program())?;
+    let program = resolve_program(&command)?;
     // A batch launcher (an npm-installed provider is one) cannot be
     // started by itself: cmd.exe runs it, with the standard library's own
     // batch command line and argument rules, so what the child sees is
     // what `Command` would have given it.
-    let (program, line) = if crate::command::is_batch_launcher(&program) {
+    let batch = crate::command::is_batch_launcher(&program);
+    let (program, line) = if batch {
         (
             command_prompt()?,
             batch_command_line(&program, command.get_args())?,
@@ -256,9 +257,17 @@ pub fn prepare_with(command: Command, console: Option<HPCON>) -> io::Result<Pend
     let mut line_wide: Vec<u16> = OsStr::new(&line).encode_wide().chain([0]).collect();
     let program_wide: Vec<u16> = program.as_os_str().encode_wide().chain([0]).collect();
     let environment = environment_block(&command);
-    let workdir_wide: Option<Vec<u16>> = command
-        .get_current_dir()
-        .map(|dir| dir.as_os_str().encode_wide().chain([0]).collect());
+    // cmd.exe refuses a verbatim working directory ("UNC paths are not
+    // supported", then the Windows directory instead — the first runner
+    // showed it), and a canonical Windows path is verbatim. A batch
+    // launcher gets the plain directory, by the same round-trip rule as
+    // its script; any other program takes the directory as given.
+    let workdir: Option<OsString> = match command.get_current_dir() {
+        Some(dir) if batch => Some(OsString::from(user_path(dir)?)),
+        Some(dir) => Some(dir.as_os_str().to_os_string()),
+        None => None,
+    };
+    let workdir_wide: Option<Vec<u16>> = workdir.map(|dir| dir.encode_wide().chain([0]).collect());
 
     // The job the child belongs to from before its first instruction.
     // SAFETY: a fresh, unnamed job with default security.
@@ -573,8 +582,8 @@ fn pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
 /// taken as given, or with each launcher extension in `PATHEXT` order
 /// when it has none; a bare name is looked up on `PATH` the same way —
 /// never in the working directory, which a bare name does not name.
-fn resolve_program(program: &OsStr) -> io::Result<PathBuf> {
-    let given = Path::new(program);
+fn resolve_program(command: &Command) -> io::Result<PathBuf> {
+    let given = Path::new(command.get_program());
     let not_found = || {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -585,22 +594,42 @@ fn resolve_program(program: &OsStr) -> io::Result<PathBuf> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(not_found)?;
+    // The child's PATH and PATHEXT, not this process's: the command's
+    // overrides are what the environment block gives the child, so the
+    // lookup sees the same variables the child will.
+    let pathext = effective_env(command, "PATHEXT");
     if given.components().count() > 1 || given.is_absolute() {
-        if given.is_file() {
-            return Ok(given.to_path_buf());
-        }
-        let dir = given.parent().map(Path::to_path_buf).unwrap_or_default();
-        let dir = if dir.is_absolute() {
-            dir
+        // Checked and returned as an absolute path: a relative script
+        // would otherwise be checked against this process's directory and
+        // run by cmd.exe from the child's.
+        let absolute = if given.is_absolute() {
+            given.to_path_buf()
         } else {
-            std::env::current_dir()?.join(dir)
+            std::env::current_dir()?.join(given)
         };
-        return crate::command::find_program(&[dir], name).ok_or_else(not_found);
+        if absolute.is_file() {
+            return Ok(absolute);
+        }
+        let dir = absolute.parent().map(Path::to_path_buf).unwrap_or_default();
+        return crate::command::find_program_with(&[dir], name, pathext.as_deref())
+            .ok_or_else(not_found);
     }
-    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+    let dirs: Vec<PathBuf> = effective_env(command, "PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
-    crate::command::find_program(&dirs, name).ok_or_else(not_found)
+    crate::command::find_program_with(&dirs, name, pathext.as_deref()).ok_or_else(not_found)
+}
+
+/// A variable as the child will see it: the command's override when it
+/// has one (matched without case, as Windows keys are), removed when the
+/// command removes it, else this process's own.
+fn effective_env(command: &Command, key: &str) -> Option<OsString> {
+    for (name, value) in command.get_envs() {
+        if name.to_string_lossy().eq_ignore_ascii_case(key) {
+            return value.map(OsStr::to_os_string);
+        }
+    }
+    std::env::var_os(key)
 }
 
 /// `cmd.exe` from the system directory, as the standard library runs a
@@ -638,7 +667,7 @@ pub fn batch_command_line<'a>(
     script: &Path,
     args: impl IntoIterator<Item = &'a OsStr>,
 ) -> io::Result<String> {
-    let script = user_path(script);
+    let script = user_path(script)?;
     if script.contains('"') || script.ends_with('\\') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -707,16 +736,68 @@ fn batch_argument(line: &mut String, arg: &OsStr) -> io::Result<()> {
 }
 
 /// A path as cmd.exe understands it: the verbatim prefix a canonical
-/// Windows path carries is not one cmd accepts.
-fn user_path(path: &Path) -> String {
-    let text = path.to_string_lossy();
-    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+/// Windows path carries is not one cmd accepts. The prefix comes off only
+/// when the plain form names the same path — `GetFullPathNameW` gives it
+/// back unchanged — as the standard library decides it; a verbatim path
+/// the plain form would normalise into something else (a trailing dot or
+/// space, a component the plain rules rewrite) is refused rather than
+/// handed to cmd as a different file.
+fn user_path(path: &Path) -> io::Result<String> {
+    let text = path.to_string_lossy().into_owned();
+    let plain = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
     } else if let Some(rest) = text.strip_prefix(r"\\?\") {
         rest.to_owned()
     } else {
-        text.into_owned()
+        return Ok(text);
+    };
+    if full_path_name(&plain)? == plain {
+        Ok(plain)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{text} cannot be named to cmd.exe without its verbatim prefix"),
+        ))
     }
+}
+
+/// `GetFullPathNameW` of `path`: what the plain path rules make of it.
+fn full_path_name(path: &str) -> io::Result<String> {
+    use windows_sys::Win32::Storage::FileSystem::GetFullPathNameW;
+    let wide: Vec<u16> = OsStr::new(path).encode_wide().chain([0]).collect();
+    let mut buffer = vec![0u16; 1024];
+    // SAFETY: the name is nul-terminated and the buffer's length is what
+    // is passed; the call writes at most that many units.
+    let length = unsafe {
+        GetFullPathNameW(
+            wide.as_ptr(),
+            buffer.len() as u32,
+            buffer.as_mut_ptr(),
+            null_mut(),
+        )
+    };
+    if length == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length as usize > buffer.len() {
+        buffer = vec![0u16; length as usize];
+        // SAFETY: as above, with the length asked for.
+        let again = unsafe {
+            GetFullPathNameW(
+                wide.as_ptr(),
+                buffer.len() as u32,
+                buffer.as_mut_ptr(),
+                null_mut(),
+            )
+        };
+        if again == 0 || again as usize > buffer.len() {
+            return Err(io::Error::last_os_error());
+        }
+        buffer.truncate(again as usize);
+    } else {
+        buffer.truncate(length as usize);
+    }
+    Ok(String::from_utf16_lossy(&buffer))
 }
 
 /// One argument quoted by the rules `CommandLineToArgvW` and the C runtime
@@ -1012,9 +1093,100 @@ mod tests {
         let refused =
             batch_command_line(Path::new(r"C:\tools\shim.cmd"), [OsStr::new("x\ny")]).unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// A canonical (verbatim) script path is given to cmd.exe as the plain
+    /// path only when that plain path names the same file; a verbatim path
+    /// whose plain form the path rules would rewrite — a trailing dot here
+    /// — is refused rather than run as some other file.
+    #[test]
+    fn a_verbatim_script_path_is_given_plainly_only_when_it_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = tmp.path().join("shim.cmd");
+        std::fs::write(&shim, "@echo off\r\n").unwrap();
+        let canonical = std::fs::canonicalize(&shim).unwrap();
+        assert!(
+            canonical.to_string_lossy().starts_with(r"\\?\"),
+            "{}",
+            canonical.display()
+        );
+        let plain = user_path(&canonical).unwrap();
+        assert!(
+            !plain.starts_with(r"\\?\") && plain.ends_with("shim.cmd"),
+            "{plain}"
+        );
+        let dotted = PathBuf::from(format!(r"\\?\{}", plain.replace("shim.cmd", "shim.cmd.")));
+        let error = user_path(&dotted).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// A relative script is the one this process sees, made absolute
+    /// before cmd.exe runs it from the child's own directory: a script of
+    /// the same name in the child's directory is not the one that runs.
+    #[test]
+    fn a_relative_script_is_resolved_here_not_in_the_childs_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let here = tmp.path().join("here");
+        let there = tmp.path().join("there");
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::create_dir_all(&there).unwrap();
+        std::fs::write(here.join("which.cmd"), "@echo off\r\necho ran-here\r\n").unwrap();
+        std::fs::write(there.join("which.cmd"), "@echo off\r\necho ran-there\r\n").unwrap();
+        let mut command = Command::new(here.join("which.cmd"));
+        command.current_dir(&there);
+        let program = resolve_program(&command).unwrap();
+        assert!(
+            program.is_absolute() && program.starts_with(&here),
+            "{}",
+            program.display()
+        );
+        let pending = prepare(command).expect("a suspended cmd.exe");
+        let mut owned = pending.activate().expect("resumed");
+        let mut stdout = owned.take_stdout().expect("a stdout pipe");
+        let mut text = String::new();
+        stdout.read_to_string(&mut text).unwrap();
+        assert!(
+            text.contains("ran-here") && !text.contains("ran-there"),
+            "{text:?}"
+        );
+        while owned.try_wait().unwrap().is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// The child's own `PATHEXT` and `PATH` decide the lookup when the
+    /// command overrides them: with `.CMD;.EXE`, the shim wins over the
+    /// executable beside it, and the directory comes from the command's
+    /// `PATH`, not this process's.
+    #[test]
+    fn the_childs_pathext_and_path_decide_a_bare_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(dir.join("both.cmd"), "@echo off\r\n").unwrap();
+        std::fs::write(dir.join("both.exe"), "MZ").unwrap();
+        let cmd_first = crate::command::find_program_with(
+            std::slice::from_ref(&dir),
+            "both",
+            Some(OsStr::new(".CMD;.EXE")),
+        )
+        .unwrap();
+        assert!(cmd_first.ends_with("both.cmd"), "{}", cmd_first.display());
+        let exe_first = crate::command::find_program_with(
+            std::slice::from_ref(&dir),
+            "both",
+            Some(OsStr::new(".EXE;.CMD")),
+        )
+        .unwrap();
+        assert!(exe_first.ends_with("both.exe"), "{}", exe_first.display());
+        let mut command = Command::new("both");
+        command.env("Path", &dir).env("pathext", ".CMD;.EXE");
+        assert_eq!(resolve_program(&command).unwrap(), dir.join("both.cmd"));
+        let mut removed = Command::new("both");
+        removed.env("Path", &dir).env_remove("PATHEXT");
         assert_eq!(
-            user_path(Path::new(r"\\?\UNC\srv\share\t.cmd")),
-            r"\\srv\share\t.cmd"
+            resolve_program(&removed).unwrap(),
+            dir.join("both.exe"),
+            "the default order puts exe first"
         );
     }
 
