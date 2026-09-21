@@ -224,15 +224,16 @@ def main():
         conflict = run("claim", "path:" + str(project / "file.txt"), "--as", "smoke-two", "--ttl", "60", check=False)
         step("a lease is held and a second claim is refused", lease.returncode == 0 and conflict.returncode != 0, conflict.stderr.strip())
         run("release", lease.stdout.strip(), "--as", "smoke-one", "--summary", "smoke done")
+        # `attach` from a pipe is refused in words on every platform: it
+        # needs a terminal, and this script has none (a person's attach
+        # from a real console is the part no runner checks).
+        attach = run("attach", "smoke-one", check=False, timeout=20)
+        step("attach without a terminal is refused in words, not with a hang", attach.returncode != 0 and "needs a terminal" in attach.stderr, attach.stderr.strip())
         if os.name == "nt":
             install = run("daemon", "install", check=False, timeout=20)
             step("daemon install is refused on Windows in words", install.returncode != 0 and "not available on Windows" in install.stderr, install.stderr.strip())
-            attach = run("attach", "smoke-one", check=False, timeout=20)
-            step("attach is refused on Windows in words, not with a hang", attach.returncode != 0 and "not available on Windows" in attach.stderr, attach.stderr.strip())
             reload = run("daemon", "reload", check=False, timeout=20)
             step("daemon reload is refused on Windows in words", reload.returncode != 0 and "Windows" in (reload.stderr + reload.stdout), (reload.stderr + reload.stdout).strip())
-            launch = run("run", "--name", "smoke-managed", "--", "cmd", "/c", "echo", "hi", check=False, timeout=20)
-            step("a managed launch is refused on Windows in words", launch.returncode != 0 and "not available on Windows" in (launch.stderr + launch.stdout), (launch.stderr + launch.stdout).strip())
         # Managed sessions: the daemon starts a session owner, which holds
         # the child, its pipes or its terminal and its log. A piped command's
         # output reaches its log; a terminal command is typed into through
