@@ -219,6 +219,11 @@ nonces cannot advance a later head. The receiver serves recovery while paused.
 A same-user local process can make this explicit administrative request; this
 permission does not prove a human or provider child made it.
 
+The first version-3 replacement trial exposed a fixture race: the preceding
+idle message was visible before its receiver acknowledgement was persisted.
+The driver now waits for the replacement scenario's exact pending message ID;
+an unrelated pending entry is not evidence that the upgrade case is prepared.
+
 The candidate has targeted scanner, ledger and real socket lost-journal/ACK
 regressions. `--scenario active-hook-resolve` adds actual Codex/loopback-model
 acceptance for dropped hook output, readback, stale confirmation refusal, lost

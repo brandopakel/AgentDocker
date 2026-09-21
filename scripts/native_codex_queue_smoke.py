@@ -1392,7 +1392,11 @@ try:
                     sent.append(result["message"])
                 if args.scenario == "controller-upgrade":
                     initial = rpc({"op":"inspect", "agent":aid})["agent"]["input_binding"]
-                    wait(lambda: (json.loads(ledgerpath.read_text()).get("attempt") or {}).get("queued"), 15)
+                    # The preceding idle message may be visible to the model
+                    # before its receiver ACK is persisted. Wait for this
+                    # scenario's exact head, not that earlier pending entry.
+                    wait(lambda: ((a := json.loads(ledgerpath.read_text()).get("attempt") or {})
+                                  .get("message") == sent[0] and a.get("queued")), 15)
                     pending = json.loads(ledgerpath.read_text())
                     assert pending["version"] == args.initial_ledger_version, "unexpected initial receiver ledger format"
                     assert pending["attempt"]["message"] == sent[0]
