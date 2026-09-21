@@ -117,21 +117,28 @@ impl Group {
         })
     }
     fn ask(&self) {
-        // Never write a pipe on the supervision loop: a child that does
-        // not read its keyboard must not block the force-stop deadline.
-        let typed = self
-            .input
-            .as_ref()
-            .and_then(|input| input.try_send(vec![0x03]).ok());
-        if typed.is_none() {
-            self.end();
-        }
+        ask_console(self.input.as_ref(), || self.end());
     }
     fn end(&self) {
         let _ = self.job.end();
     }
     fn exists(&self) -> bool {
         self.job.exists()
+    }
+}
+
+#[cfg(any(windows, test))]
+fn ask_console(input: Option<&mpsc::Sender<Vec<u8>>>, end: impl FnOnce()) {
+    // Never block the supervisor on the keyboard writer. Full means Ctrl-C
+    // was NOT queued, but the existing stop deadline still grants the child
+    // its grace period. Only a missing/closed input cannot be asked at all.
+    if input.is_none_or(|input| {
+        matches!(
+            input.try_send(vec![0x03]),
+            Err(mpsc::error::TrySendError::Closed(_))
+        )
+    }) {
+        end();
     }
 }
 
@@ -1103,6 +1110,33 @@ async fn write_log<W: AsyncWrite + Unpin>(
             .context("cannot write agent log")?;
     }
     log.flush().await.context("cannot flush agent log")
+}
+
+#[cfg(test)]
+mod console_stop_tests {
+    use super::*;
+
+    #[test]
+    fn keyboard_backpressure_does_not_force_end_or_replace_pending_input() {
+        let (input, mut keyboard) = mpsc::channel(1);
+        input.try_send(b"unfinished input".to_vec()).unwrap();
+        ask_console(Some(&input), || panic!("full keyboard skipped stop grace"));
+        assert_eq!(keyboard.try_recv().unwrap(), b"unfinished input");
+        assert!(keyboard.try_recv().is_err());
+
+        ask_console(Some(&input), || panic!("open keyboard skipped stop grace"));
+        assert_eq!(keyboard.try_recv().unwrap(), vec![0x03]);
+    }
+
+    #[test]
+    fn missing_or_closed_keyboard_ends_immediately() {
+        let (input, keyboard) = mpsc::channel(1);
+        drop(keyboard);
+        let mut ended = 0;
+        ask_console(Some(&input), || ended += 1);
+        ask_console(None, || ended += 1);
+        assert_eq!(ended, 2);
+    }
 }
 
 #[cfg(all(test, unix))]

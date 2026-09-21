@@ -925,6 +925,23 @@
       "fmt_clippy_doctests_packaging_release": "passed",
       "log": "/private/tmp/agentdocker-windows-startup-capture-final-gate-20260921.log"
     },
-    "replacement_pr": "https://github.com/brandopakel/AgentDocker/pull/214"
+    "replacement_pr": "https://github.com/brandopakel/AgentDocker/pull/214",
+    "review_stop_grace_fix": {
+      "review": "https://github.com/brandopakel/AgentDocker/pull/214#discussion_r4066722264",
+      "behavior": "A full terminal keyboard queue does not force-end the child before the existing two-second stop deadline. Ctrl-C remains unqueued in that case. Closed or missing input still ends immediately.",
+      "regression": "Two channel tests cover full/open/closed/missing inputs; pending input is retained. Reintroducing the old full-queue behavior fails the backpressure regression with full keyboard skipped stop grace.",
+      "negative_control_log": "/private/tmp/agentdocker-stop-grace-negative-control-20260921.log",
+      "native_acceptance": "Pending on the corrected source. The Windows smoke now observes the actual child process handle separately from status/console teardown, checking grace and bounded stop.",
+      "local_gate": {
+        "rust_passed": 1334,
+        "rust_skipped": 7,
+        "python_run": 106,
+        "python_skipped": 1,
+        "fmt_clippy_doctests_packaging_release": "passed",
+        "log": "/private/tmp/agentdocker-stop-grace-gate-20260921.log"
+      },
+      "native_measurement_limit": "The child handle observation excludes final-status and console teardown delay, but includes CLI startup and observer scheduling; it is not an exact measurement of owner dispatch. The channel regression and failing old-behavior negative control establish the Full versus Closed correction.",
+      "peer_review": "Independent read-only review of the complete Rust/helper, native observer/cleanup and docs diff found no remaining blocker; no additional builds were run by the reviewer."
+    }
   }
 }

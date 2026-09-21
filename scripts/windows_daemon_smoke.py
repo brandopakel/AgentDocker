@@ -595,6 +595,9 @@ def main():
             stop_flood = threading.Event()
             flood_errors = []
             flood = None
+            child = None
+            exit_observer = None
+            child_exit = []
             try:
                 wire.send({"op": "attach", "agent": "smoke-input-full", "cols": 80, "rows": 24})
                 ready = wire.line()
@@ -625,18 +628,45 @@ def main():
                     if isinstance(frame, dict) and frame.get("type") == "output":
                         screen = (screen + base64.b64decode(frame["data"]))[-65536:]
                 stop_flood.set()
+                record = inspect_agent("smoke-input-full")
+                child = WindowsProcess(record["pid"], record["process_started_at"])
+
+                def observe_exit():
+                    if child.exited(15000):
+                        child_exit.append(time.monotonic())
+
                 started = time.monotonic()
+                exit_observer = threading.Thread(target=observe_exit, daemon=True)
+                exit_observer.start()
                 stopped = run("stop", "smoke-input-full", check=False, timeout=12)
                 line = wait_status("smoke-input-full", "exited", seconds=10)
                 elapsed = time.monotonic() - started
+                exit_observer.join(timeout=1)
+                lifetime = child_exit[0] - started if child_exit else None
                 step("native keyboard backpressure was observed", b"input dropped" in screen, f"screen {screen[-300:]!r}; writer {flood_errors}")
+                # Observe the actual process, not just the final status: console
+                # teardown can delay that status and hide a premature job kill.
+                step("a full keyboard preserves the child's two-second stop grace", lifetime is not None and 1.9 <= lifetime < 10, f"child exit {lifetime!r}s after stop dispatch; final status {elapsed:.3f}s")
                 step("stop remains bounded when the child ignores Ctrl-C and never reads its full keyboard", stopped.returncode == 0 and "exited" in line and elapsed < 10, f"{elapsed:.3f}s; {line}")
                 step("the daemon still answers after terminal backpressure", run("ping").returncode == 0)
             finally:
-                stop_flood.set()
-                if flood is not None:
-                    flood.join(timeout=6)
-                wire.close()
+                try:
+                    stop_flood.set()
+                    if flood is not None and flood.ident is not None:
+                        flood.join(timeout=6)
+                finally:
+                    try:
+                        if child is not None:
+                            try:
+                                child.end()
+                            finally:
+                                if exit_observer is not None and exit_observer.ident is not None:
+                                    exit_observer.join(timeout=16)
+                                if exit_observer is not None and exit_observer.is_alive():
+                                    raise AssertionError("exit observer still owns the process handle")
+                                child.close()
+                    finally:
+                        wire.close()
         # Stopping an agent by pid checks the recorded birth before ending anything.
         helper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=project, env=env)
         try:
