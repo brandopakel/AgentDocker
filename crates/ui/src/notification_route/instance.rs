@@ -111,22 +111,27 @@ fn start_locked(
     let (directory, socket) = location(home, daemon);
     let lock_path = directory.join("instance.lock");
     // A lock is on a file, not a name. A window that is exiting removes
-    // its lock file while it still holds it; a launch that opened that
-    // file just before and locked it just after would hold a lock nobody
-    // else can see, so a lock whose file went is taken again on the file
-    // the name has now (`Lock::is_at`), the directory made afresh.
+    // its lock file and directory while it still holds the lock; a launch
+    // arriving meanwhile can find them gone between its own steps, or can
+    // lock a file that was unlinked between its open and its lock, which
+    // excludes nobody. Either way it starts over, the directory made
+    // afresh, a bounded number of times.
     let mut attempts = 0;
     let held = loop {
-        dirs::ensure_private_dir(&directory)?;
-        dirs::private_file(&lock_path, true, false)?;
-        let Some(held) = take(&lock_path)? else {
-            forward(home, daemon, &initial)?;
-            return Ok(Launch::Forwarded);
-        };
-        if held.is_at(&lock_path)? {
-            break held;
-        }
         attempts += 1;
+        let taken = dirs::ensure_private_dir(&directory)
+            .and_then(|()| dirs::private_file(&lock_path, true, false).map(drop))
+            .and_then(|()| take(&lock_path));
+        match taken {
+            Ok(Some(held)) if held.is_at(&lock_path)? => break held,
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                forward(home, daemon, &initial)?;
+                return Ok(Launch::Forwarded);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
         if attempts == LOCK_ATTEMPTS {
             return Err(io::Error::other(
                 "desktop activation lock kept changing under this launch",
@@ -359,10 +364,12 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let daemon = home.path().join("daemon.sock");
         let (directory, _) = location(home.path(), &daemon);
-        // The first take lands on a file an exiting window then removes,
-        // directory and all, before the lock is checked: what that window
-        // does while it still holds the lock. The launch notices and takes
-        // the lock again on the file the name has by then.
+        // What an exiting window does while it still holds the lock,
+        // landing on this launch twice: the file and directory go before
+        // the launch opens the lock (a missing path), then a file the
+        // launch has opened goes before it locks it (a lock on nothing).
+        // The launch starts over each time and holds the file the name has
+        // by then.
         let mut takes = 0;
         let taken = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = taken.clone();
@@ -373,8 +380,12 @@ mod tests {
             Arc::new(|_| Ok(())),
             |path| {
                 takes += 1;
-                let held = lock::try_exclusive_existing(path)?;
                 if takes == 1 {
+                    std::fs::remove_file(path)?;
+                    std::fs::remove_dir(path.parent().unwrap())?;
+                }
+                let held = lock::try_exclusive_existing(path)?;
+                if takes == 2 {
                     std::fs::remove_file(path)?;
                     std::fs::remove_dir(path.parent().unwrap())?;
                 }
@@ -385,7 +396,11 @@ mod tests {
         .unwrap() else {
             panic!("primary")
         };
-        assert_eq!(*taken.lock().unwrap(), vec![1, 2]);
+        assert_eq!(
+            *taken.lock().unwrap(),
+            vec![2, 3],
+            "the first take found no file"
+        );
         assert!(
             lock::try_exclusive_existing(&directory.join("instance.lock"))
                 .unwrap()
