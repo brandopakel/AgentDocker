@@ -230,6 +230,13 @@ pub fn collect() -> Task<Message> {
     iced::advanced::widget::operate(Collect::default()).map(Message::Accessibility)
 }
 
+/// Publish routine snapshots without an application message: Iced rebuilds and
+/// redraws the window after every message, even a read-only accessibility result.
+pub fn collect_and_update(id: window::Id, scale: f64) -> Task<Message> {
+    iced::advanced::widget::operate(Collect::default())
+        .then(move |snapshot| update(id, snapshot, scale))
+}
+
 struct Handler;
 #[cfg(target_os = "linux")]
 impl accesskit::DeactivationHandler for Handler {

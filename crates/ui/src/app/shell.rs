@@ -2382,7 +2382,16 @@ impl App {
         self.panes
             .window_width(self.shell.width / self.scale_factor());
         self.panes.sync_thread(self.shell.thread.is_some());
-        tasks.push(crate::accessibility::collect());
+        // Smoke scenarios consume the snapshot as application state. Normal
+        // refreshes publish it directly, avoiding a second update and redraw.
+        // Explicit focus/reveal chains above keep their completion message.
+        tasks.push(match self.shell.window {
+            Some(id) if self.smoke.is_none() => crate::accessibility::collect_and_update(
+                id,
+                f64::from(self.scale_factor() * self.shell.dpi.max(1.0)),
+            ),
+            _ => crate::accessibility::collect(),
+        });
         Task::batch(tasks)
     }
 

@@ -354,28 +354,6 @@ enum Msg {
     ConversationSent(String, Result<QueuedSend, String>),
 }
 
-impl Msg {
-    /// Successful daemon snapshots can share a wake. Outcomes, errors and
-    /// events retain the immediate path, including successful send receipts.
-    fn is_snapshot(&self) -> bool {
-        matches!(
-            self,
-            Self::Agents(..)
-                | Self::Leases(..)
-                | Self::Runtimes(..)
-                | Self::Discovered(..)
-                | Self::Channels(..)
-                | Self::Inbox(..)
-                | Self::Activity(..)
-                | Self::Questions(..)
-                | Self::Conversations(Ok(_))
-                | Self::History(..)
-                | Self::HistoryEarlier(..)
-                | Self::Thread(..)
-        )
-    }
-}
-
 #[derive(Debug)]
 struct QueuedSend {
     message: MessageId,
@@ -2521,18 +2499,13 @@ fn spawn_worker(
                             failure_message(err)
                         }
                     };
-                    let snapshot = msg.is_snapshot();
                     if tx.send(msg).is_err() {
                         break;
                     }
                     if !disconnected && tx.send(Msg::Connected).is_err() {
                         break;
                     }
-                    if snapshot {
-                        ctx.request_snapshot_repaint();
-                    } else {
-                        ctx.request_repaint();
-                    }
+                    ctx.request_repaint();
                     continue;
                 }
             };
@@ -3501,35 +3474,6 @@ pub(crate) struct Seek {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-
-    #[test]
-    fn snapshot_batching_never_delays_send_outcomes_or_read_errors() {
-        for snapshot in [
-            Msg::Agents(Vec::new(), BTreeMap::new()),
-            Msg::Conversations(Ok(Vec::new())),
-            Msg::History("everyone:project".into(), 7, Vec::new()),
-            Msg::Channels("project".into(), Vec::new()),
-        ] {
-            assert!(snapshot.is_snapshot());
-        }
-        for immediate in [
-            Msg::Conversations(Err("read failed".into())),
-            Msg::ConversationSent(
-                "draft".into(),
-                Ok(MessageId::from("sent".to_owned()).into()),
-            ),
-            Msg::ConversationSent("draft".into(), Err("unconfirmed".into())),
-            Msg::Answered(MessageId::from("question".to_owned()), Ok(())),
-            Msg::Launched(Ok("agent".into())),
-            Msg::Connected,
-            Msg::Disconnected("offline".into()),
-            Msg::Status("read failed".into()),
-            Msg::ThreadGone(MessageId::from("root".to_owned()), 7),
-            Msg::Console("output".into()),
-        ] {
-            assert!(!immediate.is_snapshot());
-        }
-    }
 
     /// The Tools row says what setup is missing: the one hook event a
     /// release began to require, the MCP entry, or both — and only

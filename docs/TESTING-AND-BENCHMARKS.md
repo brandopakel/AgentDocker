@@ -63,12 +63,12 @@ observed populated-project baseline, not an isolated-machine benchmark.
 Sampling showed periodic full-window presentation work while worker threads
 mostly waited.
 
-The candidate batches successful background snapshot replies for 16 ms of
-quiet, capped at 50 ms from the first reply. Terminal output, notifications,
-accessibility actions, events, send/answer outcomes and errors retain immediate
-wakes. The two-second status timer is unchanged. Tests exercise quiet bursts,
-continuous producers and urgent interruption; native before/after CPU and
-interaction acceptance must pass before claiming a performance improvement.
+Snapshot-only batching did not improve that observation (17.66% on `e609a334`)
+and was removed. The smaller follow-up publishes routine accessibility snapshots
+through the task stream directly, preserving the native accessibility tree without
+sending a second application message that would rebuild/redraw the window. Explicit
+focus/reveal completion and the smoke snapshot path remain unchanged. Native
+accessibility and before/after CPU checks are required before claiming improvement.
 
 ## Repository commands and installation
 
