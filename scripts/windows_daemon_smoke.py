@@ -63,8 +63,16 @@ def main():
     daemon = None
     log = None
 
+    def write_report():
+        args.output.mkdir(parents=True, exist_ok=True)
+        (args.output / "windows-daemon-smoke.json").write_text(json.dumps(report, indent=2))
+
     def step(name, ok, detail=""):
         report["steps"].append({"step": name, "ok": bool(ok), "detail": str(detail)[:4000]})
+        # Written after every step and said aloud, so a run the job has
+        # to end still says how far it got and what it saw.
+        write_report()
+        print(f"step {'ok  ' if ok else 'FAIL'} {name}", flush=True)
         if not ok:
             raise AssertionError(f"{name}: {detail}")
 
@@ -140,27 +148,53 @@ def main():
 
     class Wire:
         """A line-framed connection to the daemon: a Unix socket or a
-        named pipe, opened the way any script would open it."""
+        named pipe, opened the way any script would open it. Every read is
+        bounded: a thread reads lines and hands them over, and a read that
+        gets nothing in time answers with a timeout mark rather than
+        holding the run (the third runner sat in a pipe read until the
+        job's own timeout, and left no report)."""
+
+        TIMED_OUT = object()
 
         def __init__(self, where):
+            import queue
             if os.name == "nt":
                 self.file = open(where, "r+b", buffering=0)
                 self.sock = None
             else:
                 import socket
                 self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                self.sock.settimeout(15)
                 self.sock.connect(where)
                 self.file = self.sock.makefile("rwb", buffering=0)
+            self.lines = queue.Queue()
+
+            def pump(file, lines):
+                try:
+                    while True:
+                        raw = file.readline()
+                        if not raw:
+                            lines.put(None)
+                            return
+                        lines.put(raw)
+                except Exception as error:
+                    lines.put(error)
+
+            threading.Thread(target=pump, args=(self.file, self.lines), daemon=True).start()
 
         def send(self, frame):
             self.file.write((json.dumps(frame) + "\n").encode())
             self.file.flush()
 
-        def line(self):
-            raw = self.file.readline()
-            if not raw:
+        def line(self, timeout=15):
+            import queue
+            try:
+                raw = self.lines.get(timeout=timeout)
+            except queue.Empty:
+                return Wire.TIMED_OUT
+            if raw is None:
                 return None
+            if isinstance(raw, Exception):
+                raise raw
             return json.loads(raw)
 
         def close(self):
@@ -247,18 +281,21 @@ def main():
         line = wait_status("smoke-tty", "running")
         step("a terminal managed command is running on its own console", "running" in line, line)
         screen = b""
+        frames = []
         wire = Wire(transport_endpoint())
         try:
             wire.send({"op": "attach", "agent": "smoke-tty", "cols": 80, "rows": 24})
             ready = wire.line()
-            step("the attach wire answers events_ready for a terminal session", ready is not None and ready.get("type") == "events_ready", json.dumps(ready)[:300])
+            step("the attach wire answers events_ready for a terminal session", isinstance(ready, dict) and ready.get("type") == "events_ready", "timed out" if ready is Wire.TIMED_OUT else json.dumps(ready)[:300])
             # Enter is a carriage return on a Windows console, a newline on a Unix terminal.
             wire.send({"op": "attach_input", "data": base64.b64encode(b"abc\r" if os.name == "nt" else b"abc\n").decode()})
             deadline = time.time() + 15
             while time.time() < deadline and b"got abc" not in screen:
-                frame = wire.line()
-                if frame is None:
+                frame = wire.line(timeout=max(1, deadline - time.time()))
+                if frame is None or frame is Wire.TIMED_OUT:
+                    frames.append("end" if frame is None else "timed out")
                     break
+                frames.append(frame.get("type"))
                 if frame.get("type") == "output":
                     screen += base64.b64decode(frame.get("data", ""))
                 elif frame.get("type") == "end":
@@ -266,7 +303,12 @@ def main():
         finally:
             wire.close()
         text = screen.decode(errors="replace")
-        step("what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen", "tty hello" in text and "got abc" in text, text[-400:])
+        typed_ok = "tty hello" in text and "got abc" in text
+        # On a failure, what the daemon itself logged for the session and
+        # how it stands: the difference between input that never arrived
+        # and a screen rendered in a shape the check did not expect.
+        seen = "" if typed_ok else f"; logs {run('logs', 'smoke-tty', check=False).stdout.strip()[-400:]!r}; status {agent_status('smoke-tty')[:200]!r}"
+        step("what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen", typed_ok, f"frames {frames[:40]}; screen {text[-600:]!r}{seen}")
         line = wait_status("smoke-tty", "exited")
         logs = run("logs", "smoke-tty", check=False)
         step("the terminal session ends and its screen is in its log", "exited" in line and "got abc" in logs.stdout, (line + " | " + logs.stdout.strip())[-400:])
@@ -352,8 +394,7 @@ def main():
         except OSError:
             pass
         shutil.rmtree(root, ignore_errors=True)
-        args.output.mkdir(parents=True, exist_ok=True)
-        (args.output / "windows-daemon-smoke.json").write_text(json.dumps(report, indent=2))
+        write_report()
         print(json.dumps(report, indent=2))
     return 0 if report["result"] == "passed" else 1
 
