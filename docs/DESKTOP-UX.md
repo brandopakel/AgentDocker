@@ -225,7 +225,11 @@ Project tabs provide:
   AgentDocker injected — *not measured yet* until it is. Collection is off
   until `agentd.toml` enables it, and the screen says so rather than showing
   an empty table. A failed read keeps the last report with the failure beside
-  it.
+  it. The screen follows the project on view: choosing another project (or
+  forgetting the current one, which selects another) reads that project's
+  usage at once, and a screen opened while the daemon was away asks the
+  moment it is back; a read that was on its way when the daemon went is not
+  waited for.
 
 ## Messages, Inbox and tools
 
