@@ -3859,7 +3859,100 @@
         "Final-head review and CI",
         "Fresh installed idle, sustained backlog/latency, sleep/reboot, additional provider versions",
         "Independent physical keyboard/IME and full installed visual acceptance"
-      ]
+      ],
+      "additional_lifecycle_trials": {
+        "long_busy": {
+          "started_at": "2026-09-21T18:40:21.528385+00:00",
+          "scenario": "long-busy",
+          "result": "passed",
+          "source": {
+            "commit": "ccfeeb9ec4b8c200f6573810eab97b16c0a2ff6d",
+            "dirty": false,
+            "rust_and_driver_sha256": "6abad357d9512b03d250ad34c3abcc886671e710b9f992b4c336d186fb2a2df7"
+          },
+          "driver_sha256": "5f50cf1891266e53ad976db781925940d0f4b710881bda60b4b461114027f8d0",
+          "provider_version": "codex-cli 0.154.0",
+          "cli_sha256": "3d4a1ede8330148572a69d625e34f6b786c1df020682ce1729d7768479fc0584",
+          "daemon_sha256": "348f82b2a8acf86e9c86b3876f73868851a1420a07e26ac267c7052c663a48c2",
+          "idle_wake_seconds": 7.631333208992146,
+          "direct_user_busy_seconds": 65.05847037502099,
+          "completed_receipts": 4,
+          "automatic_receiver_restart_no_replay": true,
+          "draft_preserved": true,
+          "busy_order_preserved": true,
+          "thread": "01a0c544-e573-7171-949b-9be4179d88aa",
+          "raw_result_sha256": "e4d876efc12123d8b37308057fc377b20b17783e6a82d45cf4d13cc2360dc623",
+          "cleanup_errors": []
+        },
+        "lifecycle": {
+          "started_at": "2026-09-21T18:42:51.454460+00:00",
+          "scenario": "lifecycle",
+          "result": "failed",
+          "source": {
+            "commit": "ccfeeb9ec4b8c200f6573810eab97b16c0a2ff6d",
+            "dirty": false,
+            "rust_and_driver_sha256": "6abad357d9512b03d250ad34c3abcc886671e710b9f992b4c336d186fb2a2df7"
+          },
+          "driver_sha256": "5f50cf1891266e53ad976db781925940d0f4b710881bda60b4b461114027f8d0",
+          "provider_version": "codex-cli 0.154.0",
+          "cli_sha256": "3d4a1ede8330148572a69d625e34f6b786c1df020682ce1729d7768479fc0584",
+          "daemon_sha256": "348f82b2a8acf86e9c86b3876f73868851a1420a07e26ac267c7052c663a48c2",
+          "idle_wake_seconds": 7.40962904097978,
+          "completed_receipts": 5,
+          "automatic_receiver_restart_no_replay": true,
+          "thread": "01a0c547-2f0d-7660-872c-d53764421e0f",
+          "during_restart_message": "ff982cc69153430d",
+          "raw_result_sha256": "572a6390b5c518af8cf23ff437c10e10df0b60e1644fcad1fa90ecca4c72154a",
+          "cleanup_errors": []
+        },
+        "lifecycle_diagnostic": {
+          "started_at": "2026-09-21T18:46:40.485849+00:00",
+          "scenario": "lifecycle",
+          "result": "failed",
+          "source": {
+            "commit": "ccfeeb9ec4b8c200f6573810eab97b16c0a2ff6d",
+            "dirty": true,
+            "rust_and_driver_sha256": "61405af3db5f0a0d90e99cb6633c43a4d6f807fbe8210918b796a310a6115a61"
+          },
+          "driver_sha256": "892a21b479fa27a843ad5a8a2563e74dd3dcf6a52f6a136de2d6d42f1d77535e",
+          "provider_version": "codex-cli 0.154.0",
+          "cli_sha256": "3d4a1ede8330148572a69d625e34f6b786c1df020682ce1729d7768479fc0584",
+          "daemon_sha256": "348f82b2a8acf86e9c86b3876f73868851a1420a07e26ac267c7052c663a48c2",
+          "idle_wake_seconds": 7.430531332967803,
+          "completed_receipts": 5,
+          "automatic_receiver_restart_no_replay": true,
+          "thread": "01a0c54a-adbf-7200-b21f-bd50901ca406",
+          "during_restart_message": "1f2dafac2e0a48a1",
+          "raw_result_sha256": "84c1fa685b164bc21f48c9d37f8e8aab9ab4ac27cfdf0233990c147233417091",
+          "cleanup_errors": []
+        },
+        "findings": [
+          "Two attempts: second native MCP process registered but had no session label or input binding after 40s.",
+          "Only the first SessionStart hook was captured; the reopened conversation stayed at its prompt.",
+          "Original queued input retained under the old identity; no receipt fabricated, cleanup clean.",
+          "Cause of missing resume hook remains unresolved; zero-prompt reopen acceptance stays open."
+        ],
+        "diagnostic_patch": "Failure-only harness capture of registry and startup transcript; private patch, not a runtime change. Both attempts retained; no zero-prompt reopen success claimed."
+      },
+      "installed_window": {
+        "app_pid": 44748,
+        "candidate": "ff4efc6188597b2fe1a27f7cc3f84b73fc8c2be10df78621dc09fbd465183fc4",
+        "window_id": 48961,
+        "source_commit": "613c28c451e0491afc402d6b07b8bdfeca3cfffc",
+        "screenshot_sha256": "6c36298a1a1a40b5ff8e6ea2597d8c24cba7c01b620fa46a38d176ec41016c5e",
+        "observed": [
+          "Project opens shared Chat",
+          "Open project terminal is visible",
+          "All three agent cards have Terminal buttons",
+          "Temporary projects are collapsed",
+          "No clipping observed on this screen"
+        ],
+        "not_tested": [
+          "Physical typing, IME or screen reader",
+          "Other screens",
+          "Project/agent terminal buttons in this observation"
+        ]
+      }
     }
   }
 }

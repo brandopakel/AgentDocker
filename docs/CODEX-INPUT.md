@@ -292,6 +292,14 @@ as a root native receipt. The next original message `261c481ed3764883` and later
 handoffs now have native root receipts. Broader live idle/busy throughput,
 sleep/reboot and additional versions remain open.
 
+Additional trials of those immutable binaries retained both outcomes: a 65-second
+busy user turn kept peer/human inputs in order, unacknowledged until actual
+receipt, without a false idle pause; zero-prompt reopening failed twice. The
+reopened Codex 0.154.0 process started MCP but no second `SessionStart` hook was
+captured and no receiver bound within 40 seconds. The original queue stayed
+retained; no receipt or retry was invented. The missing resume hook's cause
+remains unresolved. This is an open lifecycle case, not a successful recovery.
+
 Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human
 project and human global input during one busy TUI turn and requires exact
