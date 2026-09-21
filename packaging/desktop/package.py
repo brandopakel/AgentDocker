@@ -272,9 +272,11 @@ def windows(args, stage, info):
     info["distribution"] = "portable-preview"
     app = stage / "AgentDocker"
     copy_binaries(args, app)
+    actual_hashes = {name: sha256(app / name) for name in binary_names(args.target)}
+    if actual_hashes != info["binary_sha256"]:
+        raise ValueError("Windows binary changed between build verification and packaging")
     copy_licenses(app / "licenses")
     shutil.copyfile(ROOT / "LICENSE", app / "licenses/LICENSE-AgentDocker.txt")
-    info["binary_sha256"] = {name: sha256(app / name) for name in binary_names(args.target)}
     (app / "build.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     (app / "README.txt").write_text(
         "AgentDocker for Windows x64 - unsigned portable preview\n\n"
@@ -298,8 +300,15 @@ def windows(args, stage, info):
     return app, archive, app
 
 
-def package(args):
+def package(args, expected_build=None):
     provenance = validate_inputs(args)
+    # Callers that retained build_native's stdout must not silently substitute a
+    # different directory manifest with the same commit/version/target.
+    if expected_build is not None:
+        for key in ("format", "source_commit", "source_tree", "source_input_sha256", "source_dirty",
+                    "target", "version", "state_schema", "installation_lock", "launcher_redirect", "binary_sha256"):
+            if expected_build.get(key) != provenance.get(key):
+                raise ValueError(f"native build manifest differs from the supplied build evidence: {key}")
     if args.output.exists():
         raise FileExistsError("output already exists; use a fresh directory to preserve prior artifacts")
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -310,6 +319,8 @@ def package(args):
         info.update({key: provenance[key] for key in ["source_tree", "source_input_sha256", "source_dirty", "state_schema"]})
         info["installation_lock"] = provenance.get("installation_lock", 0)
         info["launcher_redirect"] = provenance.get("launcher_redirect", 0)
+        if "windows" in args.target:
+            info["binary_sha256"] = provenance["binary_sha256"]
         build = macos if "apple-darwin" in args.target else windows if "windows" in args.target else linux
         app, archive, binaries = build(args, stage, info)
         info["size"] = measure_sizes(app, [p for p in stage.iterdir() if p.suffix in {".zip", ".gz", ".dmg"}], 2 if args.second_binary_dir else 1)

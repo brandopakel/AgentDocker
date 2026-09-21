@@ -34,7 +34,7 @@ Linux launchers encode `Exec` and `Icon` separately according to the [Desktop En
 The Windows packaging path targets `x86_64-pc-windows-msvc`. It builds a ZIP
 with `agentdocker-ui.exe`, `agentdocker.exe` and `agentd.exe` together in the
 `AgentDocker` folder, build metadata, licenses and opening instructions. The
-packager checks native-build hashes and the PE x64 executable headers before
+packager checks native-build hashes again after copying and the PE x64 executable headers before
 publishing the directory. The manifest and sidecar checksum identify the exact
 archive; this preview is unsigned, without Authenticode or installer/update
 support. Tag release feeds remain macOS/Linux until the Windows distribution
@@ -48,7 +48,8 @@ python scripts/build_native.py --target x86_64-pc-windows-msvc > artifacts/nativ
 python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package
 ```
 
-The Windows workflow runs this trial before exposing its
+The supplied build manifest must match the source-input and executable hashes
+in the binary directory's manifest. The Windows workflow runs this trial before exposing its
 `windows-desktop-preview-x86_64` artifact. It verifies the ZIP, extracts it
 outside the checkout into a path containing spaces and Unicode, verifies every
 executable against the manifest, removes the original staging payload, and runs

@@ -63,7 +63,8 @@ def main():
     output = args.output.resolve()
     info = PACKAGE.package(PACKAGE.parser().parse_args([
         "--binary-dir", build["binary_directory"], "--output", str(output),
-        "--source", build["source_commit"], "--version", build["version"], "--target", build["target"]]))
+        "--source", build["source_commit"], "--version", build["version"], "--target", build["target"]]),
+        expected_build=build)
     report = {"result": "failed", "source_commit": info["source_commit"],
               "source_input_sha256": info["source_input_sha256"],
               "artifacts": info["artifacts"], "binary_sha256": info["binary_sha256"],

@@ -5,6 +5,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,29 @@ class WindowsDesktopPackaging(unittest.TestCase):
         self.save_manifest()
         with self.assertRaisesRegex(ValueError, "target"):
             PACKAGE.package(self.args)
+
+    def test_replacement_during_copy_cannot_acquire_the_verified_source_provenance(self):
+        copy = PACKAGE.shutil.copyfile
+
+        def replace(source, destination, **kwargs):
+            result = copy(source, destination, **kwargs)
+            if source.name == "agentd.exe":
+                # Still a valid x64 executable header, but no longer the build's bytes.
+                with destination.open("ab") as stream:
+                    stream.write(b"different build")
+            return result
+
+        with patch.object(PACKAGE.shutil, "copyfile", side_effect=replace):
+            with self.assertRaisesRegex(ValueError, "between build verification and packaging"):
+                PACKAGE.package(self.args)
+        self.assertFalse(self.output.exists())
+
+    def test_supplied_build_evidence_cannot_be_replaced_by_another_directory_manifest(self):
+        for key, value in [("source_input_sha256", "d" * 64),
+                           ("binary_sha256", {name: "e" * 64 for name in self.names})]:
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "supplied build evidence"):
+                PACKAGE.package(self.args, expected_build={**self.manifest, key: value})
+            self.assertFalse(self.output.exists())
 
     def test_changed_archive_is_refused_before_extraction(self):
         info, archive = self.build()
