@@ -576,6 +576,30 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
     Ok(plan)
 }
 
+/// Ordinary setup must not report success after silently omitting Claude MCP.
+/// An explicit preview can still offer hooks for a partially configured tool.
+fn prepare_install(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
+    for runtime in selected_inventory(roots, names)? {
+        let selected = if names.is_empty() {
+            runtime.installed()
+        } else {
+            names.contains(&runtime.name)
+        };
+        if !selected || runtime.name != "claude-code" {
+            continue;
+        }
+        ensure!(
+            runtime.mcp != Wiring::Unverified,
+            "Claude Code MCP configuration needs review; nothing changed. Run `agentdocker setup claude-code --health` and review its configuration before setup"
+        );
+        ensure!(
+            runtime.mcp != Wiring::Missing || runtime.cli.is_some(),
+            "Claude Code CLI is needed to register MCP; nothing changed. Install Claude Code first, or use `agentdocker setup claude-code --preview` to review the available hooks-only changes"
+        );
+    }
+    prepare(roots, names, executable, false)
+}
+
 fn prepare_codex_activity(plan: &mut Plan, roots: &Roots, executable: &Path) -> Result<()> {
     let spec = agentdocker_core::runtime::spec("codex").expect("Codex runtime");
     let path = runtimes::hook_config_path(spec, roots);
@@ -827,6 +851,8 @@ fn list_plans(directory: &Path) -> Result<Value> {
 /// One mutually exclusive guided setup operation.
 pub enum Action<'a> {
     Preview,
+    /// Ordinary CLI setup applies a newly saved plan with the same undo rules.
+    Install,
     Apply(&'a str),
     Undo(&'a str),
     Health,
@@ -842,6 +868,7 @@ pub async fn run(
     json_output: bool,
     shell: bool,
 ) -> Result<()> {
+    let install = matches!(action, Action::Install);
     let apply_id = if let Action::Apply(id) = action {
         Some(id)
     } else {
@@ -908,10 +935,17 @@ pub async fn run(
             .context("another setup operation is in progress")?;
         let mut plan = if let Some(id) = apply_id.or(undo_id) {
             load(&directory, id)?
+        } else if install {
+            prepare_install(&roots, names, &crate::desktop::setup_executable()?)?
         } else {
             prepare(&roots, names, &crate::desktop::setup_executable()?, shell)?
         };
-        if apply_id.is_some() || undo_id.is_some() {
+        if install {
+            // Keep an addressable receipt even when apply's preflight refuses.
+            // apply also persists its recovery state before any provider write.
+            save(&directory, &plan)?;
+        }
+        if install || apply_id.is_some() || undo_id.is_some() {
             if let Err(error) = apply(&directory, &mut plan, undo_id.is_some()) {
                 bail!(
                     "{error:#}; plan {} is retained for review/resume or undo",
@@ -927,6 +961,9 @@ pub async fn run(
         println!("{}", serde_json::to_string(&value)?);
     } else if let Some(id) = value["id"].as_str() {
         eprintln!("{}", serde_json::to_string_pretty(&value)?);
+        if install {
+            eprintln!("Undo this setup: agentdocker setup --undo {id}");
+        }
         println!("{id}");
     } else {
         println!("{}", serde_json::to_string_pretty(&value)?);
@@ -1012,6 +1049,23 @@ mod tests {
             shell: None,
             versions: false,
         }
+    }
+
+    #[test]
+    fn ordinary_claude_setup_does_not_silently_omit_a_missing_cli() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let names = vec!["claude-code".into()];
+        let executable = tmp.path().join("agentdocker");
+        let error = prepare_install(&roots, &names, &executable).unwrap_err();
+        assert!(error.to_string().contains("CLI is needed to register MCP"));
+        assert!(!roots.home.join(".claude/settings.json").exists());
+        let preview = prepare(&roots, &names, &executable, false).unwrap();
+        assert!(
+            !preview.changes.is_empty(),
+            "explicit hooks preview remains available"
+        );
+        assert!(preview.delegated.is_empty());
     }
 
     /// Turn the stub `claude` into one that writes what the real

@@ -111,9 +111,10 @@ agentdocker discover          # agent processes running right now that nobody re
 agentdocker ui                # the desktop app: the same, live, in a window
 ```
 
-Use saved **preview → apply** when you want scoped undo. A plain
-`setup <runtime>` is the legacy direct route with backups; it does not create
-an undoable saved plan.
+Both ordinary `setup <runtime>` and **preview → apply** retain a private receipt
+for scoped undo. Ordinary setup prints its plan ID and the undo command; use
+`setup --show PLAN_ID` to review it or `setup --undo PLAN_ID` to reverse unchanged
+configuration. **Preview** lets you inspect the changes before applying them.
 
 Supported provider setup also installs a portable coordination skill, shared with
 MCP onboarding, so agents can discover the workflow without a repeated reminder.

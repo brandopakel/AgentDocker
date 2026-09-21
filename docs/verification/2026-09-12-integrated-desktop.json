@@ -6599,5 +6599,73 @@
         "Subsequent merge of main0468248 changes documentation only; no runtime change."
       ]
     }
+  },
+  "ordinary_setup_receipts_2026_09_19": {
+    "status": "Implemented and local validation passed; final-head CI/review and release installation remain",
+    "source_commit": "53ce092802352c28b9f03b90ecfeb10341f85665",
+    "problem": "The recorded first-install trial on ce82d06 found that ordinary setup wrote provider configuration but retained no saved undo plan.",
+    "behavior": [
+      "Ordinary setup persists a prepared receipt, then applies through the existing guarded saved-plan path. It prints a plan ID and undo command; --json returns a redacted plan.",
+      "Later user edits refuse undo before any provider files change; repeated setup owns no previous installation changes. Failed apply retains the saved plan for review/resume or undo.",
+      "Plain Claude setup refuses unverified MCP or a missing CLI required for registration instead of silently installing hooks alone. Explicit hooks-only preview remains available.",
+      "Explicit preview and --shell remain review-before-apply; --dry-run stays read-only. Older direct writes do not acquire retroactive receipts."
+    ],
+    "full_gate": {
+      "result": "passed",
+      "rust_passed": 1303,
+      "rust_skipped": 7,
+      "python_checks": 94,
+      "python_skipped": 1,
+      "includes": [
+        "fmt",
+        "strict Clippy",
+        "nextest, zero retries",
+        "doctests",
+        "Python checks",
+        "package",
+        "release build"
+      ],
+      "log_sha256": "211c3ddad8be32aa65c21a83bab39a197a2ee376a6b5ed3953995ea8cb857ef8"
+    },
+    "focused_regressions": {
+      "native_cli_tests": 4,
+      "result": "passed",
+      "cases": [
+        "Receipt/redaction/private permissions, repeated ownership, user-edit refusal and exact undo",
+        "Malformed Codex configuration leaves hooks/skills unchanged",
+        "Malformed or foreign Claude MCP refuses before hooks/skills changes",
+        "Explicit preview and shell setup remain prepared and do not write provider configuration"
+      ],
+      "additional_unit_test": "Injected roots with missing Claude CLI refuse ordinary setup while allowing an explicit hooks preview"
+    },
+    "configuration_contention": {
+      "result": "passed",
+      "checks": [
+        "different_homes_and_symlink_alias_contend_before_receipt_or_file_writes",
+        "standalone_hook_install_contends_with_guided_apply",
+        "legacy_setup_contends_with_guided_provider_registration",
+        "undo_contention_preserves_applied_receipt_and_provider_entry",
+        "both_saved_plans_apply_and_undo_after_lock_release",
+        "standalone_hook_install_remains_idempotent_after_contention"
+      ],
+      "driver_sha256": "fcf78670022cfb6ce242aaa4e3eee6d419c63d592bed582ac0e86dbe66745431",
+      "binary_sha256": {
+        "agentdocker": "81565ed3eb44c3d95a1c0b1d448ced7834552b11cc51b972f2db764bd9e795be",
+        "agentd": "feb14d1a172322cc7e2363588ef0a89805670b8c1f8b28ba63b0940bd23f47aa"
+      },
+      "cleanup": {
+        "forced": false,
+        "errors": [],
+        "exit": 0
+      }
+    },
+    "contention_report_sha256": "a103fedf0bd7b8ee9c9fdc9c12b19f7aabdea62be972693d96fefb05b1184cbf",
+    "independent_review": "Initial reviewer found a Claude MCP omission path; preflight refusal and regressions added, follow-up review found no concrete blockers.",
+    "limits": [
+      "Private provider/state profiles and a stand-in provider registration command; no real account authentication, trust or model receipt trial.",
+      "Mac arm64 local validation only; Windows source integration and native acceptance remain separate.",
+      "No production configuration changes, installed-app update, daemon restart or live provider interruption.",
+      "Subsequent documentation/evidence changes do not alter the tested runtime."
+    ]
   }
 }

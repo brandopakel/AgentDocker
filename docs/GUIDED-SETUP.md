@@ -19,7 +19,7 @@ agentdocker setup --list
 agentdocker setup --undo PLAN_ID
 ```
 
-Preview prints the new plan ID on stdout and its redacted description on stderr. `--json` prints a machine-readable description instead. The public description includes paths, channels and the AgentDocker executable, never the contents of existing provider configuration. Plain `agentdocker setup` and `--dry-run` retain their existing CLI behavior; the native window uses the saved-plan flow.
+Preview prints the new plan ID on stdout and its redacted description on stderr. `--json` prints a machine-readable description instead. The public description includes paths, channels and the AgentDocker executable, never the contents of existing provider configuration. Ordinary `agentdocker setup [runtime...]` creates and applies a saved plan, prints its ID and an undo command, and supports `--json`. `--dry-run` remains read-only; `--shell` still saves a preview that needs an explicit apply. The native window uses the same saved-plan apply/undo safeguards.
 
 Guided Claude Code setup installs the complete seven-event hooks adapter in `.claude/settings.json`. When MCP registration is missing and the Claude CLI is available, setup delegates registration to that CLI; it does not restore or rewrite `.claude.json` as a file snapshot. The receipt tracks ownership for undo. Identity reuse is verified; existing duplicates are repaired offline with `identity-repair` ([IDENTITY-REPAIR.md](IDENTITY-REPAIR.md)). Codex receives both stdio MCP and activity hooks; other supported JSON MCP hosts receive their stdio adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
 
@@ -190,11 +190,16 @@ unverified. The private daemon was stopped after the trial. Details and the
 original operator bookkeeping side effect are retained in the existing
 [integrated record](verification/2026-09-12-integrated-desktop.json).
 
-For an undoable setup, apply the saved plan with `setup --apply <plan-id>`.
-The legacy direct `setup <runtime>` route keeps backups but does not record an
-applied plan. A preview created before a direct write cannot undo that write;
-changed configuration is correctly refused. The native Review setup / Apply
-changes flow uses the saved plan.
+That trial found ordinary setup left no saved undo receipt on `ce82d06`.
+Current source fixes this: ordinary `setup <runtime>` persists a new plan before
+applying through the same guarded flow as the app. A failed apply retains its
+receipt for review, resume or undo. Repeated setup owns only its own changes;
+undo refuses later user edits. Ordinary Claude setup refuses unverified MCP
+configuration or a missing CLI needed for registration before writing hooks or
+skills; an explicit preview can still offer hooks-only changes for review.
+This does not retroactively create receipts for
+older installations. Preview/apply remains available when review before writing
+is preferred.
 
 This closes configuration-only first-install acceptance at that candidate.
 No provider session used the test profile; authentication, hook trust, startup
