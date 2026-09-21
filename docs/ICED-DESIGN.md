@@ -334,7 +334,11 @@ The rendered controls supply AccessKit labels, roles, values, actions, focus and
 physical-pixel bounds. The native adapter is installed before showing the window.
 macOS uses NSAccessibility, Linux AT-SPI, and Windows UI Automation. Keyboard
 widget tests and native capture automation complement these adapters; they do
-not substitute for a human VoiceOver/Orca/Narrator and input-method trial.
+not substitute for a human VoiceOver/Orca/Narrator and input-method trial. On
+September 21, installed macOS preview `30ce582a` exposed 716 nodes, 212 buttons
+and four terminal actions through external AXUIElement inspection after unlock;
+More expansion/collapse and Agents/Chat navigation passed through AXPress. This
+closes the locked-desktop inspection gap, not the human screen-reader/IME trial.
 
 ## Build and validation
 
@@ -432,3 +436,10 @@ fit the table, including a wide project rail or increased text size. Each card
 keeps all five counter categories and the unknown/partial markers visible;
 the wide table remains available when at least 940 logical pixels fit beside
 the rail.
+
+The default startup smoke capture waits for a redraw after its first ready
+snapshot, as scenario captures already do. Capturing in the same update that
+changes Inbox to Messages can otherwise retain the old frame with its text
+missing. This affects capture evidence; it does not establish a persistent
+interactive-window defect. Native Windows repeat `35657437544` on `e3ada9db`
+passed and its inspected image includes the Messages label.

@@ -22,14 +22,14 @@ foreign-writable state is refused. Administrators and SYSTEM remain machine
 administrators, as root does on Unix.
 
 The Windows workflow runs core/host on a real Windows runner, including
-ACL refusal, process identity and command descendant cancellation, compiles
-the UI binary, and — since slice one (#206, merged `eadae70`) — builds, lints
-and tests the daemon and CLI and drives them over the named pipe in a native
-smoke (17 steps on Windows Server 2025; see the slice-one section below). What
-it does not cover: managed sessions (slice two, #210), the full test suite, an
-installer or update path, a service, and the desktop; the native graphical and
-release workflows have no Windows target. A successful cross-compile alone is
-not runtime acceptance. Unix CI remains required.
+ACL refusal, process identity and command descendant cancellation. Slice one
+(#206, merged `eadae70`) added daemon/CLI named-pipe acceptance. Replacement #214 (superseding #210) builds all three binaries and adds managed sessions plus an opt-in
+native window trial. On `cadf3d58`, 284 native tests and all 50 smoke steps
+passed on Windows Server 2025, including terminal lifecycle, database crash
+recovery and fresh-home desktop startup/capture. The full daemon/CLI test suites,
+physical input and broader GUI/provider acceptance, installer/update path and
+service remain open. Release workflows have no Windows target. A successful
+cross-compile alone is not runtime acceptance. Unix CI remains required.
 
 File observations on Windows track native read-only attributes and change
 metadata; Windows has no Unix executable permission bits. Captured Windows
@@ -108,10 +108,15 @@ daemon made under such a directory was refused as writable by another
 principal, so nothing the daemon owns sits under one, and the report
 records what a directory made there carries: CPython's
 `os.mkdir(mode=0o700)` gives it an explicit DACL of SYSTEM, Administrators
-and `OWNER RIGHTS` (S-1-3-4), and the check does not yet count `OWNER
-RIGHTS` as the owner it has already validated — open, small, and recorded
-in [Remaining work](REMAINING-WORK.md). What the daemon creates is owned
-by the user. The same held
+and `OWNER RIGHTS` (S-1-3-4). The follow-up resolves that entry to the
+object's already validated owner. It does not trust that SID globally or
+change ownership checks: foreign-owned state and other principals' write
+grants remain refused. A native regression checks those refusals and
+unchanged parent ACLs; the runtime smoke starts a fresh home beneath an
+actual Python OWNER RIGHTS parent. Native `cadf3d58` passed this compatibility trial, including unchanged parent
+owner/ACL and protected child state; broader platform work remains in
+[Remaining work](REMAINING-WORK.md). What the daemon creates
+is owned by the user. The same held
 for the CLI: a client starting the daemon on demand made the home with a
 plain directory creation, which from an elevated shell belongs to
 Administrators and was then refused by the daemon it started — the client
@@ -125,11 +130,6 @@ the only place to observe them.
 What the slice refuses on Windows, in words rather than with a hang or a
 crash, and what that means for a person:
 
-- Managed sessions: `run`, `launch` and the desktop's launch answer that
-  managed sessions are not available on Windows yet; `attach` says the same.
-  Sessions started by the person and reached through hooks and MCP are the
-  way in — the `hook claude-code` and `hook codex` adapters and the `mcp`
-  server are stdio and the pipe, and run.
 - The native Codex queue (`codex-queue`): its hook endpoint is a Unix socket
   checked by peer credentials. The Codex hook adapter sees no receiver and
   takes its ordinary path, so a Codex session on Windows reads its messages
@@ -150,10 +150,17 @@ crash, and what that means for a person:
 
 Work still required before platform support can be claimed:
 
-- ConPTY terminal input/output/resize and a session owner that survives the
-  daemon, so managed sessions and `attach` exist; then restart recovery.
+- `attach` from a real Windows console, by a person: the console modes,
+  the keystroke reader and the size polling are in source and unexercised
+  by the runner, which has no console.
 - The native Codex queue over the named pipe with the same peer checks.
-- Windows provider configuration and desktop application inventory.
+- Windows provider configuration and desktop application inventory. CLI PATH
+  inventory already recognizes `.exe`, `.com`, `.cmd` and `.bat`, but managed
+  launch currently resolves direct executables and passes them to `CreateProcessW`.
+  npm command shims need explicit argument-safe interpreter handling and native
+  provider trials; [the Windows launch contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)
+  requires an interpreter for batch files. A direct Python/EXE terminal smoke
+  does not establish npm-provider launch support.
 - Daemon service/session startup, per-user desktop installation, Start menu
   integration, updates/rollback and signed packages.
 - The daemon and CLI test suites on the Windows runner (they still carry
@@ -162,6 +169,133 @@ Work still required before platform support can be claimed:
 
 The supported download/platform matrix remains unchanged until those acceptance
 stages pass. See [native delivery](NATIVE-DELIVERY.md) for the macOS/Linux stack.
+
+## Slice two: managed sessions on Windows
+
+In source: a managed session on Windows is the same session owner, the
+same wire and the same daemon-side controller as on macOS and Linux
+(`agentdocker_core::session`: `Activate`, keystrokes, window sizes, output
+from an offset, the exit acknowledgement; the owner outliving any daemon),
+with the platform pieces below answering what the Unix pieces do. `run`,
+`run --tty`, `logs`, `stop` and `attach` are no longer refused on
+Windows. The table is what each Unix piece is and what answers it.
+
+| Unix piece | Where | Windows answer |
+| --- | --- | --- |
+| The terminal pair: `posix_openpt`, the child gets the slave as its standard streams and controlling terminal | `host::pty::Pty` | A pseudo console: `CreatePseudoConsole` over two pipes; the daemon side reads the output pipe and writes the input pipe; the child is created with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`. There is no slave to hand over: the attribute is what binds the child. |
+| The launch gate: fork, hold before exec until the record is durable, `exec denied` on refusal, the pid and birth readable meanwhile | `host::launch::{prepare, Pending, OwnedChild}` | `CreateProcessW` with `CREATE_SUSPENDED` (plus `EXTENDED_STARTUPINFO_PRESENT` for the console attribute): the pid and the birth time are readable from the handle while the first thread has never run; `activate` is `ResumeThread`, refusal is `TerminateProcess` of a process that never executed an instruction. Rust's `Command` cannot carry the attribute list on stable (`raw_attribute` is unstable), so this is a direct `CreateProcessW` with the standard command-line quoting and an environment block built from the launch. |
+| The process group the daemon signals: `setsid` in the child, `kill(-pid)` | `take_controlling_terminal`, `OwnedChild::drop`, `group_exists` | A Job Object the owner holds, the child assigned to it before it resumes (`CREATE_SUSPENDED` makes that a certainty, not a race). Stop is `TerminateJobObject`; "does the group still exist" is the job's active process count, which trails an exit by a moment (the first runner showed a just-exited child still counted), so the owner asks again rather than concluding from one answer. The owner holds a job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: a daemon crash leaves the owner and child intact, while an owner crash ends every descendant even without destructors. Explicit `disown` clears that flag before surrendering ownership and returns an error if the clear fails. A Ctrl-C is queued through the bounded keyboard writer (`\x03`) without blocking the supervisor; a full queue leaves Ctrl-C unqueued but preserves the two-second stop grace; a missing or closed input ends the job immediately. When written into the pseudo console input, the console turns Ctrl-C into the child's `CTRL_C_EVENT`; there is no `SIGTERM`, so the graceful stop is that, then the job after the grace period. The child is not created in a new process group of its own: that flag makes a process ignore Ctrl-C and a child inherits the ignoring, so the owner clears its own inherited ignore before creating the child. A piped child has nothing to be asked with; its polite stop is the end. The daemon's own liveness question about a group (`group_exists`) is answered by the leader's liveness, since only the owner holds the job. |
+| Window size: `TIOCSWINSZ` and `SIGWINCH` | `Pty::resize` | `ResizePseudoConsole`; the console tells the child. A mutex protects the handle through resize; close takes it once under the same mutex, then releases the mutex before native teardown. Later resizes fail with a closed-console error. |
+| The owner's socket: `<home>/sessions/<agent>.sock`, `0600`, a lock beside it | `owner::serve`, `supervisor::Controller::connect` | The shared named pipe (`agentdocker_host::ipc`, protected DACL, same-user peer check) under a per-agent name derived from the home and the id; the lock stays a file in `sessions/`. |
+| The owner survives the daemon: its own session, `SIGHUP` ignored | `owner::main` | Started with `DETACHED_PROCESS \| CREATE_NEW_PROCESS_GROUP` and, if the daemon is ever inside a job, `CREATE_BREAKAWAY_FROM_JOB`; the client's standard handles are non-inheritable before the start (as `command::detach` does for the daemon), so the owner holds none of the daemon's pipes. |
+| Liveness and identity of the owner and the child | `procinfo::{alive, start_time, end}` | Already on Windows since slice one: the handle's creation time, `end` from the very handle it terminates. |
+| `attach`: raw mode, the window size, cancellable readiness-driven stdin, `Ctrl-]` | `pty::{RawMode, window_size, nonblocking_input}`, `cli::attach` | `SetConsoleMode`: input without line, echo and processed input, with virtual-terminal input; output with virtual-terminal processing; both restored on drop. The size from `GetConsoleScreenBufferInfo`'s window; a resize seen by polling it, since there is no signal. A console input handle is waitable, so readiness-driven reading is `WaitForMultipleObjects` on it and a cancel event. |
+| The log: every byte of output appended | `owner::write_log` | Unchanged: the output pipe's bytes. |
+
+Where it lives: `crates/host/src/pty/windows.rs` (the pseudo console,
+`window_size`, `RawMode` over console modes) and
+`crates/host/src/launch/windows.rs` (the suspended creation, the
+attribute list, the job, the standard command-line quoting and the
+environment block); `crates/agentd/src/owner.rs` and `supervisor.rs` are
+one source for every platform, over `agentdocker_host::ipc` (the owner's
+endpoint is `session::endpoint`: the socket on Unix, a private pipe named
+for the home and the agent on Windows, the lock and the exit file still
+files in the sessions directory); `crates/cli/src/attach.rs` with
+`attach/input_windows.rs` (a console reader thread, cancelled on drop,
+handing UTF-16 keystrokes on as UTF-8; the window size looked at four
+times a second in place of `SIGWINCH`).
+
+What the smoke checks for it, on every platform and on the Windows runner:
+a piped managed command runs under an owner and its output reaches its
+log; a terminal command runs on its own console, what is typed through
+the attach wire reaches it and its answer comes back on the screen and
+into its log; `stop` ends a terminal session through its owner; a session
+outlives a daemon that is ended abruptly, as a crash would end it (a
+deliberate `daemon stop` stops managed sessions first, by design), the
+next daemon finds it running under its owner, and stops it through that
+owner. What the smoke cannot check: `attach`
+from a real console (it has none; the console modes, the reader thread
+and the size polling wait for a person at a Windows terminal), and a
+provider's own tool under a pseudo console.
+
+The lifetime follow-up explicitly closes ConPTY after the child and its descendants
+exit, on a blocking worker while the output pump continues to drain. The pump can
+hold the shared terminal until EOF without keeping its own write end alive.
+This follows the [native close contract](https://learn.microsoft.com/en-us/windows/console/closepseudoconsole),
+including older Windows versions where close waits for output drainage. The
+exit report is flushed before a same-directory write-through move on Windows;
+it no longer tries to open a Windows directory as a plain file for `sync_all`.
+The regression smoke demands an `End` frame and final unterminated log line,
+kills a piped session owner and checks the child and grandchild through retained
+process handles, and fills a nonreading console's input before requiring stop
+within ten seconds. Its async runtime has one worker; wire writes are bounded.
+All fallible process/job handle clones are acquired before the suspended child
+is resumed. Test teardown waits for exit after requesting stop (`stopping`
+is still live), then uses force-stop and verified owner process handles as
+fallbacks. Daemon stop must succeed and leave no answering endpoint before
+private state is removed. The disown test owns its sole process directly.
+The `b24f983d` local gate passed 1,331 Rust tests (7 skipped) and 104 Python
+checks (1 skipped), packaging and release build; the portable daemon smoke
+passed 24 steps on macOS. At that revision native acceptance was still pending;
+cross-compilation and macOS execution do not establish it. The first follow-up
+Windows run passed all 281 core/host tests, including console closure and disown,
+but the test client timed out writing an inspection request over its synchronous
+named-pipe handle. That failed run remains in the existing verification record;
+the test client now uses bounded overlapped read/write operations and waits
+for cancellation before releasing native I/O storage. That rerun passed transport and attach, but exposed a real terminal launch
+defect: without `STARTF_USESTDHANDLES`, Windows copied the detached owner's
+redirected handles into its ConPTY child, causing immediate input EOF and
+invisible output. The correction supplies explicit null standard handles for
+ConPTY, following the [Microsoft Terminal implementation](https://github.com/microsoft/terminal/discussions/15814).
+The console's startup pipe ends also remain open until child creation completes,
+as required by the [ConPTY startup sequence](https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session).
+A native regression launches a detached parent with redirected streams, then
+checks its child's three console handles, real keyboard input, stdout/stderr,
+exit and output EOF under bounded deadlines. Native run `35651993280` on
+`dcceff2d` passed that regression and the terminal echo, final output, owner-death
+and full-input stop trials (stop completed in 2.375 seconds). It then failed
+crash recovery because SQLite had created its WAL with Administrators as owner.
+That failed run remains recorded. Follow-up `cadf3d58` passed the entire
+50-step smoke, including crash recovery and terminal survival under its owner.
+
+The storage correction installs a permanent `CreateFileW` override in SQLite's
+win32 VFS before any connections or worker threads start. New database, WAL,
+journal and shared-memory files receive an explicit current-user owner and
+protected user/SYSTEM DACL, including when SQLite recreates them. It preserves
+access, sharing, creation disposition, inheritance and Win32 error results;
+existing owners and ACLs are not adopted or rewritten. The initializer refuses
+an unsupported VFS and caches failure. Both binaries, all store entry points
+and raw test fixtures use the same initialization gate; library embedders must
+initialize before using raw SQLite connections. The native smoke checks DB,
+WAL and SHM ownership/protection before the crash, after it, and after recovery.
+Native `cadf3d58` passed all nine DB/WAL/SHM ownership/protection assertions
+and recovered the original running terminal after the daemon crash. The broader daemon/CLI
+test fixtures still contain Unix-only APIs and do not yet compile as native Windows tests.
+
+The desktop terminal pane already uses the shared blocking IPC transport,
+including Windows named pipes. Native graphical acceptance of its rendering,
+keyboard input, resize and lifecycle still needs a packaged Windows trial.
+Desktop startup now secures the state home before creating its autostart lock,
+and CLI/GUI sibling lookup uses the platform executable suffix. These fix
+first-run ownership and `.exe` lookup. The Windows workflow now links all three
+executables and runs an opt-in `--desktop` trial: a source-built window starts its
+own private daemon from an absent home, connects, renders a PNG and exits under
+bounded deadlines. The test retains the GUI result/log/capture and verifies that
+its private daemon remains reachable before cleanup. Capture uses private
+scratch outside the fresh home, then exports after the owned window exits;
+reusing an old capture destination is refused. On `cadf3d58` the native window
+connected and exited in 3.61 seconds with 16 runtime rows and a 48,216-byte PNG.
+The retained image has an unlabeled Inbox/Messages navigation row. Review
+traced this to capture ordering: a snapshot changes Inbox to Messages and
+screenshot reads the previous primitives before their text is redrawn. Default
+capture now waits 400 ms after readiness, matching the existing scenario capture
+settling. Final code `e3ada9db` repeated all 284 tests and 50 steps successfully
+in run `35657437544`; the inspected PNG includes Messages. Startup/capture took
+4.27 seconds and full-input stop took 2.062 seconds on that repeat. This bounded startup pass does not establish physical input, broad
+visual acceptance, installation, real-provider or clean-machine behavior.
+Opening an external project terminal or focusing an external agent terminal is
+not implemented on Windows. Provider inventory, services and the desktop
+installer remain outside this slice.
 
 ## Local connection boundary
 

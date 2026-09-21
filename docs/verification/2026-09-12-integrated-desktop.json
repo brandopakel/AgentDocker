@@ -7214,5 +7214,113 @@
         "source": "CGSessionCopyCurrentDictionary (read-only)"
       }
     }
+  },
+  "external_accessibility_unlocked_2026_09_21": {
+    "date_utc": "2026-09-21T20:33:00Z",
+    "candidate": "30ce582a5c5657c1dd6ad8c6a107f1346592bf587ba2445e5ace73f5ab9c6bc0",
+    "binary_source": "e33a45bd",
+    "app_pid": 14485,
+    "trusted_inspector": true,
+    "desktop_locked": false,
+    "result": "passed bounded external AX traversal and navigation actions",
+    "initial_tree": {
+      "bounded": true,
+      "node_count": 716,
+      "pid": 14485,
+      "roles": {
+        "AXButton": 212,
+        "AXGroup": 3,
+        "AXStaticText": 499,
+        "AXTextArea": 1,
+        "AXWindow": 1
+      },
+      "terminal_buttons": 4
+    },
+    "actions": [
+      "AXPress More exposes Board, History, Channels, Files in use, Usage controls",
+      "AXPress More collapses advanced controls",
+      "AXPress Agents exposes Current, Needs input, session rows and Open terminal",
+      "AXPress Chat restores original shared chat; 716 nodes and four terminal buttons remain"
+    ],
+    "actions_return": "AXError.success for all four presses",
+    "scope": "External ApplicationServices AXUIElement APIs against installed app; no message sent, draft edited, terminal command typed, provider or daemon restarted. Does not establish human VoiceOver, physical keyboard or IME acceptance."
+  },
+  "inactive_cleanup_2026_09_21": {
+    "status": "completed within owned inactive scope",
+    "removed_worktrees": [
+      "/private/tmp/agentdocker-chat-first-20260918",
+      "/private/tmp/agentdocker-docs-closeout-20260919",
+      "/private/tmp/agentdocker-verify-wrapper-20260918"
+    ],
+    "checks": "each checkout clean, HEAD reachable from origin/main, no live work using it; private path leases held",
+    "removed_cache_kib": 14797796,
+    "deleted_merged_local_branches": [
+      "codex/multiline-composer",
+      "codex/setup-receipts"
+    ],
+    "raw_evidence_preserved_as_tgz_bytes": [
+      41149,
+      30767,
+      38877
+    ],
+    "prune": {
+      "maintenance": {
+        "current": "30ce582a5c5657c1dd6ad8c6a107f1346592bf587ba2445e5ace73f5ab9c6bc0",
+        "keep": 0,
+        "operation": "prune",
+        "remove": [
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/00997f3c2846168c5e0a4b7c6f139630a0399db13b4d408248574d9ad7deeb2f",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/0819ac2c41dc587af172afe1091e1f10d46373bea78b38b3ef603e8f8fd451b8",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/0a4467ee82e6ae4246dc054319c0c53a63b5256777297c5796c91188f19e68c8",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/15590d90d0efac6a5eeda70cdf4f8dbddde298e41a133c6c583bf0c9e2ace8ae",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/271e24563508cdacada723b57a1d9bf115a7d9aeec4987f70b3fd5a8fd76108e",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/2ed6a55fa28ad810e01c6e14143ad0e4d2903032e881350fdca50c45244a79ea",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/3add4bea8eef217ec29af14bf0bb951e41e85cf9c724c946d2e2a660ffd61fb5",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/486c5dd04fbe96b102dac08d2e223e72049f8f651926f87fd3c55352626ca268",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/652cf6a38035c71bd3e2e5dc8d17600bb16d947b8e7b59f13ed42515b6e1224f",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/75ea45bd6a191300f2d81f8f8b2f709ccd90dd98a922862daeaca2388170be30",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/79981bebcc3f66b5d848a63f26b0b894698b73c9872c5c91c38dd2cc0159214f",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/8cbae3a97108c35131c9baea83aeeb59294fce91f46a53a1fc2722b80a872af3",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/970eb9c5efe3d6a92f53fab2e14b3a9e689d9612dad3cc00ec1957b89af42508",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/9bc0f0fc1045ebb25c5b68641142bb4f6954440ba44cdf03613eeb964b5a627d",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/ab7e4042c448bd903b6a63c509485f5f7ee3e509535649d519be0d7176e83585",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/afbf306d1a9882be7ed8d48b2bffc744adc5d08ee54c59ee49aae76a0541e879",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/f5e298f471dfadf5925558b44fb3f6e2d5d53a0172ce2e8a708af77a4f8dd192",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/fc49e0265b5a7990af2641d1143825b77a86fe70501c76f76975dc935524989d",
+          "/Users/brandopakel/.local/share/agentdocker/desktop/versions/ff4efc6188597b2fe1a27f7cc3f84b73fc8c2be10df78621dc09fbd465183fc4"
+        ],
+        "retained": [
+          {
+            "path": "/Users/brandopakel/.local/share/agentdocker/desktop/versions/30ce582a5c5657c1dd6ad8c6a107f1346592bf587ba2445e5ace73f5ab9c6bc0",
+            "reason": "active or rollback version"
+          },
+          {
+            "path": "/Users/brandopakel/.local/share/agentdocker/desktop/versions/6bd97894a4d57348fa6e6907d72f5984994dca403510580f1308eed004978716",
+            "reason": "running process uses this version"
+          },
+          {
+            "path": "/Users/brandopakel/.local/share/agentdocker/desktop/versions/9e75e83411405444f8772fcf3a51f9d56c40441eb3e5df5f363d96d2eea19ece",
+            "reason": "running process uses this version"
+          },
+          {
+            "path": "/Users/brandopakel/.local/share/agentdocker/desktop/versions/d14610b7d5f5c3d338032666ba9d774c6696fa926f74499d0ecd69fc4d1ffa85",
+            "reason": "running process uses this version"
+          },
+          {
+            "path": "/Users/brandopakel/.local/share/agentdocker/desktop/versions/d21ba9e38a7b46d1added568d82567b1e3b91136e68acadd0d7c28784c7653d5",
+            "reason": "active or rollback version"
+          },
+          {
+            "path": "/Users/brandopakel/.local/share/agentdocker/desktop/versions/fbca27a6d15a5d9f77b8b4c212858cfb23057793b4e3a363cd59abfc01b6b8fb",
+            "reason": "running process uses this version"
+          }
+        ]
+      },
+      "plan_id": "4d2a279d392a183a6a8f61a73087e8508b467c1a81a62d6d316d3ab76a2160df",
+      "preview": false,
+      "sessions": "running sessions continue; versions with lifetime pins are retained",
+      "settings": "daemon state, provider configuration and service registration are preserved"
+    },
+    "scope": "Only validated inactive desktop versions removed; active/rollback and process-pinned versions retained. No daemon state backups, provider settings or peer dirty/active worktrees removed."
   }
 }

@@ -37,9 +37,21 @@ pub fn sessions_dir(home: &std::path::Path) -> PathBuf {
     crate::paths::short_socket_dir(home).join("s")
 }
 
-/// Where an owner serves its controller.
+/// Where an owner's socket lives on Unix; on every platform, the name the
+/// owner's lock (`.lock`) is derived from, beside the exit file.
 pub fn socket_path(home: &std::path::Path, agent: &AgentId) -> PathBuf {
     sessions_dir(home).join(format!("{}.sock", agent.as_str()))
+}
+
+/// Where an owner serves its controller: the socket on Unix, a private
+/// named pipe named for the home and the agent on Windows, where a pipe
+/// has no filesystem parent (the lock and the exit file stay in the
+/// sessions directory).
+pub fn endpoint(home: &std::path::Path, agent: &AgentId) -> PathBuf {
+    #[cfg(windows)]
+    return crate::paths::pipe_name(home, &format!("session-{}", agent.as_str()));
+    #[cfg(unix)]
+    socket_path(home, agent)
 }
 
 /// Where an owner leaves its final report until a controller acknowledges

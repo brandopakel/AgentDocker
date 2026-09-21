@@ -13,7 +13,7 @@ macOS and Linux; Windows has tested foundations and remains incomplete.
 - [Release archives, update feeds and signing automation](RELEASE-AUTOMATION.md)
 - [Product direction and current delivery order](PRODUCT-DIRECTION.md)
 - [Landscape research: Dax, herdr and Paprika](LANDSCAPE-2026-09-11.md)
-- [Active delivery plan, commit/PR review and complete testing crosswalk](DELIVERY-PLAN.md)
+- [Delivery checkpoints, commit/PR review and complete testing crosswalk](DELIVERY-PLAN.md)
 - [September 7 review scope, evidence and gap ledger](REVIEW-2026-09-07.md)
 - [Engineering audit, feature coverage and known blockers](AUDIT-2026-09-06.md)
 - [Native delivery progress and regression coverage](NATIVE-DELIVERY.md)
@@ -73,8 +73,12 @@ adds one existing record, bringing September 21 coverage to 68; no additional
 planning document is needed. The September 19 audit
 rechecked every document's disposition, merged source through `14f1c519`,
 installed component identities, actual release assets and release policy.
-Current UI preview source is `ce82d06`; the serving coordinator stays at
-`705f924` to preserve its managed sessions. See the [component table](REMAINING-WORK.md#delivered-source-and-current-desktop).
+The September 19 UI preview used source `ce82d06`. Current main is `56e29423`,
+including merged docs reconciliation #212 and accessibility redraw reduction
+#213. The installed macOS preview is `30ce582a` from runtime source `e33a45bd`;
+the serving coordinator remains at `705f924` to preserve its managed sessions.
+See the [component table](REMAINING-WORK.md#delivered-source-and-current-desktop)
+for separately observed app, coordinator and receiver identities.
 
 **Reference** means the document describes an implemented workflow or engineering
 rule; it is not a release certificate. **Partial** means named implementation or
@@ -88,7 +92,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Trial issue template](../.github/ISSUE_TEMPLATE/trial-report.md) | Complete reporting route: actual versions, reproduction steps and expected/observed behavior; private paths and content should be redacted. |
 | [Coding instructions](../CLAUDE.md) | Reference: source layout, one build campaign, strict verification and source review. The pure-core rule holds: environment reads live in the host crate. |
 | [This index](README.md) | Reference: complete file inventory and one current backlog/crosswalk. |
-| [Remaining work](REMAINING-WORK.md) | Current backlog: completed implementation is separated from open engineering, release setup and acceptance. Shared chat (#200), Usage refresh (#207), build-campaign ownership (#204), Windows daemon/CLI (#206), ordinary setup receipts (#208) and the multiline composer (#209) are merged. Input recovery (#211) is merged; Windows sessions (#210) and UI wake batching (#213) are open; current downloadable desktops and independent-machine acceptance remain. |
+| [Remaining work](REMAINING-WORK.md) | Current backlog: completed implementation is separated from open engineering, release setup and acceptance. Shared chat (#200), Usage refresh (#207), build-campaign ownership (#204), Windows daemon/CLI (#206), ordinary setup receipts (#208) and the multiline composer (#209) are merged. Input recovery (#211), docs reconciliation (#212) and accessibility redraw reduction (#213) are merged; ineffective snapshot wake batching was removed. Windows sessions (#214, replacing #210), current downloadable desktops and independent-machine acceptance remain open. |
 | [Delivery plan](DELIVERY-PLAN.md) | Historical checkpoints retained; T01–T12/L01–L15 dispositions refreshed. Current component identities and bounded Claude idle/receipt acceptance are reconciled; old pending notes do not reopen completed implementation. |
 | [Remote connector](REMOTE-CONNECTOR.md) | Implemented: inventory/helpers, local OAuth/MCP, both real vendors, login service, stable Tailscale host, project routing and allowlisting. Real-account CIMD, desktop service start/install and periodic egress-feed refresh remain. Browser models poll; no idle-wake claim. |
 | [Product direction](PRODUCT-DIRECTION.md) | Partial delivery: single-host implementation includes Messages, Board/drafts, project pause, reconnect and initial usage collection. Signed downloads, wider provider acceptance, native Windows and independent Linux/Mac trials remain; federation is deferred. |
@@ -96,7 +100,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Implementation notes](IMPLEMENTATION-NOTES.md) | Reference: implemented coordination/recovery contracts; distinguish command relaunch from conversation restoration. |
 | [Guide](GUIDE.md) | Reference: command/tool inventory and current Tools/terminal navigation reconciled with source. |
 | [Desktop UX](DESKTOP-UX.md) | Implemented controls and current capabilities, with shared-chat presentation (#200) merged and installed as an earlier local preview; session presentation (#203) is merged. Physical keyboard, IME, screen-reader and coworker usability acceptance remain. |
-| [Iced design](ICED-DESIGN.md) | Partial: native migration, multiline composers and automated interactions implemented; physical keyboard, VoiceOver/IME and other-platform hands-on acceptance remain. |
+| [Iced design](ICED-DESIGN.md) | Partial: native migration, multiline composers and direct accessibility publication implemented. Unlocked external AX traversal on installed `30ce582a` passed with 716 nodes, 212 buttons and four terminal actions; More/Agents/Chat navigation passed. Physical keyboard, VoiceOver/IME and other-platform hands-on acceptance remain. |
 | [Guided setup](GUIDED-SETUP.md) | Implemented preview/apply/undo and ordinary CLI setup receipts (#208, merged), health, channel-capable Claude setup, shell opt-in and same-session reconnect. The person's managed-Claude consent/idle trial passed; empty-profile configuration preview/apply/undo passed on `ce82d06`; actual fresh-account and additional-provider acceptance remain. |
 | [Activity and messaging](ACTIVITY-AND-MESSAGING.md) | Implemented coordination/activity contracts and supported input adapters. Hooks/MCP contact alone is not idle wake; plain sessions and other-provider parity remain explicit limits. |
 | [Message delivery audit](MESSAGE-DELIVERY-AUDIT.md) | Partial acceptance: shared durable queue/exact receipts, limit gating and recovery are implemented. #196/#199 Claude managed reconnect/idle and #202 Codex active peer-answer delivery have actual bounded evidence. Other runtimes, startup/reopen, latency and sustained/provider-reset cases remain. |
@@ -114,7 +118,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Local trial](LOCAL-TRIAL.md) | Partial: isolated/native/provider/local installation trials exist; the overnight stage has a [7.5-hour record](verification/2026-09-14-overnight-sustained-use.json) and retention a [20-minute record](verification/2026-09-15-retention-sustained-use.json); sleep/reboot and independent-machine stages incomplete. The first coworker rollout requires macOS, Linux and native Windows acceptance. |
 | [Testing and benchmarks](TESTING-AND-BENCHMARKS.md) | Partial: standard/CI/fuzz/benchmark tools and the sustained-use and retention workload scripts exist with their records; failure diagnosis and platform matrices incomplete. |
 | [macOS test runner](TEST-RUNNER-MACOS.md) | Reference: reproduced descriptor inheritance and validated strict serial workaround; remove only after an upstream fix passes its controls. |
-| [Windows port](WINDOWS-PORT.md) | Daemon/CLI foundation complete in #206 with 17 native Windows smoke steps; ConPTY, full desktop, service, installer and real-provider acceptance remain required for the first coworker rollout. |
+| [Windows port](WINDOWS-PORT.md) | Daemon/CLI foundation complete in #206. Replacement #214 (superseding #210) passed 284 native tests and 50 daemon/CLI/desktop steps on `cadf3d58` and `e3ada9db`, including ConPTY, crash recovery, protected SQLite files and a fresh-home graphical launch. Integration, physical terminal/input, broader GUI, service, installer and real-provider acceptance remain; no Windows desktop download is available. |
 | [Container engines](CONTAINER-ENGINES.md) | Partial: optional engines/workspaces implemented; Mac engine acceptance and documented unsupported capabilities remain. |
 | [Container test README](../tests/containers/README.md) | Reference with partial acceptance: separate engine/lifecycle/relay fixtures; Linux CI and earlier Mac Podman evidence do not establish current Docker Desktop acceptance. |
 | [September 4 audit](AUDIT-2026-09-04.md) | Historical: retain original baseline; current fixes and open work supersede its status. |

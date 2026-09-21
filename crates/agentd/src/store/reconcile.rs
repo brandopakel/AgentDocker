@@ -193,6 +193,7 @@ impl Store {
     /// is selected before the first database read for apply. In WAL mode this
     /// refuses even an idle existing connection, independently of socket names.
     pub(crate) fn open_repair(path: &Path, exclusive: bool) -> Result<Self> {
+        crate::initialize_storage_platform()?;
         agentdocker_host::dirs::read_private_file(path)?;
         for suffix in ["-wal", "-shm", "-journal"] {
             let mut companion = path.as_os_str().to_owned();

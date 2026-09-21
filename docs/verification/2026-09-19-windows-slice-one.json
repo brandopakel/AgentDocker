@@ -134,5 +134,814 @@
     "the daemon and CLI test suites on Windows (only core and host run there)",
     "OWNER RIGHTS (S-1-3-4) as the validated owner in the Windows ACL check: a home under a Python-made temporary directory is still refused; recorded as open in REMAINING-WORK",
     "real providers, sustained use, sleep/reboot"
-  ]
+  ],
+  "managed_session_lifetime_follow_up_2026_09_21": {
+    "status": "passed bounded native acceptance twice, final code e3ada9db: 284 core/host tests and 50 daemon/CLI/desktop steps; integration and broader product acceptance remain",
+    "base": "91ba99a1dc0c0ffcb408a16fba2e3026ac24b70c",
+    "first_fix": "bc17c81e0766aff6db00db7a2d6a5d36c69393fe",
+    "cross_validation": {
+      "target": "x86_64-pc-windows-gnu",
+      "host_all_targets_clippy": "passed",
+      "daemon_cli_lib_bins_clippy": "passed",
+      "broader_daemon_cli_test_build": "failed: existing Unix-only fixtures; remains open"
+    },
+    "superseded_run": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35646876334",
+      "result": "cancelled by the author before acceptance; independent review identified fixture cleanup and pre-activation ownership fixes"
+    },
+    "local_interrupted_gate": {
+      "rust_passed_before_interrupt": 490,
+      "interrupted_test": 1,
+      "not_run": 840,
+      "reason": "author stopped owned test campaign to address review; not a completed gate"
+    },
+    "review_follow_up": [
+      "clone supervision and child handles before resuming the suspended process",
+      "disown fixture launches ping directly so cleanup owns its only process",
+      "fixture sessions stop before daemon teardown; verified owner handles provide Windows fallback",
+      "publish fixture PID marker atomically rather than racing a partial JSON write"
+    ],
+    "required_native_evidence": [
+      "terminal End frame, exited record and final partial log line with one Tokio worker",
+      "piped owner crash ends leader and grandchild through the final job handle",
+      "backpressured nonreading Ctrl-C-ignoring terminal stops within ten seconds",
+      "normal daemon crash still preserves a managed terminal under its owner"
+    ],
+    "not_covered": [
+      "physical Windows console attach and provider interactions",
+      "Windows installer, service, update/rollback and broader graphical/input acceptance",
+      "full daemon/CLI test-suite portability"
+    ],
+    "review_fix_source": "b24f983db5c39be1851d1d1d4c76abf88613692e",
+    "completed_local_gate": {
+      "source": "b24f983db5c39be1851d1d1d4c76abf88613692e",
+      "rust_passed": 1331,
+      "rust_skipped": 7,
+      "python_run": 104,
+      "python_skipped": 1,
+      "format_clippy_doctests_packaging_release": "passed",
+      "log": "/private/tmp/agentdocker-windows-lifetime-final-gate-20260921.log",
+      "scope": "before the Windows-only OWNER RIGHTS and smoke cleanup follow-up"
+    },
+    "macos_portable_smoke": {
+      "binary_source": "b24f983db5c39be1851d1d1d4c76abf88613692e",
+      "binary_sha256": {
+        "agentdocker": "4ac217735457ff628efe286f29622888b8cde04e72cb24cdadcde1cf7092979d",
+        "agentd": "496f121cc25fccc991136ffe1d80a02ed7bdc1b1300d8e8b2f2e789ab54c35dd"
+      },
+      "result": "passed",
+      "passed_steps": 24,
+      "scope": "private local transport and managed pipes/terminal/daemon crash recovery; excludes Windows-specific owner-crash/backpressure/ACL checks",
+      "report": "/private/tmp/agentdocker-windows-lifetime-macos-cleanup-verified-20260921/windows-daemon-smoke.json",
+      "driver_note": "follow-up driver includes explicit exited/failed waits and checked daemon stop plus no-autostart ping",
+      "driver_sha256": "7676e96f87da31fdd3204e9edfa11ecc5308f78e10ab81a41724a013a671a043"
+    },
+    "native_b24_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35647430508",
+      "source": "b24f983db5c39be1851d1d1d4c76abf88613692e",
+      "result": "failed",
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "281",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "2df1c4e5-d3e5-4725-a811-408dbb47bb25",
+        "timestamp": "2026-09-21T20:00:25.166+00:00",
+        "time": "10.479"
+      },
+      "daemon_cli_build_lint": "passed",
+      "smoke_passed_steps": 10,
+      "smoke_error": "TimeoutError: wire write did not finish",
+      "binary_sha256": {
+        "agentdocker.exe": "ab2cab035500762ad79fcf2c824e95fb78c197281e811273110f9313a07f4ca9",
+        "agentd.exe": "78965e02085ec5c18255ad8bd660033a9d174695ea852719a56710001d0f32b5"
+      },
+      "scope": "failed at test-client inspect after piped launch, before terminal runtime acceptance; synchronous duplex pipe harness is under investigation"
+    },
+    "owner_rights_follow_up": {
+      "status": "native host regression passed in a624; daemon first-run trial not reached before terminal failure",
+      "rule": "S-1-3-4 resolves only to the object owner after its existing ownership check; foreign state owners and foreign writers remain refused",
+      "native_regression": "current-user OW parent creates private child without parent mutation; different caller refused for state/ancestor/pipe; Everyone writer refused without child creation or ACL narrowing",
+      "cross_host_clippy": "passed",
+      "runtime_trial": "autostart fresh state beneath actual Python private OW parent; assert parent SDDL unchanged and child protected"
+    },
+    "cleanup_regressions": {
+      "stopping_is_not_exited": "passed",
+      "deadline_preserves_live_status_for_force_fallback": "passed"
+    },
+    "integrated_gate_fixture_failure": {
+      "source": "a624677e",
+      "result": "failed",
+      "rust_passed": 1331,
+      "rust_failed": 1,
+      "rust_skipped": 7,
+      "test": "desktop::tests::activation_rechecks_serving_daemon_after_a_lost_reload_reply_without_replay",
+      "error": "macOS accepted stream inherited O_NONBLOCK; read_line returned WouldBlock in 0.038 seconds despite five-second read timeout",
+      "correction": "explicitly restore blocking mode on the fixture accepted stream before setting its read timeout",
+      "log": "/private/tmp/agentdocker-windows-lifetime-integrated-a624-gate-20260921.log",
+      "targeted_fix_validation": {
+        "repetitions": 25,
+        "passed": 25,
+        "retries": 0,
+        "log": "/private/tmp/agentdocker-windows-lifetime-activation-fixture-stress-20260921.log"
+      }
+    },
+    "overlapped_smoke_client": {
+      "source": "a624677e",
+      "helper_sha256": "da338a015b49f17f096cd834df7fd2357ba4a670666edff73a8796047f8ec863",
+      "contract": "separate read/write OVERLAPPED, bounded connect/read/write/cancel; native buffers are released only after completion; timeout poisons the connection and failed cleanup retains evidence",
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35649616685",
+      "result": "named-pipe transport and attach handshake passed; native run failed at actual terminal child IO"
+    },
+    "integrated_local_gate": {
+      "source": "e454e9d03b014d1a383bcbebf93c646802f30f36",
+      "result": "passed",
+      "rust_passed": 1332,
+      "rust_skipped": 7,
+      "python_run": 106,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_package_release": "passed",
+      "log": "/private/tmp/agentdocker-windows-lifetime-integrated-final-gate-20260921.log",
+      "scope": "before ConPTY redirected standard-handle correction"
+    },
+    "native_a624_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35649616685",
+      "source": "a624677e",
+      "result": "failed",
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "282",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "80a66188-b922-45df-83fd-8fccf2b5b868",
+        "timestamp": "2026-09-21T20:21:56.267+00:00",
+        "time": "6.868"
+      },
+      "binary_sha256": {
+        "agentdocker.exe": "a346e3b08af1748bb19fbab7400db51c680f3a6361513dfa1a6bf927c1033350",
+        "agentd.exe": "a52311e03817ba5d5a75a92ae9260c13223e2b18324beff243b99a7ed08ba1e6"
+      },
+      "error": "AssertionError: what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen: frames ['output', 'output', 'end']; screen '\\x1b[?9001h\\x1b[?1004h\\x1b[?25l\\x1b[?9001l\\x1b[?1004l\\x1b[2J\\x1b[m\\x1b[H\\x1b]0;C:\\\\hostedtoolcache\\\\windows\\\\Python\\\\3.12.10\\\\x64\\\\python.exe\\x07\\x1b[?25h\\r\\n[agentdocker: input dropped, the agent is not reading its terminal; retype it]\\r\\n'; logs 'out \\x1b[?9001h\\x1b[?1004h\\x1b[?25l\\x1b[?9001l\\x1b[?1004l\\x1b[2J\\x1b[m\\x1b[H\\x1b]0;C:\\\\hostedtoolcache\\\\windows\\\\Python\\\\3.12.10\\\\x64\\\\python.exe\\x07\\x1b[?25h'; status '2e3c36f88bc8   smoke-tty     project   master   -      custom    -       exited (0)   Session ended                finished   4360   0s ago'",
+      "diagnosis": "ConPTY child inherited the detached owner redirected standard handles; missing STARTF_USESTDHANDLES with explicit null handles. Fix under native validation; no terminal acceptance claimed."
+    },
+    "native_dcceff2d_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35651993280",
+      "source": "dcceff2d285c2f6804359f19378788d7991ca090",
+      "result": "failed",
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "283",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "c4b6add4-474f-41d5-8181-e7de72584271",
+        "timestamp": "2026-09-21T20:37:20.976+00:00",
+        "time": "6.756"
+      },
+      "binary_sha256": {
+        "agentdocker.exe": "56f17387056bc2cddb5b64b2ffe93c75d2b461a685a83db8a1615dfe8bf6e08a",
+        "agentd.exe": "7260c84886db69216a914db067312768e75d02ec6462d5e9455c55e4dc8188c4"
+      },
+      "passed_steps": [
+        "the daemon answers ping over the local transport",
+        "daemon status names the serving executable",
+        "two agents register with their pids",
+        "ps lists both as running",
+        "a message sent to an agent is read from its inbox",
+        "a project broadcast reaches the other agent",
+        "a lease is held and a second claim is refused",
+        "attach without a terminal is refused in words, not with a hang",
+        "daemon install is refused on Windows in words",
+        "daemon reload is refused on Windows in words",
+        "a piped managed command runs under a session owner and its output reaches its log",
+        "a terminal managed command is running on its own console",
+        "the attach wire answers events_ready for a terminal session",
+        "what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen",
+        "terminal output reaches End with its final partial line before the deadline",
+        "the terminal session ends and its final partial line is in its log",
+        "stop ends a managed terminal session through its owner",
+        "the owner and both piped descendants are alive before the owner crash",
+        "abrupt owner death ends the piped child and grandchild without Rust cleanup",
+        "native keyboard backpressure was observed",
+        "stop remains bounded when the child ignores Ctrl-C and never reads its full keyboard",
+        "the daemon still answers after terminal backpressure",
+        "stop ends a registered process whose identity matches its record",
+        "a terminal session is running before the daemon dies",
+        "the daemon is ended abruptly, leaving the session to its owner"
+      ],
+      "error": "AssertionError: ('daemon', 'start'): exit 1: Error: agentd exited (exit code: 1) before listening on \\\\.\\pipe\\agentdocker-48cf5e80d5355345a46074e0af9ccc2b-host:\n  Error: \\\\?\\C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-44f395b8\\state.db-wal: state or ancestor belongs to an untrusted Windows principal (S-1-5-32-544)",
+      "backpressure_stop_seconds": 2.375,
+      "interpretation": "ConPTY IO, EOF, owner death and bounded stop passed; daemon crash recovery remains blocked by SQLite-created sidecar ownership on elevated Windows."
+    },
+    "conpty_local_gate": {
+      "source": "f62089ab",
+      "rust_passed": 1332,
+      "rust_skipped": 7,
+      "python_run": 106,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_packaging_release": "passed",
+      "log": "/private/tmp/agentdocker-windows-conpty-stdio-final-gate-20260921.log"
+    },
+    "native_82bb2cd6_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35653928599",
+      "source": "82bb2cd6de9b423c9318ed34c03a70488e5a4981",
+      "result": "failed",
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "284",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "f873004b-762b-4612-bd2b-b2d4cd03ed84",
+        "timestamp": "2026-09-21T20:56:22.114+00:00",
+        "time": "6.923"
+      },
+      "binary_sha256": {
+        "agentdocker.exe": "d241263e7c4634749e388ccabce4eeb6f446546cdd77d1559f2f1b84c045f78d",
+        "agentd.exe": "36fd8b1420ee05597db0118f0a93692e35f3cca155d5172b68b6506627ab8f25"
+      },
+      "passed_steps": [
+        "the daemon answers ping over the local transport",
+        "daemon status names the serving executable",
+        "two agents register with their pids",
+        "ps lists both as running",
+        "a message sent to an agent is read from its inbox",
+        "a project broadcast reaches the other agent",
+        "a lease is held and a second claim is refused",
+        "attach without a terminal is refused in words, not with a hang",
+        "daemon install is refused on Windows in words",
+        "daemon reload is refused on Windows in words",
+        "a piped managed command runs under a session owner and its output reaches its log",
+        "a terminal managed command is running on its own console",
+        "the attach wire answers events_ready for a terminal session",
+        "what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen",
+        "terminal output reaches End with its final partial line before the deadline",
+        "the terminal session ends and its final partial line is in its log",
+        "stop ends a managed terminal session through its owner",
+        "the owner and both piped descendants are alive before the owner crash",
+        "abrupt owner death ends the piped child and grandchild without Rust cleanup",
+        "native keyboard backpressure was observed",
+        "stop remains bounded when the child ignores Ctrl-C and never reads its full keyboard",
+        "the daemon still answers after terminal backpressure",
+        "stop ends a registered process whose identity matches its record",
+        "a terminal session is running before the daemon dies"
+      ],
+      "error": "CalledProcessError: Command '['powershell', '-NoProfile', '-Command', \"(Get-Acl -LiteralPath 'C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\agentdocker-smoke-8c3a003f\\\\state.db').Sddl\"]' returned non-zero exit status 1.",
+      "interpretation": "Permission observer failed before the daemon crash. Legacy PowerShell Get-Acl returned nonzero without retained stderr; no SQLite crash-recovery pass is claimed. Follow-up uses the workflow PowerShell host and retains stderr."
+    },
+    "sqlite_local_gate": {
+      "source": "82bb2cd6de9b423c9318ed34c03a70488e5a4981",
+      "rust_passed": 1332,
+      "rust_skipped": 7,
+      "python_run": 106,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_packaging_release": "passed",
+      "log": "/private/tmp/agentdocker-windows-sqlite-final-gate-20260921.log"
+    },
+    "native_dd801656_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35654650597",
+      "source": "dd801656",
+      "result": "failed",
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "284",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "a9039b9a-4efd-4b92-8b9b-3e3bb59d9911",
+        "timestamp": "2026-09-21T21:03:59.136+00:00",
+        "time": "5.973"
+      },
+      "binary_sha256": {
+        "agentdocker.exe": "a65a7979fb92b57d2e307f488ca9ec0192e2d3dd480b8e7a82b20439bba9c8e8",
+        "agentd.exe": "959ae13fe6c2628cb8fac34239776166ab4f910bebfe90cbd436a822ba947b93"
+      },
+      "error": "AssertionError: SQLite state.db is user-owned and protected before the crash: O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)",
+      "interpretation": "PowerShell 7 read permissions successfully. The assertion wrongly compared SDDL owner alias LA with the canonical user SID; this is a test-observer mismatch, not proof of foreign ownership. Follow-up compares GetOwner(SecurityIdentifier).Value and AreAccessRulesProtected directly. Crash recovery was not reached."
+    },
+    "desktop_startup_local_gate": {
+      "runtime_source": "28a0af5a",
+      "observer_followup_source": "defd4280",
+      "rust_passed": 1332,
+      "rust_skipped": 7,
+      "python_run": 106,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_packaging_release": "passed",
+      "cross_windows_production_and_ui_clippy": "passed",
+      "log": "/private/tmp/agentdocker-windows-desktop-startup-final-gate-20260921.log",
+      "note": "Rust runtime unchanged by the observer-only follow-up; native canonical ACL and desktop acceptance runs on defd4280."
+    },
+    "superseded_desktop_run": {
+      "source": "28a0af5a",
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35655082814",
+      "result": "cancelled",
+      "reason": "Superseded by defd4280 with the known SDDL alias assertion corrected; no graphical or crash-recovery pass claimed."
+    },
+    "native_defd4280_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35655375648",
+      "source": "defd4280",
+      "result": "failed",
+      "binary_sha256": {
+        "agentdocker.exe": "ee1b0c64a47247e05e564e37d2ef3ca04c74980e1213c62488605fa4946a05be",
+        "agentd.exe": "83f1f614d7cf8d2b196be522c4fca86f423b6c6e8e97a25e437daac63af003ba",
+        "agentdocker-ui.exe": "f779a3151990fa1a4d74b4a3874654a9902b18185c421804cfe0a1dfe6673b8a"
+      },
+      "desktop": {
+        "scope": "source-built native Windows window, fresh-home UI daemon autostart, connection, runtime rows and renderer capture",
+        "tcp_observation": "not_measured",
+        "capture_directory": "desktop",
+        "result": "failed",
+        "pid": 600,
+        "exit_code": 2,
+        "elapsed_seconds": 0.031000000000062755,
+        "error": "AssertionError: the native desktop exits within its smoke deadline: exit=2, elapsed=0.031s; see desktop.log"
+      },
+      "desktop_log": "D:\\: state or ancestor belongs to an untrusted Windows principal (S-1-5-20)",
+      "interpretation": "The smoke capture folder inherited the Actions checkout drive ancestry, owned by NETWORK SERVICE. The app correctly refused it before opening a window. Follow-up captures under private scratch separate from the fresh desktop home, exports artifacts after the owned window exits, and retains scratch on export failure. No desktop or SQLite crash-recovery pass is claimed by this run."
+    },
+    "native_cadf3d58_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35656352287",
+      "source": "cadf3d58bc89144b2792c356470c933732431f0e",
+      "result": "passed",
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "284",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "37c3b61d-2722-416a-afd1-d230f258f27d",
+        "timestamp": "2026-09-21T21:20:25.227+00:00",
+        "time": "6.975"
+      },
+      "report": {
+        "scope": "Windows daemon/CLI and managed-session acceptance: private local transport, registry/messages/leases, terminal input/output/EOF, owner lifetime, and bounded stop under keyboard backpressure",
+        "platform": "Windows 2025Server AMD64",
+        "binary_sha256": {
+          "agentdocker.exe": "7f94d2fea5df9806b0aac9f5b63c12dcdd4831adfe4c1828004f604700a81c4c",
+          "agentd.exe": "359e3df9d4f33a238408567c02428fa0b4ea8143e1f22c56942bab11aa52465b",
+          "agentdocker-ui.exe": "380c650e44e762dd09a55aea127446876c65586f2fdcc1e6cda6ad339d76f934"
+        },
+        "steps": [
+          {
+            "step": "the daemon answers ping over the local transport",
+            "ok": true,
+            "detail": ""
+          },
+          {
+            "step": "daemon status names the serving executable",
+            "ok": true,
+            "detail": "service   none on Windows yet (run `agentd` yourself, or `agentdocker daemon start` starts one)\ndaemon    agentd 0.1.0 up 0s at \\\\.\\pipe\\agentdocker-550fef5c16ad5c75ab9256b45db47f0b-host (pid 7664)\nserving   D:\\a\\AgentDocker\\AgentDocker\\target\\debug\\agentd.exe\ncontainer \\\\.\\pipe\\agentdocker-550fef5c16ad5c75ab9256b45db47f0b-restricted\nlog       \\\\?\\C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-9be21fec\\agentd.log"
+          },
+          {
+            "step": "the desktop trial starts with no prior home or capture",
+            "ok": true,
+            "detail": ""
+          },
+          {
+            "step": "the desktop endpoint is absent with CLI autostart disabled",
+            "ok": true,
+            "detail": "Error: cannot reach agentd at \\\\.\\pipe\\agentdocker-smoke-9be21fec-desktop (start it with `agentd`): The system cannot find the file specified. (os error 2)"
+          },
+          {
+            "step": "the native desktop exits within its smoke deadline",
+            "ok": true,
+            "detail": "exit=0, elapsed=3.610s; see desktop.log"
+          },
+          {
+            "step": "the native desktop connects and captures a ready window",
+            "ok": true,
+            "detail": "{'capture_attempts': 1, 'connected': True, 'elapsed_seconds': 3.5503079, 'error': None, 'fixture_discovered': True, 'native_accessibility_nodes': None, 'renderer': 'iced tiny-skia', 'result': 'passed', 'runtime_rows': 16, 'scenario_steps_completed': None, 'scenario_steps_total': None, 'screenshot_requested': True, 'ticks': 58}"
+          },
+          {
+            "step": "the native renderer retains a nonempty PNG",
+            "ok": true,
+            "detail": "48216 bytes"
+          },
+          {
+            "step": "the UI-started private daemon answers after the window exits",
+            "ok": true,
+            "detail": "agentd 0.1.0 up 2s"
+          },
+          {
+            "step": "two agents register with their pids",
+            "ok": true,
+            "detail": "('a3ae241189b0467b86880037c5776e36', 'a2f732f454d04979b40ac72177028829')"
+          },
+          {
+            "step": "ps lists both as running",
+            "ok": true,
+            "detail": "AGENT ID       NAME        PROJECT   BRANCH   HEAD   RUNTIME   MODEL   STATUS    INPUT                        DOING     PID    CREATED\na3ae241189b0   smoke-one   project   master   -      custom    -       running   Idle delivery not verified   unknown   368    0s ago\na2f732f454d0   smoke-two   project   master   -      custom    -       running   Idle delivery not verified   unknown   7664   0s ago"
+          },
+          {
+            "step": "a message sent to an agent is read from its inbox",
+            "ok": true,
+            "detail": "21:23:37  535b795d64ee45ab  a3ae241189b0 \u00e2\u2020\u2019 a2f732f454d0  [chat]  hello from one"
+          },
+          {
+            "step": "a project broadcast reaches the other agent",
+            "ok": true,
+            "detail": "21:23:37  24aa425d1f414007  a3ae241189b0 \u00e2\u2020\u2019 project:a7fe827ca6c8  [chat]  hello everyone"
+          },
+          {
+            "step": "a lease is held and a second claim is refused",
+            "ok": true,
+            "detail": "Error: path:\\\\?\\C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-3wkz5cm1\\project\\file.txt is held by smoke-one (a3ae241189b0; exclusive on path:\\\\?\\C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-3wkz5cm1\\project\\file.txt) (Conflict)\n{\n  \"held_by\": [\n    {\n      \"acquired_at\": \"2026-09-21T21:23:37.753268800Z\",\n      \"change_seq\": 0,\n      \"expires_at\": \"2026-09-21T21:24:37.753268800Z\",\n      \"holder\": \"a3ae241189b0467b86880037c5776e36\",\n      \"id\": \"41b57d3bc4b1\",\n      \"mode\": \"exclusive\",\n      \"resource\": \"path:\\\\\\\\?\\\\C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\agentdocker-smoke-3wkz5cm1\\\\project\\\\file.txt\"\n    }\n  ]\n}"
+          },
+          {
+            "step": "attach without a terminal is refused in words, not with a hang",
+            "ok": true,
+            "detail": "Error: attach needs a terminal; run it from a shell rather than a pipe"
+          },
+          {
+            "step": "daemon install is refused on Windows in words",
+            "ok": true,
+            "detail": "Error: the daemon service is not available on Windows yet: run `agentd` yourself, or `agentdocker daemon start` starts one for this home and `daemon stop` asks it to exit"
+          },
+          {
+            "step": "daemon reload is refused on Windows in words",
+            "ok": true,
+            "detail": "Error: reload failed: live daemon reload is not available on Windows; stop and start the daemon instead, and its agents reconnect (Unavailable)"
+          },
+          {
+            "step": "a piped managed command runs under a session owner and its output reaches its log",
+            "ok": true,
+            "detail": "def7e11a0e69   smoke-pipes   project   master   -      custom    -       exited (0)   Session ended                finished   1840   0s ago | 2026-09-21T21:23:38.308Z [err] to stderr\n2026-09-21T21:23:38.308Z [out] piped hello"
+          },
+          {
+            "step": "a terminal managed command is running on its own console",
+            "ok": true,
+            "detail": "3e223427df17   smoke-tty     project   master   -      custom    -       running      Idle delivery not verified   working    688    0s ago"
+          },
+          {
+            "step": "the attach wire answers events_ready for a terminal session",
+            "ok": true,
+            "detail": "{\"type\": \"events_ready\"}"
+          },
+          {
+            "step": "what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen",
+            "ok": true,
+            "detail": "frames ['output', 'output', 'output', 'end']; screen '\\x1b[?9001h\\x1b[?1004h\\x1b[?25l\\x1b[2J\\x1b[m\\x1b[Htty hello\\r\\n\\x1b]0;C:\\\\hostedtoolcache\\\\windows\\\\Python\\\\3.12.10\\\\x64\\\\python.exe\\x07\\x1b[?25h\\x1b[?25l\\x1b[Htty hello\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\x1b[2;1H\\x1b[?25h\\x1b[?9001l\\x1b[?1004labc\\r\\ngot abc\\r\\nfinal partial marker'"
+          },
+          {
+            "step": "terminal output reaches End with its final partial line before the deadline",
+            "ok": true,
+            "detail": "frames ['output', 'output', 'output', 'end']; screen '\\x1b[?9001h\\x1b[?1004h\\x1b[?25l\\x1b[2J\\x1b[m\\x1b[Htty hello\\r\\n\\x1b]0;C:\\\\hostedtoolcache\\\\windows\\\\Python\\\\3.12.10\\\\x64\\\\python.exe\\x07\\x1b[?25h\\x1b[?25l\\x1b[Htty hello\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\x1b[2;1H\\x1b[?25h\\x1b[?9001l\\x1b[?1004labc\\r\\ngot abc\\r\\nfinal partial marker'"
+          },
+          {
+            "step": "the terminal session ends and its final partial line is in its log",
+            "ok": true,
+            "detail": " 0s ago | out \u001b[?9001h\u001b[?1004h\u001b[?25l\u001b[2J\u001b[m\u001b[Htty hello\nout \u001b]0;C:\\hostedtoolcache\\windows\\Python\\3.12.10\\x64\\python.exe\u0007\u001b[?25h\u001b[?25l\u001b[Htty hello\u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\nout \u001b[K\u001b[2;1H\u001b[?25h\u001b[?9001l\u001b[?1004labc\nout got abc\nout final partial marker"
+          },
+          {
+            "step": "stop ends a managed terminal session through its owner",
+            "ok": true,
+            "detail": "f0a2a20470c04d409fa0a7b593903663 | f0a2a20470c0   smoke-stop    project   master   -      custom    -       exited (-1073741510)   Session ended                finished   3616   0s ago"
+          },
+          {
+            "step": "the owner and both piped descendants are alive before the owner crash",
+            "ok": true,
+            "detail": "owner 1216; descendants [7508, 1908]"
+          },
+          {
+            "step": "abrupt owner death ends the piped child and grandchild without Rust cleanup",
+            "ok": true,
+            "detail": "process handles signalled: [True, True, True]"
+          },
+          {
+            "step": "native keyboard backpressure was observed",
+            "ok": true,
+            "detail": "screen b'\\n\\x1b]0;C:\\\\hostedtoolcache\\\\windows\\\\Python\\\\3.12.10\\\\x64\\\\python.exe\\x07\\x1b[?25h\\x1b[?25l\\x1b[Hnot reading\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\r\\n\\x1b[K\\x1b[2;1H\\x1b[?25h\\r\\n[agentdocker: input dropped, the agent is not reading its terminal; retype it]\\r\\n'; writer []"
+          },
+          {
+            "step": "stop remains bounded when the child ignores Ctrl-C and never reads its full keyboard",
+            "ok": true,
+            "detail": "2.453s; 83a01f0b57a2   smoke-input-full    project   master   -      custom    -       exited (-1073741510)   Session ended                finished   9804   5s ago"
+          },
+          {
+            "step": "the daemon still answers after terminal backpressure",
+            "ok": true,
+            "detail": ""
+          },
+          {
+            "step": "stop ends a registered process whose identity matches its record",
+            "ok": true,
+            "detail": "24d6e2b73258434693b0918ca909c2d0"
+          },
+          {
+            "step": "a terminal session is running before the daemon dies",
+            "ok": true,
+            "detail": "1dc429cf060e   smoke-survivor      project   master   -      custom    -       running                Idle delivery not verified   working    4084   0s ago"
+          },
+          {
+            "step": "SQLite state.db is user-owned and protected before the crash",
+            "ok": true,
+            "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+          },
+          {
+            "step": "SQLite state.db-wal is user-owned and protected before the crash",
+            "ok": true,
+            "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;;FA;;;SY)(A;;FA;;;LA)'}"
+          },
+          {
+            "step": "SQLite state.db-shm is user-owned and protected before the crash",
+            "ok": true,
+            "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;;FA;;;SY)(A;;FA;;;LA)'}"
+          },
+          {
+            "step": "the daemon is ended abruptly, leaving the session to its owner",
+            "ok": true,
+            "detail": "1"
+          },
+          {
+            "step": "SQLite state.db is user-owned and protected after the crash",
+            "ok": true,
+            "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+          },
+          {
+            "step": "SQLite state.db-wal is user-owned and protected after the crash",
+            "ok": true,
+            "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;;FA;;;SY)(A;;FA;;;LA)'}"
+          },
+          {
+            "step": "SQLite state.db-shm is user-owned and protected after the crash",
+            "ok": true,
+            "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;;FA;;;SY)(A;;FA;;;LA)'}"
+          },
+          {
+            "step": "daemon start brings up a daemon on demand for this home",
+            "ok": true,
+            "detail": "agentd 0.1.0 up 0s"
+          },
+          {
+            "step": "the new daemon finds the session still running under its owner",
+            "ok": true,
+            "detail": "1dc429cf060e   smoke-survivor      project   master   -      custom    -       running                                                                                           Idle delivery not verified   working    4084   4s ago"
+          },
+          {
+            "step": "SQLite state.db is user-owned and protected after recovery",
+            "ok": true,
+            "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+          },
+          {
+            "step": "SQLite state.db-wal is user-owned and protected after recovery",
+            "ok": true,
+            "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+          },
+          {
+            "step": "SQLite state.db-shm is user-owned and protected after recovery",
+            "ok": true,
+            "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+          },
+          {
+            "step": "the reattached session is stopped through its owner",
+            "ok": true,
+            "detail": "1dc429cf060e4893b0f994f3c8a817df | 1dc429cf060e   smoke-survivor      project   master   -      custom    -       exited (-1073741510)                                                                              Session ended                finished   4084   6s ago"
+          },
+          {
+            "step": "daemon stop ends the daemon a client started",
+            "ok": true,
+            "detail": "stopped the running agentd"
+          },
+          {
+            "step": "the first command on a fresh home creates it and starts a daemon",
+            "ok": true,
+            "detail": "agentd 0.1.0 up 0s\nC:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-9be21fec-fresh security=O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;LA)\nC:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-9be21fec-fresh NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                                                         runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData\\Local\\Temp security=O:BAG:S-1-5-21-3699639565-2515463329-295617607-513D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;LA)\nC:\\Users\\runneradmin\\AppData\\Local\\Temp NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                        BUILTIN\\Administrators:(OI)(CI)(F)\n                                        runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData\\Local security=O:BAG:S-1-5-21-3699639565-2515463329-295617607-513D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;LA)\nC:\\Users\\runneradmin\\AppData\\Local NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                   BUILTIN\\Administrators:(OI)(CI)(F)\n                                   runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData security=O:BAG:S-1-5-21-3699639565-2515463329-295617607-513D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;LA)\nC:\\Users\\runneradmin\\AppData NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                             BUILTIN\\Administrators:(OI)(CI)(F)\n                             runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin security=O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;LA)(A;;0x100020;;;S-1-15-3-65536-599108337-2355189375-1353122160-3480128286-3345335107-485756383-4087318168-230526575)\nC:\\Users\\runneradmin NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                     BUILTIN\\Administrators:(OI)(CI)(F)\n                     runnervmvmocb\\runneradmin:(OI)(CI)(F)\n                     S-1-15-3-65536-599108337-2355189375-1353122160-3480128286-3345335107-485756383-4087318168-230526575:(S,X)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users security=O:SYG:SYD:PAI(A;OICIIO;GXGR;;;WD)(A;;0x1200a9;;;WD)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x1200a9;;;BU)(A;OICIIO;GXGR;;;BU)(A;;0x100021;;;S-1-15-3-65536-4045685566-1323397456-4055816110-285687253-194181-4019357623-1925838800-191844675)\nC:\\Users NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n         BUILTIN\\Administrators:(OI)(CI)(F)\n         BUILTIN\\Users:(RX)\n         BUILTIN\\Users:(OI)(CI)(IO)(GR,GE)\n         Everyone:(RX)\n         Everyone:(OI)(CI)(IO)(GR,GE)\n         S-1-15-3-65536-4045685566-1323397456-4055816110-285687253-194181-4019357623-1925838800-191844675:(S,RD,X)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\ security=O:S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464G:SYD:AI(A;OICIIO;SDGXGWGR;;;AU)(A;;LC;;;AU)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;;0x1000a1;;;S-1-15-3-65536-1888954469-739942743-1668119174-2468466756-4239452838-1296943325-355587736-700089176)\nC:\\ S-1-15-3-65536-1888954469-739942743-1668119174-2468466756-4239452838-1296943325-355587736-700089176:(S,RD,X,RA)\n    NT AUTHORITY\\Authenticated Users:(AD)\n    NT AUTHORITY\\Authenticated Users:(OI)(CI)(IO)(M)\n    NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n    BUILTIN\\Administrators:(OI)(CI)(F)\n    BUILTIN\\Users:(OI)(CI)(RX)\n    Mandatory Label\\High Mandatory Level:(OI)(NP)(IO)(NW)\n\nSuccessfully processed 1 files; Failed processing 0 files"
+          },
+          {
+            "step": "that daemon is ended too",
+            "ok": true,
+            "detail": "stopped the running agentd"
+          },
+          {
+            "step": "the Python private parent has an OWNER RIGHTS permission entry",
+            "ok": true,
+            "detail": "Python 3.12.10; O:BAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+          },
+          {
+            "step": "first run works below the private OWNER RIGHTS parent without changing its owner or ACL",
+            "ok": true,
+            "detail": "agentd 0.1.0 up 0s"
+          },
+          {
+            "step": "the new child state has a protected ACL",
+            "ok": true,
+            "detail": "O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;LA)"
+          },
+          {
+            "step": "the OWNER RIGHTS trial daemon is ended too",
+            "ok": true,
+            "detail": "stopped the running agentd"
+          }
+        ],
+        "result": "passed",
+        "desktop": {
+          "scope": "source-built native Windows window, fresh-home UI daemon autostart, connection, runtime rows and renderer capture",
+          "tcp_observation": "not_measured",
+          "capture_directory": "desktop",
+          "result": "passed",
+          "pid": 5104,
+          "exit_code": 0,
+          "elapsed_seconds": 3.6100000000000136,
+          "native_result": {
+            "capture_attempts": 1,
+            "connected": true,
+            "elapsed_seconds": 3.5503079,
+            "error": null,
+            "fixture_discovered": true,
+            "native_accessibility_nodes": null,
+            "renderer": "iced tiny-skia",
+            "result": "passed",
+            "runtime_rows": 16,
+            "scenario_steps_completed": null,
+            "scenario_steps_total": null,
+            "screenshot_requested": true,
+            "ticks": 58
+          },
+          "screenshot_sha256": "911b9a3c5a95945624c6c2d89349fb4b5ea1809fb2a91e64dea8cbf2a09f6be5"
+        },
+        "root_acl": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-3wkz5cm1 security=O:BAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)\nC:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-3wkz5cm1 NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                                                   BUILTIN\\Administrators:(OI)(CI)(F)\n                                                                   OWNER RIGHTS:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData\\Local\\Temp security=O:BAG:S-1-5-21-3699639565-2515463329-295617607-513D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;LA)\nC:\\Users\\runneradmin\\AppData\\Local\\Temp NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                        BUILTIN\\Administrators:(OI)(CI)(F)\n                                        runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData\\Local security=O:BAG:S-1-5-21-3699639565-2515463329-295617607-513D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;LA)\nC:\\Users\\runneradmin\\AppData\\Local NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                   BUILTIN\\Administrators:(OI)(CI)(F)\n                                   runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData security=O:BAG:S-1-5-21-3699639565-2515463329-295617607-513D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;LA)\nC:\\Users\\runneradmin\\AppData NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                             BUILTIN\\Administrators:(OI)(CI)(F)\n                             runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin security=O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;LA)(A;;0x100020;;;S-1-15-3-65536-599108337-2355189375-1353122160-3480128286-3345335107-485756383-4087318168-230526575)\nC:\\Users\\runneradmin NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                     BUILTIN\\Administrators:(OI)(CI)(F)\n                     runnervmvmocb\\runneradmin:(OI)(CI)(F)\n                     S-1-15-3-65536-599108337-2355189375-1353122160-3480128286-3345335107-485756383-4087318168-230526575:(S,X)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users security=O:SYG:SYD:PAI(A;OICIIO;GXGR;;;WD)(A;;0x1200a9;;;WD)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x1200a9;;;BU)(A;OICIIO;GXGR;;;BU)(A;;0x100021;;;S-1-15-3-65536-4045685566-1323397456-4055816110-285687253-194181-4019357623-1925838800-191844675)\nC:\\Users NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n         BUILTIN\\Administrators:(OI)(CI)(F)\n         BUILTIN\\Users:(RX)\n         BUILTIN\\Users:(OI)(CI)(IO)(GR,GE)\n         Everyone:(RX)\n         Everyone:(OI)(CI)(IO)(GR,GE)\n         S-1-15-3-65536-4045685566-1323397456-4055816110-285687253-194181-4019357623-1925838800-191844675:(S,RD,X)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\ security=O:S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464G:SYD:AI(A;OICIIO;SDGXGWGR;;;AU)(A;;LC;;;AU)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;;0x1000a1;;;S-1-15-3-65536-1888954469-739942743-1668119174-2468466756-4239452838-1296943325-355587736-700089176)\nC:\\ S-1-15-3-65536-1888954469-739942743-1668119174-2468466756-4239452838-1296943325-355587736-700089176:(S,RD,X,RA)\n    NT AUTHORITY\\Authenticated Users:(AD)\n    NT AUTHORITY\\Authenticated Users:(OI)(CI)(IO)(M)\n    NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n    BUILTIN\\Administrators:(OI)(CI)(F)\n    BUILTIN\\Users:(OI)(CI)(RX)\n    Mandatory Label\\High Mandatory Level:(OI)(NP)(IO)(NW)\n\nSuccessfully processed 1 files; Failed processing 0 files",
+        "home_acl": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-9be21fec security=O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;LA)\nC:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-9be21fec NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                                                   runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData\\Local\\Temp security=O:BAG:S-1-5-21-3699639565-2515463329-295617607-513D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;LA)\nC:\\Users\\runneradmin\\AppData\\Local\\Temp NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                        BUILTIN\\Administrators:(OI)(CI)(F)\n                                        runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData\\Local security=O:BAG:S-1-5-21-3699639565-2515463329-295617607-513D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;LA)\nC:\\Users\\runneradmin\\AppData\\Local NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                                   BUILTIN\\Administrators:(OI)(CI)(F)\n                                   runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin\\AppData security=O:BAG:S-1-5-21-3699639565-2515463329-295617607-513D:(A;OICIID;FA;;;SY)(A;OICIID;FA;;;BA)(A;OICIID;FA;;;LA)\nC:\\Users\\runneradmin\\AppData NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                             BUILTIN\\Administrators:(OI)(CI)(F)\n                             runnervmvmocb\\runneradmin:(OI)(CI)(F)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users\\runneradmin security=O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;LA)(A;;0x100020;;;S-1-15-3-65536-599108337-2355189375-1353122160-3480128286-3345335107-485756383-4087318168-230526575)\nC:\\Users\\runneradmin NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n                     BUILTIN\\Administrators:(OI)(CI)(F)\n                     runnervmvmocb\\runneradmin:(OI)(CI)(F)\n                     S-1-15-3-65536-599108337-2355189375-1353122160-3480128286-3345335107-485756383-4087318168-230526575:(S,X)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\Users security=O:SYG:SYD:PAI(A;OICIIO;GXGR;;;WD)(A;;0x1200a9;;;WD)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x1200a9;;;BU)(A;OICIIO;GXGR;;;BU)(A;;0x100021;;;S-1-15-3-65536-4045685566-1323397456-4055816110-285687253-194181-4019357623-1925838800-191844675)\nC:\\Users NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n         BUILTIN\\Administrators:(OI)(CI)(F)\n         BUILTIN\\Users:(RX)\n         BUILTIN\\Users:(OI)(CI)(IO)(GR,GE)\n         Everyone:(RX)\n         Everyone:(OI)(CI)(IO)(GR,GE)\n         S-1-15-3-65536-4045685566-1323397456-4055816110-285687253-194181-4019357623-1925838800-191844675:(S,RD,X)\n\nSuccessfully processed 1 files; Failed processing 0 files\nC:\\ security=O:S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464G:SYD:AI(A;OICIIO;SDGXGWGR;;;AU)(A;;LC;;;AU)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;;0x1000a1;;;S-1-15-3-65536-1888954469-739942743-1668119174-2468466756-4239452838-1296943325-355587736-700089176)\nC:\\ S-1-15-3-65536-1888954469-739942743-1668119174-2468466756-4239452838-1296943325-355587736-700089176:(S,RD,X,RA)\n    NT AUTHORITY\\Authenticated Users:(AD)\n    NT AUTHORITY\\Authenticated Users:(OI)(CI)(IO)(M)\n    NT AUTHORITY\\SYSTEM:(OI)(CI)(F)\n    BUILTIN\\Administrators:(OI)(CI)(F)\n    BUILTIN\\Users:(OI)(CI)(RX)\n    Mandatory Label\\High Mandatory Level:(OI)(NP)(IO)(NW)\n\nSuccessfully processed 1 files; Failed processing 0 files",
+        "daemon_log_tail": "m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:44.778315Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:44.807569Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:44.835037Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:44.895719Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:44.927777Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:44.988341Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:45.017273Z\u001b[0m \u001b[33m WARN\u001b[0m \u001b[2magentd::supervisor\u001b[0m\u001b[2m:\u001b[0m terminal input was dropped: the agent is not reading its terminal \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2427f91df79535a4669e3\n\u001b[2m2026-09-21T21:23:45.259218Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2magentd::daemon\u001b[0m\u001b[2m:\u001b[0m agent finished \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m83a01f0b57a2 \u001b[3mname\u001b[0m\u001b[2m=\u001b[0msmoke-input-full \u001b[3mstatus\u001b[0m\u001b[2m=\u001b[0mexited (-1073741510)\n\u001b[2m2026-09-21T21:23:45.615036Z\u001b[0m \u001b[32m INFO\u001b[0m \u001b[2magentd::daemon\u001b[0m\u001b[2m:\u001b[0m agent finished \u001b[3magent\u001b[0m\u001b[2m=\u001b[0m24d6e2b73258 \u001b[3mname\u001b[0m\u001b[2m=\u001b[0msmoke-helper \u001b[3mstatus\u001b[0m\u001b[2m=\u001b[0mexited (signal)\n"
+      },
+      "visual_review": "Fresh native window renders and connects. The Inbox/Messages navigation row shows its envelope icon but its text label is absent in the retained PNG; broader visual/input acceptance remains open. This is not a real-provider, installer or independent-machine trial."
+    },
+    "native_e3ada9db_result": {
+      "source": "e3ada9db91a12934735b2905957900cf6b8f3df0",
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35657437544",
+      "result": "passed",
+      "platform": "Windows 2025Server AMD64",
+      "binary_sha256": {
+        "agentdocker.exe": "b12ef26a5289c070a050438fa3deecb82e39e8242267fb1eddaab3ea9619b906",
+        "agentd.exe": "46c21d6a40d2857f8249b53a938265d537755b23b9672cf2df9fbdbcb5acc3f9",
+        "agentdocker-ui.exe": "9da95f19254c8484abfaab96f234cfd4ecadb93e7c1b677df9cfcbe587daea28"
+      },
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "284",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "132c40ee-230b-486a-8cb9-7abb272b7ffe",
+        "timestamp": "2026-09-21T21:31:17.508+00:00",
+        "time": "5.909"
+      },
+      "passed_step_names": [
+        "the daemon answers ping over the local transport",
+        "daemon status names the serving executable",
+        "the desktop trial starts with no prior home or capture",
+        "the desktop endpoint is absent with CLI autostart disabled",
+        "the native desktop exits within its smoke deadline",
+        "the native desktop connects and captures a ready window",
+        "the native renderer retains a nonempty PNG",
+        "the UI-started private daemon answers after the window exits",
+        "two agents register with their pids",
+        "ps lists both as running",
+        "a message sent to an agent is read from its inbox",
+        "a project broadcast reaches the other agent",
+        "a lease is held and a second claim is refused",
+        "attach without a terminal is refused in words, not with a hang",
+        "daemon install is refused on Windows in words",
+        "daemon reload is refused on Windows in words",
+        "a piped managed command runs under a session owner and its output reaches its log",
+        "a terminal managed command is running on its own console",
+        "the attach wire answers events_ready for a terminal session",
+        "what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen",
+        "terminal output reaches End with its final partial line before the deadline",
+        "the terminal session ends and its final partial line is in its log",
+        "stop ends a managed terminal session through its owner",
+        "the owner and both piped descendants are alive before the owner crash",
+        "abrupt owner death ends the piped child and grandchild without Rust cleanup",
+        "native keyboard backpressure was observed",
+        "stop remains bounded when the child ignores Ctrl-C and never reads its full keyboard",
+        "the daemon still answers after terminal backpressure",
+        "stop ends a registered process whose identity matches its record",
+        "a terminal session is running before the daemon dies",
+        "SQLite state.db is user-owned and protected before the crash",
+        "SQLite state.db-wal is user-owned and protected before the crash",
+        "SQLite state.db-shm is user-owned and protected before the crash",
+        "the daemon is ended abruptly, leaving the session to its owner",
+        "SQLite state.db is user-owned and protected after the crash",
+        "SQLite state.db-wal is user-owned and protected after the crash",
+        "SQLite state.db-shm is user-owned and protected after the crash",
+        "daemon start brings up a daemon on demand for this home",
+        "the new daemon finds the session still running under its owner",
+        "SQLite state.db is user-owned and protected after recovery",
+        "SQLite state.db-wal is user-owned and protected after recovery",
+        "SQLite state.db-shm is user-owned and protected after recovery",
+        "the reattached session is stopped through its owner",
+        "daemon stop ends the daemon a client started",
+        "the first command on a fresh home creates it and starts a daemon",
+        "that daemon is ended too",
+        "the Python private parent has an OWNER RIGHTS permission entry",
+        "first run works below the private OWNER RIGHTS parent without changing its owner or ACL",
+        "the new child state has a protected ACL",
+        "the OWNER RIGHTS trial daemon is ended too"
+      ],
+      "step_count": 50,
+      "backpressure_stop_seconds": 2.062,
+      "sqlite_security": [
+        {
+          "step": "SQLite state.db is user-owned and protected before the crash",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db-wal is user-owned and protected before the crash",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db-shm is user-owned and protected before the crash",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db is user-owned and protected after the crash",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db-wal is user-owned and protected after the crash",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db-shm is user-owned and protected after the crash",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:P(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db is user-owned and protected after recovery",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db-wal is user-owned and protected after recovery",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        },
+        {
+          "step": "SQLite state.db-shm is user-owned and protected after recovery",
+          "ok": true,
+          "detail": "{'owner_sid': 'S-1-5-21-3699639565-2515463329-295617607-500', 'protected': True, 'sddl': 'O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)'}"
+        }
+      ],
+      "desktop": {
+        "scope": "source-built native Windows window, fresh-home UI daemon autostart, connection, runtime rows and renderer capture",
+        "tcp_observation": "not_measured",
+        "capture_directory": "desktop",
+        "result": "passed",
+        "pid": 10120,
+        "exit_code": 0,
+        "elapsed_seconds": 4.2660000000000196,
+        "native_result": {
+          "capture_attempts": 1,
+          "connected": true,
+          "elapsed_seconds": 4.2081096,
+          "error": null,
+          "fixture_discovered": true,
+          "native_accessibility_nodes": null,
+          "renderer": "iced tiny-skia",
+          "result": "passed",
+          "runtime_rows": 16,
+          "scenario_steps_completed": null,
+          "scenario_steps_total": null,
+          "screenshot_requested": true,
+          "ticks": 65
+        },
+        "screenshot_sha256": "c85e71948d07ad34926a2bcfd2a9aff60fab54f36a7138f031561b9aa822a00b"
+      },
+      "cleanup_errors": [],
+      "visual_review": "Retained PNG inspected: Messages label is present, with Projects/Tools/settings/project labels and the connected fresh window. Confirms the earlier missing label was resolved by capture redraw settling in this trial; not broad physical-input/GUI/provider acceptance."
+    },
+    "final_capture_local_gate": {
+      "source": "e3ada9db91a12934735b2905957900cf6b8f3df0",
+      "rust_passed": 1332,
+      "rust_skipped": 7,
+      "python_run": 106,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_packaging_release": "passed",
+      "log": "/private/tmp/agentdocker-windows-startup-capture-final-gate-20260921.log"
+    },
+    "replacement_pr": "https://github.com/brandopakel/AgentDocker/pull/214",
+    "review_stop_grace_fix": {
+      "review": "https://github.com/brandopakel/AgentDocker/pull/214#discussion_r4066722264",
+      "behavior": "A full terminal keyboard queue does not force-end the child before the existing two-second stop deadline. Ctrl-C remains unqueued in that case. Closed or missing input still ends immediately.",
+      "regression": "Two channel tests cover full/open/closed/missing inputs; pending input is retained. Reintroducing the old full-queue behavior fails the backpressure regression with full keyboard skipped stop grace.",
+      "negative_control_log": "/private/tmp/agentdocker-stop-grace-negative-control-20260921.log",
+      "native_acceptance": "Pending on the corrected source. The Windows smoke now observes the actual child process handle separately from status/console teardown, checking grace and bounded stop.",
+      "local_gate": {
+        "rust_passed": 1334,
+        "rust_skipped": 7,
+        "python_run": 106,
+        "python_skipped": 1,
+        "fmt_clippy_doctests_packaging_release": "passed",
+        "log": "/private/tmp/agentdocker-stop-grace-gate-20260921.log"
+      },
+      "native_measurement_limit": "The child handle observation excludes final-status and console teardown delay, but includes CLI startup and observer scheduling; it is not an exact measurement of owner dispatch. The channel regression and failing old-behavior negative control establish the Full versus Closed correction.",
+      "peer_review": "Independent read-only review of the complete Rust/helper, native observer/cleanup and docs diff found no remaining blocker; no additional builds were run by the reviewer."
+    }
+  }
 }
