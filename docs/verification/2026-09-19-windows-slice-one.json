@@ -285,6 +285,64 @@
       },
       "error": "AssertionError: what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen: frames ['output', 'output', 'end']; screen '\\x1b[?9001h\\x1b[?1004h\\x1b[?25l\\x1b[?9001l\\x1b[?1004l\\x1b[2J\\x1b[m\\x1b[H\\x1b]0;C:\\\\hostedtoolcache\\\\windows\\\\Python\\\\3.12.10\\\\x64\\\\python.exe\\x07\\x1b[?25h\\r\\n[agentdocker: input dropped, the agent is not reading its terminal; retype it]\\r\\n'; logs 'out \\x1b[?9001h\\x1b[?1004h\\x1b[?25l\\x1b[?9001l\\x1b[?1004l\\x1b[2J\\x1b[m\\x1b[H\\x1b]0;C:\\\\hostedtoolcache\\\\windows\\\\Python\\\\3.12.10\\\\x64\\\\python.exe\\x07\\x1b[?25h'; status '2e3c36f88bc8   smoke-tty     project   master   -      custom    -       exited (0)   Session ended                finished   4360   0s ago'",
       "diagnosis": "ConPTY child inherited the detached owner redirected standard handles; missing STARTF_USESTDHANDLES with explicit null handles. Fix under native validation; no terminal acceptance claimed."
+    },
+    "native_dcceff2d_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35651993280",
+      "source": "dcceff2d285c2f6804359f19378788d7991ca090",
+      "result": "failed",
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "283",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "c4b6add4-474f-41d5-8181-e7de72584271",
+        "timestamp": "2026-09-21T20:37:20.976+00:00",
+        "time": "6.756"
+      },
+      "binary_sha256": {
+        "agentdocker.exe": "56f17387056bc2cddb5b64b2ffe93c75d2b461a685a83db8a1615dfe8bf6e08a",
+        "agentd.exe": "7260c84886db69216a914db067312768e75d02ec6462d5e9455c55e4dc8188c4"
+      },
+      "passed_steps": [
+        "the daemon answers ping over the local transport",
+        "daemon status names the serving executable",
+        "two agents register with their pids",
+        "ps lists both as running",
+        "a message sent to an agent is read from its inbox",
+        "a project broadcast reaches the other agent",
+        "a lease is held and a second claim is refused",
+        "attach without a terminal is refused in words, not with a hang",
+        "daemon install is refused on Windows in words",
+        "daemon reload is refused on Windows in words",
+        "a piped managed command runs under a session owner and its output reaches its log",
+        "a terminal managed command is running on its own console",
+        "the attach wire answers events_ready for a terminal session",
+        "what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen",
+        "terminal output reaches End with its final partial line before the deadline",
+        "the terminal session ends and its final partial line is in its log",
+        "stop ends a managed terminal session through its owner",
+        "the owner and both piped descendants are alive before the owner crash",
+        "abrupt owner death ends the piped child and grandchild without Rust cleanup",
+        "native keyboard backpressure was observed",
+        "stop remains bounded when the child ignores Ctrl-C and never reads its full keyboard",
+        "the daemon still answers after terminal backpressure",
+        "stop ends a registered process whose identity matches its record",
+        "a terminal session is running before the daemon dies",
+        "the daemon is ended abruptly, leaving the session to its owner"
+      ],
+      "error": "AssertionError: ('daemon', 'start'): exit 1: Error: agentd exited (exit code: 1) before listening on \\\\.\\pipe\\agentdocker-48cf5e80d5355345a46074e0af9ccc2b-host:\n  Error: \\\\?\\C:\\Users\\runneradmin\\AppData\\Local\\Temp\\agentdocker-smoke-44f395b8\\state.db-wal: state or ancestor belongs to an untrusted Windows principal (S-1-5-32-544)",
+      "backpressure_stop_seconds": 2.375,
+      "interpretation": "ConPTY IO, EOF, owner death and bounded stop passed; daemon crash recovery remains blocked by SQLite-created sidecar ownership on elevated Windows."
+    },
+    "conpty_local_gate": {
+      "source": "f62089ab",
+      "rust_passed": 1332,
+      "rust_skipped": 7,
+      "python_run": 106,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_packaging_release": "passed",
+      "log": "/private/tmp/agentdocker-windows-conpty-stdio-final-gate-20260921.log"
     }
   }
 }

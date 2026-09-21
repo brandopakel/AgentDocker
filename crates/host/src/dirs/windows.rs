@@ -9,10 +9,12 @@ use std::os::windows::{
 };
 use std::path::Path;
 use std::ptr::{null, null_mut};
+use std::sync::OnceLock;
 
 use windows_sys::Win32::{
     Foundation::{
-        GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+        ERROR_ACCESS_DENIED, GENERIC_ALL, GENERIC_READ, GENERIC_WRITE, HANDLE,
+        INVALID_HANDLE_VALUE, LocalFree, SetLastError,
     },
     Security::{
         ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
@@ -26,12 +28,13 @@ use windows_sys::Win32::{
         TokenUser,
     },
     Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, CreateDirectoryW, CreateFileW, DELETE,
-        FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+        BY_HANDLE_FILE_INFORMATION, CREATE_ALWAYS, CREATE_NEW, CreateDirectoryW, CreateFileW,
+        DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
         FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD, FILE_FLAG_BACKUP_SEMANTICS,
         FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
         FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
-        GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
+        GetFileInformationByHandle, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
+        WRITE_OWNER,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
@@ -150,6 +153,79 @@ pub(crate) struct Protection {
     sid: String,
     descriptor: LocalAllocation,
 }
+// SAFETY: the allocated self-relative descriptor is immutable after conversion.
+// The Windows APIs below only read it; ownership lasts through every such call.
+unsafe impl Send for Protection {}
+unsafe impl Sync for Protection {}
+
+fn sqlite_protection() -> io::Result<&'static Protection> {
+    static PROTECTION: OnceLock<Result<Protection, i32>> = OnceLock::new();
+    PROTECTION
+        .get_or_init(|| {
+            Protection::new()
+                .map_err(|error| error.raw_os_error().unwrap_or(ERROR_ACCESS_DENIED as i32))
+        })
+        .as_ref()
+        .map_err(|code| io::Error::from_raw_os_error(*code))
+}
+
+/// Prepare immutable security attributes before installing SQLite's Windows
+/// creation callback. This changes no process/thread token or existing file.
+pub fn initialize_sqlite_protection() -> io::Result<()> {
+    sqlite_protection().map(|_| ())
+}
+
+/// SQLite's CreateFileW callback: new DB, WAL, shared-memory and journal files
+/// belong to the current user even when an elevated token defaults to the
+/// Administrators group. Existing-file validation still belongs to the caller;
+/// this never adopts or narrows an existing file's owner or ACL.
+///
+/// # Safety
+/// Every pointer/handle must satisfy CreateFileW's contract. Install once before
+/// opening SQLite connections; use only as its permanent win32 VFS callback.
+pub unsafe extern "system" fn sqlite_create_file(
+    path: *const u16,
+    access: u32,
+    share: u32,
+    supplied: *const SECURITY_ATTRIBUTES,
+    disposition: u32,
+    flags: u32,
+    template: HANDLE,
+) -> HANDLE {
+    if !matches!(disposition, CREATE_NEW | CREATE_ALWAYS | OPEN_ALWAYS) {
+        // SAFETY: the callback forwards the original Win32 call unchanged.
+        return unsafe { CreateFileW(path, access, share, supplied, disposition, flags, template) };
+    }
+    let protection = match sqlite_protection() {
+        Ok(protection) => protection,
+        Err(error) => {
+            // SAFETY: this only reports the failed creation to SQLite.
+            unsafe {
+                SetLastError(error.raw_os_error().unwrap_or(ERROR_ACCESS_DENIED as i32) as u32)
+            };
+            return INVALID_HANDLE_VALUE;
+        }
+    };
+    let mut attributes = protection.attributes();
+    if !supplied.is_null() {
+        // SAFETY: supplied attributes are valid by the callback contract.
+        attributes.bInheritHandle = unsafe { (*supplied).bInheritHandle };
+    }
+    // Keep GetLastError exactly as CreateFileW left it. The descriptor lives
+    // for the process; no LocalFree/CloseHandle destructor runs after this call.
+    unsafe {
+        CreateFileW(
+            path,
+            access,
+            share,
+            &attributes,
+            disposition,
+            flags,
+            template,
+        )
+    }
+}
+
 impl Protection {
     pub(crate) fn new() -> io::Result<Self> {
         let sid = current_sid()?;
@@ -729,6 +805,56 @@ mod tests {
         assert!(secure_state_dir(&state.join("must-not-create")).is_err());
         assert!(!state.join("must-not-create").exists());
         assert_eq!(acl_bytes(directory.as_raw_handle()), before);
+    }
+
+    #[test]
+    fn sqlite_creation_sets_owner_and_preserves_existing_acl_and_last_error() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, GetLastError,
+        };
+        let temporary = tempfile::tempdir().unwrap();
+        let state = temporary.path().join("sqlite-state");
+        secure_state_dir(&state).unwrap();
+        initialize_sqlite_protection().unwrap();
+        let path = state.join("state.db-wal");
+        let raw = wide(&path).unwrap();
+        let create = |disposition| unsafe {
+            sqlite_create_file(
+                raw.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE | READ_CONTROL | WRITE_DAC,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                null(),
+                disposition,
+                FILE_ATTRIBUTE_NORMAL,
+                null_mut(),
+            )
+        };
+        let handle = create(OPEN_ALWAYS);
+        assert_ne!(handle, INVALID_HANDLE_VALUE);
+        let mut file = unsafe { File::from_raw_handle(handle) };
+        file.write_all(b"durable WAL contents").unwrap();
+        assert!(acl_bytes(file.as_raw_handle()).0);
+        Protection::new()
+            .unwrap()
+            .validate_access(file.as_raw_handle(), Access::State)
+            .unwrap();
+        // The protected parent supplies ancestry but does not determine a
+        // child's owner under an elevated token. Validate the file itself.
+        read_private_file(&path).unwrap();
+
+        let duplicate = create(CREATE_NEW);
+        assert_eq!(duplicate, INVALID_HANDLE_VALUE);
+        assert_eq!(unsafe { GetLastError() }, ERROR_FILE_EXISTS);
+        grant_everyone_write(&file);
+        let before = acl_bytes(file.as_raw_handle());
+        let reopened = create(OPEN_ALWAYS);
+        let last_error = unsafe { GetLastError() };
+        assert_ne!(reopened, INVALID_HANDLE_VALUE);
+        let _reopened = unsafe { File::from_raw_handle(reopened) };
+        assert_eq!(last_error, ERROR_ALREADY_EXISTS);
+        assert_eq!(acl_bytes(file.as_raw_handle()), before);
+        assert!(read_private_file(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"durable WAL contents");
     }
 
     #[test]

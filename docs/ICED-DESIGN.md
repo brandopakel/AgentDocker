@@ -334,7 +334,11 @@ The rendered controls supply AccessKit labels, roles, values, actions, focus and
 physical-pixel bounds. The native adapter is installed before showing the window.
 macOS uses NSAccessibility, Linux AT-SPI, and Windows UI Automation. Keyboard
 widget tests and native capture automation complement these adapters; they do
-not substitute for a human VoiceOver/Orca/Narrator and input-method trial.
+not substitute for a human VoiceOver/Orca/Narrator and input-method trial. On
+September 21, installed macOS preview `30ce582a` exposed 716 nodes, 212 buttons
+and four terminal actions through external AXUIElement inspection after unlock;
+More expansion/collapse and Agents/Chat navigation passed through AXPress. This
+closes the locked-desktop inspection gap, not the human screen-reader/IME trial.
 
 ## Build and validation
 

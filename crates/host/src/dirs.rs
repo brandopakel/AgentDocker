@@ -14,8 +14,8 @@ use agentdocker_core::paths;
 pub(crate) mod windows;
 #[cfg(windows)]
 pub use windows::{
-    check_private_dir, check_socket_parent, ensure_private_dir, open_private, private_file,
-    read_private_file, secure_state_dir,
+    check_private_dir, check_socket_parent, ensure_private_dir, initialize_sqlite_protection,
+    open_private, private_file, read_private_file, secure_state_dir, sqlite_create_file,
 };
 #[cfg(windows)]
 pub(crate) use windows::{current_sid, process_sid};

@@ -1368,6 +1368,10 @@ const MAIN_STACK: usize = 32 << 20;
 /// answer by its class (see [`client::exit_code`]), anything else as
 /// unexpected. The words go to stderr as they always did.
 fn main() {
+    if let Err(error) = agentd::initialize_storage_platform() {
+        eprintln!("Error: {error:#}");
+        std::process::exit(client::exit_code_for(&error));
+    }
     let worker = std::thread::Builder::new()
         .name("agentdocker".into())
         .stack_size(MAIN_STACK)

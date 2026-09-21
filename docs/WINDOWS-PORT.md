@@ -250,9 +250,24 @@ The console's startup pipe ends also remain open until child creation completes,
 as required by the [ConPTY startup sequence](https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session).
 A native regression launches a detached parent with redirected streams, then
 checks its child's three console handles, real keyboard input, stdout/stderr,
-exit and output EOF under bounded deadlines. Native acceptance of these
-corrections is pending; neither failed run is a pass. The broader daemon/CLI test fixtures still contain Unix-only APIs
-and do not yet compile as native Windows tests.
+exit and output EOF under bounded deadlines. Native run `35651993280` on
+`dcceff2d` passed that regression and the terminal echo, final output, owner-death
+and full-input stop trials (stop completed in 2.375 seconds). It then failed
+crash recovery because SQLite had created its WAL with Administrators as owner.
+The failed run remains recorded; the entire managed-session smoke is not yet a pass.
+
+The storage correction installs a permanent `CreateFileW` override in SQLite's
+win32 VFS before any connections or worker threads start. New database, WAL,
+journal and shared-memory files receive an explicit current-user owner and
+protected user/SYSTEM DACL, including when SQLite recreates them. It preserves
+access, sharing, creation disposition, inheritance and Win32 error results;
+existing owners and ACLs are not adopted or rewritten. The initializer refuses
+an unsupported VFS and caches failure. Both binaries, all store entry points
+and raw test fixtures use the same initialization gate; library embedders must
+initialize before using raw SQLite connections. The native smoke checks DB,
+WAL and SHM ownership/protection before the crash, after it, and after recovery.
+Native acceptance of this storage correction is pending. The broader daemon/CLI
+test fixtures still contain Unix-only APIs and do not yet compile as native Windows tests.
 
 Not in this slice: the desktop's own terminal pane on Windows (it reads
 the same protocol; its rendering is the desktop slice), provider

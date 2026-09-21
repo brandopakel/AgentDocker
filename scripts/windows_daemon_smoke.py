@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import secrets
 import shutil
 import subprocess
@@ -331,6 +332,21 @@ def main():
         result = subprocess.run(["powershell", "-NoProfile", "-Command", f"(Get-Acl -LiteralPath '{quoted}').Sddl"], capture_output=True, text=True, timeout=15, check=True)
         return result.stdout.strip()
 
+    def check_sqlite_security(phase):
+        current = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"],
+            capture_output=True, text=True, timeout=15, check=True,
+        ).stdout.strip()
+        assert current.startswith("S-1-"), current
+        descriptors = {name: windows_sddl(home / name)
+                       for name in ("state.db", "state.db-wal", "state.db-shm")}
+        for name, descriptor in descriptors.items():
+            owner = re.search(r"^O:(.*?)(?:G:|D:|S:|$)", descriptor)
+            step(f"SQLite {name} is user-owned and protected {phase}",
+                 owner is not None and owner.group(1) == current and "D:P" in descriptor,
+                 descriptor)
+
     def agent_status(name):
         listing = run("ps", "--no-discover", "--all")
         for line in listing.stdout.splitlines():
@@ -547,14 +563,20 @@ def main():
             run("run", "--name", "smoke-survivor", "--tty", "--runtime", "custom", "--", sys.executable, "-c", "import time; print('surviving', flush=True); time.sleep(120)")
             line = wait_status("smoke-survivor", "running")
             step("a terminal session is running before the daemon dies", "running" in line, line)
+            if os.name == "nt":
+                check_sqlite_security("before the crash")
             daemon.kill()
             step("the daemon is ended abruptly, leaving the session to its owner", wait_exit(daemon), str(daemon.returncode))
+            if os.name == "nt":
+                check_sqlite_security("after the crash")
             # The ordinary first run: a client with nothing to talk to starts
             # the daemon itself and waits for it to listen.
             started = run("daemon", "start", extra_env={"AGENTDOCKER_NO_AUTOSTART": ""}, timeout=30)
             step("daemon start brings up a daemon on demand for this home", started.returncode == 0 and "agentd" in started.stdout, started.stdout.strip())
             line = wait_status("smoke-survivor", "running", seconds=15)
             step("the new daemon finds the session still running under its owner", "running" in line, line)
+            if os.name == "nt":
+                check_sqlite_security("after recovery")
             stopped = run("stop", "smoke-survivor", check=False, timeout=20)
             line = wait_status("smoke-survivor", "exited", seconds=15)
             step("the reattached session is stopped through its owner", stopped.returncode == 0 and "exited" in line, (stopped.stderr.strip() or stopped.stdout.strip()) + " | " + line)

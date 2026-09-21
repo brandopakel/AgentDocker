@@ -1511,7 +1511,7 @@ mod fence_tests {
         let daemon = open(&dir);
         // Large enough to actually delete rows if either reaper bypasses the fence.
         // Payloads are unused: this test observes the retained rows, not event decoding.
-        let conn = rusqlite::Connection::open(dir.path().join("state.db")).unwrap();
+        let conn = crate::sqlite_fixture::open(dir.path().join("state.db")).unwrap();
         conn.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < ?1) INSERT INTO events(seq, at, json) SELECT x, '2026-09-15T00:00:00Z', '{}' FROM n", [EVENT_HISTORY as i64 + 3]).unwrap();
         conn.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < ?1) INSERT INTO changes(project, path, at, json) SELECT 'fixture', 'fixture', '2026-09-15T00:00:00Z', '{}' FROM n", [CHANGE_HISTORY as i64 + 3]).unwrap();
         lock(&daemon.state).next_seq = EVENT_HISTORY as u64 + 4;

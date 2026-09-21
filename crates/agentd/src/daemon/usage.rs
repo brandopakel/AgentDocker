@@ -720,7 +720,7 @@ mod tests {
         std::fs::copy(&path, root.join("copy.jsonl")).unwrap();
         collect_generation(&Arc::downgrade(&daemon), &config);
         assert_eq!(query(&daemon).await.rows[0].samples, 2);
-        let conn = rusqlite::Connection::open(temp.path().join("state.db")).unwrap();
+        let conn = crate::sqlite_fixture::open(temp.path().join("state.db")).unwrap();
         for table in [
             "usage_samples",
             "usage_buckets",
