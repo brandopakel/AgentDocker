@@ -13,6 +13,9 @@ SPEC = importlib.util.spec_from_file_location("windows_package_smoke", ROOT / "s
 SMOKE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SMOKE)
 PACKAGE = SMOKE.PACKAGE
+SPEC = importlib.util.spec_from_file_location("desktop_release", ROOT / "packaging/desktop/release.py")
+RELEASE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(RELEASE)
 
 
 class WindowsDesktopPackaging(unittest.TestCase):
@@ -64,6 +67,108 @@ class WindowsDesktopPackaging(unittest.TestCase):
         self.assertEqual((app / "licenses/LICENSE-Inter.txt").read_bytes(), (ROOT / "crates/ui/src/fonts/LICENSE-Inter.txt").read_bytes())
         self.assertIn("no installer", (app / "README.txt").read_text(encoding="utf-8"))
         self.assertEqual((self.output / (archive.name + ".sha256")).read_text().strip(), info["artifacts"][archive.name] + "  " + archive.name)
+
+    def accepted_fixture(self):
+        # This is synthetic acceptance for promotion-policy tests only;
+        # windows_package_smoke supplies real execution evidence in CI.
+        self.manifest["version"] = self.args.version = "0.2.0-rc.1"
+        self.save_manifest()
+        info, archive = self.build()
+        desktop = self.output / "smoke/desktop"
+        desktop.mkdir(parents=True)
+        screenshot = desktop / "window.png"
+        screenshot.write_bytes(b"fixture screenshot")
+        self.observed = {"result": "passed", "binary_sha256": info["binary_sha256"],
+                         "steps": [{"step": "fixture only", "ok": True}],
+                         "desktop": {"result": "passed", "screenshot_sha256": PACKAGE.sha256(screenshot),
+                                     "native_result": {"result": "passed", "connected": True}}}
+        self.report = {key: info[key] for key in ("source_commit", "source_input_sha256", "binary_sha256", "artifacts")}
+        self.report.update(result="passed", steps=1, desktop=self.observed["desktop"])
+        self.save_acceptance()
+        return info, archive
+
+    def save_acceptance(self):
+        (self.output / "package-acceptance.json").write_text(json.dumps(self.report))
+        (self.output / "smoke/windows-daemon-smoke.json").write_text(json.dumps(self.observed))
+
+    def promote(self, tag="v0.2.0-rc.1", source="a" * 40):
+        return RELEASE.windows_preview(self.binaries / "native-build.json", self.output,
+                                       self.root / "release", tag, source)
+
+    def test_preview_promotion_retains_accepted_bytes_and_separate_manifest(self):
+        info, archive = self.accepted_fixture()
+        self.promote()
+        release = self.root / "release"
+        self.assertEqual((release / archive.name).read_bytes(), archive.read_bytes())
+        self.assertEqual(json.loads((release / "windows-preview-manifest.json").read_text()), info)
+        self.assertEqual(json.loads((release / "windows-preview-acceptance.json").read_text()), self.report)
+        self.assertFalse(list(release.glob("manifest-*.json")))  # not an update-feed input
+        self.assertIn("no installer", (release / "WINDOWS-PREVIEW.txt").read_text())
+        self.assertEqual(len(list(release.iterdir())), 5)
+        with self.assertRaises(FileExistsError):
+            self.promote()
+
+    def test_windows_preview_rejects_stable_wrong_version_and_dirty_build(self):
+        self.accepted_fixture()
+        for tag, error in [("v0.2.0", "prerelease"), ("v0.3.0-rc.1", "matching clean")]:
+            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, error):
+                self.promote(tag)
+            self.assertFalse((self.root / "release").exists())
+        with self.assertRaisesRegex(ValueError, "matching clean"):
+            self.promote(source="d" * 40)  # another commit with the same version
+        self.manifest["source_dirty"] = True
+        self.save_manifest()
+        with self.assertRaisesRegex(ValueError, "matching clean"):
+            self.promote()
+
+    def test_windows_preview_refuses_failed_stale_or_incomplete_acceptance(self):
+        self.accepted_fixture()
+        original_report, original_observed = json.dumps(self.report), json.dumps(self.observed)
+        mutations = [lambda: self.report.update(result="failed"),
+                     lambda: self.report.update(source_input_sha256="d" * 64),
+                     lambda: self.report.update(steps=2),
+                     lambda: self.observed.update(steps=[]),
+                     lambda: self.observed["steps"][0].update(ok=False),
+                     lambda: self.observed.update(binary_sha256={}),
+                     lambda: self.observed["desktop"]["native_result"].update(connected=False)]
+        for mutation in mutations:
+            self.report, self.observed = json.loads(original_report), json.loads(original_observed)
+            mutation()
+            self.save_acceptance()
+            with self.assertRaises(ValueError):
+                self.promote()
+            self.assertFalse((self.root / "release").exists())
+        self.report, self.observed = json.loads(original_report), json.loads(original_observed)
+        self.save_acceptance()
+        (self.output / "smoke/desktop/window.png").write_bytes(b"replaced")
+        with self.assertRaisesRegex(ValueError, "screenshot"):
+            self.promote()
+
+    def test_windows_preview_refuses_archive_replaced_during_promotion(self):
+        _, archive = self.accepted_fixture()
+        copy = RELEASE.shutil.copyfile
+
+        def replace(source, destination, **kwargs):
+            result = copy(source, destination, **kwargs)
+            if Path(source) == archive:
+                value = bytearray(Path(destination).read_bytes())
+                value[-1] ^= 1  # same size, different bytes
+                Path(destination).write_bytes(value)
+            return result
+
+        with patch.object(RELEASE.shutil, "copyfile", side_effect=replace):
+            with self.assertRaisesRegex(ValueError, "checksum"):
+                self.promote()
+        self.assertFalse((self.root / "release").exists())
+
+    def test_preview_release_notes_preserve_existing_text_and_are_idempotent(self):
+        original = "## Changes\n\nA contributor's release notes.\n"
+        notes = RELEASE.preview_notes("v0.2.0-rc.1", original)
+        self.assertTrue(notes.endswith(original))
+        self.assertIn("unsigned portable preview", notes)
+        self.assertIn("actual-provider trials remain open", notes)
+        self.assertEqual(RELEASE.preview_notes("v0.2.0-rc.1", notes), notes)
+        self.assertEqual(RELEASE.preview_notes("v0.2.0", original), original)
 
     def test_wrong_machine_dll_or_truncated_pe_is_refused_before_publication(self):
         binary = self.binaries / "agentd.exe"

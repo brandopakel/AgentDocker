@@ -37,8 +37,9 @@ with `agentdocker-ui.exe`, `agentdocker.exe` and `agentd.exe` together in the
 packager checks native-build hashes again after copying and the PE x64 executable headers before
 publishing the directory. The manifest and sidecar checksum identify the exact
 archive; this preview is unsigned, without Authenticode or installer/update
-support. Tag release feeds remain macOS/Linux until the Windows distribution
-path is accepted. Windows ARM64 is not claimed.
+support. Prerelease tags attach this separately tested Windows portable ZIP;
+stable tags and the four-target update feeds remain macOS/Linux. Windows ARM64
+is not claimed. The protected-tag publication path still needs its first live run.
 
 On a native Windows build host, from the repository root in PowerShell:
 

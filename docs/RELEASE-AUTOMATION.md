@@ -14,6 +14,20 @@ the same source/version/schema and verifies each actual archive before writing
 `updates.json`. A prerelease tag writes `updates-preview.json` and remains a
 GitHub prerelease. Preview packages require explicit local-preview acceptance.
 
+Prerelease tags also build an **unsigned Windows x64 portable ZIP**. The Windows
+job extracts that archive outside the build directory and runs the native
+daemon/CLI/terminal/desktop trial before `release.py windows-preview` prepares
+assets. Promotion checks the clean tag/build provenance, exact archived EXE
+hashes, successful step results, GUI result and screenshot hash. It rechecks the
+staged ZIP before exposing the output directory. A failed Windows build or trial
+blocks the prerelease; stable tags skip this preview-only job.
+
+Windows assets have separate `windows-preview-manifest.json` and
+`windows-preview-acceptance.json` files and `WINDOWS-PREVIEW.txt` instructions.
+They are not inputs to the four-target update feed. Release notes identify the
+unsigned portable preview and its missing Windows installer, service and updater.
+The public upload selects only release assets, excluding diagnostic artifacts.
+
 Publication uploads all assets to a draft, then publishes it. A failed upload
 leaves the draft for a retry. The workflow refuses to replace an already
 published release. The Homebrew formula and cask use the same download checksums.
@@ -64,3 +78,6 @@ An actual protected-tag run with Apple credentials, hosted downloads through
 `agentdocker desktop update`, and Gatekeeper acceptance on a clean Mac remain
 release acceptance steps. The updater previews and explicitly applies a release;
 it does not replace a running daemon or terminate active agents.
+Windows promotion refusal and exact-byte retention have fixture coverage. The
+protected-tag Windows job, hosted ZIP download and independent-machine/provider
+acceptance remain unverified until the candidate is released and tried.
