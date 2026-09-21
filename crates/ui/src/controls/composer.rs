@@ -4,6 +4,14 @@ use super::*;
 use iced::widget::text_editor::{self, Action, Binding, Content, KeyPress, Motion, Status};
 use std::sync::Arc;
 
+#[derive(Clone, Copy)]
+struct Shaped {
+    limits: layout::Limits,
+    font: iced::Font,
+    fonts: iced::advanced::graphics::text::Version,
+    size: Size,
+}
+
 #[derive(Clone, Debug)]
 enum Edit {
     Action(Action),
@@ -18,6 +26,7 @@ struct State {
     value: String,
     preedit: bool,
     status: Option<Status>,
+    shaped: Option<Shaped>,
 }
 impl State {
     fn new(id: String, destination: String, value: String) -> Self {
@@ -30,6 +39,7 @@ impl State {
             value,
             preedit: false,
             status: None,
+            shaped: None,
         }
     }
 }
@@ -158,10 +168,33 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Composer {
         renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let state = tree.state.downcast_ref::<State>();
-        self.editor(&state.content, false, None)
+        let state = tree.state.downcast_mut::<State>();
+        let font = iced::advanced::text::Renderer::default_font(renderer);
+        let fonts = iced::advanced::graphics::text::font_system()
+            .read()
+            .expect("Read font system")
+            .version();
+        // Iced's editor.update replaces its backing Arc even for identical
+        // layout inputs. Repeating it between draw and capture invalidates
+        // the renderer's weak text primitive, leaving only an empty border.
+        if let Some(shaped) = state.shaped
+            && shaped.limits == *limits
+            && shaped.font == font
+            && shaped.fonts == fonts
+        {
+            return layout::Node::new(shaped.size);
+        }
+        let node = self
+            .editor(&state.content, false, None)
             .as_widget_mut()
-            .layout(&mut tree.children[0], renderer, limits)
+            .layout(&mut tree.children[0], renderer, limits);
+        state.shaped = Some(Shaped {
+            limits: *limits,
+            font,
+            fonts,
+            size: node.size(),
+        });
+        node
     }
     fn operate(
         &mut self,
@@ -242,6 +275,7 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Composer {
                 Edit::Action(action) => {
                     let changed = action.is_edit();
                     state.content.perform(action);
+                    state.shaped = None;
                     // Cursor/selection/scroll actions also need native shaping
                     // of the newly visible lines before the next draw.
                     shell.invalidate_layout();
@@ -448,6 +482,63 @@ mod tests {
     }
     fn tree(composer: &Composer) -> Tree {
         Tree::new(composer as &dyn Widget<Message, iced::Theme, iced::Renderer>)
+    }
+
+    #[test]
+    fn unchanged_layout_keeps_drawn_editor_glyphs_alive_for_native_capture() {
+        use iced::advanced::graphics::text::Text as Primitive;
+        let mut composer = fixture("room", "A visible draft\nSecond line 日本語", true, true);
+        let mut tree = tree(&composer);
+        let mut renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
+        let bounds = Rectangle::with_size(Size::new(320.0, 160.0));
+        let limits = layout::Limits::new(Size::ZERO, bounds.size());
+        let node = composer.layout(&mut tree, &renderer, &limits);
+        composer.draw(
+            &tree,
+            &mut renderer,
+            &iced::Theme::Dark,
+            &renderer::Style {
+                text_color: iced::Color::WHITE,
+            },
+            Layout::new(&node),
+            mouse::Cursor::Unavailable,
+            &bounds,
+        );
+        let drawn = renderer
+            .layers()
+            .iter()
+            .flat_map(|layer| &layer.text)
+            .flat_map(|item| item.as_slice())
+            .find_map(|primitive| match primitive {
+                Primitive::Editor { editor, .. } => Some(editor.clone()),
+                _ => None,
+            })
+            .expect("native renderer emitted the editor text");
+        assert!(
+            drawn
+                .upgrade()
+                .unwrap()
+                .buffer()
+                .layout_runs()
+                .any(|run| !run.glyphs.is_empty())
+        );
+        // App ticks rebuild/layout the unchanged view before a screenshot
+        // reads the last drawn frame. Its weak editor must still be usable.
+        for _ in 0..3 {
+            let mut rebuilt = fixture("room", "A visible draft\nSecond line 日本語", true, true);
+            rebuilt.diff(&mut tree);
+            let repeated = rebuilt.layout(&mut tree, &renderer, &limits);
+            assert_eq!(repeated.size(), node.size());
+            assert!(
+                drawn.upgrade().is_some(),
+                "unchanged layout discarded drawn glyphs"
+            );
+        }
+        // Real geometry changes still reshape instead of reusing stale bounds.
+        let narrower = layout::Limits::new(Size::ZERO, Size::new(120.0, 160.0));
+        let resized = composer.layout(&mut tree, &renderer, &narrower);
+        assert!(resized.size().width < node.size().width);
+        assert!(drawn.upgrade().is_none());
     }
 
     #[test]

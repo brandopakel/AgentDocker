@@ -326,6 +326,9 @@ Changing destination resets focus. A send receipt, mention or notification edit
 refreshes the editor from the same draft used by the accessibility SetValue path.
 Native widget-event regressions cover these boundaries, including Unicode IME
 commit and multiline paste; they do not replace physical keyboard/IME trials.
+Unchanged view layouts retain the editor's shaped text so native captures keep
+their drawn glyphs. Edits, navigation, font changes and resized bounds reshape it;
+a renderer regression checks glyph availability across repeated layout passes.
 
 The rendered controls supply AccessKit labels, roles, values, actions, focus and
 physical-pixel bounds. The native adapter is installed before showing the window.
