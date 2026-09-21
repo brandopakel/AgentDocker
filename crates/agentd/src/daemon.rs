@@ -603,6 +603,47 @@ fn same_agent(a: &AgentRecord, b: &AgentRecord) -> bool {
     agentdocker_core::identity::same_registration(a, b)
 }
 
+/// What a stopped daemon leaves behind in its session directory, taken
+/// away: the lock file of every owner nobody holds any more (an owner's
+/// lock outlives its socket on purpose, so a late opener never locks a
+/// dead inode), with that owner's socket if it was killed before it
+/// could unlink it — never an exit report, which waits for a daemon to
+/// record it, and never a lock somebody still holds. Then the directory
+/// itself when nothing is left, and the short `/tmp` directory a long
+/// home falls back to when it is empty too: a machine that runs test
+/// daemons by the hundred, or one person's daemon for a year, keeps
+/// nothing in `/tmp` for a daemon that is gone.
+pub(crate) fn sweep_sessions(home: &std::path::Path) {
+    let dir = agentdocker_core::session::sessions_dir(home);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "lock") {
+            continue;
+        }
+        // Held by a living owner: theirs, left alone.
+        match agentdocker_host::lock::try_exclusive_existing(&path) {
+            Ok(Some(_held)) => {}
+            _ => continue,
+        }
+        let exit = path.with_extension("exit");
+        if exit.exists() {
+            // An unacknowledged exit report is a daemon's to read.
+            continue;
+        }
+        let _ = std::fs::remove_file(path.with_extension("sock"));
+        let _ = std::fs::remove_file(&path);
+    }
+    // Non-recursive on purpose: anything still inside keeps the directory.
+    let _ = std::fs::remove_dir(&dir);
+    let short = agentdocker_core::paths::short_socket_dir(home);
+    if short != home && dir.starts_with(&short) {
+        let _ = std::fs::remove_dir(&short);
+    }
+}
+
 /// Whether a process with this pid exists — ours or not; an access
 /// refusal is a yes. Both platforms answer through the host crate.
 fn process_exists(pid: u32) -> bool {
@@ -895,6 +936,9 @@ impl Daemon {
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
+        // Owners of this daemon have gone (or were given their time): what
+        // they left in the session directory that nobody holds goes too.
+        sweep_sessions(&self.home);
     }
 
     fn stop(&self, reference: &str, force: bool) -> Response {
@@ -8996,6 +9040,44 @@ mod tests {
             .cloned()
             .unwrap();
         assert_eq!(stale, before, "a fenced return changes nothing in memory");
+    }
+
+    /// A daemon that stops leaves nothing of its sessions behind that
+    /// nobody holds: a stopped owner's lock and socket go, the session
+    /// directory goes when it is empty, and so does the short `/tmp`
+    /// directory a long home's sockets fell back to. An exit report that
+    /// no daemon has recorded yet stays, with the directory around it.
+    #[tokio::test]
+    async fn a_stopped_daemon_leaves_no_session_directory_behind() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("brief");
+        command.workdir = Some(dir.path().to_path_buf());
+        command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent } = daemon.handle(Request::Run { spec: command }).await else {
+            panic!("managed launch failed");
+        };
+        let sessions = agentdocker_core::session::sessions_dir(dir.path());
+        assert!(
+            sessions.join(format!("{}.lock", agent.id)).exists(),
+            "the owner holds its lock while it runs"
+        );
+        daemon.stop_all().await;
+        assert!(!sessions.exists(), "{}", sessions.display());
+        let short = agentdocker_core::paths::short_socket_dir(dir.path());
+        if short != dir.path() {
+            assert!(!short.exists(), "{}", short.display());
+        }
+        // An exit report nobody recorded keeps its place.
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("deadbeef.exit"), b"{}").unwrap();
+        std::fs::write(sessions.join("deadbeef.lock"), b"").unwrap();
+        sweep_sessions(dir.path());
+        assert!(sessions.join("deadbeef.exit").exists());
+        assert!(sessions.join("deadbeef.lock").exists());
+        std::fs::remove_file(sessions.join("deadbeef.exit")).unwrap();
+        sweep_sessions(dir.path());
+        assert!(!sessions.exists(), "an unheld lock with no report goes");
     }
 
     /// A relaunch whose program cannot be started at all is answered with

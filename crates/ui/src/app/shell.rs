@@ -559,6 +559,9 @@ pub enum Message {
     More,
     SessionDetails,
     ReviewDelivery,
+    /// The Needs-you strip's **Review**: open that session with its
+    /// delivery review already unfolded, wherever the person was.
+    ReviewSession(String),
     ResumeProvider(String, chrono::DateTime<Utc>),
     RetryController(String),
     ComposeSession,
@@ -1635,6 +1638,15 @@ impl App {
             Message::RetryController(agent) => {
                 if self.connected.is_ok() {
                     self.send(Cmd::RetryController(agent));
+                }
+            }
+            Message::ReviewSession(id) => {
+                // Opening selects and folds everything; the review is then
+                // unfolded for this session, so the button does something
+                // visible even when the session was already selected.
+                tasks.push(self.update(Message::OpenSession(id.clone())));
+                if self.shell.selected.as_deref() == Some(id.as_str()) {
+                    tasks.push(self.update(Message::ReviewDelivery));
                 }
             }
             Message::ReviewDelivery => {
@@ -4531,6 +4543,56 @@ mod tests {
         );
         assert_eq!(app.shell.answers[&action.target.message], "unfinished");
         assert!(app.sending.is_empty());
+    }
+
+    /// The Needs-you strip's **Review** does something visible: it opens
+    /// the session with its delivery review unfolded and asks for its log,
+    /// even when that session was already the selected one (selecting
+    /// alone folds the review, which is what made the button look dead).
+    #[test]
+    fn needs_you_review_opens_the_sessions_delivery_review() {
+        let (mut app, commands, _) = app();
+        app.connected = Ok(());
+        let now = Utc::now();
+        let mut paused = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "claude-code-0180".into(),
+                runtime: "claude-code".into(),
+                workdir: Some("/work/repo".into()),
+                ..Default::default()
+            },
+            false,
+            now,
+        );
+        paused.id = "paused-claude".into();
+        paused.status = agentdocker_core::AgentStatus::Running;
+        paused.process_started_at = Some(now);
+        paused.input_delivery = Some(agentdocker_core::InputDelivery {
+            process_started_at: now,
+            paused: true,
+            pause_reason: Some("Retained input requires review".into()),
+            reported_at: now,
+            received: None,
+            received_at: None,
+        });
+        app.agents.push(paused);
+        // Already selected, review folded: exactly the screenshot's state.
+        app.shell.selected = Some("paused-claude".into());
+        app.shell.review_delivery = false;
+        let _ = app.update(Message::ReviewSession("paused-claude".into()));
+        assert_eq!(app.shell.selected.as_deref(), Some("paused-claude"));
+        assert!(app.shell.review_delivery, "the review is unfolded");
+        assert_eq!(app.screen, Screen::Agents);
+        assert!(
+            commands
+                .try_iter()
+                .any(|cmd| matches!(cmd, Cmd::SessionLog(ref id) if id == "paused-claude")),
+            "the session log is asked for"
+        );
+        // Pressed again it toggles like the inspector's own control would
+        // not — it stays a way in, never a way out.
+        let _ = app.update(Message::ReviewSession("paused-claude".into()));
+        assert!(app.shell.review_delivery);
     }
 
     /// The Earlier groups (ended sessions, earlier conversations) open on a
