@@ -557,69 +557,106 @@ async fn stream_logs(
 /// A reader of a session log across its rotations. It holds the file it
 /// reads, so a rotation (the owner renames the file to `<name>.1` and
 /// starts a new one) cannot take unread lines away: each read drains the
-/// held file, then, when the path names another file, switches to it and
-/// drains that from its start. Identity is the file's (`same_file`), not
-/// its size: a new file that has already outgrown the old one is still a
-/// new file. One rotation per read is followed; a second in the same
-/// interval is beyond it.
+/// held file, then, when the path names another file, drains the held
+/// one once more (for what was written just before the rename), switches
+/// to the new one and drains that from its start. Identity is the file's
+/// (`same_file`), not its size: a new file that has already outgrown the
+/// old one is still a new file. One rotation per read is followed; a
+/// second in the same interval is beyond it.
 struct Follower {
     path: PathBuf,
     held: Option<(File, same_file::Handle)>,
+    /// The files already read, newest last, so the earlier half is not
+    /// shown again when it is one of them.
+    seen: Vec<same_file::Handle>,
 }
 
 impl Follower {
     fn open(path: PathBuf) -> Self {
-        Self { path, held: None }
+        Self {
+            path,
+            held: None,
+            seen: Vec::new(),
+        }
     }
 
     /// Everything not yet read: the rest of the held file, then the whole
     /// of a new one when the path has moved on.
     async fn read(&mut self) -> String {
+        self.read_with(|| ()).await
+    }
+
+    /// `read`, with `between` run after the held file is drained and
+    /// before the path is checked: where a rotation lands in a test.
+    async fn read_with(&mut self, between: impl FnOnce()) -> String {
         let mut text = String::new();
         if self.held.is_none() {
-            self.held = Self::hold(&self.path).await;
+            let path = self.path.clone();
+            self.held = self.hold(&path).await;
         }
         if let Some((file, _)) = &mut self.held {
             text.push_str(&Self::drain(file).await);
         }
-        if let Some((mut file, handle)) = self.switched().await {
-            text.push_str(&Self::drain(&mut file).await);
-            self.held = Some((file, handle));
+        between();
+        if let Some((mut fresh, handle)) = self.switched().await {
+            if let Some((old, _)) = &mut self.held {
+                text.push_str(&Self::drain(old).await);
+            }
+            text.push_str(&Self::drain(&mut fresh).await);
+            self.held = Some((fresh, handle));
         }
         text
     }
 
-    /// The rotated half, unless it is the very file being held: a rotation
+    /// The rotated half, unless it is a file already read: a rotation
     /// between the two reads of the first snapshot would otherwise show
     /// the same text twice.
-    async fn earlier(&self) -> String {
+    async fn earlier(&mut self) -> String {
         let rotated = paths::rotated_log(&self.path);
-        match Self::hold(&rotated).await {
-            Some((_, there)) if self.held.as_ref().is_some_and(|(_, held)| there == *held) => {
-                String::new()
-            }
+        match self.hold(&rotated).await {
             Some((mut file, _)) => Self::drain(&mut file).await,
             None => String::new(),
         }
     }
 
-    async fn hold(path: &Path) -> Option<(File, same_file::Handle)> {
+    /// Open `path` and remember it as read; `None` when it is not there,
+    /// or when it was read already (a rotated half that is the file this
+    /// follower held).
+    async fn hold(&mut self, path: &Path) -> Option<(File, same_file::Handle)> {
         let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || {
+        let (file, handle, seen) = tokio::task::spawn_blocking(move || {
             let file = std::fs::File::open(&path).ok()?;
             let handle = same_file::Handle::from_file(file.try_clone().ok()?).ok()?;
-            Some((File::from_std(file), handle))
+            let seen = same_file::Handle::from_file(file.try_clone().ok()?).ok()?;
+            Some((File::from_std(file), handle, seen))
         })
         .await
         .ok()
-        .flatten()
+        .flatten()?;
+        if self.seen.contains(&seen) {
+            return None;
+        }
+        self.seen.push(seen);
+        if self.seen.len() > 2 {
+            self.seen.remove(0);
+        }
+        Some((file, handle))
     }
 
     /// The file the path names now, when it is not the one held.
-    async fn switched(&self) -> Option<(File, same_file::Handle)> {
-        let (_, held) = self.held.as_ref()?;
-        let fresh = Self::hold(&self.path).await?;
-        (fresh.1 != *held).then_some(fresh)
+    async fn switched(&mut self) -> Option<(File, same_file::Handle)> {
+        let held = self.held.as_ref()?.1.as_file().try_clone().ok()?;
+        let held = same_file::Handle::from_file(held).ok()?;
+        let path = self.path.clone();
+        let same = tokio::task::spawn_blocking(move || {
+            same_file::Handle::from_path(&path).is_ok_and(|there| there == held)
+        })
+        .await
+        .unwrap_or(true);
+        if same {
+            return None;
+        }
+        self.hold(&self.path.clone()).await
     }
 
     /// From the file's position to its end; the position moves with it.
@@ -846,6 +883,11 @@ mod tests {
     use super::*;
     use agentdocker_core::{AgentSpec, EventKind, LeaseMode};
 
+    fn append(path: &Path, text: &str) {
+        let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        std::io::Write::write_all(&mut file, text.as_bytes()).unwrap();
+    }
+
     #[tokio::test]
     async fn a_follower_reads_across_a_rotation_without_losing_the_moved_tail() {
         let tmp = tempfile::tempdir().unwrap();
@@ -858,39 +900,67 @@ mod tests {
         // Written after the last read, then moved by a rotation the
         // follower did not see happen; the new file is already longer than
         // the old one was, so size says nothing.
-        let mut old = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        std::io::Write::write_all(&mut old, b"three\n").unwrap();
+        append(&path, "three\n");
         std::fs::rename(&path, &rotated).unwrap();
         std::fs::write(&path, "four four four four four\n").unwrap();
         assert_eq!(follower.read().await, "three\nfour four four four four\n");
         assert_eq!(follower.read().await, "");
-        std::io::Write::write_all(
-            &mut std::fs::OpenOptions::new()
-                .append(true)
-                .open(&path)
-                .unwrap(),
-            b"five\n",
-        )
-        .unwrap();
+        append(&path, "five\n");
         assert_eq!(follower.read().await, "five\n");
     }
 
     #[tokio::test]
-    async fn the_first_snapshot_does_not_show_the_held_file_twice_as_its_own_earlier_half() {
+    async fn a_rotation_between_the_drain_and_the_check_loses_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("agent.log");
+        let rotated = paths::rotated_log(&path);
+        std::fs::write(&path, "one\n").unwrap();
+        let mut follower = Follower::open(path.clone());
+        assert_eq!(follower.read().await, "one\n");
+        // The owner's last line before the rename, the rename and the
+        // first line after, all between this read's drain and its check.
+        let text = follower
+            .read_with(|| {
+                append(&path, "tail\n");
+                std::fs::rename(&path, &rotated).unwrap();
+                std::fs::write(&path, "new\n").unwrap();
+            })
+            .await;
+        assert_eq!(text, "tail\nnew\n");
+        assert_eq!(follower.read().await, "");
+    }
+
+    #[tokio::test]
+    async fn the_first_snapshot_does_not_show_a_file_it_read_as_its_own_earlier_half() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("agent.log");
+        let rotated = paths::rotated_log(&path);
+        // Rotated between the snapshot's drain and its check: the read
+        // shows both files, and the "earlier" file is one of them.
+        std::fs::write(&path, "old\n").unwrap();
+        let mut follower = Follower::open(path.clone());
+        let text = follower
+            .read_with(|| {
+                std::fs::rename(&path, &rotated).unwrap();
+                std::fs::write(&path, "new\n").unwrap();
+            })
+            .await;
+        assert_eq!(text, "old\nnew\n");
+        assert_eq!(follower.earlier().await, "");
+        // Rotated between the snapshot's two reads instead: the same.
         std::fs::write(&path, "held\n").unwrap();
         let mut follower = Follower::open(path.clone());
         assert_eq!(follower.read().await, "held\n");
-        // Rotated between the snapshot's two reads: the "earlier" file is
-        // the one already read.
-        std::fs::rename(&path, paths::rotated_log(&path)).unwrap();
-        std::fs::write(&path, "new\n").unwrap();
+        std::fs::rename(&path, &rotated).unwrap();
+        std::fs::write(&path, "next\n").unwrap();
         assert_eq!(follower.earlier().await, "");
-        assert_eq!(follower.read().await, "new\n");
+        assert_eq!(follower.read().await, "next\n");
+        // An earlier half nobody read is shown.
+        std::fs::write(&rotated, "before\n").unwrap();
+        std::fs::write(&path, "live\n").unwrap();
+        let mut follower = Follower::open(path.clone());
+        assert_eq!(follower.read().await, "live\n");
+        assert_eq!(follower.earlier().await, "before\n");
     }
 
     #[tokio::test]

@@ -1517,7 +1517,9 @@ impl Daemon {
             let log = self.log_path(&id);
             let _ = std::fs::remove_file(&log);
             let _ = std::fs::remove_file(paths::rotated_log(&log));
-            let _ = std::fs::remove_file(controller_log(&self.home, &id));
+            let controller = controller_log(&self.home, &id);
+            let _ = std::fs::remove_file(&controller);
+            let _ = std::fs::remove_file(paths::rotated_log(&controller));
         }
         response
     }
@@ -13387,6 +13389,7 @@ deny = ["send:all"]
         std::fs::write(paths::rotated_log(&log), "earlier\n").unwrap();
         let controller = controller_log(&daemon.home, &done.id);
         std::fs::write(&controller, "receiver\n").unwrap();
+        std::fs::write(paths::rotated_log(&controller), "receiver, earlier\n").unwrap();
         daemon
             .handle(Request::Deregister {
                 agent: "done".into(),
@@ -13403,6 +13406,7 @@ deny = ["send:all"]
         assert!(!log.exists());
         assert!(!paths::rotated_log(&log).exists());
         assert!(!controller.exists());
+        assert!(!paths::rotated_log(&controller).exists());
     }
 
     #[tokio::test]
