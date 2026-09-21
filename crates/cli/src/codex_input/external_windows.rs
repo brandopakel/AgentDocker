@@ -71,3 +71,25 @@ pub mod upgrade {
         anyhow::bail!(super::UNAVAILABLE)
     }
 }
+
+pub mod resolve {
+    use anyhow::Result;
+
+    use crate::client::Client;
+
+    #[derive(clap::Args)]
+    pub struct Args {
+        #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
+        pub agent: String,
+        #[arg(long, requires_all = ["confirm_read", "note"])]
+        pub message: Option<String>,
+        #[arg(long, requires_all = ["message", "note"])]
+        pub confirm_read: Option<String>,
+        #[arg(long, requires_all = ["message", "confirm_read"])]
+        pub note: Option<String>,
+    }
+
+    pub async fn run(_client: Client, _args: Args) -> Result<()> {
+        anyhow::bail!(super::UNAVAILABLE)
+    }
+}
