@@ -21,6 +21,19 @@ pub struct Lock {
 }
 
 impl Lock {
+    /// Whether `path` still names the file this lock is held on. A lock
+    /// is on a file, not a name: one taken on a file that was unlinked
+    /// between its open and its lock excludes nobody who opens the path
+    /// afterwards, so a holder whose file went takes the lock again.
+    pub fn is_at(&self, path: &Path) -> io::Result<bool> {
+        let ours = same_file::Handle::from_file(self._file.try_clone()?)?;
+        match same_file::Handle::from_path(path) {
+            Ok(there) => Ok(there == ours),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     /// The lock as a bare descriptor: `flock` locks travel with the open
     /// file, so a process that receives this descriptor holds the lock for
     /// as long as it keeps it open.
@@ -162,6 +175,19 @@ pub fn try_exclusive_existing(path: &Path) -> io::Result<Option<Lock>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lock_knows_when_its_file_was_replaced_under_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("owner.lock");
+        let held = try_exclusive(&path).unwrap().unwrap();
+        assert!(held.is_at(&path).unwrap());
+        std::fs::remove_file(&path).unwrap();
+        assert!(!held.is_at(&path).unwrap(), "gone");
+        let other = try_exclusive(&path).unwrap().unwrap();
+        assert!(!held.is_at(&path).unwrap(), "another file by that name");
+        assert!(other.is_at(&path).unwrap());
+    }
 
     #[test]
     fn existing_lock_does_not_create_files_and_contends_with_readers() {
