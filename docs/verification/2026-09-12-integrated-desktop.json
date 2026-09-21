@@ -6862,7 +6862,7 @@
         "width": 1180,
         "height": 792
       },
-      "conditions": "No UI interaction; live coordinator and provider sessions, normal periodic snapshots and activity events. Not an isolated workstation benchmark.",
+      "conditions": "No UI interaction; live coordinator and provider sessions, normal periodic snapshots and activity events. Not an isolated workstation benchmark. Desktop locked since 18:26:03 UTC; background window measurement, not foreground human interaction.",
       "elapsed_seconds": 60.06925499998033,
       "cpu_seconds": 10.219999999999999,
       "mean_one_core_percent": 17.013695275567084,
@@ -6956,7 +6956,7 @@
         "width": 1180,
         "height": 792
       },
-      "conditions": "No UI interaction; live coordinator and provider sessions, normal periodic snapshots and activity events. Not an isolated workstation benchmark. Same window dimensions and screen as baseline.",
+      "conditions": "No UI interaction; live coordinator and provider sessions, normal periodic snapshots and activity events. Not an isolated workstation benchmark. Same window dimensions and screen as baseline. Desktop locked since 18:26:03 UTC; background window measurement, not foreground human interaction.",
       "elapsed_seconds": 60.1351697499631,
       "cpu_seconds": 10.62,
       "mean_one_core_percent": 17.660214553574978,
@@ -7064,7 +7064,7 @@
           "width": 1180,
           "height": 792
         },
-        "conditions": "No UI interaction; live coordinator/providers. Bounded read-only accessibility inspection during sample. Same window size/screen; not an isolated benchmark.",
+        "conditions": "No UI interaction; live coordinator/providers. Bounded read-only accessibility inspection during sample. Same window size/screen; not an isolated benchmark. Desktop locked since 18:26:03 UTC; background window measurement, not foreground human interaction.",
         "elapsed_seconds": 60.138359375006985,
         "cpu_seconds": 4.87,
         "mean_one_core_percent": 8.097992779669896,
@@ -7163,13 +7163,35 @@
           7794,
           23973
         ]
+      },
+      "final_gate": {
+        "source_commit": "8f8d10da",
+        "rust_passed": 1331,
+        "rust_skipped": 7,
+        "python_run": 104,
+        "python_skipped": 1,
+        "fmt_clippy_doctests_package_release": "passed",
+        "task_stream_regression": "passed"
+      },
+      "native_workflow": {
+        "result": "passed",
+        "checks": 31,
+        "rendered_steps": 580,
+        "windows": 12,
+        "elapsed_seconds": 157.00296237500152,
+        "binary_sha256": {
+          "agentd": "348f82b2a8acf86e9c86b3876f73868851a1420a07e26ac267c7052c663a48c2",
+          "agentdocker": "2faa12cc6c6f10208055e1df51adf609ba7e325ce0a4df75839aca5320581629",
+          "agentdocker-ui": "69c4aae7191ff7698b13f4c32c17b7754d755829d8c92fa753541edfd7531816"
+        },
+        "external_accessibility_acceptance": false
       }
     },
-    "external_accessibility_failure": {
+    "external_accessibility_unavailable": {
       "baseline_pid": 67610,
       "candidate_pid": 92662,
       "trusted_inspector": true,
-      "result": "failed on both builds",
+      "result": "Acceptance unavailable while the desktop was locked; not established as an app defect.",
       "observed": [
         "AXWindows returned an element CFEqual to the application and role AXApplication.",
         "Bounded CFEqual-based traversal reached 87 menu/application nodes and no buttons.",
@@ -7177,10 +7199,20 @@
         "System Events exposed no app windows."
       ],
       "not_claimed": [
-        "No external screen-reader/control acceptance.",
-        "No attribution of the pre-existing hierarchy failure to this performance change."
+        "No external screen-reader/control acceptance while locked.",
+        "No claim that the observed locked-session hierarchy is an AgentDocker defect."
       ],
-      "existing_smoke_limit": "Rendered smoke collects in-process controls and does not establish external accessibility API access."
+      "existing_smoke_limit": "Rendered smoke collects in-process controls and does not establish external accessibility API access.",
+      "control_fixture": {
+        "kind": "Separate plain AppKit NSWindow/NSButton, no AgentDocker accessibility code",
+        "result": "Same application-only hierarchy; no window controls",
+        "cleanup": "Owned fixture ended; no provider process touched"
+      },
+      "desktop_state": {
+        "screen_locked": true,
+        "locked_since_utc": "2026-09-21T18:26:03Z",
+        "source": "CGSessionCopyCurrentDictionary (read-only)"
+      }
     }
   }
 }

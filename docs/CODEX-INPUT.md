@@ -185,7 +185,7 @@ original blocked answer without manual queue acknowledgement. #202 merged as
 `14f1c519`; broader startup and throughput limits remain. See
 `peer_answer_active_hook_2026_09_18` in the [native queue record](verification/2026-09-15-native-codex-queue.json).
 
-### Retained hook recovery (September 21 candidate)
+### Retained hook recovery (merged September 21)
 
 A lost hook result without an exact native receipt remains unresolved; increasing
 transcript capacity cannot turn missing evidence into delivery. The installed
@@ -286,8 +286,10 @@ Root hooks omit the child fields; real child hooks supply `agent_id` and
 assertion (Codex appends child notifications); a second passed behavior but was
 invalidated by a source merge during the run. Both failures remain recorded.
 
-Local desktop `ff4efc61` from `613c28c4` now supplies both the hook CLI and receiver
-PID 42141; app PID 44748 runs that release, including merged multiline input.
+The initial `ff4efc61` installation from `613c28c4` supplied the root-scope fix.
+PR #211 then merged as `ae751745`, including the final authentication-deadline
+and resolution-output fixes. The current `30ce582a` app/CLI and receiver PID 67597
+(retained from `d21ba9e3`, identical CLI hash) run those fixes.
 The coordinator (92608), Codex (51242) and both Claude processes (7794/23973) stayed
 running. The original `9ca24aa8e53a4912` was read in the complete explicit preview
 and manually resolved under audit `d2e1cc66fe504a0f9022c88be71d246e`, never treated

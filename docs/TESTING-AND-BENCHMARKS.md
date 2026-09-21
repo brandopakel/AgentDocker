@@ -69,10 +69,12 @@ through the task stream directly, preserving the native accessibility tree witho
 sending a second application message that would rebuild/redraw the window. Explicit
 focus/reveal completion and the smoke snapshot path remain unchanged. The installed follow-up measured 8.10% of one core over 60.14 seconds with the
 same shared-chat screen and window size. A task-stream regression verifies published
-control actions and scaled bounds without an application message. External macOS
-AX inspection failed on both previews (window queries returned the application and
-only menu nodes); that existing integration defect remains open. Smoke bypasses
-that external boundary, so it cannot certify screen-reader support.
+control actions and scaled bounds without an application message. Both CPU observations occurred with the desktop locked since 18:26 UTC, so they
+do not establish foreground interaction or power use. External macOS AX inspection
+was unavailable in that state: both previews and a plain AppKit control exposed
+only application/menu nodes. This does not establish an AgentDocker defect. Repeat
+external accessibility checks on an unlocked desktop; in-process smoke does not
+certify screen-reader support.
 
 ## Repository commands and installation
 
