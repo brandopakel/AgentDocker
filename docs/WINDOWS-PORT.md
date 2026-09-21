@@ -154,13 +154,27 @@ Work still required before platform support can be claimed:
   the keystroke reader and the size polling are in source and unexercised
   by the runner, which has no console.
 - The native Codex queue over the named pipe with the same peer checks.
-- Windows provider configuration and desktop application inventory. CLI PATH
-  inventory already recognizes `.exe`, `.com`, `.cmd` and `.bat`, but managed
-  launch currently resolves direct executables and passes them to `CreateProcessW`.
-  npm command shims need explicit argument-safe interpreter handling and native
-  provider trials; [the Windows launch contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)
-  requires an interpreter for batch files. A direct Python/EXE terminal smoke
-  does not establish npm-provider launch support.
+- Windows provider configuration: a provider's own tool under a pseudo
+  console, and a person's setup on a Windows machine. What is in source: an
+  npm-installed provider is a `.cmd` shim on `PATH` (`claude.cmd`,
+  `codex.cmd` beside `node.exe`), and the launch gate now starts one the way
+  a shell and the standard library do — one resolver for the runtime
+  inventory and the launch (`command::find_program`: a bare name by
+  launcher extension in `PATHEXT`'s order, never a data file, never the
+  working directory), and a batch launcher run by `cmd.exe` from the
+  system directory with the standard library's own batch command line
+  (`cmd.exe /e:ON /v:OFF /d /c ""script" args…"`) and argument rules: a
+  line-breaking argument is refused before anything runs, `%` is
+  neutralised, arguments are quoted unless made of characters cmd leaves
+  alone, and a canonical `\\?\` path is given as the plain path cmd
+  understands. Host tests on the runner: the batch line against the
+  standard library's shape, a `.cmd` shim run through the gate with a
+  space and a `&` intact in its arguments, a refused argument leaving a
+  marker-writing shim unrun, and `PATHEXT` precedence between `shim.exe`
+  and `shim.cmd`. The smoke starts a managed session from a shim on the
+  daemon's `PATH` by its bare name and reads its arguments back from its
+  log. Not established: a real provider's shim (Node under the pseudo
+  console) — that is the provider trial.
 - Daemon service/session startup, per-user desktop installation, Start menu
   integration, updates/rollback and signed packages.
 - The daemon and CLI test suites on the Windows runner (they still carry

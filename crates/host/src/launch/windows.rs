@@ -22,6 +22,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -235,11 +236,23 @@ pub fn prepare_with(command: Command, console: Option<HPCON>) -> io::Result<Pend
     // ignore-Ctrl-C attribute; nothing is registered.
     unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0) };
     let program = resolve_program(command.get_program())?;
-    let mut line = quoted(program.as_os_str());
-    for arg in command.get_args() {
-        line.push(' ');
-        line.push_str(&quoted(arg));
-    }
+    // A batch launcher (an npm-installed provider is one) cannot be
+    // started by itself: cmd.exe runs it, with the standard library's own
+    // batch command line and argument rules, so what the child sees is
+    // what `Command` would have given it.
+    let (program, line) = if crate::command::is_batch_launcher(&program) {
+        (
+            command_prompt()?,
+            batch_command_line(&program, command.get_args())?,
+        )
+    } else {
+        let mut line = quoted(program.as_os_str());
+        for arg in command.get_args() {
+            line.push(' ');
+            line.push_str(&quoted(arg));
+        }
+        (program, line)
+    };
     let mut line_wide: Vec<u16> = OsStr::new(&line).encode_wide().chain([0]).collect();
     let program_wide: Vec<u16> = program.as_os_str().encode_wide().chain([0]).collect();
     let environment = environment_block(&command);
@@ -555,52 +568,155 @@ fn pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
     })
 }
 
-/// The program as `Command` would find it: a path with a directory part
-/// is taken as given (with `.exe` tried when it has no extension); a bare
-/// name is looked up on `PATH`, `.exe` appended when it has no extension.
+/// The program as a shell would find it, and as the runtime inventory
+/// finds it (`command::find_program`): a path with a directory part is
+/// taken as given, or with each launcher extension in `PATHEXT` order
+/// when it has none; a bare name is looked up on `PATH` the same way —
+/// never in the working directory, which a bare name does not name.
 fn resolve_program(program: &OsStr) -> io::Result<PathBuf> {
     let given = Path::new(program);
-    let with_exe = |path: &Path| -> PathBuf {
-        if path.extension().is_some() {
-            path.to_path_buf()
-        } else {
-            let mut named = path.as_os_str().to_os_string();
-            named.push(".exe");
-            PathBuf::from(named)
-        }
+    let not_found = || {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("program not found: {}", given.display()),
+        )
     };
+    let name = given
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(not_found)?;
     if given.components().count() > 1 || given.is_absolute() {
         if given.is_file() {
             return Ok(given.to_path_buf());
         }
-        let named = with_exe(given);
-        if named.is_file() {
-            return Ok(named);
+        let dir = given.parent().map(Path::to_path_buf).unwrap_or_default();
+        let dir = if dir.is_absolute() {
+            dir
+        } else {
+            std::env::current_dir()?.join(dir)
+        };
+        return crate::command::find_program(&[dir], name).ok_or_else(not_found);
+    }
+    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    crate::command::find_program(&dirs, name).ok_or_else(not_found)
+}
+
+/// `cmd.exe` from the system directory, as the standard library runs a
+/// batch file with.
+fn command_prompt() -> io::Result<PathBuf> {
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buffer = vec![0u16; 260];
+    // SAFETY: the buffer's length is what is passed; the call writes at
+    // most that many units and returns the length needed.
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if length == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length as usize > buffer.len() {
+        buffer = vec![0u16; length as usize];
+        // SAFETY: as above, with a buffer of the length asked for.
+        let again = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+        if again == 0 || again as usize > buffer.len() {
+            return Err(io::Error::last_os_error());
         }
+        buffer.truncate(again as usize);
+    } else {
+        buffer.truncate(length as usize);
+    }
+    Ok(PathBuf::from(OsString::from_wide(&buffer)).join("cmd.exe"))
+}
+
+/// The command line the standard library builds to run a batch file:
+/// `cmd.exe /e:ON /v:OFF /d /c ""script" args…"` — the whole command in
+/// one extra pair of quotes, the script quoted, and every argument by
+/// `batch_argument`'s rules. A script path with a `"` or a trailing `\`
+/// cannot be named to cmd; a verbatim (`\\?\`) path is given as the plain
+/// path cmd understands.
+pub fn batch_command_line<'a>(
+    script: &Path,
+    args: impl IntoIterator<Item = &'a OsStr>,
+) -> io::Result<String> {
+    let script = user_path(script);
+    if script.contains('"') || script.ends_with('\\') {
         return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!("program not found: {}", given.display()),
+            io::ErrorKind::InvalidInput,
+            "a batch file's name may not contain `\"` or end with `\\`",
         ));
     }
-    let candidates = [given.to_path_buf(), with_exe(given)];
-    if let Some(found) = candidates.iter().find(|candidate| candidate.is_file()) {
-        return Ok(found.clone());
+    let mut line = String::from("cmd.exe /e:ON /v:OFF /d /c \"");
+    line.push('"');
+    line.push_str(&script);
+    line.push('"');
+    for arg in args {
+        line.push(' ');
+        batch_argument(&mut line, arg)?;
     }
-    for dir in std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-        .unwrap_or_default()
-    {
-        for candidate in &candidates {
-            let full = dir.join(candidate);
-            if full.is_file() {
-                return Ok(full);
+    line.push('"');
+    Ok(line)
+}
+
+/// One argument for a batch file, by the standard library's rules: `\r`
+/// and `\n` refused (they would truncate the command line), `%` turned
+/// into `%%cd:~,%` so `%VAR%` is never expanded, quoted unless made only
+/// of characters cmd leaves alone, `"` doubled inside quotes and the
+/// backslashes before one doubled too.
+fn batch_argument(line: &mut String, arg: &OsStr) -> io::Result<()> {
+    let text = arg.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "batch file arguments must be Unicode",
+        )
+    })?;
+    if text.contains(['\r', '\n', '\0']) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "batch file arguments are invalid",
+        ));
+    }
+    const UNQUOTED: &str = r"#$*+-./:?@\_";
+    let quote = text.is_empty()
+        || text.ends_with('\\')
+        || text.chars().any(|c| {
+            (c.is_ascii() && !(c.is_ascii_alphanumeric() || UNQUOTED.contains(c))) || c.is_control()
+        });
+    if quote {
+        line.push('"');
+    }
+    let mut backslashes = 0;
+    for c in text.chars() {
+        if c == '\\' {
+            backslashes += 1;
+        } else {
+            if c == '"' {
+                line.extend(std::iter::repeat_n('\\', backslashes));
+                line.push('"');
+            } else if c == '%' {
+                line.push_str("%%cd:~,");
             }
+            backslashes = 0;
         }
+        line.push(c);
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!("program not found: {}", given.display()),
-    ))
+    if quote {
+        line.extend(std::iter::repeat_n('\\', backslashes));
+        line.push('"');
+    }
+    Ok(())
+}
+
+/// A path as cmd.exe understands it: the verbatim prefix a canonical
+/// Windows path carries is not one cmd accepts.
+fn user_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        rest.to_owned()
+    } else {
+        text.into_owned()
+    }
 }
 
 /// One argument quoted by the rules `CommandLineToArgvW` and the C runtime
@@ -877,6 +993,98 @@ mod tests {
             std::fs::read_to_string(diagnostic).unwrap_or_default()
         );
     }
+    /// A batch launcher's command line is the standard library's: the whole
+    /// command in one extra pair of quotes, the script quoted with its
+    /// verbatim prefix gone, arguments quoted unless made of safe
+    /// characters, `%` neutralised, and a line-breaking argument refused.
+    #[test]
+    fn a_batch_command_line_follows_the_standard_librarys_rules() {
+        let args = ["hello world", "a&b", "100%", "plain", "", "back\\"];
+        let line = batch_command_line(
+            Path::new(r"\\?\C:\tools\shim.cmd"),
+            args.iter().map(OsStr::new),
+        )
+        .unwrap();
+        assert_eq!(
+            line,
+            r#"cmd.exe /e:ON /v:OFF /d /c ""C:\tools\shim.cmd" "hello world" "a&b" "100%%cd:~,%" plain "" "back\\""#
+        );
+        let refused =
+            batch_command_line(Path::new(r"C:\tools\shim.cmd"), [OsStr::new("x\ny")]).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            user_path(Path::new(r"\\?\UNC\srv\share\t.cmd")),
+            r"\\srv\share\t.cmd"
+        );
+    }
+
+    /// A `.cmd` launcher — the shape of an npm-installed provider — runs
+    /// under the gate like any program: through cmd.exe, with its
+    /// arguments intact, its output piped, in its job.
+    #[test]
+    fn a_batch_launcher_runs_under_cmd_with_its_arguments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = tmp.path().join("shim.cmd");
+        std::fs::write(&shim, "@echo off\r\necho shim-args %1 %2\r\n").unwrap();
+        let mut command = Command::new(&shim);
+        command.args(["hello world", "a&b"]);
+        let pending = prepare(command).expect("a suspended cmd.exe");
+        let mut owned = pending.activate().expect("resumed");
+        let mut stdout = owned.take_stdout().expect("a stdout pipe");
+        let mut text = String::new();
+        stdout.read_to_string(&mut text).expect("read to the end");
+        assert!(
+            text.contains("shim-args \"hello world\" \"a&b\""),
+            "{text:?}"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while owned.try_wait().expect("wait").is_none() {
+            assert!(std::time::Instant::now() < deadline, "cmd.exe did not exit");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// An argument cmd would rewrite is refused before anything runs: the
+    /// launcher that would have left a marker leaves none.
+    #[test]
+    fn a_refused_batch_argument_runs_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = tmp.path().join("shim.cmd");
+        let marker = tmp.path().join("marker.txt");
+        std::fs::write(
+            &shim,
+            format!("@echo off\r\necho ran > \"{}\"\r\n", marker.display()),
+        )
+        .unwrap();
+        let mut command = Command::new(&shim);
+        command.arg("first line\nsecond line");
+        let Err(error) = prepare(command) else {
+            panic!("a line-breaking argument was accepted");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!marker.exists(), "a refused launch ran the launcher");
+    }
+
+    /// A bare name resolves the way a shell resolves it: by launcher
+    /// extension in `PATHEXT`'s order, never a data file, never a relative
+    /// directory.
+    #[test]
+    fn a_bare_launcher_name_resolves_by_pathext_precedence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(dir.join("shim.cmd"), "@echo off\r\n").unwrap();
+        std::fs::write(dir.join("shim.txt"), "not a launcher").unwrap();
+        let found = crate::command::find_program(std::slice::from_ref(&dir), "shim").unwrap();
+        assert!(found.ends_with("shim.cmd"), "{}", found.display());
+        assert!(crate::command::find_program(std::slice::from_ref(&dir), "shim.txt").is_none());
+        assert!(crate::command::find_program(&[PathBuf::from("relative")], "shim").is_none());
+        // An executable beside the shim wins, as PATHEXT orders them.
+        std::fs::write(dir.join("shim.exe"), "MZ").unwrap();
+        let found = crate::command::find_program(&[dir], "shim").unwrap();
+        assert!(found.ends_with("shim.exe"), "{}", found.display());
+    }
+
     #[test]
     fn arguments_are_quoted_by_the_c_runtime_rules() {
         assert_eq!(quoted(OsStr::new("plain")), "plain");

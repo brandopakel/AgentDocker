@@ -86,6 +86,12 @@ def main():
     env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_")}
     env["AGENTDOCKER_HOME"] = str(home)
     env["AGENTDOCKER_NO_AUTOSTART"] = "1"
+    # A launcher directory on the daemon's PATH, as npm's is on a person's:
+    # an npm-installed provider is a `.cmd` shim there, and a session
+    # started by that bare name must find and run it.
+    launchers = root / "launchers"
+    launchers.mkdir()
+    env["PATH"] = str(launchers) + os.pathsep + env.get("PATH", "")
     # Console close must not block the async worker that drains its output.
     env["TOKIO_WORKER_THREADS"] = "1"
     daemon = None
@@ -514,6 +520,14 @@ def main():
         # the attach wire and answers on its screen; a stop through the
         # owner ends a child that would otherwise run on.
         piped = run("run", "--name", "smoke-pipes", "--runtime", "custom", "--", sys.executable, "-c", "import sys; print('piped hello'); print('to stderr', file=sys.stderr)")
+        if os.name == "nt":
+            # The shape of `claude` after `npm install -g`: a .cmd shim on PATH,
+            # started by its bare name, with an argument cmd must not rewrite.
+            (launchers / "smoke-shim.cmd").write_text("@echo off\r\necho shim-ran %1 %2\r\n")
+            run("run", "--name", "smoke-shim", "--runtime", "custom", "--", "smoke-shim", "hello world", "a&b")
+            line = wait_status("smoke-shim", "exited")
+            logs = run("logs", "smoke-shim", check=False)
+            step("a managed session starts from an npm-style .cmd launcher by its bare name, with a space and a cmd metacharacter intact in its arguments", "exited (0)" in line and 'shim-ran "hello world" "a&b"' in logs.stdout, (line + " | " + logs.stdout.strip())[-400:])
         line = wait_status("smoke-pipes", "exited")
         logs = run("logs", "smoke-pipes", check=False)
         step("a piped managed command runs under a session owner and its output reaches its log", "exited" in line and "piped hello" in logs.stdout and "to stderr" in logs.stdout, (line + " | " + logs.stdout.strip())[:600])

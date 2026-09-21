@@ -199,45 +199,13 @@ fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
     which_in(&roots.path, name)
 }
 
-/// The first executable file of that name on the path. A data file that
-/// happens to share the name is not a CLI.
-#[cfg(unix)]
+/// The first program of that name on the path, as the launch gate finds it
+/// too (`command::find_program`): the executable bit on Unix, the
+/// launcher extensions on Windows, where an npm-installed CLI is a `.cmd`
+/// shim. A data file that happens to share the name is not a CLI, and the
+/// working directory is never searched.
 fn which_in(paths: &[PathBuf], name: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    paths
-        .iter()
-        .filter(|path| path.is_absolute())
-        .map(|dir| dir.join(name))
-        .find(|candidate| {
-            std::fs::metadata(candidate)
-                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
-}
-
-/// Resolve common Windows CLI executables and npm command shims from PATH.
-/// Never implicitly search the working directory or execute a data-only file.
-#[cfg(windows)]
-fn which_in(paths: &[PathBuf], name: &str) -> Option<PathBuf> {
-    const EXTENSIONS: &[&str] = &["exe", "com", "cmd", "bat"];
-    let names: Vec<_> = if let Some(extension) = Path::new(name).extension() {
-        if !EXTENSIONS
-            .iter()
-            .any(|candidate| extension.eq_ignore_ascii_case(candidate))
-        {
-            return None;
-        }
-        vec![name.to_owned()]
-    } else {
-        EXTENSIONS
-            .iter()
-            .map(|extension| format!("{name}.{extension}"))
-            .collect()
-    };
-    paths
-        .iter()
-        .filter(|path| path.is_absolute())
-        .flat_map(|root| names.iter().map(move |name| root.join(name)))
-        .find(|candidate| std::fs::metadata(candidate).is_ok_and(|metadata| metadata.is_file()))
+    command::find_program(paths, name)
 }
 
 /// The first line of `<cli> --version`, trimmed to something table-sized.

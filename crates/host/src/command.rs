@@ -68,6 +68,97 @@ pub fn detach(command: &mut Command) {
     }
 }
 
+/// The launchers this host runs, in the order a Windows shell tries them
+/// unless `PATHEXT` says otherwise: an npm-installed provider is a `.cmd`
+/// shim beside `node.exe`, which is how `claude` and `codex` appear.
+/// Scripts a shell would also try (`.vbs`, `.js`) are not launchers here.
+#[cfg(windows)]
+pub const LAUNCHER_EXTENSIONS: &[&str] = &["com", "exe", "bat", "cmd"];
+
+/// The first program of that name in `dirs`, as a shell would find it.
+/// `name` is a bare name or a name with an extension, never a path with
+/// directories; relative directories in `dirs` are skipped, so the working
+/// directory is never searched by accident.
+pub fn find_program(dirs: &[std::path::PathBuf], name: &str) -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        dirs.iter()
+            .filter(|dir| dir.is_absolute())
+            .map(|dir| dir.join(name))
+            .find(|candidate| {
+                std::fs::metadata(candidate)
+                    .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            })
+    }
+    #[cfg(windows)]
+    {
+        let names = launcher_names(name)?;
+        dirs.iter()
+            .filter(|dir| dir.is_absolute())
+            .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+            .find(|candidate| std::fs::metadata(candidate).is_ok_and(|m| m.is_file()))
+    }
+}
+
+/// The file names `name` may stand for on Windows, in the order they are
+/// tried: a name with a launcher extension as given; a bare name with
+/// each launcher extension in `PATHEXT`'s order (the shell's precedence),
+/// or the default order when `PATHEXT` is unset. A name with an unknown
+/// extension names no launcher at all — a data file that shares the name
+/// is not a CLI.
+#[cfg(windows)]
+pub fn launcher_names(name: &str) -> Option<Vec<String>> {
+    match Path::new(name).extension() {
+        Some(extension) => LAUNCHER_EXTENSIONS
+            .iter()
+            .any(|known| extension.eq_ignore_ascii_case(known))
+            .then(|| vec![name.to_owned()]),
+        None => Some(
+            launcher_order()
+                .into_iter()
+                .map(|extension| format!("{name}.{extension}"))
+                .collect(),
+        ),
+    }
+}
+
+/// `PATHEXT`'s order restricted to the launchers this host runs; the
+/// default order when it is unset or names none of them.
+#[cfg(windows)]
+fn launcher_order() -> Vec<&'static str> {
+    let ordered: Vec<&'static str> = std::env::var("PATHEXT")
+        .map(|pathext| {
+            pathext
+                .split(';')
+                .filter_map(|entry| {
+                    let entry = entry.trim().trim_start_matches('.');
+                    LAUNCHER_EXTENSIONS
+                        .iter()
+                        .copied()
+                        .find(|known| known.eq_ignore_ascii_case(entry))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if ordered.is_empty() {
+        LAUNCHER_EXTENSIONS.to_vec()
+    } else {
+        ordered
+    }
+}
+
+/// Whether a resolved program is a batch launcher, which Windows cannot
+/// start on its own: `cmd.exe` runs it.
+#[cfg(windows)]
+pub fn is_batch_launcher(program: &Path) -> bool {
+    program.extension().is_some_and(|extension| {
+        ["cmd", "bat"]
+            .iter()
+            .any(|batch| extension.eq_ignore_ascii_case(batch))
+    })
+}
+
 pub struct Output {
     pub success: bool,
     /// Standard output only, for structured engine responses.
