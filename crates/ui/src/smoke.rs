@@ -21,6 +21,7 @@ pub struct Smoke {
     requested: bool,
     ticks: usize,
     ready: bool,
+    capture_after: Option<Instant>,
     connected: bool,
     fixture: bool,
     runtimes: usize,
@@ -55,6 +56,7 @@ impl Smoke {
                 requested: false,
                 ticks: 0,
                 ready: false,
+                capture_after: None,
                 connected: false,
                 fixture: false,
                 runtimes: 0,
@@ -77,6 +79,9 @@ impl Smoke {
             .expected_pid
             .is_none_or(|pid| discovered.iter().any(|p| p.pid == pid));
         self.ready = connected && runtimes > 0 && fixture;
+        if !self.ready {
+            self.capture_after = None;
+        }
         self.connected = connected;
         self.fixture = fixture;
         if self.started.elapsed() > self.deadline {
@@ -106,6 +111,15 @@ impl Smoke {
             && self.started.elapsed() > Duration::from_millis(500)
             && !self.requested
         {
+            // As in scenario Capture, let a redraw replace primitives whose
+            // text state changed with the first ready snapshot (Inbox becomes
+            // Messages). A screenshot in that same update can omit the text.
+            let after = self
+                .capture_after
+                .get_or_insert_with(|| Instant::now() + Duration::from_millis(400));
+            if Instant::now() < *after {
+                return Task::none();
+            }
             self.requested = true;
             return window::oldest()
                 .and_then(window::screenshot)

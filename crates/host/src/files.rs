@@ -4,6 +4,84 @@ use std::fs::{File, Metadata, OpenOptions};
 use std::io;
 use std::path::Path;
 
+/// Publish an already-flushed staged file in the same directory. Unix
+/// syncs the containing directory after rename; Windows requests a
+/// write-through move rather than trying to open a directory as a file.
+pub fn publish_staged(staged: &Path, destination: &Path) -> io::Result<()> {
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    if parent.is_none() || staged.parent() != parent {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "staged file must share its destination directory",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        std::fs::rename(staged, destination)?;
+        File::open(parent.expect("validated parent"))?.sync_all()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+        };
+        let wide = |path: &Path| -> io::Result<Vec<u16>> {
+            let mut name: Vec<u16> = path.as_os_str().encode_wide().collect();
+            if name.contains(&0) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "path contains a NUL",
+                ));
+            }
+            name.push(0);
+            Ok(name)
+        };
+        let staged = wide(staged)?;
+        let destination = wide(destination)?;
+        // SAFETY: both paths are nul-terminated and remain live through
+        // the call; no cross-volume copy or deferred rename is allowed.
+        if unsafe {
+            MoveFileExW(
+                staged.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn a_flushed_report_is_published_and_replaced_in_its_own_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let staged = directory.path().join("session.exit.staging");
+        let destination = directory.path().join("session.exit");
+        for bytes in [
+            b"first report".as_slice(),
+            b"second complete report".as_slice(),
+        ] {
+            let mut file = File::create(&staged).unwrap();
+            file.write_all(bytes).unwrap();
+            file.sync_all().unwrap();
+            drop(file);
+            publish_staged(&staged, &destination).unwrap();
+            assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+            assert!(!staged.exists());
+        }
+    }
+}
+
 pub fn open_regular(path: &Path) -> io::Result<File> {
     #[cfg(unix)]
     let file = {

@@ -716,6 +716,7 @@ impl Store {
     }
 
     fn open_with(path: &Path, bump_version: bool) -> Result<Self> {
+        crate::initialize_storage_platform()?;
         // Secure the database before SQLite can create a journal/WAL. Existing
         // companion files are checked without following links as well.
         agentdocker_host::dirs::private_file(path, true, false)?;
@@ -739,7 +740,7 @@ impl Store {
     /// A throwaway database for tests.
     #[cfg(test)]
     pub fn in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?, true)
+        Self::init(crate::sqlite_fixture::in_memory()?, true)
     }
 
     /// Behave as if the SQLite build lacked FTS5, to exercise the fallback.
@@ -2750,7 +2751,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_schema_version() {
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = crate::sqlite_fixture::in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', '999')",
@@ -2768,7 +2769,7 @@ mod tests {
     /// read back whole.
     #[test]
     fn a_newer_database_is_refused_and_this_versions_pause_is_kept() {
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = crate::sqlite_fixture::in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute(
             "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
@@ -2820,7 +2821,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.db");
         {
-            let conn = Connection::open(&path).unwrap();
+            let conn = crate::sqlite_fixture::open(&path).unwrap();
             conn.execute_batch(SCHEMA).unwrap();
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
@@ -2940,7 +2941,7 @@ mod tests {
         let now = Utc::now();
         let record = AgentRecord::new(AgentSpec::default(), false, now);
         {
-            let conn = Connection::open(&path).unwrap();
+            let conn = crate::sqlite_fixture::open(&path).unwrap();
             conn.execute_batch(SCHEMA).unwrap();
             conn.execute(
                 "INSERT INTO meta(key,value) VALUES('schema_version', '18')",
@@ -3148,7 +3149,7 @@ mod tests {
     #[test]
     fn legacy_schemas_upgrade_to_durable_delivery_guard() {
         for version in 1..SCHEMA_VERSION {
-            let conn = Connection::open_in_memory().unwrap();
+            let conn = crate::sqlite_fixture::in_memory().unwrap();
             conn.execute_batch(SCHEMA).unwrap();
             conn.execute(
                 "INSERT INTO meta(key,value) VALUES('schema_version', ?1)",
@@ -3170,7 +3171,7 @@ mod tests {
 
     fn archive_fixture() -> (Store, Vec<Envelope>) {
         use agentdocker_core::{AgentSpec, Destination};
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = crate::sqlite_fixture::in_memory().unwrap();
         let store = Store::init(conn, true).unwrap();
         let a = AgentRecord::new(AgentSpec::default(), false, Utc::now());
         let b = AgentRecord::new(AgentSpec::default(), false, Utc::now());
@@ -3574,7 +3575,7 @@ mod tests {
     #[test]
     fn a_thread_pages_by_seq_within_its_conversation() {
         use agentdocker_core::Destination;
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = crate::sqlite_fixture::in_memory().unwrap();
         let store = Store::init(conn, true).unwrap();
         let root = Envelope::new(
             "a",
@@ -3644,7 +3645,7 @@ mod tests {
     #[test]
     fn the_backfilled_archive_starts_read_for_the_person() {
         use agentdocker_core::{AgentSpec, Destination};
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = crate::sqlite_fixture::in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute(
             "INSERT INTO meta(key,value) VALUES('schema_version', '20')",
@@ -3727,7 +3728,7 @@ mod tests {
     #[test]
     fn queued_messages_from_before_v19_are_offered_at_the_upgrade() {
         use agentdocker_core::{AgentSpec, Destination};
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = crate::sqlite_fixture::in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute(
             "INSERT INTO meta(key,value) VALUES('schema_version', '18')",
@@ -3808,7 +3809,7 @@ mod tests {
         use agentdocker_core::{
             AgentSpec, Destination, InputBinding, ProcessIdentity, ProviderGeneration,
         };
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = crate::sqlite_fixture::in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         conn.execute(
             "INSERT INTO meta(key,value) VALUES('schema_version', '19')",
@@ -4216,7 +4217,7 @@ mod tests {
 
         // A database from before the column existed: the blob is the only
         // copy of the summary until `init` adds and fills the column.
-        let legacy = Connection::open_in_memory().unwrap();
+        let legacy = crate::sqlite_fixture::in_memory().unwrap();
         legacy
             .execute_batch(
                 "CREATE TABLE journal (
@@ -4272,7 +4273,7 @@ mod tests {
     fn interrupted_summary_migration_rolls_back_and_can_retry() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.db");
-        let legacy = Connection::open(&path).unwrap();
+        let legacy = crate::sqlite_fixture::open(&path).unwrap();
         legacy.execute_batch("CREATE TABLE journal (
             id INTEGER PRIMARY KEY, project TEXT NOT NULL, seq INTEGER NOT NULL,
             at TEXT NOT NULL, agent TEXT, branch TEXT, kind TEXT NOT NULL,
@@ -4280,7 +4281,7 @@ mod tests {
             INSERT INTO journal (project, seq, at, kind, json) VALUES ('p', 7, '', 'note', 'malformed');").unwrap();
         drop(legacy);
         assert!(Store::open(&path).is_err());
-        let conn = Connection::open(&path).unwrap();
+        let conn = crate::sqlite_fixture::open(&path).unwrap();
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(journal)")
             .unwrap()

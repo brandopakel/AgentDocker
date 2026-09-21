@@ -447,7 +447,7 @@ fn wal_exclusive_maintenance_refuses_idle_connections_and_blocks_new_ones() {
     );
     drop(store);
     let maintenance = Store::open_repair(&path, true).unwrap();
-    let contender = Connection::open(&path).unwrap();
+    let contender = crate::sqlite_fixture::open(&path).unwrap();
     contender.busy_timeout(std::time::Duration::ZERO).unwrap();
     assert!(
         contender

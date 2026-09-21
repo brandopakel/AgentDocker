@@ -10,17 +10,12 @@
 //! binary is [`main`] and nothing else.
 
 pub mod daemon;
-#[cfg(unix)]
 mod owner;
 pub mod reconcile;
 mod server;
-mod store;
-// Managed sessions (owner processes, PTYs, descriptor handover) are Unix
-// today; Windows gets the same supervisor surface answering `unavailable`.
-#[cfg(unix)]
-mod supervisor;
 #[cfg(windows)]
-#[path = "supervisor_windows.rs"]
+mod sqlite_windows;
+mod store;
 mod supervisor;
 #[cfg(unix)]
 mod takeover;
@@ -45,10 +40,38 @@ use crate::daemon::Daemon;
 /// The schema this executable writes when it opens daemon state.
 pub const STATE_SCHEMA_VERSION: u32 = store::SCHEMA_VERSION as u32;
 
+/// Prepare the process-wide storage platform before starting worker threads.
+/// On Windows this permanently installs SQLite's private-file creation hook;
+/// on other platforms it does nothing. Call this before using raw SQLite
+/// connections in a process that embeds agentd. AgentDocker's own connection
+/// entry points and test fixtures also wait for this initialization.
+pub fn initialize_storage_platform() -> anyhow::Result<()> {
+    #[cfg(windows)]
+    sqlite_windows::initialize()?;
+    Ok(())
+}
+
+/// Raw fixture databases must wait for the same initialization as Store. In
+/// particular, an in-memory fixture must not initialize SQLite concurrently
+/// with installation of its process-wide Windows syscall hook.
+#[cfg(test)]
+mod sqlite_fixture {
+    pub(crate) fn open(path: impl AsRef<std::path::Path>) -> anyhow::Result<rusqlite::Connection> {
+        super::initialize_storage_platform()?;
+        Ok(rusqlite::Connection::open(path)?)
+    }
+
+    pub(crate) fn in_memory() -> anyhow::Result<rusqlite::Connection> {
+        super::initialize_storage_platform()?;
+        Ok(rusqlite::Connection::open_in_memory()?)
+    }
+}
+
 /// Read the compatibility floor without creating, migrating or opening a
 /// daemon. An unreadable existing database is an error, never an absent home.
 pub fn stored_state_schema(home: &std::path::Path) -> anyhow::Result<Option<u32>> {
     use anyhow::Context;
+    initialize_storage_platform()?;
     let path = home.join("state.db");
     match std::fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -124,6 +147,7 @@ const MAIN_STACK: usize = 32 << 20;
 pub fn main() -> anyhow::Result<()> {
     agentdocker_host::installation::redirect_managed_launcher()?;
     let args = Args::parse();
+    initialize_storage_platform()?;
     let worker = std::thread::Builder::new()
         .name("agentd".into())
         .stack_size(MAIN_STACK)
@@ -140,17 +164,10 @@ pub fn main() -> anyhow::Result<()> {
 /// daemon when they cannot connect, and two may race to do so.
 pub fn run(args: Args) -> anyhow::Result<()> {
     if args.session_owner {
-        #[cfg(unix)]
-        {
-            let launch: owner::Launch =
-                serde_json::from_reader(std::io::stdin().lock()).map_err(|error| {
-                    anyhow::anyhow!("session owner expects a launch on stdin: {error}")
-                })?;
-            let code = owner::main(launch)?;
-            std::process::exit(code);
-        }
-        #[cfg(windows)]
-        anyhow::bail!("session owners are not available on Windows yet");
+        let launch: owner::Launch = serde_json::from_reader(std::io::stdin().lock())
+            .map_err(|error| anyhow::anyhow!("session owner expects a launch on stdin: {error}"))?;
+        let code = owner::main(launch)?;
+        std::process::exit(code);
     }
     serve(args)
 }
@@ -424,7 +441,7 @@ mod schema_tests {
         assert_eq!(stored_state_schema(&missing).unwrap(), None);
         assert!(!missing.exists());
         let path = tmp.path().join("state.db");
-        let conn = rusqlite::Connection::open(&path).unwrap();
+        let conn = crate::sqlite_fixture::open(&path).unwrap();
         conn.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT); INSERT INTO meta VALUES('schema_version','999');").unwrap();
         drop(conn);
         let before = std::fs::read(&path).unwrap();

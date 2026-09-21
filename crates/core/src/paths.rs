@@ -177,7 +177,7 @@ pub fn container_socket(home: &Path) -> PathBuf {
 }
 
 #[cfg(windows)]
-fn pipe_name(home: &Path, channel: &str) -> PathBuf {
+pub(crate) fn pipe_name(home: &Path, channel: &str) -> PathBuf {
     let id = uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_URL,
         home.as_os_str().as_encoded_bytes(),

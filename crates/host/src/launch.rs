@@ -106,9 +106,11 @@ impl OwnedChild {
     /// The caller takes on the reaping. After a handover that is the
     /// successor, which watches by pid rather than by wait status,
     /// because a process it did not fork is not its child to wait on.
-    pub fn disown(mut self) -> u32 {
+    /// Windows can refuse to clear the job's crash protection; both
+    /// platforms expose the same fallible ownership handoff.
+    pub fn disown(mut self) -> io::Result<u32> {
         self.reaped = true;
-        self.child.id()
+        Ok(self.child.id())
     }
 }
 
@@ -284,7 +286,7 @@ mod tests {
         command.args(["-c", "sleep 30"]).process_group(0);
         let pending = prepare(command).unwrap();
         let child = pending.activate().unwrap();
-        let pid = child.disown();
+        let pid = child.disown().expect("ownership transferred");
         assert!(alive(pid), "still running the moment we let go");
         // Nothing holds it now. A `Drop` that killed would have killed
         // it above, so this is about the absence of that.

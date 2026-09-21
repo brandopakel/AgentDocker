@@ -16,26 +16,31 @@
 //! log path and its socket, and nothing else.
 
 use std::collections::{BTreeMap, VecDeque};
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(unix)]
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
 use agentdocker_core::AgentId;
 use agentdocker_core::session::{
     ACTIVATE_WITHIN_SECS, ChildIdentity, ExitReport, FORMAT, OwnerCommand, OwnerHello, OwnerReport,
-    exit_path, socket_path,
+    endpoint, exit_path, socket_path,
 };
+use agentdocker_host::ipc::{Listener, Stream};
 use agentdocker_host::launch::{OwnedChild, Pending};
 use agentdocker_host::lock;
 use anyhow::Context;
 use chrono::Utc;
+#[cfg(unix)]
 use nix::sys::signal::{Signal, kill};
+#[cfg(unix)]
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
 /// What the daemon hands an owner on its stdin: everything needed to
@@ -54,6 +59,87 @@ pub struct Launch {
     pub home: PathBuf,
     pub socket: PathBuf,
     pub log: PathBuf,
+}
+
+/// The terminal the owner keeps for as long as the child lives: the master
+/// descriptor on Unix; on Windows the pseudo console itself, which must not
+/// close before the child does.
+#[cfg(unix)]
+type Terminal = std::os::fd::OwnedFd;
+#[cfg(windows)]
+type Terminal = agentdocker_host::pty::Pty;
+
+fn resize_terminal(terminal: &Terminal, cols: u16, rows: u16) -> std::io::Result<()> {
+    #[cfg(unix)]
+    return agentdocker_host::pty::set_window_size(
+        std::os::fd::AsRawFd::as_raw_fd(terminal),
+        cols,
+        rows,
+    );
+    #[cfg(windows)]
+    terminal.resize(cols, rows)
+}
+
+/// The child's process group as this platform ends it: on Unix the group
+/// signalled by `-pid`, asked with `SIGTERM` and ended with `SIGKILL`; on
+/// Windows the job the child was assigned to before it ran, asked — for a
+/// console child — with a Ctrl-C typed into its console (a piped child has
+/// nothing to be asked with, so the ask is the end) and ended by ending
+/// the job.
+#[cfg(unix)]
+struct Group(Pid, u32);
+#[cfg(unix)]
+impl Group {
+    fn of(child: &Pending, _input: Option<&mpsc::Sender<Vec<u8>>>) -> anyhow::Result<Self> {
+        Ok(Self(Pid::from_raw(-(child.pid as i32)), child.pid))
+    }
+    fn ask(&self) {
+        let _ = kill(self.0, Signal::SIGTERM);
+    }
+    fn end(&self) {
+        let _ = kill(self.0, Signal::SIGKILL);
+    }
+    fn exists(&self) -> bool {
+        crate::supervisor::group_exists(self.1)
+    }
+}
+#[cfg(windows)]
+struct Group {
+    job: agentdocker_host::launch::Job,
+    input: Option<mpsc::Sender<Vec<u8>>>,
+}
+#[cfg(windows)]
+impl Group {
+    fn of(child: &Pending, input: Option<&mpsc::Sender<Vec<u8>>>) -> anyhow::Result<Self> {
+        Ok(Self {
+            job: child.job().context("cannot hold the agent's job")?,
+            input: input.cloned(),
+        })
+    }
+    fn ask(&self) {
+        ask_console(self.input.as_ref(), || self.end());
+    }
+    fn end(&self) {
+        let _ = self.job.end();
+    }
+    fn exists(&self) -> bool {
+        self.job.exists()
+    }
+}
+
+#[cfg(any(windows, test))]
+fn ask_console(input: Option<&mpsc::Sender<Vec<u8>>>, end: impl FnOnce()) {
+    // Never block the supervisor on the keyboard writer. Full means Ctrl-C
+    // was NOT queued, but the existing stop deadline still grants the child
+    // its grace period. Only a missing/closed input cannot be asked at all.
+    if input.is_none_or(|input| {
+        matches!(
+            input.try_send(vec![0x03]),
+            Err(mpsc::error::TrySendError::Closed(_))
+        )
+    }) {
+        end();
+    }
 }
 
 /// What a client attaching late is shown before the live stream.
@@ -113,7 +199,7 @@ struct Shared {
     live: broadcast::Sender<(u64, Vec<u8>)>,
     /// Keystrokes for the terminal; absent for a piped command.
     input: Option<mpsc::Sender<Vec<u8>>>,
-    master: Option<Arc<std::os::fd::OwnedFd>>,
+    terminal: Option<Arc<Terminal>>,
     /// The controller's decisions: activate, stop (with force), acknowledge.
     activate: watch::Sender<bool>,
     stop: watch::Sender<Option<bool>>,
@@ -148,11 +234,15 @@ fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 pub fn main(launch: Launch) -> anyhow::Result<i32> {
     anyhow::ensure!(launch.format == FORMAT, "unknown launch format");
     // Our own session: the daemon signals the agent's group, never ours,
-    // and a daemon that dies must not take us with it.
-    let _ = nix::unistd::setsid();
-    // SAFETY: setting a disposition to SIG_IGN has no handler to be unsafe.
-    unsafe {
-        let _ = nix::sys::signal::signal(Signal::SIGHUP, nix::sys::signal::SigHandler::SigIgn);
+    // and a daemon that dies must not take us with it. On Windows the
+    // daemon starts us detached in our own group, which is the same thing.
+    #[cfg(unix)]
+    {
+        let _ = nix::unistd::setsid();
+        // SAFETY: setting a disposition to SIG_IGN has no handler to be unsafe.
+        unsafe {
+            let _ = nix::sys::signal::signal(Signal::SIGHUP, nix::sys::signal::SigHandler::SigIgn);
+        }
     }
     // Hold the installed release this executable belongs to for as long as
     // we own a child, so maintenance cannot prune an occupied release after
@@ -187,6 +277,11 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
     } else {
         None
     };
+    // On Unix the child is handed the slave as its standard streams and
+    // claims it as its controlling terminal between fork and exec; a piped
+    // child gets its own process group. On Windows the console is bound
+    // to the child at creation, and the group is a job (see `launch`).
+    #[cfg(unix)]
     match pty.as_mut().and_then(|pty| pty.take_slave()) {
         Some(slave) => {
             let stdin = slave.try_clone()?;
@@ -210,13 +305,23 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
     if let Some(workdir) = &launch.workdir {
         command.current_dir(workdir);
     }
-    let terminal_io = pty
+    // This side of the terminal, to read what the agent writes and to type
+    // into it, as plain files either platform's pump can drive.
+    let terminal_io: Option<(std::fs::File, std::fs::File)> = pty
         .as_ref()
         .map(|pty| -> std::io::Result<_> {
-            Ok((pty.master().try_clone()?, pty.master().try_clone()?))
+            #[cfg(unix)]
+            return Ok((
+                std::fs::File::from(pty.master().try_clone()?),
+                std::fs::File::from(pty.master().try_clone()?),
+            ));
+            #[cfg(windows)]
+            Ok((pty.reader()?, pty.writer()?))
         })
         .transpose()
         .context("cannot clone the agent's terminal")?;
+    #[cfg(windows)]
+    let console = pty.as_mut().map(|pty| pty.console()).transpose()?;
     let log_path = launch.log.clone();
     let log = tokio::task::spawn_blocking(move || {
         agentdocker_host::dirs::secure_state_dir(
@@ -253,18 +358,29 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
             None => tokio::time::sleep(Duration::from_millis(50)).await,
         }
     };
-    let _ = std::fs::remove_file(&socket);
-    let listener = UnixListener::bind(&socket)
-        .with_context(|| format!("cannot listen on {}", socket.display()))?;
+    let serving = endpoint(&launch.home, &launch.agent);
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(&serving);
+    let listener = Listener::bind(&serving)
+        .with_context(|| format!("cannot listen on {}", serving.display()))?;
+    #[cfg(unix)]
     std::fs::set_permissions(
-        &socket,
+        &serving,
         <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
     )?;
 
     let program = launch.command[0].clone();
-    let pending = tokio::task::spawn_blocking(move || agentdocker_host::launch::prepare(command))
+    #[cfg(unix)]
+    let prepare = move || agentdocker_host::launch::prepare(command);
+    #[cfg(windows)]
+    let prepare = move || agentdocker_host::launch::prepare_with(command, console);
+    let pending = tokio::task::spawn_blocking(prepare)
         .await?
         .with_context(|| format!("failed to prepare `{program}`"))?;
+    #[cfg(windows)]
+    if let Some(pty) = pty.as_mut() {
+        pty.child_created();
+    }
     let child = ChildIdentity {
         pid: pending.pid,
         started_at: agentdocker_host::procinfo::start_time(pending.pid)
@@ -283,7 +399,10 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
         }
         None => (None, None),
     };
-    let master = pty.map(|pty| Arc::new(pty.into_master()));
+    #[cfg(unix)]
+    let terminal = pty.map(|pty| Arc::new(pty.into_master()));
+    #[cfg(windows)]
+    let terminal = pty.map(Arc::new);
     let shared = Arc::new(Shared {
         owner: agentdocker_core::session::SessionOwner {
             pid: std::process::id(),
@@ -306,7 +425,7 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
         })),
         live,
         input,
-        master,
+        terminal,
         activate,
         stop,
         acknowledged,
@@ -369,7 +488,8 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
     )
     .await;
     accepting.abort();
-    let _ = std::fs::remove_file(&socket);
+    #[cfg(unix)]
+    let _ = std::fs::remove_file(&serving);
     // The lock file stays: unlinking it would let an opener paused between
     // open and flock lock the old inode while a third locks the new one.
     Ok(code)
@@ -381,7 +501,7 @@ async fn supervise(
     pending: Pending,
     child: ChildIdentity,
     log: tokio::fs::File,
-    terminal_io: Option<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)>,
+    terminal_io: Option<(std::fs::File, std::fs::File)>,
     keystrokes: Option<mpsc::Receiver<Vec<u8>>>,
     mut activated: watch::Receiver<bool>,
     mut stopped: watch::Receiver<Option<bool>>,
@@ -410,6 +530,17 @@ async fn supervise(
         tracing::info!(agent = %shared.launch.agent, "launch was never activated; exec denied");
         return 3;
     }
+    // Acquire every fallible ownership handle before activation. Reporting
+    // a failed group clone after starting the child would publish Exited
+    // while the unowned command was still allowed to run.
+    let group = match Group::of(&pending, shared.input.as_ref()) {
+        Ok(group) => group,
+        Err(error) => {
+            drop(pending);
+            return finish_failed(&shared, &child, format!("{error:#}"), &mut acknowledgement)
+                .await;
+        }
+    };
     let mut owned = match tokio::task::spawn_blocking(move || pending.activate()).await {
         Ok(Ok(child)) => child,
         Ok(Err(error)) => {
@@ -435,36 +566,55 @@ async fn supervise(
     match terminal_io {
         Some((reader, writer)) => {
             tasks.spawn(pump_terminal(
-                tokio::fs::File::from_std(std::fs::File::from(reader)),
+                tokio::fs::File::from_std(reader),
                 lines,
                 shared.clone(),
             ));
             if let Some(keystrokes) = keystrokes {
                 input_task = Some(tokio::spawn(type_into_terminal(
-                    tokio::fs::File::from_std(std::fs::File::from(writer)),
+                    tokio::fs::File::from_std(writer),
                     keystrokes,
                 )));
             }
         }
         None => {
-            if let Some(stdout) = owned.take_stdout() {
-                tasks.spawn(pump(
-                    tokio::process::ChildStdout::from_std(stdout).expect("stdout is nonblocking"),
-                    "out",
-                    lines.clone(),
-                ));
+            // Unix pipes are read as the async child streams they are;
+            // Windows pipe ends are files read on the blocking pool.
+            #[cfg(unix)]
+            {
+                if let Some(stdout) = owned.take_stdout() {
+                    tasks.spawn(pump(
+                        tokio::process::ChildStdout::from_std(stdout)
+                            .expect("stdout is nonblocking"),
+                        "out",
+                        lines.clone(),
+                    ));
+                }
+                if let Some(stderr) = owned.take_stderr() {
+                    tasks.spawn(pump(
+                        tokio::process::ChildStderr::from_std(stderr)
+                            .expect("stderr is nonblocking"),
+                        "err",
+                        lines,
+                    ));
+                }
             }
-            if let Some(stderr) = owned.take_stderr() {
-                tasks.spawn(pump(
-                    tokio::process::ChildStderr::from_std(stderr).expect("stderr is nonblocking"),
-                    "err",
-                    lines,
-                ));
+            #[cfg(windows)]
+            {
+                if let Some(stdout) = owned.take_stdout() {
+                    tasks.spawn(pump(
+                        tokio::fs::File::from_std(stdout),
+                        "out",
+                        lines.clone(),
+                    ));
+                }
+                if let Some(stderr) = owned.take_stderr() {
+                    tasks.spawn(pump(tokio::fs::File::from_std(stderr), "err", lines));
+                }
             }
         }
     }
 
-    let group = Pid::from_raw(-(child.pid as i32));
     let mut stopping = false;
     let mut deadline = tokio::time::Instant::now();
     let mut output_error: Option<String> = None;
@@ -480,7 +630,7 @@ async fn supervise(
                 };
                 if let Some(error) = error && output_error.is_none() {
                     output_error = Some(error);
-                    let _ = kill(group, Signal::SIGTERM);
+                    group.ask();
                     if !stopping {
                         deadline = tokio::time::Instant::now() + STOP_GRACE;
                         stopping = true;
@@ -489,7 +639,7 @@ async fn supervise(
             }
             Ok(()) = stopped.changed() => {
                 if let Some(force) = *stopped.borrow_and_update() {
-                    let _ = kill(group, if force { Signal::SIGKILL } else { Signal::SIGTERM });
+                    if force { group.end() } else { group.ask() }
                     if !stopping {
                         deadline = tokio::time::Instant::now() + STOP_GRACE;
                         stopping = true;
@@ -497,19 +647,19 @@ async fn supervise(
                 }
             }
             () = tokio::time::sleep_until(deadline), if stopping => {
-                let _ = kill(group, Signal::SIGKILL);
+                group.end();
                 stopping = false;
             }
         }
     };
     // Descendants stop before the exit is reported, so leases released on
     // that report cover nothing still running.
-    if crate::supervisor::group_exists(child.pid) {
-        let _ = kill(group, Signal::SIGTERM);
+    if group.exists() {
+        group.ask();
         let deadline = tokio::time::Instant::now() + STOP_GRACE;
-        while crate::supervisor::group_exists(child.pid) {
+        while group.exists() {
             if tokio::time::Instant::now() >= deadline {
-                let _ = kill(group, Signal::SIGKILL);
+                group.end();
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
@@ -517,6 +667,17 @@ async fn supervise(
     if let Some(input) = input_task {
         input.abort();
         let _ = input.await;
+    }
+    // ConPTY owns the output pipe's write end even after the child exits.
+    // The pump holds Shared (and thus the terminal), so waiting for EOF
+    // before closing it deadlocks. Close on another thread while the pump
+    // continues draining, preserving the final bytes on older Windows too.
+    #[cfg(windows)]
+    if let Some(terminal) = shared.terminal.clone()
+        && let Err(error) = tokio::task::spawn_blocking(move || terminal.close()).await
+        && output_error.is_none()
+    {
+        output_error = Some(format!("cannot close the agent's console: {error}"));
     }
     while let Some(result) = tasks.join_next().await {
         if let Ok(Err(error)) = result
@@ -537,7 +698,10 @@ async fn supervise(
             owner: shared.owner.clone(),
             child: child.clone(),
             code: exit.code(),
+            #[cfg(unix)]
             signal: std::os::unix::process::ExitStatusExt::signal(&exit),
+            #[cfg(windows)]
+            signal: None,
             log_flushed,
             at: Utc::now(),
         },
@@ -620,12 +784,12 @@ fn write_durably(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = std::fs::File::create(&staged)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    std::fs::rename(&staged, path)?;
-    std::fs::File::open(path.parent().expect("exit file has a parent"))?.sync_all()
+    drop(file);
+    agentdocker_host::files::publish_staged(&staged, path)
 }
 
 /// One controller connection: hello, then commands in, reports out.
-async fn controller(stream: UnixStream, shared: Arc<Shared>, epoch: u64) -> anyhow::Result<()> {
+async fn controller(stream: Stream, shared: Arc<Shared>, epoch: u64) -> anyhow::Result<()> {
     // Only the newest connection's commands are obeyed; an older one is
     // told nothing more and dropped.
     let current = || shared.epoch.load(std::sync::atomic::Ordering::SeqCst) == epoch;
@@ -698,12 +862,8 @@ async fn controller(stream: UnixStream, shared: Arc<Shared>, epoch: u64) -> anyh
                             _ => None,
                         },
                         OwnerCommand::Resize { cols, rows } => {
-                            if let Some(master) = &shared.master {
-                                let _ = agentdocker_host::pty::set_window_size(
-                                    std::os::fd::AsRawFd::as_raw_fd(master.as_ref()),
-                                    cols,
-                                    rows,
-                                );
+                            if let Some(terminal) = &shared.terminal {
+                                let _ = resize_terminal(terminal, cols, rows);
                             }
                             None
                         }
@@ -799,7 +959,7 @@ enum Deferred {
 /// partial frame, kept across a cancelled read so nothing is lost when the
 /// live-output branch wins the select mid-frame.
 async fn read_command(
-    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    reader: &mut BufReader<agentdocker_host::ipc::OwnedReadHalf>,
     line: &mut Vec<u8>,
 ) -> anyhow::Result<Option<OwnerCommand>> {
     loop {
@@ -842,7 +1002,7 @@ async fn pump_terminal(
     loop {
         let read = match terminal.read(&mut buffer).await {
             Ok(0) => break,
-            Err(error) if error.raw_os_error() == Some(nix::libc::EIO) => break,
+            Err(error) if terminal_closed(&error) => break,
             Err(error) => return Err(error).context("cannot read agent terminal output"),
             Ok(read) => read,
         };
@@ -886,6 +1046,19 @@ async fn type_into_terminal(
     }
 }
 
+/// How a terminal reports that its other end is gone: `EIO` from a Unix
+/// master whose slave closed, a broken pipe from a Windows console that
+/// closed.
+fn terminal_closed(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    return error.raw_os_error() == Some(nix::libc::EIO);
+    #[cfg(windows)]
+    matches!(error.kind(), std::io::ErrorKind::BrokenPipe)
+}
+
+/// The child's exit: woken by `SIGCHLD` on Unix; polled on Windows, where
+/// a wait on the handle could not be cancelled by the select around it.
+#[cfg(unix)]
 async fn wait_owned_child(child: &mut OwnedChild) -> std::io::Result<std::process::ExitStatus> {
     let mut changes = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child())?;
     loop {
@@ -896,6 +1069,15 @@ async fn wait_owned_child(child: &mut OwnedChild) -> std::io::Result<std::proces
             .recv()
             .await
             .ok_or_else(|| std::io::Error::other("child signal stream closed"))?;
+    }
+}
+#[cfg(windows)]
+async fn wait_owned_child(child: &mut OwnedChild) -> std::io::Result<std::process::ExitStatus> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -931,6 +1113,33 @@ async fn write_log<W: AsyncWrite + Unpin>(
 }
 
 #[cfg(test)]
+mod console_stop_tests {
+    use super::*;
+
+    #[test]
+    fn keyboard_backpressure_does_not_force_end_or_replace_pending_input() {
+        let (input, mut keyboard) = mpsc::channel(1);
+        input.try_send(b"unfinished input".to_vec()).unwrap();
+        ask_console(Some(&input), || panic!("full keyboard skipped stop grace"));
+        assert_eq!(keyboard.try_recv().unwrap(), b"unfinished input");
+        assert!(keyboard.try_recv().is_err());
+
+        ask_console(Some(&input), || panic!("open keyboard skipped stop grace"));
+        assert_eq!(keyboard.try_recv().unwrap(), vec![0x03]);
+    }
+
+    #[test]
+    fn missing_or_closed_keyboard_ends_immediately() {
+        let (input, keyboard) = mpsc::channel(1);
+        drop(keyboard);
+        let mut ended = 0;
+        ask_console(Some(&input), || ended += 1);
+        ask_console(None, || ended += 1);
+        assert_eq!(ended, 2);
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -962,7 +1171,7 @@ mod tests {
         let mut owner = tokio::spawn(serve(launch));
         let stream = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if let Ok(stream) = UnixStream::connect(&socket).await {
+                if let Ok(stream) = Stream::connect(&socket).await {
                     break stream;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;

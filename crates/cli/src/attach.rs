@@ -5,6 +5,7 @@
 //! and typing at it, exactly as it was.
 
 use std::io::IsTerminal;
+#[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd};
 
 use agentdocker_core::{Request, Response, protocol};
@@ -13,6 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use crate::client::Client;
 
+#[cfg_attr(windows, path = "attach/input_windows.rs")]
 mod input;
 
 /// Ctrl-] detaches, the way `telnet` has always done it.
@@ -23,13 +25,20 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
     if !stdin.is_terminal() {
         bail!("attach needs a terminal; run it from a shell rather than a pipe");
     }
-    let (mut reader, mut write_half) = open(client, agent, stdin.as_raw_fd()).await?;
+    let (mut reader, mut write_half) = open(client, agent).await?;
 
     eprintln!("attached to {agent}; press Ctrl-] to detach without stopping it");
     // Raw mode from here, restored by the guard however this ends.
+    #[cfg(unix)]
     let _raw = agentdocker_host::pty::RawMode::enter(stdin.as_raw_fd())
         .context("cannot put this terminal in raw mode")?;
+    #[cfg(windows)]
+    let _raw = agentdocker_host::pty::RawMode::enter(std_handle::input(), std_handle::output())
+        .context("cannot put this console in raw mode")?;
+    #[cfg(unix)]
     let mut keys = input::Input::open(stdin.as_fd()).context("cannot open terminal input")?;
+    #[cfg(windows)]
+    let mut keys = input::Input::open(std_handle::input()).context("cannot read the console")?;
     let mut retries = crate::client::StreamRetries::default();
     let outcome = loop {
         match pump(reader, write_half, &mut keys, tokio::io::stdout()).await {
@@ -42,7 +51,7 @@ pub async fn run(client: &Client, agent: &str) -> Result<()> {
                         format!("cannot reconnect attachment to {agent}; its exit is unconfirmed")
                     });
                 }
-                match open(client, agent, stdin.as_raw_fd()).await {
+                match open(client, agent).await {
                     Ok(reopened) => {
                         eprint!("\r\n[the daemon was replaced; attached again to {agent}]\r\n");
                         (reader, write_half) = reopened;
@@ -83,11 +92,81 @@ type Attached = (
     agentdocker_host::ipc::OwnedWriteHalf,
 );
 
+/// The size of the window this command runs in, as the terminal reports
+/// it: the standard input's on Unix, the console's screen buffer window
+/// on Windows.
+fn current_window_size() -> Option<(u16, u16)> {
+    #[cfg(unix)]
+    return agentdocker_host::pty::window_size(std::io::stdin().as_raw_fd());
+    #[cfg(windows)]
+    agentdocker_host::pty::window_size(std_handle::output())
+}
+
+/// The process's standard console handles, for the modes and the size:
+/// borrowed for the process's lifetime, which is how long they are open.
+#[cfg(windows)]
+mod std_handle {
+    use std::os::windows::io::{AsHandle, BorrowedHandle};
+    pub(super) fn input() -> BorrowedHandle<'static> {
+        static STDIN: std::sync::LazyLock<std::io::Stdin> =
+            std::sync::LazyLock::new(std::io::stdin);
+        STDIN.as_handle()
+    }
+    pub(super) fn output() -> BorrowedHandle<'static> {
+        static STDOUT: std::sync::LazyLock<std::io::Stdout> =
+            std::sync::LazyLock::new(std::io::stdout);
+        STDOUT.as_handle()
+    }
+}
+
+/// When the window changes: `SIGWINCH` on Unix; on Windows nothing tells
+/// a process, so the size is looked at a few times a second and a
+/// difference is the change.
+#[cfg(unix)]
+struct WindowWatch(tokio::signal::unix::Signal);
+#[cfg(unix)]
+impl WindowWatch {
+    fn new() -> Result<Self> {
+        Ok(Self(
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
+                .context("cannot watch for window changes")?,
+        ))
+    }
+    async fn changed(&mut self) -> Option<(u16, u16)> {
+        self.0.recv().await;
+        current_window_size()
+    }
+}
+#[cfg(windows)]
+struct WindowWatch {
+    ticks: tokio::time::Interval,
+    last: Option<(u16, u16)>,
+}
+#[cfg(windows)]
+impl WindowWatch {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            ticks: tokio::time::interval(std::time::Duration::from_millis(250)),
+            last: current_window_size(),
+        })
+    }
+    async fn changed(&mut self) -> Option<(u16, u16)> {
+        loop {
+            self.ticks.tick().await;
+            let now = current_window_size();
+            if now != self.last {
+                self.last = now;
+                return now;
+            }
+        }
+    }
+}
+
 /// Attach to the agent's terminal at this window size and read the
 /// daemon's acknowledgement, so a refusal arrives as an error rather than
 /// as silence.
-async fn open(client: &Client, agent: &str, terminal: i32) -> Result<Attached> {
-    let (cols, rows) = agentdocker_host::pty::window_size(terminal).unzip();
+async fn open(client: &Client, agent: &str) -> Result<Attached> {
+    let (cols, rows) = current_window_size().unzip();
     let stream = client
         .open(&Request::Attach {
             agent: agent.to_owned(),
@@ -142,8 +221,7 @@ where
     let mut buffer = [0_u8; 4096];
     let mut line = String::new();
     let mut progressed = false;
-    let mut winch = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
-        .context("cannot watch for window changes")?;
+    let mut window = WindowWatch::new()?;
 
     loop {
         line.clear();
@@ -187,10 +265,8 @@ where
                 send_input(&mut write_half, &buffer[..read]).await?;
             }
             // The window changed.
-            _ = winch.recv() => {
-                if let Some((cols, rows)) =
-                    agentdocker_host::pty::window_size(std::io::stdin().as_raw_fd())
-                {
+            size = window.changed() => {
+                if let Some((cols, rows)) = size {
                     let frame = serde_json::to_string(&Request::AttachResize { cols, rows })?;
                     write_half.write_all(format!("{frame}\n").as_bytes()).await?;
                 }

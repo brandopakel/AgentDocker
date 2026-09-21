@@ -1637,6 +1637,10 @@ mod tests {
                             Err(error) => panic!("accept: {error}"),
                         }
                     };
+                    // macOS can inherit O_NONBLOCK from the listening
+                    // socket. A read timeout does not make such a stream
+                    // blocking; an early read otherwise races the client.
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_secs(5)))
                         .unwrap();

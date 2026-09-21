@@ -1305,7 +1305,7 @@ mod tests {
             "CREATE TRIGGER fail BEFORE INSERT ON agents WHEN json_extract(NEW.json, '$.status.state') = 'created' BEGIN SELECT RAISE(ABORT, 'identity fault'); END;",
         ] {
             let (_dir, daemon, record, marker) = saved().await;
-            let conn = rusqlite::Connection::open(daemon.home.join("state.db")).unwrap();
+            let conn = crate::sqlite_fixture::open(daemon.home.join("state.db")).unwrap();
             conn.execute_batch(statement).unwrap();
             daemon.restore_agents().await;
             let state = lock(&daemon.state);
@@ -1346,7 +1346,7 @@ mod tests {
                 let current = current.clone();
                 state.store.upsert_agent(&current).unwrap();
             }
-            let connection = rusqlite::Connection::open(daemon.home.join("state.db")).unwrap();
+            let connection = crate::sqlite_fixture::open(daemon.home.join("state.db")).unwrap();
             connection.execute_batch(statement).unwrap();
             daemon.restore_agents().await;
             let state = lock(&daemon.state);
@@ -1431,7 +1431,7 @@ mod tests {
                 state.channels.insert(channel.id.clone(), channel.clone());
                 state.store.max_journal_seq(&channel.project).unwrap()
             };
-            let connection = rusqlite::Connection::open(daemon.home.join("state.db")).unwrap();
+            let connection = crate::sqlite_fixture::open(daemon.home.join("state.db")).unwrap();
             connection.execute_batch(fault).unwrap();
             let response = daemon
                 .handle(Request::Stop {
