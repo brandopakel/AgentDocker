@@ -12,6 +12,7 @@ mod icons;
 mod messages;
 mod naming;
 pub(crate) mod panes;
+mod project_chat;
 pub(crate) mod queue;
 mod send_readiness;
 mod sessions;
@@ -78,6 +79,7 @@ const STATUS_FOR: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
+    Chat,
     Agents,
     Board,
     Usage,
@@ -546,7 +548,14 @@ impl App {
         ] {
             let _ = cmd_tx.send(cmd);
         }
-        let shell = shell::State::load(&home);
+        let mut shell = shell::State::load(&home);
+        let screen = if let Some(entry) = shell.catalog.selected() {
+            shell.conversation = Some(format!("everyone:{}", entry.project.id()));
+            shell.inbox_open = true;
+            Screen::Chat
+        } else {
+            Screen::Agents
+        };
         let settings = shell
             .catalog
             .appearance
@@ -565,7 +574,7 @@ impl App {
             desktop: Default::default(),
             tx: cmd_tx,
             rx: msg_rx,
-            screen: Screen::Agents,
+            screen,
             agents: Vec::new(),
             aliases: BTreeMap::new(),
             leases: Vec::new(),
@@ -1200,13 +1209,21 @@ impl App {
                         if let Some(project) = &self.journal_project {
                             self.request_journal(project.clone());
                         }
+                        // A usage screen opened while the daemon was away
+                        // has asked nothing; it asks now.
+                        if self.screen == Screen::Usage {
+                            self.request_usage();
+                        }
                     }
                 }
                 Msg::Disconnected(reason) => {
                     self.connected = Err(reason);
                     // A page asked for will not come: a notification's
-                    // search ends rather than wait on it.
+                    // search ends rather than wait on it, and a usage read
+                    // on its way is not waited for either — the next
+                    // request is not deduplicated against it.
                     self.cancel_reveal();
+                    self.usage_pending = None;
                 }
                 Msg::Status(text) => self.say(text),
                 Msg::Desktop(result) => self.desktop.receive(result),
@@ -1292,7 +1309,7 @@ impl App {
                         if self.shell.inbox_open && self.shell.conversation.is_none() {
                             self.adopt_inbox_thread();
                         } else if let Some(open) = self.shell.conversation.clone()
-                            && self.screen == Screen::Questions
+                            && matches!(self.screen, Screen::Questions | Screen::Chat)
                         {
                             // Reading the open conversation as its history
                             // arrives marks it read; a conversation that
@@ -1666,7 +1683,7 @@ impl App {
             {
                 continue;
             }
-            let on_screen = self.screen == Screen::Agents
+            let on_screen = matches!(self.screen, Screen::Agents | Screen::Chat)
                 && !self.shell.unfocused
                 && self.agents.iter().any(|a| {
                     a.id.as_str() == id
@@ -1914,11 +1931,15 @@ impl App {
     /// Whether the open conversation's pane is on the screen: the Messages
     /// screen, and in a compact layout the conversation rather than the list.
     pub(crate) fn conversation_pane_visible(&self) -> bool {
-        self.screen == Screen::Questions
-            && self.shell.conversation.is_some()
-            // A compact layout replaces this pane with the list or a thread.
-            && (!self.messages_compact()
-                || (self.shell.inbox_open && self.shell.thread.is_none()))
+        self.shell.conversation.is_some()
+            && match self.screen {
+                Screen::Chat => !self.messages_compact() || self.shell.thread.is_none(),
+                Screen::Questions => {
+                    !self.messages_compact()
+                        || (self.shell.inbox_open && self.shell.thread.is_none())
+                }
+                _ => false,
+            }
     }
 
     pub(crate) fn is_human(&self, id: &str) -> bool {
