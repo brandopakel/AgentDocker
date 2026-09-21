@@ -83,7 +83,13 @@ const MAX_LEASE_TTL_SECS: u64 = 24 * 60 * 60;
 /// Stored event history is trimmed to this many entries.
 const EVENT_HISTORY: usize = 10_000;
 /// The ledger keeps this many entries per project.
-const CHANGE_HISTORY: usize = 100_000;
+/// Change observations kept per project. The ledger answers "who touched
+/// what lately" (`changes`, `blame`, stale reads), not history; a hundred
+/// thousand rows a project was fifty megabytes of database on a busy
+/// checkout, for a daemon meant to be light.
+const CHANGE_HISTORY: usize = 20_000;
+/// The daemon's own log is trimmed past this many bytes.
+const DAEMON_LOG_CAP: u64 = 4 * 1024 * 1024;
 /// Longest a claim may wait for a conflicting lease to clear.
 const MAX_WAIT_SECS: u64 = 600;
 
@@ -1460,6 +1466,22 @@ impl Daemon {
         self.home.join("logs").join(format!("{id}.log"))
     }
 
+    /// Forget a record and, with it, the output captured for it: a
+    /// forgotten agent's log is nobody's to read, its rotated half too.
+    fn remove(&self, reference: &str) -> Response {
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let response = lock(&self.state).remove(&id.to_string());
+        if matches!(response, Response::Ok) {
+            let log = self.log_path(&id);
+            let _ = std::fs::remove_file(&log);
+            let _ = std::fs::remove_file(paths::rotated_log(&log));
+        }
+        response
+    }
+
     pub fn subscribe_events(&self) -> broadcast::Receiver<Event> {
         lock(&self.state).events.subscribe()
     }
@@ -1752,7 +1774,7 @@ impl Daemon {
             Request::Runtimes => self.runtimes().await,
             Request::Adopt { pid, name, runtime } => self.adopt(pid, name, runtime).await,
             Request::Stop { agent, force } => self.stop_agent(&agent, force).await,
-            Request::Remove { agent } => lock(&self.state).remove(&agent),
+            Request::Remove { agent } => self.remove(&agent),
             Request::List {
                 all,
                 project,
@@ -3820,6 +3842,75 @@ impl Daemon {
         }) && removed > 0
         {
             info!(removed, "pruned the ledger");
+        }
+    }
+
+    /// Captured output belongs to a record. A log whose agent is no longer
+    /// known, forgotten while the daemon was down or left by an earlier
+    /// daemon, goes once it is an hour old, so `logs/` holds nothing
+    /// `ps --all` cannot show. Validation logs are named for their
+    /// validation record and stay with it.
+    pub fn prune_logs(&self) {
+        let Ok(entries) = std::fs::read_dir(self.home.join("logs")) else {
+            return;
+        };
+        let known: HashSet<String> = lock(&self.state)
+            .registry
+            .all()
+            .map(|a| a.id.to_string())
+            .collect();
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(owner) = name
+                .strip_suffix(".log.1")
+                .or_else(|| name.strip_suffix(".log"))
+            else {
+                continue;
+            };
+            if owner.starts_with("validation-") || known.contains(owner) {
+                continue;
+            }
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|age| age > std::time::Duration::from_secs(60 * 60));
+            if old && std::fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            info!(removed, "pruned logs of forgotten agents");
+        }
+    }
+
+    /// The daemon's own output goes to `agentd.log` through an inherited
+    /// descriptor in append mode, so it cannot be renamed away under the
+    /// writer; past `DAEMON_LOG_CAP` bytes it is copied to `agentd.log.1`
+    /// and truncated in place, and the next line lands at the start.
+    pub fn trim_daemon_log(&self) {
+        let path = paths::daemon_log(&self.home);
+        let Ok(mut file) = agentdocker_host::dirs::private_file(&path, false, false) else {
+            return;
+        };
+        let Ok(meta) = file.metadata() else {
+            return;
+        };
+        if meta.len() <= DAEMON_LOG_CAP {
+            return;
+        }
+        let rotated = paths::rotated_log(&path);
+        let copied =
+            agentdocker_host::dirs::private_file(&rotated, true, false).and_then(|mut earlier| {
+                earlier.set_len(0)?;
+                std::io::copy(&mut file, &mut earlier).map(|_| ())
+            });
+        match copied.and_then(|()| file.set_len(0)) {
+            Ok(()) => info!(bytes = meta.len(), "rotated the daemon log"),
+            Err(error) => warn!(%error, "could not rotate the daemon log"),
         }
     }
 
@@ -13249,6 +13340,84 @@ deny = ["send:all"]
         let daemon = open(&dir);
         assert!(lock(&daemon.state).registry.get(&done.id).is_none());
         assert!(lock(&daemon.state).inboxes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_takes_the_agents_captured_output_with_it() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let done = register(&daemon, "done", None).await;
+        let log = daemon.log_path(&done.id);
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::fs::write(&log, "later\n").unwrap();
+        std::fs::write(paths::rotated_log(&log), "earlier\n").unwrap();
+        daemon
+            .handle(Request::Deregister {
+                agent: "done".into(),
+            })
+            .await;
+        assert!(matches!(
+            daemon
+                .handle(Request::Remove {
+                    agent: "done".into()
+                })
+                .await,
+            Response::Ok
+        ));
+        assert!(!log.exists());
+        assert!(!paths::rotated_log(&log).exists());
+    }
+
+    #[tokio::test]
+    async fn retention_prunes_only_old_logs_of_agents_nobody_knows() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let known = register(&daemon, "known", None).await;
+        let logs = daemon.home.join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60);
+        let mut kept = vec![
+            daemon.log_path(&known.id),
+            logs.join("validation-abc.log"),
+            logs.join("notes.txt"),
+            logs.join("fresh-orphan.log"),
+        ];
+        let stale = [logs.join("orphan.log"), logs.join("orphan.log.1")];
+        for path in kept.iter().chain(&stale) {
+            std::fs::write(path, "x").unwrap();
+        }
+        for path in kept.iter().take(3).chain(&stale) {
+            std::fs::File::open(path)
+                .unwrap()
+                .set_modified(hours_ago)
+                .unwrap();
+        }
+        daemon.prune_logs();
+        kept.sort();
+        let mut left: Vec<_> = std::fs::read_dir(&logs)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        left.sort();
+        assert_eq!(left, kept);
+    }
+
+    #[test]
+    fn the_daemon_log_is_trimmed_in_place_past_its_cap() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let log = paths::daemon_log(&daemon.home);
+        let rotated = paths::rotated_log(&log);
+        std::fs::write(&log, "short\n").unwrap();
+        daemon.trim_daemon_log();
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), "short\n");
+        assert!(!rotated.exists());
+
+        let long = "line\n".repeat((DAEMON_LOG_CAP as usize / 5) + 1);
+        std::fs::write(&log, &long).unwrap();
+        daemon.trim_daemon_log();
+        assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
+        assert_eq!(std::fs::read_to_string(&rotated).unwrap(), long);
     }
 
     #[tokio::test]

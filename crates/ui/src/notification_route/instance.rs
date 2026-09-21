@@ -136,6 +136,11 @@ fn start_with(
         drop(listener);
         #[cfg(unix)]
         remove_owned(&socket, &owned);
+        // Nothing of ours stays behind: the lock file goes while we still
+        // hold it, and the directory when it is empty. A launch that has
+        // meanwhile made its own lock and socket keeps its directory.
+        let _ = std::fs::remove_file(&lock_path);
+        let _ = std::fs::remove_dir(&directory);
     })?;
     Ok(Launch::Primary(Instance {
         stop: Some(stop),
@@ -313,6 +318,8 @@ mod tests {
             panic!("replacement instance")
         };
         drop(next);
+        let (directory, _) = location(home.path(), &daemon);
+        assert!(!directory.exists(), "{}", directory.display());
     }
 
     #[test]

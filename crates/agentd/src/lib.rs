@@ -194,6 +194,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
+        // Colour is for a terminal; in `agentd.log` it is a third more bytes.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
     // One spelling of the home, whatever it was given as, so the socket
@@ -361,6 +363,8 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 daemon.apply_journal_retention();
                 daemon.apply_message_retention();
                 daemon.evict_journal_rings();
+                daemon.prune_logs();
+                daemon.trim_daemon_log();
             }
         }
     };

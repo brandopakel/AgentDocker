@@ -497,7 +497,14 @@ async fn stream_logs(
         }
     }
     let path = daemon.log_path(&id);
-    let (mut offset, existing) = read_from(&path, 0).await;
+    let rotated = paths::rotated_log(&path);
+    let (mut offset, mut existing) = read_from(&path, 0).await;
+    // The earlier half only when it is wanted: everything, or a tail the
+    // live file cannot fill on its own.
+    if tail == 0 || existing.lines().count() < tail {
+        let (_, earlier) = read_from(&rotated, 0).await;
+        existing.insert_str(0, &earlier);
+    }
     let lines: Vec<&str> = existing.lines().collect();
     let start = if tail == 0 {
         0
@@ -524,8 +531,8 @@ async fn stream_logs(
         tokio::select! {
             () = client_closed(reader) => break,
             _ = ticker.tick() => {
-                let (read, chunk) = read_from(&path, offset).await;
-                offset += read;
+                let chunk = follow_from(&path, &rotated, &mut offset).await;
+                let read = chunk.len();
                 pending.push_str(&chunk);
                 while let Some(newline) = pending.find('\n') {
                     let line = pending[..newline].to_owned();
@@ -547,6 +554,26 @@ async fn stream_logs(
         }
     }
     Ok(())
+}
+
+/// Everything written after `offset`, across a rotation: a live file
+/// shorter than the offset was moved to `rotated` and started over, so
+/// the rest of the moved file comes first and reading resumes at zero.
+async fn follow_from(path: &Path, rotated: &Path, offset: &mut u64) -> String {
+    let len = tokio::fs::metadata(path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let mut text = String::new();
+    if len < *offset {
+        let (_, rest) = read_from(rotated, *offset).await;
+        text.push_str(&rest);
+        *offset = 0;
+    }
+    let (read, chunk) = read_from(path, *offset).await;
+    *offset += read;
+    text.push_str(&chunk);
+    text
 }
 
 /// Read everything after `offset`. Returns bytes consumed and the text.
@@ -778,6 +805,30 @@ pub(crate) fn listener_fd(listener: &Listener) -> std::io::Result<std::os::fd::O
 mod tests {
     use super::*;
     use agentdocker_core::{AgentSpec, EventKind, LeaseMode};
+
+    #[tokio::test]
+    async fn a_follower_reads_across_a_rotation_without_losing_the_moved_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("agent.log");
+        let rotated = paths::rotated_log(&path);
+        std::fs::write(&path, "one\ntwo\n").unwrap();
+        let mut offset = 0;
+        assert_eq!(
+            follow_from(&path, &rotated, &mut offset).await,
+            "one\ntwo\n"
+        );
+        // Written after the last tick, then moved by the rotation the
+        // follower did not see happen.
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        std::fs::rename(&path, &rotated).unwrap();
+        std::fs::write(&path, "four\n").unwrap();
+        assert_eq!(
+            follow_from(&path, &rotated, &mut offset).await,
+            "three\nfour\n"
+        );
+        assert_eq!(offset, 5);
+        assert_eq!(follow_from(&path, &rotated, &mut offset).await, "");
+    }
 
     #[tokio::test]
     async fn attached_terminal_fences_input_and_resize_but_keeps_output() {
