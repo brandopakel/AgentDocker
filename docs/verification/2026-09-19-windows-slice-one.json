@@ -420,6 +420,46 @@
       },
       "error": "AssertionError: SQLite state.db is user-owned and protected before the crash: O:LAG:S-1-5-21-3699639565-2515463329-295617607-513D:PAI(A;;FA;;;SY)(A;;FA;;;LA)",
       "interpretation": "PowerShell 7 read permissions successfully. The assertion wrongly compared SDDL owner alias LA with the canonical user SID; this is a test-observer mismatch, not proof of foreign ownership. Follow-up compares GetOwner(SecurityIdentifier).Value and AreAccessRulesProtected directly. Crash recovery was not reached."
+    },
+    "desktop_startup_local_gate": {
+      "runtime_source": "28a0af5a",
+      "observer_followup_source": "defd4280",
+      "rust_passed": 1332,
+      "rust_skipped": 7,
+      "python_run": 106,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_packaging_release": "passed",
+      "cross_windows_production_and_ui_clippy": "passed",
+      "log": "/private/tmp/agentdocker-windows-desktop-startup-final-gate-20260921.log",
+      "note": "Rust runtime unchanged by the observer-only follow-up; native canonical ACL and desktop acceptance runs on defd4280."
+    },
+    "superseded_desktop_run": {
+      "source": "28a0af5a",
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35655082814",
+      "result": "cancelled",
+      "reason": "Superseded by defd4280 with the known SDDL alias assertion corrected; no graphical or crash-recovery pass claimed."
+    },
+    "native_defd4280_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35655375648",
+      "source": "defd4280",
+      "result": "failed",
+      "binary_sha256": {
+        "agentdocker.exe": "ee1b0c64a47247e05e564e37d2ef3ca04c74980e1213c62488605fa4946a05be",
+        "agentd.exe": "83f1f614d7cf8d2b196be522c4fca86f423b6c6e8e97a25e437daac63af003ba",
+        "agentdocker-ui.exe": "f779a3151990fa1a4d74b4a3874654a9902b18185c421804cfe0a1dfe6673b8a"
+      },
+      "desktop": {
+        "scope": "source-built native Windows window, fresh-home UI daemon autostart, connection, runtime rows and renderer capture",
+        "tcp_observation": "not_measured",
+        "capture_directory": "desktop",
+        "result": "failed",
+        "pid": 600,
+        "exit_code": 2,
+        "elapsed_seconds": 0.031000000000062755,
+        "error": "AssertionError: the native desktop exits within its smoke deadline: exit=2, elapsed=0.031s; see desktop.log"
+      },
+      "desktop_log": "D:\\: state or ancestor belongs to an untrusted Windows principal (S-1-5-20)",
+      "interpretation": "The smoke capture folder inherited the Actions checkout drive ancestry, owned by NETWORK SERVICE. The app correctly refused it before opening a window. Follow-up captures under private scratch separate from the fresh desktop home, exports artifacts after the owned window exits, and retains scratch on export failure. No desktop or SQLite crash-recovery pass is claimed by this run."
     }
   }
 }

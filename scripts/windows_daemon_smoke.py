@@ -75,6 +75,11 @@ def main():
     homes = [home, fresh]
     home_sockets = {}
     root = Path(tempfile.mkdtemp(prefix="agentdocker-smoke-")).resolve()
+    # Smoke capture uses the same private ancestry rules as application state.
+    # The Actions checkout drive is owned by NETWORK SERVICE, so capture in
+    # private scratch first and export only after the owned window has exited.
+    # Keep this separate from the fresh home whose initialization is under test.
+    desktop_capture = root / "desktop-capture"
     project = root / "project"
     project.mkdir()
     daemon_log = root / "smoke-daemon.log"
@@ -395,7 +400,7 @@ def main():
         nonlocal window
         desktop_home = base / f"agentdocker-smoke-{token}-desktop"
         endpoint = rf"\\.\pipe\agentdocker-smoke-{token}-desktop"
-        capture = args.output.resolve() / "desktop"
+        capture = desktop_capture
         desktop_env = {
             "AGENTDOCKER_HOME": str(desktop_home),
             "AGENTDOCKER_SOCKET": endpoint,
@@ -717,6 +722,13 @@ def main():
                 window.wait(timeout=5)
             except Exception as error:
                 report.setdefault("cleanup", []).append(f"desktop cleanup: {error}")
+        if desktop_capture.exists():
+            try:
+                if window is not None and window.poll() is None:
+                    raise RuntimeError("window still running; retaining private capture in scratch")
+                shutil.copytree(desktop_capture, args.output / "desktop", dirs_exist_ok=True)
+            except Exception as error:
+                report.setdefault("cleanup", []).append(f"desktop capture export: {error}; source={desktop_capture}")
         # An owner deliberately outlives its daemon. End fixture sessions
         # while the daemon can still reach them, before killing the daemon
         # or removing its state. If the crash trial lost its replacement,
