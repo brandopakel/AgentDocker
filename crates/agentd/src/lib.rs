@@ -364,7 +364,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 daemon.apply_message_retention();
                 daemon.evict_journal_rings();
                 daemon.prune_logs();
-                daemon.trim_daemon_log();
+                daemon.trim_diagnostic_logs();
             }
         }
     };

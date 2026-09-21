@@ -144,8 +144,9 @@ system, which is drawn from the mark:
   the status line honest runs every two seconds while the window has focus
   and every thirty while it does not (`FOCUSED_SWEEP`, `UNFOCUSED_SWEEP`),
   since nobody reads those labels in a window they are not looking at; and a
-  sweep's wave of snapshot requests wakes the window once, when the last
-  answer is in (`queue::Receiver::idle`), not once per answer.
+  wake becomes one frame forty milliseconds later (`WAKE_SETTLE`), so the
+  seven answers to a sweep's snapshot requests, which land within a few
+  milliseconds of each other, are one frame rather than seven.
 - **Meters.** A lease row carries a thin bar of the time left on it; it turns
   amber under one fifth. A question card carries the time left to answer it,
   red under one fifth. Session rows say when they started. Panels that hold a

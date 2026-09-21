@@ -652,6 +652,45 @@ pub(crate) fn sweep_sessions(home: &std::path::Path) {
     }
 }
 
+/// The agent a file under `logs/` belongs to: `<id>.log`, `<id>.log.1`
+/// and `<id>.controller.log` (a relaunched input receiver's output) all
+/// name `<id>`. Anything else is nobody's.
+fn log_owner(name: &str) -> Option<&str> {
+    let stem = name
+        .strip_suffix(".log.1")
+        .or_else(|| name.strip_suffix(".log"))?;
+    Some(stem.strip_suffix(".controller").unwrap_or(stem))
+}
+
+/// Where a relaunched input receiver's output goes (see `binding.rs`).
+fn controller_log(home: &Path, id: &AgentId) -> PathBuf {
+    home.join("logs").join(format!("{id}.controller.log"))
+}
+
+/// Copy a log past `DAEMON_LOG_CAP` to `<name>.1` and truncate it in
+/// place, for a file whose writers hold it in append mode.
+fn trim_in_place(path: &Path, what: &str) {
+    let Ok(mut file) = agentdocker_host::dirs::private_file(path, false, false) else {
+        return;
+    };
+    let Ok(meta) = file.metadata() else {
+        return;
+    };
+    if meta.len() <= DAEMON_LOG_CAP {
+        return;
+    }
+    let rotated = paths::rotated_log(path);
+    let copied =
+        agentdocker_host::dirs::private_file(&rotated, true, false).and_then(|mut earlier| {
+            earlier.set_len(0)?;
+            std::io::copy(&mut file, &mut earlier).map(|_| ())
+        });
+    match copied.and_then(|()| file.set_len(0)) {
+        Ok(()) => info!(bytes = meta.len(), path = %path.display(), "trimmed {what}"),
+        Err(error) => warn!(%error, path = %path.display(), "could not trim {what}"),
+    }
+}
+
 /// Whether a process with this pid exists — ours or not; an access
 /// refusal is a yes. Both platforms answer through the host crate.
 fn process_exists(pid: u32) -> bool {
@@ -1478,6 +1517,7 @@ impl Daemon {
             let log = self.log_path(&id);
             let _ = std::fs::remove_file(&log);
             let _ = std::fs::remove_file(paths::rotated_log(&log));
+            let _ = std::fs::remove_file(controller_log(&self.home, &id));
         }
         response
     }
@@ -3848,8 +3888,9 @@ impl Daemon {
     /// Captured output belongs to a record. A log whose agent is no longer
     /// known, forgotten while the daemon was down or left by an earlier
     /// daemon, goes once it is an hour old, so `logs/` holds nothing
-    /// `ps --all` cannot show. Validation logs are named for their
-    /// validation record and stay with it.
+    /// `ps --all` cannot show: the session log and its rotated half, and
+    /// the controller log of a relaunched input receiver. Validation logs
+    /// are named for their validation record and stay with it.
     pub fn prune_logs(&self) {
         let Ok(entries) = std::fs::read_dir(self.home.join("logs")) else {
             return;
@@ -3863,10 +3904,7 @@ impl Daemon {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            let Some(owner) = name
-                .strip_suffix(".log.1")
-                .or_else(|| name.strip_suffix(".log"))
-            else {
+            let Some(owner) = log_owner(&name) else {
                 continue;
             };
             if owner.starts_with("validation-") || known.contains(owner) {
@@ -3887,30 +3925,26 @@ impl Daemon {
         }
     }
 
-    /// The daemon's own output goes to `agentd.log` through an inherited
-    /// descriptor in append mode, so it cannot be renamed away under the
-    /// writer; past `DAEMON_LOG_CAP` bytes it is copied to `agentd.log.1`
-    /// and truncated in place, and the next line lands at the start.
-    pub fn trim_daemon_log(&self) {
-        let path = paths::daemon_log(&self.home);
-        let Ok(mut file) = agentdocker_host::dirs::private_file(&path, false, false) else {
-            return;
-        };
-        let Ok(meta) = file.metadata() else {
-            return;
-        };
-        if meta.len() <= DAEMON_LOG_CAP {
-            return;
-        }
-        let rotated = paths::rotated_log(&path);
-        let copied =
-            agentdocker_host::dirs::private_file(&rotated, true, false).and_then(|mut earlier| {
-                earlier.set_len(0)?;
-                std::io::copy(&mut file, &mut earlier).map(|_| ())
-            });
-        match copied.and_then(|()| file.set_len(0)) {
-            Ok(()) => info!(bytes = meta.len(), "rotated the daemon log"),
-            Err(error) => warn!(%error, "could not rotate the daemon log"),
+    /// The daemon's own output goes to `agentd.log`, and a relaunched
+    /// input receiver's to `logs/<id>.controller.log`, through inherited
+    /// descriptors in append mode that nobody coordinates, so neither can
+    /// be renamed away under its writer. Past `DAEMON_LOG_CAP` bytes each
+    /// is copied to `<name>.1` and truncated in place, and the next line
+    /// lands at the start. A line written in the instant between the copy
+    /// and the truncation is lost: these are diagnostic logs, bounded, not
+    /// evidence, and a session's captured output is not trimmed this way.
+    pub fn trim_diagnostic_logs(&self) {
+        trim_in_place(&paths::daemon_log(&self.home), "the daemon log");
+        if let Ok(entries) = std::fs::read_dir(self.home.join("logs")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with(".controller.log"))
+                {
+                    trim_in_place(&path, "a controller log");
+                }
+            }
         }
     }
 
@@ -13351,6 +13385,8 @@ deny = ["send:all"]
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
         std::fs::write(&log, "later\n").unwrap();
         std::fs::write(paths::rotated_log(&log), "earlier\n").unwrap();
+        let controller = controller_log(&daemon.home, &done.id);
+        std::fs::write(&controller, "receiver\n").unwrap();
         daemon
             .handle(Request::Deregister {
                 agent: "done".into(),
@@ -13366,6 +13402,7 @@ deny = ["send:all"]
         ));
         assert!(!log.exists());
         assert!(!paths::rotated_log(&log).exists());
+        assert!(!controller.exists());
     }
 
     #[tokio::test]
@@ -13378,15 +13415,20 @@ deny = ["send:all"]
         let hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60);
         let mut kept = vec![
             daemon.log_path(&known.id),
+            controller_log(&daemon.home, &known.id),
             logs.join("validation-abc.log"),
             logs.join("notes.txt"),
             logs.join("fresh-orphan.log"),
         ];
-        let stale = [logs.join("orphan.log"), logs.join("orphan.log.1")];
+        let stale = [
+            logs.join("orphan.log"),
+            logs.join("orphan.log.1"),
+            logs.join("orphan.controller.log"),
+        ];
         for path in kept.iter().chain(&stale) {
             std::fs::write(path, "x").unwrap();
         }
-        for path in kept.iter().take(3).chain(&stale) {
+        for path in kept.iter().take(4).chain(&stale) {
             std::fs::File::open(path)
                 .unwrap()
                 .set_modified(hours_ago)
@@ -13403,21 +13445,46 @@ deny = ["send:all"]
     }
 
     #[test]
-    fn the_daemon_log_is_trimmed_in_place_past_its_cap() {
+    fn diagnostic_logs_are_trimmed_in_place_past_their_cap() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let log = paths::daemon_log(&daemon.home);
         let rotated = paths::rotated_log(&log);
         std::fs::write(&log, "short\n").unwrap();
-        daemon.trim_daemon_log();
+        daemon.trim_diagnostic_logs();
         assert_eq!(std::fs::read_to_string(&log).unwrap(), "short\n");
         assert!(!rotated.exists());
 
         let long = "line\n".repeat((DAEMON_LOG_CAP as usize / 5) + 1);
         std::fs::write(&log, &long).unwrap();
-        daemon.trim_daemon_log();
+        let controller = controller_log(&daemon.home, &AgentId::from("receiver"));
+        std::fs::create_dir_all(controller.parent().unwrap()).unwrap();
+        std::fs::write(&controller, &long).unwrap();
+        let session = daemon.log_path(&AgentId::from("session"));
+        std::fs::write(&session, &long).unwrap();
+        daemon.trim_diagnostic_logs();
         assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
         assert_eq!(std::fs::read_to_string(&rotated).unwrap(), long);
+        assert_eq!(std::fs::metadata(&controller).unwrap().len(), 0);
+        assert_eq!(
+            std::fs::read_to_string(paths::rotated_log(&controller)).unwrap(),
+            long
+        );
+        assert_eq!(
+            std::fs::metadata(&session).unwrap().len(),
+            long.len() as u64,
+            "a session's captured output is the owner's to rotate"
+        );
+    }
+
+    #[test]
+    fn a_log_names_its_owner_whatever_its_suffix() {
+        assert_eq!(log_owner("abc.log"), Some("abc"));
+        assert_eq!(log_owner("abc.log.1"), Some("abc"));
+        assert_eq!(log_owner("abc.controller.log"), Some("abc"));
+        assert_eq!(log_owner("abc.controller.log.1"), Some("abc"));
+        assert_eq!(log_owner("validation-x.log"), Some("validation-x"));
+        assert_eq!(log_owner("notes.txt"), None);
     }
 
     #[tokio::test]

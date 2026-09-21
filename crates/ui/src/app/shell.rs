@@ -720,11 +720,18 @@ pub enum Message {
     Accessibility(crate::accessibility::Snapshot),
 }
 
+/// A wake becomes one frame, a moment later: the answers to a sweep (seven
+/// snapshots asked for at once) land within a few milliseconds of each
+/// other, and every frame paints the whole window, so the wakes that
+/// arrive while this waits are folded into the one it sends.
+const WAKE_SETTLE: Duration = Duration::from_millis(40);
+
 async fn notifications(mut output: iced::futures::channel::mpsc::Sender<Message>) {
     use iced::futures::SinkExt;
     let wake = Wake::default();
     loop {
         wake.notified().await;
+        tokio::time::sleep(WAKE_SETTLE).await;
         if output.send(Message::Tick).await.is_err() {
             break;
         }

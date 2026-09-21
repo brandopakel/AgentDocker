@@ -2401,7 +2401,6 @@ fn spawn_worker(
             lane(tx.clone(), ctx.clone(), cancelled.clone(), |(): ()| {
                 Msg::UpdateChecked(check_update())
             });
-        let mut deferred = false;
         while let Ok(cmd) = rx.recv() {
             if cancelled.load(std::sync::atomic::Ordering::Acquire) {
                 break;
@@ -2448,13 +2447,7 @@ fn spawn_worker(
                         .is_some_and(|error| error.downcast_ref::<RemoteError>().is_none());
                     let msg = match outcome {
                         Ok(Some(msg)) => msg,
-                        Ok(None) => {
-                            if deferred && rx.idle() {
-                                deferred = false;
-                                ctx.request_repaint();
-                            }
-                            continue;
-                        }
+                        Ok(None) => continue,
                         Err(err) => {
                             if let Some(request) = pause
                                 && tx.send(Msg::Paused(request, Err(format!(
@@ -2512,15 +2505,7 @@ fn spawn_worker(
                     if !disconnected && tx.send(Msg::Connected).is_err() {
                         break;
                     }
-                    // A wave of refreshes wakes the window once, when the
-                    // last of them is in; nothing is dropped, since the one
-                    // that empties the queue always wakes it.
-                    if rx.idle() {
-                        deferred = false;
-                        ctx.request_repaint();
-                    } else {
-                        deferred = true;
-                    }
+                    ctx.request_repaint();
                     continue;
                 }
             };
