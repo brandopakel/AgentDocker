@@ -298,7 +298,9 @@ receipt, without a false idle pause; zero-prompt reopening failed twice. The
 reopened Codex 0.154.0 process started MCP but no second `SessionStart` hook was
 captured and no receiver bound within 40 seconds. The original queue stayed
 retained; no receipt or retry was invented. The missing resume hook's cause
-remains unresolved. This is an open lifecycle case, not a successful recovery.
+remains unresolved. A separate explicit bootstrap-prompt resume passed with the
+same logical identity and retained queue drained; it does not close zero-prompt
+reopening.
 
 Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human

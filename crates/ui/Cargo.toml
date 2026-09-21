@@ -55,6 +55,7 @@ objc2-user-notifications = { version = "0.3", features = [
 
 [dev-dependencies]
 libc.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 accesskit_unix = "0.21.1"

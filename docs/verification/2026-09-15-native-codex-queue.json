@@ -3932,7 +3932,27 @@
           "Original queued input retained under the old identity; no receipt fabricated, cleanup clean.",
           "Cause of missing resume hook remains unresolved; zero-prompt reopen acceptance stays open."
         ],
-        "diagnostic_patch": "Failure-only harness capture of registry and startup transcript; private patch, not a runtime change. Both attempts retained; no zero-prompt reopen success claimed."
+        "diagnostic_patch": "Failure-only harness capture of registry and startup transcript; private patch, not a runtime change. Both attempts retained; no zero-prompt reopen success claimed.",
+        "explicit_bootstrap_resume": {
+          "started_at": "2026-09-21T18:52:58.048429+00:00",
+          "scenario": "resume",
+          "result": "passed",
+          "source": {
+            "commit": "f316c483566ad87037557638a4495f5871d82287",
+            "dirty": false,
+            "rust_and_driver_sha256": "6abad357d9512b03d250ad34c3abcc886671e710b9f992b4c336d186fb2a2df7"
+          },
+          "driver_sha256": "5f50cf1891266e53ad976db781925940d0f4b710881bda60b4b461114027f8d0",
+          "provider_version": "codex-cli 0.154.0",
+          "cli_sha256": "3d4a1ede8330148572a69d625e34f6b786c1df020682ce1729d7768479fc0584",
+          "daemon_sha256": "348f82b2a8acf86e9c86b3876f73868851a1420a07e26ac267c7052c663a48c2",
+          "same_logical_agent_after_resume": true,
+          "resumed_thread": "01a0c550-7093-7573-a647-b47570779ff8",
+          "old_queue_after_resume": [],
+          "raw_result_sha256": "3037ef2ee6b8c155501e3040e62a24361a51d5ea705b4e7201e7d2416daf96bc",
+          "cleanup_errors": [],
+          "scope": "A submitted bootstrap prompt invoked the real hook after reopening; same identity and retained queue recovered. This does not establish zero-prompt reopen."
+        }
       },
       "installed_window": {
         "app_pid": 44748,

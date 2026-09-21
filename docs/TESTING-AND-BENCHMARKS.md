@@ -54,6 +54,22 @@ running. This is one local baseline, not model-message latency, repeated
 calibration, overnight acceptance or validation of later integration commits.
 The earlier socket timeout/errno-35 failures below remain unexplained.
 
+## September 21 desktop refresh cost
+
+The installed `ff4efc61` shared-chat window consumed 10.22 CPU seconds over
+60.07 seconds with no UI input (17.01% of one core). The window was 1180×792;
+the live coordinator and provider sessions remained active, so this is an
+observed populated-project baseline, not an isolated-machine benchmark.
+Sampling showed periodic full-window presentation work while worker threads
+mostly waited.
+
+The candidate batches successful background snapshot replies for 16 ms of
+quiet, capped at 50 ms from the first reply. Terminal output, notifications,
+accessibility actions, events, send/answer outcomes and errors retain immediate
+wakes. The two-second status timer is unchanged. Tests exercise quiet bursts,
+continuous producers and urgent interruption; native before/after CPU and
+interaction acceptance must pass before claiming a performance improvement.
+
 ## Repository commands and installation
 
 `bash scripts/verify.sh check` runs the PR gate. `test` runs nextest and doctests; `coverage` writes `artifacts/coverage.lcov`; `bench` runs Criterion and the native socket workload at 1/10/100 clients; `fuzz` runs four bounded nightly campaigns (`FUZZ_SECONDS`, default 60 per target). The native load workload runs shared-path contention and disjoint per-client paths separately. The `socket_v2` series separates successful claim/release cycles (two requests) from claim conflicts (one request), including connection setup. Each outcome records sample count and throughput over the same campaign duration; empty outcomes omit latency percentiles. Attempts, elapsed seconds and conflict ratio accompany each workload. These series must not be compared as continuations of the older `socket_claim_release` series, which mixed both outcomes. Stale detection/restart scenarios remain correctness integration tests until dedicated latency workloads are added. Custom counts use [Bencher Metric Format measures](https://bencher.dev/docs/reference/bencher-metric-format/).
