@@ -17,6 +17,8 @@ The long-busy scenario holds a direct user turn for 65 seconds, verifies retaine
 peer input without a false idle pause, then requires ordered provider receipts.
 Active-hook scenarios accept --active-peer-kind answer to exercise an ordinary
 peer reply at the queue head followed by human input in the same active turn.
+The subagent-hook scenario uses a real child conversation on the same loopback
+provider: its tool must leave root input queued until a root tool receives it.
 With --reload, baseline/question also hand the private daemon over while idle,
 with a draft, during a busy turn and (question only) before a pending answer.
 Private profiles/processes are retired; --output keeps private traces and a
@@ -71,6 +73,7 @@ parser.add_argument(
         "baseline",
         "active-hook",
         "active-hook-lost", "active-hook-resolve",
+        "subagent-hook",
         "controller-upgrade",
         "long-busy",
         "startup",
@@ -154,6 +157,52 @@ limit_active = args.scenario == "rate-limit"
 block = threading.Event()
 release = threading.Event()
 release.set()
+scope_child_ready = threading.Event()
+scope_child_release = threading.Event()
+scope_child_done = threading.Event()
+scope_root_waiting = threading.Event()
+scope_root_release = threading.Event()
+scope_root_done = threading.Event()
+scope_spawned = False
+scope_child_calls = 0
+scope_root_calls = 0
+SCOPE_ROOT_PROMPT = "SUBAGENT_SCOPE_START"
+SCOPE_CHILD_PROMPT = "SUBAGENT_SCOPE_CHILD"
+SCOPE_MESSAGE = "PEER_SCOPE_PARENT_ONLY"
+
+
+def fixture_tool(body, name):
+    """Use the actual provider's advertised namespace and argument schema."""
+    for tool in body.get("tools", []):
+        if tool.get("type") == "function" and tool.get("name") == name:
+            return None, tool.get("parameters", {}).get("properties", {})
+        if tool.get("type") == "namespace":
+            for nested in tool.get("tools", []):
+                if nested.get("name") == name:
+                    return tool["name"], nested.get("parameters", {}).get("properties", {})
+    raise AssertionError(f"actual Codex did not advertise {name}")
+
+
+def scope_tool_events(response, body, name, arguments):
+    namespace, _ = fixture_tool(body, name)
+    item_id = "fc_scope_" + response["id"]
+    item = {"type": "function_call", "id": item_id,
+        "call_id": "call_scope_" + response["id"], "name": name,
+        "arguments": json.dumps(arguments), "status": "completed"}
+    if namespace:
+        item["namespace"] = namespace
+    response["output"] = [item]
+    return [
+        {"type": "response.created", "response": dict(response, status="in_progress", output=[])},
+        {"type": "response.output_item.added", "output_index": 0,
+            "item": dict(item, arguments="", status="in_progress")},
+        {"type": "response.function_call_arguments.delta", "item_id": item_id,
+            "output_index": 0, "delta": item["arguments"]},
+        {"type": "response.function_call_arguments.done", "item_id": item_id,
+            "output_index": 0, "arguments": item["arguments"]},
+        {"type": "response.output_item.done", "output_index": 0, "item": item},
+        {"type": "response.completed", "response": response},
+    ]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -162,16 +211,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         global bootstrap_called, question_called, request_sequence
+        global scope_spawned, scope_child_calls, scope_root_calls
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert self.headers.get("Authorization") == "Bearer fixture-only"
         title = "Generate a concise, single-line task title" in json.dumps(body.get("input", []))
         users = [v for v in body.get("input", []) if v.get("role") == "user"]
+        scope = None
+        if args.scenario == "subagent-hook":
+            if SCOPE_CHILD_PROMPT in json.dumps(users):
+                scope = "child"
+            elif SCOPE_ROOT_PROMPT in json.dumps(users):
+                scope = "root"
         with request_lock:
             bootstrap = not title and not bootstrap_called
             bootstrap_called |= bootstrap
             auxiliary = bootstrap or title
             if not auxiliary:
-                report["requests"].append({"at": time.monotonic(), "body": body})
+                report["requests"].append({"at": time.monotonic(), "body": body, "scope": scope})
             n = len(report["requests"])
             request_sequence += 1
             rid = "resp_fixture_" + str(request_sequence)
@@ -355,6 +411,46 @@ class Handler(BaseHTTPRequestHandler):
                 {"type": "response.output_item.done", "output_index": 0, "item": item},
                 {"type": "response.completed", "response": response},
             ]
+        if scope == "root":
+            scope_root_calls += 1
+            assert scope_root_calls <= 8, "root did not receive its scoped input"
+            if not scope_spawned:
+                scope_spawned = True
+                namespace, properties = fixture_tool(body, "spawn_agent")
+                report["subagent_tool"] = {"namespace": namespace, "name": "spawn_agent"}
+                arguments = {"message": SCOPE_CHILD_PROMPT + ": run the single fixture tool, then finish."}
+                if "fork_context" in properties:
+                    arguments["fork_context"] = False
+                elif "fork_turns" in properties:
+                    arguments["fork_turns"] = "none"
+                if "task_name" in properties:
+                    arguments["task_name"] = "hook_scope_fixture"
+                events = scope_tool_events(response, body, "spawn_agent", arguments)
+            else:
+                # The root has completed spawn_agent (including its hooks),
+                # but cannot run another tool until the child-only check ends.
+                scope_root_waiting.set()
+                assert scope_root_release.wait(60), "root scope barrier timed out"
+                if SCOPE_MESSAGE not in json.dumps(body.get("input", [])):
+                    events = scope_tool_events(response, body, "exec_command", {
+                        "cmd": shlex.join([sys.executable, "-c", "print('SCOPE_ROOT_TOOL_DONE')"]),
+                        "max_output_tokens": 1000})
+                else:
+                    scope_root_done.set()
+        elif scope == "child":
+            scope_child_calls += 1
+            assert scope_child_calls <= 2, "child fixture unexpectedly continued"
+            if scope_child_calls == 1:
+                scope_child_ready.set()
+                assert scope_child_release.wait(60), "child scope barrier timed out"
+                events = scope_tool_events(response, body, "exec_command", {
+                    "cmd": shlex.join([sys.executable, "-c", "print('SCOPE_CHILD_TOOL_DONE')"]),
+                    "max_output_tokens": 1000})
+            else:
+                assert any(item.get("type") == "function_call_output"
+                    and "SCOPE_CHILD_TOOL_DONE" in json.dumps(item.get("output"))
+                    for item in body.get("input", [])), "child tool did not finish successfully"
+                scope_child_done.set()
         data = "".join("event: " + e["type"] + "\ndata: " + json.dumps(e) + "\n\n" for e in events).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -522,7 +618,7 @@ try:
                     + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n'
                 )
             provider_prefix = [codex, "--no-alt-screen"]
-            if args.scenario in ("startup", "lifecycle", "active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade"):
+            if args.scenario in ("startup", "lifecycle", "active-hook", "active-hook-lost", "active-hook-resolve", "subagent-hook", "controller-upgrade"):
                 # The only hook in this private profile is this reviewed fixture
                 # command. One-off trust does not change any user's saved policy.
                 hook_cli_path = root / "hook-cli.txt"
@@ -533,9 +629,14 @@ try:
                     "import json,os,subprocess,sys\n"
                     "from pathlib import Path\n"
                     "raw=sys.stdin.read()\n"
+                    "value=json.loads(raw)\n"
+                    "metadata={'event':value.get('hook_event_name')}\n"
+                    "metadata.update({k:value[k] for k in ('session_id','agent_id','agent_type','transcript_path','turn_id') if k in value})\n"
                     + "Path("
                     + repr(str(out / "hook-input.json"))
-                    + ").write_text(raw)\n"
+                    + ").write_text(json.dumps(metadata))\n"
+                    + "with open(" + repr(str(out / "hook-input-metadata.jsonl")) + ",'a') as log:\n"
+                    + " log.write(json.dumps(metadata)+'\\n')\n"
                     + ("if Path(" + repr(str(root / "hold-upgrade-hook"))
                        + ").exists():\n print('{}')\n sys.exit(0)\n"
                        if args.scenario == "controller-upgrade" else "")
@@ -560,7 +661,7 @@ try:
                             "hooks": {
                                 event: [{"hooks": [{"type": "command",
                                     "command": shlex.join([sys.executable, str(hook_runner)])}]}]
-                                for event in (["PreToolUse", "PostToolUse"] if args.scenario in ("active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade") else ["SessionStart"])
+                                for event in (["PreToolUse", "PostToolUse"] if args.scenario in ("active-hook", "active-hook-lost", "active-hook-resolve", "subagent-hook", "controller-upgrade") else ["SessionStart"])
                             }
                         }
                     )
@@ -1376,6 +1477,99 @@ try:
                     15,
                 )
                 report["idle_wake_after_receiver_crash"] = True
+            if args.scenario == "subagent-hook":
+                ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
+                wait(lambda: json.loads(ledgerpath.read_text()).get("attempt") is None, 15)
+                start = len(report["requests"])
+                os.write(master, SCOPE_ROOT_PROMPT.encode())
+                time.sleep(0.3)
+                os.write(master, b"\r")
+                wait(lambda: scope_root_waiting.is_set() and scope_child_ready.is_set(), 35)
+                sent = rpc({"op": "send", "from": peer, "to": aid,
+                    "kind": "chat", "payload": {"text": SCOPE_MESSAGE}})["message"]
+                pending = wait(lambda: (a if (a := json.loads(ledgerpath.read_text()).get("attempt"))
+                    and a["message"] == sent and a.get("queued") else None), 15)
+                queue_id = pending["queued"]
+                assert pending.get("hook") is None and pending.get("receipt") is None
+
+                def native_queue_row():
+                    # Observe the actual fixture provider's scheduling, never
+                    # mutate its database or infer survival from our ledger.
+                    database = sqlite3.connect((profile / "queue_1.sqlite").as_uri() + "?mode=ro", uri=True)
+                    try:
+                        database.execute("PRAGMA query_only=ON")
+                        return database.execute("SELECT id, thread_id FROM queued_items WHERE id = ?",
+                            (queue_id,)).fetchone()
+                    finally:
+                        database.close()
+
+                assert native_queue_row() == (queue_id, tid), "root input was not natively queued"
+                scope_child_release.set()
+                wait(scope_child_done.is_set, 30)
+                after_child = json.loads(ledgerpath.read_text())
+                assert after_child["attempt"] == pending, "child hook changed the root's pending input"
+                assert native_queue_row() == (queue_id, tid), "child hook removed the root's native input"
+                assert [m["id"] for m in rpc({"op": "peek_input", "agent": aid})["messages"]] == [sent]
+                assert not any(SCOPE_MESSAGE in json.dumps(r["body"].get("input", []))
+                    for r in report["requests"][start:] if r["scope"] == "child"), "root input reached child context"
+                metadata = [json.loads(line) for line in (out / "hook-input-metadata.jsonl").read_text().splitlines()]
+                children = [h for h in metadata if h.get("agent_id")]
+                assert children, "actual child hooks did not expose agent_id"
+                assert all(h["session_id"] == tid and h["agent_id"] != tid for h in children)
+                assert {h["event"] for h in children} >= {"PreToolUse", "PostToolUse"}
+                child_ids = {h["agent_id"] for h in children}
+                assert len(child_ids) == 1, "fixture unexpectedly spawned multiple children"
+                child_id = next(iter(child_ids))
+                scope_root_release.set()
+                wait(scope_root_done.is_set, 30)
+                wait(lambda: not rpc({"op": "peek_input", "agent": aid})["messages"], 15)
+                completed = wait(lambda: [r for r in json.loads(ledgerpath.read_text())["completed"]
+                    if r["message"] == sent], 15)
+                assert len(completed) == 1 and completed[0]["receipt"]["thread"] == tid
+
+                def hook_items(path):
+                    found = []
+                    with path.open() as rollout:
+                        transcript_id = json.loads(rollout.readline())["payload"]["id"]
+                        for line in rollout:
+                            if not line.endswith("\n"):
+                                break
+                            record = json.loads(line)
+                            item = record.get("payload", {})
+                            tags = item.get("internal_chat_message_metadata_passthrough") or {}
+                            if (record.get("type") == "response_item" and item.get("type") == "message"
+                                    and item.get("role") == "developer"
+                                    and tags.get("content_item_kinds") == ["hooks.additional_context"]
+                                    and any(SCOPE_MESSAGE in c.get("text", "") for c in item.get("content", []))):
+                                found.append({"thread": transcript_id,
+                                    "turn": tags["turn_id"], "item": item["id"]})
+                    return found
+
+                root_items = hook_items(files[0])
+                child_files = list(profile.glob("sessions/**/*" + child_id + ".jsonl"))
+                assert len(child_files) == 1, "child transcript unavailable"
+                assert not hook_items(child_files[0]), "root message has a tagged child receipt"
+                assert root_items == [completed[0]["receipt"]], "root needs one matching tagged receipt"
+                root_requests = [r for r in report["requests"][start:] if r["scope"] == "root"]
+                assert json.dumps(root_requests[-1]["body"].get("input", [])).count(SCOPE_MESSAGE) == 1
+                assert all(SCOPE_ROOT_PROMPT in json.dumps([item for item in r["body"]["input"]
+                    if item.get("role") == "user"][-1]) for r in root_requests), "root input became another ordinary turn"
+                assert native_queue_row() is None
+                time.sleep(4)
+                assert json.loads(ledgerpath.read_text())["attempt"] is None
+                assert hook_items(files[0]) == root_items, "root message was replayed"
+                assert not hook_items(child_files[0])
+                assert all(r["scope"] in ("root", "child") for r in report["requests"][start:]), "input started another ordinary turn"
+                metadata = [json.loads(line) for line in (out / "hook-input-metadata.jsonl").read_text().splitlines()]
+                root_hooks = [h for h in metadata if h.get("session_id") == tid
+                    and h.get("turn_id") == completed[0]["receipt"]["turn"]
+                    and not h.get("agent_id") and not h.get("agent_type")]
+                assert {h["event"] for h in root_hooks} >= {"PreToolUse", "PostToolUse"}
+                report["subagent_hook_scope"] = {"message": sent, "root_thread": tid,
+                    "child_thread": child_id, "native_queue_id": queue_id,
+                    "child_left_native_queue_and_attempt_unchanged": True,
+                    "child_received_root_context": False, "root_receipt": completed[0]["receipt"],
+                    "hook_metadata": metadata, "same_live_provider": provider.poll() is None}
             if args.scenario in ("active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade"):
                 ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
                 if args.scenario == "controller-upgrade":
@@ -1541,6 +1735,8 @@ try:
             assert hashlib.sha256(cli.with_name("agentd").read_bytes()).hexdigest() == report["daemon_sha256"]
         finally:
             release.set()
+            scope_child_release.set()
+            scope_root_release.set()
             if daemon is not None:
                 try:
                     os.kill(daemon.pid, signal.SIGCONT)
@@ -1617,6 +1813,8 @@ except (Exception, KeyboardInterrupt) as e:  # noqa: BLE001 - Save evidence, cle
     traceback.print_exc()
 finally:
     release.set()
+    scope_child_release.set()
+    scope_root_release.set()
     server.shutdown()
     server.server_close()
     (out / "result-private.json").write_text(json.dumps(report, indent=2))
