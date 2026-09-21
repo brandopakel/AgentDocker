@@ -38,6 +38,18 @@ recipe must set container executable bits explicitly. Reparse points are not
 accepted as ordinary files. Engine workspace transport is explicitly unavailable
 on Windows until a checked named-pipe/VM transport is implemented.
 
+## Portable desktop archive
+
+Windows x64 desktop packaging now produces an unsigned ZIP containing the three
+`.exe` files together, exact source/build and executable hashes, licenses and
+opening instructions. The Windows workflow builds release binaries, checks PE
+architecture, and runs its full daemon/CLI/terminal/desktop trial only after
+extracting that ZIP outside the checkout into a path containing spaces and
+Unicode. This archive path is awaiting native CI acceptance; it does not close
+Windows installer/update/rollback, services, clean-machine or actual-provider
+acceptance. The public tag workflow still has no Windows target. See
+[desktop distribution](DESKTOP-DISTRIBUTION.md#windows-portable-preview).
+
 ## Slice one: the daemon and the CLI answer
 
 The first integration slice is in source: `agentd` and `agentdocker` build

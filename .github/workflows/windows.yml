@@ -12,11 +12,12 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  PYTHONUTF8: "1"
 
 jobs:
   native-foundations:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -29,6 +30,10 @@ jobs:
         with:
           key: windows-native-foundations
           cache-on-failure: true
+      - name: Windows package integrity and executable metadata regressions
+        run: |
+          python -m unittest discover -s tests -p test_windows_desktop_package.py
+          python -m unittest discover -s tests -p test_native_build.py
       - name: Native core and host lint
         run: cargo clippy --locked -p agentdocker-core -p agentdocker-host --all-targets -- -D warnings
       - name: Iced desktop and native accessibility compile
@@ -44,12 +49,23 @@ jobs:
       # test suites still carry Unix-only fixtures and run elsewhere.
       - name: Native daemon and CLI lint
         run: cargo clippy --locked -p agentd -p agentdocker -- -D warnings
-      - name: Native daemon, CLI and desktop build
-        run: cargo build --locked -p agentdocker -p agentdocker-ui
-      - name: Native daemon, CLI and desktop startup smoke
+      - name: Native daemon, CLI and desktop release build with provenance
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          python scripts/build_native.py --target x86_64-pc-windows-msvc > artifacts/native-build.json
+      - name: Extracted Windows desktop package acceptance
         # Every command in it is bounded; a hang is a finding, not a wait.
         timeout-minutes: 10
-        run: python scripts/windows_daemon_smoke.py --binary-dir target/debug --output artifacts/windows-daemon-smoke --desktop
+        run: python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package
+      - name: Preserve tested unsigned portable preview
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-desktop-preview-x86_64
+          path: |
+            artifacts/windows-desktop-package/*.zip
+            artifacts/windows-desktop-package/*.sha256
+            artifacts/windows-desktop-package/manifest.json
+          if-no-files-found: error
       - name: Preserve test report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -62,5 +78,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: windows-daemon-smoke
-          path: artifacts/windows-daemon-smoke/
+          path: |
+            artifacts/native-build.json
+            artifacts/windows-desktop-package/package-acceptance.json
+            artifacts/windows-desktop-package/smoke/
           if-no-files-found: warn

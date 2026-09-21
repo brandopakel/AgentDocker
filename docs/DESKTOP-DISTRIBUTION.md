@@ -29,6 +29,36 @@ Build metadata comes from the compiled `agentd --build-info` command, which prin
 
 Linux launchers encode `Exec` and `Icon` separately according to the [Desktop Entry string rules](https://specifications.freedesktop.org/desktop-entry/latest/value-types.html) and [command quoting rules](https://specifications.freedesktop.org/desktop-entry/latest/exec-variables.html). Control characters and equals signs in executable paths are refused.
 
+## Windows portable preview
+
+The Windows packaging path targets `x86_64-pc-windows-msvc`. It builds a ZIP
+with `agentdocker-ui.exe`, `agentdocker.exe` and `agentd.exe` together in the
+`AgentDocker` folder, build metadata, licenses and opening instructions. The
+packager checks native-build hashes and the PE x64 executable headers before
+publishing the directory. The manifest and sidecar checksum identify the exact
+archive; this preview is unsigned, without Authenticode or installer/update
+support. Tag release feeds remain macOS/Linux until the Windows distribution
+path is accepted. Windows ARM64 is not claimed.
+
+On a native Windows build host, from the repository root in PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force artifacts | Out-Null
+python scripts/build_native.py --target x86_64-pc-windows-msvc > artifacts/native-build.json
+python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package
+```
+
+The Windows workflow runs this trial before exposing its
+`windows-desktop-preview-x86_64` artifact. It verifies the ZIP, extracts it
+outside the checkout into a path containing spaces and Unicode, verifies every
+executable against the manifest, removes the original staging payload, and runs
+the daemon/CLI/terminal and fresh-home GUI trial on those extracted files.
+The smoke's executable hashes must match the archive's hashes. A checksum,
+runner trial and CI artifact do not establish publisher authentication or
+clean-machine/provider acceptance. Those tests and the user installer, service,
+update and rollback path remain in [Remaining work](REMAINING-WORK.md).
+Native execution of this new archive path is pending its Windows CI run.
+
 ## Public macOS signing
 
 Use a clean checkout, an installed **Developer ID Application** identity, and a local `notarytool` keychain profile:
