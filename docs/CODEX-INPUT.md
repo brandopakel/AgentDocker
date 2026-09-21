@@ -150,8 +150,14 @@ Codex 0.154 records Pre/PostToolUse context as a developer message tagged
 `hooks.additional_context`, with a provider item ID and turn ID, but omits it
 from `thread/items/list`. A bounded reader therefore verifies the provider's
 reported transcript path, profile/session/checkout, opened file identity and
-complete records after the pre-offer byte boundary. It reads at most 4 MiB and
-never accepts plain text, untagged messages or an incomplete last record.
+complete records after the pre-offer byte boundary. The September 21 correction
+scans a fixed end of that suffix with bounded memory, including large compaction
+records, instead of refusing once cumulative growth exceeds 4 MiB. It retains
+only receipt fields; JSON nesting, object keys and captured strings have explicit
+bounds. Malformed or structurally oversized records fail closed. The whole suffix
+is checked for duplicate receipts; an incomplete last record is not evidence.
+The scan runs off the async executor, but has no fixed latency promise. It never
+accepts plain text or untagged messages.
 The older `hookPrompt` representation remains supported when the API exposes it. Native `userMessage` receipts remain valid if the original queue entry
 won the race. Older version-2 ledgers migrate without changing the token, queue
 ID, original input or receipts. An older receiver refuses the new ledger version.
@@ -178,6 +184,116 @@ in the same turn on the fix. The installed `c0a7c56` receiver then delivered the
 original blocked answer without manual queue acknowledgement. #202 merged as
 `14f1c519`; broader startup and throughput limits remain. See
 `peer_answer_active_hook_2026_09_18` in the [native queue record](verification/2026-09-15-native-codex-queue.json).
+
+### Retained hook recovery (September 21 candidate)
+
+A lost hook result without an exact native receipt remains unresolved; increasing
+transcript capacity cannot turn missing evidence into delivery. The installed
+Codex receiver exposed both cases together: an uncertain hook offer blocked later
+messages, then transcript growth hid that original reason behind the 4 MiB error.
+
+`agentdocker codex-queue-resolve --agent <id>` asks the owning receiver for a
+read-only preview of its complete retained envelope and a confirmation digest.
+After actually reading that message, an operator can run:
+
+```sh
+agentdocker codex-queue-resolve --agent <id> --message <message-id> \
+  --confirm-read <digest-from-preview> --note 'Read the complete original message'
+```
+
+This explicitly records **manual readback**, never a native provider receipt. A
+confirmation prints the resolution id alone on stdout (the way every command that
+creates something prints its id) and its report on stderr; the preview prints its
+JSON report on stdout. The
+private endpoint checks OS peer identity, daemon endpoint and provider generation;
+the digest binds the exact input, hook nonce and generation. The controller refuses
+an input still scheduled under its original client or queue ID, even if its text
+was edited. A missing project journal refuses before any disposition is written.
+The existing provider, receiver ownership and queue order remain intact.
+
+Ledger version 4 migrates versions 2/3 without changing their input or token. It
+persists the manual intent, journals its resolution ID, acknowledges that one ID
+through the existing token-bound inbox, then records completion. Loss of a journal
+reply can produce duplicate notes with the same resolution ID; lost ACK/reply or
+restart resumes the same disposition without another input. At most 256 manual
+records are retained separately from the 128 rotating native receipts; reaching
+that bound refuses further resolution without discarding the audit. Resolved hook
+nonces cannot advance a later head. The receiver serves recovery while paused.
+A same-user local process can make this explicit administrative request; this
+permission does not prove a human or provider child made it.
+On Windows the command reports the same explicit unavailable status as the
+native queue; it does not inspect or alter a Unix receiver ledger. The first
+Windows CI run caught the missing command surface; the matching refusal keeps
+the existing native Windows CLI build intact.
+
+The first version-3 replacement trial exposed a fixture race: the preceding
+idle message was visible before its receiver acknowledgement was persisted.
+The driver now waits for the replacement scenario's exact pending message ID;
+an unrelated pending entry is not evidence that the upgrade case is prepared.
+The repeat showed the old hook could consume that head before replacement. The
+private fixture now holds hook forwarding during the upgrade, leaving the native
+queue entry pending, and releases it after the successor is verified. This holds
+only the fixture's hook; it does not alter the provider's queue or delivery ledger.
+The third run completed replacement and ordered model delivery, then caught the
+short interval between daemon acknowledgement and the receiver's completion
+write. Acceptance now waits for both durable checkpoints before asserting order.
+
+Source `13565901` passed 26 targeted regressions and the full gate: 1,314 Rust
+tests (seven skipped), 104 Python checks (one skipped), lint, doctests, packaging
+and release. The actual Codex 0.154.0/loopback-model `active-hook-resolve` trial
+passed dropped hook output, full readback, stale-confirmation refusal, lost reply,
+receiver restart and ordered later delivery. The version-3 replacement trial
+preserved the provider, token and six old receipts; a peer answer and two human
+messages reached one active turn in order in 14.81 seconds. Failed fixture
+attempts remain in the [existing evidence](verification/2026-09-15-native-codex-queue.json).
+
+The September 21 receiver-only activation replaced PID 60959 with 28370 while
+Codex PID 51242, daemon PID 92608, provider binding and token remained. After
+reading the complete original coworker audit, Codex explicitly resolved only
+`343b8636571449a0` under audit `83f6f80a3c4a49b492e3d980cd5f7ec1`.
+That ID has no native receipt. The next original message `55360dd5dc354f89` and
+later handoffs then arrived automatically with exact native receipts. The
+receiver lives in a permanent private release directory; older version-3 CLIs
+refuse its version-4 ledger. Further receiver operations must use a compatible
+CLI; never restore an old ledger over already acknowledged input. Fresh idle,
+throughput and sustained-use acceptance remain open. Provider receipt and task
+completion remain separate from manual readback.
+
+A second offer on September 21 exposed a different defect: the exact tagged
+context for `9ca24aa8e53a4912` reached a review **subagent**, not the root
+conversation. Codex child hooks use their parent's `session_id`; PID ancestry and
+that field alone do not establish which conversation receives hook output.
+The root correctly refused to count the child's receipt and retained the offer.
+The initial recovery did not close this recurrence; the corrected hook and
+receiver were both installed only after the root/child trial passed.
+
+The candidate now reads `agent_id` and `agent_type` and skips child hooks before
+registration, activity reporting, receiver startup or legacy/native queue access.
+Either non-null field, including an empty string, means the hook cannot act for
+the root. Native hook protocol 2 also requires explicit root scope: older clients
+that discarded the child identity are refused before queue access. Both the hook
+executable and receiver must be upgraded; replacing only the receiver cannot
+restore active-turn hook delivery from an old client. Idle queue delivery is
+unchanged. The request carries the original monotonic deadline, leaving output
+time within the caller's four-second budget; delayed/expired requests cannot
+reserve a head. A timeout after reservation remains uncertain and is never
+automatically replayed. Source `613c28c4` passed the combined gate (1,330 Rust
+tests/seven skipped, 104 Python checks/one skipped) and the actual Codex root/child
+trial: child tool hooks left the root queue and ledger unchanged, then one exact
+root receipt named the original root turn, with no child receipt or replay.
+Root hooks omit the child fields; real child hooks supply `agent_id` and
+`agent_type=default`. The first fixture failed an overly strict last-user-item
+assertion (Codex appends child notifications); a second passed behavior but was
+invalidated by a source merge during the run. Both failures remain recorded.
+
+Local desktop `ff4efc61` from `613c28c4` now supplies both the hook CLI and receiver
+PID 42141; app PID 44748 runs that release, including merged multiline input.
+The coordinator (92608), Codex (51242) and both Claude processes (7794/23973) stayed
+running. The original `9ca24aa8e53a4912` was read in the complete explicit preview
+and manually resolved under audit `d2e1cc66fe504a0f9022c88be71d246e`, never treated
+as a root native receipt. The next original message `261c481ed3764883` and later
+handoffs now have native root receipts. Broader live idle/busy throughput,
+sleep/reboot and additional versions remain open.
 
 Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human

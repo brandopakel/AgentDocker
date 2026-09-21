@@ -35,10 +35,16 @@ pub(super) async fn find(
     attempt: &Attempt,
     binding: &super::ledger::Binding,
 ) -> Result<Option<Receipt>> {
-    if let Some(hook) = &attempt.hook
-        && let Some(receipt) = super::hook_receipts::find(binding, hook)?
-    {
-        return Ok(Some(receipt));
+    if let Some(hook) = &attempt.hook {
+        let hook = hook.clone();
+        let binding = binding.clone();
+        if let Some(receipt) =
+            tokio::task::spawn_blocking(move || super::hook_receipts::find(&binding, &hook))
+                .await
+                .context("hook transcript scanner stopped")??
+        {
+            return Ok(Some(receipt));
+        }
     }
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
         let mut cursor: Option<String> = None;
@@ -156,6 +162,31 @@ pub(super) async fn queued(
     thread: &str,
     attempt: &Attempt,
 ) -> Result<Option<String>> {
+    scan_queue(provider, thread, attempt, false).await
+}
+
+pub(super) async fn queued_for_manual(
+    provider: &mut Provider,
+    thread: &str,
+    attempt: &Attempt,
+) -> Result<Option<String>> {
+    scan_queue(provider, thread, attempt, true).await
+}
+
+fn same_queue_identity(value: &Value, attempt: &Attempt) -> bool {
+    value["clientUserMessageId"].as_str() == Some(&attempt.message)
+        || attempt
+            .queued
+            .as_deref()
+            .is_some_and(|id| value["id"].as_str() == Some(id))
+}
+
+async fn scan_queue(
+    provider: &mut Provider,
+    thread: &str,
+    attempt: &Attempt,
+    manual: bool,
+) -> Result<Option<String>> {
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
         let mut cursor: Option<String> = None;
         let mut cursors = HashSet::new();
@@ -169,6 +200,11 @@ pub(super) async fn queued(
                 .await?;
             let (items, next) = recovery::page(&value, &mut cursors)?;
             for item in items {
+                if manual && same_queue_identity(item, attempt) {
+                    // The user may have edited a still-scheduled entry. Changed
+                    // text is not proof that the original scheduling is gone.
+                    return Ok(Some("matching scheduled input".into()));
+                }
                 if let Some(id) = queued_id(item, attempt)? {
                     ensure!(
                         found.is_none(),
@@ -254,8 +290,13 @@ mod tests {
         );
         value["input"][0]["text"] = json!("partial");
         assert!(queued_id(&value, &attempt).unwrap().is_none());
+        assert!(same_queue_identity(&value, &attempt));
         value["input"][0]["text"] = json!("full input");
         value["clientUserMessageId"] = json!("another");
         assert!(queued_id(&value, &attempt).unwrap().is_none());
+        assert!(!same_queue_identity(&value, &attempt));
+        let mut attempt = attempt;
+        attempt.queued = Some("provider-queue".into());
+        assert!(same_queue_identity(&value, &attempt));
     }
 }

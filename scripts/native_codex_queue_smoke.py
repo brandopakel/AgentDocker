@@ -17,6 +17,8 @@ The long-busy scenario holds a direct user turn for 65 seconds, verifies retaine
 peer input without a false idle pause, then requires ordered provider receipts.
 Active-hook scenarios accept --active-peer-kind answer to exercise an ordinary
 peer reply at the queue head followed by human input in the same active turn.
+The subagent-hook scenario uses a real child conversation on the same loopback
+provider: its tool must leave root input queued until a root tool receives it.
 With --reload, baseline/question also hand the private daemon over while idle,
 with a draft, during a busy turn and (question only) before a pending answer.
 Private profiles/processes are retired; --output keeps private traces and a
@@ -70,7 +72,8 @@ parser.add_argument(
     choices=[
         "baseline",
         "active-hook",
-        "active-hook-lost",
+        "active-hook-lost", "active-hook-resolve",
+        "subagent-hook",
         "controller-upgrade",
         "long-busy",
         "startup",
@@ -94,12 +97,12 @@ parser.add_argument(
 )
 parser.add_argument("--initial-receiver-cli", type=Path,
     help="Older immutable CLI used to bootstrap the controller-upgrade scenario")
-parser.add_argument("--initial-ledger-version", type=int, choices=(2, 3), default=2,
+parser.add_argument("--initial-ledger-version", type=int, choices=(2, 3, 4), default=2,
     help="Expected initial receiver ledger format; default 2 preserves the migration trial")
 parser.add_argument("--active-peer-kind", choices=("chat", "answer"), default="chat",
     help="Message kind for the peer head in active-hook, active-hook-lost or controller-upgrade")
 args = parser.parse_args()
-if args.active_peer_kind != "chat" and args.scenario not in ("active-hook", "active-hook-lost", "controller-upgrade"):
+if args.active_peer_kind != "chat" and args.scenario not in ("active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade"):
     parser.error("--active-peer-kind requires an active-hook or controller-upgrade scenario")
 if args.reload and args.scenario not in ("baseline", "question"):
     parser.error("--reload supports baseline and question only")
@@ -154,6 +157,52 @@ limit_active = args.scenario == "rate-limit"
 block = threading.Event()
 release = threading.Event()
 release.set()
+scope_child_ready = threading.Event()
+scope_child_release = threading.Event()
+scope_child_done = threading.Event()
+scope_root_waiting = threading.Event()
+scope_root_release = threading.Event()
+scope_root_done = threading.Event()
+scope_spawned = False
+scope_child_calls = 0
+scope_root_calls = 0
+SCOPE_ROOT_PROMPT = "SUBAGENT_SCOPE_START"
+SCOPE_CHILD_PROMPT = "SUBAGENT_SCOPE_CHILD"
+SCOPE_MESSAGE = "PEER_SCOPE_PARENT_ONLY"
+
+
+def fixture_tool(body, name):
+    """Use the actual provider's advertised namespace and argument schema."""
+    for tool in body.get("tools", []):
+        if tool.get("type") == "function" and tool.get("name") == name:
+            return None, tool.get("parameters", {}).get("properties", {})
+        if tool.get("type") == "namespace":
+            for nested in tool.get("tools", []):
+                if nested.get("name") == name:
+                    return tool["name"], nested.get("parameters", {}).get("properties", {})
+    raise AssertionError(f"actual Codex did not advertise {name}")
+
+
+def scope_tool_events(response, body, name, arguments):
+    namespace, _ = fixture_tool(body, name)
+    item_id = "fc_scope_" + response["id"]
+    item = {"type": "function_call", "id": item_id,
+        "call_id": "call_scope_" + response["id"], "name": name,
+        "arguments": json.dumps(arguments), "status": "completed"}
+    if namespace:
+        item["namespace"] = namespace
+    response["output"] = [item]
+    return [
+        {"type": "response.created", "response": dict(response, status="in_progress", output=[])},
+        {"type": "response.output_item.added", "output_index": 0,
+            "item": dict(item, arguments="", status="in_progress")},
+        {"type": "response.function_call_arguments.delta", "item_id": item_id,
+            "output_index": 0, "delta": item["arguments"]},
+        {"type": "response.function_call_arguments.done", "item_id": item_id,
+            "output_index": 0, "arguments": item["arguments"]},
+        {"type": "response.output_item.done", "output_index": 0, "item": item},
+        {"type": "response.completed", "response": response},
+    ]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -162,16 +211,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         global bootstrap_called, question_called, request_sequence
+        global scope_spawned, scope_child_calls, scope_root_calls
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert self.headers.get("Authorization") == "Bearer fixture-only"
         title = "Generate a concise, single-line task title" in json.dumps(body.get("input", []))
         users = [v for v in body.get("input", []) if v.get("role") == "user"]
+        scope = None
+        if args.scenario == "subagent-hook" and not title:
+            if SCOPE_CHILD_PROMPT in json.dumps(users):
+                scope = "child"
+            elif SCOPE_ROOT_PROMPT in json.dumps(users):
+                scope = "root"
         with request_lock:
             bootstrap = not title and not bootstrap_called
             bootstrap_called |= bootstrap
             auxiliary = bootstrap or title
             if not auxiliary:
-                report["requests"].append({"at": time.monotonic(), "body": body})
+                report["requests"].append({"at": time.monotonic(), "body": body, "scope": scope})
             n = len(report["requests"])
             request_sequence += 1
             rid = "resp_fixture_" + str(request_sequence)
@@ -258,10 +314,11 @@ class Handler(BaseHTTPRequestHandler):
             {"type": "response.output_item.done", "output_index": 0, "item": item},
             {"type": "response.completed", "response": response},
         ]
-        active_hook = (args.scenario in ("active-hook", "active-hook-lost", "controller-upgrade") and users
+        active_hook = (args.scenario in ("active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade") and users
             and "ACTIVE_HOOK_START" in json.dumps(users[-1])
             and not all(marker in json.dumps(body.get("input", [])) for marker in
-                        ("PEER_ACTIVE_HOOK", "HUMAN_PROJECT_PAUSE", "HUMAN_BROADCAST_PAUSE")))
+                        (("HUMAN_PROJECT_PAUSE", "HUMAN_BROADCAST_PAUSE") if args.scenario == "active-hook-resolve" else
+                         ("PEER_ACTIVE_HOOK", "HUMAN_PROJECT_PAUSE", "HUMAN_BROADCAST_PAUSE"))))
         if active_hook:
             assert n < 40, "active hook messages did not reach the model"
         if bootstrap or active_hook:
@@ -354,6 +411,46 @@ class Handler(BaseHTTPRequestHandler):
                 {"type": "response.output_item.done", "output_index": 0, "item": item},
                 {"type": "response.completed", "response": response},
             ]
+        if scope == "root":
+            scope_root_calls += 1
+            assert scope_root_calls <= 8, "root did not receive its scoped input"
+            if not scope_spawned:
+                scope_spawned = True
+                namespace, properties = fixture_tool(body, "spawn_agent")
+                report["subagent_tool"] = {"namespace": namespace, "name": "spawn_agent"}
+                arguments = {"message": SCOPE_CHILD_PROMPT + ": run the single fixture tool, then finish."}
+                if "fork_context" in properties:
+                    arguments["fork_context"] = False
+                elif "fork_turns" in properties:
+                    arguments["fork_turns"] = "none"
+                if "task_name" in properties:
+                    arguments["task_name"] = "hook_scope_fixture"
+                events = scope_tool_events(response, body, "spawn_agent", arguments)
+            else:
+                # The root has completed spawn_agent (including its hooks),
+                # but cannot run another tool until the child-only check ends.
+                scope_root_waiting.set()
+                assert scope_root_release.wait(60), "root scope barrier timed out"
+                if SCOPE_MESSAGE not in json.dumps(body.get("input", [])):
+                    events = scope_tool_events(response, body, "exec_command", {
+                        "cmd": shlex.join([sys.executable, "-c", "print('SCOPE_ROOT_TOOL_DONE')"]),
+                        "max_output_tokens": 1000})
+                else:
+                    scope_root_done.set()
+        elif scope == "child":
+            scope_child_calls += 1
+            assert scope_child_calls <= 2, "child fixture unexpectedly continued"
+            if scope_child_calls == 1:
+                scope_child_ready.set()
+                assert scope_child_release.wait(60), "child scope barrier timed out"
+                events = scope_tool_events(response, body, "exec_command", {
+                    "cmd": shlex.join([sys.executable, "-c", "print('SCOPE_CHILD_TOOL_DONE')"]),
+                    "max_output_tokens": 1000})
+            else:
+                assert any(item.get("type") == "function_call_output"
+                    and "SCOPE_CHILD_TOOL_DONE" in json.dumps(item.get("output"))
+                    for item in body.get("input", [])), "child tool did not finish successfully"
+                scope_child_done.set()
         data = "".join("event: " + e["type"] + "\ndata: " + json.dumps(e) + "\n\n" for e in events).encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -521,7 +618,7 @@ try:
                     + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n'
                 )
             provider_prefix = [codex, "--no-alt-screen"]
-            if args.scenario in ("startup", "lifecycle", "active-hook", "active-hook-lost", "controller-upgrade"):
+            if args.scenario in ("startup", "lifecycle", "active-hook", "active-hook-lost", "active-hook-resolve", "subagent-hook", "controller-upgrade"):
                 # The only hook in this private profile is this reviewed fixture
                 # command. One-off trust does not change any user's saved policy.
                 hook_cli_path = root / "hook-cli.txt"
@@ -532,9 +629,17 @@ try:
                     "import json,os,subprocess,sys\n"
                     "from pathlib import Path\n"
                     "raw=sys.stdin.read()\n"
+                    "value=json.loads(raw)\n"
+                    "metadata={'event':value.get('hook_event_name')}\n"
+                    "metadata.update({k:value[k] for k in ('session_id','agent_id','agent_type','transcript_path','turn_id') if k in value})\n"
                     + "Path("
                     + repr(str(out / "hook-input.json"))
-                    + ").write_text(raw)\n"
+                    + ").write_text(json.dumps(metadata))\n"
+                    + "with open(" + repr(str(out / "hook-input-metadata.jsonl")) + ",'a') as log:\n"
+                    + " log.write(json.dumps(metadata)+'\\n')\n"
+                    + ("if Path(" + repr(str(root / "hold-upgrade-hook"))
+                       + ").exists():\n print('{}')\n sys.exit(0)\n"
+                       if args.scenario == "controller-upgrade" else "")
                     + "p=subprocess.run("
                     + "[Path(" + repr(str(hook_cli_path)) + ").read_text(),"
                     + repr("--socket") + "," + repr(str(sock)) + ", 'hook', 'codex']"
@@ -547,7 +652,7 @@ try:
                        + "if v.get('hookSpecificOutput',{}).get('additionalContext') and not marker.exists():\n"
                        + " marker.write_text('one offered context discarded before provider acceptance')\n print('{}')\n"
                        + "else: print(p.stdout,end='')\n"
-                       if args.scenario == "active-hook-lost" else "print(p.stdout,end='')\n")
+                       if args.scenario in ("active-hook-lost", "active-hook-resolve") else "print(p.stdout,end='')\n")
                     + "sys.exit(p.returncode)\n"
                 )
                 (profile / "hooks.json").write_text(
@@ -556,7 +661,7 @@ try:
                             "hooks": {
                                 event: [{"hooks": [{"type": "command",
                                     "command": shlex.join([sys.executable, str(hook_runner)])}]}]
-                                for event in (["PreToolUse", "PostToolUse"] if args.scenario in ("active-hook", "active-hook-lost", "controller-upgrade") else ["SessionStart"])
+                                for event in (["PreToolUse", "PostToolUse"] if args.scenario in ("active-hook", "active-hook-lost", "active-hook-resolve", "subagent-hook", "controller-upgrade") else ["SessionStart"])
                             }
                         }
                     )
@@ -1372,8 +1477,139 @@ try:
                     15,
                 )
                 report["idle_wake_after_receiver_crash"] = True
-            if args.scenario in ("active-hook", "active-hook-lost", "controller-upgrade"):
+            if args.scenario == "subagent-hook":
                 ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
+                wait(lambda: json.loads(ledgerpath.read_text()).get("attempt") is None, 15)
+
+                def root_turn_evidence():
+                    starts, prompts = [], []
+                    with files[0].open() as rollout:
+                        for line in rollout:
+                            if not line.endswith("\n"):
+                                break
+                            record = json.loads(line)
+                            item = record.get("payload", {})
+                            if record.get("type") == "event_msg" and item.get("type") == "task_started":
+                                starts.append(item["turn_id"])
+                            if (record.get("type") == "response_item" and item.get("type") == "message"
+                                    and item.get("role") == "user"
+                                    and "".join(c.get("text", "") for c in item.get("content", [])) == SCOPE_ROOT_PROMPT):
+                                tags = item.get("internal_chat_message_metadata_passthrough") or {}
+                                assert tags.get("content_item_kinds") == ["user.text"]
+                                prompts.append({"item": item["id"], "turn": tags["turn_id"]})
+                    return starts, prompts
+
+                turns_before, prompts_before = root_turn_evidence()
+                assert not prompts_before
+                start = len(report["requests"])
+                os.write(master, SCOPE_ROOT_PROMPT.encode())
+                time.sleep(0.3)
+                os.write(master, b"\r")
+                wait(lambda: scope_root_waiting.is_set() and scope_child_ready.is_set(), 35)
+                sent = rpc({"op": "send", "from": peer, "to": aid,
+                    "kind": "chat", "payload": {"text": SCOPE_MESSAGE}})["message"]
+                pending = wait(lambda: (a if (a := json.loads(ledgerpath.read_text()).get("attempt"))
+                    and a["message"] == sent and a.get("queued") else None), 15)
+                queue_id = pending["queued"]
+                assert pending.get("hook") is None and pending.get("receipt") is None
+
+                def native_queue_row():
+                    # Observe the actual fixture provider's scheduling, never
+                    # mutate its database or infer survival from our ledger.
+                    database = sqlite3.connect((profile / "queue_1.sqlite").as_uri() + "?mode=ro", uri=True)
+                    try:
+                        database.execute("PRAGMA query_only=ON")
+                        return database.execute("SELECT id, thread_id FROM queued_items WHERE id = ?",
+                            (queue_id,)).fetchone()
+                    finally:
+                        database.close()
+
+                assert native_queue_row() == (queue_id, tid), "root input was not natively queued"
+                scope_child_release.set()
+                wait(scope_child_done.is_set, 30)
+                after_child = json.loads(ledgerpath.read_text())
+                assert after_child["attempt"] == pending, "child hook changed the root's pending input"
+                assert native_queue_row() == (queue_id, tid), "child hook removed the root's native input"
+                assert [m["id"] for m in rpc({"op": "peek_input", "agent": aid})["messages"]] == [sent]
+                assert not any(SCOPE_MESSAGE in json.dumps(r["body"].get("input", []))
+                    for r in report["requests"][start:] if r["scope"] == "child"), "root input reached child context"
+                metadata = [json.loads(line) for line in (out / "hook-input-metadata.jsonl").read_text().splitlines()]
+                children = [h for h in metadata if h.get("agent_id")]
+                assert children, "actual child hooks did not expose agent_id"
+                assert all(h["session_id"] == tid and h["agent_id"] != tid for h in children)
+                assert {h["event"] for h in children} >= {"PreToolUse", "PostToolUse"}
+                child_ids = {h["agent_id"] for h in children}
+                assert len(child_ids) == 1, "fixture unexpectedly spawned multiple children"
+                child_id = next(iter(child_ids))
+                active_turns, active_prompts = root_turn_evidence()
+                assert len(active_prompts) == 1, "root needs one original prompt"
+                active_prompt = active_prompts[0]
+                assert active_turns == turns_before + [active_prompt["turn"]], "unexpected root turn before delivery"
+                scope_root_release.set()
+                wait(scope_root_done.is_set, 30)
+                wait(lambda: not rpc({"op": "peek_input", "agent": aid})["messages"], 15)
+                completed = wait(lambda: [r for r in json.loads(ledgerpath.read_text())["completed"]
+                    if r["message"] == sent], 15)
+                assert len(completed) == 1 and completed[0]["receipt"]["thread"] == tid
+
+                def hook_items(path):
+                    found = []
+                    with path.open() as rollout:
+                        transcript_id = json.loads(rollout.readline())["payload"]["id"]
+                        for line in rollout:
+                            if not line.endswith("\n"):
+                                break
+                            record = json.loads(line)
+                            item = record.get("payload", {})
+                            tags = item.get("internal_chat_message_metadata_passthrough") or {}
+                            if (record.get("type") == "response_item" and item.get("type") == "message"
+                                    and item.get("role") == "developer"
+                                    and tags.get("content_item_kinds") == ["hooks.additional_context"]
+                                    and any(SCOPE_MESSAGE in c.get("text", "") for c in item.get("content", []))):
+                                found.append({"thread": transcript_id,
+                                    "turn": tags["turn_id"], "item": item["id"]})
+                    return found
+
+                root_items = hook_items(files[0])
+                child_files = list(profile.glob("sessions/**/*" + child_id + ".jsonl"))
+                assert len(child_files) == 1, "child transcript unavailable"
+                assert not hook_items(child_files[0]), "root message has a tagged child receipt"
+                assert root_items == [completed[0]["receipt"]], "root needs one matching tagged receipt"
+                assert completed[0]["receipt"]["turn"] == active_prompt["turn"], "root input became another ordinary turn"
+                root_requests = [r for r in report["requests"][start:] if r["scope"] == "root"]
+                assert json.dumps(root_requests[-1]["body"].get("input", [])).count(SCOPE_MESSAGE) == 1
+                # Codex can append a native child-completion notification as a
+                # user item in this same turn. Anchor to the original prompt
+                # identity and actual rollout turn, not the last user item.
+                assert all(sum(item.get("id") == active_prompt["item"] and item.get("role") == "user"
+                    for item in r["body"]["input"]) == 1 for r in root_requests), "root prompt identity changed"
+                assert native_queue_row() is None
+                time.sleep(4)
+                assert json.loads(ledgerpath.read_text())["attempt"] is None
+                assert hook_items(files[0]) == root_items, "root message was replayed"
+                assert not hook_items(child_files[0])
+                assert root_turn_evidence() == (active_turns, active_prompts), "input started another ordinary turn"
+                assert all(r["scope"] in ("root", "child") for r in report["requests"][start:]), "input started another ordinary turn"
+                metadata = [json.loads(line) for line in (out / "hook-input-metadata.jsonl").read_text().splitlines()]
+                root_hooks = [h for h in metadata if h.get("session_id") == tid
+                    and h.get("turn_id") == completed[0]["receipt"]["turn"]
+                    and not h.get("agent_id") and not h.get("agent_type")]
+                assert {h["event"] for h in root_hooks} >= {"PreToolUse", "PostToolUse"}
+                report["subagent_hook_scope"] = {"message": sent, "root_thread": tid,
+                    "child_thread": child_id, "native_queue_id": queue_id,
+                    "child_left_native_queue_and_attempt_unchanged": True,
+                    "child_received_root_context": False, "root_receipt": completed[0]["receipt"],
+                    "original_root_prompt": active_prompt, "same_root_turn_without_replay": True,
+                    "hook_metadata": metadata, "same_live_provider": provider.poll() is None}
+            if args.scenario in ("active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade"):
+                ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
+                if args.scenario == "controller-upgrade":
+                    # Hold only this private fixture's hook forwarding while
+                    # the active turn owns a native queue entry. Release after
+                    # replacement, so a fast old hook cannot consume the very
+                    # pending input whose migration this scenario must prove.
+                    (root / "hold-upgrade-hook").touch()
+                    wait(lambda: json.loads(ledgerpath.read_text()).get("attempt") is None, 15)
                 start = len(report["requests"])
                 os.write(master, b"ACTIVE_HOOK_START")
                 time.sleep(0.3)
@@ -1391,7 +1627,11 @@ try:
                     sent.append(result["message"])
                 if args.scenario == "controller-upgrade":
                     initial = rpc({"op":"inspect", "agent":aid})["agent"]["input_binding"]
-                    wait(lambda: (json.loads(ledgerpath.read_text()).get("attempt") or {}).get("queued"), 15)
+                    # The preceding idle message may be visible to the model
+                    # before its receiver ACK is persisted. Wait for this
+                    # scenario's exact head, not that earlier pending entry.
+                    wait(lambda: ((a := json.loads(ledgerpath.read_text()).get("attempt") or {})
+                                  .get("message") == sent[0] and a.get("queued")), 15)
                     pending = json.loads(ledgerpath.read_text())
                     assert pending["version"] == args.initial_ledger_version, "unexpected initial receiver ledger format"
                     assert pending["attempt"]["message"] == sent[0]
@@ -1403,6 +1643,7 @@ try:
                         env=daemon_env, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=75)
                     (out / "upgrade-command.log").write_text(upgrade.stdout + upgrade.stderr)
                     assert upgrade.returncode == 0, "receiver upgrade command failed"
+                    (root / "hold-upgrade-hook").unlink()
                     upgraded = rpc({"op":"inspect", "agent":aid})["agent"]["input_binding"]
                     assert upgraded["provider"] == initial["provider"]
                     assert upgraded["controller"] != initial["controller"]
@@ -1418,7 +1659,7 @@ try:
                         "prior_completed_receipts":len(old_completed), "pending_native_queue_id":old_queue_id,
                         "initial_cli_sha256":hashlib.sha256(args.initial_receiver_cli.resolve(strict=True).read_bytes()).hexdigest()}
                 markers = ("PEER_ACTIVE_HOOK", "HUMAN_PROJECT_PAUSE", "HUMAN_BROADCAST_PAUSE")
-                if args.scenario == "active-hook-lost":
+                if args.scenario in ("active-hook-lost", "active-hook-resolve"):
                     wait(lambda: (out / "discarded-hook-context").exists(), 15)
                     wait(lambda: rpc({"op":"inspect", "agent":aid})["agent"].get("input_delivery", {}).get("paused") is True, 45)
                     retained = json.loads(ledgerpath.read_text())
@@ -1427,9 +1668,74 @@ try:
                     assert not any(m in json.dumps(q["body"].get("input", [])) for q in report["requests"][start:] for m in markers)
                     report["lost_hook_output"] = {"retained_messages":sent, "paused":True,
                         "no_provider_receipt":True, "no_blind_resubmission":True}
+                    if args.scenario == "active-hook-resolve":
+                        def recovery_command(*options):
+                            return subprocess.run([str(cli), "--socket", str(sock),
+                                "codex-queue-resolve", "--agent", aid, *options],
+                                env=daemon_env, cwd=repo, capture_output=True, text=True, timeout=95)
+
+                        review = recovery_command()
+                        assert review.returncode == 0, review.stderr
+                        reviewed = json.loads(review.stdout)["pending"]
+                        assert reviewed["message"] == sent[0]
+                        assert reviewed["envelope"]["payload"]["text"] == markers[0]
+                        assert reviewed["native_receipt"] is None
+                        wrong = recovery_command("--message", sent[0], "--confirm-read", "0" * 64,
+                            "--note", "fixture deliberately stale confirmation")
+                        assert wrong.returncode != 0, "stale confirmation was accepted"
+                        assert not json.loads(ledgerpath.read_text()).get("manual_reads")
+                        assert [m["id"] for m in rpc({"op":"peek_input", "agent":aid})["messages"]] == sent
+
+                        # Simulate the explicit operator reading the complete CLI
+                        # preview, then losing the confirmation response. Never
+                        # present this as a native model receipt for the first ID.
+                        accepted = rpc({"op":"inspect", "agent":aid})["agent"]["input_binding"]
+                        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as admin:
+                            admin.connect(str(adhome / "codex-queue" / aid / "resolve.sock"))
+                            admin.sendall((json.dumps({"action":"confirm", "agent":aid,
+                                "provider":accepted["provider"], "socket":str(sock),
+                                "message":sent[0], "confirmation":reviewed["confirmation"],
+                                "note":"fixture operator reviewed the full original envelope"}) + "\n").encode())
+                            admin.shutdown(socket.SHUT_WR)
+                            wait(lambda: any(r["acknowledged"] for r in
+                                json.loads(ledgerpath.read_text()).get("manual_reads", [])), 75)
+                            # Close without receiving the reply; retry after a
+                            # real receiver replacement must be idempotent.
+                        controller_pid = rpc({"op":"inspect", "agent":aid})["agent"]["input_binding"]["controller"]["pid"]
+                        controller_pids.add(controller_pid)
+                        controller_pid = restart_with_ledger(ledgerpath, controller_pid, lambda _: None)
+                        controller_pids.add(controller_pid)
+                        repeated = recovery_command("--message", sent[0], "--confirm-read", reviewed["confirmation"],
+                            "--note", "retry after response loss and receiver restart")
+                        assert repeated.returncode == 0, repeated.stderr
+                        # A confirmation prints the resolution id alone on stdout;
+                        # its report (already_applied included) goes to stderr.
+                        assert json.loads(repeated.stderr)["already_applied"] is True
+                        assert repeated.stdout.strip() == json.loads(repeated.stderr)["resolution"]
+                        wait(lambda: not rpc({"op":"peek_input", "agent":aid})["messages"], 45)
+                        wait(lambda: all(m in json.dumps(report["requests"][-1]["body"].get("input", [])) for m in markers[1:]), 30)
+                        wait(lambda: set(sent[1:]).issubset(
+                            {r["message"] for r in json.loads(ledgerpath.read_text())["completed"]}), 15)
+                        final = json.loads(ledgerpath.read_text())
+                        manual = final["manual_reads"]
+                        assert len(manual) == 1 and manual[0]["message"] == sent[0] and manual[0]["acknowledged"]
+                        assert [r["message"] for r in final["completed"] if r["message"] in sent] == sent[1:]
+                        visible = json.dumps(report["requests"][-1]["body"].get("input", []))
+                        assert markers[0] not in visible, "manual recovery replayed the original input"
+                        assert all(visible.count(m) == 1 for m in markers[1:])
+                        assert visible.index(markers[1]) < visible.index(markers[2])
+                        report["manual_readback_recovery"] = {
+                            "message":sent[0], "resolution":manual[0]["id"],
+                            "native_receipt_for_manually_read_message":False,
+                            "stale_confirmation_refused":True, "lost_response_retry_after_restart":True,
+                            "later_inputs_received_in_order":sent[1:], "original_not_replayed":True}
                 else:
                     wait(lambda: all(m in json.dumps(report["requests"][-1]["body"].get("input", [])) for m in markers), 45)
                     wait(lambda: not rpc({"op":"peek_input", "agent":aid})["messages"], 15)
+                    # The daemon ACK precedes the receiver's durable completion
+                    # write. Observe both checkpoints before asserting order.
+                    wait(lambda: set(sent).issubset(
+                        {r["message"] for r in json.loads(ledgerpath.read_text())["completed"]}), 15)
                     visible = json.dumps(report["requests"][-1]["body"].get("input", []))
                     assert all(visible.count(marker) == 1 for marker in markers), "provider context duplicated an input"
                     positions = [visible.index(marker) for marker in markers]
@@ -1443,7 +1749,7 @@ try:
                     assert all("ACTIVE_HOOK_START" in json.dumps([i for i in r["body"]["input"] if i.get("role") == "user"][-1]) for r in after)
                     assert retained["attempt"] is None
                     if args.scenario == "controller-upgrade":
-                        assert retained["version"] == 3
+                        assert retained["version"] == 4
                         assert retained["completed"][:len(old_completed)] == old_completed
                     report["active_hook"] = {"messages":sent, "receipts":receipts,
                         "seconds":time.monotonic()-began, "same_turn":True,
@@ -1463,6 +1769,8 @@ try:
             assert hashlib.sha256(cli.with_name("agentd").read_bytes()).hexdigest() == report["daemon_sha256"]
         finally:
             release.set()
+            scope_child_release.set()
+            scope_root_release.set()
             if daemon is not None:
                 try:
                     os.kill(daemon.pid, signal.SIGCONT)
@@ -1539,6 +1847,8 @@ except (Exception, KeyboardInterrupt) as e:  # noqa: BLE001 - Save evidence, cle
     traceback.print_exc()
 finally:
     release.set()
+    scope_child_release.set()
+    scope_root_release.set()
     server.shutdown()
     server.server_close()
     (out / "result-private.json").write_text(json.dumps(report, indent=2))

@@ -51,6 +51,7 @@ pub mod hooks {
         _agent: &agentdocker_core::AgentRecord,
         _event: &str,
         _session: &str,
+        _deadline: tokio::time::Instant,
     ) -> Result<Option<String>> {
         Ok(None)
     }
@@ -65,6 +66,28 @@ pub mod upgrade {
     pub struct Args {
         #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
         pub agent: String,
+    }
+
+    pub async fn run(_client: Client, _args: Args) -> Result<()> {
+        anyhow::bail!(super::UNAVAILABLE)
+    }
+}
+
+pub mod resolve {
+    use anyhow::Result;
+
+    use crate::client::Client;
+
+    #[derive(clap::Args)]
+    pub struct Args {
+        #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
+        pub agent: String,
+        #[arg(long, requires_all = ["confirm_read", "note"])]
+        pub message: Option<String>,
+        #[arg(long, requires_all = ["message", "note"])]
+        pub confirm_read: Option<String>,
+        #[arg(long, requires_all = ["message", "confirm_read"])]
+        pub note: Option<String>,
     }
 
     pub async fn run(_client: Client, _args: Args) -> Result<()> {
