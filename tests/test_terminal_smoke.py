@@ -12,6 +12,32 @@ SPEC = importlib.util.spec_from_file_location("terminal_smoke", ROOT / "scripts/
 SMOKE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SMOKE)
 
+WINDOWS_SPEC = importlib.util.spec_from_file_location("windows_smoke", ROOT / "scripts/windows_daemon_smoke.py")
+WINDOWS_SMOKE = importlib.util.module_from_spec(WINDOWS_SPEC)
+WINDOWS_SPEC.loader.exec_module(WINDOWS_SMOKE)
+
+
+class ManagedSessionCleanup(unittest.TestCase):
+    def test_stop_requested_is_not_exit_observed(self):
+        from unittest.mock import Mock
+        stopping = {"status": {"state": "stopping"}}
+        exited = {"status": {"state": "exited", "code": 0}}
+        inspect = Mock(side_effect=[stopping, stopping, exited])
+        with patch.object(WINDOWS_SMOKE.time, "sleep"):
+            result = WINDOWS_SMOKE.wait_terminal(inspect, "fixture")
+        self.assertEqual(result, exited)
+        self.assertEqual(inspect.call_count, 3)
+
+    def test_cleanup_deadline_preserves_live_status_for_force_fallback(self):
+        from unittest.mock import Mock
+        stopping = {"status": {"state": "stopping"}}
+        inspect = Mock(return_value=stopping)
+        with patch.object(WINDOWS_SMOKE.time, "monotonic", side_effect=[0, 0, 11]), patch.object(WINDOWS_SMOKE.time, "sleep"):
+            result = WINDOWS_SMOKE.wait_terminal(inspect, "fixture")
+        self.assertEqual(result, stopping)
+        self.assertFalse(WINDOWS_SMOKE.terminal_record(result))
+        self.assertEqual(inspect.call_count, 2)
+
 
 class FixtureSetupCleanup(unittest.TestCase):
     def test_missing_binary_removes_fixture_and_records_failure(self):

@@ -260,8 +260,16 @@ impl Protection {
                 return Err(denied("truncated access-control identifier"));
             }
             let trustee = unsafe { sid_text(sid.cast())? };
+            // OWNER RIGHTS grants belong to this object's owner, whose
+            // identity was already checked above. CPython's private
+            // directories use this ACE. It is not a globally trusted SID.
+            let trustee = if trustee == "S-1-3-4" {
+                owner.as_str()
+            } else {
+                trustee.as_str()
+            };
             // Administrators can already take ownership, as root can on Unix.
-            if trustee != self.sid && !trusted_system(&trustee) {
+            if trustee != self.sid && !trusted_system(trustee) {
                 return Err(denied(&format!(
                     "state is writable by another Windows principal ({trustee})"
                 )));
@@ -611,7 +619,11 @@ mod tests {
     }
 
     fn grant_everyone_write(file: &File) {
-        let sddl: Vec<_> = "D:P(A;OICI;FA;;;WD)".encode_utf16().chain([0]).collect();
+        set_test_acl(file, "D:P(A;OICI;FA;;;WD)");
+    }
+
+    fn set_test_acl(file: &File, sddl: &str) {
+        let sddl: Vec<_> = sddl.encode_utf16().chain([0]).collect();
         let mut descriptor = null_mut();
         assert_ne!(
             unsafe {
@@ -648,6 +660,51 @@ mod tests {
             },
             0
         );
+    }
+
+    #[test]
+    fn owner_rights_resolves_to_the_validated_owner_without_trusting_other_writers() {
+        let temporary = tempfile::tempdir().unwrap();
+        let parent = temporary.path().join("python-private-parent");
+        secure_state_dir(&parent).unwrap();
+        let protection = Protection::new().unwrap();
+        let directory = open(&parent, &protection, true, false, false).unwrap();
+        // CPython 3.13's mkdir(mode=0700) ACL, installed on a directory
+        // whose owner is already the current user.
+        set_test_acl(
+            &directory,
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)",
+        );
+        let before = acl_bytes(directory.as_raw_handle());
+        secure_state_dir(&parent.join("child-state")).unwrap();
+        assert_eq!(
+            acl_bytes(directory.as_raw_handle()),
+            before,
+            "parent ACL changed"
+        );
+        protection
+            .validate_access(directory.as_raw_handle(), Access::State)
+            .unwrap();
+
+        // OWNER RIGHTS must not bypass the earlier ownership check. Simulate
+        // a different caller without requiring privilege to set foreign owners.
+        let mut foreign_caller = Protection::new().unwrap();
+        foreign_caller.sid = "S-1-5-21-1-2-3-9876".into();
+        for access in [Access::State, Access::Ancestor, Access::Pipe] {
+            assert!(
+                foreign_caller
+                    .validate_access(directory.as_raw_handle(), access)
+                    .is_err()
+            );
+        }
+        set_test_acl(
+            &directory,
+            "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;OW)(A;OICI;FA;;;WD)",
+        );
+        let before = acl_bytes(directory.as_raw_handle());
+        assert!(secure_state_dir(&parent.join("must-not-create")).is_err());
+        assert!(!parent.join("must-not-create").exists());
+        assert_eq!(acl_bytes(directory.as_raw_handle()), before);
     }
 
     #[test]

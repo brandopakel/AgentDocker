@@ -104,10 +104,14 @@ daemon made under such a directory was refused as writable by another
 principal, so nothing the daemon owns sits under one, and the report
 records what a directory made there carries: CPython's
 `os.mkdir(mode=0o700)` gives it an explicit DACL of SYSTEM, Administrators
-and `OWNER RIGHTS` (S-1-3-4), and the check does not yet count `OWNER
-RIGHTS` as the owner it has already validated — open, small, and recorded
-in [Remaining work](REMAINING-WORK.md). What the daemon creates is owned
-by the user. The same held
+and `OWNER RIGHTS` (S-1-3-4). The follow-up resolves that entry to the
+object's already validated owner. It does not trust that SID globally or
+change ownership checks: foreign-owned state and other principals' write
+grants remain refused. A native regression checks those refusals and
+unchanged parent ACLs; the runtime smoke starts a fresh home beneath an
+actual Python OWNER RIGHTS parent. Native acceptance of this compatibility
+fix is pending in [Remaining work](REMAINING-WORK.md). What the daemon creates
+is owned by the user. The same held
 for the CLI: a client starting the daemon on demand made the home with a
 plain directory creation, which from an elevated shell belongs to
 Administrators and was then refused by the daemon it started — the client
@@ -215,10 +219,14 @@ kills a piped session owner and checks the child and grandchild through retained
 process handles, and fills a nonreading console's input before requiring stop
 within ten seconds. Its async runtime has one worker; wire writes are bounded.
 All fallible process/job handle clones are acquired before the suspended child
-is resumed. Test teardown stops managed sessions before its daemon, and uses
-verified owner process handles as a fallback; the disown test owns its sole
-process directly. Native execution of these new checks is pending; cross-compilation is not runtime
-acceptance. The broader daemon/CLI test fixtures still contain Unix-only APIs
+is resumed. Test teardown waits for exit after requesting stop (`stopping`
+is still live), then uses force-stop and verified owner process handles as
+fallbacks. Daemon stop must succeed and leave no answering endpoint before
+private state is removed. The disown test owns its sole process directly.
+The `b24f983d` local gate passed 1,331 Rust tests (7 skipped) and 104 Python
+checks (1 skipped), packaging and release build; the portable daemon smoke
+passed 24 steps on macOS. Native Windows runtime acceptance is still pending;
+cross-compilation and macOS execution do not establish it. The broader daemon/CLI test fixtures still contain Unix-only APIs
 and do not yet compile as native Windows tests.
 
 Not in this slice: the desktop's own terminal pane on Windows (it reads

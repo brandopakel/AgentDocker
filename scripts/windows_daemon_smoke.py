@@ -24,6 +24,19 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
+def terminal_record(record):
+    return record is None or record["status"]["state"] in ("exited", "failed")
+
+
+def wait_terminal(inspect, name, seconds=10):
+    deadline = time.monotonic() + seconds
+    while True:
+        record = inspect(name, missing_ok=True)
+        if terminal_record(record) or time.monotonic() >= deadline:
+            return record
+        time.sleep(0.1)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary-dir", type=Path, required=True)
@@ -48,11 +61,12 @@ def main():
     # by the user. The first runner also refused a home the daemon made under
     # a directory made here as "writable by another principal": what such a
     # directory inherits there is recorded in the report (`root_acl`) and
-    # nothing the daemon owns sits under one.
+    # the final OWNER RIGHTS trial now checks that ancestry directly.
     base = Path(tempfile.gettempdir()).resolve()
     token = secrets.token_hex(4)
     home = base / f"agentdocker-smoke-{token}"
     fresh = base / f"agentdocker-smoke-{token}-fresh"
+    homes = [home, fresh]
     root = Path(tempfile.mkdtemp(prefix="agentdocker-smoke-")).resolve()
     project = root / "project"
     project.mkdir()
@@ -159,7 +173,7 @@ def main():
 
     def transport_endpoint():
         """Where the daemon listens, as `daemon status` prints it."""
-        status = run("daemon", "status")
+        status = run("daemon", "status", timeout=5)
         for line in status.stdout.splitlines():
             if line.startswith("daemon ") and " at " in line:
                 return line.split(" at ", 1)[1].split(" (pid")[0].strip()
@@ -250,11 +264,13 @@ def main():
             closer.start()
             closer.join(timeout=2)
 
-    def inspect_agent(name):
+    def inspect_agent(name, missing_ok=False):
         wire = Wire(transport_endpoint())
         try:
             wire.send({"op": "inspect", "agent": name})
-            response = wire.line()
+            response = wire.line(timeout=3)
+            if missing_ok and isinstance(response, dict) and response.get("type") == "error" and response.get("code") == "not_found":
+                return None
             assert isinstance(response, dict) and response.get("type") == "agent", response
             return response["agent"]
         finally:
@@ -302,6 +318,11 @@ def main():
 
         def close(self):
             self.api.CloseHandle(self.handle)
+
+    def windows_sddl(path):
+        quoted = str(path).replace("'", "''")
+        result = subprocess.run(["powershell", "-NoProfile", "-Command", f"(Get-Acl -LiteralPath '{quoted}').Sddl"], capture_output=True, text=True, timeout=15, check=True)
+        return result.stdout.strip()
 
     def agent_status(name):
         listing = run("ps", "--no-discover", "--all")
@@ -543,6 +564,23 @@ def main():
             stop = run("daemon", "stop", extra_env=fresh_env)
             gone = run("ping", check=False, extra_env=dict(fresh_env, AGENTDOCKER_NO_AUTOSTART="1"), timeout=10)
             step("that daemon is ended too", "stopped" in stop.stdout and gone.returncode != 0, stop.stdout.strip())
+            if os.name == "nt":
+                # root was created by tempfile.mkdtemp(mode=0700): newer
+                # CPython uses SYSTEM, Administrators and OWNER RIGHTS.
+                # Verify that exact premise rather than passing on an older
+                # Python whose ACL never exercised the compatibility bug.
+                before_acl = windows_sddl(root)
+                step("the Python private parent has an OWNER RIGHTS permission entry", ";;;OW)" in before_acl, f"Python {platform.python_version()}; {before_acl}")
+                nested = root / "owner-rights-home"
+                homes.append(nested)
+                nested_env = {"AGENTDOCKER_HOME": str(nested), "AGENTDOCKER_NO_AUTOSTART": ""}
+                pinged = run("ping", check=False, extra_env=nested_env, timeout=30)
+                step("first run works below the private OWNER RIGHTS parent without changing its owner or ACL", pinged.returncode == 0 and windows_sddl(root) == before_acl, (pinged.stderr + pinged.stdout).strip())
+                child_acl = windows_sddl(nested)
+                step("the new child state has a protected ACL", "D:P" in child_acl, child_acl)
+                stop = run("daemon", "stop", extra_env=nested_env)
+                gone = run("ping", check=False, extra_env=dict(nested_env, AGENTDOCKER_NO_AUTOSTART="1"), timeout=10)
+                step("the OWNER RIGHTS trial daemon is ended too", "stopped" in stop.stdout and gone.returncode != 0, stop.stdout.strip())
         else:
             daemon.terminate()
             step("the private daemon is ended directly, since this user has a service installed", wait_exit(daemon), str(user_service))
@@ -566,7 +604,26 @@ def main():
                         time.sleep(0.1)
                 for name in reversed(managed_names):
                     try:
-                        run("stop", name, check=False, timeout=8)
+                        record = inspect_agent(name, missing_ok=True)
+                        if terminal_record(record):
+                            continue
+                        # Also covers run commands that failed/timed out
+                        # after creating a session, before run() could keep
+                        # the owner's handle for cleanup.
+                        if os.name == "nt" and record.get("owner"):
+                            owner = record["owner"]
+                            try:
+                                owner_handles.append(WindowsProcess(owner["pid"], owner["started_at"]))
+                            except OSError:
+                                if not terminal_record(wait_terminal(inspect_agent, name, seconds=3)):
+                                    raise
+                        stopped = run("stop", name, check=False, timeout=8)
+                        record = wait_terminal(inspect_agent, name)
+                        if not terminal_record(record):
+                            run("stop", name, "--force", check=False, timeout=8)
+                            record = wait_terminal(inspect_agent, name, seconds=5)
+                        if not terminal_record(record):
+                            raise AssertionError(f"session did not exit; stop returned {stopped.returncode}: {stopped.stderr.strip()}")
                     except Exception as error:
                         report.setdefault("cleanup", []).append(f"stop {name}: {error}")
             except Exception as error:
@@ -594,21 +651,26 @@ def main():
         # A daemon a client started for either home outlives the client;
         # ask it to exit so nothing of this run is left behind (never where
         # `daemon stop` would reach the user's own service).
-        for made in (home, fresh) if user_service is None else ():
+        for made in homes if user_service is None else ():
             try:
-                run("daemon", "stop", check=False, timeout=15, extra_env={"AGENTDOCKER_HOME": str(made), "AGENTDOCKER_NO_AUTOSTART": "1"})
+                cleanup_env = {"AGENTDOCKER_HOME": str(made), "AGENTDOCKER_NO_AUTOSTART": "1"}
+                run("daemon", "stop", timeout=15, extra_env=cleanup_env)
+                if run("ping", check=False, timeout=5, extra_env=cleanup_env).returncode == 0:
+                    raise AssertionError("private daemon still answers after stop")
             except Exception as error:
                 report.setdefault("cleanup", []).append(f"{made}: {error}")
         if os.name == "nt":
             report["root_acl"] = acl_report(root).strip()
             report["home_acl"] = acl_report(home).strip()
-        for made in (home, fresh):
-            shutil.rmtree(made, ignore_errors=True)
+        if not report.get("cleanup"):
+            for made in homes:
+                shutil.rmtree(made, ignore_errors=True)
         try:
             report["daemon_log_tail"] = daemon_log.read_text(errors="replace")[-2000:]
         except OSError:
             pass
-        shutil.rmtree(root, ignore_errors=True)
+        if not report.get("cleanup"):
+            shutil.rmtree(root, ignore_errors=True)
         if report.get("cleanup"):
             report["result"] = "failed"
             report.setdefault("error", "fixture cleanup did not complete cleanly")

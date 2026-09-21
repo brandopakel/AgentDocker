@@ -171,6 +171,64 @@
       "physical Windows console attach and provider interactions",
       "Windows installer, service and GUI acceptance",
       "full daemon/CLI test-suite portability"
-    ]
+    ],
+    "review_fix_source": "b24f983db5c39be1851d1d1d4c76abf88613692e",
+    "completed_local_gate": {
+      "source": "b24f983db5c39be1851d1d1d4c76abf88613692e",
+      "rust_passed": 1331,
+      "rust_skipped": 7,
+      "python_run": 104,
+      "python_skipped": 1,
+      "format_clippy_doctests_packaging_release": "passed",
+      "log": "/private/tmp/agentdocker-windows-lifetime-final-gate-20260921.log",
+      "scope": "before the Windows-only OWNER RIGHTS and smoke cleanup follow-up"
+    },
+    "macos_portable_smoke": {
+      "binary_source": "b24f983db5c39be1851d1d1d4c76abf88613692e",
+      "binary_sha256": {
+        "agentdocker": "4ac217735457ff628efe286f29622888b8cde04e72cb24cdadcde1cf7092979d",
+        "agentd": "496f121cc25fccc991136ffe1d80a02ed7bdc1b1300d8e8b2f2e789ab54c35dd"
+      },
+      "result": "passed",
+      "passed_steps": 24,
+      "scope": "private local transport and managed pipes/terminal/daemon crash recovery; excludes Windows-specific owner-crash/backpressure/ACL checks",
+      "report": "/private/tmp/agentdocker-windows-lifetime-macos-cleanup-verified-20260921/windows-daemon-smoke.json",
+      "driver_note": "follow-up driver includes explicit exited/failed waits and checked daemon stop plus no-autostart ping",
+      "driver_sha256": "7676e96f87da31fdd3204e9edfa11ecc5308f78e10ab81a41724a013a671a043"
+    },
+    "native_b24_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35647430508",
+      "source": "b24f983db5c39be1851d1d1d4c76abf88613692e",
+      "result": "failed",
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "281",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "2df1c4e5-d3e5-4725-a811-408dbb47bb25",
+        "timestamp": "2026-09-21T20:00:25.166+00:00",
+        "time": "10.479"
+      },
+      "daemon_cli_build_lint": "passed",
+      "smoke_passed_steps": 10,
+      "smoke_error": "TimeoutError: wire write did not finish",
+      "binary_sha256": {
+        "agentdocker.exe": "ab2cab035500762ad79fcf2c824e95fb78c197281e811273110f9313a07f4ca9",
+        "agentd.exe": "78965e02085ec5c18255ad8bd660033a9d174695ea852719a56710001d0f32b5"
+      },
+      "scope": "failed at test-client inspect after piped launch, before terminal runtime acceptance; synchronous duplex pipe harness is under investigation"
+    },
+    "owner_rights_follow_up": {
+      "status": "implemented, native acceptance pending",
+      "rule": "S-1-3-4 resolves only to the object owner after its existing ownership check; foreign state owners and foreign writers remain refused",
+      "native_regression": "current-user OW parent creates private child without parent mutation; different caller refused for state/ancestor/pipe; Everyone writer refused without child creation or ACL narrowing",
+      "cross_host_clippy": "passed",
+      "runtime_trial": "autostart fresh state beneath actual Python private OW parent; assert parent SDDL unchanged and child protected"
+    },
+    "cleanup_regressions": {
+      "stopping_is_not_exited": "passed",
+      "deadline_preserves_live_status_for_force_fallback": "passed"
+    }
   }
 }
