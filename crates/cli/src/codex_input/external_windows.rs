@@ -51,6 +51,7 @@ pub mod hooks {
         _agent: &agentdocker_core::AgentRecord,
         _event: &str,
         _session: &str,
+        _deadline: tokio::time::Instant,
     ) -> Result<Option<String>> {
         Ok(None)
     }

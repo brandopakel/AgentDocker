@@ -256,6 +256,27 @@ CLI; never restore an old ledger over already acknowledged input. Fresh idle,
 throughput and sustained-use acceptance remain open. Provider receipt and task
 completion remain separate from manual readback.
 
+A second offer on September 21 exposed a different defect: the exact tagged
+context for `9ca24aa8e53a4912` reached a review **subagent**, not the root
+conversation. Codex child hooks use their parent's `session_id`; PID ancestry and
+that field alone do not establish which conversation receives hook output.
+The root correctly refused to count the child's receipt and retained the offer.
+This recurrence remains an installed-delivery blocker; the initial recovery did
+not close it.
+
+The candidate now reads `agent_id` and `agent_type` and skips child hooks before
+registration, activity reporting, receiver startup or legacy/native queue access.
+Either non-null field, including an empty string, means the hook cannot act for
+the root. Native hook protocol 2 also requires explicit root scope: older clients
+that discarded the child identity are refused before queue access. Both the hook
+executable and receiver must be upgraded; replacing only the receiver cannot
+restore active-turn hook delivery from an old client. Idle queue delivery is
+unchanged. The request carries the original monotonic deadline, leaving output
+time within the caller's four-second budget; delayed/expired requests cannot
+reserve a head. A timeout after reservation remains uncertain and is never
+automatically replayed. Targeted scope/deadline regressions pass; the actual
+root/child fixture and corrected installed acceptance remain pending.
+
 Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human
 project and human global input during one busy TUI turn and requires exact

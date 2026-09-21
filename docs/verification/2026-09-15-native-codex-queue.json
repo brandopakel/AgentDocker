@@ -3092,7 +3092,7 @@
         ]
       }
     ],
-    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait. The sanitized tool timeline shows about 50 seconds between tool boundaries and a 45-second coordinator sleep before the first peer context. Attribute the 104–119 seconds to end-to-end context latency, not daemon/polling latency alone.",
+    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait. The sanitized tool timeline shows about 50 seconds between tool boundaries and a 45-second coordinator sleep before the first peer context. Attribute the 104\u2013119 seconds to end-to-end context latency, not daemon/polling latency alone.",
     "acceptance_remaining": "Reduce and measure busy delivery latency and system-notice backlog while preserving FIFO human/peer ordering, exact receipt recovery, unavailable-provider gates and no duplicate execution. Three ordered receipts do not establish prompt-like latency or sustained throughput.",
     "private_evidence": "/private/tmp/agentdocker-live-active-burst-20260917.json",
     "provider_route_review": {
@@ -3342,7 +3342,6 @@
     "status": "Implemented and installed for the recorded existing Codex session; exact later native receipts resumed. Broader provider, lifecycle, sustained-use and release acceptance remain open.",
     "observed_failure": {
       "message": "343b8636571449a0",
-      "offered_at": "2026-09-19T03:09:10.108802Z",
       "hook_request": "b9b17751be2d447e98a12c139f77ac04",
       "old_receiver_source": "c0a7c566",
       "old_receiver_pid": 60959,
@@ -3352,7 +3351,8 @@
       "records": 3118,
       "largest_record_bytes": 11253082,
       "exact_tagged_receipt_found": false,
-      "diagnostic_tool_output_is_not_native_proof": true
+      "diagnostic_tool_output_is_not_native_proof": true,
+      "message_sent_at": "2026-09-19T03:09:10.108802Z"
     },
     "gate": {
       "source": "1356590181b4192eb86e69ec6e29ca02d94d7e1f",
@@ -3615,6 +3615,24 @@
       "The scanner bounds memory and scans a fixed EOF; no fixed worst-case latency is claimed.",
       "Newly receiving historical handoffs during an active turn does not close fresh idle, sleep/reboot, throughput or other-provider acceptance.",
       "Receiver-only activation preserved the original provider and serving daemon; this is not a new public desktop release."
-    ]
+    ],
+    "recurrence": {
+      "status": "Open: exact hook context went to a review subagent, not the bound root. Initial manual recovery remains valid but did not close routing.",
+      "message": "9ca24aa8e53a4912",
+      "hook_nonce": "147ce4066dc247f88233bf40e0c16377",
+      "at": "2026-09-21T18:00:25.890Z",
+      "root_thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+      "child_thread": "01a0b6ad-8822-7d23-8a07-1bf533d5b121",
+      "child_path": "/root/chat_terminal_review",
+      "child_item": "msg_01a0c520-5622-72f2-ad64-72878191cc53",
+      "child_turn": "01a0c520-30bc-7731-a9f3-bbae97e650c2",
+      "content_kind": "hooks.additional_context",
+      "exact_context_bytes": 892,
+      "exact_context_sha256": "57fd8806f209c1d03c5a695190fd1429c3c5b3d71450b120249cd055e2567143",
+      "cause": "Codex child hooks use the parent session_id; AgentDocker ignored agent_id and agent_type. PID/session verification accepted the wrong conversation. Raw hook input was not retained; the isolated actual-provider fixture will verify the exact field values.",
+      "root_receipt": false,
+      "acknowledged_as_root": false,
+      "candidate_fix": "Ignore child hooks before registration/activity/queue access; require root-scoped protocol2 for native hooks; propagate the remaining caller deadline."
+    }
   }
 }

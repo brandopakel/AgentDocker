@@ -69,6 +69,15 @@ emits `report_input(received)` for manual reading. Retries retain the same inten
 late hook requests are fenced, and matching scheduled input refuses the operation.
 The prior native receipt remains unchanged. See [recovery](CODEX-INPUT.md#retained-hook-recovery-september-21-candidate).
 
+Codex child hooks share the parent's session ID. The hook adapter therefore
+ignores child-scoped activity and input before contacting coordination. Native
+hook protocol 2 requires explicit root scope and a same-host monotonic expiry;
+old scope-less or expired requests are refused before queue reservation. The
+receiver never treats another conversation's exact hook text as root delivery.
+Hook and receiver binaries must both understand this protocol. The expiry limits
+the server to the original caller budget; uncertain committed offers still need
+receipt reconciliation or explicit manual disposition.
+
 The existing-terminal Codex receiver starts from a verified `SessionStart` hook when the provider emits it. Actual Codex 0.154.0 delays that event until a turn, even on no-prompt resume; zero-prompt reopened-terminal binding remains unresolved. This hook records adapter contact and exact process/session identity, without asserting turn activity or consuming legacy inbox context. Native queue/history preflight and the durable daemon binding still decide whether the receiver owns delivery; see [Codex input](CODEX-INPUT.md).
 
 
