@@ -623,11 +623,13 @@ pub(crate) fn sweep_sessions(home: &std::path::Path) {
         if path.extension().is_none_or(|e| e != "lock") {
             continue;
         }
-        // Held by a living owner: theirs, left alone.
-        match agentdocker_host::lock::try_exclusive_existing(&path) {
-            Ok(Some(_held)) => {}
-            _ => continue,
-        }
+        // Held by a living owner: theirs, left alone. Ours stays held
+        // until both files are gone: an owner for the same id that opens
+        // the lock file meanwhile finds it taken, not an inode about to be
+        // unlinked from under a lock it just won.
+        let Ok(Some(_held)) = agentdocker_host::lock::try_exclusive_existing(&path) else {
+            continue;
+        };
         let exit = path.with_extension("exit");
         if exit.exists() {
             // An unacknowledged exit report is a daemon's to read.
