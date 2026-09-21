@@ -12,6 +12,9 @@
 //!
 //! Nothing here restarts a daemon or stops an agent. The report says whether
 //! agents are live so the person can decide when to restart.
+// The installer, updates and retained versions run on macOS and Linux;
+// on Windows only the refusal in `run` is live, and the rest waits its slice.
+#![cfg_attr(windows, allow(dead_code))]
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

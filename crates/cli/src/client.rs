@@ -149,7 +149,14 @@ impl Client {
         let home = dirs::home();
         let lock_path = paths::daemon_lock(&home, &self.socket);
         if let Some(parent) = lock_path.parent() {
-            if parent == paths::socket_dir(&home) && parent != home {
+            if parent == home {
+                // The home is state, so it is made the way the daemon makes
+                // it: private, and on Windows owned by the user — a plain
+                // creation from an elevated shell belongs to the
+                // Administrators group, which the daemon then refuses.
+                dirs::secure_state_dir(&home)
+                    .with_context(|| format!("home {} is unusable", home.display()))?;
+            } else if parent == paths::socket_dir(&home) {
                 dirs::ensure_private_dir(parent).with_context(|| {
                     format!("socket directory {} is unusable", parent.display())
                 })?;
@@ -175,6 +182,7 @@ impl Client {
     /// Send one request and hand back the raw connection, for a caller
     /// that then speaks a duplex protocol on it. Nothing has been read
     /// yet, so no buffered bytes are lost.
+    #[cfg_attr(windows, allow(dead_code))] // the attach relay's stream, Unix only today
     pub async fn open(&self, request: &Request) -> Result<Stream> {
         Ok(self.connect(request).await?.into_inner())
     }

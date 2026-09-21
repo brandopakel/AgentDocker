@@ -120,7 +120,22 @@ impl Daemon {
         }
     }
 
+    /// The workspace endpoint is a Unix socket and its token a mode-0600
+    /// file; neither exists on Windows until a checked named-pipe or VM
+    /// transport does, so a launch there is refused before any grant.
+    #[cfg(windows)]
+    pub(super) fn workspace_grant(
+        &self,
+        _record: &mut AgentRecord,
+    ) -> Result<(), agentdocker_host::containers::ContainerError> {
+        Err(agentdocker_host::containers::ContainerError::with_code(
+            ErrorCode::Unavailable,
+            "container workspace access is not available on Windows yet".into(),
+        ))
+    }
+
     /// Mint a private file before publishing a launch; a crash leaves an inactive grant.
+    #[cfg(unix)]
     pub(super) fn workspace_grant(
         &self,
         record: &mut AgentRecord,

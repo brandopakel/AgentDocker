@@ -7,6 +7,7 @@ pub mod guided;
 pub(crate) mod mutation;
 
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
@@ -239,12 +240,13 @@ fn back_up(path: &Path) -> Result<()> {
             format!("agentdocker-backup.{index}")
         };
         let backup = path.with_extension(extension);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&backup)
-        {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        // Private to this user: a mode on Unix; the profile directory's
+        // own ACL on Windows, where the file inherits it.
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&backup) {
             Ok(mut file) => {
                 file.write_all(&contents)?;
                 file.sync_all()?;

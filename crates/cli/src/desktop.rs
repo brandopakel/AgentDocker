@@ -1,8 +1,14 @@
 //! Per-user native desktop installation. Immutable version and activation
 //! directories make the current release and rollback target one atomic switch.
+// The installer, updates and retained versions run on macOS and Linux;
+// on Windows only the refusal in `run` is live, and the rest waits its slice.
+#![cfg_attr(windows, allow(dead_code))]
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{PermissionsExt, symlink};
+#[cfg(windows)]
+use std::os::windows::fs::symlink_file as symlink;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -352,13 +358,24 @@ impl Layout {
     /// Whether this user may create entries in `directory`, asked of the
     /// kernel (group membership and ACLs included) without writing anything.
     fn writable(directory: &Path) -> bool {
-        use std::os::unix::ffi::OsStrExt;
-        let Ok(path) = std::ffi::CString::new(directory.as_os_str().as_bytes()) else {
-            return false;
-        };
-        // SAFETY: `path` is a valid NUL-terminated C string for the call's
-        // duration, and access(2) reads it without retaining it.
-        unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let Ok(path) = std::ffi::CString::new(directory.as_os_str().as_bytes()) else {
+                return false;
+            };
+            // SAFETY: `path` is a valid NUL-terminated C string for the call's
+            // duration, and access(2) reads it without retaining it.
+            unsafe { libc::access(path.as_ptr(), libc::W_OK | libc::X_OK) == 0 }
+        }
+        #[cfg(windows)]
+        {
+            // The installer does not run on Windows yet (see `run`); the
+            // read-only attribute is the one answer the metadata gives.
+            std::fs::metadata(directory)
+                .map(|m| m.is_dir() && !m.permissions().readonly())
+                .unwrap_or(false)
+        }
     }
 
     /// Remember where the launcher went: written whole or not at all.
@@ -377,6 +394,7 @@ impl Layout {
         )?;
         file.write_all(b"\n")?;
         file.sync_all()?;
+        #[cfg(unix)]
         std::fs::set_permissions(staging.path(), std::fs::Permissions::from_mode(0o600))?;
         staging.persist(&record)?;
         std::fs::File::open(&self.root)?.sync_all()?;
@@ -980,11 +998,7 @@ fn tree_hash(root: &Path) -> Result<String> {
                 );
                 files.insert(
                     path.strip_prefix(root)?.to_owned(),
-                    format!(
-                        "{:o}:{}",
-                        metadata.permissions().mode() & 0o111,
-                        file_hash(&path)?
-                    ),
+                    format!("{:o}:{}", executable_bits(&metadata), file_hash(&path)?),
                 );
             }
         }
@@ -1098,7 +1112,7 @@ fn inspect(source: &Path, local_preview: bool) -> Result<(PathBuf, Release)> {
         let path = binaries.join(name);
         let metadata = path.symlink_metadata()?;
         ensure!(
-            metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
+            metadata.is_file() && executable_bits(&metadata) != 0,
             "{name} is not a regular executable"
         );
         if !cfg!(target_os = "macos") {
@@ -1206,7 +1220,36 @@ fn copy_payload(source: &Path, destination: &Path) -> Result<()> {
 
 /// `socket` is the top-level `--socket`, when given: the daemon a status
 /// asks and an activation reloads is the one selected, not the default.
+/// The executable bits a file carries: its Unix mode's, and on Windows,
+/// where there are none, `1` for a regular file so a payload listing
+/// keeps one shape on both platforms.
+fn executable_bits(metadata: &std::fs::Metadata) -> u32 {
+    #[cfg(unix)]
+    {
+        metadata.permissions().mode() & 0o111
+    }
+    #[cfg(windows)]
+    {
+        u32::from(metadata.is_file())
+    }
+}
+
 pub fn run(args: DesktopArgs, socket: Option<PathBuf>) -> Result<()> {
+    // Per-user installation, retained versions, launchers and rollback
+    // are written for macOS and Linux; Windows gets them in a later slice.
+    #[cfg(windows)]
+    {
+        let _ = (&args, &socket);
+        bail!(
+            "the desktop installer is not available on Windows yet; run the daemon and CLI from the archive"
+        );
+    }
+    #[cfg(unix)]
+    run_unix(args, socket)
+}
+
+#[cfg(unix)]
+fn run_unix(args: DesktopArgs, socket: Option<PathBuf>) -> Result<()> {
     let prefix = args
         .prefix
         .or_else(std::env::home_dir)

@@ -281,7 +281,7 @@ fn layout(args: &ServeArgs) -> Result<Layout> {
         agentdocker,
         home,
         user_home,
-        uid: unsafe { libc::getuid() },
+        uid: crate::service::current_uid_for_service(),
         serve_args,
         path_dirs,
     })

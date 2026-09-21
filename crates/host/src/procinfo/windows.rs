@@ -5,11 +5,12 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
 use windows_sys::Win32::{
     Foundation::{FILETIME, WAIT_TIMEOUT},
     System::Threading::{
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-        WaitForSingleObject,
+        PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
     },
 };
 
@@ -97,6 +98,27 @@ pub(super) fn cwd(pid: u32) -> Option<PathBuf> {
         .flatten()
 }
 
+/// Whether a process with this pid exists and has not exited: the handle
+/// opens and the process is not signalled. Like `kill(pid, 0)` on Unix, an
+/// access refusal is still a yes — the process is there, just not ours.
+pub(super) fn alive(pid: u32) -> bool {
+    // SAFETY: OpenProcess returns an owned handle or null; the handle is
+    // owned by RAII at once and WaitForSingleObject only reads it.
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        )
+    };
+    if handle.is_null() {
+        return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED as i32);
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    let signalled = unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) };
+    signalled == WAIT_TIMEOUT
+}
+
 pub(super) fn start_time(pid: u32) -> Option<DateTime<Utc>> {
     // SAFETY: OpenProcess returns an owned handle or null; the handle is
     // immediately owned by RAII, and all GetProcessTimes outputs are valid.
@@ -111,6 +133,50 @@ pub(super) fn start_time(pid: u32) -> Option<DateTime<Utc>> {
         return None;
     }
     let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    start_time_of(&handle)
+}
+
+/// End the process that `pid` names only if it is the one born at
+/// `started_at`: the birth is read from the very handle that is
+/// terminated, so a recycled pid cannot be ended by mistake between a
+/// check and the act. Windows has no gentle signal a process is obliged
+/// to hear; `force` is recorded by the caller and both end the process.
+pub(super) fn end(pid: u32, started_at: DateTime<Utc>, _force: bool) -> io::Result<()> {
+    // SAFETY: as in `start_time`; TerminateProcess only reads the handle.
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE,
+            0,
+            pid,
+        )
+    };
+    if handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    match start_time_of(&handle) {
+        Some(born) if born == started_at => {}
+        Some(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the pid now belongs to a different process",
+            ));
+        }
+        None => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the process has already exited",
+            ));
+        }
+    }
+    if unsafe { TerminateProcess(handle.as_raw_handle(), 1) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// The birth time of an open, still-running process.
+fn start_time_of(handle: &OwnedHandle) -> Option<DateTime<Utc>> {
     if unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) } != WAIT_TIMEOUT {
         return None;
     }

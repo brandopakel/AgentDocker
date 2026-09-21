@@ -42,6 +42,45 @@ pub fn open_regular(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// What tells one file from another on its filesystem, whatever it is
+/// named: device and inode on Unix, volume serial number and file index
+/// on Windows. Read from an open handle, so it is the identity of the
+/// file that was opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Identity {
+    pub device: u64,
+    pub inode: u64,
+}
+
+pub fn identity(file: &File) -> io::Result<Identity> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        Ok(Identity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+        };
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: the buffer is the size the call writes; file keeps the
+        // handle alive.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Identity {
+            device: u64::from(info.dwVolumeSerialNumber),
+            inode: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Stamp {
     length: u64,

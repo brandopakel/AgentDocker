@@ -3,9 +3,11 @@ use agentdocker_core::AgentRecord;
 use agentdocker_host::containers::ContainerError;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+// The restricted endpoint is the shared local transport: a Unix socket
+// here, a named pipe on Windows.
+use agentdocker_host::ipc::Stream as UnixStream;
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    net::UnixStream,
     sync::{Semaphore, mpsc},
     task::{AbortHandle, JoinHandle, JoinSet},
 };
