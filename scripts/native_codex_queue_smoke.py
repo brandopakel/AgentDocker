@@ -70,7 +70,7 @@ parser.add_argument(
     choices=[
         "baseline",
         "active-hook",
-        "active-hook-lost",
+        "active-hook-lost", "active-hook-resolve",
         "controller-upgrade",
         "long-busy",
         "startup",
@@ -94,12 +94,12 @@ parser.add_argument(
 )
 parser.add_argument("--initial-receiver-cli", type=Path,
     help="Older immutable CLI used to bootstrap the controller-upgrade scenario")
-parser.add_argument("--initial-ledger-version", type=int, choices=(2, 3), default=2,
+parser.add_argument("--initial-ledger-version", type=int, choices=(2, 3, 4), default=2,
     help="Expected initial receiver ledger format; default 2 preserves the migration trial")
 parser.add_argument("--active-peer-kind", choices=("chat", "answer"), default="chat",
     help="Message kind for the peer head in active-hook, active-hook-lost or controller-upgrade")
 args = parser.parse_args()
-if args.active_peer_kind != "chat" and args.scenario not in ("active-hook", "active-hook-lost", "controller-upgrade"):
+if args.active_peer_kind != "chat" and args.scenario not in ("active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade"):
     parser.error("--active-peer-kind requires an active-hook or controller-upgrade scenario")
 if args.reload and args.scenario not in ("baseline", "question"):
     parser.error("--reload supports baseline and question only")
@@ -258,10 +258,11 @@ class Handler(BaseHTTPRequestHandler):
             {"type": "response.output_item.done", "output_index": 0, "item": item},
             {"type": "response.completed", "response": response},
         ]
-        active_hook = (args.scenario in ("active-hook", "active-hook-lost", "controller-upgrade") and users
+        active_hook = (args.scenario in ("active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade") and users
             and "ACTIVE_HOOK_START" in json.dumps(users[-1])
             and not all(marker in json.dumps(body.get("input", [])) for marker in
-                        ("PEER_ACTIVE_HOOK", "HUMAN_PROJECT_PAUSE", "HUMAN_BROADCAST_PAUSE")))
+                        (("HUMAN_PROJECT_PAUSE", "HUMAN_BROADCAST_PAUSE") if args.scenario == "active-hook-resolve" else
+                         ("PEER_ACTIVE_HOOK", "HUMAN_PROJECT_PAUSE", "HUMAN_BROADCAST_PAUSE"))))
         if active_hook:
             assert n < 40, "active hook messages did not reach the model"
         if bootstrap or active_hook:
@@ -521,7 +522,7 @@ try:
                     + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n'
                 )
             provider_prefix = [codex, "--no-alt-screen"]
-            if args.scenario in ("startup", "lifecycle", "active-hook", "active-hook-lost", "controller-upgrade"):
+            if args.scenario in ("startup", "lifecycle", "active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade"):
                 # The only hook in this private profile is this reviewed fixture
                 # command. One-off trust does not change any user's saved policy.
                 hook_cli_path = root / "hook-cli.txt"
@@ -547,7 +548,7 @@ try:
                        + "if v.get('hookSpecificOutput',{}).get('additionalContext') and not marker.exists():\n"
                        + " marker.write_text('one offered context discarded before provider acceptance')\n print('{}')\n"
                        + "else: print(p.stdout,end='')\n"
-                       if args.scenario == "active-hook-lost" else "print(p.stdout,end='')\n")
+                       if args.scenario in ("active-hook-lost", "active-hook-resolve") else "print(p.stdout,end='')\n")
                     + "sys.exit(p.returncode)\n"
                 )
                 (profile / "hooks.json").write_text(
@@ -556,7 +557,7 @@ try:
                             "hooks": {
                                 event: [{"hooks": [{"type": "command",
                                     "command": shlex.join([sys.executable, str(hook_runner)])}]}]
-                                for event in (["PreToolUse", "PostToolUse"] if args.scenario in ("active-hook", "active-hook-lost", "controller-upgrade") else ["SessionStart"])
+                                for event in (["PreToolUse", "PostToolUse"] if args.scenario in ("active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade") else ["SessionStart"])
                             }
                         }
                     )
@@ -1372,7 +1373,7 @@ try:
                     15,
                 )
                 report["idle_wake_after_receiver_crash"] = True
-            if args.scenario in ("active-hook", "active-hook-lost", "controller-upgrade"):
+            if args.scenario in ("active-hook", "active-hook-lost", "active-hook-resolve", "controller-upgrade"):
                 ledgerpath = adhome / "codex-queue" / aid / "delivery.json"
                 start = len(report["requests"])
                 os.write(master, b"ACTIVE_HOOK_START")
@@ -1418,7 +1419,7 @@ try:
                         "prior_completed_receipts":len(old_completed), "pending_native_queue_id":old_queue_id,
                         "initial_cli_sha256":hashlib.sha256(args.initial_receiver_cli.resolve(strict=True).read_bytes()).hexdigest()}
                 markers = ("PEER_ACTIVE_HOOK", "HUMAN_PROJECT_PAUSE", "HUMAN_BROADCAST_PAUSE")
-                if args.scenario == "active-hook-lost":
+                if args.scenario in ("active-hook-lost", "active-hook-resolve"):
                     wait(lambda: (out / "discarded-hook-context").exists(), 15)
                     wait(lambda: rpc({"op":"inspect", "agent":aid})["agent"].get("input_delivery", {}).get("paused") is True, 45)
                     retained = json.loads(ledgerpath.read_text())
@@ -1427,6 +1428,62 @@ try:
                     assert not any(m in json.dumps(q["body"].get("input", [])) for q in report["requests"][start:] for m in markers)
                     report["lost_hook_output"] = {"retained_messages":sent, "paused":True,
                         "no_provider_receipt":True, "no_blind_resubmission":True}
+                    if args.scenario == "active-hook-resolve":
+                        def recovery_command(*options):
+                            return subprocess.run([str(cli), "--socket", str(sock),
+                                "codex-queue-resolve", "--agent", aid, *options],
+                                env=daemon_env, cwd=repo, capture_output=True, text=True, timeout=95)
+
+                        review = recovery_command()
+                        assert review.returncode == 0, review.stderr
+                        reviewed = json.loads(review.stdout)["pending"]
+                        assert reviewed["message"] == sent[0]
+                        assert reviewed["envelope"]["payload"]["text"] == markers[0]
+                        assert reviewed["native_receipt"] is None
+                        wrong = recovery_command("--message", sent[0], "--confirm-read", "0" * 64,
+                            "--note", "fixture deliberately stale confirmation")
+                        assert wrong.returncode != 0, "stale confirmation was accepted"
+                        assert not json.loads(ledgerpath.read_text()).get("manual_reads")
+                        assert [m["id"] for m in rpc({"op":"peek_input", "agent":aid})["messages"]] == sent
+
+                        # Simulate the explicit operator reading the complete CLI
+                        # preview, then losing the confirmation response. Never
+                        # present this as a native model receipt for the first ID.
+                        accepted = rpc({"op":"inspect", "agent":aid})["agent"]["input_binding"]
+                        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as admin:
+                            admin.connect(str(adhome / "codex-queue" / aid / "resolve.sock"))
+                            admin.sendall((json.dumps({"action":"confirm", "agent":aid,
+                                "provider":accepted["provider"], "socket":str(sock),
+                                "message":sent[0], "confirmation":reviewed["confirmation"],
+                                "note":"fixture operator reviewed the full original envelope"}) + "\n").encode())
+                            admin.shutdown(socket.SHUT_WR)
+                            wait(lambda: any(r["acknowledged"] for r in
+                                json.loads(ledgerpath.read_text()).get("manual_reads", [])), 75)
+                            # Close without receiving the reply; retry after a
+                            # real receiver replacement must be idempotent.
+                        controller_pid = rpc({"op":"inspect", "agent":aid})["agent"]["input_binding"]["controller"]["pid"]
+                        controller_pids.add(controller_pid)
+                        controller_pid = restart_with_ledger(ledgerpath, controller_pid, lambda _: None)
+                        controller_pids.add(controller_pid)
+                        repeated = recovery_command("--message", sent[0], "--confirm-read", reviewed["confirmation"],
+                            "--note", "retry after response loss and receiver restart")
+                        assert repeated.returncode == 0, repeated.stderr
+                        assert json.loads(repeated.stdout)["already_applied"] is True
+                        wait(lambda: not rpc({"op":"peek_input", "agent":aid})["messages"], 45)
+                        wait(lambda: all(m in json.dumps(report["requests"][-1]["body"].get("input", [])) for m in markers[1:]), 30)
+                        final = json.loads(ledgerpath.read_text())
+                        manual = final["manual_reads"]
+                        assert len(manual) == 1 and manual[0]["message"] == sent[0] and manual[0]["acknowledged"]
+                        assert [r["message"] for r in final["completed"] if r["message"] in sent] == sent[1:]
+                        visible = json.dumps(report["requests"][-1]["body"].get("input", []))
+                        assert markers[0] not in visible, "manual recovery replayed the original input"
+                        assert all(visible.count(m) == 1 for m in markers[1:])
+                        assert visible.index(markers[1]) < visible.index(markers[2])
+                        report["manual_readback_recovery"] = {
+                            "message":sent[0], "resolution":manual[0]["id"],
+                            "native_receipt_for_manually_read_message":False,
+                            "stale_confirmation_refused":True, "lost_response_retry_after_restart":True,
+                            "later_inputs_received_in_order":sent[1:], "original_not_replayed":True}
                 else:
                     wait(lambda: all(m in json.dumps(report["requests"][-1]["body"].get("input", [])) for m in markers), 45)
                     wait(lambda: not rpc({"op":"peek_input", "agent":aid})["messages"], 15)
@@ -1443,7 +1500,7 @@ try:
                     assert all("ACTIVE_HOOK_START" in json.dumps([i for i in r["body"]["input"] if i.get("role") == "user"][-1]) for r in after)
                     assert retained["attempt"] is None
                     if args.scenario == "controller-upgrade":
-                        assert retained["version"] == 3
+                        assert retained["version"] == 4
                         assert retained["completed"][:len(old_completed)] == old_completed
                     report["active_hook"] = {"messages":sent, "receipts":receipts,
                         "seconds":time.monotonic()-began, "same_turn":True,

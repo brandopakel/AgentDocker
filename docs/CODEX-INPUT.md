@@ -150,8 +150,14 @@ Codex 0.154 records Pre/PostToolUse context as a developer message tagged
 `hooks.additional_context`, with a provider item ID and turn ID, but omits it
 from `thread/items/list`. A bounded reader therefore verifies the provider's
 reported transcript path, profile/session/checkout, opened file identity and
-complete records after the pre-offer byte boundary. It reads at most 4 MiB and
-never accepts plain text, untagged messages or an incomplete last record.
+complete records after the pre-offer byte boundary. The September 21 correction
+scans a fixed end of that suffix with bounded memory, including large compaction
+records, instead of refusing once cumulative growth exceeds 4 MiB. It retains
+only receipt fields; JSON nesting, object keys and captured strings have explicit
+bounds. Malformed or structurally oversized records fail closed. The whole suffix
+is checked for duplicate receipts; an incomplete last record is not evidence.
+The scan runs off the async executor, but has no fixed latency promise. It never
+accepts plain text or untagged messages.
 The older `hookPrompt` representation remains supported when the API exposes it. Native `userMessage` receipts remain valid if the original queue entry
 won the race. Older version-2 ledgers migrate without changing the token, queue
 ID, original input or receipts. An older receiver refuses the new ledger version.
@@ -178,6 +184,48 @@ in the same turn on the fix. The installed `c0a7c56` receiver then delivered the
 original blocked answer without manual queue acknowledgement. #202 merged as
 `14f1c519`; broader startup and throughput limits remain. See
 `peer_answer_active_hook_2026_09_18` in the [native queue record](verification/2026-09-15-native-codex-queue.json).
+
+### Retained hook recovery (September 21 candidate)
+
+A lost hook result without an exact native receipt remains unresolved; increasing
+transcript capacity cannot turn missing evidence into delivery. The installed
+Codex receiver exposed both cases together: an uncertain hook offer blocked later
+messages, then transcript growth hid that original reason behind the 4 MiB error.
+
+`agentdocker codex-queue-resolve --agent <id>` asks the owning receiver for a
+read-only preview of its complete retained envelope and a confirmation digest.
+After actually reading that message, an operator can run:
+
+```sh
+agentdocker codex-queue-resolve --agent <id> --message <message-id> \
+  --confirm-read <digest-from-preview> --note 'Read the complete original message'
+```
+
+This explicitly records **manual readback**, never a native provider receipt. The
+private endpoint checks OS peer identity, daemon endpoint and provider generation;
+the digest binds the exact input, hook nonce and generation. The controller refuses
+an input still scheduled under its original client or queue ID, even if its text
+was edited. A missing project journal refuses before any disposition is written.
+The existing provider, receiver ownership and queue order remain intact.
+
+Ledger version 4 migrates versions 2/3 without changing their input or token. It
+persists the manual intent, journals its resolution ID, acknowledges that one ID
+through the existing token-bound inbox, then records completion. Loss of a journal
+reply can produce duplicate notes with the same resolution ID; lost ACK/reply or
+restart resumes the same disposition without another input. At most 256 manual
+records are retained separately from the 128 rotating native receipts; reaching
+that bound refuses further resolution without discarding the audit. Resolved hook
+nonces cannot advance a later head. The receiver serves recovery while paused.
+A same-user local process can make this explicit administrative request; this
+permission does not prove a human or provider child made it.
+
+The candidate has targeted scanner, ledger and real socket lost-journal/ACK
+regressions. `--scenario active-hook-resolve` adds actual Codex/loopback-model
+acceptance for dropped hook output, readback, stale confirmation refusal, lost
+confirmation response, receiver restart and ordered later delivery. Final gate,
+that runtime trial and installed resolution remain pending; the old queued ID is
+retained until verified recovery. Provider receipt and task completion remain
+separate from this manual action.
 
 Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human

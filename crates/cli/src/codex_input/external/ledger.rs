@@ -1,6 +1,6 @@
 //! Private, generation-bound write-ahead ledger for an external native queue.
 use super::super::ledger::Receipt;
-use agentdocker_core::{Envelope, InputBinding, ProviderGeneration};
+use agentdocker_core::{Envelope, InputBinding, ProcessIdentity, ProviderGeneration};
 use agentdocker_host::{dirs, lock, procinfo};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,25 @@ use std::{
 const MAX_STATE: usize = 8 * 1024 * 1024;
 const MAX_INPUT: usize = 1024 * 1024;
 const RETAINED: usize = 128;
+const MAX_MANUAL_READS: usize = 256;
+
+/// Explicit readback is an administrative disposition, never a provider receipt.
+/// Keep its audit and replay fence independently of the rotating native receipts.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ManualRead {
+    pub id: String,
+    pub message: String,
+    pub input_sha256: String,
+    pub confirmation: String,
+    pub hook_request: String,
+    pub provider: ProviderGeneration,
+    pub operator: ProcessIdentity,
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub note: String,
+    pub journaled: bool,
+    pub acknowledged: bool,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,6 +84,8 @@ pub(super) struct Record {
     completed: VecDeque<Completed>,
     #[serde(default)]
     pub failed_turn: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub manual_reads: Vec<ManualRead>,
 }
 
 pub(super) struct Ledger {
@@ -118,13 +139,7 @@ pub(super) fn upgrade_credential(
     );
     let mut record: Record =
         serde_json::from_slice(&data).context("invalid retained native queue ledger")?;
-    if record.version == 2 {
-        ensure!(
-            record.attempt.as_ref().is_none_or(|a| a.hook.is_none()),
-            "old native record contains a hook offer"
-        );
-        record.version = 3;
-    }
+    record.migrate()?;
     record.validate(&record.binding)?;
     ensure!(
         record.binding.agent == agent
@@ -160,23 +175,18 @@ impl Ledger {
                     "bound native input ledger is missing; retained input needs reconciliation"
                 );
                 Record {
-                    version: 3,
+                    version: 4,
                     binding: binding.clone(),
                     token: uuid::Uuid::new_v4().simple().to_string(),
                     attempt: None,
                     completed: VecDeque::new(),
                     failed_turn: None,
+                    manual_reads: Vec::new(),
                 }
             }
             Err(e) => return Err(e.into()),
         };
-        if record.version == 2 {
-            ensure!(
-                record.attempt.as_ref().is_none_or(|a| a.hook.is_none()),
-                "old native record contains a hook offer"
-            );
-            record.version = 3;
-        }
+        record.migrate()?;
         record.validate(&record.binding)?;
         if let Some(accepted) = accepted {
             ensure!(
@@ -241,7 +251,12 @@ impl Ledger {
                 .record
                 .completed
                 .iter()
-                .any(|a| a.message == envelope.id.as_str()),
+                .any(|a| a.message == envelope.id.as_str())
+                && !self
+                    .record
+                    .manual_reads
+                    .iter()
+                    .any(|r| r.message == envelope.id.as_str()),
             "native input has already been received"
         );
         let mut next = self.record.clone();
@@ -293,6 +308,10 @@ impl Ledger {
     }
 
     pub fn received(&mut self, receipt: Receipt) -> Result<()> {
+        ensure!(
+            self.pending_manual_read().is_none(),
+            "manual readback is already being reconciled"
+        );
         let mut next = self.record.clone();
         let attempt = next.attempt.as_mut().context("no prepared native input")?;
         ensure!(
@@ -300,6 +319,117 @@ impl Ledger {
             "native input has conflicting receipts"
         );
         attempt.receipt = Some(receipt);
+        self.save(next)
+    }
+
+    pub fn confirmation(&self) -> Result<String> {
+        let attempt = self
+            .record
+            .attempt
+            .as_ref()
+            .context("no retained input to review")?;
+        // Bind confirmation to this complete input AND this provider generation.
+        Ok(format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&(
+                &self.record.binding,
+                &attempt.message,
+                &attempt.input,
+                attempt.hook.as_ref().map(|h| &h.request),
+            ))?)
+        ))
+    }
+
+    pub fn pending_manual_read(&self) -> Option<&ManualRead> {
+        self.record.manual_reads.iter().find(|r| !r.acknowledged)
+    }
+
+    pub fn resolved_hook_request(&self, request: &str) -> bool {
+        self.record
+            .manual_reads
+            .iter()
+            .any(|r| r.hook_request == request)
+    }
+
+    pub fn begin_manual_read(
+        &mut self,
+        message: &str,
+        confirmation: &str,
+        note: &str,
+        operator: ProcessIdentity,
+    ) -> Result<()> {
+        ensure!(
+            self.pending_manual_read().is_none(),
+            "a manual readback is already pending"
+        );
+        ensure!(
+            self.record.manual_reads.len() < MAX_MANUAL_READS,
+            "manual readback audit is full; retained input requires review"
+        );
+        let attempt = self
+            .record
+            .attempt
+            .as_ref()
+            .context("no retained input to resolve")?;
+        ensure!(
+            attempt.message == message && self.confirmation()? == confirmation,
+            "retained input or provider generation changed; review it again"
+        );
+        ensure!(
+            attempt.receipt.is_none(),
+            "native receipt already exists; let the receiver reconcile it"
+        );
+        let hook = attempt
+            .hook
+            .as_ref()
+            .context("manual readback requires a retained hook offer")?;
+        ensure!(
+            valid_note(note),
+            "manual readback requires a short nonempty audit note"
+        );
+        let mut next = self.record.clone();
+        next.manual_reads.push(ManualRead {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            message: message.into(),
+            input_sha256: format!("{:x}", Sha256::digest(attempt.input.as_bytes())),
+            confirmation: confirmation.into(),
+            hook_request: hook.request.clone(),
+            provider: self.record.binding.provider.clone(),
+            operator,
+            at: chrono::Utc::now(),
+            note: note.into(),
+            journaled: false,
+            acknowledged: false,
+        });
+        self.save(next)
+    }
+
+    pub fn manual_journaled(&mut self, id: &str) -> Result<()> {
+        let mut next = self.record.clone();
+        let read = next
+            .manual_reads
+            .iter_mut()
+            .find(|r| r.id == id && !r.acknowledged)
+            .context("no matching pending manual readback")?;
+        read.journaled = true;
+        self.save(next)
+    }
+
+    pub fn acknowledge_manual(&mut self, id: &str) -> Result<()> {
+        let mut next = self.record.clone();
+        let read = next
+            .manual_reads
+            .iter_mut()
+            .find(|r| r.id == id && !r.acknowledged && r.journaled)
+            .context("manual readback has not been journaled")?;
+        ensure!(
+            next.attempt
+                .as_ref()
+                .is_some_and(|a| a.message == read.message),
+            "manual readback no longer names the pending input"
+        );
+        next.attempt = None;
+        read.acknowledged = true;
         self.save(next)
     }
 
@@ -355,10 +485,36 @@ fn valid_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
 }
 
+fn valid_note(value: &str) -> bool {
+    !value.trim().is_empty() && value.len() <= 1024 && !value.chars().any(char::is_control)
+}
+
+fn digest(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit())
+}
+
 impl Record {
+    fn migrate(&mut self) -> Result<()> {
+        if self.version == 2 {
+            ensure!(
+                self.attempt.as_ref().is_none_or(|a| a.hook.is_none()),
+                "old native record contains a hook offer"
+            );
+            self.version = 3;
+        }
+        if self.version == 3 {
+            ensure!(
+                self.manual_reads.is_empty(),
+                "old native record contains manual readback state"
+            );
+            self.version = 4;
+        }
+        Ok(())
+    }
+
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
-            self.version == 3 && &self.binding == binding,
+            self.version == 4 && &self.binding == binding,
             "native queue provider binding changed; reconcile retained input before reconnecting"
         );
         ensure!(
@@ -432,6 +588,53 @@ impl Record {
                 "invalid or repeated completed native receipt"
             );
         }
+        ensure!(
+            self.manual_reads.len() <= MAX_MANUAL_READS,
+            "too many manual readback audit entries"
+        );
+        let mut manual_ids = std::collections::HashSet::new();
+        let mut pending = 0;
+        for read in &self.manual_reads {
+            ensure!(
+                valid_id(&read.id)
+                    && manual_ids.insert(&read.id)
+                    && valid_id(&read.message)
+                    && valid_id(&read.hook_request)
+                    && digest(&read.input_sha256)
+                    && digest(&read.confirmation)
+                    && read.provider.valid()
+                    && read.provider.session == binding.provider.session
+                    && read.provider.profile == binding.provider.profile
+                    && read.operator.pid > 0
+                    && read.operator.started_at <= read.at
+                    && valid_note(&read.note),
+                "invalid manual readback audit"
+            );
+            if read.acknowledged {
+                ensure!(
+                    read.journaled && ids.insert(&read.message),
+                    "invalid or repeated acknowledged manual readback"
+                );
+            } else {
+                pending += 1;
+                let attempt = self
+                    .attempt
+                    .as_ref()
+                    .context("manual readback lost its retained input")?;
+                ensure!(
+                    attempt.message == read.message
+                        && attempt.receipt.is_none()
+                        && format!("{:x}", Sha256::digest(attempt.input.as_bytes()))
+                            == read.input_sha256
+                        && attempt
+                            .hook
+                            .as_ref()
+                            .is_some_and(|h| h.request == read.hook_request),
+                    "manual readback differs from the retained hook offer"
+                );
+            }
+        }
+        ensure!(pending <= 1, "multiple pending manual readbacks");
         Ok(())
     }
 }
@@ -456,6 +659,142 @@ mod tests {
             executable: home.join("codex"),
         }
     }
+
+    #[test]
+    fn manual_readback_survives_each_checkpoint_without_fabricating_a_receipt() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let envelope = Envelope::new(
+            "peer",
+            Destination::parse("agent"),
+            "chat",
+            serde_json::json!({"text":"original multiline\n日本語"}),
+            None,
+            chrono::Utc::now(),
+        );
+        let mut ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
+        ledger.prepare(&envelope, None).unwrap();
+        ledger
+            .offer_hook("original-hook", input(&envelope).unwrap(), None)
+            .unwrap();
+        let confirmation = ledger.confirmation().unwrap();
+        let operator = ProcessIdentity {
+            pid: 123,
+            started_at: chrono::Utc::now(),
+        };
+        let before = std::fs::read(&ledger.path).unwrap();
+        assert!(
+            ledger
+                .begin_manual_read(
+                    "wrong-message",
+                    &confirmation,
+                    "reviewed original",
+                    operator.clone()
+                )
+                .is_err()
+        );
+        assert!(
+            ledger
+                .begin_manual_read(
+                    envelope.id.as_str(),
+                    &"0".repeat(64),
+                    "reviewed original",
+                    operator.clone()
+                )
+                .is_err()
+        );
+        assert!(
+            ledger
+                .begin_manual_read(envelope.id.as_str(), &confirmation, "", operator.clone())
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&ledger.path).unwrap(), before);
+        ledger
+            .begin_manual_read(
+                envelope.id.as_str(),
+                &confirmation,
+                "reviewed original",
+                operator,
+            )
+            .unwrap();
+        let id = ledger.pending_manual_read().unwrap().id.clone();
+        assert!(
+            ledger
+                .received(Receipt {
+                    thread: "thread".into(),
+                    turn: "invented".into(),
+                    item: "invented".into()
+                })
+                .is_err()
+        );
+        assert!(ledger.acknowledge().is_err());
+        assert!(ledger.acknowledge_manual(&id).is_err());
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
+        assert_eq!(ledger.confirmation().unwrap(), confirmation);
+        assert_eq!(ledger.pending_manual_read().unwrap().id, id);
+        assert!(ledger.record.attempt.as_ref().unwrap().receipt.is_none());
+        ledger.manual_journaled(&id).unwrap();
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
+        assert!(ledger.pending_manual_read().unwrap().journaled);
+        ledger.acknowledge_manual(&id).unwrap();
+        assert!(ledger.record.attempt.is_none());
+        assert!(ledger.latest_receipt().is_none());
+        assert!(ledger.prepare(&envelope, None).is_err());
+        drop(ledger);
+        let ledger = Ledger::open(home.path(), binding, None).unwrap();
+        assert_eq!(ledger.record.manual_reads.len(), 1);
+        assert!(ledger.record.manual_reads[0].acknowledged);
+        assert_eq!(ledger.record.manual_reads[0].hook_request, "original-hook");
+        assert!(ledger.resolved_hook_request("original-hook"));
+        assert!(!ledger.resolved_hook_request("new-hook"));
+        assert!(
+            !std::fs::read_to_string(&ledger.path)
+                .unwrap()
+                .contains("original multiline")
+        );
+        let mut old = serde_json::to_value(&ledger.record).unwrap();
+        old["version"] = serde_json::json!(3);
+        std::fs::write(&ledger.path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let binding = ledger.record.binding.clone();
+        drop(ledger);
+        assert!(Ledger::open(home.path(), binding, None).is_err());
+    }
+
+    #[test]
+    fn manual_confirmation_is_bound_to_provider_generation_and_input() {
+        let home = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(home.path(), binding(home.path()), None).unwrap();
+        let envelope = Envelope::new(
+            "peer",
+            Destination::parse("agent"),
+            "chat",
+            serde_json::json!({"text":"read me"}),
+            None,
+            chrono::Utc::now(),
+        );
+        ledger.prepare(&envelope, None).unwrap();
+        let before = ledger.confirmation().unwrap();
+        ledger.record.binding.provider.process.pid += 1;
+        assert_ne!(ledger.confirmation().unwrap(), before);
+        ledger.record.binding.provider.process.pid -= 1;
+        ledger.record.attempt.as_mut().unwrap().input.push(' ');
+        assert_ne!(ledger.confirmation().unwrap(), before);
+        ledger.record.attempt.as_mut().unwrap().input.pop();
+        assert_eq!(ledger.confirmation().unwrap(), before);
+        let operator = ProcessIdentity {
+            pid: 123,
+            started_at: chrono::Utc::now(),
+        };
+        assert!(
+            ledger
+                .begin_manual_read(envelope.id.as_str(), &before, "reviewed", operator)
+                .is_err(),
+            "a native queue offer without a retained hook is not eligible"
+        );
+    }
+
     #[test]
     fn completed_large_inputs_release_their_bodies_and_keep_bounded_receipts() {
         let home = tempfile::tempdir().unwrap();
@@ -565,7 +904,7 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let ledger = Ledger::open(home.path(), binding, None).unwrap();
         let mut upgraded = serde_json::to_value(&ledger.record).unwrap();
-        assert_eq!(upgraded["version"], 3);
+        assert_eq!(upgraded["version"], 4);
         upgraded["version"] = serde_json::json!(2);
         assert_eq!(upgraded, old);
     }

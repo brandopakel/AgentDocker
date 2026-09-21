@@ -227,6 +227,11 @@ async fn offer(
     ledger: &mut Ledger,
     origin: &Origin,
 ) -> Result<Option<String>> {
+    if ledger.resolved_hook_request(&request.nonce) {
+        // A delayed/retried hook that was explicitly resolved must not reserve
+        // a different queue head now that its original attempt is gone.
+        return Ok(None);
+    }
     if let Some(attempt) = &ledger.record().attempt {
         // A previous uncertain hook must never be emitted again. The ordinary
         // receipt loop will reconcile it before another message is offered.
