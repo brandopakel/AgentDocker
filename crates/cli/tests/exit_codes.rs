@@ -54,13 +54,14 @@ impl FakeDaemon {
                 let mut request = String::new();
                 reader.read_line(&mut request).expect("a request line");
                 assert!(request.contains("\"op\""), "{request}");
+                // One write: the command may close its side as soon as it
+                // has the answer, and a trailing write to a closed peer is
+                // a broken pipe (seen once on a loaded runner, #206), not a
+                // failure of the command.
                 let mut stream = stream;
                 stream
-                    .write_all(format!("{answer}\n").as_bytes())
-                    .expect("answer written");
-                stream
-                    .write_all(format!("{}\n", json!({"type":"end"})).as_bytes())
-                    .expect("end written");
+                    .write_all(format!("{answer}\n{}\n", json!({"type":"end"})).as_bytes())
+                    .expect("answer and end written");
             }
         })))
     }

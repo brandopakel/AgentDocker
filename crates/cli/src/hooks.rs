@@ -18,8 +18,11 @@
 //! note to stderr and exits 0, and Claude Code carries on as if the hook
 //! were not there (an edit is allowed rather than denied).
 
+#[cfg(windows)]
+use agentdocker_host::procinfo::parent_id;
 use std::cell::RefCell;
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::process::parent_id;
 use std::path::{Path, PathBuf};
 
@@ -351,8 +354,36 @@ async fn bounded_claude_code_at<B: Backend>(
         .context("coordination exceeded the one-second hook budget")?
 }
 
+/// Deliver output within the hook deadline. Windows has no nonblocking
+/// console or pipe write to poll: a thread writes and the deadline is kept
+/// by waiting for it; a write that outlives the deadline is abandoned with
+/// the process, and nothing partial is acknowledged.
+#[cfg(windows)]
+fn write_output_before(
+    fd: i32,
+    bytes: &[u8],
+    deadline: tokio::time::Instant,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    if fd != 1 {
+        return Err(std::io::Error::other("hook output goes to stdout only"));
+    }
+    let bytes = bytes.to_vec();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = std::io::stdout().lock();
+        let _ = sender.send(out.write_all(&bytes).and_then(|()| out.flush()));
+    });
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    match receiver.recv_timeout(remaining) {
+        Ok(outcome) => outcome,
+        Err(_) => Err(std::io::ErrorKind::TimedOut.into()),
+    }
+}
+
 /// Deliver output on a nonblocking descriptor within the same hook deadline.
 /// A partial/failed delivery is never acknowledged, permitting safe redelivery.
+#[cfg(unix)]
 fn write_output_before(
     fd: i32,
     mut bytes: &[u8],
@@ -1047,12 +1078,9 @@ fn journal_text(digest: &str) -> String {
 /// cut fell in. Cost does not grow with the transcript.
 fn transcript_tail(path: &Path) -> Option<String> {
     use std::io::{Seek, SeekFrom};
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
-        .open(path)
-        .ok()?;
+    // A regular file, never a symlink's target or a special file, on
+    // every platform.
+    let mut file = agentdocker_host::files::open_regular(path).ok()?;
     let metadata = file.metadata().ok()?;
     if !metadata.is_file() {
         return None;

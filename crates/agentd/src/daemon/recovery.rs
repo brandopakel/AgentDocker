@@ -4,6 +4,7 @@ use super::*;
 use agentdocker_core::container::ContainerEnvironment;
 use agentdocker_core::{Checkpoint, ReadMark, Recovery, Validation};
 use agentdocker_host::content;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::Stdio;
 
@@ -595,29 +596,58 @@ impl Daemon {
                 .stdout(output)
                 .stderr(error)
                 .kill_on_drop(true);
+            #[cfg(unix)]
             cmd.as_std_mut().process_group(0);
             let mut child = match cmd.spawn() {
                 Ok(child) => child,
                 Err(e) => return internal(e),
             };
-            let pid = child.id().and_then(signal_pid).unwrap();
-            let mut group = ValidationGroup(Some(Pid::from_raw(-pid.as_raw())));
-            match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait())
-                .await
+            // On Unix the command leads its own process group, ended as a
+            // whole on a timeout and checked for survivors afterwards. On
+            // Windows only the child itself is ended (kill_on_drop stands);
+            // whether descendants survived is not known there yet, and the
+            // field stays false rather than guessed.
+            #[cfg(unix)]
             {
-                Ok(Ok(status)) => validation.exit_code = status.code(),
-                Ok(Err(e)) => return internal(e),
-                Err(_) => {
-                    validation.timed_out = true;
+                let pid = child.id().and_then(signal_pid).unwrap();
+                let mut group = ValidationGroup(Some(Pid::from_raw(-pid.as_raw())));
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(timeout_secs),
+                    child.wait(),
+                )
+                .await
+                {
+                    Ok(Ok(status)) => validation.exit_code = status.code(),
+                    Ok(Err(e)) => return internal(e),
+                    Err(_) => {
+                        validation.timed_out = true;
+                        let _ = kill(group.0.unwrap(), Signal::SIGKILL);
+                        let _ = child.wait().await;
+                    }
+                }
+                if !validation.timed_out && kill(group.0.unwrap(), None).is_ok() {
+                    validation.descendants_survived = true;
                     let _ = kill(group.0.unwrap(), Signal::SIGKILL);
-                    let _ = child.wait().await;
+                }
+                group.0 = None;
+            }
+            #[cfg(windows)]
+            {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(timeout_secs),
+                    child.wait(),
+                )
+                .await
+                {
+                    Ok(Ok(status)) => validation.exit_code = status.code(),
+                    Ok(Err(e)) => return internal(e),
+                    Err(_) => {
+                        validation.timed_out = true;
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                    }
                 }
             }
-            if !validation.timed_out && kill(group.0.unwrap(), None).is_ok() {
-                validation.descendants_survived = true;
-                let _ = kill(group.0.unwrap(), Signal::SIGKILL);
-            }
-            group.0 = None;
         }
         validation.finished_at = Utc::now();
         validation.after = tokio::task::spawn_blocking(move || content::fingerprint(&checkout))
@@ -668,7 +698,9 @@ fn checkpoint_retry(
     }
 }
 
+#[cfg(unix)]
 struct ValidationGroup(Option<Pid>);
+#[cfg(unix)]
 impl Drop for ValidationGroup {
     fn drop(&mut self) {
         if let Some(group) = self.0 {

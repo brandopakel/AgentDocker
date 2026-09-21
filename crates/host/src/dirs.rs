@@ -13,7 +13,10 @@ use agentdocker_core::paths;
 #[path = "dirs/windows.rs"]
 pub(crate) mod windows;
 #[cfg(windows)]
-pub use windows::{check_socket_parent, ensure_private_dir, private_file, secure_state_dir};
+pub use windows::{
+    check_private_dir, check_socket_parent, ensure_private_dir, open_private, private_file,
+    read_private_file, secure_state_dir,
+};
 #[cfg(windows)]
 pub(crate) use windows::{current_sid, process_sid};
 

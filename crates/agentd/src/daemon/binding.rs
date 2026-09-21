@@ -46,10 +46,12 @@ fn is_running(process: &ProcessIdentity) -> bool {
         && agentdocker_host::procinfo::start_time(process.pid) == Some(process.started_at)
 }
 
-/// Signal a process the daemon launched, if it is still the one launched.
-fn signal(process: &ProcessIdentity, signal: Signal) {
+/// End a process the daemon launched, if it is still the one launched:
+/// the host crate compares the birth before it acts, on every platform.
+/// `force` is SIGKILL where there are signals; Windows ends it either way.
+fn signal(process: &ProcessIdentity, force: bool) {
     if is_running(process) {
-        let _ = kill(Pid::from_raw(process.pid as i32), signal);
+        let _ = agentdocker_host::procinfo::end(process.pid, process.started_at, force);
     }
 }
 
@@ -106,8 +108,12 @@ fn spawn_controller(
         .env("AGENTDOCKER_HOME", home)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log))
-        .stderr(std::process::Stdio::from(stderr))
-        .process_group(0);
+        .stderr(std::process::Stdio::from(stderr));
+    // Its own process group, so a signal to the daemon's group never
+    // reaches a controller; Windows has no groups, the Job Object the
+    // host crate wraps commands in plays that part there.
+    #[cfg(unix)]
+    command.process_group(0);
     let mut child = command
         .spawn()
         .map_err(|e| format!("{}: {e}", launch.executable.display()))?;
@@ -164,14 +170,7 @@ impl Daemon {
                     // Retained intent makes a crash after commit recoverable.
                     // Never let malformed restored state target the provider.
                     if binding.controller != binding.provider.process {
-                        signal(
-                            &binding.controller,
-                            if kill {
-                                Signal::SIGKILL
-                            } else {
-                                Signal::SIGTERM
-                            },
-                        );
+                        signal(&binding.controller, kill);
                     }
                 }
                 ControllerStep::Ended => {
@@ -225,14 +224,7 @@ impl Daemon {
                     }
                     if let Some(launched) = &binding.restart.launched {
                         warn!(agent = %id, pid = launched.pid, "launched controller did not bind in time");
-                        signal(
-                            launched,
-                            if hard {
-                                Signal::SIGKILL
-                            } else {
-                                Signal::SIGTERM
-                            },
-                        );
+                        signal(launched, hard);
                     }
                 }
                 ControllerStep::Launch { attempt } => {
@@ -281,7 +273,7 @@ impl Daemon {
                         Ok(controller) => {
                             // Storage refused the record: nothing says this
                             // process was launched, so it must not stay.
-                            signal(controller, Signal::SIGTERM);
+                            signal(controller, false);
                         }
                         Err(error) => {
                             warn!(agent = %id, attempt, %error, "could not launch the bound controller");
@@ -666,7 +658,7 @@ impl State {
                 if let Some(launched) = &existing.restart.launched
                     && *launched != controller
                 {
-                    signal(launched, Signal::SIGTERM);
+                    signal(launched, false);
                 }
                 resumed = true;
                 let mut resumed_binding = existing.clone();
@@ -930,7 +922,7 @@ impl State {
         *self.registry.get_mut(&id).expect("resolved agent") = record;
         self.controller_pins.remove(&id);
         if let Some(launched) = launched {
-            signal(&launched, Signal::SIGTERM);
+            signal(&launched, false);
         }
         self.next_seq += 1;
         let _ = self.events.send(event);
@@ -1633,7 +1625,7 @@ mod tests {
         assert_eq!(events_since(&daemon, seq).await.len(), 3);
         // It dies too, within the stable window: the second launch waits
         // out its backoff.
-        signal(&launched, Signal::SIGKILL);
+        signal(&launched, true);
         for _ in 0..50 {
             if !is_running(&launched) {
                 break;
@@ -1893,7 +1885,7 @@ mod tests {
                 .await,
             Response::InputBound { resumed: true, agent, .. } if agent == prior.id
         ));
-        signal(&launched, Signal::SIGKILL);
+        signal(&launched, true);
         // A lost reply asked again is answered the same way, with nothing
         // new recorded; a different request through the alias is refused.
         let seq = lock(&daemon.state).next_seq;
@@ -2144,7 +2136,7 @@ mod tests {
                 ..
             }
         ));
-        signal(&launched, Signal::SIGKILL);
+        signal(&launched, true);
         // An unmanaged binding has nothing the daemon could start.
         let plain = provider(&daemon, "plain", "sess-2").await;
         let other = Other::spawn();
@@ -2371,7 +2363,7 @@ mod tests {
             other => panic!("{other:?}"),
         };
         assert!(is_running(&launched));
-        signal(&launched, Signal::SIGKILL);
+        signal(&launched, true);
     }
 
     /// A descriptor that cannot start counts as an attempt and waits out

@@ -1,7 +1,6 @@
 //! Coordinate our configuration writers across daemon homes and saved plans.
 //! Provider CLIs and editors do not participate; ownership checks still apply.
 use std::collections::BTreeSet;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use agentdocker_host::{dirs, lock, project};
@@ -25,12 +24,13 @@ impl Guard {
             // TMPDIR and provider profile overrides. Never unlink lock files:
             // replacing the inode would let concurrent writers both acquire it.
             // SAFETY: geteuid has no preconditions.
-            let directory = PathBuf::from(format!("/tmp/agentdocker-config-locks-{}", unsafe {
-                libc::geteuid()
-            }));
+            let directory = lock_directory();
             dirs::ensure_private_dir(&directory)?;
             for target in &targets {
-                let key = format!("{:x}", Sha256::digest(target.as_os_str().as_bytes()));
+                let key = format!(
+                    "{:x}",
+                    Sha256::digest(target.as_os_str().as_encoded_bytes())
+                );
                 let path = directory.join(format!("{key}.lock"));
                 dirs::private_file(&path, true, false)?;
                 locks.push(
@@ -55,6 +55,23 @@ impl Guard {
             "configuration target changed after locking; create a fresh setup preview"
         );
         Ok(())
+    }
+}
+
+/// Where configuration locks live: a per-user namespace under /tmp on
+/// Unix (named by the effective uid), and the user's own temporary
+/// directory on Windows, which is per-user already.
+fn lock_directory() -> PathBuf {
+    #[cfg(unix)]
+    {
+        // SAFETY: geteuid has no preconditions.
+        PathBuf::from(format!("/tmp/agentdocker-config-locks-{}", unsafe {
+            libc::geteuid()
+        }))
+    }
+    #[cfg(windows)]
+    {
+        std::env::temp_dir().join("agentdocker-config-locks")
     }
 }
 

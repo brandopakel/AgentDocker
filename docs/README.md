@@ -206,5 +206,6 @@ fails when it and the records disagree.
 | [2026-09-15-retention-sustained-use.json](verification/2026-09-15-retention-sustained-use.json) | passed: 20-minute retention trial rerun with every claimed assertion (source 33f8117 of the retention branch on main 51a1a9f, hashed private daemon copy): ten registered agents, journal retention 120s applied by the d... |
 | [2026-09-15-successor-readiness.json](verification/2026-09-15-successor-readiness.json) | Passed at fb92879 on release binaries built from the committed source (state schema 18): two successive gated reloads kept a batch and a PTY agent's processes, logs and exact exits 7/3 under the third daemon with the... |
 | [2026-09-16-reload-controller-episode.json](verification/2026-09-16-reload-controller-episode.json) | passed |
+| [2026-09-19-windows-slice-one.json](verification/2026-09-19-windows-slice-one.json) | passed: the first native Windows daemon/CLI slice on a real windows-latest runner (Windows Server 2025, AMD64): agentd and agentdocker built from 7b3fd108 answered all 17 smoke steps over the named pipe, including thr... |
 
 <!-- verification-index:end -->

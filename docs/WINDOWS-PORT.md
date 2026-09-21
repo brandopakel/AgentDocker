@@ -34,23 +34,126 @@ recipe must set container executable bits explicitly. Reparse points are not
 accepted as ordinary files. Engine workspace transport is explicitly unavailable
 on Windows until a checked named-pipe/VM transport is implemented.
 
+## Slice one: the daemon and the CLI answer
+
+The first integration slice is in source: `agentd` and `agentdocker` build
+and lint natively for Windows, the daemon serves the shared named-pipe
+transport (`agentdocker_host::ipc`, the same listener and stream the Unix
+socket uses), and the CLI registers, lists, sends, reads, claims and stops
+through it. The Windows workflow builds both, lints them strictly and runs
+`scripts/windows_daemon_smoke.py` on a real `windows-latest` runner: a daemon
+on a private home answers `ping`, two agents register with their pids, `ps`
+lists them, a direct message and a project broadcast are read from an inbox,
+a lease is held and a second claim refused, `stop` ends a registered process
+whose identity matches its record, `daemon stop` ends the daemon, `daemon
+start` brings one up on demand for the home (the ordinary first run: a
+client with nothing to talk to starts the daemon and waits for it to
+listen), `daemon stop` ends that one too, and on a home no daemon has made
+yet a plain `ping` creates it and starts a daemon. Its report is the run's
+`windows-daemon-smoke` artifact — on `7b3fd108` all 17 steps passed on
+Windows Server 2025, the [record](verification/2026-09-19-windows-slice-one.json)
+carries the report and the three failed runs before it; the same script
+runs on macOS and Linux, so it is checked before the runner sees it —
+there it ends its private
+daemon directly when the user has a daemon service installed, since
+`daemon stop` on macOS and Linux also drives that service, which is filed
+per user and not per home.
+
+What the slice changes in the shared code, on every platform:
+
+- Ending a process goes through `agentdocker_host::procinfo::end(pid,
+  started_at, force)`: the recorded birth is compared before anything is
+  sent. On Unix that is the same `SIGTERM`/`SIGKILL` as before; on Windows
+  the birth is read from the very handle that is then terminated, so the
+  check and the act cannot straddle a pid recycling. Liveness is
+  `procinfo::alive` on both (an access refusal is a yes, as with
+  `kill(pid, 0)`). The daemon's stop path keeps its record checks unchanged.
+- A file's identity across renames is `agentdocker_host::files::identity`:
+  device and inode on Unix, volume serial number and file index on Windows,
+  read from the open handle. The channel-receipt cursor stores it.
+- The hook adapter's bounded stdin read and deadline-bound stdout write use
+  a helper thread on Windows, where a console or pipe handle cannot be
+  polled; the deadline is the same, and nothing partial is acknowledged.
+- Private state reads (`read_private_file`, `check_private_dir`,
+  `open_private`) exist on Windows, opening read-only with the kind and the
+  ACL checked and nothing narrowed: a read is never a write.
+- A daemon the CLI starts on demand does not hold the client's standard
+  handles: on Windows a child inherits every inheritable handle of its
+  parent, and a script's or shell's capture of `agentdocker` output is
+  such a handle, so the daemon kept the capture open for as long as it
+  ran — the third runner sat 26 minutes in `daemon start` that way, until
+  the job's own timeout. `command::detach` makes the client's standard
+  handles non-inheritable before the daemon is started; the daemon gets
+  its own stdio from the command. The smoke captures every command through
+  pipes as a script would and fails a command whose pipes are still held
+  after it exits, so this cannot come back silently.
+- Both binaries do their work on a thread with a 32 MiB stack. A Windows
+  main thread has 1 MiB (Unix has 8), and the first Windows runner
+  overflowed it in the CLI on `ping` (`thread 'main' has overflowed its
+  stack`) — clap's derived parser for this many commands and the one future
+  behind every command are large in a debug build. The reservation is address space
+  until touched.
+
+What the first real runner taught, kept in the smoke: the daemon creates
+its home itself, directly under the temporary directory, as it does on a
+person's first run. A directory the smoke made first was foreign-owned
+state — objects an administrator creates on Windows belong to the
+Administrators group, not the user — and the daemon refused it by design
+(`state or ancestor belongs to an untrusted Windows principal`); a home the
+daemon made under such a directory was refused as writable by another
+principal, so nothing the daemon owns sits under one, and the report
+records what a directory made there carries: CPython's
+`os.mkdir(mode=0o700)` gives it an explicit DACL of SYSTEM, Administrators
+and `OWNER RIGHTS` (S-1-3-4), and the check does not yet count `OWNER
+RIGHTS` as the owner it has already validated — open, small, and recorded
+in [Remaining work](REMAINING-WORK.md). What the daemon creates is owned
+by the user. The same held
+for the CLI: a client starting the daemon on demand made the home with a
+plain directory creation, which from an elevated shell belongs to
+Administrators and was then refused by the daemon it started — the client
+now makes the home the way the daemon does. A person who points
+`AGENTDOCKER_HOME` at a directory they made from an elevated shell sees the
+refusal, which names the path and the principal, and the fix is to let
+the daemon make it. On a refusal the smoke records the owner and the
+access-control entries of the home and its ancestors, since the runner is
+the only place to observe them.
+
+What the slice refuses on Windows, in words rather than with a hang or a
+crash, and what that means for a person:
+
+- Managed sessions: `run`, `launch` and the desktop's launch answer that
+  managed sessions are not available on Windows yet; `attach` says the same.
+  Sessions started by the person and reached through hooks and MCP are the
+  way in — the `hook claude-code` and `hook codex` adapters and the `mcp`
+  server are stdio and the pipe, and run.
+- The native Codex queue (`codex-queue`): its hook endpoint is a Unix socket
+  checked by peer credentials. The Codex hook adapter sees no receiver and
+  takes its ordinary path, so a Codex session on Windows reads its messages
+  at its next prompt, never live.
+- Live daemon reload and the descriptor handover (`daemon reload`): the
+  daemon holds no descriptors a successor could inherit; stop and start it.
+- Container workspace transport and grants: the endpoint is a Unix socket.
+- The desktop installer (`desktop install`, updates, rollback) and the daemon
+  and connector services: `daemon install` and `uninstall` say there is no
+  service on Windows yet, a later slice. The subcommands that only speak to
+  a daemon still work there: `daemon start` starts one on demand for the
+  home, `stop` asks it to exit, `status` reports it (and that no service
+  exists), `vacuum` compacts its store, and `reload` carries the daemon's
+  own refusal.
+- A validation command is ended on a timeout, but only the command itself:
+  there is no process group and no Job Object around it yet, so whether its
+  descendants survived is not reported.
+
 Work still required before platform support can be claimed:
 
-- Build the full daemon and CLI natively. Their transport call sites already
-  use the shared `agentdocker_host::ipc` API, but process supervision, session
-  owners/live reload, permissions, parent-process lookup and terminal paths
-  still contain unconditional Unix dependencies. Complete portable process and
-  filesystem handling; unsupported features must return explicit unavailability.
-  Keep PID/birth checks and the same-user/ACL boundary on Windows. Add real
-  Windows daemon/CLI checks and a named-pipe ping/register/send/inbox smoke.
-  Existing core/host peer verification, bounded streams, admission and desktop
-  cancellation tests do not establish that full-product boundary.
-- Native supervised processes, ConPTY terminal input/output/resize, same-user
-  identity checks for stopping adopted processes, and restart recovery.
+- ConPTY terminal input/output/resize and a session owner that survives the
+  daemon, so managed sessions and `attach` exist; then restart recovery.
+- The native Codex queue over the named pipe with the same peer checks.
 - Windows provider configuration and desktop application inventory.
 - Daemon service/session startup, per-user desktop installation, Start menu
   integration, updates/rollback and signed packages.
-- Full daemon/CLI tests and native graphical acceptance, followed by a fresh
+- The daemon and CLI test suites on the Windows runner (they still carry
+  Unix-only fixtures), native graphical acceptance, then a fresh
   real-provider integration and sustained lifecycle trials.
 
 The supported download/platform matrix remains unchanged until those acceptance

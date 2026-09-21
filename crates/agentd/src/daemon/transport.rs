@@ -2,6 +2,7 @@
 use super::*;
 use agentdocker_core::container::WorkspaceAccess;
 use agentdocker_host::{containers::ContainerError, transport::Bridge};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 pub(super) struct Transport {
@@ -62,23 +63,34 @@ impl Daemon {
         if access.relay.is_some() {
             transport.listener = Some(super::relay::start(record.clone(), socket).await?);
         } else if access.vm.is_none() {
-            let path = access.socket_directory.join("endpoint.sock");
-            if path.exists() {
-                if tokio::net::UnixStream::connect(&path).await.is_ok() {
-                    return Err(ContainerError::unavailable(
-                        "workspace endpoint is already in use".into(),
-                    ));
-                }
-                std::fs::remove_file(&path)
-                    .map_err(|e| ContainerError::unavailable(e.to_string()))?;
+            // The workspace endpoint is a Unix socket in the grant's
+            // directory; Windows has no checked transport for it yet.
+            #[cfg(windows)]
+            {
+                return Err(ContainerError::unavailable(
+                    "the workspace endpoint is not available on Windows yet".into(),
+                ));
             }
-            let listener = tokio::net::UnixListener::bind(&path)
-                .map_err(|e| ContainerError::unavailable(e.to_string()))?;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                .map_err(|e| ContainerError::unavailable(e.to_string()))?;
-            transport.listener = Some(tokio::spawn(async move {
-                crate::server::serve_workspace(listener, socket).await;
-            }));
+            #[cfg(unix)]
+            {
+                let path = access.socket_directory.join("endpoint.sock");
+                if path.exists() {
+                    if tokio::net::UnixStream::connect(&path).await.is_ok() {
+                        return Err(ContainerError::unavailable(
+                            "workspace endpoint is already in use".into(),
+                        ));
+                    }
+                    std::fs::remove_file(&path)
+                        .map_err(|e| ContainerError::unavailable(e.to_string()))?;
+                }
+                let listener = tokio::net::UnixListener::bind(&path)
+                    .map_err(|e| ContainerError::unavailable(e.to_string()))?;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                    .map_err(|e| ContainerError::unavailable(e.to_string()))?;
+                transport.listener = Some(tokio::spawn(async move {
+                    crate::server::serve_workspace(listener, socket).await;
+                }));
+            }
         } else {
             let access: WorkspaceAccess = access.clone();
             transport.bridge = tokio::task::spawn_blocking(move || {
