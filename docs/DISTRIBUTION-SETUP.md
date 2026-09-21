@@ -118,7 +118,7 @@ notifications are not permitted: Notifications are not allowed for this applicat
 That probe did not isolate signing from notification authorization and bundle
 registration. Its result does not establish that paying for membership or
 adding a signature alone fixes posting or navigation. The
-[notification audit](NOTIFICATION-ROUTING-AUDIT.md) keeps those checks separate:
+notification audit (in git history) keeps those checks separate:
 actual Notification Center clicks must open the right destination while the app
 is active, backgrounded or closed, including retained drafts and expired targets.
 Physical installed-app acceptance remains open.
@@ -126,7 +126,7 @@ Physical installed-app acceptance remains open.
 The packaging pipeline accepts `--identity` and `--notary-profile` through
 `packaging/desktop/package.py`. Local previews can be ad-hoc signed; the stable
 protected-tag workflow requires a Developer ID Application identity and
-successful notarization. Follow [release automation](RELEASE-AUTOMATION.md) for
+successful notarization. Follow release automation (in git history) for
 private credential configuration. Verify signing, notarization, stapling and
 Gatekeeper against the final app/DMG on an independent Mac before publication.
 These acceptance steps remain necessary after the credentials are configured.
