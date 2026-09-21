@@ -22,14 +22,15 @@ foreign-writable state is refused. Administrators and SYSTEM remain machine
 administrators, as root does on Unix.
 
 The Windows workflow runs core/host on a real Windows runner, including
-ACL refusal, process identity and command descendant cancellation, compiles
-the UI binary, and — since slice one (#206, merged `eadae70`) — builds and lints
-the daemon and CLI and drives them over the named pipe in a native
-smoke (17 steps on Windows Server 2025; see the slice-one section below). What
-it does not cover: managed sessions (slice two, #210), the full test suite, an
-installer or update path, a service, and the desktop; the native graphical and
-release workflows have no Windows target. A successful cross-compile alone is
-not runtime acceptance. Unix CI remains required.
+ACL refusal, process identity and command descendant cancellation. Slice one
+(#206, merged `eadae70`) added daemon/CLI named-pipe acceptance. Open #210 and
+its follow-ups build all three binaries and add managed sessions plus an opt-in
+native window trial. On `cadf3d58`, 284 native tests and all 50 smoke steps
+passed on Windows Server 2025, including terminal lifecycle, database crash
+recovery and fresh-home desktop startup/capture. The full daemon/CLI test suites,
+physical input and broader GUI/provider acceptance, installer/update path and
+service remain open. Release workflows have no Windows target. A successful
+cross-compile alone is not runtime acceptance. Unix CI remains required.
 
 File observations on Windows track native read-only attributes and change
 metadata; Windows has no Unix executable permission bits. Captured Windows
@@ -113,8 +114,9 @@ object's already validated owner. It does not trust that SID globally or
 change ownership checks: foreign-owned state and other principals' write
 grants remain refused. A native regression checks those refusals and
 unchanged parent ACLs; the runtime smoke starts a fresh home beneath an
-actual Python OWNER RIGHTS parent. Native acceptance of this compatibility
-fix is pending in [Remaining work](REMAINING-WORK.md). What the daemon creates
+actual Python OWNER RIGHTS parent. Native `cadf3d58` passed this compatibility trial, including unchanged parent
+owner/ACL and protected child state; broader platform work remains in
+[Remaining work](REMAINING-WORK.md). What the daemon creates
 is owned by the user. The same held
 for the CLI: a client starting the daemon on demand made the home with a
 plain directory creation, which from an elevated shell belongs to
@@ -235,7 +237,7 @@ fallbacks. Daemon stop must succeed and leave no answering endpoint before
 private state is removed. The disown test owns its sole process directly.
 The `b24f983d` local gate passed 1,331 Rust tests (7 skipped) and 104 Python
 checks (1 skipped), packaging and release build; the portable daemon smoke
-passed 24 steps on macOS. Native Windows runtime acceptance is still pending;
+passed 24 steps on macOS. At that revision native acceptance was still pending;
 cross-compilation and macOS execution do not establish it. The first follow-up
 Windows run passed all 281 core/host tests, including console closure and disown,
 but the test client timed out writing an inspection request over its synchronous
@@ -254,7 +256,8 @@ exit and output EOF under bounded deadlines. Native run `35651993280` on
 `dcceff2d` passed that regression and the terminal echo, final output, owner-death
 and full-input stop trials (stop completed in 2.375 seconds). It then failed
 crash recovery because SQLite had created its WAL with Administrators as owner.
-The failed run remains recorded; the entire managed-session smoke is not yet a pass.
+That failed run remains recorded. Follow-up `cadf3d58` passed the entire
+50-step smoke, including crash recovery and terminal survival under its owner.
 
 The storage correction installs a permanent `CreateFileW` override in SQLite's
 win32 VFS before any connections or worker threads start. New database, WAL,
@@ -266,7 +269,8 @@ an unsupported VFS and caches failure. Both binaries, all store entry points
 and raw test fixtures use the same initialization gate; library embedders must
 initialize before using raw SQLite connections. The native smoke checks DB,
 WAL and SHM ownership/protection before the crash, after it, and after recovery.
-Native acceptance of this storage correction is pending. The broader daemon/CLI
+Native `cadf3d58` passed all nine DB/WAL/SHM ownership/protection assertions
+and recovered the original running terminal after the daemon crash. The broader daemon/CLI
 test fixtures still contain Unix-only APIs and do not yet compile as native Windows tests.
 
 The desktop terminal pane already uses the shared blocking IPC transport,
@@ -278,8 +282,16 @@ first-run ownership and `.exe` lookup. The Windows workflow now links all three
 executables and runs an opt-in `--desktop` trial: a source-built window starts its
 own private daemon from an absent home, connects, renders a PNG and exits under
 bounded deadlines. The test retains the GUI result/log/capture and verifies that
-its private daemon remains reachable before cleanup. Native graphical acceptance
-is pending; this is not an installer, real-provider or clean-machine trial.
+its private daemon remains reachable before cleanup. Capture uses private
+scratch outside the fresh home, then exports after the owned window exits;
+reusing an old capture destination is refused. On `cadf3d58` the native window
+connected and exited in 3.61 seconds with 16 runtime rows and a 48,216-byte PNG.
+The retained image has an unlabeled Inbox/Messages navigation row. Review
+traced this to capture ordering: a snapshot changes Inbox to Messages and
+screenshot reads the previous primitives before their text is redrawn. Default
+capture now waits 400 ms after readiness, matching the existing scenario capture
+settling. A native repeat must verify the resulting label. This bounded startup pass does not establish physical input, broad
+visual acceptance, installation, real-provider or clean-machine behavior.
 Opening an external project terminal or focusing an external agent terminal is
 not implemented on Windows. Provider inventory, services and the desktop
 installer remain outside this slice.

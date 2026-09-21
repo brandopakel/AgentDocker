@@ -417,7 +417,7 @@ def main():
         try:
             # No command may start or initialize this home before the UI. Its
             # explicit endpoint also prevents forwarding into another window.
-            step("the desktop trial starts with no prior home or capture", not desktop_home.exists() and not capture.exists())
+            step("the desktop trial starts with no prior home or capture", not desktop_home.exists() and not capture.exists() and not (args.output / "desktop").exists())
             # Register cleanup before any child can create its private daemon.
             homes.append(desktop_home)
             home_sockets[desktop_home] = endpoint
@@ -726,7 +726,7 @@ def main():
             try:
                 if window is not None and window.poll() is None:
                     raise RuntimeError("window still running; retaining private capture in scratch")
-                shutil.copytree(desktop_capture, args.output / "desktop", dirs_exist_ok=True)
+                shutil.copytree(desktop_capture, args.output / "desktop")
             except Exception as error:
                 report.setdefault("cleanup", []).append(f"desktop capture export: {error}; source={desktop_capture}")
         # An owner deliberately outlives its daemon. End fixture sessions

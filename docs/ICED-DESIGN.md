@@ -436,3 +436,9 @@ fit the table, including a wide project rail or increased text size. Each card
 keeps all five counter categories and the unknown/partial markers visible;
 the wide table remains available when at least 940 logical pixels fit beside
 the rail.
+
+The default startup smoke capture waits for a redraw after its first ready
+snapshot, as scenario captures already do. Capturing in the same update that
+changes Inbox to Messages can otherwise retain the old frame with its text
+missing. This affects capture evidence; it does not establish a persistent
+interactive-window defect. The Windows startup repeat checks the new image.
