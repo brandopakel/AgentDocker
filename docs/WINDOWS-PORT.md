@@ -23,8 +23,8 @@ administrators, as root does on Unix.
 
 The Windows workflow runs core/host on a real Windows runner, including
 ACL refusal, process identity and command descendant cancellation, compiles
-the UI binary, and — since slice one (#206, merged `eadae70`) — builds, lints
-and tests the daemon and CLI and drives them over the named pipe in a native
+the UI binary, and — since slice one (#206, merged `eadae70`) — builds and lints
+the daemon and CLI and drives them over the named pipe in a native
 smoke (17 steps on Windows Server 2025; see the slice-one section below). What
 it does not cover: managed sessions (slice two, #210), the full test suite, an
 installer or update path, a service, and the desktop; the native graphical and
@@ -230,7 +230,13 @@ private state is removed. The disown test owns its sole process directly.
 The `b24f983d` local gate passed 1,331 Rust tests (7 skipped) and 104 Python
 checks (1 skipped), packaging and release build; the portable daemon smoke
 passed 24 steps on macOS. Native Windows runtime acceptance is still pending;
-cross-compilation and macOS execution do not establish it. The broader daemon/CLI test fixtures still contain Unix-only APIs
+cross-compilation and macOS execution do not establish it. The first follow-up
+Windows run passed all 281 core/host tests, including console closure and disown,
+but the test client timed out writing an inspection request over its synchronous
+named-pipe handle. That failed run remains in the existing verification record;
+the test client now uses bounded overlapped read/write operations and waits
+for cancellation before releasing native I/O storage. Native acceptance is
+being rerun, without treating the earlier incomplete run as a pass. The broader daemon/CLI test fixtures still contain Unix-only APIs
 and do not yet compile as native Windows tests.
 
 Not in this slice: the desktop's own terminal pane on Windows (it reads

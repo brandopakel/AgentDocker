@@ -184,15 +184,17 @@ def main():
         named pipe, opened the way any script would open it. Every read is
         bounded: a thread reads lines and hands them over, and a read that
         gets nothing in time answers with a timeout mark rather than
-        holding the run (the third runner sat in a pipe read until the
-        job's own timeout, and left no report)."""
+        holding the run. Windows uses independent overlapped read/write
+        operations: a synchronous handle serializes a read before the first
+        request can be written and deadlocks the client."""
 
         TIMED_OUT = object()
 
         def __init__(self, where):
             import queue
             if os.name == "nt":
-                self.file = open(where, "r+b", buffering=0)
+                from windows_smoke_pipe import WindowsSmokePipe
+                self.file = WindowsSmokePipe(where)
                 self.sock = None
             else:
                 import socket
@@ -254,6 +256,11 @@ def main():
             return json.loads(raw)
 
         def close(self):
+            if os.name == "nt":
+                # The overlapped helper bounds cancellation itself. Propagate
+                # cleanup failures instead of losing them in a daemon thread.
+                self.file.close()
+                return
             def close():
                 try:
                     self.file.close()
