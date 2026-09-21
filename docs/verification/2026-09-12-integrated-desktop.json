@@ -6819,7 +6819,7 @@
     "source_commit": "e609a3348555d944a61a736ddfeae1dcc8f60fe9",
     "source_dirty": false,
     "candidate": "d21ba9e3",
-    "status": "Snapshot-only batching did not improve the installed CPU observation; performance remains open.",
+    "status": "Snapshot-only batching was removed after no improvement. Direct accessibility publication reduced the observed live-window CPU cost; broader acceptance remains open.",
     "gate": {
       "rust_passed": 1334,
       "rust_skipped": 7,
@@ -7045,6 +7045,142 @@
       "Live workstation observations, not a controlled battery or power benchmark.",
       "No physical keyboard, IME or screen-reader acceptance.",
       "Do not call snapshot batching a measured performance improvement."
-    ]
+    ],
+    "direct_publication": {
+      "source_commit": "e33a45bd5def61bf645423ddc1f1abd6e45748ed",
+      "source_dirty": false,
+      "candidate": "30ce582a5c5657c1dd6ad8c6a107f1346592bf587ba2445e5ace73f5ab9c6bc0",
+      "binary_sha256": {
+        "agentdocker": "2faa12cc6c6f10208055e1df51adf609ba7e325ce0a4df75839aca5320581629",
+        "agentd": "348f82b2a8acf86e9c86b3876f73868851a1420a07e26ac267c7052c663a48c2",
+        "agentdocker-ui": "69c4aae7191ff7698b13f4c32c17b7754d755829d8c92fa753541edfd7531816"
+      },
+      "cpu": {
+        "candidate": "30ce582a",
+        "source": "e33a45bd",
+        "pid": 92662,
+        "screen": "AgentDocker project shared Chat",
+        "native_window_bounds": {
+          "width": 1180,
+          "height": 792
+        },
+        "conditions": "No UI interaction; live coordinator/providers. Bounded read-only accessibility inspection during sample. Same window size/screen; not an isolated benchmark.",
+        "elapsed_seconds": 60.138359375006985,
+        "cpu_seconds": 4.87,
+        "mean_one_core_percent": 8.097992779669896,
+        "samples": [
+          {
+            "at": "2026-09-21T19:20:57.006238+00:00",
+            "monotonic": 370361.138749,
+            "sample": "92662  13.1 185952   0:01.53",
+            "status": 0
+          },
+          {
+            "at": "2026-09-21T19:21:02.019868+00:00",
+            "monotonic": 370366.149984041,
+            "sample": "92662   3.2 185984   0:01.79",
+            "status": 0
+          },
+          {
+            "at": "2026-09-21T19:21:07.042432+00:00",
+            "monotonic": 370371.164588375,
+            "sample": "92662   0.1 186208   0:02.00",
+            "status": 0
+          },
+          {
+            "at": "2026-09-21T19:21:12.056776+00:00",
+            "monotonic": 370376.187280333,
+            "sample": "92662   3.5 186352   0:02.30",
+            "status": 0
+          },
+          {
+            "at": "2026-09-21T19:21:17.067026+00:00",
+            "monotonic": 370381.197424041,
+            "sample": "92662   0.1 186352   0:02.85",
+            "status": 0
+          },
+          {
+            "at": "2026-09-21T19:21:22.075726+00:00",
+            "monotonic": 370386.206624958,
+            "sample": "92662   5.7 186384   0:03.58",
+            "status": 0
+          },
+          {
+            "at": "2026-09-21T19:21:27.087470+00:00",
+            "monotonic": 370391.218351333,
+            "sample": "92662   0.7 195360   0:03.92",
+            "status": 0
+          },
+          {
+            "at": "2026-09-21T19:21:32.097828+00:00",
+            "monotonic": 370396.228373125,
+            "sample": "92662   4.7 195872   0:04.41",
+            "status": 0
+          },
+          {
+            "at": "2026-09-21T19:21:37.110594+00:00",
+            "monotonic": 370401.241040125,
+            "sample": "92662   0.0 195872   0:04.63",
+            "status": 0
+          },
+          {
+            "at": "2026-09-21T19:21:42.121067+00:00",
+            "monotonic": 370406.251432208,
+            "sample": "92662   2.2 195984   0:05.34",
+            "status": 0
+          },
+          {
+            "at": "2026-09-21T19:21:47.139148+00:00",
+            "monotonic": 370411.262096708,
+            "sample": "92662   0.0 195984   0:05.60",
+            "status": 0
+          },
+          {
+            "at": "2026-09-21T19:21:52.152516+00:00",
+            "monotonic": 370416.268882541,
+            "sample": "92662   4.2 195984   0:06.17",
+            "status": 0
+          },
+          {
+            "at": "2026-09-21T19:21:57.166117+00:00",
+            "monotonic": 370421.277108375,
+            "sample": "92662   0.0 195984   0:06.40",
+            "status": 0
+          }
+        ]
+      },
+      "change": "Routine accessibility collection publishes through Task::then and native window action, avoiding an application message/redraw. Explicit focus and smoke snapshot completion remain unchanged.",
+      "targeted_validation": "217 UI tests and strict Clippy passed; additional task-stream regression checks published action controls and scaled bounds with no application message.",
+      "installed": {
+        "app_pid": 92662,
+        "receiver_pid": 67597,
+        "receiver_candidate": "d21ba9e3",
+        "receiver_cli_sha256_unchanged": true,
+        "serving_daemon_pid": 92608,
+        "serving_daemon_reloaded": false,
+        "provider_pids_preserved": [
+          51242,
+          7794,
+          23973
+        ]
+      }
+    },
+    "external_accessibility_failure": {
+      "baseline_pid": 67610,
+      "candidate_pid": 92662,
+      "trusted_inspector": true,
+      "result": "failed on both builds",
+      "observed": [
+        "AXWindows returned an element CFEqual to the application and role AXApplication.",
+        "Bounded CFEqual-based traversal reached 87 menu/application nodes and no buttons.",
+        "Four app-scoped hit tests within the candidate window returned the application.",
+        "System Events exposed no app windows."
+      ],
+      "not_claimed": [
+        "No external screen-reader/control acceptance.",
+        "No attribution of the pre-existing hierarchy failure to this performance change."
+      ],
+      "existing_smoke_limit": "Rendered smoke collects in-process controls and does not establish external accessibility API access."
+    }
   }
 }

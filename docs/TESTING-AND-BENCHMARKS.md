@@ -67,8 +67,12 @@ Snapshot-only batching did not improve that observation (17.66% on `e609a334`)
 and was removed. The smaller follow-up publishes routine accessibility snapshots
 through the task stream directly, preserving the native accessibility tree without
 sending a second application message that would rebuild/redraw the window. Explicit
-focus/reveal completion and the smoke snapshot path remain unchanged. Native
-accessibility and before/after CPU checks are required before claiming improvement.
+focus/reveal completion and the smoke snapshot path remain unchanged. The installed follow-up measured 8.10% of one core over 60.14 seconds with the
+same shared-chat screen and window size. A task-stream regression verifies published
+control actions and scaled bounds without an application message. External macOS
+AX inspection failed on both previews (window queries returned the application and
+only menu nodes); that existing integration defect remains open. Smoke bypasses
+that external boundary, so it cannot certify screen-reader support.
 
 ## Repository commands and installation
 
