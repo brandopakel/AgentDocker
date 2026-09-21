@@ -470,6 +470,9 @@ enum Command {
     },
     /// Give an agent a role, so `role:<name>` names it as a recipient.
     Role(RoleArgs),
+    /// Bring an ended Claude Code session back under its own record, with
+    /// its conversation and live messages, as a process the daemon runs.
+    Reconnect(ReconnectArgs),
     /// Signal an agent to stop.
     Stop {
         agent: String,
@@ -599,6 +602,8 @@ enum Command {
         /// The answer.
         text: String,
     },
+    /// Tokens the providers reported, with what the totals cover.
+    Usage(UsageArgs),
     /// What each agent is doing: working, idle, or blocked on a named
     /// resource held by a named agent.
     Activity {
@@ -1200,9 +1205,42 @@ fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
     agentdocker_core::Link::parse(text).map_err(str::to_owned)
 }
 
+#[derive(Args)]
+struct UsageArgs {
+    /// Only this agent (id, name or unique prefix); explicit query filter.
+    // This selects whose usage is included, not the request's sender identity.
+    // Inheriting AGENTDOCKER_AGENT_ID would silently hide other agents' totals.
+    #[arg(long = "agent", visible_alias = "as")]
+    agent: Option<String>,
+    /// Only agents in this project.
+    #[arg(long, value_name = "ID|PATH")]
+    project: Option<String>,
+    /// From when: a duration back from now (`30m`, `24h`, `7d`) or an RFC 3339 time.
+    #[arg(long)]
+    since: Option<String>,
+    /// Until when, RFC 3339; now when not given.
+    #[arg(long)]
+    until: Option<chrono::DateTime<chrono::Utc>>,
+    /// One row per agent, model, provider, project or hour.
+    #[arg(long, default_value = "agent", value_parser = ["agent", "model", "provider", "project", "hour"])]
+    by: String,
+    /// The report as JSON, as the daemon answered it.
+    #[arg(long)]
+    json: bool,
+}
+
 /// Its own struct, as `RunArgs` is: every field added
 /// straight to `Command` costs the parser's stack, and a test thread has
 /// little of it.
+#[derive(Args)]
+struct ReconnectArgs {
+    /// The ended session: id, name or unique prefix.
+    agent: String,
+    /// The tool's executable when it is not on PATH as `claude`.
+    #[arg(long, value_name = "PATH")]
+    claude: Option<PathBuf>,
+}
+
 #[derive(Args)]
 struct RoleArgs {
     #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -2404,6 +2442,51 @@ async fn run() -> Result<()> {
         Command::Rm { agent } => {
             client.call(&Request::Remove { agent }).await?;
         }
+        Command::Reconnect(ReconnectArgs { agent, claude }) => {
+            // The record says what to resume and where; this command
+            // says with what, and the daemon checks both against each
+            // other before anything starts.
+            let Response::Agent { agent: record } =
+                client.call(&Request::Inspect { agent }).await?
+            else {
+                bail!("unexpected reply to inspect");
+            };
+            if record.spec.runtime != "claude-code" {
+                bail!("only a Claude Code session is reconnected here");
+            }
+            let session = record
+                .spec
+                .labels
+                .get("session_id")
+                .cloned()
+                .ok_or_else(|| anyhow!("this session has no conversation id to resume"))?;
+            let claude = claude.unwrap_or_else(|| PathBuf::from("claude"));
+            let mut spec = agentdocker_core::AgentSpec {
+                name: record.spec.name.clone(),
+                runtime: record.spec.runtime.clone(),
+                command: vec![
+                    claude.to_string_lossy().into_owned(),
+                    "--resume".into(),
+                    session,
+                ],
+                workdir: record.spec.workdir.clone(),
+                tty: true,
+                ..Default::default()
+            };
+            let me = std::env::current_exe().context("cannot find this executable")?;
+            agentdocker_host::provider_input::enable_claude_channel(&mut spec, &me)
+                .context("cannot enable live messages")?;
+            match client
+                .call(&Request::ResumeSession {
+                    agent: record.id.to_string(),
+                    spec,
+                })
+                .await?
+            {
+                Response::Agent { agent } => println!("{}", agent.id),
+                other => bail!("unexpected reply to reconnect: {other:?}"),
+            }
+        }
         Command::Role(RoleArgs { agent, role, clear }) => {
             let role = if clear { None } else { role };
             if let Response::Agent { agent } = client.call(&Request::Role { agent, role }).await? {
@@ -2629,6 +2712,28 @@ async fn run() -> Result<()> {
             };
             if let Response::Activity { activity } = client.call(&request).await? {
                 print_activity(&client, &activity).await;
+            }
+        }
+        Command::Usage(args) => {
+            use agentdocker_core::usage::report::Group;
+            let by = match args.by.as_str() {
+                "model" => Group::Model,
+                "provider" => Group::Provider,
+                "project" => Group::Project,
+                "hour" => Group::Hour,
+                _ => Group::Agent,
+            };
+            let request = Request::Usage {
+                project: args.project.as_deref().map(project_selector),
+                agent: args.agent,
+                since: args.since,
+                until: args.until,
+                by,
+            };
+            match client.call(&request).await? {
+                Response::Usage { report } if args.json => print_json(&report)?,
+                Response::Usage { report } => format::usage_report(&report),
+                other => bail!("unexpected reply to usage: {other:?}"),
             }
         }
         Command::Top => top::run(&client).await?,

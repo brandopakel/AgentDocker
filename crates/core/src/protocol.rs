@@ -80,6 +80,19 @@ pub struct DigestRequest {
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     Ping,
+    /// Provider-reported tokens and explicit local collection coverage.
+    Usage {
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        since: Option<String>,
+        #[serde(default)]
+        until: Option<chrono::DateTime<chrono::Utc>>,
+        #[serde(default)]
+        by: crate::usage::report::Group,
+    },
     BuildImage {
         spec: crate::ImageBuildSpec,
     },
@@ -214,6 +227,18 @@ pub enum Request {
 
     /// Spawn `spec.command` and supervise it.
     Run {
+        spec: crate::AgentSpec,
+    },
+    /// Bring an ended session back as a process this daemon supervises:
+    /// `spec` is the launch — the session's own tool with `--resume` and
+    /// its conversation, in its checkout, on a terminal — and `agent` the
+    /// ended record whose identity, queue, aliases and everything else the
+    /// new process continues. Refused while the old process lives, while
+    /// anything is bound to or subscribed on the record, for another
+    /// checkout or runtime, or for a session id that is not plain. Answers
+    /// `agent`; a launch that fails leaves the record ended with its queue.
+    ResumeSession {
+        agent: String,
         spec: crate::AgentSpec,
     },
     /// Launch a command inside a retained immutable image, with optional scoped mounts.
@@ -1110,6 +1135,10 @@ pub enum ErrorCode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
+    Usage {
+        #[serde(flatten)]
+        report: crate::usage::report::Report,
+    },
     ImageBuild {
         build: crate::ImageBuild,
     },

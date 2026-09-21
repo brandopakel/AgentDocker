@@ -175,7 +175,7 @@ fn hint<'a>(
     .into()
 }
 /// A track holding `segment` choices.
-fn segmented<'a>(choices: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
+pub(super) fn segmented<'a>(choices: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
     let mut track = row![].spacing(2);
     for choice in choices {
         track = track.push(choice);
@@ -374,7 +374,7 @@ impl App {
         )
     }
     /// The words for what an agent is doing, live or finished.
-    fn activity_label(&self, agent: &AgentRecord) -> String {
+    pub(super) fn activity_label(&self, agent: &AgentRecord) -> String {
         let id = agent.id.to_string();
         if self.needs_input(&id) {
             "needs input".to_owned()
@@ -545,26 +545,48 @@ impl App {
             ));
         }
         let mut header = row![header_left].spacing(16).align_y(Center);
-        if self.screen == Screen::Agents
+        if matches!(self.screen, Screen::Agents | Screen::Chat)
             && !narrow
             && let Some(pause) = self.pause_controls(c)
         {
             header = header.push(pause);
         }
-        if self.screen == Screen::Agents
+        if matches!(self.screen, Screen::Agents | Screen::Chat)
             && !narrow
             && let Some(launch) = self.launch_button()
         {
             header = header.push(launch);
         }
         let mut content = column![header].spacing(18).width(Fill);
+        let mut project_actions = row![].spacing(8);
+        if in_project && self.shell.catalog.selected().is_some() {
+            project_actions = project_actions.push(action(
+                "project-terminal",
+                "Open project terminal",
+                (!self.shell.terminal_opening && self.shell.project_available != Some(false))
+                    .then_some(Message::OpenProjectTerminal),
+                false,
+            ));
+        }
         // Narrow, the hold has its own line under the header rather than
         // none: a pause is not a thing to lose with the width.
-        if self.screen == Screen::Agents
+        if matches!(self.screen, Screen::Agents | Screen::Chat)
             && narrow
             && let Some(pause) = self.pause_controls(c)
         {
-            content = content.push(pause);
+            project_actions = project_actions.push(pause);
+        }
+        if self.screen == Screen::Chat
+            && narrow
+            && let Some(launch) = self.launch_button()
+        {
+            project_actions = project_actions.push(launch);
+        }
+        if in_project && self.shell.catalog.selected().is_some() {
+            content = content.push(project_actions.wrap());
+        }
+        if self.screen == Screen::Chat && self.shell.launch {
+            content = content.push(self.launch_view(c));
         }
         if let Err(error) = &self.connected {
             content = content.push(attention(
@@ -638,9 +660,8 @@ impl App {
         if in_project && !self.all_projects() {
             let mut tabs = row![].spacing(14);
             for (screen, label, glyph) in [
-                (Screen::Agents, "Sessions", Icon::Sessions),
-                (Screen::Board, "Board", Icon::Board),
-                (Screen::Journal, "Activity", Icon::Activity),
+                (Screen::Chat, "Chat", Icon::Channels),
+                (Screen::Agents, "Agents", Icon::Sessions),
             ] {
                 let selected = self.screen == screen
                     || (screen == Screen::Agents && self.screen == Screen::Terminal);
@@ -659,7 +680,12 @@ impl App {
             let more_selected = self.shell.more
                 || matches!(
                     self.screen,
-                    Screen::Channels | Screen::Leases | Screen::Console
+                    Screen::Board
+                        | Screen::Journal
+                        | Screen::Channels
+                        | Screen::Leases
+                        | Screen::Console
+                        | Screen::Usage
                 );
             tabs = tabs.push(tab(
                 "project-more",
@@ -688,6 +714,28 @@ impl App {
             let queued = self.queued_channel_messages();
             let mut more = row![
                 row![
+                    icon(Icon::Board, c.muted, 14.0),
+                    action(
+                        "project-tab-Board",
+                        "Board",
+                        Some(Message::Navigate(Screen::Board)),
+                        self.screen == Screen::Board
+                    )
+                ]
+                .spacing(6)
+                .align_y(Center),
+                row![
+                    icon(Icon::Activity, c.muted, 14.0),
+                    action(
+                        "project-tab-Journal",
+                        "History",
+                        Some(Message::Navigate(Screen::Journal)),
+                        self.screen == Screen::Journal
+                    )
+                ]
+                .spacing(6)
+                .align_y(Center),
+                row![
                     icon(Icon::Channels, c.muted, 14.0),
                     action(
                         "project-tab-Channels",
@@ -710,9 +758,15 @@ impl App {
                 ),
                 action(
                     "project-tab-Console",
-                    "Command line",
+                    "AgentDocker commands",
                     Some(Message::Navigate(Screen::Console)),
                     self.screen == Screen::Console
+                ),
+                action(
+                    "project-tab-Usage",
+                    "Usage",
+                    Some(Message::Navigate(Screen::Usage)),
+                    self.screen == Screen::Usage
                 ),
             ]
             .spacing(6);
@@ -771,8 +825,10 @@ impl App {
             ));
         }
         let body = match self.screen {
+            Screen::Chat => self.project_chat_view(c),
             Screen::Agents => self.sessions(c),
             Screen::Board => self.board_view(c),
+            Screen::Usage => self.usage_view(c),
             Screen::Questions if self.has_conversations() => self.messages_view(c),
             Screen::Questions => self.questions(c),
             Screen::Runtimes => self.connections(c),
@@ -784,19 +840,31 @@ impl App {
             Screen::Settings => self.settings_view(c),
             Screen::Desktop => self.installation_view(c),
         };
-        content = content.push(body);
+        // Chat owns the remaining viewport so its composer never depends on
+        // scrolling past the header. Large forms and notices scroll above it.
+        let workspace: Element<'_, Message> = if self.screen == Screen::Chat {
+            column![
+                container(scrollable(content).height(iced::Shrink))
+                    .max_height(self.shell.height / self.scale_factor() * 0.45),
+                container(body).height(Fill),
+            ]
+            .spacing(18)
+            .height(Fill)
+            .into()
+        } else {
+            scrollable(content.push(body))
+                .spacing(12)
+                .width(Fill)
+                .height(Fill)
+                .id("workspace-scroll")
+                .into()
+        };
         row![
             container(Space::new().width(1).height(Fill)).style(move |_| c.rule()),
-            container(
-                scrollable(content)
-                    .spacing(12)
-                    .width(Fill)
-                    .height(Fill)
-                    .id("workspace-scroll")
-            )
-            .padding(if narrow { [18, 18] } else { [24, 30] })
-            .width(Fill)
-            .style(move |_| c.surface(c.ground, false))
+            container(workspace)
+                .padding(if narrow { [18, 18] } else { [24, 30] })
+                .width(Fill)
+                .style(move |_| c.surface(c.ground, false))
         ]
         .height(Fill)
         .into()
@@ -892,6 +960,131 @@ impl App {
         )
     }
 
+    /// One project's row in the sidebar, with its menu under it when open.
+    fn project_row<'a>(
+        &'a self,
+        entry: &'a crate::catalog::Entry,
+        shared: &std::collections::BTreeSet<String>,
+        project_page: bool,
+        c: Colors,
+    ) -> Element<'a, Message> {
+        let path = entry.project.root.clone();
+        let selected = project_page && self.selected_root() == Some(path.as_path());
+        let name = entry.name();
+        let menu_open = self.shell.project_menu.as_deref() == Some(path.as_path());
+        let live = self.live_in(&path);
+        let done = self.shell.unviewed_in(&self.agents, &path);
+        let mut hint_text = if live > 0 {
+            format!("{live} live agent{}", if live == 1 { "" } else { "s" })
+        } else if entry.pinned {
+            "Pinned · no live agents".to_owned()
+        } else {
+            "Discovered · no live agents".to_owned()
+        };
+        if done > 0 {
+            hint_text.push_str(&format!(" · {done} finished, not yet viewed"));
+        }
+        let seed = entry.project.id().to_string();
+        // One line each, clipped rather than wrapped or drawn over the
+        // marks beside it. Two folders called the same are told apart
+        // by where they are, in one short line.
+        let mut label = column![
+            text(name.clone())
+                .size(14)
+                .wrapping(iced::widget::text::Wrapping::None)
+        ]
+        .spacing(1)
+        .width(Fill);
+        if shared.contains(&name) {
+            label = label.push(
+                text(parent_folder(&path))
+                    .size(12)
+                    .color(c.muted)
+                    .wrapping(iced::widget::text::Wrapping::None),
+            );
+        }
+        let label = container(label).width(Fill).clip(true);
+        let mut content = row![hint(monogram(&name, &seed, 20.0, c), hint_text, c), label]
+            .spacing(6)
+            .width(Fill)
+            .align_y(Center);
+        if done > 0 {
+            content = content.push(pill(done.to_string(), c.accent_soft, c.accent_ink, c));
+        }
+        if live > 0 {
+            content = content.push(
+                row![dot(c.green, 6.0, c), small(live.to_string(), c)]
+                    .spacing(5)
+                    .align_y(Center),
+            );
+        }
+        // The row's own menu, at the row's right edge: a quiet button
+        // would otherwise take half the row's width as if it were a
+        // row itself.
+        content = content.push(
+            container(custom(
+                format!("project-menu-{}", path.display()),
+                format!("Options for {name}"),
+                icon(
+                    Icon::More,
+                    if menu_open { c.accent_ink } else { c.muted },
+                    12.0,
+                ),
+                Some(Message::ProjectMenu(path.clone())),
+                menu_open,
+                Kind::Quiet,
+                [4, 4],
+            ))
+            .width(26.0)
+            .align_x(iced::alignment::Horizontal::Right),
+        );
+        let mut rows = column![].spacing(2).width(Fill);
+        rows = rows.push(custom(
+            format!("project-{}", path.display()),
+            format!("{}{}", if entry.pinned { "• " } else { "" }, name),
+            content,
+            Some(Message::SelectProject(path.clone())),
+            selected,
+            Kind::Quiet,
+            [8, 12],
+        ));
+        if menu_open {
+            rows = rows.push(self.project_menu(entry, c));
+        }
+        rows.into()
+    }
+
+    /// Whether the Temporary fold is open: the person's choice once made,
+    /// otherwise open while a scratch project has a live session or is the
+    /// project on view. One rule for the fold as drawn and for what a
+    /// click on it negates, so one click always closes an open fold.
+    pub(super) fn temporary_fold_open(&self) -> bool {
+        self.shell.temporary_open.unwrap_or_else(|| {
+            let on_view = self.in_project();
+            self.shell
+                .catalog
+                .projects
+                .iter()
+                .filter(|e| !e.pinned && crate::catalog::is_scratch(&e.project.root))
+                .any(|e| {
+                    self.live_in(&e.project.root) > 0
+                        || (on_view && self.selected_root() == Some(e.project.root.as_path()))
+                })
+        })
+    }
+
+    /// Live, non-human sessions in the project at `root`.
+    fn live_in(&self, root: &std::path::Path) -> usize {
+        self.agents
+            .iter()
+            .filter(|a| {
+                a.status.is_live()
+                    && a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
+                    && a.project.as_ref().is_some_and(|p| p.root == root)
+            })
+            .count()
+    }
+
     fn sidebar(&self, c: Colors) -> Element<'_, Message> {
         let project_page = self.in_project();
         let mut nav = column![brand(c), Space::new().height(22)].spacing(4);
@@ -941,96 +1134,56 @@ impl App {
             .push(Space::new().height(2));
         let mut projects = column![].spacing(2).width(Fill);
         let shared = self.shell.catalog.shared_names();
-        for entry in &self.shell.catalog.projects {
-            let path = entry.project.root.clone();
-            let selected = project_page && self.selected_root() == Some(path.as_path());
-            let name = entry.name();
-            let menu_open = self.shell.project_menu.as_deref() == Some(path.as_path());
-            let live = self
-                .agents
+        // Folders discovered under a scratch directory and never pinned
+        // are fixtures and trials, not the person's projects: one group
+        // under the real ones, folded while nothing runs in any of them
+        // and none is selected, opened by hand otherwise; the live count
+        // sits on the fold so nothing running is ever hidden.
+        let (temporary, regular): (Vec<&crate::catalog::Entry>, Vec<&crate::catalog::Entry>) = self
+            .shell
+            .catalog
+            .projects
+            .iter()
+            .partition(|e| !e.pinned && crate::catalog::is_scratch(&e.project.root));
+        for entry in regular {
+            projects = projects.push(self.project_row(entry, &shared, project_page, c));
+        }
+        if !temporary.is_empty() {
+            let live = temporary
                 .iter()
-                .filter(|a| {
-                    a.status.is_live()
-                        && a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
-                        && a.project.as_ref().is_some_and(|p| p.root == path)
-                })
-                .count();
-            let done = self.shell.unviewed_in(&self.agents, &path);
-            let mut hint_text = if live > 0 {
-                format!("{live} live agent{}", if live == 1 { "" } else { "s" })
-            } else if entry.pinned {
-                "Pinned · no live agents".to_owned()
-            } else {
-                "Discovered · no live agents".to_owned()
-            };
-            if done > 0 {
-                hint_text.push_str(&format!(" · {done} finished, not yet viewed"));
-            }
-            let seed = entry.project.id().to_string();
-            // One line each, clipped rather than wrapped or drawn over the
-            // marks beside it. Two folders called the same are told apart
-            // by where they are, in one short line.
-            let mut label = column![
-                text(name.clone())
-                    .size(14)
-                    .wrapping(iced::widget::text::Wrapping::None)
+                .map(|e| self.live_in(&e.project.root))
+                .sum::<usize>();
+            // The person's own choice wins, both ways; until they have
+            // made one, the fold opens by itself for a live or selected
+            // scratch project — the one rule in `temporary_fold_open`.
+            let open = self.temporary_fold_open();
+            let label = format!("Temporary ({})", temporary.len());
+            let mut fold = row![
+                text(if open { "▾" } else { "▸" }).size(11).color(c.muted),
+                eyebrow(label.clone(), c).width(Fill),
             ]
-            .spacing(1)
-            .width(Fill);
-            if shared.contains(&name) {
-                label = label.push(
-                    text(parent_folder(&path))
-                        .size(12)
-                        .color(c.muted)
-                        .wrapping(iced::widget::text::Wrapping::None),
-                );
-            }
-            let label = container(label).width(Fill).clip(true);
-            let mut content = row![hint(monogram(&name, &seed, 20.0, c), hint_text, c), label]
-                .spacing(6)
-                .width(Fill)
-                .align_y(Center);
-            if done > 0 {
-                content = content.push(pill(done.to_string(), c.accent_soft, c.accent_ink, c));
-            }
+            .spacing(8)
+            .align_y(Center);
             if live > 0 {
-                content = content.push(
+                fold = fold.push(
                     row![dot(c.green, 6.0, c), small(live.to_string(), c)]
                         .spacing(5)
                         .align_y(Center),
                 );
             }
-            // The row's own menu, at the row's right edge: a quiet button
-            // would otherwise take half the row's width as if it were a
-            // row itself.
-            content = content.push(
-                container(custom(
-                    format!("project-menu-{}", path.display()),
-                    format!("Options for {name}"),
-                    icon(
-                        Icon::More,
-                        if menu_open { c.accent_ink } else { c.muted },
-                        12.0,
-                    ),
-                    Some(Message::ProjectMenu(path.clone())),
-                    menu_open,
-                    Kind::Quiet,
-                    [4, 4],
-                ))
-                .width(26.0)
-                .align_x(iced::alignment::Horizontal::Right),
-            );
             projects = projects.push(custom(
-                format!("project-{}", path.display()),
-                format!("{}{}", if entry.pinned { "• " } else { "" }, name),
-                content,
-                Some(Message::SelectProject(path.clone())),
-                selected,
+                "projects-temporary",
+                label,
+                fold,
+                Some(Message::ToggleTemporary),
+                false,
                 Kind::Quiet,
-                [8, 12],
+                [6, 12],
             ));
-            if menu_open {
-                projects = projects.push(self.project_menu(entry, c));
+            if open {
+                for entry in temporary {
+                    projects = projects.push(self.project_row(entry, &shared, project_page, c));
+                }
             }
         }
         if self
@@ -1588,6 +1741,7 @@ impl App {
             // Ended sessions are not a tab: one collapsed group under the
             // current ones, opened by a search that finds something there.
             let open = self.shell.earlier_open || !self.shell.search.trim().is_empty();
+            let shown = self.shell.earlier_shown.max(EARLIER_PAGE);
             let mut group = column![custom(
                 "sessions-earlier",
                 format!("Earlier ({})", earlier.len()),
@@ -1604,7 +1758,22 @@ impl App {
             )]
             .spacing(6);
             if open {
-                group = group.push(panel(self.session_rows(&earlier, c), c));
+                // The newest first, a page at a time: an ended session
+                // from last week is a click away, not on every screen.
+                let page: Vec<&AgentRecord> = earlier.iter().copied().take(shown).collect();
+                let older = earlier.len().saturating_sub(page.len());
+                group = group.push(panel(self.session_rows(&page, c), c));
+                if older > 0 {
+                    group = group.push(
+                        container(action(
+                            "sessions-earlier-more",
+                            format!("Show {} older", older.min(EARLIER_PAGE)),
+                            Some(Message::MoreEarlier),
+                            false,
+                        ))
+                        .padding([0, 12]),
+                    );
+                }
             }
             panel_col = panel_col.push(group);
         }
@@ -1689,7 +1858,42 @@ impl App {
                 // in the meta line; this says only that it is new to you.
                 content = content.push(pill("Done", c.accent_soft, c.accent_ink, c));
             }
-            content = content.push(pill(agent.spec.runtime.clone(), c.raised, c.muted, c));
+            // A generated name already reads as the tool ("Claude Code ·
+            // 0180d761"); the runtime pill would say it twice. A chosen
+            // name keeps the pill, which is then the only place the tool
+            // is named.
+            if !agent.name_is_generated() {
+                content = content.push(pill(agent.spec.runtime.clone(), c.raised, c.muted, c));
+            }
+            // An ended Claude Code session that can come back says so on
+            // its row: the one thing to do with it is right there, not
+            // behind Details. While its resume is on its way the row says
+            // so; a blocker (live, no conversation id, no tool) keeps the
+            // row quiet, and Details says why.
+            if agent.spec.runtime == "claude-code"
+                && !agent.status.is_live()
+                && self.reconnect_blocker(agent).is_none()
+            {
+                let reconnecting = self.shell.reconnecting.as_deref() == Some(id.as_str());
+                content = content.push(
+                    container(custom(
+                        format!("row-reconnect-{id}"),
+                        format!("Reconnect {name} here"),
+                        text(if reconnecting {
+                            "Reconnecting…"
+                        } else {
+                            "Reconnect here"
+                        })
+                        .size(13),
+                        (!reconnecting && !self.shell.launching && self.connected.is_ok())
+                            .then_some(Message::Reconnect(id.clone())),
+                        false,
+                        Kind::Secondary,
+                        [5, 10],
+                    ))
+                    .align_x(iced::alignment::Horizontal::Right),
+                );
+            }
             rows = rows.push(custom(
                 format!("session-{id}"),
                 spoken,
@@ -1856,9 +2060,10 @@ impl App {
                     .then_some(Message::Attach(id.clone())),
             ));
         } else if agent.status.is_live() {
-            body = body.push(note(
-                "Continue in the app or terminal where this agent started.",
-                c,
+            body = body.push(primary(
+                "open-original-terminal",
+                "Open original terminal",
+                (!self.shell.terminal_opening).then(|| Message::OpenAgentTerminal(id.clone())),
             ));
         }
         if agent.status.is_live() && agent.spec.runtime != "human" {
@@ -1967,6 +2172,35 @@ impl App {
                 super::send_readiness::reconnect(agent, &self.agents, "inspector", c)
             {
                 details = details.push(guidance);
+                // The relaunch the guidance describes, done here: the
+                // session's own tool, its conversation, its folder and the
+                // channel, in a pane of this window where Claude's own
+                // consent prompt appears. Until its terminal process has
+                // ended the button says why it waits.
+                if agent.spec.runtime == "claude-code" {
+                    let blocker = self.reconnect_blocker(agent);
+                    let mut reconnect = row![primary(
+                        format!("reconnect-{}", agent.id),
+                        if self.shell.reconnecting.as_deref() == Some(agent.id.as_str()) {
+                            "Reconnecting…"
+                        } else {
+                            "Reconnect here"
+                        },
+                        (blocker.is_none() && !self.shell.launching && self.connected.is_ok())
+                            .then_some(Message::Reconnect(agent.id.to_string())),
+                    )]
+                    .spacing(8)
+                    .align_y(Center);
+                    if let Some(why) = blocker {
+                        reconnect = reconnect.push(small(why, c));
+                    } else {
+                        reconnect = reconnect.push(small(
+                            "Opens the session in a pane here, with its conversation and live messages; accept Claude's prompt there.",
+                            c,
+                        ));
+                    }
+                    details = details.push(reconnect);
+                }
             }
             body = body.push(details);
         }

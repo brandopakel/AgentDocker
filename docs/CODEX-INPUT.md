@@ -10,7 +10,7 @@ resumes a conversation. Codex's native `thread/queue/add` route schedules the ne
 ordinary input and preserves the terminal's unfinished draft and permission UI.
 
 The receiver requires the schema-20 controller binding and answer migration and
-Codex's experimental native queue API (tested with CLI 0.154.0). The current
+Codex's experimental native queue API (tested with CLI 0.154.0). The September 17
 installed `f5e298f4` package (source `418fbc9`, schema 23) includes the reviewed
 active-hook and receiver-upgrade fixes; its September 17 receiver upgrade kept
 every retained receipt in order, and one CLI-origin message then started a new
@@ -34,6 +34,19 @@ The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;
 only an accepted daemon binding suppresses their competing reads. An incompatible
 provider version on an existing binding keeps the queue and reports a pause.
+
+For a first installation, preview **Tools → Codex → Review setup** (or
+`agentdocker setup codex --preview`), then apply the reviewed plan. The plan
+installs MCP, hooks and the shared coordination skill; it does not start a
+receiver for an unverified conversation. Accept the new hook definitions in
+Codex as required by the provider. On the tested CLI 0.154.0, the first ordinary
+turn emits the verified startup hook and bootstraps the receiver automatically.
+A separate maintainer-only receiver install is not required. Verify actual
+receipt for that session; a new or reopened terminal with no first turn still
+has the zero-prompt gap described above. An unsupported queue API must report
+its limitation, not claim idle delivery. Empty-profile setup/health/undo passed on `ce82d06` as configuration-only
+acceptance. Actual fresh-profile authentication, hook trust, model delivery
+and independent OS-account acceptance remain.
 
 The private `AGENTDOCKER_HOME/codex-queue/<agent-id>` record stores the controller
 token before binding and the exact input before offering it. An enqueue reply is
@@ -151,10 +164,27 @@ their existing route. Hooks do not type into the terminal, resume another thread
 or choose permission decisions. This is delivery at tool boundaries; a provider
 that performs no tool call still controls when the next input is consumed.
 
+The hook shares the receiver's ordinary-input classification: a peer message
+whose kind is `answer` is ordinary input, and a human answer may enter hook
+context only when the daemon confirms native-queue routing. An uncertain prior
+offer is never eligible. Human answers without routing proof remain on the
+exact MCP receipt path; the fix does not replay synchronous tool answers.
+This September 18 source correction addresses a peer answer that otherwise
+blocked later active-turn input. Its focused policy test and actual-provider
+acceptance variant passed at `ee7bb1a` (1,271 Rust tests, seven skipped;
+94 Python checks, one skipped). Actual Codex/loopback-model acceptance reproduced
+the old failure and delivered the peer answer plus two human messages in order
+in the same turn on the fix. The installed `c0a7c56` receiver then delivered the
+original blocked answer without manual queue acknowledgement. #202 merged as
+`14f1c519`; broader startup and throughput limits remain. See
+`peer_answer_active_hook_2026_09_18` in the [native queue record](verification/2026-09-15-native-codex-queue.json).
+
 Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human
 project and human global input during one busy TUI turn and requires exact
 receipts, FIFO order and no later replay after baseline idle/draft/crash tests.
+Add `--active-peer-kind answer` to put a peer answer ahead of those human
+messages and require the same exact receipts and same-turn delivery.
 `--scenario active-hook-lost` discards one offered hook output and requires the
 original queued IDs to remain paused without receipt or automatic resubmission.
 Source `5545697` passed 14 focused tests, the full 1,093-Rust/84-Python gate

@@ -40,7 +40,7 @@ impl App {
         let mut page = column![self.file_card(&root, c)].spacing(14).width(Fill);
         if tasks.is_empty() && self.tasks.is_some() {
             page = page.push(note(
-                "Nothing on the board yet. File a card above; agents pull from Ready.",
+                "Nothing on the board yet. Add a task above; agents take them from Ready.",
                 c,
             ));
         }
@@ -100,14 +100,15 @@ impl App {
         page.push(columns).into()
     }
 
-    /// A title, what done means, and where it goes: Backlog to think
-    /// about, or Ready for the next agent to pull.
+    /// A title, when it counts as done, and where it goes: Backlog to
+    /// think about, or Ready for the next agent to take. The words are
+    /// the person's — a task, done when — not the lease's.
     fn file_card(&self, project: &str, c: Colors) -> Element<'_, Message> {
         let blank = TaskDraft::default();
         let draft = self.shell.task_drafts.get(project).unwrap_or(&blank);
         let ready = self.connected.is_ok() && !draft.sending() && !draft.title.trim().is_empty();
         let mut form = column![
-            eyebrow("File a card", c),
+            eyebrow("Add a task", c),
             input_enabled(
                 "task-title",
                 "What needs doing",
@@ -117,7 +118,7 @@ impl App {
             ),
             input_enabled(
                 "task-acceptance",
-                "What done means — an agent reads this before it starts",
+                "Done when… (the agent reads this before it starts)",
                 &draft.acceptance,
                 Message::TaskAcceptance,
                 !draft.sending(),
@@ -126,9 +127,9 @@ impl App {
                 primary(
                     "task-file-ready",
                     if draft.sending() {
-                        "Filing…"
+                        "Adding…"
                     } else {
-                        "File as Ready"
+                        "Add to Ready"
                     },
                     ready.then_some(Message::TaskFile(Column::Ready)),
                 ),
@@ -211,30 +212,39 @@ impl App {
         .spacing(4)
         .width(Fill);
         if let Some((name, live, held)) = &holder {
+            // One line for the name, clipped: a long name never pushes
+            // the state off the card or wraps under the dot.
             let mut who = row![
                 dot(if *live { c.green } else { c.faint }, 7.0, c),
-                small(name.clone(), c),
+                container(
+                    text(name.clone())
+                        .size(12)
+                        .color(c.muted)
+                        .wrapping(iced::widget::text::Wrapping::None)
+                )
+                .width(Fill)
+                .clip(true),
             ]
             .spacing(6)
             .align_y(Center);
             if !held && matches!(task.column, Column::InProgress | Column::Review) {
-                who = who.push(pill("hold lapsed", alpha(c.amber, 0.2), c.amber, c));
+                who = who.push(pill("not being worked on", alpha(c.amber, 0.2), c.amber, c));
             }
             head = head.push(who);
         } else if task.column == Column::Ready {
-            head = head.push(pill("for the taking", c.accent_soft, c.accent_ink, c));
+            head = head.push(pill("unassigned", c.accent_soft, c.accent_ink, c));
         }
         // The control's name says the state too, so a screen reader — and
         // the smoke — hear who holds the card without opening it.
         let label = match &holder {
             Some((name, _, held)) => {
                 if !held && matches!(task.column, Column::InProgress | Column::Review) {
-                    format!("{} — {name}'s, hold lapsed", task.title)
+                    format!("{} — {name}'s, not being worked on", task.title)
                 } else {
                     format!("{} — held by {name}", task.title)
                 }
             }
-            None if task.column == Column::Ready => format!("{} — for the taking", task.title),
+            None if task.column == Column::Ready => format!("{} — unassigned", task.title),
             None => task.title.clone(),
         };
         let mut body = column![custom(
@@ -277,12 +287,12 @@ impl App {
             .into()
     }
 
-    /// What done means, or that nothing says.
+    /// When the task counts as done, or that nothing says.
     fn acceptance(&self, task: &Task, c: Colors) -> Element<'_, Message> {
         let acceptance = if task.acceptance.is_empty() {
-            "No acceptance text. An agent will decide for itself what done means.".to_owned()
+            "Nothing says when this is done; the agent decides for itself.".to_owned()
         } else {
-            task.acceptance.clone()
+            format!("Done when: {}", task.acceptance)
         };
         text(acceptance)
             .size(13)

@@ -10,6 +10,15 @@ Claude session must enable the MCP entry as a channel and satisfy its provider
 consent and organization policy. Merely configuring MCP does not enable input.
 See the [official channel contract](https://code.claude.com/docs/en/channels-reference).
 
+After initialization and any session verification, the adapter waits one second
+before its first queue offer. A September 18 real-provider trace found an offer
+written just before Claude registered its channel handler; an uninstrumented
+run lost that offer. This short startup settling interval mitigates that race;
+it is not a readiness guarantee or a receipt. Control and receipt requests
+remain responsive during the wait. Later messages follow the normal polling
+cadence. Missing receipts still retain and visibly pause the queue, without
+automatic replay based only on an absent transcript entry.
+
 ## Launch from AgentDocker
 
 For a new Claude session, open **New session** and choose Claude Code.
@@ -34,8 +43,9 @@ before launch. Provider consent and organization policy still apply.
 
 Fresh setup generates `--claude-channel` in the Claude MCP entry, and the
 inventory/setup checks recognize that exact form. The flag makes the adapter
-available; it does not enable the parent input-mode variable or accept provider
-consent. Existing plain MCP entries remain valid and are preserved. Before
+available; it does not add a channel flag to an already running parent or accept
+provider consent. The adapter also recognizes the opted-in parent launch flag;
+`agentdocker setup --shell` previews a shell block for future terminal launches. Existing plain MCP entries remain valid and are preserved. Before
 relaunching an existing session for idle input, ensure its actual entry includes
 `--claude-channel`; the provider launch flag alone cannot enable a plain adapter.
 
@@ -48,6 +58,27 @@ for channel input. Only the launch decides.
 
 ## Resuming a session
 
+The installed September 18 preview (`6bd97894`, source `705f924`) provides
+**Reconnect here** in a Claude session's **Details**. Exit that session normally
+with `/exit`, select it under **Earlier sessions**, and press the button. The
+app resumes the same conversation under its existing agent record, retaining
+its queue, aliases, questions and cards. Its terminal opens in the app for
+Claude's own channel consent. The matching inline MCP entry and launch flags
+are supplied by the app; no handwritten environment command is needed.
+The CLI alternative is `agentdocker reconnect <agent>`. A still-live process,
+conflicting subscriber or uncertain persistence refuses the relaunch.
+
+Three sequential actual-Claude trials and one additional final-package trial
+preserved the ended identity, delivered its retained message, and answered an
+idle project pause in the same chat with verified receipts and no explicit ACK.
+The final package passed thirteen installation/rollback checks and is installed
+with all six external provider processes unchanged. These bounded private
+trials do not certify the user's still-plain sessions: each needs reconnect and
+provider consent before its own idle-pause acceptance. Exact sources, receipts,
+earlier failed trials and activation are in the
+[existing delivery record](verification/2026-09-12-input-delivery-status.json).
+
+For an external relaunch outside the app, the registration path below applies.
 A session that comes back as a new process takes up the record it ended
 with: the hooks adapter names the session, and the daemon joins the new
 process to the ended records of that session in the same checkout, once
@@ -133,9 +164,11 @@ development flag bypasses its channel allowlist for this entry; it does not
 bypass organization policy or general tool permissions. The `--strict-mcp-config`
 option limits which MCP entries load; it does not isolate the provider profile.
 Existing sessions must be relaunched normally to load another configuration.
-That alone does not transfer an old AgentDocker record's queue to the resumed
-process. A safe existing-session handover remains open; do not restart a working
-session merely to make the connection indicator green.
+Plain reconfiguration alone does not prove an old AgentDocker record's queue
+was transferred. The **Reconnect here** flow described above resumes an eligible
+ended record with its conversation and queue; it refuses live or unsafe cases.
+Installed consent and idle receipt passed for the recorded managed session.
+Do not restart a working session merely to make the indicator green.
 
 Actual-provider acceptance uses an owned `CLAUDE_CONFIG_DIR` and private daemon
 home/socket, monitors existing provider configuration for changes, and reuses
@@ -157,13 +190,53 @@ tool call; broader ordering, approval, cancellation and starvation cases remain.
 
 The adapter waits for MCP initialization, then offers one queued envelope with
 its complete JSON payload and stable `message_id`, `from_agent`, `kind`,
-`sent_at`, `destination` and optional `reply_to` metadata. The model must acknowledge received IDs
-using `acknowledge_messages`. That receipt frees the queue head; it confirms
-receipt, not task completion. A reply remains a separate `send_message` call.
+`sent_at`, `destination` and optional `reply_to` metadata. The model can acknowledge
+received IDs using `acknowledge_messages`. Lifecycle hooks also recover a forgotten
+ACK when the current session's provider transcript records the exact complete
+channel body and metadata followed by a real assistant response in its parent
+chain. This accepts both idle channel input and a busy `queued_command` attachment;
+an attachment without that continuation is insufficient. The receipt commits
+before removing the queue head. It confirms input receipt, not task completion.
+Replies use `send_message` to the envelope's `reply_destination` with
+`reply_to=message_id`, so project/channel responses appear in their original chat.
+A terminal-only response is not an app reply.
+The legacy lifecycle-hook path carries the same complete envelope and reply
+destination; it no longer strips IDs and routing down to a display-name/text
+summary. Hooks alone still require a provider prompt/tool boundary and cannot
+wake a plain idle session.
 
-A stdout write never removes an inbox message. Until an explicit receipt,
+Automatic recovery first reads a 2 MiB suffix, then at most one additional
+2 MiB history window if the head's evidence is older. A private per-agent cursor
+keeps only the file identity, process/session generation, head ID and offset;
+successive hook boundaries advance with a 1 MiB overlap. Changes of head,
+generation or source, and truncation, reset the scan. No historical proof is
+trusted without rereading it. Each proof is limited to 4,096 records after its
+candidate ID, within a 250 ms recovery budget inside the existing one-second
+hook budget. It requires the
+current process generation and session, and rejects provider errors, synthetic
+responses, unrelated turns, sidechains, changed bodies and malformed metadata.
+No transcript content is retained. Missing hooks, unknown provider formats,
+ambiguous UUIDs and proof chains too large for a window keep the explicit-ACK
+fallback and queued input. Recovery clears at most one verified head per hook
+boundary; a deep backlog is not consumed in a burst.
+
+A final text-only response may not be visible when `Stop` runs. The hook schedules
+one bounded receipt helper after returning control: a per-agent lock, three-second
+lifetime and three delayed proof attempts. Each attempt rechecks the actual PID
+birth time, registered generation, session and channel ownership. It uses the
+same exact-body proof and receipt-before-ACK ordering; it neither submits a prompt
+nor fabricates a hook/contact/activity event. Unknown or absent proof stays queued.
+This closes the deferred-flush path; installed text-only acceptance is tracked
+separately from the earlier tool-call trials.
+
+A stdout write never removes an inbox message. Until a verified receipt,
 delivery is unconfirmed. Claude may silently ignore a channel that was not
-enabled; after 30 seconds without a receipt the adapter reports a diagnostic.
+enabled; after 30 seconds without a receipt the adapter reports a durable
+delivery pause naming the outstanding message. That state appears in session
+details and send-readiness warnings. It stays paused through periodic refreshes
+until that message leaves the queue; fresh transport contact alone does not
+clear it. A failed or stalled diagnostic write is bounded and retried, without
+blocking the receipt/control path or offering the message again.
 The message remains recoverable through a non-draining CLI inbox read.
 The channel MCP hides and refuses `read_inbox` and `wait_for_messages` so the
 model receives input through the channel queue. Reconnects offer the same
@@ -275,7 +348,8 @@ input, a second MCP entry still cannot acquire another channel under the new
 canonical ID. Hooks check the process lock too. `claude_channel_smoke.py --resume`
 checks this boundary and the initialized-receiver refusal using real daemon/MCP
 processes with fixture provider processes. It does not prove model idle wake or
-actual Claude startup ordering. Verification of this follow-up is pending.
+actual Claude startup ordering. The following dated gates record the subsequent
+transport verification; September 18 actual reconnect/idle evidence is separate.
 
 September 17 reconnect review: a provider-generation owner lock supplements the
 agent-ID lock when SessionStart folds an MCP-first registration. A channel that
@@ -283,7 +357,9 @@ has already initialized is not folded behind its offered head. Source `b5ea76c`
 passes the full 1,094-Rust/84-Python gate (seven skipped) and the actual daemon/MCP
 transport regression; the older binary admits a second channel and fails. See
 [existing channel evidence](verification/2026-09-11-claude-channel-input.json).
-Actual Claude relaunch and model idle wake still need separate acceptance.
+At this September 17 checkpoint actual Claude relaunch/model idle wake was
+not tested. The September 18 **Reconnect here** evidence above later covers
+those cases for its named provider session and candidate.
 
 September 17 startup validation: runtime `a45f831` passed the full gate with
 1,149 Rust tests (seven skipped), 94 Python checks (one skipped), formatting,

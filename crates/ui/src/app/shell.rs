@@ -11,6 +11,10 @@ pub(super) struct State {
     pub search: String,
     pub session_filter: super::sessions::Filter,
     pub more: bool,
+    pub terminal_opening: bool,
+    /// The usage screen's window and grouping: this window's, not saved.
+    pub usage_since: &'static str,
+    pub usage_by: agentdocker_core::usage::report::Group,
     pub session_details: bool,
     pub review_delivery: bool,
     pub session_message: bool,
@@ -36,6 +40,15 @@ pub(super) struct State {
     /// control can turn it off; provider consent and policy still apply.
     pub launch_channel: bool,
     pub launching: bool,
+    /// The session whose resume is on its way to the daemon, so its
+    /// button alone says "Reconnecting…" (a launch from the Launch form
+    /// sets `launching` too, and is not a reconnect).
+    pub reconnecting: Option<String>,
+    /// A session just reconnected: its pane opens when the list shows the
+    /// process the daemon started (by its start time) running, and the
+    /// list decides — a session that ended at once stays in the list with
+    /// its exit and no pane opens on it; an older list waits.
+    pub attach_when_listed: Option<(String, Option<chrono::DateTime<chrono::Utc>>)>,
     pub error: Option<String>,
     pub setup_error: Option<String>,
     pub answer_errors: BTreeMap<MessageId, String>,
@@ -52,6 +65,18 @@ pub(super) struct State {
     /// Whether the collapsed sidebar groups are open.
     pub collisions_open: bool,
     pub earlier_open: bool,
+    /// How many of the Earlier group's entries are on screen: a page, and
+    /// a page more for each *Show older*; closing the group resets it.
+    pub earlier_shown: usize,
+    /// The same two for the earlier conversations in Messages: its own
+    /// fold and page, so the two screens' groups do not move each other.
+    pub earlier_conversations_open: bool,
+    pub earlier_conversations_shown: usize,
+    /// Whether the temporary projects (discovered under /tmp, unpinned)
+    /// are unfolded in the sidebar: the person's choice once they have
+    /// toggled it, until then automatic (open while one of them has a
+    /// live session).
+    pub temporary_open: Option<bool>,
     /// Whether the conversations between agents are unfolded.
     pub peers_open: bool,
     /// The project row whose menu is open.
@@ -293,6 +318,7 @@ impl State {
             dpi: 1.0,
             width: 1180.0,
             height: 760.0,
+            usage_since: super::usage::DEFAULT_SINCE,
             ..Default::default()
         }
     }
@@ -514,6 +540,9 @@ pub enum Message {
     CloseWithoutDraftSave,
     Notification(crate::notification_route::Activation),
     Navigate(Screen),
+    /// The usage screen's window (`24h`, `7d`, `30d`) or grouping.
+    UsageSince(&'static str),
+    UsageBy(agentdocker_core::usage::report::Group),
     SelectProject(PathBuf),
     /// Every project at once: the home view.
     AllProjects,
@@ -554,6 +583,12 @@ pub enum Message {
     MessagesSearch(String),
     ToggleCollisions,
     ToggleEarlier,
+    /// One page more of the Earlier group.
+    MoreEarlier,
+    /// The earlier conversations in Messages: their own fold and page.
+    ToggleEarlierConversations,
+    MoreEarlierConversations,
+    ToggleTemporary,
     TogglePeers,
     /// A divider between the window's columns was dragged, in one grid.
     PaneResized(super::panes::Grid, iced::widget::pane_grid::ResizeEvent),
@@ -633,8 +668,14 @@ pub enum Message {
     LaunchArguments(String),
     LaunchChannel(bool),
     Launch,
+    /// Relaunch an ended Claude Code session here, with its conversation
+    /// and the AgentDocker channel, so it takes messages live.
+    Reconnect(String),
     Attach(String),
     Detach,
+    OpenProjectTerminal,
+    OpenAgentTerminal(String),
+    NativeTerminalOpened(Result<(), String>),
     TerminalInput(Vec<u8>),
     TerminalResize(u16, u16),
     TerminalScroll(i32),
@@ -1049,8 +1090,14 @@ impl App {
                 self.shell.notification_message = None;
                 self.screen = screen;
                 self.shell.more = false;
+                if screen == Screen::Chat {
+                    self.open_project_chat();
+                }
                 if screen == Screen::Board {
                     self.request_tasks();
+                }
+                if screen == Screen::Usage {
+                    self.request_usage();
                 }
                 if screen == Screen::Runtimes {
                     self.send(Cmd::Runtimes);
@@ -1059,6 +1106,14 @@ impl App {
                 if screen == Screen::Desktop {
                     self.send(Cmd::Desktop(self.desktop.command("status")));
                 }
+            }
+            Message::UsageSince(since) => {
+                self.shell.usage_since = since;
+                self.request_usage();
+            }
+            Message::UsageBy(by) => {
+                self.shell.usage_by = by;
+                self.request_usage();
             }
             Message::RetryProject => self.shell.checked_project = None,
             Message::ToggleNeedsYou => {
@@ -1115,9 +1170,9 @@ impl App {
                     self.shell.selected = None;
                     self.shell.search.clear();
                     self.reset_session_view();
-                    self.screen = Screen::Agents;
                     self.shell.changed();
                     self.refresh_project_context();
+                    self.open_project_chat();
                 }
             }
             Message::OpenSession(id) => {
@@ -1148,6 +1203,7 @@ impl App {
                         tasks.push(self.update(Message::Unassigned));
                     }
                 }
+                self.screen = Screen::Agents;
                 tasks.push(self.update(Message::SelectSession(id)));
             }
             Message::SelectSession(id) => {
@@ -1257,7 +1313,32 @@ impl App {
                 self.shell.messages_search = text.chars().take(200).collect();
             }
             Message::ToggleCollisions => self.shell.collisions_open = !self.shell.collisions_open,
-            Message::ToggleEarlier => self.shell.earlier_open = !self.shell.earlier_open,
+            Message::ToggleEarlier => {
+                self.shell.earlier_open = !self.shell.earlier_open;
+                self.shell.earlier_shown = EARLIER_PAGE;
+            }
+            Message::MoreEarlier => {
+                self.shell.earlier_shown = self
+                    .shell
+                    .earlier_shown
+                    .max(EARLIER_PAGE)
+                    .saturating_add(EARLIER_PAGE);
+            }
+            Message::ToggleEarlierConversations => {
+                self.shell.earlier_conversations_open = !self.shell.earlier_conversations_open;
+                self.shell.earlier_conversations_shown = EARLIER_PAGE;
+            }
+            Message::MoreEarlierConversations => {
+                self.shell.earlier_conversations_shown = self
+                    .shell
+                    .earlier_conversations_shown
+                    .max(EARLIER_PAGE)
+                    .saturating_add(EARLIER_PAGE);
+            }
+            Message::ToggleTemporary => {
+                let open = self.temporary_fold_open();
+                self.shell.temporary_open = Some(!open);
+            }
             Message::TogglePeers => self.shell.peers_open = !self.shell.peers_open,
             Message::PaneResized(grid, event) => {
                 if self.panes.resized(grid, event) {
@@ -1672,7 +1753,7 @@ impl App {
                         self.shell.add_path.clear();
                         self.shell.selected = None;
                         self.reset_session_view();
-                        self.screen = Screen::Agents;
+                        self.open_project_chat();
                         self.shell.changed();
                         self.refresh_project_context();
                     }
@@ -1895,6 +1976,7 @@ impl App {
                     }
                 }
             }
+            Message::Reconnect(id) => self.reconnect(&id, sibling_cli()),
             Message::Attach(id) => {
                 if self
                     .agents
@@ -1911,6 +1993,48 @@ impl App {
             Message::Detach => {
                 self.terminal = None;
                 self.screen = Screen::Agents;
+            }
+            Message::OpenProjectTerminal => {
+                if !self.shell.terminal_opening
+                    && let Some(path) = self.shell.catalog.selected.as_ref()
+                {
+                    let path = path.clone();
+                    self.shell.terminal_opening = true;
+                    self.say("Opening terminal…");
+                    tasks.push(open_native_terminal(
+                        crate::native_terminal::Request::Project(path),
+                    ));
+                }
+            }
+            Message::OpenAgentTerminal(id) => {
+                if let Some(agent) = self
+                    .agents
+                    .iter()
+                    .find(|a| a.id.as_str() == id && a.status.is_live())
+                {
+                    if agent.managed && agent.spec.tty {
+                        tasks.push(self.update(Message::Attach(id)));
+                    } else if !self.shell.terminal_opening {
+                        if let (Some(pid), Some(started_at)) = (agent.pid, agent.process_started_at)
+                        {
+                            self.shell.terminal_opening = true;
+                            self.say("Opening terminal…");
+                            tasks.push(open_native_terminal(
+                                crate::native_terminal::Request::Agent { pid, started_at },
+                            ));
+                        } else {
+                            self.shell.error = Some("This agent has not reported its terminal process. Open the app where it started.".into());
+                        }
+                    }
+                }
+            }
+            Message::NativeTerminalOpened(result) => {
+                self.shell.terminal_opening = false;
+                self.status.clear();
+                match result {
+                    Ok(()) => self.say("Terminal opened"),
+                    Err(error) => self.shell.error = Some(error),
+                }
             }
             Message::TerminalInput(bytes) => {
                 if let Some(terminal) = &mut self.terminal {
@@ -2175,6 +2299,16 @@ impl App {
                 return Task::batch(tasks);
             }
         }
+        // Catalog removal and missing-folder cleanup can choose another
+        // project too. Its header must never accompany the previous queue.
+        if self.screen == Screen::Chat
+            && self.shell.conversation
+                != self
+                    .selected_project_id()
+                    .map(|id| format!("everyone:{id}"))
+        {
+            self.open_project_chat();
+        }
         if self.shell.catalog.selected != self.shell.checked_project {
             self.shell.checked_project = self.shell.catalog.selected.clone();
             self.shell.project_available = None;
@@ -2283,7 +2417,7 @@ impl App {
         }
     }
 
-    fn refresh_project_context(&mut self) {
+    pub(super) fn refresh_project_context(&mut self) {
         let selected = self
             .shell
             .catalog
@@ -2305,6 +2439,11 @@ impl App {
             self.board_asks.clear();
             if self.screen == Screen::Board {
                 self.request_tasks();
+            }
+            // The usage on view is the old project's: read the new one's
+            // now rather than say "Reading…" until a filter is touched.
+            if self.screen == Screen::Usage {
+                self.request_usage();
             }
         }
     }
@@ -2475,6 +2614,118 @@ impl App {
         Ok(spec)
     }
 
+    /// Why a session cannot be reconnected here right now, or nothing
+    /// when it can: it must be a Claude Code session with a conversation
+    /// to resume, its process must have ended (the app cannot exit a
+    /// session it does not own, and resuming a conversation a live
+    /// process still holds would start a second one), and its tool must
+    /// be installed. The words are the button's.
+    pub(super) fn reconnect_blocker(
+        &self,
+        agent: &agentdocker_core::AgentRecord,
+    ) -> Option<&'static str> {
+        if agent.spec.runtime != "claude-code" {
+            return Some("Only a Claude Code session can be reconnected here.");
+        }
+        if !agent.spec.labels.contains_key("session_id") {
+            return Some("This session has no conversation id to resume.");
+        }
+        if agent.status.is_live() {
+            return Some(
+                "Exit the session in its terminal first (/exit); this enables when it has.",
+            );
+        }
+        if !self
+            .runtimes
+            .iter()
+            .any(|r| r.name == "claude-code" && r.cli.is_some())
+        {
+            return Some("Claude Code is not installed here.");
+        }
+        None
+    }
+
+    /// One press of **Reconnect here**: the launch goes to the daemon as
+    /// a resume of that record, once. A second press while the first is
+    /// unanswered does nothing, and the daemon's refusal (the list was
+    /// stale: the process is back, the checkout differs, somebody is
+    /// attached) comes back as the error under the button.
+    pub(super) fn reconnect(&mut self, id: &str, cli: Result<PathBuf, String>) {
+        if self.connected.is_ok() && !self.shell.launching {
+            match self.reconnect_spec(id, cli) {
+                Ok(spec) => {
+                    self.shell.launching = true;
+                    self.shell.reconnecting = Some(id.to_owned());
+                    self.shell.error = None;
+                    self.send(Cmd::Resume(id.to_owned(), Box::new(spec)));
+                }
+                Err(error) => self.shell.error = Some(error),
+            }
+        }
+    }
+
+    /// The launch that reconnects an ended Claude Code session: its own
+    /// tool, `--resume` with its conversation, in its own checkout, with
+    /// the AgentDocker channel, under its name. The daemon checks it
+    /// against the record and brings the record back under its own id
+    /// with its queue. Nothing is sent or acknowledged on its behalf;
+    /// consent is Claude's own prompt in the pane this opens.
+    fn reconnect_spec(
+        &self,
+        id: &str,
+        cli: Result<PathBuf, String>,
+    ) -> Result<agentdocker_core::AgentSpec, String> {
+        let agent = self
+            .agents
+            .iter()
+            .find(|a| a.id.as_str() == id)
+            .ok_or("This session is no longer listed")?;
+        if let Some(blocker) = self.reconnect_blocker(agent) {
+            return Err(blocker.to_owned());
+        }
+        let session = agent
+            .spec
+            .labels
+            .get("session_id")
+            .cloned()
+            .ok_or("This session has no conversation id to resume")?;
+        let claude = self
+            .runtimes
+            .iter()
+            .find(|r| r.name == "claude-code")
+            .and_then(|r| r.cli.clone())
+            .ok_or("Claude Code is not installed here")?;
+        let workdir = agent
+            .spec
+            .workdir
+            .clone()
+            .ok_or("This session has no checkout to resume in")?;
+        let mut spec = agentdocker_core::AgentSpec {
+            name: agent.spec.name.clone(),
+            runtime: "claude-code".into(),
+            provider: None,
+            model: None,
+            command: vec![
+                claude.to_string_lossy().into_owned(),
+                "--resume".into(),
+                session,
+            ],
+            workdir: Some(workdir),
+            env: BTreeMap::new(),
+            labels: BTreeMap::new(),
+            isolate: false,
+            tty: true,
+            restore: false,
+            in_pane: false,
+            restart: Default::default(),
+            depends_on: Vec::new(),
+        };
+        let cli = cli.map_err(|error| format!("Cannot enable live messages: {error}"))?;
+        agentdocker_host::provider_input::enable_claude_channel(&mut spec, &cli)
+            .map_err(|error| format!("Cannot enable live messages: {error}"))?;
+        Ok(spec)
+    }
+
     fn launch_spec(&self) -> Result<agentdocker_core::AgentSpec, String> {
         let entry = self
             .shell
@@ -2541,6 +2792,17 @@ fn sibling_cli() -> Result<PathBuf, String> {
     Ok(cli)
 }
 
+fn open_native_terminal(request: crate::native_terminal::Request) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || crate::native_terminal::open(request))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+        },
+        Message::NativeTerminalOpened,
+    )
+}
+
 fn resolve_folder(path: PathBuf) -> Task<Message> {
     Task::perform(
         async move {
@@ -2583,7 +2845,7 @@ mod tests {
     /// while another is on view, a move or hand of some other card does
     /// not clear it, a late reply to an earlier filing does not take
     /// newer text, a filing that cannot be queued says so instead of
-    /// staying "Filing…", and a board that cannot be read stays as last
+    /// staying "Adding…", and a board that cannot be read stays as last
     /// read.
     #[test]
     fn a_card_draft_survives_other_board_actions_late_replies_and_refused_queues() {
@@ -3942,6 +4204,7 @@ mod tests {
             Cmd::Answer(..)
                 | Cmd::ChannelSend(..)
                 | Cmd::Launch(..)
+                | Cmd::Resume(..)
                 | Cmd::Stop(..)
                 | Cmd::HistoryBefore(..)
         )));
@@ -4259,6 +4522,291 @@ mod tests {
         );
         assert_eq!(app.shell.answers[&action.target.message], "unfinished");
         assert!(app.sending.is_empty());
+    }
+
+    /// The Earlier groups (ended sessions, earlier conversations) open on a
+    /// page of entries and grow a page per *Show older*; closing a group
+    /// forgets how far it was opened, and the temporary projects fold
+    /// opens and closes on its own toggle.
+    #[test]
+    fn earlier_groups_page_and_the_temporary_fold_toggles() {
+        let (mut app, _commands, _) = app();
+        assert!(!app.shell.earlier_open);
+        let _ = app.update(Message::ToggleEarlier);
+        assert!(app.shell.earlier_open);
+        assert_eq!(app.shell.earlier_shown, EARLIER_PAGE);
+        let _ = app.update(Message::MoreEarlier);
+        let _ = app.update(Message::MoreEarlier);
+        assert_eq!(app.shell.earlier_shown, 3 * EARLIER_PAGE);
+        let _ = app.update(Message::ToggleEarlier);
+        assert!(!app.shell.earlier_open);
+        let _ = app.update(Message::ToggleEarlier);
+        assert_eq!(app.shell.earlier_shown, EARLIER_PAGE, "reopened at a page");
+        // The conversations' group is its own: untouched by the sessions'
+        // toggle and page, and the other way round.
+        assert!(!app.shell.earlier_conversations_open);
+        let _ = app.update(Message::ToggleEarlierConversations);
+        let _ = app.update(Message::MoreEarlierConversations);
+        assert!(app.shell.earlier_conversations_open);
+        assert_eq!(app.shell.earlier_conversations_shown, 2 * EARLIER_PAGE);
+        assert_eq!(app.shell.earlier_shown, EARLIER_PAGE);
+        let _ = app.update(Message::ToggleEarlier);
+        assert!(app.shell.earlier_conversations_open);
+        // The temporary fold is automatic until toggled: closed with
+        // nothing running in a scratch project, and a toggle is the
+        // person's choice from then on — closable even while one runs.
+        assert_eq!(app.shell.temporary_open, None);
+        assert!(!app.temporary_fold_open());
+        let _ = app.update(Message::ToggleTemporary);
+        assert_eq!(app.shell.temporary_open, Some(true));
+        assert!(app.temporary_fold_open());
+        let mut scratch = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "claude-code-77".into(),
+                runtime: "claude-code".into(),
+                workdir: Some("/private/tmp/fixture/workspace".into()),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        scratch.id = "scratch-live".into();
+        scratch.status = agentdocker_core::AgentStatus::Running;
+        scratch.project = Some(agentdocker_core::ProjectRef::directory(
+            "/private/tmp/fixture/workspace",
+        ));
+        app.agents.push(scratch);
+        app.shell.catalog.remember(
+            agentdocker_core::ProjectRef::directory("/private/tmp/fixture/workspace"),
+            false,
+        );
+        let _ = app.update(Message::ToggleTemporary);
+        assert_eq!(app.shell.temporary_open, Some(false));
+        assert!(
+            !app.temporary_fold_open(),
+            "closable while a scratch session runs"
+        );
+        app.shell.temporary_open = None;
+        assert!(app.temporary_fold_open(), "automatic: open while one runs");
+        // A selected scratch project with nothing running opens the fold
+        // by itself, and one click closes it: the click negates the fold
+        // as drawn, selection included.
+        app.agents.clear();
+        app.shell.catalog.selected = Some("/private/tmp/fixture/workspace".into());
+        app.screen = Screen::Agents;
+        assert!(
+            app.temporary_fold_open(),
+            "automatic: open for the project on view"
+        );
+        let _ = app.update(Message::ToggleTemporary);
+        assert_eq!(app.shell.temporary_open, Some(false));
+        assert!(!app.temporary_fold_open(), "one click closes it");
+        let _ = app.update(Message::ToggleTemporary);
+        assert!(app.temporary_fold_open());
+    }
+
+    /// Reconnecting an ended Claude Code session launches its own tool
+    /// with `--resume` and its conversation, in its folder, with the
+    /// AgentDocker channel, under its name; a live process, another
+    /// runtime, a missing conversation id or a missing tool is refused
+    /// with the reason, and nothing is launched.
+    #[test]
+    fn reconnect_here_relaunches_an_ended_claude_session_with_its_conversation_and_the_channel() {
+        let (mut app, commands, messages) = app();
+        app.connected = Ok(());
+        let cli = tempfile::NamedTempFile::new().unwrap();
+        let cli_path = cli.path().to_path_buf();
+        app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
+            name: "claude-code".into(),
+            vendor: "fixture".into(),
+            label: "Claude Code".into(),
+            cli: Some("/fixture/claude".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: agentdocker_core::runtime::Wiring::Missing,
+            hooks: agentdocker_core::runtime::Wiring::Missing,
+            hooks_missing: vec![],
+            shell: agentdocker_core::runtime::Wiring::Unsupported,
+            running: 0,
+        }];
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "claude-code-4242".into(),
+                runtime: "claude-code".into(),
+                workdir: Some("/work/repo".into()),
+                labels: BTreeMap::from([(
+                    "session_id".to_owned(),
+                    "218845eb-ba1e-4457-bb5a-e1829f5652dd".to_owned(),
+                )]),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.id = "ended-claude".into();
+        agent.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        app.agents.push(agent.clone());
+        let spec = app
+            .reconnect_spec("ended-claude", Ok(cli_path.clone()))
+            .unwrap();
+        assert_eq!(spec.name, "claude-code-4242");
+        assert_eq!(spec.runtime, "claude-code");
+        assert_eq!(
+            spec.workdir.as_deref(),
+            Some(std::path::Path::new("/work/repo"))
+        );
+        assert!(spec.tty);
+        assert_eq!(spec.command[0], "/fixture/claude");
+        assert!(
+            spec.command
+                .windows(2)
+                .any(|w| w[0] == "--resume" && w[1] == "218845eb-ba1e-4457-bb5a-e1829f5652dd"),
+            "{:?}",
+            spec.command
+        );
+        assert!(
+            spec.command
+                .windows(2)
+                .any(|w| w[0] == "--dangerously-load-development-channels"
+                    && w[1] == "server:agentdocker")
+        );
+        assert_eq!(
+            spec.env
+                .get(agentdocker_host::provider_input::CLAUDE_CHANNEL_ENV),
+            Some(&"1".to_owned())
+        );
+        // Through the message the app's own sibling CLI is required; a
+        // test binary has none, and that is said rather than launched.
+        let _ = app.update(Message::Reconnect("ended-claude".into()));
+        assert!(!app.shell.launching);
+        assert!(
+            app.shell
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("live messages")),
+            "{:?}",
+            app.shell.error
+        );
+        assert_eq!(commands.try_iter().count(), 0);
+
+        // With the CLI beside the app the press is one resume of that
+        // record at the daemon, and a second press while it is unanswered
+        // is nothing: the button waits for the answer.
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        assert!(app.shell.launching);
+        assert_eq!(app.shell.reconnecting.as_deref(), Some("ended-claude"));
+        assert_eq!(app.shell.error, None);
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        let sent: Vec<Cmd> = commands.try_iter().collect();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        match &sent[0] {
+            Cmd::Resume(id, spec) => {
+                assert_eq!(id, "ended-claude");
+                assert_eq!(spec.name, "claude-code-4242");
+                assert!(spec.command.windows(2).any(|w| w[0] == "--resume"));
+            }
+            other => panic!("a reconnect is a resume, not {other:?}"),
+        }
+        // The list was stale: the daemon saw the process back, or the
+        // checkout moved. Its refusal is the error under the button, and
+        // the button is pressable again.
+        messages
+            .send(Msg::Reconnected(Err(
+                "the session is still live; a live session is not relaunched".into(),
+            )))
+            .unwrap();
+        app.drain();
+        assert!(!app.shell.launching);
+        assert_eq!(
+            app.shell.reconnecting, None,
+            "the button says Reconnect here again"
+        );
+        assert!(
+            app.shell
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("still live"))
+        );
+        // The daemon's yes selects the same record, and asks for the list.
+        let generation = Some(Utc::now());
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        assert_eq!(commands.try_iter().count(), 1);
+        messages
+            .send(Msg::Reconnected(Ok(("ended-claude".into(), generation))))
+            .unwrap();
+        app.drain();
+        assert!(!app.shell.launching);
+        assert_eq!(app.shell.error, None);
+        assert_eq!(app.shell.selected.as_deref(), Some("ended-claude"));
+        assert!(commands.try_iter().any(|cmd| matches!(cmd, Cmd::Agents)));
+        // An older list, from before the reconnect, says nothing: the
+        // request waits. The list that shows the process the daemon
+        // started opens the pane when it runs; when it ended at once the
+        // session stays in the list with its exit and no pane opens.
+        messages
+            .send(Msg::Agents(vec![agent.clone()], BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_ne!(app.screen, Screen::Terminal);
+        assert!(app.shell.attach_when_listed.is_some());
+        let mut listed = agent.clone();
+        listed.managed = true;
+        listed.spec.tty = true;
+        listed.process_started_at = generation;
+        listed.status = agentdocker_core::AgentStatus::Exited { code: Some(1) };
+        messages
+            .send(Msg::Agents(vec![listed.clone()], BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_ne!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.attach_when_listed, None);
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        messages
+            .send(Msg::Reconnected(Ok(("ended-claude".into(), generation))))
+            .unwrap();
+        app.drain();
+        listed.status = agentdocker_core::AgentStatus::Running;
+        messages
+            .send(Msg::Agents(vec![listed], BTreeMap::new()))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.attach_when_listed, None);
+        commands.try_iter().count();
+        app.screen = Screen::Agents;
+
+        // A live process is refused with the reason, and nothing launches.
+        app.agents[0].status = agentdocker_core::AgentStatus::Running;
+        assert_eq!(
+            app.reconnect_blocker(&app.agents[0]),
+            Some("Exit the session in its terminal first (/exit); this enables when it has.")
+        );
+        let _ = app.update(Message::Reconnect("ended-claude".into()));
+        assert!(!app.shell.launching);
+        assert!(
+            app.shell
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("Exit the session"))
+        );
+        assert_eq!(commands.try_iter().count(), 0);
+
+        // Another runtime, no conversation id, no installed tool.
+        app.agents[0].status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        app.agents[0].spec.runtime = "codex".into();
+        assert!(app.reconnect_blocker(&app.agents[0]).is_some());
+        app.agents[0].spec.runtime = "claude-code".into();
+        app.agents[0].spec.labels.clear();
+        assert!(app.reconnect_blocker(&app.agents[0]).is_some());
+        app.agents[0]
+            .spec
+            .labels
+            .insert("session_id".into(), "x".into());
+        app.runtimes.clear();
+        assert!(app.reconnect_blocker(&app.agents[0]).is_some());
     }
 
     #[test]
@@ -4673,11 +5221,15 @@ mod tests {
         let _ = app.update(Message::FolderResolved(Ok(project.clone())));
         assert!(app.shell.catalog.selected().unwrap().pinned);
         assert_eq!(app.shell.catalog.selected.as_ref(), Some(&project.root));
-        assert!(
-            commands
-                .try_iter()
-                .all(|cmd| matches!(cmd, Cmd::Journal(_, _) | Cmd::Channels(_, _)))
+        assert_eq!(app.screen, Screen::Chat);
+        assert_eq!(
+            app.shell.conversation,
+            Some(format!("everyone:{}", project.id()))
         );
+        assert!(commands.try_iter().all(|cmd| matches!(
+            cmd,
+            Cmd::Journal(_, _) | Cmd::Channels(_, _) | Cmd::Conversations(_) | Cmd::History(_, _)
+        )));
         assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 0);
     }
     #[test]

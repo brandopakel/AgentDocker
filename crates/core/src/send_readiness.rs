@@ -161,7 +161,15 @@ impl RecipientReadiness {
                     None => "Resume Claude from its project folder with AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 and --dangerously-load-development-channels server:agentdocker, then complete its channel consent. See Tools for AgentDocker setup.".into(),
                 }
             }
-            SendIssue::NoReceiver | SendIssue::ReceiverSilent => "Open this session's Connection details in Tools and reconnect a supported input receiver. Until then, check its terminal; queueing alone cannot wake it.".into(),
+            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "codex" => "Open this session's Connection details in Tools and reconnect a supported input receiver. Until then, check its terminal; queueing alone cannot wake it.".into(),
+            // No adapter exists for this runtime: nothing here can wake
+            // it, and saying "reconnect a receiver" would send the person
+            // looking for one. The message waits in its queue for the
+            // agent's own read.
+            SendIssue::NoReceiver | SendIssue::ReceiverSilent => format!(
+                "A {} session has no input receiver: the message waits in its queue until the agent reads it (agentdocker inbox --as {} or watch --as {}, or the MCP read_inbox tool); nothing here wakes it.",
+                self.runtime, self.agent.short(), self.agent.short()
+            ),
         }
     }
 }
@@ -272,6 +280,35 @@ mod tests {
                 None
             )
             .is_none()
+        );
+    }
+
+    /// A runtime nothing here can wake is told so: the guidance names the
+    /// agent's own read of its queue, by its id, and never sends the person
+    /// to reconnect a receiver that cannot exist. Codex and Claude Code keep
+    /// their receiver guidance.
+    #[test]
+    fn a_runtime_without_an_adapter_is_told_the_agent_reads_its_own_queue() {
+        for runtime in ["custom", "gemini-cli", "cursor"] {
+            let agent = agent(runtime);
+            let issue = RecipientReadiness::for_agent(&agent, agent.created_at, None).unwrap();
+            let guidance = issue.guidance();
+            assert!(
+                guidance.contains("has no input receiver"),
+                "{runtime}: {guidance}"
+            );
+            assert!(
+                guidance.contains(&format!("inbox --as {}", agent.id.short())),
+                "{runtime}: {guidance}"
+            );
+            assert!(!guidance.contains("reconnect"), "{runtime}: {guidance}");
+        }
+        let codex = agent("codex");
+        assert!(
+            RecipientReadiness::for_agent(&codex, codex.created_at, None)
+                .unwrap()
+                .guidance()
+                .contains("reconnect a supported input receiver")
         );
     }
 

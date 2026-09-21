@@ -23,7 +23,10 @@ An older maintenance release cannot move the latest-update endpoint or the
 Homebrew tap backwards. Prereleases do not change either stable distribution path.
 The separate CLI-only Linux tarballs use musl; graphical Linux packages use GNU libc.
 No workflow change publishes a release by itself: a protected version tag is
-the trigger.
+the trigger. The September 19 repository ruleset check found deletion and
+non-fast-forward protection for `v*` tags, with no creation restriction; tag
+protection does not itself require a human-only push. A release still needs a
+reviewed candidate, matching workspace version and all applicable acceptance.
 
 ## Mac signing setup
 

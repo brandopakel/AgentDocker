@@ -60,6 +60,7 @@ mod restarts;
 mod restore;
 mod tasks;
 mod transport;
+mod usage;
 mod waiting;
 mod webhooks;
 mod working;
@@ -216,6 +217,7 @@ fn mutates(request: &Request) -> bool {
             | Request::SearchMessages { .. }
             | Request::Leases { .. }
             | Request::Tasks { .. }
+            | Request::Usage { .. }
             | Request::Events { .. }
             | Request::ResumeEvents { .. }
             | Request::Logs { .. }
@@ -264,6 +266,11 @@ pub struct Daemon {
     held: Mutex<Option<reload::Held>>,
     /// Signalled once a successor is serving and this daemon may leave.
     transferred_exit: Notify,
+    /// A test's hold on a relaunch between its checks and its commit, so
+    /// the record can be changed underneath it. Taken once; never held
+    /// across an await.
+    #[cfg(test)]
+    relaunch_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
 }
 
 /// Release the scan slot and wake joiners on completion or cancellation.
@@ -1351,6 +1358,8 @@ impl Daemon {
             webhooks: Mutex::new(webhooks::Sinks::default()),
             held: Mutex::new(None),
             transferred_exit: Notify::new(),
+            #[cfg(test)]
+            relaunch_hold: Mutex::new(None),
             scan_finished: Notify::new(),
             container_backend: Arc::new(agentdocker_host::containers::CliContainers),
             container_slots: Arc::new(tokio::sync::Semaphore::new(8)),
@@ -1618,6 +1627,22 @@ impl Daemon {
                 ttl_secs,
             } => self.grant_access(&agent, container_root, ttl_secs),
             Request::RevokeAccess { grant } => self.revoke_access(&grant),
+            Request::Usage {
+                project,
+                agent,
+                since,
+                until,
+                by,
+            } => {
+                self.usage(agentdocker_core::usage::report::Query {
+                    project,
+                    agent,
+                    since,
+                    until,
+                    by,
+                })
+                .await
+            }
             Request::Ping => Response::Pong {
                 version: env!("CARGO_PKG_VERSION").to_owned(),
                 uptime_secs: self.started.elapsed().as_secs(),
@@ -1648,6 +1673,7 @@ impl Daemon {
             }
             Request::RestartContainer { agent } => self.restart_container(&agent).await,
             Request::Register { spec, pid, session } => self.register(spec, pid, session).await,
+            Request::ResumeSession { agent, spec } => self.resume_session(&agent, spec).await,
             Request::Deregister { agent } => lock(&self.state).deregister(&agent),
             Request::Discover => self.discover().await,
             Request::Runtimes => self.runtimes().await,
@@ -2161,6 +2187,189 @@ impl Daemon {
                 return other;
             }
         };
+        self.launch(record).await
+    }
+
+    /// Bring an ended session back as a process of this daemon's, under
+    /// its own record: the same id, queue, aliases and everything else,
+    /// now supervised. The launch is checked against the record by the
+    /// pure rule ([`agentdocker_core::identity::relaunch_check`]); here
+    /// the host's facts are added — the old process must be gone, nothing
+    /// may be subscribed on the record — and the record's return is
+    /// committed (`session_relaunched`) before anything is spawned, so a
+    /// launch that fails leaves an ended record with its queue and no
+    /// second live process.
+    async fn resume_session(self: &Arc<Self>, reference: &str, spec: AgentSpec) -> Response {
+        if spec.command.first().is_none_or(String::is_empty) {
+            return Response::error(ErrorCode::Invalid, "a relaunch needs a nonempty command");
+        }
+        // The checkout as the record spells it: canonical, existing.
+        let mut spec = spec;
+        if let Some(workdir) = spec.workdir.take() {
+            let resolved = tokio::task::spawn_blocking(move || {
+                let path = std::fs::canonicalize(&workdir)?;
+                if !path.is_dir() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "working directory is not a directory",
+                    ));
+                }
+                Ok(path)
+            })
+            .await;
+            match resolved {
+                Ok(Ok(path)) => spec.workdir = Some(path),
+                Ok(Err(error)) => {
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        format!("the relaunch's checkout is unusable: {error}"),
+                    );
+                }
+                Err(_) => {
+                    return Response::error(
+                        ErrorCode::Internal,
+                        "checkout resolution did not complete",
+                    );
+                }
+            }
+        }
+        // What the record must satisfy, checked now and again at the
+        // commit: the pure rule, nobody subscribed, and the old process
+        // gone in fact, not only in the record — a pid still alive whose
+        // start time is the recorded one, or one that cannot be asked, is
+        // that process.
+        let launch = spec.clone();
+        let refusal = |state: &State, record: &AgentRecord| -> Option<Response> {
+            if let Err(reason) = agentdocker_core::identity::relaunch_check(record, &launch) {
+                return Some(Response::error(ErrorCode::Invalid, reason));
+            }
+            if state.live_subscribers.get(&record.id).copied().unwrap_or(0) > 0 {
+                return Some(Response::error(
+                    ErrorCode::Conflict,
+                    "the session still has a live subscriber; close it first",
+                ));
+            }
+            if record.pid.is_some_and(|pid| {
+                process_exists(pid) && same_process(pid, record.process_started_at)
+            }) {
+                return Some(Response::error(
+                    ErrorCode::Conflict,
+                    "the session's process is still running; exit it first",
+                ));
+            }
+            None
+        };
+        let ended = {
+            let mut state = lock(&self.state);
+            let id = match state.resolve(reference) {
+                Ok(id) => id,
+                Err(response) => return *response,
+            };
+            let Some(record) = state.registry.get(&id).cloned() else {
+                return Response::error(ErrorCode::NotFound, "agent vanished");
+            };
+            if let Some(refused) = refusal(&state, &record) {
+                return refused;
+            }
+            record
+        };
+        let session = ended
+            .spec
+            .labels
+            .get("session_id")
+            .cloned()
+            .unwrap_or_default();
+        // The record as it returns: the launch's command, environment and
+        // terminal, its own name, labels, project and checkout, nothing of
+        // the old process, and supervised from here on.
+        let mut record = ended.clone();
+        let mut labels = ended.spec.labels.clone();
+        labels.extend(spec.labels.clone());
+        labels.insert("session_id".to_owned(), session.clone());
+        record.spec = AgentSpec {
+            name: ended.spec.name.clone(),
+            labels,
+            workdir: spec.workdir.clone(),
+            ..spec
+        };
+        record.managed = true;
+        record.status = AgentStatus::Created;
+        record.pid = None;
+        record.process_started_at = None;
+        record.process_group = None;
+        record.owner = None;
+        record.started_at = None;
+        record.finished_at = None;
+        record.session = None;
+        if let Err(response) = self.admit_run(&mut record).await {
+            return *response;
+        }
+        record.vcs = Self::vcs_for(record.spec.workdir.clone()).await;
+        #[cfg(test)]
+        {
+            let hold = lock(&self.relaunch_hold).take();
+            if let Some(hold) = hold {
+                hold.wait().await;
+                hold.wait().await;
+            }
+        }
+        let committed = {
+            let mut state = lock(&self.state);
+            // Nothing may have changed underneath: the record is still,
+            // field for field, the ended one this launch was checked
+            // against and rebuilt from (a role, a label, an availability
+            // report that landed while admission and the checkout were
+            // looked at would otherwise be written over by the copy), and
+            // it still passes every check — a subscriber can have arrived
+            // meanwhile too.
+            let Some(current) = state.registry.get(&record.id).cloned() else {
+                return Response::error(ErrorCode::NotFound, "agent vanished");
+            };
+            if current != ended {
+                return Response::error(ErrorCode::Conflict, "the session changed; look again");
+            }
+            if let Some(refused) = refusal(&state, &current) {
+                return refused;
+            }
+            let now = Utc::now();
+            let mut event = Event::new(
+                EventKind::SessionRelaunched {
+                    agent: record.id.clone(),
+                    session,
+                },
+                now,
+            );
+            event.seq = state.next_seq;
+            let committed = state.persist("session relaunch", |store| {
+                store.agent_transition(&record, &event)
+            });
+            if committed == Persisted::Committed {
+                *state
+                    .registry
+                    .get_mut(&record.id)
+                    .expect("relaunched record retained") = record.clone();
+                state.next_seq += 1;
+                let _ = state.events.send(event);
+            }
+            match state.write_failure() {
+                Some(error) => Err(error),
+                None if committed == Persisted::Committed => Ok(()),
+                None => Err(Response::error(
+                    ErrorCode::Unavailable,
+                    "the relaunch was not committed",
+                )),
+            }
+        };
+        if let Err(error) = committed {
+            return error;
+        }
+        self.launch(record).await
+    }
+
+    /// The part of a launch after its record exists: watched, spawned,
+    /// marked running and supervised — or marked failed, with the record
+    /// left as it was for a later attempt.
+    async fn launch(self: &Arc<Self>, record: AgentRecord) -> Response {
         // Watched before the process exists, so its first edit is seen.
         if watchable(&record) {
             if let Err(reason) = self.ensure_watched(&record).await {
@@ -4062,13 +4271,32 @@ impl Daemon {
                         waiting.end(agentdocker_core::WaitOutcome::Claimed);
                         return Response::Lease { lease };
                     }
-                    Err(err) => {
-                        let message = err.to_string();
-                        match err {
-                            LeaseError::Conflict { held_by, .. } => (message, held_by),
-                            other => return lease_error(other),
+                    Err(err) => match err {
+                        // Said by whom, by name: the holder is somebody the
+                        // person can go and talk to, and an id is not a name.
+                        LeaseError::Conflict { held_by, .. } => {
+                            let holders = held_by
+                                .iter()
+                                .map(|l| {
+                                    let name = state
+                                        .registry
+                                        .get(&l.holder)
+                                        .map(|a| a.spec.name.as_str())
+                                        .filter(|n| !n.is_empty())
+                                        .unwrap_or("an unknown agent");
+                                    format!(
+                                        "{name} ({}; {} on {})",
+                                        l.holder.short(),
+                                        l.mode,
+                                        l.resource
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            (format!("{resource} is held by {holders}"), held_by)
                         }
-                    }
+                        other => return lease_error(other),
+                    },
                 };
                 // One conflict event per request, committed with liveness.
                 let conflict = (!reported_conflict).then(|| EventKind::LeaseConflict {
@@ -8334,6 +8562,526 @@ mod tests {
         daemon
     }
 
+    /// An ended terminal session comes back as this daemon's own process
+    /// under its own record, on a real terminal: the same id, its queued
+    /// messages, the question it asked and the card it holds untouched,
+    /// now supervised. It is refused while its process lives — a pid
+    /// that is alive and cannot be dated counts as living — while
+    /// something is subscribed on it, for another checkout, and while it
+    /// is already back; two presses at once bring back one process; a
+    /// launch that fails leaves the record ended with its queue and a
+    /// later relaunch still works; a fenced store commits nothing.
+    #[tokio::test]
+    async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let session = "218845eb-ba1e-4457-bb5a-e1829f5652dd";
+        // A session registered the way a terminal session is: by its
+        // hooks, with its conversation id, in its checkout.
+        let mut ended_spec = spec("claude-code-4242");
+        ended_spec.runtime = "claude-code".into();
+        ended_spec.workdir = Some(checkout.clone());
+        ended_spec
+            .labels
+            .insert("session_id".into(), session.into());
+        let Response::Agent { agent: ended } = daemon
+            .handle(Request::Register {
+                spec: ended_spec,
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("registration failed")
+        };
+        let peer = register(&daemon, "peer", None).await;
+        // What it left behind while live: a question it asked, a card it
+        // pulled. Both are the record's, by its id, and stay so.
+        let Response::Sent {
+            message: question, ..
+        } = daemon
+            .handle(Request::PostQuestion {
+                from: ended.id.to_string(),
+                to: peer.id.to_string(),
+                question: "still there?".to_owned(),
+                presentation: None,
+                timeout_secs: 600,
+            })
+            .await
+        else {
+            panic!("the session asks")
+        };
+        let Response::Task { task: card } = daemon
+            .handle(Request::TaskCreate {
+                from: peer.id.to_string(),
+                project: Some(checkout.display().to_string()),
+                title: "Reconnect".to_owned(),
+                acceptance: "it is back".to_owned(),
+                column: Some(agentdocker_core::Column::Ready),
+                links: Vec::new(),
+            })
+            .await
+        else {
+            panic!("a card is filed")
+        };
+        let Response::Task { task: pulled } = daemon
+            .handle(Request::TaskPull {
+                agent: ended.id.to_string(),
+                task: card.id.to_string(),
+                take_over_from: None,
+            })
+            .await
+        else {
+            panic!("the session pulls the card")
+        };
+        assert_eq!(pulled.assignee.as_ref(), Some(&ended.id));
+        // Something queued for it while it was away.
+        let Response::Sent { message, .. } = daemon
+            .handle(Request::Send {
+                from: peer.id.to_string(),
+                to: ended.id.to_string(),
+                kind: "chat".into(),
+                payload: json!({"text": "still for you"}),
+                reply_to: None,
+                links: Vec::new(),
+            })
+            .await
+        else {
+            panic!("send failed")
+        };
+        let relaunch = |command: Vec<&str>, workdir: PathBuf| AgentSpec {
+            runtime: "claude-code".into(),
+            command: command.into_iter().map(str::to_owned).collect(),
+            workdir: Some(workdir),
+            ..Default::default()
+        };
+        let good = || AgentSpec {
+            tty: true,
+            ..relaunch(
+                vec!["sh", "-c", "sleep 30", "--resume", session],
+                checkout.clone(),
+            )
+        };
+        // Live: not relaunched.
+        assert!(matches!(
+            daemon
+                .handle(Request::ResumeSession {
+                    agent: ended.id.to_string(),
+                    spec: good(),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        daemon.mark_exited(&ended.id, AgentStatus::Exited { code: Some(0) });
+        // The record says ended, but its pid is alive and cannot be dated:
+        // that is its process until proven otherwise.
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&ended.id).unwrap();
+            record.pid = Some(std::process::id());
+            record.process_started_at = None;
+        }
+        assert!(matches!(
+            daemon
+                .handle(Request::ResumeSession {
+                    agent: ended.id.to_string(),
+                    spec: good(),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        lock(&daemon.state).registry.get_mut(&ended.id).unwrap().pid = None;
+        // Another checkout: not its own.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        assert!(matches!(
+            daemon
+                .handle(Request::ResumeSession {
+                    agent: ended.id.to_string(),
+                    spec: relaunch(vec!["sh", "-c", "sleep 30", "--resume", session], elsewhere),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        // A subscriber still on the record: refused until it goes.
+        {
+            let (subscription, _receiver) = daemon
+                .subscribe(Some(ended.id.as_str()), Vec::new())
+                .unwrap();
+            assert!(matches!(
+                daemon
+                    .handle(Request::ResumeSession {
+                        agent: ended.id.to_string(),
+                        spec: good(),
+                    })
+                    .await,
+                Response::Error {
+                    code: ErrorCode::Conflict,
+                    ..
+                }
+            ));
+            drop(subscription);
+        }
+        // A launch that dies at once: whether it is refused or ends right
+        // after starting, the record ends again with its queue kept and
+        // nothing living under it.
+        let _ = daemon
+            .handle(Request::ResumeSession {
+                agent: ended.id.to_string(),
+                spec: relaunch(
+                    vec!["sh", "-c", "exit 3", "--resume", session],
+                    checkout.clone(),
+                ),
+            })
+            .await;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while lock(&daemon.state)
+            .registry
+            .get(&ended.id)
+            .is_some_and(|r| r.status.is_live())
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let failed = lock(&daemon.state)
+            .registry
+            .get(&ended.id)
+            .cloned()
+            .unwrap();
+        assert!(!failed.status.is_live(), "{:?}", failed.status);
+        let queued = inbox(&daemon, ended.id.as_str(), false).await;
+        assert!(queued.iter().any(|m| m.id == message), "the queue is kept");
+        // Back, under its own record, on a terminal. The failed launch's
+        // owner may still be letting go of the id for a moment; a
+        // relaunch that meets it is refused, not taken over, and is asked
+        // again. Two presses at once: one process comes back, the other
+        // press is refused, never a second process under the id.
+        let mut events = daemon.subscribe_events();
+        let mut answer = Response::Ok;
+        for _ in 0..4 {
+            let (first, second) = tokio::join!(
+                daemon.handle(Request::ResumeSession {
+                    agent: ended.id.to_string(),
+                    spec: good(),
+                }),
+                daemon.handle(Request::ResumeSession {
+                    agent: ended.id.to_string(),
+                    spec: good(),
+                })
+            );
+            let (won, lost) = match (&first, &second) {
+                (Response::Agent { .. }, other) => (first.clone(), other.clone()),
+                (other, Response::Agent { .. }) => (second.clone(), other.clone()),
+                _ => {
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+            assert!(
+                matches!(
+                    lost,
+                    Response::Error {
+                        code: ErrorCode::Conflict | ErrorCode::Invalid,
+                        ..
+                    }
+                ),
+                "the other press is refused: {lost:?}"
+            );
+            answer = won;
+            break;
+        }
+        let Response::Agent { agent: back } = answer else {
+            panic!("relaunch failed: {answer:?}")
+        };
+        assert!(back.spec.tty, "a terminal, as asked");
+        assert_eq!(back.id, ended.id, "the same identity");
+        assert_eq!(back.status, AgentStatus::Running);
+        assert!(back.managed && back.pid.is_some());
+        assert_eq!(back.spec.name, "claude-code-4242");
+        assert_eq!(
+            back.spec.labels.get("session_id").map(String::as_str),
+            Some(session)
+        );
+        assert!(
+            back.spec
+                .command
+                .windows(2)
+                .any(|w| w[0] == "--resume" && w[1] == session)
+        );
+        let mut kinds = Vec::new();
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(std::time::Duration::from_millis(200), events.recv()).await
+        {
+            kinds.push(event.kind);
+        }
+        assert!(kinds.iter().any(|k| matches!(k, EventKind::SessionRelaunched { agent, session: s } if *agent == ended.id && s == session)));
+        assert!(
+            kinds
+                .iter()
+                .any(|k| matches!(k, EventKind::AgentStarted { agent, .. } if *agent == ended.id))
+        );
+        let queued = inbox(&daemon, ended.id.as_str(), false).await;
+        assert!(
+            queued.iter().any(|m| m.id == message),
+            "the queue rode along"
+        );
+        let Response::Questions { questions } =
+            daemon.handle(Request::Questions { agent: None }).await
+        else {
+            panic!("questions did not answer")
+        };
+        assert!(
+            questions
+                .iter()
+                .any(|q| q.id == question && q.from == ended.id.as_str()),
+            "its question is still its own: {questions:?}"
+        );
+        let Response::Tasks { tasks, .. } = daemon
+            .handle(Request::Tasks {
+                project: Some(checkout.display().to_string()),
+                column: None,
+                archived: false,
+                offset: 0,
+                limit: 10,
+            })
+            .await
+        else {
+            panic!("the board did not answer")
+        };
+        assert!(
+            tasks
+                .iter()
+                .any(|t| t.id == card.id && t.assignee.as_ref() == Some(&ended.id)),
+            "its card is still its own: {tasks:?}"
+        );
+        // Already back: not twice.
+        assert!(matches!(
+            daemon
+                .handle(Request::ResumeSession {
+                    agent: ended.id.to_string(),
+                    spec: good(),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        daemon.stop_all().await;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while lock(&daemon.state)
+            .registry
+            .get(&ended.id)
+            .is_some_and(|r| r.status.is_live())
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        // Something lands on the record between the checks and the
+        // commit — a label here, as a role or an availability report
+        // would: the relaunch is refused rather than written over it,
+        // and the label is still there.
+        let hold = Arc::new(tokio::sync::Barrier::new(2));
+        *lock(&daemon.relaunch_hold) = Some(hold.clone());
+        let held = {
+            let daemon = daemon.clone();
+            let id = ended.id.to_string();
+            let spec = good();
+            tokio::spawn(async move {
+                daemon
+                    .handle(Request::ResumeSession { agent: id, spec })
+                    .await
+            })
+        };
+        hold.wait().await;
+        lock(&daemon.state)
+            .registry
+            .get_mut(&ended.id)
+            .unwrap()
+            .spec
+            .labels
+            .insert("role".into(), "reviewer".into());
+        hold.wait().await;
+        assert!(matches!(
+            held.await.unwrap(),
+            Response::Error {
+                code: ErrorCode::Conflict,
+                ..
+            }
+        ));
+        let kept = lock(&daemon.state)
+            .registry
+            .get(&ended.id)
+            .cloned()
+            .unwrap();
+        assert!(!kept.status.is_live(), "{:?}", kept.status);
+        assert_eq!(
+            kept.spec.labels.get("role").map(String::as_str),
+            Some("reviewer")
+        );
+        // Gone again; a store that cannot commit the return commits
+        // nothing: the record stays ended, the answer says storage.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while lock(&daemon.state)
+            .registry
+            .get(&ended.id)
+            .is_some_and(|r| r.status.is_live())
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let before = lock(&daemon.state)
+            .registry
+            .get(&ended.id)
+            .cloned()
+            .unwrap();
+        assert!(!before.status.is_live());
+        lock(&daemon.state)
+            .store
+            .reject_event_for_test("session_relaunched");
+        assert!(matches!(
+            daemon
+                .handle(Request::ResumeSession {
+                    agent: ended.id.to_string(),
+                    spec: good(),
+                })
+                .await,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ));
+        let stale = lock(&daemon.state)
+            .registry
+            .get(&ended.id)
+            .cloned()
+            .unwrap();
+        assert_eq!(stale, before, "a fenced return changes nothing in memory");
+    }
+
+    /// A relaunch whose program cannot be started at all is answered with
+    /// the reason, leaves the record ended with its queue, and does not
+    /// stand in the way of the next relaunch.
+    #[tokio::test]
+    async fn a_relaunch_that_cannot_start_answers_and_leaves_the_record_ended() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let session = "0f0f0f0f-1111-2222-3333-444444444444";
+        let mut ended_spec = spec("claude-code-7");
+        ended_spec.runtime = "claude-code".into();
+        ended_spec.workdir = Some(checkout.clone());
+        ended_spec
+            .labels
+            .insert("session_id".into(), session.into());
+        let Response::Agent { agent: ended } = daemon
+            .handle(Request::Register {
+                spec: ended_spec,
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("registration failed")
+        };
+        let peer = register(&daemon, "peer", None).await;
+        let Response::Sent { message, .. } = daemon
+            .handle(Request::Send {
+                from: peer.id.to_string(),
+                to: ended.id.to_string(),
+                kind: "chat".into(),
+                payload: json!({"text": "waiting"}),
+                reply_to: None,
+                links: Vec::new(),
+            })
+            .await
+        else {
+            panic!("send failed")
+        };
+        daemon.mark_exited(&ended.id, AgentStatus::Exited { code: Some(0) });
+        let relaunch = |program: &str| AgentSpec {
+            runtime: "claude-code".into(),
+            command: vec![program.to_owned(), "--resume".into(), session.into()],
+            workdir: Some(checkout.clone()),
+            ..Default::default()
+        };
+        let missing = dir.path().join("no-such-claude");
+        let answer = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            daemon.handle(Request::ResumeSession {
+                agent: ended.id.to_string(),
+                spec: relaunch(&missing.display().to_string()),
+            }),
+        )
+        .await
+        .expect("a launch that cannot start is answered");
+        assert!(
+            matches!(answer, Response::Error { .. }),
+            "the reason comes back: {answer:?}"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while lock(&daemon.state)
+            .registry
+            .get(&ended.id)
+            .is_some_and(|r| r.status.is_live())
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let after = lock(&daemon.state)
+            .registry
+            .get(&ended.id)
+            .cloned()
+            .unwrap();
+        assert!(!after.status.is_live(), "{:?}", after.status);
+        let queued = inbox(&daemon, ended.id.as_str(), false).await;
+        assert!(queued.iter().any(|m| m.id == message), "the queue is kept");
+        // The next relaunch is not held up by the one that never started.
+        let mut answer = Response::Ok;
+        for _ in 0..4 {
+            answer = tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                daemon.handle(Request::ResumeSession {
+                    agent: ended.id.to_string(),
+                    spec: AgentSpec {
+                        command: vec![
+                            "sh".into(),
+                            "-c".into(),
+                            "sleep 30".into(),
+                            "--resume".into(),
+                            session.into(),
+                        ],
+                        ..relaunch("sh")
+                    },
+                }),
+            )
+            .await
+            .expect("the next relaunch is answered");
+            if matches!(answer, Response::Agent { .. }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        let Response::Agent { agent: back } = answer else {
+            panic!("relaunch after a failed start: {answer:?}")
+        };
+        assert_eq!(back.id, ended.id);
+        assert_eq!(back.status, AgentStatus::Running);
+        daemon.stop_all().await;
+    }
+
     #[tokio::test]
     async fn a_restarted_daemon_brings_back_a_restorable_agent_under_its_own_identity() {
         let dir = TempDir::new().unwrap();
@@ -8547,6 +9295,44 @@ mod tests {
         daemon.check_liveness();
         assert!(!daemon.is_live(&agent.id));
         daemon.stop_all().await;
+    }
+
+    /// A refused claim says by whom: the holder's name, which is who the
+    /// person can go and talk to, with its id and what it holds.
+    #[tokio::test]
+    async fn a_refused_claim_names_the_holder() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let writer = register(&daemon, "writer", None).await;
+        let reviewer = register(&daemon, "reviewer", None).await;
+        let claim = |agent: &AgentRecord, resource: &str| Request::Claim {
+            agent: agent.id.to_string(),
+            resource: resource.to_owned(),
+            mode: LeaseMode::Exclusive,
+            amount: None,
+            ttl_secs: 300,
+            note: Some("refactoring the parser".to_owned()),
+            wait_secs: 0,
+            automatic: false,
+        };
+        assert!(matches!(
+            daemon.handle(claim(&writer, "path:/work/src")).await,
+            Response::Lease { .. }
+        ));
+        let Response::Error { code, message, .. } = daemon
+            .handle(claim(&reviewer, "path:/work/src/parser.rs"))
+            .await
+        else {
+            panic!("the second claim is refused")
+        };
+        assert_eq!(code, ErrorCode::Conflict);
+        assert_eq!(
+            message,
+            format!(
+                "path:/work/src/parser.rs is held by writer ({}; exclusive on path:/work/src)",
+                writer.id.short()
+            )
+        );
     }
 
     #[tokio::test]

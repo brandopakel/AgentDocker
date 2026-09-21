@@ -85,6 +85,25 @@ independent provider CLI or editor. Such writers can still race between validati
 and the provider command, so edits to the same MCP entry need coordination.
 Ordinary unrelated provider application-state updates do not invalidate a receipt.
 
+## Planned app-guided live-message connection
+
+An **Enable live messages / Reconnect** action must let the person preview and
+approve connecting an existing session from the app. It should discover the
+session and construct the supported launch/resume settings, preserve the same
+conversation, queued IDs and drafts, and guide any provider-required startup
+consent. Keep a copyable CLI command as an alternative. Do not require repeated
+manual flags when the supported setup can remember them; do not imply the app
+can grant consent that belongs to the provider.
+
+A running session that cannot attach in place needs a clear, approved handoff,
+with busy-session, cancellation, launch failure and provider-limit handling.
+No failed handoff may consume input or silently start a different conversation.
+Show setup, waiting for consent, receiver contact and verified delivery
+separately; close the flow only after a real receipt. Test actual idle wake as
+well as reconnect, retained drafts and queued-message order for each supported
+provider. This is requested engineering work, not a shipped button yet; see the
+[delivery plan](DELIVERY-PLAN.md) and [remaining work](REMAINING-WORK.md).
+
 ## What a connection check proves
 
 Tools separates saved configuration, recent adapter contact and input delivery.
@@ -160,3 +179,24 @@ were removed; monitored user configurations stayed unchanged. Run
 `scripts/claude_setup_smoke.py --binary PATH --manifest PATH --output NEW_DIRECTORY`
 with an installed Claude CLI to repeat this configuration-only trial. It does
 not invoke a model or prove automatic inbox consumption.
+
+## First-install configuration acceptance (September 19)
+
+The installed `9e75e834` package (source `ce82d06`) was installed into a private
+trial prefix and exercised against empty provider configuration. Saved preview,
+apply, health and undo covered Claude/Codex MCP entries, hooks and both shared
+skills; shell setup/undo also passed. Codex hook trust correctly remained
+unverified. The private daemon was stopped after the trial. Details and the
+original operator bookkeeping side effect are retained in the existing
+[integrated record](verification/2026-09-12-integrated-desktop.json).
+
+For an undoable setup, apply the saved plan with `setup --apply <plan-id>`.
+The legacy direct `setup <runtime>` route keeps backups but does not record an
+applied plan. A preview created before a direct write cannot undo that write;
+changed configuration is correctly refused. The native Review setup / Apply
+changes flow uses the saved plan.
+
+This closes configuration-only first-install acceptance at that candidate.
+No provider session used the test profile; authentication, hook trust, startup
+consent, actual idle receipt, independent OS-user behavior and Gatekeeper remain
+separate acceptance.
