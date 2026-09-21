@@ -227,6 +227,9 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Composer {
                 Edit::Action(action) => {
                     let changed = action.is_edit();
                     state.content.perform(action);
+                    // Cursor/selection/scroll actions also need native shaping
+                    // of the newly visible lines before the next draw.
+                    shell.invalidate_layout();
                     if changed {
                         // Let the application reject over-limit edits, keeping
                         // the earlier draft and reporting why. Truncating here
@@ -235,7 +238,6 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Composer {
                         let value = state.content.text();
                         state.value = value.clone();
                         shell.publish((self.change)(value));
-                        shell.invalidate_layout();
                     }
                     shell.request_redraw();
                 }
@@ -729,5 +731,69 @@ mod tests {
             shell.redraw_request(),
             iced::window::RedrawRequest::NextFrame
         );
+    }
+
+    #[test]
+    fn native_navigation_and_scroll_shape_the_new_viewport_without_editing_the_draft() {
+        let mut renderer = iced::Renderer::new(iced::Font::DEFAULT, 14.0.into());
+        let original = "日本語 long draft line\n".repeat(100);
+        let mut composer = fixture("room", &original, true, true);
+        let mut tree = tree(&composer);
+        focus(&mut tree);
+        let bounds = Rectangle::with_size(Size::new(220.0, 160.0));
+        let pointer = mouse::Cursor::Available(iced::Point::new(20.0, 20.0));
+        for event in [
+            key(
+                keyboard::Key::Named(keyboard::key::Named::PageUp),
+                keyboard::Modifiers::empty(),
+                false,
+            ),
+            key(
+                keyboard::Key::Named(keyboard::key::Named::PageUp),
+                keyboard::Modifiers::SHIFT,
+                false,
+            ),
+            Event::Mouse(mouse::Event::WheelScrolled {
+                delta: mouse::ScrollDelta::Lines { x: 0.0, y: 3.0 },
+            }),
+        ] {
+            let node = composer.layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, bounds.size()),
+            );
+            let mut messages = Vec::new();
+            let mut shell = Shell::new(&mut messages);
+            composer.update(
+                &mut tree,
+                &event,
+                Layout::new(&node),
+                pointer,
+                &renderer,
+                &mut MemoryClipboard::default(),
+                &mut shell,
+                &bounds,
+            );
+            assert!(
+                shell.is_layout_invalid(),
+                "navigation needs shaping before draw: {event:?}"
+            );
+            assert!(messages.is_empty());
+            let node = composer.layout(
+                &mut tree,
+                &renderer,
+                &layout::Limits::new(Size::ZERO, bounds.size()),
+            );
+            composer.draw(
+                &tree,
+                &mut renderer,
+                &iced::Theme::Light,
+                &renderer::Style::default(),
+                Layout::new(&node),
+                pointer,
+                &bounds,
+            );
+            assert_eq!(tree.state.downcast_ref::<State>().content.text(), original);
+        }
     }
 }

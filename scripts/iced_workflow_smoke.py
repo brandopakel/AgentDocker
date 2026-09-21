@@ -633,9 +633,16 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 }, saved_drafts
                 cards_before_reopen = rpc(endpoint, {"op": "tasks", "project": str(project), "archived": True})["tasks"]
                 restored_steps = [
-                    step("resize", width=1800, height=900),
+                    # Open the destination through compact navigation first.
+                    # macOS may cap a requested wide window to its display;
+                    # shared chat remains selected and hides the sidebar then.
+                    step("resize", width=720, height=540),
                     step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="inbox"),
+                    step("wait_control", id="thread-back", present=True),
+                    step("click", id="thread-back"),
+                    step("wait_control", id=f"thread-{narrow['id']}", present=True),
                     step("click", id=f"thread-{narrow['id']}"),
+                    step("resize", width=1800, height=900),
                     step("wait_text", text=answer_marker),
                     step("wait_text", text="Keep this conversation draft\nSecond line 日本語"),
                     step("click", id=f"thread-{routed}"),
