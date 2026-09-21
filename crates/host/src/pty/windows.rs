@@ -15,6 +15,7 @@ use std::fs::File;
 use std::io;
 use std::os::windows::io::{AsRawHandle, BorrowedHandle, FromRawHandle, OwnedHandle};
 use std::ptr::{null, null_mut};
+use std::sync::Mutex;
 
 use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Console::{
@@ -33,7 +34,7 @@ const DEFAULT_ROWS: i16 = 24;
 /// the console renders, `input` is what the child reads as its keyboard.
 #[derive(Debug)]
 pub struct Pty {
-    console: HPCON,
+    console: Mutex<Option<HPCON>>,
     output: OwnedHandle,
     input: OwnedHandle,
 }
@@ -71,16 +72,39 @@ impl Pty {
         drop(child_reads);
         drop(child_writes);
         Ok(Self {
-            console,
+            console: Mutex::new(Some(console)),
             output: we_read,
             input: we_write,
         })
     }
 
     /// The console handle a child is bound to at creation
-    /// (`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`).
-    pub fn console(&self) -> HPCON {
+    /// (`PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`). Only used during exclusive
+    /// launch preparation, before this terminal is shared with controllers.
+    /// The caller must finish creating the child before closing the console.
+    pub fn console(&mut self) -> io::Result<HPCON> {
         self.console
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .ok_or_else(console_closed)
+    }
+
+    /// End the console independently of this struct's lifetime. Output
+    /// readers may still hold the terminal while waiting for EOF. Keep
+    /// draining output concurrently: on older Windows versions this call
+    /// waits for the console to finish writing its final output.
+    pub fn close(&self) {
+        let console = self
+            .console
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        // The lock excludes a resize still using the handle. Release it
+        // before the potentially blocking close; future resizes fail closed.
+        if let Some(console) = console {
+            // SAFETY: this call took sole ownership of the live handle.
+            unsafe { ClosePseudoConsole(console) };
+        }
     }
 
     /// Tell the console how big the window is; it tells the child.
@@ -89,8 +113,13 @@ impl Pty {
             X: i16::try_from(cols.max(1)).unwrap_or(i16::MAX),
             Y: i16::try_from(rows.max(1)).unwrap_or(i16::MAX),
         };
-        // SAFETY: the console handle is live for as long as `self` is.
-        let result = unsafe { ResizePseudoConsole(self.console, size) };
+        let console = self
+            .console
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let handle = (*console).ok_or_else(console_closed)?;
+        // SAFETY: close cannot take this handle while this guard is held.
+        let result = unsafe { ResizePseudoConsole(handle, size) };
         if result < 0 {
             return Err(io::Error::from_raw_os_error(result));
         }
@@ -114,10 +143,12 @@ impl Pty {
 
 impl Drop for Pty {
     fn drop(&mut self) {
-        // SAFETY: closing the console this struct owns, once. The pipe
-        // ends close with their handles after it.
-        unsafe { ClosePseudoConsole(self.console) };
+        self.close();
     }
+}
+
+fn console_closed() -> io::Error {
+    io::Error::new(io::ErrorKind::BrokenPipe, "the agent's console is closed")
 }
 
 /// An anonymous pipe, both ends non-inheritable: the child gets its ends
@@ -253,11 +284,56 @@ mod tests {
         // by any child; the pipe itself must still accept the write.
         writer.write_all(b"x").expect("typed");
         drop(writer);
+        let drain = std::thread::spawn(move || {
+            let mut rest = Vec::new();
+            let _ = reader.read_to_end(&mut rest);
+        });
         drop(pty);
-        // With the console closed and our write end gone, the read end
-        // reaches its end rather than blocking forever.
-        let mut rest = Vec::new();
-        let _ = reader.read_to_end(&mut rest);
+        // Read concurrently: ClosePseudoConsole itself can wait for the
+        // output drain on Windows versions before 11 24H2.
+        drain.join().unwrap();
+    }
+
+    #[test]
+    fn explicit_close_ends_output_while_the_terminal_is_still_shared() {
+        use std::sync::{Arc, Barrier, mpsc};
+        use std::time::Duration;
+        let pty = Arc::new(Pty::open().unwrap());
+        let mut reader = pty.reader().unwrap();
+        let (eof, received) = mpsc::channel();
+        // Drain concurrently with ClosePseudoConsole, including on Windows
+        // versions that wait for the final console output during close.
+        let retained = pty.clone();
+        std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let result = reader.read_to_end(&mut output);
+            let _ = eof.send(result);
+            drop(retained);
+        });
+        let barrier = Arc::new(Barrier::new(2));
+        let resizing = pty.clone();
+        let start = barrier.clone();
+        let resizer = std::thread::spawn(move || {
+            start.wait();
+            for _ in 0..100 {
+                if let Err(error) = resizing.resize(100, 30) {
+                    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+                    return;
+                }
+            }
+        });
+        barrier.wait();
+        pty.close();
+        pty.close(); // idempotent, including the eventual Drop
+        resizer.join().unwrap();
+        assert_eq!(
+            pty.resize(80, 24).unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        let result = received
+            .recv_timeout(Duration::from_secs(5))
+            .expect("output EOF");
+        assert!(result.is_ok() || result.unwrap_err().kind() == io::ErrorKind::BrokenPipe);
     }
 
     #[test]

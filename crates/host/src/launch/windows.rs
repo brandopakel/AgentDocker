@@ -32,8 +32,10 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::System::Console::HPCON;
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
-    JobObjectBasicAccountingInformation, QueryInformationJobObject, TerminateJobObject,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
@@ -133,9 +135,12 @@ impl OwnedChild {
     /// Give up ownership: the process keeps running and its job is not
     /// ended when this drops. See the Unix twin for why the default is
     /// the opposite.
-    pub fn disown(mut self) -> u32 {
+    /// Clearing the owner's crash protection must succeed before ownership
+    /// is surrendered. On error, this still drops as an owned child.
+    pub fn disown(mut self) -> io::Result<u32> {
+        kill_on_close(&self.job, false)?;
         self.reaped = true;
-        self.pid
+        Ok(self.pid)
     }
 }
 
@@ -241,6 +246,10 @@ pub fn prepare_with(command: Command, console: Option<HPCON>) -> io::Result<Pend
     }
     // SAFETY: a handle this process owns from here on.
     let job = unsafe { OwnedHandle::from_raw_handle(job) };
+    // The durable session owner holds this job, not the daemon. A daemon
+    // crash leaves it intact; an owner crash closes every handle and ends
+    // the whole tree even when no Rust destructor can run.
+    kill_on_close(&job, true)?;
 
     // What the child inherits: with a console, nothing (its stdio is the
     // console's); with pipes, exactly its two pipe ends.
@@ -405,6 +414,44 @@ pub fn prepare_with(command: Command, console: Option<HPCON>) -> io::Result<Pend
 
 /// A child's job, held apart from the child.
 pub struct Job(OwnedHandle);
+
+fn kill_on_close(job: &OwnedHandle, enabled: bool) -> io::Result<()> {
+    // SAFETY: the Win32 structure is entirely numeric fields; zero is valid.
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    // Preserve all other limits when deliberately disowning the child.
+    // SAFETY: the live handle and the correctly sized out-pointer last
+    // throughout the call.
+    if unsafe {
+        QueryInformationJobObject(
+            job.as_raw_handle() as HANDLE,
+            JobObjectExtendedLimitInformation,
+            std::ptr::addr_of_mut!(limits).cast(),
+            std::mem::size_of_val(&limits) as u32,
+            null_mut(),
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    if enabled {
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    } else {
+        limits.BasicLimitInformation.LimitFlags &= !JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    }
+    // SAFETY: the same live handle and initialized limits, passed by value.
+    if unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle() as HANDLE,
+            JobObjectExtendedLimitInformation,
+            std::ptr::addr_of!(limits).cast(),
+            std::mem::size_of_val(&limits) as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
 
 impl Job {
     /// Does any process in it still exist?
@@ -691,5 +738,25 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn disown_clears_crash_protection_before_the_last_job_handle_closes() {
+        let mut command = Command::new("cmd");
+        command.args(["/c", "ping -n 31 127.0.0.1 > nul"]);
+        let child = prepare(command).unwrap().activate().unwrap();
+        // Keep only a process handle, never a job clone that would mask a
+        // missing flag clear by preventing last-job-handle close.
+        let process = child.process.try_clone().unwrap();
+        let pid = child.id();
+        assert_eq!(child.disown().unwrap(), pid);
+        let handle = process.as_raw_handle() as HANDLE;
+        // SAFETY: the handle remains open throughout the wait and cleanup.
+        let waited = unsafe { WaitForSingleObject(handle, 200) };
+        unsafe {
+            TerminateProcess(handle, ENDED_BY_OWNER);
+            WaitForSingleObject(handle, 5_000);
+        }
+        assert_eq!(waited, windows_sys::Win32::Foundation::WAIT_TIMEOUT);
     }
 }

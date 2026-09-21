@@ -1,9 +1,9 @@
 """The first Windows daemon/CLI slice, exercised on a real runner: a daemon
 on a private home answers over the local transport (a named pipe on
 Windows, a Unix socket elsewhere) and the CLI registers, lists, sends,
-reads and stops through it. Nothing here needs a provider, a PTY, a
-service or the desktop, which are later slices; what those answer on
-Windows is checked to be an explicit refusal, never a hang or a crash.
+reads and stops through it, then exercises managed pipes and terminals,
+owner lifetime, terminal EOF and stop under keyboard backpressure. No
+provider, installed service or desktop is needed.
 
 Portable on purpose: the same steps run on macOS/Linux, so the script is
 checked before the Windows runner ever sees it."""
@@ -34,7 +34,7 @@ def main():
     cli = binary_dir / f"agentdocker{exe}"
     daemon_binary = binary_dir / f"agentd{exe}"
     report = {
-        "scope": "Windows daemon/CLI slice one: a private daemon over the local transport, the CLI's ping/register/ps/send/inbox/stop, and explicit refusals for what is not delivered on Windows",
+        "scope": "Windows daemon/CLI and managed-session acceptance: private local transport, registry/messages/leases, terminal input/output/EOF, owner lifetime, and bounded stop under keyboard backpressure",
         "platform": f"{platform.system()} {platform.release()} {platform.machine()}",
         "binary_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (cli, daemon_binary)},
         "steps": [],
@@ -60,6 +60,8 @@ def main():
     env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_")}
     env["AGENTDOCKER_HOME"] = str(home)
     env["AGENTDOCKER_NO_AUTOSTART"] = "1"
+    # Console close must not block the async worker that drains its output.
+    env["TOKIO_WORKER_THREADS"] = "1"
     daemon = None
     log = None
 
@@ -181,9 +183,32 @@ def main():
 
             threading.Thread(target=pump, args=(self.file, self.lines), daemon=True).start()
 
-        def send(self, frame):
-            self.file.write((json.dumps(frame) + "\n").encode())
-            self.file.flush()
+        def send(self, frame, timeout=10):
+            # A full input pipe must produce a recorded failure, not consume
+            # the CI job's timeout before it can save its report.
+            import queue
+            result = queue.Queue()
+
+            def write():
+                try:
+                    data = memoryview((json.dumps(frame) + "\n").encode())
+                    while data:
+                        written = self.file.write(data)
+                        if not written:
+                            raise OSError("wire write returned no progress")
+                        data = data[written:]
+                    self.file.flush()
+                    result.put(None)
+                except Exception as error:
+                    result.put(error)
+
+            threading.Thread(target=write, daemon=True).start()
+            try:
+                error = result.get(timeout=timeout)
+            except queue.Empty:
+                raise TimeoutError("wire write did not finish") from None
+            if error is not None:
+                raise error
 
         def line(self, timeout=15):
             import queue
@@ -198,11 +223,68 @@ def main():
             return json.loads(raw)
 
         def close(self):
-            try:
-                self.file.close()
-            finally:
-                if self.sock is not None:
-                    self.sock.close()
+            def close():
+                try:
+                    self.file.close()
+                finally:
+                    if self.sock is not None:
+                        self.sock.close()
+            closer = threading.Thread(target=close, daemon=True)
+            closer.start()
+            closer.join(timeout=2)
+
+    def inspect_agent(name):
+        wire = Wire(transport_endpoint())
+        try:
+            wire.send({"op": "inspect", "agent": name})
+            response = wire.line()
+            assert isinstance(response, dict) and response.get("type") == "agent", response
+            return response["agent"]
+        finally:
+            wire.close()
+
+    class WindowsProcess:
+        """A fixture's process identity held open across exit, never a Job
+        handle that could keep its owner's kill-on-close job alive."""
+
+        def __init__(self, pid, expected_birth=None):
+            import ctypes
+            from ctypes import wintypes
+            from datetime import datetime, timezone
+            self.api = ctypes.WinDLL("kernel32", use_last_error=True)
+            self.api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            self.api.OpenProcess.restype = wintypes.HANDLE
+            self.api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            self.api.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            self.api.CloseHandle.argtypes = [wintypes.HANDLE]
+            self.api.GetProcessTimes.argtypes = [wintypes.HANDLE, *([ctypes.POINTER(wintypes.FILETIME)] * 4)]
+            self.handle = self.api.OpenProcess(0x00100000 | 0x1000 | 1, False, pid)
+            if not self.handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+            if not self.api.GetProcessTimes(self.handle, *map(ctypes.byref, (created, exited, kernel, user))):
+                self.api.CloseHandle(self.handle)
+                raise ctypes.WinError(ctypes.get_last_error())
+            ticks = (created.dwHighDateTime << 32 | created.dwLowDateTime) - 116444736000000000
+            date = datetime.fromtimestamp(ticks // 10000000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+            birth = date + (f".{ticks % 10000000:07d}".rstrip("0").rstrip(".")) + "Z"
+            if expected_birth is not None:
+                expected = expected_birth.removesuffix("Z")
+                if "." in expected:
+                    expected = expected.rstrip("0").rstrip(".")
+                if birth != expected + "Z":
+                    self.api.CloseHandle(self.handle)
+                    raise AssertionError(f"fixture pid {pid} changed birth: {birth} != {expected_birth}")
+
+        def exited(self, milliseconds=0):
+            return self.api.WaitForSingleObject(self.handle, milliseconds) == 0
+
+        def end(self):
+            if not self.exited() and not self.api.TerminateProcess(self.handle, 99):
+                raise AssertionError("cannot end the fixture process")
+
+        def close(self):
+            self.api.CloseHandle(self.handle)
 
     def agent_status(name):
         listing = run("ps", "--no-discover", "--all")
@@ -277,7 +359,7 @@ def main():
         line = wait_status("smoke-pipes", "exited")
         logs = run("logs", "smoke-pipes", check=False)
         step("a piped managed command runs under a session owner and its output reaches its log", "exited" in line and "piped hello" in logs.stdout and "to stderr" in logs.stdout, (line + " | " + logs.stdout.strip())[:600])
-        run("run", "--name", "smoke-tty", "--tty", "--runtime", "custom", "--", sys.executable, "-c", "import sys; print('tty hello', flush=True); line = sys.stdin.readline(); print('got ' + line.strip(), flush=True)")
+        run("run", "--name", "smoke-tty", "--tty", "--runtime", "custom", "--", sys.executable, "-c", "import sys; print('tty hello', flush=True); line = sys.stdin.readline(); print('got ' + line.strip(), flush=True); print('final partial marker', end='', flush=True)")
         line = wait_status("smoke-tty", "running")
         step("a terminal managed command is running on its own console", "running" in line, line)
         screen = b""
@@ -290,10 +372,10 @@ def main():
             # Enter is a carriage return on a Windows console, a newline on a Unix terminal.
             wire.send({"op": "attach_input", "data": base64.b64encode(b"abc\r" if os.name == "nt" else b"abc\n").decode()})
             deadline = time.time() + 15
-            while time.time() < deadline and b"got abc" not in screen:
+            while time.time() < deadline:
                 frame = wire.line(timeout=max(1, deadline - time.time()))
                 if frame is None or frame is Wire.TIMED_OUT:
-                    frames.append("end" if frame is None else "timed out")
+                    frames.append("eof" if frame is None else "timed out")
                     break
                 frames.append(frame.get("type"))
                 if frame.get("type") == "output":
@@ -309,14 +391,94 @@ def main():
         # and a screen rendered in a shape the check did not expect.
         seen = "" if typed_ok else f"; logs {run('logs', 'smoke-tty', check=False).stdout.strip()[-400:]!r}; status {agent_status('smoke-tty')[:200]!r}"
         step("what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen", typed_ok, f"frames {frames[:40]}; screen {text[-600:]!r}{seen}")
+        step("terminal output reaches End with its final partial line before the deadline", "end" in frames and "final partial marker" in text, f"frames {frames[-10:]}; screen {text[-600:]!r}")
         line = wait_status("smoke-tty", "exited")
         logs = run("logs", "smoke-tty", check=False)
-        step("the terminal session ends and its screen is in its log", "exited" in line and "got abc" in logs.stdout, (line + " | " + logs.stdout.strip())[-400:])
+        step("the terminal session ends and its final partial line is in its log", "exited" in line and "got abc" in logs.stdout and "final partial marker" in logs.stdout, (line + " | " + logs.stdout.strip())[-400:])
         run("run", "--name", "smoke-stop", "--tty", "--runtime", "custom", "--", sys.executable, "-c", "import time; print('sleeping', flush=True); time.sleep(120)")
         line = wait_status("smoke-stop", "running")
         stopped = run("stop", "smoke-stop", check=False, timeout=20)
         line = wait_status("smoke-stop", "exited", seconds=15)
         step("stop ends a managed terminal session through its owner", stopped.returncode == 0 and "exited" in line, (stopped.stderr.strip() or stopped.stdout.strip()) + " | " + line)
+        if os.name == "nt":
+            # Piped on purpose: closing a console on owner death could hide
+            # a missing Job Object policy. Only the owner's last job handle
+            # closing should end this otherwise long-lived process tree.
+            marker = project / "owner-death-processes.json"
+            child_script = "import time; time.sleep(120)"
+            leader_script = "import json,os,pathlib,subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c',sys.argv[2]]); pathlib.Path(sys.argv[1]).write_text(json.dumps([os.getpid(),p.pid])); time.sleep(120)"
+            run("run", "--name", "smoke-owner-death", "--runtime", "custom", "--", sys.executable, "-c", leader_script, str(marker), child_script)
+            deadline = time.monotonic() + 10
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            pids = json.loads(marker.read_text())
+            record = inspect_agent("smoke-owner-death")
+            assert pids[0] == record["pid"]
+            owner = record["owner"]
+            held = []
+            try:
+                held.append(WindowsProcess(owner["pid"], owner["started_at"]))
+                held.extend(WindowsProcess(pid) for pid in pids)
+                step("the owner and both piped descendants are alive before the owner crash", all(not process.exited() for process in held), f"owner {owner['pid']}; descendants {pids}")
+                held[0].end()
+                gone = [process.exited(5000) for process in held]
+                step("abrupt owner death ends the piped child and grandchild without Rust cleanup", all(gone), f"process handles signalled: {gone}")
+            finally:
+                for process in held:
+                    process.end()
+                    process.close()
+
+            # Disable console line processing and echo, then never read.
+            # Fill the actual keyboard queue and demand a bounded stop over
+            # another connection, even if a pending pipe write is blocked.
+            no_read = "import ctypes,signal,time; k=ctypes.WinDLL('kernel32'); k.GetStdHandle.restype=ctypes.c_void_p; k.SetConsoleMode.argtypes=[ctypes.c_void_p,ctypes.c_uint]; assert k.SetConsoleMode(k.GetStdHandle(-10),0); signal.signal(signal.SIGINT,signal.SIG_IGN); print('not reading',flush=True); time.sleep(120)"
+            run("run", "--name", "smoke-input-full", "--tty", "--runtime", "custom", "--", sys.executable, "-c", no_read)
+            wire = Wire(transport_endpoint())
+            stop_flood = threading.Event()
+            flood_errors = []
+            flood = None
+            try:
+                wire.send({"op": "attach", "agent": "smoke-input-full", "cols": 80, "rows": 24})
+                ready = wire.line()
+                assert isinstance(ready, dict) and ready.get("type") == "events_ready", ready
+                screen = b""
+                deadline = time.monotonic() + 10
+                while b"not reading" not in screen and time.monotonic() < deadline:
+                    frame = wire.line(timeout=1)
+                    if isinstance(frame, dict) and frame.get("type") == "output":
+                        screen += base64.b64decode(frame["data"])
+                assert b"not reading" in screen, screen[-500:]
+
+                def flood_keyboard():
+                    try:
+                        encoded = base64.b64encode(b"x" * 65536).decode()
+                        for _ in range(512):
+                            if stop_flood.is_set():
+                                return
+                            wire.send({"op": "attach_input", "data": encoded}, timeout=5)
+                    except Exception as error:
+                        flood_errors.append(str(error))
+
+                flood = threading.Thread(target=flood_keyboard, daemon=True)
+                flood.start()
+                deadline = time.monotonic() + 20
+                while b"input dropped" not in screen and time.monotonic() < deadline:
+                    frame = wire.line(timeout=1)
+                    if isinstance(frame, dict) and frame.get("type") == "output":
+                        screen = (screen + base64.b64decode(frame["data"]))[-65536:]
+                stop_flood.set()
+                started = time.monotonic()
+                stopped = run("stop", "smoke-input-full", check=False, timeout=12)
+                line = wait_status("smoke-input-full", "exited", seconds=10)
+                elapsed = time.monotonic() - started
+                step("native keyboard backpressure was observed", b"input dropped" in screen, f"screen {screen[-300:]!r}; writer {flood_errors}")
+                step("stop remains bounded when the child ignores Ctrl-C and never reads its full keyboard", stopped.returncode == 0 and "exited" in line and elapsed < 10, f"{elapsed:.3f}s; {line}")
+                step("the daemon still answers after terminal backpressure", run("ping").returncode == 0)
+            finally:
+                stop_flood.set()
+                if flood is not None:
+                    flood.join(timeout=6)
+                wire.close()
         # Stopping an agent by pid checks the recorded birth before ending anything.
         helper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=project, env=env)
         try:

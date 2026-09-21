@@ -90,7 +90,7 @@ fn resize_terminal(terminal: &Terminal, cols: u16, rows: u16) -> std::io::Result
 struct Group(Pid, u32);
 #[cfg(unix)]
 impl Group {
-    fn of(child: &OwnedChild, _terminal: Option<&Arc<Terminal>>) -> anyhow::Result<Self> {
+    fn of(child: &OwnedChild, _input: Option<&mpsc::Sender<Vec<u8>>>) -> anyhow::Result<Self> {
         Ok(Self(Pid::from_raw(-(child.id() as i32)), child.id()))
     }
     fn ask(&self) {
@@ -106,23 +106,23 @@ impl Group {
 #[cfg(windows)]
 struct Group {
     job: agentdocker_host::launch::Job,
-    console: Option<Arc<Terminal>>,
+    input: Option<mpsc::Sender<Vec<u8>>>,
 }
 #[cfg(windows)]
 impl Group {
-    fn of(child: &OwnedChild, terminal: Option<&Arc<Terminal>>) -> anyhow::Result<Self> {
+    fn of(child: &OwnedChild, input: Option<&mpsc::Sender<Vec<u8>>>) -> anyhow::Result<Self> {
         Ok(Self {
             job: child.job().context("cannot hold the agent's job")?,
-            console: terminal.cloned(),
+            input: input.cloned(),
         })
     }
     fn ask(&self) {
-        use std::io::Write;
+        // Never write a pipe on the supervision loop: a child that does
+        // not read its keyboard must not block the force-stop deadline.
         let typed = self
-            .console
+            .input
             .as_ref()
-            .and_then(|console| console.writer().ok())
-            .and_then(|mut input| input.write_all(&[0x03]).ok());
+            .and_then(|input| input.try_send(vec![0x03]).ok());
         if typed.is_none() {
             self.end();
         }
@@ -265,7 +265,6 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
             "TERM",
             std::env::var("TERM").as_deref().unwrap_or("xterm-256color"),
         );
-    #[cfg_attr(windows, allow(unused_mut))] // the slave is taken on Unix only
     let mut pty = if launch.tty {
         Some(agentdocker_host::pty::Pty::open().context("cannot open a terminal for the agent")?)
     } else {
@@ -315,7 +314,7 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
         .transpose()
         .context("cannot clone the agent's terminal")?;
     #[cfg(windows)]
-    let console = pty.as_ref().map(|pty| pty.console());
+    let console = pty.as_mut().map(|pty| pty.console()).transpose()?;
     let log_path = launch.log.clone();
     let log = tokio::task::spawn_blocking(move || {
         agentdocker_host::dirs::secure_state_dir(
@@ -594,7 +593,7 @@ async fn supervise(
         }
     }
 
-    let group = match Group::of(&owned, shared.terminal.as_ref()) {
+    let group = match Group::of(&owned, shared.input.as_ref()) {
         Ok(group) => group,
         Err(error) => {
             return finish_failed(&shared, &child, format!("{error:#}"), &mut acknowledgement)
@@ -653,6 +652,17 @@ async fn supervise(
     if let Some(input) = input_task {
         input.abort();
         let _ = input.await;
+    }
+    // ConPTY owns the output pipe's write end even after the child exits.
+    // The pump holds Shared (and thus the terminal), so waiting for EOF
+    // before closing it deadlocks. Close on another thread while the pump
+    // continues draining, preserving the final bytes on older Windows too.
+    #[cfg(windows)]
+    if let Some(terminal) = shared.terminal.clone()
+        && let Err(error) = tokio::task::spawn_blocking(move || terminal.close()).await
+        && output_error.is_none()
+    {
+        output_error = Some(format!("cannot close the agent's console: {error}"));
     }
     while let Some(result) = tasks.join_next().await {
         if let Ok(Err(error)) = result
@@ -759,8 +769,8 @@ fn write_durably(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = std::fs::File::create(&staged)?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    std::fs::rename(&staged, path)?;
-    std::fs::File::open(path.parent().expect("exit file has a parent"))?.sync_all()
+    drop(file);
+    agentdocker_host::files::publish_staged(&staged, path)
 }
 
 /// One controller connection: hello, then commands in, reports out.
