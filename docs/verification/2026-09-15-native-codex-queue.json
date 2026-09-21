@@ -3617,7 +3617,7 @@
       "Receiver-only activation preserved the original provider and serving daemon; this is not a new public desktop release."
     ],
     "recurrence": {
-      "status": "Open: exact hook context went to a review subagent, not the bound root. Initial manual recovery remains valid but did not close routing.",
+      "status": "Corrected hook and receiver installed after exact actual-provider root/child acceptance. Native receipts resumed after explicit manual readback of the one misrouted offer; broader acceptance open.",
       "message": "9ca24aa8e53a4912",
       "hook_nonce": "147ce4066dc247f88233bf40e0c16377",
       "at": "2026-09-21T18:00:25.890Z",
@@ -3633,6 +3633,233 @@
       "root_receipt": false,
       "acknowledged_as_root": false,
       "candidate_fix": "Ignore child hooks before registration/activity/queue access; require root-scoped protocol2 for native hooks; propagate the remaining caller deadline."
+    },
+    "scope_fix": {
+      "source_commit": "613c28c451e0491afc402d6b07b8bdfeca3cfffc",
+      "source_dirty": false,
+      "binary_sha256": {
+        "agentdocker": "3d4a1ede8330148572a69d625e34f6b786c1df020682ce1729d7768479fc0584",
+        "agentd": "348f82b2a8acf86e9c86b3876f73868851a1420a07e26ac267c7052c663a48c2",
+        "agentdocker-ui": "554c9bac47734b6688c919f6efc6170ac85ecc0619d912f543596e6883fda872"
+      },
+      "gate": {
+        "rust_passed": 1330,
+        "rust_skipped": 7,
+        "python_run": 104,
+        "python_skipped": 1,
+        "fmt_strict_clippy_doctests_packaging_release": "passed"
+      },
+      "native_trial": {
+        "started_at": "2026-09-21T18:26:29.767963+00:00",
+        "scenario": "subagent-hook",
+        "active_peer_kind": "chat",
+        "reload_enabled": false,
+        "result": "passed",
+        "scope": "Exercise actual Codex native queue delivery using a private AgentDocker daemon.\n\nRequires the native Codex executable with thread/queue APIs. The loopback Responses\nfixture needs no provider account or network model service. A model tool invokes\nthe real verified hook. The startup scenario uses an actual SessionStart hook\nwith one-off trust for the sole vetted private fixture command; it does not\ntest the hook trust UI or change the user's saved configuration.\nThe original TUI retains its thread, draft and tool/permission behavior. Every\nscenario tests idle wake, draft preservation, mixed-origin busy FIFO, exclusive\nqueue ownership, provider receipts and automatic receiver crash recovery.\n\nExtra scenarios cover new/legacy MCP human answers, HTTP 429 hold/resume, and\nfault injection into the isolated receiver ledger (never the provider database),\nand explicitly closing/reopening the same TUI conversation with queued input.\nThe long-busy scenario holds a direct user turn for 65 seconds, verifies retained\npeer input without a false idle pause, then requires ordered provider receipts.\nActive-hook scenarios accept --active-peer-kind answer to exercise an ordinary\npeer reply at the queue head followed by human input in the same active turn.\nThe subagent-hook scenario uses a real child conversation on the same loopback\nprovider: its tool must leave root input queued until a root tool receives it.\nWith --reload, baseline/question also hand the private daemon over while idle,\nwith a draft, during a busy turn and (question only) before a pending answer.\nPrivate profiles/processes are retired; --output keeps private traces and a\nsanitized result.json suitable for review. This driver is explicit acceptance,\nnot a hermetic unit test or evidence for other providers/versions/platforms.\n",
+        "driver_sha256": "5f50cf1891266e53ad976db781925940d0f4b710881bda60b4b461114027f8d0",
+        "source": {
+          "commit": "613c28c451e0491afc402d6b07b8bdfeca3cfffc",
+          "dirty": false,
+          "rust_and_driver_sha256": "6abad357d9512b03d250ad34c3abcc886671e710b9f992b4c336d186fb2a2df7"
+        },
+        "provider_version": "codex-cli 0.154.0",
+        "cli_sha256": "3d4a1ede8330148572a69d625e34f6b786c1df020682ce1729d7768479fc0584",
+        "daemon_sha256": "348f82b2a8acf86e9c86b3876f73868851a1420a07e26ac267c7052c663a48c2",
+        "fixture_hook_trust": "one-off vetted private fixture hooks; no saved user policy changed",
+        "pid": 23417,
+        "thread": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+        "agent": "2b2409995b554e9c88d1f2baae062baa",
+        "automatic_hook_bootstrap": true,
+        "idle_wake_seconds": 7.204100875009317,
+        "cross_process_receipt": {
+          "thread": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+          "turn": "01a0c538-5c48-7cd0-bf93-a8b747b080e9",
+          "item": "01a0c538-5c52-71f0-8c9f-9e4e0555ba91"
+        },
+        "no_conversation_resume": true,
+        "daemon_receipt": {
+          "messages": [
+            "cc85582a9b3e4ce2"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+            "turn": "01a0c538-d183-7581-a858-fc414cf6ae5d",
+            "item": "01a0c538-d192-7452-a839-ad02b1bda0e7"
+          }
+        },
+        "completed_receipts": 5,
+        "automatic_receiver_restart_no_replay": true,
+        "idle_wake_after_receiver_crash": true,
+        "subagent_tool": {
+          "namespace": "multi_agent_v1",
+          "name": "spawn_agent"
+        },
+        "subagent_hook_scope": {
+          "message": "b6e0f792a82f42dc",
+          "root_thread": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+          "child_thread": "01a0c538-fdf2-7440-bb9d-a6e80651fcc7",
+          "native_queue_id": "01a0c539-0679-7801-acd2-ed21c4ea2387",
+          "child_left_native_queue_and_attempt_unchanged": true,
+          "child_received_root_context": false,
+          "root_receipt": {
+            "thread": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+            "turn": "01a0c538-fd7f-7801-b2c2-c99a950bf348",
+            "item": "msg_01a0c539-07f6-70c2-8b72-0a574d85a6fe"
+          },
+          "original_root_prompt": {
+            "item": "msg_01a0c538-fd8d-7842-8700-c55df212e8c8",
+            "turn": "01a0c538-fd7f-7801-b2c2-c99a950bf348"
+          },
+          "same_root_turn_without_replay": true,
+          "hook_metadata": [
+            {
+              "event": "PreToolUse",
+              "session_id": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+              "transcript_path": "/private/tmp/ad-native-queue-bs5wdlsh/profile/sessions/2026/09/21/rollout-2026-09-21T11-26-30-01a0c538-353c-7ad1-a47b-fd459088ea37.jsonl",
+              "turn_id": "01a0c538-3559-7db2-929e-889e5f57e33e"
+            },
+            {
+              "event": "PostToolUse",
+              "session_id": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+              "transcript_path": "/private/tmp/ad-native-queue-bs5wdlsh/profile/sessions/2026/09/21/rollout-2026-09-21T11-26-30-01a0c538-353c-7ad1-a47b-fd459088ea37.jsonl",
+              "turn_id": "01a0c538-3559-7db2-929e-889e5f57e33e"
+            },
+            {
+              "event": "PreToolUse",
+              "session_id": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+              "transcript_path": "/private/tmp/ad-native-queue-bs5wdlsh/profile/sessions/2026/09/21/rollout-2026-09-21T11-26-30-01a0c538-353c-7ad1-a47b-fd459088ea37.jsonl",
+              "turn_id": "01a0c538-fd7f-7801-b2c2-c99a950bf348"
+            },
+            {
+              "event": "PostToolUse",
+              "session_id": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+              "transcript_path": "/private/tmp/ad-native-queue-bs5wdlsh/profile/sessions/2026/09/21/rollout-2026-09-21T11-26-30-01a0c538-353c-7ad1-a47b-fd459088ea37.jsonl",
+              "turn_id": "01a0c538-fd7f-7801-b2c2-c99a950bf348"
+            },
+            {
+              "event": "PreToolUse",
+              "session_id": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+              "agent_id": "01a0c538-fdf2-7440-bb9d-a6e80651fcc7",
+              "agent_type": "default",
+              "transcript_path": "/private/tmp/ad-native-queue-bs5wdlsh/profile/sessions/2026/09/21/rollout-2026-09-21T11-27-21-01a0c538-fdf2-7440-bb9d-a6e80651fcc7.jsonl",
+              "turn_id": "01a0c538-fe2e-7291-97bf-5dde0d4b9519"
+            },
+            {
+              "event": "PostToolUse",
+              "session_id": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+              "agent_id": "01a0c538-fdf2-7440-bb9d-a6e80651fcc7",
+              "agent_type": "default",
+              "transcript_path": "/private/tmp/ad-native-queue-bs5wdlsh/profile/sessions/2026/09/21/rollout-2026-09-21T11-27-21-01a0c538-fdf2-7440-bb9d-a6e80651fcc7.jsonl",
+              "turn_id": "01a0c538-fe2e-7291-97bf-5dde0d4b9519"
+            },
+            {
+              "event": "PreToolUse",
+              "session_id": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+              "transcript_path": "/private/tmp/ad-native-queue-bs5wdlsh/profile/sessions/2026/09/21/rollout-2026-09-21T11-26-30-01a0c538-353c-7ad1-a47b-fd459088ea37.jsonl",
+              "turn_id": "01a0c538-fd7f-7801-b2c2-c99a950bf348"
+            },
+            {
+              "event": "PostToolUse",
+              "session_id": "01a0c538-353c-7ad1-a47b-fd459088ea37",
+              "transcript_path": "/private/tmp/ad-native-queue-bs5wdlsh/profile/sessions/2026/09/21/rollout-2026-09-21T11-26-30-01a0c538-353c-7ad1-a47b-fd459088ea37.jsonl",
+              "turn_id": "01a0c538-fd7f-7801-b2c2-c99a950bf348"
+            }
+          ],
+          "same_live_provider": true
+        },
+        "same_live_tui": true,
+        "draft_preserved": true,
+        "busy_order_preserved": true,
+        "model_requests": 13,
+        "agentdocker_integration": true,
+        "cleanup_errors": [],
+        "raw_result_sha256": "db456eee1364b2c3d16eab3b572e75956bd2366a9ca935425298c6a761c52fb6"
+      },
+      "failed_trials": [
+        {
+          "artifacts": "/private/tmp/agentdocker-subagent-hook-native-20260921",
+          "cause": "Child queue preservation/root receipt passed, but driver treated title requests as conversation requests and required the last user item to be the original prompt; actual Codex adds a child-completion user notification."
+        },
+        {
+          "artifacts": "/private/tmp/agentdocker-subagent-hook-native2-20260921",
+          "cause": "All behavior passed; the operator merged main during the trial, so its source-provenance guard correctly failed."
+        }
+      ],
+      "install": {
+        "candidate": {
+          "id": "ff4efc6188597b2fe1a27f7cc3f84b73fc8c2be10df78621dc09fbd465183fc4",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "613c28c451e0491afc402d6b07b8bdfeca3cfffc",
+          "state_schema": 23,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "ff4efc6188597b2fe1a27f7cc3f84b73fc8c2be10df78621dc09fbd465183fc4",
+          "version": "0.1.0"
+        },
+        "previous": {
+          "id": "9e75e83411405444f8772fcf3a51f9d56c40441eb3e5df5f363d96d2eea19ece",
+          "installation_lock": 1,
+          "launcher_redirect": 1,
+          "payload": "AgentDocker.app",
+          "source_commit": "ce82d06e4782f26fd6e18bcadd595b5920957653",
+          "state_schema": 23,
+          "target": "aarch64-apple-darwin",
+          "tree_sha256": "9e75e83411405444f8772fcf3a51f9d56c40441eb3e5df5f363d96d2eea19ece",
+          "version": "0.1.0"
+        },
+        "coordinator_reload": {
+          "answered": true,
+          "refusal": {
+            "code": "unavailable",
+            "message": "live daemon reload is unavailable: session owners, the coordinator fence and the successor handover are in place, but their acceptance matrix is still being recorded; set AGENTDOCKER_EXPERIMENTAL_RELOAD=1 on the daemon to allow it; the current daemon and agents remain running"
+          },
+          "reloaded": false,
+          "serving": {
+            "executable": "/Users/brandopakel/.local/share/agentdocker/desktop/versions/6bd97894a4d57348fa6e6907d72f5984994dca403510580f1308eed004978716/AgentDocker.app/Contents/MacOS/agentd",
+            "pid": 92608,
+            "version": "0.1.0"
+          },
+          "summary": "not reloaded (live daemon reload is unavailable: session owners, the coordinator fence and the successor handover are in place, but their acceptance matrix is still being recorded; set AGENTDOCKER_EXPERIMENTAL_RELOAD=1 on the daemon to allow it; the current daemon and agents remain running); agentd 0.1.0 keeps serving from /Users/brandopakel/.local/share/agentdocker/desktop/versions/6bd97894a4d57348fa6e6907d72f5984994dca403510580f1308eed004978716/AgentDocker.app/Contents/MacOS/agentd until `agentdocker daemon reload` succeeds or it is restarted"
+        },
+        "app_pid": 44748,
+        "receiver_pid": 42141,
+        "provider_pids_preserved": [
+          51242,
+          7794,
+          23973
+        ],
+        "provider_binding_token_preserved": true,
+        "backup": "/private/tmp/agentdocker-before-scope-install-20260921",
+        "backup_integrity": "ok",
+        "manual_message": "9ca24aa8e53a4912",
+        "manual_resolution": "d2e1cc66fe504a0f9022c88be71d246e",
+        "manual_is_native_receipt": false,
+        "first_subsequent_native_receipt": {
+          "process_started_at": "2026-09-12T23:36:03.055103Z",
+          "paused": false,
+          "pause_reason": null,
+          "reported_at": "2026-09-21T18:31:42.378358Z",
+          "received": {
+            "messages": [
+              "261c481ed3764883"
+            ],
+            "receipt": {
+              "provider": "codex",
+              "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+              "turn": "01a0c4c5-9716-7690-9c12-65d8000ce8ec",
+              "item": "msg_01a0c53c-828c-7ed3-b4f3-b513de55993e"
+            }
+          },
+          "received_at": "2026-09-21T18:31:14.278066Z"
+        }
+      },
+      "remaining": [
+        "Final-head review and CI",
+        "Fresh installed idle, sustained backlog/latency, sleep/reboot, additional provider versions",
+        "Independent physical keyboard/IME and full installed visual acceptance"
+      ]
     }
   }
 }

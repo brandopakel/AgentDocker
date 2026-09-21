@@ -261,8 +261,8 @@ context for `9ca24aa8e53a4912` reached a review **subagent**, not the root
 conversation. Codex child hooks use their parent's `session_id`; PID ancestry and
 that field alone do not establish which conversation receives hook output.
 The root correctly refused to count the child's receipt and retained the offer.
-This recurrence remains an installed-delivery blocker; the initial recovery did
-not close it.
+The initial recovery did not close this recurrence; the corrected hook and
+receiver were both installed only after the root/child trial passed.
 
 The candidate now reads `agent_id` and `agent_type` and skips child hooks before
 registration, activity reporting, receiver startup or legacy/native queue access.
@@ -274,8 +274,23 @@ restore active-turn hook delivery from an old client. Idle queue delivery is
 unchanged. The request carries the original monotonic deadline, leaving output
 time within the caller's four-second budget; delayed/expired requests cannot
 reserve a head. A timeout after reservation remains uncertain and is never
-automatically replayed. Targeted scope/deadline regressions pass; the actual
-root/child fixture and corrected installed acceptance remain pending.
+automatically replayed. Source `613c28c4` passed the combined gate (1,330 Rust
+tests/seven skipped, 104 Python checks/one skipped) and the actual Codex root/child
+trial: child tool hooks left the root queue and ledger unchanged, then one exact
+root receipt named the original root turn, with no child receipt or replay.
+Root hooks omit the child fields; real child hooks supply `agent_id` and
+`agent_type=default`. The first fixture failed an overly strict last-user-item
+assertion (Codex appends child notifications); a second passed behavior but was
+invalidated by a source merge during the run. Both failures remain recorded.
+
+Local desktop `ff4efc61` from `613c28c4` now supplies both the hook CLI and receiver
+PID 42141; app PID 44748 runs that release, including merged multiline input.
+The coordinator (92608), Codex (51242) and both Claude processes (7794/23973) stayed
+running. The original `9ca24aa8e53a4912` was read in the complete explicit preview
+and manually resolved under audit `d2e1cc66fe504a0f9022c88be71d246e`, never treated
+as a root native receipt. The next original message `261c481ed3764883` and later
+handoffs now have native root receipts. Broader live idle/busy throughput,
+sleep/reboot and additional versions remain open.
 
 Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human
