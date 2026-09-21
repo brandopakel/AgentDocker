@@ -388,9 +388,9 @@ or changing the saved conversation. This covers the Mac ARM CI failure at
 
 The standard suite includes strict lint, nextest, doctests, installer/package
 checks and release builds. Desktop CI packages and runs native workflow acceptance
-on macOS and Linux; Windows compiles the desktop/adapters and tests its existing
-core/host foundations. Full Windows daemon/ConPTY/service packaging remains
-separate platform work. Equivalent package size, launch time, memory and CPU
+on macOS and Linux; Windows builds and exercises the daemon/CLI over its native
+named pipe and tests the core/host foundations. ConPTY, full desktop/service
+packaging and real-provider Windows acceptance remain separate platform work. Equivalent package size, launch time, memory and CPU
 measurements must accompany release decisions, using exact binary provenance.
 See [distribution and signing](DESKTOP-DISTRIBUTION.md) for public release gates.
 

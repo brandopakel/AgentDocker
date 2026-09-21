@@ -2198,7 +2198,7 @@
     "result": "passed",
     "scope": "A pause survives a rollback attempt: the schema-23 daemon records a hold,\nan installed schema-22 daemon refuses to open that state, and the hold is\nstill there for the 23 daemon. Private home; never the production state.",
     "steps": [
-      "schema-23 daemon paused the project: paused aef60cbc5ffb \u2014 rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
+      "schema-23 daemon paused the project: paused aef60cbc5ffb — rollback trial hold; agents there take no new leases until `agentdocker pause --lift`",
       "pause --list shows the hold",
       "state.db at schema 23 with one pause document",
       "schema-22 daemon refused to start (exit 1); state.db unchanged (sha256 e352e94e548a), pause document retained",
@@ -3678,7 +3678,7 @@
         "kind": "Native fixture expected no pending input after adding a send probe",
         "artifacts": "/private/tmp/agentdocker-send-readiness-workflow-20260917",
         "elapsed_seconds": 215.8977894160198,
-        "result": "Warning/advice and exactly-one-queued-message checks passed, then readiness-ready timed out expecting Receiver active, awaiting first receipt. The new probe is still queued, so the correct app state is Queued \u00b7 awaiting provider receipt. The harness now expects that state and supplies both fixture IDs in the later simulated receipt; corrected rerun passed 496 rendered steps/29 checks across 11 windows. This was a fixture expectation error, not a provider receipt or live-model test."
+        "result": "Warning/advice and exactly-one-queued-message checks passed, then readiness-ready timed out expecting Receiver active, awaiting first receipt. The new probe is still queued, so the correct app state is Queued · awaiting provider receipt. The harness now expects that state and supplies both fixture IDs in the later simulated receipt; corrected rerun passed 496 rendered steps/29 checks across 11 windows. This was a fixture expectation error, not a provider receipt or live-model test."
       }
     ],
     "review": {
@@ -4688,7 +4688,7 @@
       },
       "corrections": [
         "Ignore response-fragment timestamps when deduplicating the same accounting identity, retain its first accepted hour, recognize legacy fingerprints, and still report changed counters.",
-        "Support observed Claude patch formats 2.1.271\u2013276 and replay old cursors so earlier unsupported records can be revisited.",
+        "Support observed Claude patch formats 2.1.271–276 and replay old cursors so earlier unsupported records can be revisited.",
         "Give a large complete record a fresh bounded batch instead of permanently quarantining it after an earlier prefix consumed that batch.",
         "Validate complete oversized non-accounting records without retaining their payload; preserve context through supported Codex compacted/response/item-completed records and report malformed or unknown accounting records.",
         "Report configuration explicitly: enabled before first discovery is starting, a disabled collector may retain totals, and older-daemon configuration is unknown."
@@ -5433,7 +5433,7 @@
       "chatgpt-browser   OpenAI        -                                      -                       -                          -     -                   0"
     ],
     "runtimes_note": "Claude (browser extension) is installed in the browser. Sessions in the browser run there and on the vendor's side; nothing on this machine speaks for them, so AgentDocker cannot list, message or lease for them. A bridge the browser launches for a command-line tool is that tool's helper, not a session, and adopting it is refused.",
-    "discover": "PID     RUNTIME       PROJECT       CWD                                              STARTED   COMMAND\n18563   claude-code   AgentDocker   /Users/brandopakel/AgentDocker                   4h ago    claude --resume 218845eb-ba1e-4457-bb5a-e1829f5652dd\n51242   codex         AgentDocker   /Users/brandopakel/AgentDocker                   4d ago    /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@o\u2026\n74334   claude-code   AgentDocker   /Users/brandopakel/AgentDocker                   32m ago   claude\n1285    codex         aistor        /Users/brandopakel/dev/minio-lab/source/aistor   7d ago    /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@o\u2026\n48719   claude-code   keel          /Users/brandopakel/keel                          3h ago    claude",
+    "discover": "PID     RUNTIME       PROJECT       CWD                                              STARTED   COMMAND\n18563   claude-code   AgentDocker   /Users/brandopakel/AgentDocker                   4h ago    claude --resume 218845eb-ba1e-4457-bb5a-e1829f5652dd\n51242   codex         AgentDocker   /Users/brandopakel/AgentDocker                   4d ago    /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@o…\n74334   claude-code   AgentDocker   /Users/brandopakel/AgentDocker                   32m ago   claude\n1285    codex         aistor        /Users/brandopakel/dev/minio-lab/source/aistor   7d ago    /opt/homebrew/lib/node_modules/@openai/codex/node_modules/@o…\n48719   claude-code   keel          /Users/brandopakel/keel                          3h ago    claude",
     "adopt_refusals": {
       "no_runtime": "Error: pid 1072 is Claude Code's bridge for the browser extension, not a session; there is nothing to adopt (Invalid)\nexit=1",
       "runtime_claude_code": "Error: pid 1072 is Claude Code's bridge for the browser extension, not a session; there is nothing to adopt (Invalid)\nexit=1"
@@ -5451,7 +5451,7 @@
   },
   "remote_connector_2026_09_17": {
     "date": "2026-09-17",
-    "status": "Passed at d14a862 on release binaries built from the committed source (state schema 23), on loopback without a tunnel: the vendor's side of the remote connector, scripted, ran 29 steps end to end \u2014 metadata discovery, a foreign callback refused at registration and Claude's accepted, the consent page, a wrong pairing code refused, the right one redirecting to Claude's callback with the code and state while registering nothing, a wrong PKCE verifier burning the code without leaving an agent, a fresh consent under the same name, the exchange registering `claude-browser-trial` in the project as `claude-browser`, a further consent under that live name refused on the page, `initialize` naming the agent and the browser, the messaging-only tool list, a `send_message` landing in the terminal agent's inbox attributed to the browser agent, `claim` refused by name, refresh rotation with the old token dead, `connector grants` active, `connector revoke` ending the tokens and marking the agent finished. The state file is mode 0600 and holds a refresh hash, no token. The same evening, a real Claude account connected through a cloudflared quick tunnel to the production daemon and delivered a message from claude-browser-qszf to keel's terminal sessions (`vendor_acceptance`); The next day the connector ran as a login service with a vendor allowlist, and both Claude and ChatGPT connected and delivered (`service_acceptance`), which also found and fixed the project-broadcast bug. Later that night the connector moved to Tailscale Funnel on this machine's own stable name, both vendors re-connected for what should be the last time, and MCP tool annotations let ChatGPT's reads through without a prompt (`stable_host_acceptance`). Then one connector was made to serve every project on the machine (the consent page chooses), Client ID Metadata Documents were accepted beside DCR with ChatGPT's real document fetched and admitted on release binaries, and the desktop's Tools screen gained the connector's state (`any_project_and_cimd`).",
+    "status": "Passed at d14a862 on release binaries built from the committed source (state schema 23), on loopback without a tunnel: the vendor's side of the remote connector, scripted, ran 29 steps end to end — metadata discovery, a foreign callback refused at registration and Claude's accepted, the consent page, a wrong pairing code refused, the right one redirecting to Claude's callback with the code and state while registering nothing, a wrong PKCE verifier burning the code without leaving an agent, a fresh consent under the same name, the exchange registering `claude-browser-trial` in the project as `claude-browser`, a further consent under that live name refused on the page, `initialize` naming the agent and the browser, the messaging-only tool list, a `send_message` landing in the terminal agent's inbox attributed to the browser agent, `claim` refused by name, refresh rotation with the old token dead, `connector grants` active, `connector revoke` ending the tokens and marking the agent finished. The state file is mode 0600 and holds a refresh hash, no token. The same evening, a real Claude account connected through a cloudflared quick tunnel to the production daemon and delivered a message from claude-browser-qszf to keel's terminal sessions (`vendor_acceptance`); The next day the connector ran as a login service with a vendor allowlist, and both Claude and ChatGPT connected and delivered (`service_acceptance`), which also found and fixed the project-broadcast bug. Later that night the connector moved to Tailscale Funnel on this machine's own stable name, both vendors re-connected for what should be the last time, and MCP tool annotations let ChatGPT's reads through without a prompt (`stable_host_acceptance`). Then one connector was made to serve every project on the machine (the consent page chooses), Client ID Metadata Documents were accepted beside DCR with ChatGPT's real document fetched and admitted on release binaries, and the desktop's Tools screen gained the connector's state (`any_project_and_cimd`).",
     "scope": "agentdocker connector serve/grants/revoke on release binaries in a private AGENTDOCKER_HOME with a release agentd, a registered external agent standing in for a terminal session, and a Python client (urllib, no OAuth library) performing discovery, RFC 7591 registration, the authorization code flow with PKCE S256, the token exchange, refresh, Streamable HTTP JSON-RPC and revocation. The public URL was the loopback bind address, which `serve` accepts only for loopback hosts.",
     "build": {
       "source_commit": "d14a862299307924b2a695b9d6c695d89340e96a",
@@ -5537,7 +5537,7 @@
         "step": "Claude's client registered",
         "ok": true,
         "detail": {
-          "client_id": "uBJyR78w\u2026"
+          "client_id": "uBJyR78w…"
         }
       },
       {
@@ -5561,7 +5561,7 @@
       {
         "step": "right pairing code redirects to Claude's callback with a code and the state",
         "ok": true,
-        "detail": "https://claude.ai/api/mcp/auth_callback?code=d652ptorRgu6WRm\u2026"
+        "detail": "https://claude.ai/api/mcp/auth_callback?code=d652ptorRgu6WRm…"
       },
       {
         "step": "consent alone registers no agent",
@@ -5631,7 +5631,7 @@
         "step": "the terminal agent's inbox holds it, attributed to the browser agent",
         "ok": true,
         "detail": [
-          "16:47:12  4e7c9b5570574e9e  25811318fe28 \u2192 e77b81b9e875  [chat]  From the browser: the docs page says the flag was renamed to --soak-bound; update the gate."
+          "16:47:12  4e7c9b5570574e9e  25811318fe28 → e77b81b9e875  [chat]  From the browser: the docs page says the flag was renamed to --soak-bound; update the gate."
         ]
       },
       {
@@ -5712,15 +5712,15 @@
     "also_covered_by_tests": "A daemon that is not answering during /mcp is a 503 with Retry-After and the grant stands (connector::tests::a_silent_daemon_does_not_end_a_grant); the loopback trial does not stop the daemon.",
     "vendor_acceptance": {
       "date": "2026-09-18T00:12:55Z",
-      "result": "Passed against a real Claude account on the installed production daemon (d14610b7) with the release CLI from d14a862: the connector for /Users/brandopakel/keel was served on loopback behind a cloudflared quick tunnel; claude.ai probed the metadata (its Add dialog showed \"Sign in now \u2014 Detected\" and \"Register automatically \u2014 Detected\"), registered its own OAuth client by DCR (client_name \"Claude\", redirect https://claude.ai/api/mcp/auth_callback), and sent the browser to the consent page with PKCE S256, state, scope and resource; the person typed the pairing code; the token exchange registered claude-browser-qszf (286aba983a4f45f6b46d3bebd5b1547f, runtime claude-browser, labels connector=true vendor=Claude) in keel; in a claude.ai chat, Claude called whoami, list_agents and send_message through the connector (each allowed once) and reported message_id b63531c321094bec, which the daemon shows from 286aba983a4f to project:59dbd732689f in the inboxes of both keel terminal sessions (claude-code-74455, claude-code-73929) and in keel's #everyone conversation.",
+      "result": "Passed against a real Claude account on the installed production daemon (d14610b7) with the release CLI from d14a862: the connector for /Users/brandopakel/keel was served on loopback behind a cloudflared quick tunnel; claude.ai probed the metadata (its Add dialog showed \"Sign in now — Detected\" and \"Register automatically — Detected\"), registered its own OAuth client by DCR (client_name \"Claude\", redirect https://claude.ai/api/mcp/auth_callback), and sent the browser to the consent page with PKCE S256, state, scope and resource; the person typed the pairing code; the token exchange registered claude-browser-qszf (286aba983a4f45f6b46d3bebd5b1547f, runtime claude-browser, labels connector=true vendor=Claude) in keel; in a claude.ai chat, Claude called whoami, list_agents and send_message through the connector (each allowed once) and reported message_id b63531c321094bec, which the daemon shows from 286aba983a4f to project:59dbd732689f in the inboxes of both keel terminal sessions (claude-code-74455, claude-code-73929) and in keel's #everyone conversation.",
       "tunnel": "cloudflared 2026.9.1 quick tunnel, https://safe-psp-generating-finding.trycloudflare.com (ephemeral hostname), TLS and public name by Cloudflare, connector bound to 127.0.0.1:62800",
       "steps": [
         "brew install cloudflared; a first quick tunnel's hostname was looked up locally before Cloudflare had published it and the ISP resolver cached NXDOMAIN (SOA negative TTL ~28 min); a second tunnel was confirmed at 1.1.1.1 before any local lookup and resolved locally at once",
         "agentdocker connector serve --public-url https://safe-psp-generating-finding.trycloudflare.com --bind 127.0.0.1:62800 in ~/keel; curl through the tunnel: protected-resource metadata 200, unauthenticated POST /mcp 401 with WWW-Authenticate resource_metadata",
-        "claude.ai Customize \u203a Connectors \u203a Add custom connector: name \"AgentDocker keel\", URL <public-url>/mcp; step 2 detected Sign in now and Register automatically; Add; the connector page offered Connect",
-        "Connect: DCR client registered (state.json: clients=[Claude, claude, [https://claude.ai/api/mcp/auth_callback]]); browser redirected to /authorize?response_type=code&client_id=\u2026&redirect_uri=https://claude.ai/api/mcp/auth_callback&code_challenge=\u2026&code_challenge_method=S256&state=\u2026&scope=agentdocker&resource=<public-url>/mcp",
+        "claude.ai Customize › Connectors › Add custom connector: name \"AgentDocker keel\", URL <public-url>/mcp; step 2 detected Sign in now and Register automatically; Add; the connector page offered Connect",
+        "Connect: DCR client registered (state.json: clients=[Claude, claude, [https://claude.ai/api/mcp/auth_callback]]); browser redirected to /authorize?response_type=code&client_id=…&redirect_uri=https://claude.ai/api/mcp/auth_callback&code_challenge=…&code_challenge_method=S256&state=…&scope=agentdocker&resource=<public-url>/mcp",
         "The Claude in Chrome extension had no site permission for trycloudflare.com, so the assistant could not act on the consent page; the person typed the pairing code and clicked Connect",
-        "connector log: consented to join keel as claude-browser-qszf; connected as claude-browser-qszf (286aba983a4f\u2026) in keel; `agentdocker ps` lists it in keel with runtime claude-browser, status running, DOING working; `connector grants`: active, last used seconds after connecting (claude.ai's first MCP calls)",
+        "connector log: consented to join keel as claude-browser-qszf; connected as claude-browser-qszf (286aba983a4f…) in keel; `agentdocker ps` lists it in keel with runtime claude-browser, status running, DOING working; `connector grants`: active, last used seconds after connecting (claude.ai's first MCP calls)",
         "claude.ai chat prompt: whoami, list_agents, send_message to \"project\"; three per-tool permission prompts answered Allow once; reply: agent claude-browser-qszf, agents user/codex-51242/claude-code-74231/claude-code-74334/codex-1285/claude-code-73929/claude-code-74455/claude-browser-qszf, message_id b63531c321094bec",
         "daemon: inbox --as claude-code-74455 and --as claude-code-73929 both hold b63531c321094bec from 286aba983a4f to project:59dbd732689f at 00:12:55Z; conversations --as claude-browser-qszf shows it in keel's #everyone"
       ],
@@ -5732,7 +5732,7 @@
     },
     "service_acceptance": {
       "date": "2026-09-18T00:57:48Z",
-      "result": "Passed on the connector installed as a launchd service (`agentdocker connector install --tunnel cloudflared --project /Users/brandopakel/keel --allow-from anthropic --allow-from @~/.agentdocker/connector/openai-connectors.json`) against the production daemon: the service started cloudflared itself, published a quick-tunnel hostname, and admitted 272 prefixes (Anthropic's /21 plus OpenAI's 271-prefix feed of 2026-09-18). From the public side the metadata was open and POST /mcp from this Mac's own address was refused 403 and logged. Claude's registration and token exchange came through the allowlist from Anthropic's range and registered claude-browser-oid2; ChatGPT (Pro plan, Developer mode on, New Plugin with OAuth, DCR chosen because CIMD is not advertised) registered a client with the per-connection callback https://chatgpt.com/connector/oauth/<id>, consented with the pairing code, and registered chatgpt-browser-cr0h. ChatGPT's first `send_message` to `project` (message 424ef88f8e214121) was archived under everyone:d15aacfd\u2026 \u2014 a project nobody was in \u2014 because the MCP server resolved `project` from the service's working directory `/`; it reached no inbox. After the fix (remote mode resolves `project` to the served root) the service was restarted with the fixed binary (new quick-tunnel hostname, both connectors re-added and consented: claude-browser-qhip, chatgpt-browser-fnvy), and ChatGPT's second broadcast 6deffabefa5f4fcc went to project:59dbd732689f \u2014 keel \u2014 and sits in claude-code-74455's inbox and nobody else's.",
+      "result": "Passed on the connector installed as a launchd service (`agentdocker connector install --tunnel cloudflared --project /Users/brandopakel/keel --allow-from anthropic --allow-from @~/.agentdocker/connector/openai-connectors.json`) against the production daemon: the service started cloudflared itself, published a quick-tunnel hostname, and admitted 272 prefixes (Anthropic's /21 plus OpenAI's 271-prefix feed of 2026-09-18). From the public side the metadata was open and POST /mcp from this Mac's own address was refused 403 and logged. Claude's registration and token exchange came through the allowlist from Anthropic's range and registered claude-browser-oid2; ChatGPT (Pro plan, Developer mode on, New Plugin with OAuth, DCR chosen because CIMD is not advertised) registered a client with the per-connection callback https://chatgpt.com/connector/oauth/<id>, consented with the pairing code, and registered chatgpt-browser-cr0h. ChatGPT's first `send_message` to `project` (message 424ef88f8e214121) was archived under everyone:d15aacfd… — a project nobody was in — because the MCP server resolved `project` from the service's working directory `/`; it reached no inbox. After the fix (remote mode resolves `project` to the served root) the service was restarted with the fixed binary (new quick-tunnel hostname, both connectors re-added and consented: claude-browser-qhip, chatgpt-browser-fnvy), and ChatGPT's second broadcast 6deffabefa5f4fcc went to project:59dbd732689f — keel — and sits in claude-code-74455's inbox and nobody else's.",
       "service_binary_sha256": "94535ae2bf17844138eefa4604693db79ef5e806f9c1770e8db45910bd9e9765",
       "service_binary_source": "built from the working tree whose code equals commit 8da5b9b (the docs of that commit were written after the build); the loopback trial below ran on the release build of 8da5b9b itself",
       "loopback_trial_on_8da5b9b": {
@@ -5745,7 +5745,7 @@
       },
       "observed": [
         "A first quick tunnel's hostname was looked up locally before Cloudflare published it and the ISP resolver cached NXDOMAIN for ~28 minutes; the connector now holds a new hostname back for four seconds before saying it.",
-        "claude.ai's Add dialog offers no URL edit; ChatGPT's plugin menu offers Edit name/description, Disconnect, Delete \u2014 a new hostname means remove and re-add on both, and one more consent each.",
+        "claude.ai's Add dialog offers no URL edit; ChatGPT's plugin menu offers Edit name/description, Disconnect, Delete — a new hostname means remove and re-add on both, and one more consent each.",
         "ChatGPT annotates every tool `open world, destructive, output schema recommended` and asks Allow once per call because the tools carry no MCP annotations; adding readOnlyHint/destructiveHint would let its `Allow low-risk actions` default apply.",
         "A connector added to a Claude account appears in every Claude surface of that account, including this Claude Code session, as the browser agent's tools; the connector's instructions now say not to use them from a session that has its own."
       ],
@@ -5762,7 +5762,7 @@
     "folded_from": "2026-09-17-remote-connector.json (folded into this record at review's request; the section keeps that record's fields)",
     "stable_host_acceptance": {
       "date": "2026-09-18T06:03:00Z",
-      "result": "Passed: the connector service reinstalled with `--tunnel tailscale` on the production daemon; the connector read the node's name from `tailscale status`, set `tailscale funnel --bg --https=443 http://127.0.0.1:57189`, and published https://brandos-macbook-pro.tail916334.ts.net/mcp \u2014 a name that does not change on restart and needed no domain. From outside, the metadata was open and POST /mcp from this Mac was refused 403 (its address arrives as a 100.x tailnet address, since a tailnet member reaches the node directly; internet traffic arrives through Funnel's ingress with the client's address in X-Forwarded-For). Claude was re-added (Add dialog detected Sign in now and Register automatically), its DCR and token exchange were admitted through the Anthropic range, and it connected as claude-browser-9gok; ChatGPT's plugin was deleted and re-created against the new address, its DCR was admitted through the OpenAI feed, and it connected as chatgpt-browser-nsq1 \u2014 this consent typed by the assistant, since the extension acts on `*.ts.net` pages (it would not on `trycloudflare.com`). With MCP tool annotations in place, ChatGPT ran `whoami` and `list_agents` with no prompt and asked only for `send_message`; message 17a8180d078d4bec went to project:59dbd732689f (keel) and sits in claude-code-74455's inbox and nobody else's.",
+      "result": "Passed: the connector service reinstalled with `--tunnel tailscale` on the production daemon; the connector read the node's name from `tailscale status`, set `tailscale funnel --bg --https=443 http://127.0.0.1:57189`, and published https://brandos-macbook-pro.tail916334.ts.net/mcp — a name that does not change on restart and needed no domain. From outside, the metadata was open and POST /mcp from this Mac was refused 403 (its address arrives as a 100.x tailnet address, since a tailnet member reaches the node directly; internet traffic arrives through Funnel's ingress with the client's address in X-Forwarded-For). Claude was re-added (Add dialog detected Sign in now and Register automatically), its DCR and token exchange were admitted through the Anthropic range, and it connected as claude-browser-9gok; ChatGPT's plugin was deleted and re-created against the new address, its DCR was admitted through the OpenAI feed, and it connected as chatgpt-browser-nsq1 — this consent typed by the assistant, since the extension acts on `*.ts.net` pages (it would not on `trycloudflare.com`). With MCP tool annotations in place, ChatGPT ran `whoami` and `list_agents` with no prompt and asked only for `send_message`; message 17a8180d078d4bec went to project:59dbd732689f (keel) and sits in claude-code-74455's inbox and nobody else's.",
       "found_and_fixed": [
         "Overwriting the service's running binary in place makes macOS kill every new invocation (exit 137: the code-signing cache no longer matches); the copy must be a new inode (rm, then cp).",
         "`launchctl bootstrap` right after `bootout` can fail with I/O error 5 because launchd unloads asynchronously; `connector install` now boots the old job out and waits for its label to be gone before bootstrapping.",
@@ -5813,8 +5813,8 @@
     "binaries": "/private/tmp/agentdocker-candidate-reconnect-becea18 (native-build.json beside them)",
     "project": "/private/tmp/newcomer-repo (a one-commit git repository made for the trial)",
     "what_a_newcomer_trips_on": [
-      "A claim conflict named the holder by id only (\"held by bcda6a8215eb\") where the README promises it \"says by whom\"; the daemon now names the holder (\"held by writer (bcda6a8215eb; exclusive on path:\u2026)\").",
-      "A send to a custom-runtime agent printed 'No verified input receiver \u2026 reconnect a supported input receiver' \u2014 advice that cannot be followed for a runtime with no adapter; the guidance now says such a session has no input receiver and the message waits in its queue for the agent's own read (inbox/watch --as <id>, or read_inbox).",
+      "A claim conflict named the holder by id only (\"held by bcda6a8215eb\") where the README promises it \"says by whom\"; the daemon now names the holder (\"held by writer (bcda6a8215eb; exclusive on path:…)\").",
+      "A send to a custom-runtime agent printed 'No verified input receiver … reconnect a supported input receiver' — advice that cannot be followed for a runtime with no adapter; the guidance now says such a session has no input receiver and the message waits in its queue for the agent's own read (inbox/watch --as <id>, or read_inbox).",
       "`agentdocker events` in the quick start is a live stream that blocks the terminal; the README now says so and names --replay N.",
       "A question asked of `user` by a daemon on another AGENTDOCKER_HOME still reached the Mac's notification center; answering it from the notification opened a second app window on that home with nothing saying it was not the usual one. Left as an observation: a trial daemon should say which home a notification is from, or notifications should be off for a non-default home."
     ],
@@ -6092,16 +6092,16 @@
     },
     "steps": [
       "desktop --prefix <trial home> install --from <active AgentDocker.app> --local-preview: launchers under <home>/.local/bin (agentd, agentdocker, agentdocker-ui) and <home>/Applications/AgentDocker.app; the trial's own agentdocker is used from here, since the versioned binary under the real home refuses a trial home ('a trial installation cannot use the system Applications folder').",
-      "runtimes from the fresh home: claude-code 2.1.278 and codex-cli 0.154.0 found on PATH, MCP no / HOOKS no for both \u2014 a first install; browser-extension inventory empty because Chrome profiles live under the real home.",
+      "runtimes from the fresh home: claude-code 2.1.278 and codex-cli 0.154.0 found on PATH, MCP no / HOOKS no for both — a first install; browser-extension inventory empty because Chrome profiles live under the real home.",
       "setup claude-code codex --dry-run names six writes (.claude.json MCP entry, .claude/settings.json hooks, .claude/skills/agentdocker/SKILL.md, .codex/config.toml, .codex/hooks.json, .codex/skills/agentdocker/SKILL.md); nothing written.",
       "setup --preview --json then setup --apply <id>: all six created. .claude.json mcpServers.agentdocker = <home>/.local/bin/agentdocker mcp --runtime claude-code --claude-channel, registered through Claude's own `mcp add --scope user` with a setup-receipt marker (Claude left .claude/backups/.claude.json.backup.*); .claude/settings.json: seven hook events (PreToolUse with the edit/read matcher, PostToolUse, SessionStart, SessionEnd, Stop, StopFailure async, UserPromptSubmit), each `agentdocker hook claude-code`, timeout 15; .codex/config.toml [mcp_servers.agentdocker] = agentdocker mcp --runtime codex; .codex/hooks.json eight events (Interrupt, PostCompact, PostToolUse, PreCompact, PreToolUse, SessionStart, Stop, UserPromptSubmit), each `agentdocker hook codex`; both skills with the same front matter.",
-      "setup --health: daemon reachable, per-runtime mcp/hooks checks name the files; runtimes after: claude-code MCP yes HOOKS yes, codex MCP yes HOOKS unverified \u2014 the apply output says Codex requires the person to review/trust the new hooks in /hooks.",
+      "setup --health: daemon reachable, per-runtime mcp/hooks checks name the files; runtimes after: claude-code MCP yes HOOKS yes, codex MCP yes HOOKS unverified — the apply output says Codex requires the person to review/trust the new hooks in /hooks.",
       "setup --shell --preview then --apply: <home>/.zshrc created with the marked block (a `claude` function adding AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 and --dangerously-load-development-channels server:agentdocker); setup --undo removed the file it had created.",
-      "setup --undo <applied plan id>: settings.json, config.toml, hooks.json and both SKILL.md removed; the .claude.json MCP entry removed (the file stays, mcpServers {} \u2014 Claude's own remove leaves it)."
+      "setup --undo <applied plan id>: settings.json, config.toml, hooks.json and both SKILL.md removed; the .claude.json MCP entry removed (the file stays, mcpServers {} — Claude's own remove leaves it)."
     ],
     "found": [
-      "Undo covers only a plan applied as that plan. Plain `agentdocker setup <runtimes>` (no --preview/--apply) writes the same files but records no plan of its own, and undoing the preview taken just before it is refused with '<file> changed after the last setup step; plan retained' \u2014 a coworker who runs plain setup has no undo. Either plain setup saves its receipt, or GUIDE/GUIDED-SETUP say undo needs preview + apply.",
-      "Codex receiver on a new machine: setup codex installs hooks.json with SessionStart; the receiver (`agentdocker codex-queue`, codex_input/external/bootstrap.rs) is started detached by that verified hook on the session's first turn once the person has trusted the hooks in Codex's /hooks \u2014 no maintainer step. CODEX-INPUT.md says this in history form, not as a first-install instruction.",
+      "Undo covers only a plan applied as that plan. Plain `agentdocker setup <runtimes>` (no --preview/--apply) writes the same files but records no plan of its own, and undoing the preview taken just before it is refused with '<file> changed after the last setup step; plan retained' — a coworker who runs plain setup has no undo. Either plain setup saves its receipt, or GUIDE/GUIDED-SETUP say undo needs preview + apply.",
+      "Codex receiver on a new machine: setup codex installs hooks.json with SessionStart; the receiver (`agentdocker codex-queue`, codex_input/external/bootstrap.rs) is started detached by that verified hook on the session's first turn once the person has trusted the hooks in Codex's /hooks — no maintainer step. CODEX-INPUT.md says this in history form, not as a first-install instruction.",
       "The desktop's versioned binary cannot drive a trial home; a trial installs into its prefix first. Right for a real coworker (their install is their prefix); one line for LOCAL-TRIAL.md."
     ],
     "not_claimed": "No Claude or Codex session was started against this configuration, so tool consumption, hook delivery, Codex /hooks trust and the channel consent are not shown; the isolated home has no Chrome profile, keychain or notification center of its own.",
@@ -6599,5 +6599,143 @@
         "Subsequent merge of main0468248 changes documentation only; no runtime change."
       ]
     }
+  },
+  "multiline_composer_2026_09_21": {
+    "date": "2026-09-21",
+    "status": "Multiline composer implemented; native-event and release graphical acceptance passed on 5f30e3fe. Integration, installation and physical keyboard/IME trials remain separate.",
+    "runtime_build": {
+      "source": "5f30e3fee55a81a9d3a95375875abfe938e56cc4",
+      "dirty": false,
+      "profile": "release",
+      "binaries": {
+        "agentd": "b86428b98de7b7d7907f14282a4030089fb57ccd8b7afadf5a9dbf1a0cb6b2f7",
+        "agentdocker": "69570423569cb084a8b82d566a5fd5e96be4fdf7a8b2b77fb76c8e9b4a1a9705",
+        "agentdocker-ui": "b51ab1d1e0953e6647329804800ca106e40771465c65b1c674e5c8f26a59ac00"
+      }
+    },
+    "standard_gate": {
+      "runtime_source": "5f30e3fee55a81a9d3a95375875abfe938e56cc4",
+      "result": "passed",
+      "rust_passed": 1314,
+      "rust_skipped": 7,
+      "python_checks": 94,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_package_release": "passed",
+      "log_sha256": "d3633f4083484fa0a2050ea8edfd29c2ed4537979b905113a2fa2a3ee002d2c0"
+    },
+    "native_widget_events": {
+      "passed": 9,
+      "scope": [
+        "focused Enter submits once; Shift-Enter inserts a newline",
+        "held Enter and IME preedit do not submit; Unicode commit preserves text",
+        "clipboard/copy/select-all retain multiline text",
+        "oversized insertion is refused without losing the existing suffix",
+        "recipient changes reset focus even with a static accessibility id",
+        "native cursor/selection/scroll actions reshape the viewport",
+        "drawn glyphs remain alive through unchanged view rebuilds; resize invalidates shape"
+      ]
+    },
+    "native_acceptance": {
+      "result": "passed",
+      "os": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+      "architecture": "arm64",
+      "steps": 580,
+      "windows": {
+        "restored-drafts": 37,
+        "row-reconnect": 7,
+        "readiness-received": 24,
+        "provider-limit": 15,
+        "readiness-activity": 33,
+        "readiness-ready": 24,
+        "workflows": 197,
+        "restored": 8,
+        "readiness-paused": 24,
+        "readiness-contact": 24,
+        "narrow-inbox": 128,
+        "constrained-panes": 59
+      },
+      "checks": [
+        "ended_session_search_shows_earlier_match_without_false_empty_state_and_keeps_genuine_no_match_state",
+        "structured_command_and_choice_controls_use_exact_shared_answer_routes_and_preserve_other_drafts",
+        "direct_human_input_uses_peer_inbox_queue_and_preserves_draft_across_navigation",
+        "reading_a_conversation_acknowledges_its_rows_and_clears_its_unread_count",
+        "rendered_actions",
+        "answer_and_draft_navigation",
+        "native_vt_rendering",
+        "terminal_attach_detach",
+        "channels",
+        "setup_review_apply_undo",
+        "launch_and_confirmed_stop",
+        "focused_control_reveal",
+        "compact_zoom",
+        "current_history_separation",
+        "project_attention",
+        "compact_session_navigation",
+        "folder_pin_has_no_project_files",
+        "same_project_after_launch",
+        "last_project_restore",
+        "quiet_project_retained",
+        "saved_appearance",
+        "send_warns_about_named_unbound_recipient_and_expands_reconnect_guidance_without_resending",
+        "rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause",
+        "provider_limit_resume_preserves_draft_receipts_and_retained_queue",
+        "ended_claude_session_row_offers_reconnect",
+        "narrow_inbox_shows_list_or_one_conversation_and_routes_notifications_and_keeps_drafts_across_switch_and_resize",
+        "a_card_filed_in_the_window_was_pulled_once_by_an_agent_shown_with_its_holder_moved_on_by_the_person_and_archived",
+        "enter_sends_and_sidebar_channel_creation_and_invitation_reach_the_exact_members",
+        "maximum_saved_columns_shrink_or_use_one_pane_and_zoom_reflows_without_losing_drafts_or_preferences",
+        "unfinished_board_card_reopens_in_its_project_without_filing_or_changing_any_card",
+        "normal_close_flushes_multiline_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them"
+      ],
+      "elapsed_seconds": 152.28845991700655,
+      "report_sha256": "2bdb9946a9ffd27a96aae3a6f8d6622fa9ac3dff07b171e6cca07e32a02da567",
+      "timeline_sha256": "012ea36dc5ec5ca0c59e459d8f29b950b71509cebc5e590339e7a93781b1f8e7",
+      "visual_review": {
+        "result": "passed; multiline text and Unicode glyphs visible in conversation/thread/session/channel and retained answer screenshots",
+        "screenshots": {
+          "restored-conversation-and-thread.png": "979ec69662df713880a82dcc699c2d34cbfd56b0b4f8d121caf3917b54783eca",
+          "restored-session.png": "78e706c162b6f7a36b6de852cdad4f428ba70b088fc683e8678c2f7eb4179085",
+          "restored-channel.png": "cc051ec31baff32ff8cde3a990dfdcc119aed0d5ce6a6291506b7c49df94a1c4"
+        }
+      },
+      "scope": "Native rendered callbacks, real fixture daemon/storage, normal close/reopen and visual captures. Does not assert physical key presses, provider consumption or installed acceptance.",
+      "idle_resources": {
+        "result": "not_run",
+        "reason": "Explicit --skip-idle-measurement: foreground CPU/RSS sample omitted; no idle performance claim."
+      }
+    },
+    "retained_failures": [
+      {
+        "source": "cb25f067358397a9b733b8a789495dabba01a6e4",
+        "profile": "debug",
+        "result": "failed",
+        "completed_first_window_steps": 196,
+        "failure": "Launched fixture remained running after two Stop clicks. Slow transitions suggest the five-second confirmation expired; exact click timings were not retained. Driver now waits for the Stop control to disappear and still requires the exact launched record to exit.",
+        "report_sha256": "233d7fb83b101ab42ef8d2b83da748664288a5bcfd7d4a4d8331169ac6bd0577"
+      },
+      {
+        "source": "126d5d3f878c7a177d9a140db8f7aac77bc4442d",
+        "profile": "release",
+        "result": "visual acceptance failed despite 580 rendered steps and 31 action/state checks passing",
+        "failure": "Composer text primitives were invalidated by unchanged layout calls, leaving blank glyphs in captures. No installation or successful visual acceptance was claimed. Fixed by retaining the shape until inputs change.",
+        "report_sha256": "45ede143bc55dd0a01d4972550ff02367d1113fd2d4fda3f3cd82a6911d645c7"
+      },
+      {
+        "result": "controlled regression failed as expected with shape-cache guard disabled; fixed code restored afterward",
+        "assertion": "unchanged layout discarded drawn glyphs",
+        "log_sha256": "9dc8f7832d99d2503e7d169f94e1cf631249a619baace8152aeb3a91178eeef7"
+      }
+    ],
+    "integration": {
+      "main_merged": "7a3e0c251c07087fe7588a7d6bdabc71e0bf3cee",
+      "merge_commit": "9ef54590",
+      "ui_and_native_driver_unchanged_by_merge": true,
+      "combined_gate": "pending"
+    },
+    "remaining": [
+      "Final integration/CI and installation",
+      "Physical keyboard, IME and supported screen-reader trials",
+      "Other-platform candidate acceptance; no idle performance measurement in this trial"
+    ]
   }
 }

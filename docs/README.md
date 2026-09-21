@@ -35,7 +35,7 @@ Native delivery follow-ups: [desktop packaging and installation](DESKTOP-DISTRIB
 
 <a id="existing-document-audit-september-14-2026"></a>
 
-## Existing-document audit, September 14, 2026 (refreshed September 19)
+## Existing-document audit, September 14, 2026 (refreshed September 21)
 
 The September 14 audit covered **37 tracked Markdown files**: 34 here, the root README and
 coding instructions, and the container test README. It also checks the **61
@@ -67,8 +67,10 @@ The September 18 reconciliation checked GitHub merge metadata and ancestry for
 older records that still said final review/CI or installation was pending. Their
 original trial fields remain intact; a dated disposition now supplies the index
 summary. PRs #181/#182 are also merged and included in the current desktop preview. The
-current inventory is 40 Markdown files (including the connector document and
-trial issue template) and 67 verification records. The September 19 audit
+September 19 inventory was 40 Markdown files (including the connector document
+and trial issue template) and 67 verification records. The merged Windows trial
+adds one existing record, bringing September 21 coverage to 68; no additional
+planning document is needed. The September 19 audit
 rechecked every document's disposition, merged source through `14f1c519`,
 installed component identities, actual release assets and release policy.
 Current UI preview source is `ce82d06`; the serving coordinator stays at
@@ -86,7 +88,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Trial issue template](../.github/ISSUE_TEMPLATE/trial-report.md) | Complete reporting route: actual versions, reproduction steps and expected/observed behavior; private paths and content should be redacted. |
 | [Coding instructions](../CLAUDE.md) | Reference: source layout, one build campaign, strict verification and source review. The pure-core rule holds: environment reads live in the host crate. |
 | [This index](README.md) | Reference: complete file inventory and one current backlog/crosswalk. |
-| [Remaining work](REMAINING-WORK.md) | Current backlog: completed implementation is separated from open engineering, release setup and acceptance. Shared chat (#200) and Usage refresh (#207) are merged; build-campaign ownership (#204), Windows daemon/CLI (#206), ordinary setup receipts (#208), current downloadable desktops and independent-machine acceptance remain. |
+| [Remaining work](REMAINING-WORK.md) | Current backlog: completed implementation is separated from open engineering, release setup and acceptance. Shared chat (#200) and Usage refresh (#207) are merged; build-campaign ownership (#204) and Windows daemon/CLI (#206) are also merged. Ordinary setup receipts (#208), multiline composer integration, current downloadable desktops and independent-machine acceptance remain. |
 | [Delivery plan](DELIVERY-PLAN.md) | Historical checkpoints retained; T01–T12/L01–L15 dispositions refreshed. Current component identities and bounded Claude idle/receipt acceptance are reconciled; old pending notes do not reopen completed implementation. |
 | [Remote connector](REMOTE-CONNECTOR.md) | Implemented: inventory/helpers, local OAuth/MCP, both real vendors, login service, stable Tailscale host, project routing and allowlisting. Real-account CIMD, desktop service start/install and periodic egress-feed refresh remain. Browser models poll; no idle-wake claim. |
 | [Product direction](PRODUCT-DIRECTION.md) | Partial delivery: single-host implementation includes Messages, Board/drafts, project pause, reconnect and initial usage collection. Signed downloads, wider provider acceptance, native Windows and independent Linux/Mac trials remain; federation is deferred. |
@@ -112,7 +114,7 @@ current tracker. **Deferred** identifies existing optional proposals.
 | [Local trial](LOCAL-TRIAL.md) | Partial: isolated/native/provider/local installation trials exist; the overnight stage has a [7.5-hour record](verification/2026-09-14-overnight-sustained-use.json) and retention a [20-minute record](verification/2026-09-15-retention-sustained-use.json); sleep/reboot and independent-machine stages incomplete. The first coworker rollout requires macOS, Linux and native Windows acceptance. |
 | [Testing and benchmarks](TESTING-AND-BENCHMARKS.md) | Partial: standard/CI/fuzz/benchmark tools and the sustained-use and retention workload scripts exist with their records; failure diagnosis and platform matrices incomplete. |
 | [macOS test runner](TEST-RUNNER-MACOS.md) | Reference: reproduced descriptor inheritance and validated strict serial workaround; remove only after an upstream fix passes its controls. |
-| [Windows port](WINDOWS-PORT.md) | Partial: native core/host/named-pipe foundations; full daemon/GUI, ConPTY, service and installer remain; required for the first coworker rollout. |
+| [Windows port](WINDOWS-PORT.md) | Daemon/CLI foundation complete in #206 with 17 native Windows smoke steps; ConPTY, full desktop, service, installer and real-provider acceptance remain required for the first coworker rollout. |
 | [Container engines](CONTAINER-ENGINES.md) | Partial: optional engines/workspaces implemented; Mac engine acceptance and documented unsupported capabilities remain. |
 | [Container test README](../tests/containers/README.md) | Reference with partial acceptance: separate engine/lifecycle/relay fixtures; Linux CI and earlier Mac Podman evidence do not establish current Docker Desktop acceptance. |
 | [September 4 audit](AUDIT-2026-09-04.md) | Historical: retain original baseline; current fixes and open work supersede its status. |
