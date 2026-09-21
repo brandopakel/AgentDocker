@@ -163,7 +163,9 @@ and failed sends. Successful delivery does not prove the agent consumed an answe
 **Tools** starts with installed tools. **Details** reveals executable paths,
 versions and MCP/hooks configuration. **Other supported tools** expands the rest
 of the inventory. **Review setup**, **Apply reviewed changes**, and **Undo this
-setup** use saved plans. **Check connections** provides bounded diagnostics;
+setup** use saved plans. Ordinary `agentdocker setup <runtime>` also saves an
+undo receipt and prints its ID; `setup --show ID` reviews it and `setup --undo ID`
+reverses only unchanged configuration. **Check connections** provides bounded diagnostics;
 actual provider delivery requires a real round trip.
 
 ### Usage
