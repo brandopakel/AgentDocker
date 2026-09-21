@@ -1007,7 +1007,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             line,
-            r#"cmd.exe /e:ON /v:OFF /d /c ""C:\tools\shim.cmd" "hello world" "a&b" "100%%cd:~,%" plain "" "back\\""#
+            r#"cmd.exe /e:ON /v:OFF /d /c ""C:\tools\shim.cmd" "hello world" "a&b" "100%%cd:~,%" plain "" "back\\"""#
         );
         let refused =
             batch_command_line(Path::new(r"C:\tools\shim.cmd"), [OsStr::new("x\ny")]).unwrap_err();
