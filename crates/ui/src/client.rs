@@ -241,7 +241,13 @@ impl Client {
         }
         let lock_path = paths::daemon_lock(&self.home, &self.socket);
         if let Some(parent) = lock_path.parent() {
-            if parent == paths::socket_dir(&self.home) && parent != self.home {
+            if cfg!(windows) && parent == self.home {
+                // Protect the state home before creating its lock. A plain
+                // directory from an elevated Windows process can belong to
+                // Administrators, which the daemon correctly refuses.
+                dirs::secure_state_dir(&self.home)
+                    .with_context(|| format!("home {} is unusable", self.home.display()))?;
+            } else if parent == paths::socket_dir(&self.home) && parent != self.home {
                 dirs::ensure_private_dir(parent)?;
             } else {
                 std::fs::create_dir_all(parent)?;

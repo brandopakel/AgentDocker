@@ -3171,11 +3171,12 @@ fn shell_words(line: &str) -> Option<Vec<String>> {
 /// button that shells out. Comparing against our own path costs one
 /// `canonicalize` and rules that out however the bundle is laid out.
 fn beside(name: &str) -> std::path::PathBuf {
+    let name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     let me = agentdocker_host::procinfo::executable_path().ok();
     let real = |path: &std::path::Path| path.canonicalize().ok();
     me.as_deref()
         .and_then(|me| me.parent())
-        .map(|dir| dir.join(name))
+        .map(|dir| dir.join(&name))
         .filter(|sibling| sibling.is_file())
         .filter(|sibling| real(sibling) != me.as_deref().and_then(real))
         .unwrap_or_else(|| std::path::PathBuf::from(name))

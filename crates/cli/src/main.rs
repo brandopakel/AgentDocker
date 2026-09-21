@@ -3811,9 +3811,10 @@ fn desktop_app_from(
     applications: &[PathBuf],
     search_path: &[PathBuf],
 ) -> Option<PathBuf> {
+    let binary = format!("agentdocker-ui{}", std::env::consts::EXE_SUFFIX);
     if let Some(sibling) = executable
         .and_then(|exe| exe.parent())
-        .map(|dir| dir.join("agentdocker-ui"))
+        .map(|dir| dir.join(&binary))
         .filter(|sibling| sibling.is_file())
     {
         return Some(sibling);
@@ -3833,7 +3834,7 @@ fn desktop_app_from(
     }
     search_path
         .iter()
-        .map(|dir| dir.join("agentdocker-ui"))
+        .map(|dir| dir.join(&binary))
         .find(|candidate| candidate.is_file())
 }
 
@@ -4225,6 +4226,7 @@ mod tests {
 
     #[test]
     fn desktop_launch_prefers_matching_release_over_installed_app_and_path() {
+        let binary = format!("agentdocker-ui{}", std::env::consts::EXE_SUFFIX);
         let temp = tempfile::tempdir().unwrap();
         let binaries = temp.path().join("release");
         let applications = temp.path().join("Applications");
@@ -4233,11 +4235,7 @@ mod tests {
         for dir in [&binaries, legacy.parent().unwrap(), &fallback] {
             std::fs::create_dir_all(dir).unwrap();
         }
-        for file in [
-            binaries.join("agentdocker-ui"),
-            legacy,
-            fallback.join("agentdocker-ui"),
-        ] {
+        for file in [binaries.join(&binary), legacy, fallback.join(&binary)] {
             std::fs::write(file, "fixture").unwrap();
         }
         assert_eq!(
@@ -4246,7 +4244,7 @@ mod tests {
                 &[applications],
                 &[fallback]
             ),
-            Some(binaries.join("agentdocker-ui"))
+            Some(binaries.join(&binary))
         );
     }
 

@@ -269,9 +269,20 @@ WAL and SHM ownership/protection before the crash, after it, and after recovery.
 Native acceptance of this storage correction is pending. The broader daemon/CLI
 test fixtures still contain Unix-only APIs and do not yet compile as native Windows tests.
 
-Not in this slice: the desktop's own terminal pane on Windows (it reads
-the same protocol; its rendering is the desktop slice), provider
-inventory, services, installer.
+The desktop terminal pane already uses the shared blocking IPC transport,
+including Windows named pipes. Native graphical acceptance of its rendering,
+keyboard input, resize and lifecycle still needs a packaged Windows trial.
+Desktop startup now secures the state home before creating its autostart lock,
+and CLI/GUI sibling lookup uses the platform executable suffix. These fix
+first-run ownership and `.exe` lookup. The Windows workflow now links all three
+executables and runs an opt-in `--desktop` trial: a source-built window starts its
+own private daemon from an absent home, connects, renders a PNG and exits under
+bounded deadlines. The test retains the GUI result/log/capture and verifies that
+its private daemon remains reachable before cleanup. Native graphical acceptance
+is pending; this is not an installer, real-provider or clean-machine trial.
+Opening an external project terminal or focusing an external agent terminal is
+not implemented on Windows. Provider inventory, services and the desktop
+installer remain outside this slice.
 
 ## Local connection boundary
 

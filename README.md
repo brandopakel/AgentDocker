@@ -29,7 +29,7 @@
 
 Coding agents are cheap to start and easy to lose track of. Run three of them against one repository and you get the same failure modes distributed systems solved decades ago: two agents editing the same file, an agent reasoning about context another agent just invalidated, and no shared channel to say "I've got this one" or "here's what I found". AgentDocker gives agents the primitives to coordinate, using the shape everyone already knows from containers.
 
-It is bare metal: a native per-user daemon and a native CLI talking over a Unix socket. Nothing is served over HTTP, nothing needs a browser, and nothing needs Docker — a container is one optional way to sandbox an agent, not the product.
+It runs on the host: a native per-user daemon, CLI and desktop using local IPC — Unix sockets on macOS/Linux and named pipes on Windows. Docker and the browser connector are optional adapters.
 
 If you know [herdr](https://github.com/herdrdev/herdr), the two are complements rather than rivals: herdr owns the terminals agents live in, AgentDocker owns what they may touch, what they changed, and who else needs to know. See [Where AgentDocker sits](docs/ARCHITECTURE.md#where-agentdocker-sits). The same goes for [Dax](https://getdax.app/) (a macOS menu-bar companion whose Shepherd window embeds herdr) and [Paprika](https://paprika.ai/) (a hosted Kanban board where agents pull cards over MCP): they say what the work is and where it lives; AgentDocker helps agents coordinate their work, surfaces conflicts, and records what happened. What is shared today, what is designed and what is only an idea is in the [landscape notes](docs/LANDSCAPE-2026-09-11.md) and the [herdr bridge](docs/HERDR-BRIDGE.md): a herdr, tmux, screen or zellij session is recognised and shown with the agent; a local board of cards with acceptance text, pulled once over a `task:<id>` lease, is in the app (the shape taken from Paprika); the herdr prompt/focus bridge and a Paprika card-to-lease bridge are proposals.
 
@@ -42,7 +42,7 @@ Windows foundations alone do not satisfy that requirement.
 Projects open to shared chat first, with clearly named agents and terminal
 access beside the conversation. **Open project terminal** starts a shell in the
 project folder; **Agents** opens the session list. The shared-chat interface is merged
-and installed as an earlier local preview. Message composers now support multiple
+and installed in the local macOS preview. Message composers now support multiple
 lines: **Enter** sends, **Shift+Enter** adds a line. Board, history and technical activity remain
 available under More. The [remaining-work tracker](docs/REMAINING-WORK.md)
 separates completed implementation, unmerged changes and release acceptance.
@@ -63,7 +63,7 @@ separates completed implementation, unmerged changes and release acceptance.
 | `docker export` | **handoff bundle** | Everything the daemon knows about an agent's work, handed to another agent or another machine |
 | pull request | **channel** | The room two agents share when they turn out to be changing the same files, where they talk and review each other's work |
 
-Agents don't need an SDK. Anything that can write a line of JSON to a Unix socket — a shell hook, a Python script, an MCP tool call — is a first-class participant. That is what makes it model- and vendor-agnostic: Claude Code, Codex, Gemini CLI, Cursor, and hand-rolled agents all coordinate through the same daemon.
+Agents don't need an SDK. Anything that can exchange a line of JSON over that local IPC — a shell hook, a Python script, an MCP tool call — is a first-class participant. That is what makes it model- and vendor-agnostic: Claude Code, Codex, Gemini CLI, Cursor, and hand-rolled agents all coordinate through the same daemon.
 
 Idle message delivery needs a provider input adapter as well. Managed Claude channels and the Codex bridge provide it. The existing-terminal Codex native queue is installed on the current Mac; peer input has started an idle turn, and fresh human-route, peer and project inputs have entered an active turn with exact receipts. Fresh startup, reopen and broader provider acceptance remain open. Other runtimes' coordination support does not establish idle wake. Current capabilities and remaining acceptance are in the [message audit](docs/MESSAGE-DELIVERY-AUDIT.md).
 
@@ -130,7 +130,8 @@ The daemon keeps scanning for agent processes on its own and announces them as `
 
 - **One host.** Agents on two machines do not see each other; a hand-off bundle carries work across, a shared registry does not.
 - **Waking an idle Claude Code session.** A Claude session takes a message the moment it is next at a prompt, or live if it was launched with the AgentDocker channel (`agentdocker setup claude-code` writes the MCP entry; the session must start with `--dangerously-load-development-channels server:agentdocker` and accept the consent prompt, or be relaunched so — the app tells you when a recipient cannot be woken). **Reconnect here** now resumes an eligible ended Claude session in the app with its conversation and queue; Claude displays its own consent. **Wake terminal sessions** in Tools (or `agentdocker setup --shell`) previews the shell configuration for future Claude launches. Existing plain sessions need a normal exit/reconnect. Codex uses its separate [input adapter](docs/CODEX-INPUT.md), whose startup and version limits remain explicit.
-- **Linux:** the CLI and daemon are exercised in CI on x86-64 and ARM64 and the desktop app builds and packages there, but no release has been tried on a real distribution by a person yet. **Windows:** the daemon and CLI now build and answer over native named pipes in CI. Supervised terminals, the desktop/service and installer path remain incomplete.
+- **Linux:** the CLI and daemon are exercised in CI on x86-64 and ARM64 and the desktop app builds and packages there, but no release has been tried on a real distribution by a person yet. **Windows:** the merged daemon/CLI foundation answers over native named pipes. ConPTY sessions in open #210 passed bounded native terminal and owner-lifetime checks, but daemon crash recovery failed on SQLite file ownership; the correction is awaiting native acceptance. Desktop, service, installer and real-provider acceptance remain, and no Windows desktop download is available. See the [Windows port status](docs/WINDOWS-PORT.md).
+- **Accessibility and input:** external accessibility-tree inspection and More/Agents/Chat navigation passed on the installed macOS preview. Physical keyboard, VoiceOver and IME acceptance remain open.
 - **Provider limits and account resets** are detected and recovered in bounded trials, not over days of real use.
 
 ### Report what you find

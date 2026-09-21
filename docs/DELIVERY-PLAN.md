@@ -7,9 +7,10 @@ For current engineering, acceptance and manual release work, start with
 [Remaining work](REMAINING-WORK.md) — its [road to v1](REMAINING-WORK.md#the-road-to-v1-a-release-other-people-can-install-and-try)
 is the short list between main and a release other people can install. The
 dated checkpoints below retain historical evidence; an old “pending” entry is
-not by itself a current implementation gap, and this plan is not extended
-further after September 18. It stays as the historical record of how the native
-product was delivered and what each checkpoint verified; it certifies nothing
+not by itself a current implementation gap. The current disposition and testing
+crosswalk are refreshed without extending the historical checkpoint log after
+September 18. It records how the native product was delivered and what each
+checkpoint verified; it certifies nothing
 that is still open — actual provider idle wake for every runtime, physical
 keyboard and IME input, Linux desktop acceptance on real distributions and
 Windows — and those open items live only in [Remaining work](REMAINING-WORK.md).
@@ -17,16 +18,42 @@ Windows — and those open items live only in [Remaining work](REMAINING-WORK.md
 ## Product and engineering requirements
 
 
-### Current integration and installation (September 19 UTC)
+### Current integration and installation (September 21 UTC)
 
-The [current component table](REMAINING-WORK.md#delivered-source-and-current-desktop)
-is authoritative: main `16bf69a`, installed shared-chat app/CLI `9e75e834`
-from `ce82d06`, retained coordinator `6bd97894`/PID 92608/schema 23, and
-Codex receiver `486c5dd0`/PID 60959. The different versions preserve active
-provider sessions; usage collection is merged but not active on that coordinator.
-#203 is merged; #200/#204 remain integration work. Source-specific packaged acceptance
-passed 545 rendered steps/31 checks and 13 install/rollback scenarios;
-physical-input and independent-machine acceptance remain.
+Main `56e29423` includes merged input recovery #211, docs reconciliation #212
+and accessibility redraw reduction #213. Installed macOS preview `30ce582a`
+uses runtime source `e33a45bd` (latest observed app PID 14485). The older serving
+coordinator and retained Codex receiver have separate identities in the
+[current component table](REMAINING-WORK.md#delivered-source-and-current-desktop);
+installing the app did not activate newer coordinator features.
+
+Unlocked external accessibility inspection of that preview passed with 716
+nodes, 212 buttons and four terminal actions; More expansion/collapse and
+Agents/Chat navigation passed. This establishes the bounded AX path, while
+physical keyboard, VoiceOver, IME and independent-machine acceptance remain.
+The latest public download is still `v0.1.0`, which predates the current desktop.
+
+Windows #210 remains open. Native run `35651993280` on `dcceff2d` passed ConPTY
+input/output, owner-death cleanup and input-backpressure stop (2.375 seconds),
+then failed daemon crash recovery on SQLite WAL ownership. The storage fix at
+`82bb2cd6` reached the permission observer in run `35653928599`, which failed
+before crash recovery. The observer correction at `dd801656` is being tested
+in run `35654650597`; the complete managed-session smoke is not yet a pass. See the [existing Windows record](verification/2026-09-19-windows-slice-one.json).
+Windows desktop, service, installer and real-provider acceptance remain open;
+there is no Windows desktop download.
+
+<a id="current-integration-and-installation-september-19-utc"></a>
+
+### Historical integration and installation (September 19 UTC)
+
+At that checkpoint, main was `16bf69a`, the installed shared-chat app/CLI was
+`9e75e834` from `ce82d06`, the retained coordinator was `6bd97894`/PID 92608/schema 23,
+and the Codex receiver was `486c5dd0`/PID 60959. The different versions preserved
+active provider sessions; usage collection was merged but not active on that
+coordinator. #203 was merged; #200/#204 were still integration work.
+Source-specific packaged acceptance passed 545 rendered steps/31 checks and
+13 install/rollback scenarios; physical-input and independent-machine acceptance
+remained open.
 
 #196/#199 reconnect and #202 peer-answer delivery are merged. The person's
 in-app Claude consent was followed by a peer-only idle project input and reply
@@ -531,7 +558,7 @@ integrations, GUI, full platform parity and live-upgrade work continue afterward
 | 2. Finish correctness and privacy | Restore must wait for durable protection and serving/watcher readiness. Failed persistence must not leave an uncontrolled writer or remove protection prematurely. Children must use their owning daemon. Close the process-spawn/database crash boundary and investigate retained unexplained failures. | Implemented restore readiness, private state, pre-exec launch gating, durable questions and output-drain fixes are merged and regression-tested. Pure-core cleanup and retention maintenance implementation are complete. Sleep/reboot/crash breadth, sustained retention acceptance and retained unexplained failures remain partial. |
 | 3. Complete native install and onboarding | Verify app/archive packaging, final signatures, preview/apply/undo, connection diagnostics, stable provider paths, pinned installation/update/rollback, uninstall and retention. Exercise interrupted activation and schema compatibility with live sessions. | Local app/CLI installation and legacy hook/MCP compatibility passed at PR #119; UI is installed in /Applications. Update consumer, scheduler, preview/apply/undo and rollback exist. Per-session configuration/contact/receiver/receipt states and required-provider guidance are implemented; PR #125 passed 165 native steps and a 90-second actual Codex queue/idle-heartbeat trial. Final review and installed-candidate readiness acceptance remain pending. Signed hosted distribution and broader acceptance remain. |
 | 4. Verify real integrations and discovery | Run fresh Claude Code hooks and Codex MCP sessions on the integrated candidate; prove actual inbox consumption, observation/staleness, conflicts and journal continuity. Expand desktop identities, installation locations and accurate capability reporting. | Managed Codex and Claude channels have actual shared human/peer queue, idle/busy/question and bounded recovery evidence. Broader review/elicitation forms, installed-version trials and longer sessions remain. Production duplicate repair awaits a safe daemon stop. |
-| 5. Deliver platform parity | Finish native Windows host/IPC/process/terminal/service/path/installer adapters and runtime CI. Complete Linux desktop inventory/packages and target-distribution GUI/service tests. Repeat the same semantic tests on each OS. | Four Mac/Linux desktop CI targets and Windows core/host/named-pipe foundations pass on main. Target-distribution/service, second-Mac/physical-Intel and full native Windows daemon/GUI/ConPTY/service/installer acceptance remain. |
+| 5. Deliver platform parity | Finish native Windows host/IPC/process/terminal/service/path/installer adapters and runtime CI. Complete Linux desktop inventory/packages and target-distribution GUI/service tests. Repeat the same semantic tests on each OS. | Four Mac/Linux desktop CI targets and Windows core/host/named-pipe foundations pass on main. Open #210 has bounded native ConPTY/lifetime passes; its SQLite crash-recovery correction awaits native acceptance. Target-distribution/service, second-Mac/physical-Intel and full native Windows daemon/GUI/service/installer acceptance remain; no Windows desktop download is published. |
 | 6. Integrate sustained-use features | Review #45/#47/#50 restart/backoff/dependency/policy/retention/reload work, including the reproduced agent termination and log-loss defects. Preserve batch and PTY I/O, process ownership, logs, schema and socket compatibility through replacement. Validate the actual replacement binary and successor readiness before the old daemon exits. | Policy/quotas, restart/backoff/dependencies, bounded logs and output ownership are merged. Automatic journal/checkpoint maintenance and independent session-owner processes are implemented and merged. Coordinator fencing, successor readiness and client/install handover are in source behind `AGENTDOCKER_EXPERIMENTAL_RELOAD`; without that gate reload refuses. Twenty private handovers and bounded Codex native-client idle/draft/busy/question trials passed. Real model-service/Claude and attached-terminal handovers, uncertain writes, replay retention and platform acceptance remain open; see [live upgrades](LIVE-DAEMON-UPGRADES.md). |
 | 7. Complete the extensive test program | Execute the testing-standard and local-trial crosswalk below, repair failures, retain original failure evidence, and rerun affected integrated scenarios. | Partial. Current T01–T12 and L01–L15 dispositions follow below. Short and hour-long trials exist; overnight, sleep/reboot, some failure diagnosis and independent-platform cases remain. |
 | 8. Install, trial elsewhere and release | After the preceding blockers pass, install the reviewed candidate on this Mac; then independent second-Mac and platform trials. Publish signed artifacts, checksums and accurate installation instructions for supported channels. | Local installation completed on this Mac. Running-daemon switch, independent machines, Developer ID/notarization, protected-tag publication and hosted update/cask acceptance remain. Public v0.1.0 is still the older release. |
@@ -551,7 +578,7 @@ Each finding records: ID, invariant, source/PR, reproduction and original output
 
 ## Testing-standard crosswalk
 
-This checklist covers every category in [TESTING-AND-BENCHMARKS.md](TESTING-AND-BENCHMARKS.md). The original baseline was `aaa1b61`; dispositions were reconciled on September 19 against current source and the linked source-specific evidence. **Passed** applies only to the stated scope; **partial** means an existing requirement is still untested or unfinished. Release acceptance must use the final candidate on applicable platforms.
+This checklist covers every category in [TESTING-AND-BENCHMARKS.md](TESTING-AND-BENCHMARKS.md). The original baseline was `aaa1b61`; dispositions were reconciled on September 19, with the September 21 Windows and accessibility observations incorporated below; all results retain their source-specific evidence. **Passed** applies only to the stated scope; **partial** means an existing requirement is still untested or unfinished. Release acceptance must use the final candidate on applicable platforms.
 
 | ID | Required work | Existing evidence requirements | Audited status and remaining evidence |
 |---|---|---|---|
@@ -577,12 +604,12 @@ Execute [LOCAL-TRIAL.md](LOCAL-TRIAL.md) in order. Every Stage 2 row below requi
 | L01 / 1 | Isolated build and launch | Matching CLI/daemon/GUI binaries from a pinned source, private state/socket/repository, standard gate, safe fixture-only ownership and cleanup. | Passed for PR #119: pinned CLI/daemon/GUI, isolated fixtures, standard gate, package validation and owned-process cleanup. The installed main provenance is recorded in its final PR comment. |
 | L02 / 2 | Startup and GUI | Normal/CLI/repeated launch, reopen, unavailable socket, long/missing/symlinked home; responsive native window, automatic refresh and no required TCP or engine throughout the trial. | Partial: four-target native CI plus final-source local window/workflow and Launch Services checks pass. Retained incomplete captures and broader installed/platform startup acceptance remain. |
 | L03 / 2 | Inventory and discovery | Idle CLI and desktop app, process start/change/exit/PID reuse, scan failure, app without shell PATH; preserve last good scan and distinguish actual capabilities. | Partial: discovery/identity/configuration fixtures pass; helpers are excluded in current source. The historical Chrome-helper record was removed and helper adoption is refused by current source. Actual capability proof, production reconciliation, current-version and Windows inventory remain. |
-| L04 / 2 | Managed processes | Batch/PTY input/output, attach/detach/resize, no-newline/noisy output, natural exit and stop/force-stop including descendants; preserve leases until verified exit. | Passed bounded Unix fixtures: [output-drain and pipe/PTY evidence](verification/2026-09-12-output-drain.json), desktop terminal and CLI lifecycle scenarios. This does not cover live ownership transfer or Windows ConPTY. |
+| L04 / 2 | Managed processes | Batch/PTY input/output, attach/detach/resize, no-newline/noisy output, natural exit and stop/force-stop including descendants; preserve leases until verified exit. | Passed bounded Unix fixtures: [output-drain and pipe/PTY evidence](verification/2026-09-12-output-drain.json), desktop terminal and CLI lifecycle scenarios. Windows `dcceff2d` also passed ConPTY input/output, owner-death and backpressure-stop checks, then failed SQLite WAL ownership during daemon crash recovery. The `82bb2cd6` correction awaits native acceptance; the complete Windows managed-session trial and broader live ownership transfer remain open. |
 | L05 / 2 | Coordination | Two writers through physical aliases, shared readers, FIFO waiting, timeout/disconnect and deadlock; actual blocker attribution. Include Windows spelling/case/reparse behavior. | Partial: native lease/FIFO/deadlock/stale/alias regressions and engine fixtures pass. Full Windows physical-path and process-lifetime integration remains. |
 | L06 / 2 | Working state | Read/observe/edit/stale/reread, watcher outage and gaps, journal cursor/reconnect; stale data cannot be accepted as fresh. | Partial: observation/journal tests and [100-repeat watcher regressions](verification/2026-09-11-macos-watcher-recovery.json) pass. Verify installed daemon after switching; longer outage/retention workloads remain. |
 | L07 / 2 | Handoff and validation | Source/image changes, timeout/survivors, checkpoint, addressed acceptance and lease transfer, wrong recipient and cross-host import; evidence and identity must match. | Partial: source/image validation, owned-fixture timeout/cleanup and addressed handoff regressions pass. Broad final-candidate/platform and provider-conversation restoration remain separate acceptance. |
 | L08 / 2 | Channels and contests | Membership, review/approval, wrong owner/checkout validation, reported metrics, ties/noise floor; no implied automatic merge. | Partial: channel/contest protocol and native workflow tests pass, and current peers exchange actual project/direct messages. That does not prove all actual review/verdict/closure and noise-floor scenarios on every platform. |
-| L09 / 2 | Human interaction | Questions/answers, timeout/disconnect, missing/denied notifications, GUI answer failures; delivery failure cannot imply the user saw a notification. | Partial: durable questions, exact provider-answer receipts, native routes and bounded installed Notification Center message/question/stale-target clicks pass. Zero-GUI-process launch passed on the recorded September 17 local preview; signed-release posting, later-candidate physical input and accessibility/IME remain. |
+| L09 / 2 | Human interaction | Questions/answers, timeout/disconnect, missing/denied notifications, GUI answer failures; delivery failure cannot imply the user saw a notification. | Partial: durable questions, exact provider-answer receipts, native routes and bounded installed Notification Center message/question/stale-target clicks pass. Zero-GUI-process launch passed on the recorded September 17 local preview. September 21 external AX traversal and More/Agents/Chat navigation passed on installed `30ce582a`; signed-release posting, physical keyboard, VoiceOver and IME acceptance remain. |
 | L10 / 2 | Multiplexers | Owned existing tmux session and new pane, invalid combinations, name collision and immediate exit; exact session and clear ownership/log limits. | Partial: environment/ancestry and owned tmux launch fixtures exist. Broad installed/platform acceptance remains; herdr focus/input bridge is an optional deferred design. |
 | L11 / 2 | Storage and restart | Graceful stop, forced death, write failure, missing executable/cwd, reboot/sleep/wake; no duplicate/unprotected launch, explicit stop retained. Exercise unresolved spawn/commit gap. | Partial: crash/restart/schema/restore failure fixtures pass; automatic journal/checkpoint retention is implemented with injected-failure and clock-skew tests. Sleep/wake, login/reboot and live replacement remain. |
 | L12 / 2 | Installation and update | Move/rename bundle, distinct-source update, rollback/uninstall, service preview, collision/tamper/stale input, schema and interrupted activation; stable references and explicit live-session behavior. | Passed local installation scope: PR #119 package activation/rollback/uninstall, legacy hooks/MCP and actual /Applications launch. Hosted signed updates, second-machine/service and live daemon replacement remain partial. |

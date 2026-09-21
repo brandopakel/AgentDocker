@@ -2794,7 +2794,7 @@ fn sibling_cli() -> Result<PathBuf, String> {
         .map_err(|error| format!("Cannot locate this app: {error}"))?;
     let cli = me
         .parent()
-        .map(|dir| dir.join("agentdocker"))
+        .map(|dir| dir.join(format!("agentdocker{}", std::env::consts::EXE_SUFFIX)))
         .filter(|cli| cli.is_file())
         .filter(|cli| cli.canonicalize().ok() != me.canonicalize().ok())
         .ok_or("The agentdocker command-line tool is not installed beside this app")?;

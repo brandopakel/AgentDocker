@@ -3,7 +3,8 @@ on a private home answers over the local transport (a named pipe on
 Windows, a Unix socket elsewhere) and the CLI registers, lists, sends,
 reads and stops through it, then exercises managed pipes and terminals,
 owner lifetime, terminal EOF and stop under keyboard backpressure. No
-provider, installed service or desktop is needed.
+provider or installed service is needed. Opt-in --desktop also checks a
+source-built native Windows window, fresh-home UI daemon startup and capture.
 
 Portable on purpose: the same steps run on macOS/Linux, so the script is
 checked before the Windows runner ever sees it."""
@@ -42,15 +43,20 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--desktop", action="store_true", help="also exercise native Windows UI startup and capture in a fresh private home")
     args = parser.parse_args()
+    if args.desktop and os.name != "nt":
+        parser.error("--desktop requires a native Windows session; use desktop_smoke.py on macOS/Linux")
     binary_dir = args.binary_dir.resolve(strict=True)
     exe = ".exe" if os.name == "nt" else ""
     cli = binary_dir / f"agentdocker{exe}"
     daemon_binary = binary_dir / f"agentd{exe}"
+    desktop_binary = binary_dir / f"agentdocker-ui{exe}"
+    binaries = (cli, daemon_binary, desktop_binary) if args.desktop else (cli, daemon_binary)
     report = {
         "scope": "Windows daemon/CLI and managed-session acceptance: private local transport, registry/messages/leases, terminal input/output/EOF, owner lifetime, and bounded stop under keyboard backpressure",
         "platform": f"{platform.system()} {platform.release()} {platform.machine()}",
-        "binary_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (cli, daemon_binary)},
+        "binary_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in binaries},
         "steps": [],
         "result": "failed",
     }
@@ -68,6 +74,7 @@ def main():
     home = base / f"agentdocker-smoke-{token}"
     fresh = base / f"agentdocker-smoke-{token}-fresh"
     homes = [home, fresh]
+    home_sockets = {}
     root = Path(tempfile.mkdtemp(prefix="agentdocker-smoke-")).resolve()
     project = root / "project"
     project.mkdir()
@@ -78,6 +85,7 @@ def main():
     # Console close must not block the async worker that drains its output.
     env["TOKIO_WORKER_THREADS"] = "1"
     daemon = None
+    window = None
     log = None
     managed_names = []
     owner_handles = []
@@ -374,6 +382,67 @@ def main():
             line = agent_status(name)
         return line
 
+    def desktop_trial():
+        nonlocal window
+        desktop_home = base / f"agentdocker-smoke-{token}-desktop"
+        endpoint = rf"\\.\pipe\agentdocker-smoke-{token}-desktop"
+        capture = args.output.resolve() / "desktop"
+        desktop_env = {
+            "AGENTDOCKER_HOME": str(desktop_home),
+            "AGENTDOCKER_SOCKET": endpoint,
+            "AGENTDOCKER_NO_AUTOSTART": "1",
+        }
+        desktop = {
+            "scope": "source-built native Windows window, fresh-home UI daemon autostart, connection, runtime rows and renderer capture",
+            "tcp_observation": "not_measured",
+            "capture_directory": "desktop",
+            "result": "running",
+        }
+        report["desktop"] = desktop
+        write_report()
+        try:
+            # No command may start or initialize this home before the UI. Its
+            # explicit endpoint also prevents forwarding into another window.
+            step("the desktop trial starts with no prior home or capture", not desktop_home.exists() and not capture.exists())
+            # Register cleanup before any child can create its private daemon.
+            homes.append(desktop_home)
+            home_sockets[desktop_home] = endpoint
+            absent = run("ping", check=False, timeout=5, extra_env=desktop_env)
+            step("the desktop endpoint is absent with CLI autostart disabled", absent.returncode != 0 and not desktop_home.exists(), (absent.stderr + absent.stdout).strip())
+            started = time.monotonic()
+            with (args.output / "desktop.log").open("wb") as window_log:
+                window = subprocess.Popen(
+                    [str(desktop_binary), "--smoke-test", str(capture), "--smoke-deadline", "60"],
+                    cwd=project,
+                    env=dict(env, **dict(desktop_env, AGENTDOCKER_NO_AUTOSTART="0")),
+                    stdin=subprocess.DEVNULL, stdout=window_log, stderr=subprocess.STDOUT,
+                )
+                desktop["pid"] = window.pid
+                write_report()
+                # Let the application's own deadline retain its failure report;
+                # bound a deadlocked window separately instead of waiting forever.
+                window.wait(timeout=75)
+            desktop["exit_code"] = window.returncode
+            desktop["elapsed_seconds"] = time.monotonic() - started
+            step("the native desktop exits within its smoke deadline", window.returncode == 0, f"exit={window.returncode}, elapsed={desktop['elapsed_seconds']:.3f}s; see desktop.log")
+            observed = json.loads((capture / "result.json").read_text(encoding="utf-8"))
+            desktop["native_result"] = observed
+            step("the native desktop connects and captures a ready window", observed.get("result") == "passed" and observed.get("connected") is True and observed.get("runtime_rows", 0) > 0 and observed.get("screenshot_requested") is True, observed)
+            png = (capture / "window.png").read_bytes()
+            step("the native renderer retains a nonempty PNG", png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) >= 1000, f"{len(png)} bytes")
+            desktop["screenshot_sha256"] = hashlib.sha256(png).hexdigest()
+            # The UI has exited. This probe cannot start a daemon itself, so a
+            # reply proves the UI started the private endpoint and left it alive.
+            alive = run("ping", check=False, timeout=5, extra_env=desktop_env)
+            step("the UI-started private daemon answers after the window exits", alive.returncode == 0, (alive.stderr + alive.stdout).strip())
+            desktop["result"] = "passed"
+            write_report()
+        except Exception as error:
+            desktop["result"] = "failed"
+            desktop["error"] = f"{type(error).__name__}: {error}"
+            write_report()
+            raise
+
     def wait_exit(process, seconds=10):
         for _ in range(int(seconds * 10)):
             if process.poll() is not None:
@@ -397,6 +466,8 @@ def main():
         step("the daemon answers ping over the local transport", probe.returncode == 0, detail)
         status = run("daemon", "status")
         step("daemon status names the serving executable", str(daemon_binary.name) in status.stdout, status.stdout.strip())
+        if args.desktop:
+            desktop_trial()
         first = run("register", "--name", "smoke-one", "--runtime", "custom", "--pid", str(os.getpid()))
         second = run("register", "--name", "smoke-two", "--runtime", "custom", "--pid", str(daemon.pid))
         ids = (first.stdout.strip(), second.stdout.strip())
@@ -629,6 +700,14 @@ def main():
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
     finally:
+        # Stop only the window created above before tearing down its daemon.
+        # Keep capture/result/log artifacts even when startup or cleanup failed.
+        if window is not None and window.poll() is None:
+            try:
+                window.kill()
+                window.wait(timeout=5)
+            except Exception as error:
+                report.setdefault("cleanup", []).append(f"desktop cleanup: {error}")
         # An owner deliberately outlives its daemon. End fixture sessions
         # while the daemon can still reach them, before killing the daemon
         # or removing its state. If the crash trial lost its replacement,
@@ -695,6 +774,8 @@ def main():
         for made in homes if user_service is None else ():
             try:
                 cleanup_env = {"AGENTDOCKER_HOME": str(made), "AGENTDOCKER_NO_AUTOSTART": "1"}
+                if made in home_sockets:
+                    cleanup_env["AGENTDOCKER_SOCKET"] = home_sockets[made]
                 run("daemon", "stop", timeout=15, extra_env=cleanup_env)
                 if run("ping", check=False, timeout=5, extra_env=cleanup_env).returncode == 0:
                     raise AssertionError("private daemon still answers after stop")
