@@ -105,7 +105,10 @@ impl OwnedChild {
         self.pid
     }
 
-    /// Does any process of the child's job still exist?
+    /// Does any process of the child's job still exist? The count trails
+    /// an exit by a moment — a process is signalled before its job
+    /// membership is torn down — so a caller that has just seen the exit
+    /// asks again rather than concluding from one answer.
     pub fn group_exists(&self) -> bool {
         job_active_processes(&self.job) > 0
     }
@@ -642,7 +645,17 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
         assert!(status.success(), "{status:?}");
-        assert!(!owned.group_exists());
+        // The job's accounting trails the exit by a moment: the process
+        // is signalled before its job membership is torn down (seen on
+        // the first runner), so the group is empty soon, not at once.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while owned.group_exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the job still counts the exited child"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]
