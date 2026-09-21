@@ -6730,7 +6730,16 @@
       "main_merged": "7a3e0c251c07087fe7588a7d6bdabc71e0bf3cee",
       "merge_commit": "9ef54590",
       "ui_and_native_driver_unchanged_by_merge": true,
-      "combined_gate": "pending"
+      "combined_gate": {
+        "status": "passed",
+        "source_commit": "a30f5416b2197646a0abfdd20b8e5c4cb38574f1",
+        "rust_passed": 1314,
+        "rust_skipped": 7,
+        "python_checks": 104,
+        "python_skipped": 1,
+        "format_lint_doctests_package_release": "passed",
+        "log": "/private/tmp/agentdocker-multiline-combined-gate-20260921.log"
+      }
     },
     "remaining": [
       "Final integration/CI and installation",
