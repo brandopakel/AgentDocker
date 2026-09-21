@@ -261,26 +261,29 @@ pub(super) async fn serve(
     ledger: &mut Ledger,
     origin: &Origin,
 ) -> Result<()> {
-    timeout(Duration::from_secs(2), async {
-        let request = authenticated_request(&mut stream).await?;
-        let remaining = request.remaining()?;
-        timeout(remaining, async {
-            ensure!(
-                verified(&request, &ledger.record().binding)?,
-                "native hook belongs to another provider generation"
-            );
-            identity(client, &ledger.record().binding).await?;
-            let text = offer(&request, client, provider, ledger, origin).await?;
-            let mut response = serde_json::to_vec(&json!({"nonce":request.nonce,"context":text}))?;
-            response.push(b'\n');
-            stream.write_all(&response).await?;
-            Ok(())
-        })
+    // Two bounds, each on its own step: authentication gets two seconds
+    // of ours; the offer and its response get the client's own remaining
+    // budget (up to three seconds), never cut short by the outer bound —
+    // an offer already persisted must not lose its response to a cap
+    // that was meant for the handshake.
+    let request = timeout(Duration::from_secs(2), authenticated_request(&mut stream))
         .await
-        .context("native hook client's deadline expired; input retained")?
+        .context("native hook authentication timed out; input retained")??;
+    let remaining = request.remaining()?;
+    timeout(remaining, async {
+        ensure!(
+            verified(&request, &ledger.record().binding)?,
+            "native hook belongs to another provider generation"
+        );
+        identity(client, &ledger.record().binding).await?;
+        let text = offer(&request, client, provider, ledger, origin).await?;
+        let mut response = serde_json::to_vec(&json!({"nonce":request.nonce,"context":text}))?;
+        response.push(b'\n');
+        stream.write_all(&response).await?;
+        Ok(())
     })
     .await
-    .context("native hook offer timed out; input retained")?
+    .context("native hook client's deadline expired; input retained")?
 }
 
 fn can_offer(

@@ -201,7 +201,10 @@ agentdocker codex-queue-resolve --agent <id> --message <message-id> \
   --confirm-read <digest-from-preview> --note 'Read the complete original message'
 ```
 
-This explicitly records **manual readback**, never a native provider receipt. The
+This explicitly records **manual readback**, never a native provider receipt. A
+confirmation prints the resolution id alone on stdout (the way every command that
+creates something prints its id) and its report on stderr; the preview prints its
+JSON report on stdout. The
 private endpoint checks OS peer identity, daemon endpoint and provider generation;
 the digest binds the exact input, hook nonce and generation. The controller refuses
 an input still scheduled under its original client or queue ID, even if its text

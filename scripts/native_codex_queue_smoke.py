@@ -1708,7 +1708,10 @@ try:
                         repeated = recovery_command("--message", sent[0], "--confirm-read", reviewed["confirmation"],
                             "--note", "retry after response loss and receiver restart")
                         assert repeated.returncode == 0, repeated.stderr
-                        assert json.loads(repeated.stdout)["already_applied"] is True
+                        # A confirmation prints the resolution id alone on stdout;
+                        # its report (already_applied included) goes to stderr.
+                        assert json.loads(repeated.stderr)["already_applied"] is True
+                        assert repeated.stdout.strip() == json.loads(repeated.stderr)["resolution"]
                         wait(lambda: not rpc({"op":"peek_input", "agent":aid})["messages"], 45)
                         wait(lambda: all(m in json.dumps(report["requests"][-1]["body"].get("input", [])) for m in markers[1:]), 30)
                         wait(lambda: set(sent[1:]).issubset(
