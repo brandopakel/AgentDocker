@@ -168,8 +168,11 @@ def main():
             if not candidate.exists():
                 continue
             listing = subprocess.run(["icacls", str(candidate)], capture_output=True, text=True, timeout=20)
-            owner = subprocess.run(["powershell", "-NoProfile", "-Command", f"(Get-Acl -LiteralPath '{candidate}').Owner"], capture_output=True, text=True, timeout=30)
-            lines.append(f"{candidate} owner={owner.stdout.strip()}\n{listing.stdout.strip()}")
+            try:
+                descriptor = windows_sddl(candidate)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                descriptor = f"ACL observation failed: {error}"
+            lines.append(f"{candidate} security={descriptor}\n{listing.stdout.strip()}")
         return "\n" + "\n".join(lines)
 
     def transport_endpoint():
@@ -329,12 +332,21 @@ def main():
 
     def windows_sddl(path):
         quoted = str(path).replace("'", "''")
-        result = subprocess.run(["powershell", "-NoProfile", "-Command", f"(Get-Acl -LiteralPath '{quoted}').Sddl"], capture_output=True, text=True, timeout=15, check=True)
+        # The workflow runs in PowerShell 7; keep its module environment and
+        # host together rather than starting legacy Windows PowerShell inside it.
+        host = shutil.which("pwsh") or "powershell"
+        result = subprocess.run(
+            [host, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+             f"$ErrorActionPreference='Stop'; (Get-Acl -LiteralPath '{quoted}').Sddl"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            raise RuntimeError(f"cannot inspect ACL of {path}: host={host}; exit={result.returncode}; stdout={result.stdout[:1000]!r}; stderr={result.stderr[:3000]!r}")
         return result.stdout.strip()
 
     def check_sqlite_security(phase):
         current = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
+            [shutil.which("pwsh") or "powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
              "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value"],
             capture_output=True, text=True, timeout=15, check=True,
         ).stdout.strip()

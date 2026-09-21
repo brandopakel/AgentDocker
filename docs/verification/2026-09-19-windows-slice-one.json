@@ -343,6 +343,62 @@
       "python_skipped": 1,
       "fmt_clippy_doctests_packaging_release": "passed",
       "log": "/private/tmp/agentdocker-windows-conpty-stdio-final-gate-20260921.log"
+    },
+    "native_82bb2cd6_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35653928599",
+      "source": "82bb2cd6de9b423c9318ed34c03a70488e5a4981",
+      "result": "failed",
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "284",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "f873004b-762b-4612-bd2b-b2d4cd03ed84",
+        "timestamp": "2026-09-21T20:56:22.114+00:00",
+        "time": "6.923"
+      },
+      "binary_sha256": {
+        "agentdocker.exe": "d241263e7c4634749e388ccabce4eeb6f446546cdd77d1559f2f1b84c045f78d",
+        "agentd.exe": "36fd8b1420ee05597db0118f0a93692e35f3cca155d5172b68b6506627ab8f25"
+      },
+      "passed_steps": [
+        "the daemon answers ping over the local transport",
+        "daemon status names the serving executable",
+        "two agents register with their pids",
+        "ps lists both as running",
+        "a message sent to an agent is read from its inbox",
+        "a project broadcast reaches the other agent",
+        "a lease is held and a second claim is refused",
+        "attach without a terminal is refused in words, not with a hang",
+        "daemon install is refused on Windows in words",
+        "daemon reload is refused on Windows in words",
+        "a piped managed command runs under a session owner and its output reaches its log",
+        "a terminal managed command is running on its own console",
+        "the attach wire answers events_ready for a terminal session",
+        "what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen",
+        "terminal output reaches End with its final partial line before the deadline",
+        "the terminal session ends and its final partial line is in its log",
+        "stop ends a managed terminal session through its owner",
+        "the owner and both piped descendants are alive before the owner crash",
+        "abrupt owner death ends the piped child and grandchild without Rust cleanup",
+        "native keyboard backpressure was observed",
+        "stop remains bounded when the child ignores Ctrl-C and never reads its full keyboard",
+        "the daemon still answers after terminal backpressure",
+        "stop ends a registered process whose identity matches its record",
+        "a terminal session is running before the daemon dies"
+      ],
+      "error": "CalledProcessError: Command '['powershell', '-NoProfile', '-Command', \"(Get-Acl -LiteralPath 'C:\\\\Users\\\\runneradmin\\\\AppData\\\\Local\\\\Temp\\\\agentdocker-smoke-8c3a003f\\\\state.db').Sddl\"]' returned non-zero exit status 1.",
+      "interpretation": "Permission observer failed before the daemon crash. Legacy PowerShell Get-Acl returned nonzero without retained stderr; no SQLite crash-recovery pass is claimed. Follow-up uses the workflow PowerShell host and retains stderr."
+    },
+    "sqlite_local_gate": {
+      "source": "82bb2cd6de9b423c9318ed34c03a70488e5a4981",
+      "rust_passed": 1332,
+      "rust_skipped": 7,
+      "python_run": 106,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_packaging_release": "passed",
+      "log": "/private/tmp/agentdocker-windows-sqlite-final-gate-20260921.log"
     }
   }
 }
