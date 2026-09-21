@@ -989,6 +989,7 @@ impl App {
         let input = row![
             composer(
                 input_id,
+                key.clone(),
                 &placeholder,
                 &text_now,
                 move |t| Message::ConversationDraft(owner.clone(), t),

@@ -14,17 +14,19 @@ enum Edit {
 struct State {
     content: Content,
     id: String,
+    destination: String,
     value: String,
     preedit: bool,
     status: Option<Status>,
 }
 impl State {
-    fn new(id: String, value: String) -> Self {
+    fn new(id: String, destination: String, value: String) -> Self {
         let mut content = Content::with_text(&value);
         content.perform(Action::Move(Motion::DocumentEnd));
         Self {
             content,
             id,
+            destination,
             value,
             preedit: false,
             status: None,
@@ -34,6 +36,7 @@ impl State {
 
 struct Composer {
     id: String,
+    destination: String,
     label: String,
     value: String,
     change: Arc<dyn Fn(String) -> Message + Send + Sync>,
@@ -114,21 +117,33 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Composer {
         tree::Tag::of::<State>()
     }
     fn state(&self) -> tree::State {
-        tree::State::new(State::new(self.id.clone(), self.value.clone()))
+        tree::State::new(State::new(
+            self.id.clone(),
+            self.destination.clone(),
+            self.value.clone(),
+        ))
     }
     fn children(&self) -> Vec<Tree> {
         vec![Tree::new(self.editor(&Content::new(), false, None))]
     }
     fn diff(&self, tree: &mut Tree) {
         let state = tree.state.downcast_mut::<State>();
-        if state.id != self.id {
-            *state = State::new(self.id.clone(), self.value.clone());
+        if state.id != self.id || state.destination != self.destination {
+            *state = State::new(
+                self.id.clone(),
+                self.destination.clone(),
+                self.value.clone(),
+            );
             tree.children = self.children();
         } else if state.value != self.value {
             // A receipt cleared this draft, a mention/notification changed it,
             // or the application refused an edit. Its value is authoritative.
             let preedit = state.preedit;
-            *state = State::new(self.id.clone(), self.value.clone());
+            *state = State::new(
+                self.id.clone(),
+                self.destination.clone(),
+                self.value.clone(),
+            );
             // The child retains focus and native preedit. A SetValue or
             // notification must not turn the composition's Enter into Send.
             state.preedit = preedit;
@@ -317,6 +332,7 @@ fn visual_status(enabled: bool, tree: &Tree, layout: Layout<'_>, cursor: mouse::
 
 pub fn composer<'a>(
     id: impl Into<String>,
+    destination: impl Into<String>,
     label: &str,
     value: &str,
     change: impl Fn(String) -> Message + Send + Sync + 'static,
@@ -339,6 +355,7 @@ pub fn composer<'a>(
     Control {
         content: Element::new(Composer {
             id,
+            destination: destination.into(),
             label: label.into(),
             value: value.into(),
             change,
@@ -369,6 +386,7 @@ mod tests {
     fn fixture(id: &str, text: &str, enabled: bool, ready: bool) -> Composer {
         Composer {
             id: id.into(),
+            destination: id.into(),
             label: "Message".into(),
             value: text.into(),
             change: Arc::new(Message::ChannelDraft),
@@ -669,7 +687,10 @@ mod tests {
         let cleared = fixture("conversation", "", true, false);
         cleared.diff(&mut tree);
         assert!(tree.state.downcast_ref::<State>().content.text().is_empty());
-        let thread = fixture("thread", "thread's draft\nretained", true, true);
+        // Legacy session/channel forms reuse a static accessibility id;
+        // the destination must still reset their editor and focus.
+        let mut thread = fixture("conversation", "thread's draft\nretained", true, true);
+        thread.destination = "another-recipient".into();
         thread.diff(&mut tree);
         assert_eq!(
             tree.state.downcast_ref::<State>().content.text(),

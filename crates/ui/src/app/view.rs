@@ -2090,6 +2090,7 @@ impl App {
                 body = body
                     .push(composer(
                         "session-message-text",
+                        target.clone(),
                         "Message this agent…",
                         value,
                         move |text| Message::SessionDraft(target.clone(), text),
@@ -2536,6 +2537,7 @@ impl App {
                 row![
                     composer(
                         format!("reply-{id}"),
+                        id.to_owned(),
                         "Message…",
                         &draft,
                         move |t| Message::SessionDraft(owner.clone(), t),
@@ -2886,6 +2888,7 @@ impl App {
                     body = body
                         .push(composer(
                             format!("answer-{id}"),
+                            id.to_string(),
                             if presentation.is_some() {
                                 "Or write an answer"
                             } else {
@@ -3184,6 +3187,7 @@ impl App {
                     row![
                         composer(
                             "channel-message",
+                            id.clone(),
                             "Message",
                             &draft.text,
                             Message::ChannelDraft,
