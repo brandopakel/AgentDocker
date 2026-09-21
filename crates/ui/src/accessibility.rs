@@ -230,6 +230,13 @@ pub fn collect() -> Task<Message> {
     iced::advanced::widget::operate(Collect::default()).map(Message::Accessibility)
 }
 
+/// Publish routine snapshots without an application message: Iced rebuilds and
+/// redraws the window after every message, even a read-only accessibility result.
+pub fn collect_and_update(id: window::Id, scale: f64) -> Task<Message> {
+    iced::advanced::widget::operate(Collect::default())
+        .then(move |snapshot| update(id, snapshot, scale))
+}
+
 struct Handler;
 #[cfg(target_os = "linux")]
 impl accesskit::DeactivationHandler for Handler {
@@ -423,8 +430,10 @@ pub fn geometry(id: window::Id) -> Task<Message> {
 mod tests {
     use super::*;
     use accesskit::ActionHandler;
+    static TEST_STATE: Mutex<()> = Mutex::new(());
     #[test]
     fn accessibility_actions_use_the_same_messages_as_visible_controls() {
+        let _state = TEST_STATE.lock().unwrap();
         let semantic = Semantic::button(
             "add-project".into(),
             "Add project".into(),
@@ -441,5 +450,69 @@ mod tests {
             data: None,
         });
         assert!(matches!(take_actions().as_slice(), [Message::ShowAdd]));
+    }
+
+    #[test]
+    fn routine_publication_updates_controls_without_an_application_message() {
+        use iced::futures::StreamExt;
+        use iced_runtime::{Action as RuntimeAction, task};
+
+        let _state = TEST_STATE.lock().unwrap();
+        tokio::runtime::Builder::new_current_thread()
+            .build().unwrap().block_on(async {
+            let window = window::Id::unique();
+            let mut stream = task::into_stream(collect_and_update(window, 2.0)).unwrap();
+            let Some(RuntimeAction::Widget(mut collect)) = stream.next().await else {
+                panic!("collection must operate on the actual widget tree");
+            };
+            let mut semantic = Semantic::button(
+                "routine-publication".into(),
+                "Open project terminal".into(),
+                Some(Message::ShowAdd),
+            );
+            let id = node_id(&semantic.id);
+            collect.custom(
+                None,
+                Rectangle {
+                    x: 3.0,
+                    y: 5.0,
+                    width: 7.0,
+                    height: 11.0,
+                },
+                &mut semantic,
+            );
+            let _ = collect.finish();
+            drop(collect);
+            let Some(RuntimeAction::Window(iced_runtime::window::Action::Run(target, publish))) =
+                stream.next().await
+            else {
+                panic!("publication must schedule a native window action, not an app message");
+            };
+            assert_eq!(target, window);
+            {
+                let tree = snapshot().lock().unwrap();
+                assert_eq!(tree.controls[&id].label, "Open project terminal");
+                assert_eq!(
+                    tree.nodes
+                        .iter()
+                        .find(|(node, _)| *node == id)
+                        .unwrap()
+                        .1
+                        .bounds(),
+                    Some(accesskit::Rect::new(6.0, 10.0, 20.0, 32.0))
+                );
+            }
+            Handler.do_action(accesskit::ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: id,
+                data: None,
+            });
+            assert!(matches!(take_actions().as_slice(), [Message::ShowAdd]));
+            // The window runtime normally invokes this callback. Dropping it
+            // closes its reply channel; no application message is manufactured.
+            drop(publish);
+            assert!(stream.next().await.is_none());
+        });
     }
 }

@@ -22,10 +22,14 @@ foreign-writable state is refused. Administrators and SYSTEM remain machine
 administrators, as root does on Unix.
 
 The Windows workflow runs core/host on a real Windows runner, including
-ACL refusal, process identity and command descendant cancellation, and compiles
-the UI binary. At main `16bf69a`, it does not build/test the complete daemon or
-CLI; the native graphical and release workflows have no Windows target. A
-successful cross-compile alone is not runtime acceptance. Unix CI remains required.
+ACL refusal, process identity and command descendant cancellation, compiles
+the UI binary, and — since slice one (#206, merged `eadae70`) — builds, lints
+and tests the daemon and CLI and drives them over the named pipe in a native
+smoke (17 steps on Windows Server 2025; see the slice-one section below). What
+it does not cover: managed sessions (slice two, #210), the full test suite, an
+installer or update path, a service, and the desktop; the native graphical and
+release workflows have no Windows target. A successful cross-compile alone is
+not runtime acceptance. Unix CI remains required.
 
 File observations on Windows track native read-only attributes and change
 metadata; Windows has no Unix executable permission bits. Captured Windows

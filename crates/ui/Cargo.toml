@@ -54,6 +54,7 @@ objc2-user-notifications = { version = "0.3", features = [
 ] }
 
 [dev-dependencies]
+iced_runtime.workspace = true
 libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

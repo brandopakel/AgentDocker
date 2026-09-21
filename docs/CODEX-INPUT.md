@@ -185,7 +185,7 @@ original blocked answer without manual queue acknowledgement. #202 merged as
 `14f1c519`; broader startup and throughput limits remain. See
 `peer_answer_active_hook_2026_09_18` in the [native queue record](verification/2026-09-15-native-codex-queue.json).
 
-### Retained hook recovery (September 21 candidate)
+### Retained hook recovery (merged September 21)
 
 A lost hook result without an exact native receipt remains unresolved; increasing
 transcript capacity cannot turn missing evidence into delivery. The installed
@@ -286,14 +286,26 @@ Root hooks omit the child fields; real child hooks supply `agent_id` and
 assertion (Codex appends child notifications); a second passed behavior but was
 invalidated by a source merge during the run. Both failures remain recorded.
 
-Local desktop `ff4efc61` from `613c28c4` now supplies both the hook CLI and receiver
-PID 42141; app PID 44748 runs that release, including merged multiline input.
+The initial `ff4efc61` installation from `613c28c4` supplied the root-scope fix.
+PR #211 then merged as `ae751745`, including the final authentication-deadline
+and resolution-output fixes. The current `30ce582a` app/CLI and receiver PID 67597
+(retained from `d21ba9e3`, identical CLI hash) run those fixes.
 The coordinator (92608), Codex (51242) and both Claude processes (7794/23973) stayed
 running. The original `9ca24aa8e53a4912` was read in the complete explicit preview
 and manually resolved under audit `d2e1cc66fe504a0f9022c88be71d246e`, never treated
 as a root native receipt. The next original message `261c481ed3764883` and later
 handoffs now have native root receipts. Broader live idle/busy throughput,
 sleep/reboot and additional versions remain open.
+
+Additional trials of those immutable binaries retained both outcomes: a 65-second
+busy user turn kept peer/human inputs in order, unacknowledged until actual
+receipt, without a false idle pause; zero-prompt reopening failed twice. The
+reopened Codex 0.154.0 process started MCP but no second `SessionStart` hook was
+captured and no receiver bound within 40 seconds. The original queue stayed
+retained; no receipt or retry was invented. The missing resume hook's cause
+remains unresolved. A separate explicit bootstrap-prompt resume passed with the
+same logical identity and retained queue drained; it does not close zero-prompt
+reopening.
 
 Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human
