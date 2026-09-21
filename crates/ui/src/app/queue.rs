@@ -191,6 +191,16 @@ impl Receiver {
         Ok(command)
     }
 
+    /// Whether no refresh waits behind the command in hand. A sweep asks
+    /// for seven snapshots at once; the window is woken when the last of
+    /// them is in, not once per answer, since every wake paints it whole.
+    pub(super) fn idle(&self) -> bool {
+        self.pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty()
+    }
+
     #[cfg(test)]
     pub(super) fn try_iter(&self) -> impl Iterator<Item = Cmd> + '_ {
         self.inner
@@ -202,6 +212,25 @@ impl Receiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wave_of_refreshes_is_idle_only_once_the_last_is_taken() {
+        let (sender, receiver) = channel();
+        assert!(receiver.idle());
+        sender.send(Cmd::Agents).unwrap();
+        sender.send(Cmd::Leases).unwrap();
+        sender.send(Cmd::Stop("x".into())).unwrap();
+        assert!(!receiver.idle());
+        receiver.recv().unwrap();
+        assert!(!receiver.idle(), "a refresh still waits");
+        receiver.recv().unwrap();
+        assert!(
+            receiver.idle(),
+            "a plain command is not a refresh to wait for"
+        );
+        receiver.recv().unwrap();
+        assert!(receiver.idle());
+    }
 
     #[test]
     fn refreshes_with_distinct_roots_are_not_dropped() {

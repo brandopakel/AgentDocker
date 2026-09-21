@@ -134,6 +134,18 @@ system, which is drawn from the mark:
 - **Tabs carry glyphs** (stacked bars, pulse, speech bubble, three dots) drawn
   the same way as the rail icons. Icon geometry is cached between frames and
   redrawn only when its colour changes, so idle frames repaint nothing for it.
+- **An idle window costs nothing to speak of.** Every message Iced delivers
+  ends in a whole frame: on macOS the software surface starts from a fresh
+  buffer each time, so the window is painted entire and copied to the
+  compositor, a tenth of a second of one core at Retina size. Frames are
+  therefore rationed rather than made cheap. State arrives through the
+  daemon's event stream and the workers' wake, never by polling for a
+  redraw; the clock sweep that keeps "12s ago", a question's time left and
+  the status line honest runs every two seconds while the window has focus
+  and every thirty while it does not (`FOCUSED_SWEEP`, `UNFOCUSED_SWEEP`),
+  since nobody reads those labels in a window they are not looking at; and a
+  sweep's wave of snapshot requests wakes the window once, when the last
+  answer is in (`queue::Receiver::idle`), not once per answer.
 - **Meters.** A lease row carries a thin bar of the time left on it; it turns
   amber under one fifth. A question card carries the time left to answer it,
   red under one fifth. Session rows say when they started. Panels that hold a
