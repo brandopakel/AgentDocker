@@ -23,8 +23,7 @@ administrators, as root does on Unix.
 
 The Windows workflow runs core/host on a real Windows runner, including
 ACL refusal, process identity and command descendant cancellation. Slice one
-(#206, merged `eadae70`) added daemon/CLI named-pipe acceptance. Open #210 and
-its follow-ups build all three binaries and add managed sessions plus an opt-in
+(#206, merged `eadae70`) added daemon/CLI named-pipe acceptance. Replacement #214 (superseding #210) builds all three binaries and add managed sessions plus an opt-in
 native window trial. On `cadf3d58`, 284 native tests and all 50 smoke steps
 passed on Windows Server 2025, including terminal lifecycle, database crash
 recovery and fresh-home desktop startup/capture. The full daemon/CLI test suites,

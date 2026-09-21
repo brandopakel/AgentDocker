@@ -924,6 +924,7 @@
       "python_skipped": 1,
       "fmt_clippy_doctests_packaging_release": "passed",
       "log": "/private/tmp/agentdocker-windows-startup-capture-final-gate-20260921.log"
-    }
+    },
+    "replacement_pr": "https://github.com/brandopakel/AgentDocker/pull/214"
   }
 }
