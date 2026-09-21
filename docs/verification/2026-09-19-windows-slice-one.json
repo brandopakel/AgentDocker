@@ -220,7 +220,7 @@
       "scope": "failed at test-client inspect after piped launch, before terminal runtime acceptance; synchronous duplex pipe harness is under investigation"
     },
     "owner_rights_follow_up": {
-      "status": "implemented, native acceptance pending",
+      "status": "native host regression passed in a624; daemon first-run trial not reached before terminal failure",
       "rule": "S-1-3-4 resolves only to the object owner after its existing ownership check; foreign state owners and foreign writers remain refused",
       "native_regression": "current-user OW parent creates private child without parent mutation; different caller refused for state/ancestor/pipe; Everyone writer refused without child creation or ACL narrowing",
       "cross_host_clippy": "passed",
@@ -252,7 +252,39 @@
       "helper_sha256": "da338a015b49f17f096cd834df7fd2357ba4a670666edff73a8796047f8ec863",
       "contract": "separate read/write OVERLAPPED, bounded connect/read/write/cancel; native buffers are released only after completion; timeout poisons the connection and failed cleanup retains evidence",
       "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35649616685",
-      "result": "pending"
+      "result": "named-pipe transport and attach handshake passed; native run failed at actual terminal child IO"
+    },
+    "integrated_local_gate": {
+      "source": "e454e9d03b014d1a383bcbebf93c646802f30f36",
+      "result": "passed",
+      "rust_passed": 1332,
+      "rust_skipped": 7,
+      "python_run": 106,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_package_release": "passed",
+      "log": "/private/tmp/agentdocker-windows-lifetime-integrated-final-gate-20260921.log",
+      "scope": "before ConPTY redirected standard-handle correction"
+    },
+    "native_a624_result": {
+      "run": "https://github.com/brandopakel/AgentDocker/actions/runs/35649616685",
+      "source": "a624677e",
+      "result": "failed",
+      "core_host_junit": {
+        "name": "nextest-run",
+        "tests": "282",
+        "skipped": "0",
+        "failures": "0",
+        "errors": "0",
+        "uuid": "80a66188-b922-45df-83fd-8fccf2b5b868",
+        "timestamp": "2026-09-21T20:21:56.267+00:00",
+        "time": "6.868"
+      },
+      "binary_sha256": {
+        "agentdocker.exe": "a346e3b08af1748bb19fbab7400db51c680f3a6361513dfa1a6bf927c1033350",
+        "agentd.exe": "a52311e03817ba5d5a75a92ae9260c13223e2b18324beff243b99a7ed08ba1e6"
+      },
+      "error": "AssertionError: what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen: frames ['output', 'output', 'end']; screen '\\x1b[?9001h\\x1b[?1004h\\x1b[?25l\\x1b[?9001l\\x1b[?1004l\\x1b[2J\\x1b[m\\x1b[H\\x1b]0;C:\\\\hostedtoolcache\\\\windows\\\\Python\\\\3.12.10\\\\x64\\\\python.exe\\x07\\x1b[?25h\\r\\n[agentdocker: input dropped, the agent is not reading its terminal; retype it]\\r\\n'; logs 'out \\x1b[?9001h\\x1b[?1004h\\x1b[?25l\\x1b[?9001l\\x1b[?1004l\\x1b[2J\\x1b[m\\x1b[H\\x1b]0;C:\\\\hostedtoolcache\\\\windows\\\\Python\\\\3.12.10\\\\x64\\\\python.exe\\x07\\x1b[?25h'; status '2e3c36f88bc8   smoke-tty     project   master   -      custom    -       exited (0)   Session ended                finished   4360   0s ago'",
+      "diagnosis": "ConPTY child inherited the detached owner redirected standard handles; missing STARTF_USESTDHANDLES with explicit null handles. Fix under native validation; no terminal acceptance claimed."
     }
   }
 }

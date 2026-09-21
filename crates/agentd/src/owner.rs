@@ -370,6 +370,10 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
     let pending = tokio::task::spawn_blocking(prepare)
         .await?
         .with_context(|| format!("failed to prepare `{program}`"))?;
+    #[cfg(windows)]
+    if let Some(pty) = pty.as_mut() {
+        pty.child_created();
+    }
     let child = ChildIdentity {
         pid: pending.pid,
         started_at: agentdocker_host::procinfo::start_time(pending.pid)

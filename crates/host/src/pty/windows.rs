@@ -35,6 +35,7 @@ const DEFAULT_ROWS: i16 = 24;
 #[derive(Debug)]
 pub struct Pty {
     console: Mutex<Option<HPCON>>,
+    startup_pipes: Mutex<Option<(OwnedHandle, OwnedHandle)>>,
     output: OwnedHandle,
     input: OwnedHandle,
 }
@@ -67,12 +68,11 @@ impl Pty {
         if result < 0 {
             return Err(io::Error::from_raw_os_error(result));
         }
-        // The console duplicated the child's ends for itself; ours close
-        // here so the output pipe reports an end when the console does.
-        drop(child_reads);
-        drop(child_writes);
+        // Keep the console's original pipe ends until CreateProcess has
+        // connected the child, as required by the ConPTY startup sequence.
         Ok(Self {
             console: Mutex::new(Some(console)),
+            startup_pipes: Mutex::new(Some((child_reads, child_writes))),
             output: we_read,
             input: we_write,
         })
@@ -89,6 +89,16 @@ impl Pty {
             .ok_or_else(console_closed)
     }
 
+    /// Release the parent's copies after CreateProcess has attached the
+    /// child (which may still be suspended). Keeping these afterward would
+    /// prevent output EOF when the console closes its own copies.
+    pub fn child_created(&mut self) {
+        self.startup_pipes
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
     /// End the console independently of this struct's lifetime. Output
     /// readers may still hold the terminal while waiting for EOF. Keep
     /// draining output concurrently: on older Windows versions this call
@@ -96,6 +106,11 @@ impl Pty {
     pub fn close(&self) {
         let console = self
             .console
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        // Also cover a failed or abandoned launch with no child_created.
+        self.startup_pipes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();

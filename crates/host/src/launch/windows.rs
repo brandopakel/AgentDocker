@@ -342,7 +342,11 @@ pub fn prepare_with(command: Command, console: Option<HPCON>) -> io::Result<Pend
             dwXCountChars: 0,
             dwYCountChars: 0,
             dwFillAttribute: 0,
-            dwFlags: 0,
+            // Explicit null standard handles let ConPTY supply them. With
+            // this flag absent, Windows can copy the owner's redirected
+            // NUL handles even though bInheritHandles is false: input then
+            // sees EOF and output disappears instead of reaching ConPTY.
+            dwFlags: STARTF_USESTDHANDLES,
             wShowWindow: 0,
             cbReserved2: 0,
             lpReserved2: null_mut(),
@@ -353,7 +357,6 @@ pub fn prepare_with(command: Command, console: Option<HPCON>) -> io::Result<Pend
         lpAttributeList: attributes.list,
     };
     let inherit_handles = if let Some((null_input, out_write, err_write, _, _)) = &stdio {
-        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         startup.StartupInfo.hStdInput = null_input.as_raw_handle() as HANDLE;
         startup.StartupInfo.hStdOutput = out_write.as_raw_handle() as HANDLE;
         startup.StartupInfo.hStdError = err_write.as_raw_handle() as HANDLE;
@@ -672,6 +675,208 @@ mod tests {
     use super::*;
     use std::io::Read;
 
+    fn conpty_fixture_command(name: &str) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            &format!("launch::tests::{name}"),
+            "--ignored",
+            "--nocapture",
+        ]);
+        command
+    }
+
+    fn fixture_stdio_are_consoles() -> [bool; 3] {
+        use windows_sys::Win32::System::Console::{
+            GetConsoleMode, GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE].map(|which| {
+            let mut mode = 0;
+            // SAFETY: inspecting this fixture's standard handles; a null,
+            // redirected or invalid handle simply fails GetConsoleMode.
+            unsafe { GetConsoleMode(GetStdHandle(which), &mut mode) != 0 }
+        })
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture for conpty_child_uses_its_console_from_a_redirected_parent"]
+    fn conpty_stdio_child_fixture() {
+        use std::io::Write;
+        assert_eq!(fixture_stdio_are_consoles(), [true; 3]);
+        std::io::stdout().write_all(b"conpty-ready\n").unwrap();
+        std::io::stdout().flush().unwrap();
+        std::io::stderr().write_all(b"conpty-stderr\n").unwrap();
+        std::io::stderr().flush().unwrap();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+        assert_eq!(line.trim_end(), "typed-through-conpty");
+        std::io::stdout()
+            .write_all(b"conpty-input-ok final-partial")
+            .unwrap();
+        std::io::stdout().flush().unwrap();
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture for conpty_child_uses_its_console_from_a_redirected_parent"]
+    fn conpty_redirected_parent_fixture() {
+        use std::io::Write;
+        use std::sync::{Arc, mpsc};
+        use std::time::{Duration, Instant};
+
+        // Preserve failures despite deliberately redirecting stderr to NUL.
+        // This hook exists only in this isolated fixture subprocess.
+        let diagnostic = std::env::var_os("AGENTDOCKER_TEST_CONPTY_DIAGNOSTIC").unwrap();
+        std::panic::set_hook(Box::new(move |panic| {
+            let _ = std::fs::write(&diagnostic, panic.to_string());
+        }));
+        // A separate process keeps these NUL handles out of concurrently
+        // running tests. This is the detached session owner's launch shape.
+        assert_eq!(fixture_stdio_are_consoles(), [false; 3]);
+        let mut pty = crate::pty::Pty::open().unwrap();
+        let mut reader = pty.reader().unwrap();
+        let mut writer = pty.writer().unwrap();
+        let pending = prepare_with(
+            conpty_fixture_command("conpty_stdio_child_fixture"),
+            Some(pty.console().unwrap()),
+        )
+        .unwrap();
+        pty.child_created();
+        let pty = Arc::new(pty);
+        let mut child = pending.activate().unwrap();
+
+        // Drain concurrently through ClosePseudoConsole, which may itself
+        // wait for the final output on older Windows versions.
+        let (output, chunks) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut buffer = [0; 4096];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => return,
+                    Ok(count) => {
+                        if output.send(Ok(buffer[..count].to_vec())).is_err() {
+                            return;
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::BrokenPipe => return,
+                    Err(error) => {
+                        let _ = output.send(Err(error));
+                        return;
+                    }
+                }
+            }
+        });
+        let mut screen = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !String::from_utf8_lossy(&screen).contains("conpty-ready") {
+            let bytes = chunks
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("console child's ready output before input")
+                .unwrap();
+            screen.extend(bytes);
+            assert!(screen.len() <= 65536, "unbounded fixture output");
+        }
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "stdin reached EOF before typing"
+        );
+        let (written, writing) = mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let _ = written.send(writer.write_all(b"typed-through-conpty\r"));
+        });
+        writing
+            .recv_timeout(Duration::from_secs(5))
+            .expect("bounded console input write")
+            .unwrap();
+        writer.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "console child did not exit after input"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let (closed, closing) = mpsc::channel();
+        let closer = std::thread::spawn(move || {
+            pty.close();
+            let _ = closed.send(());
+        });
+        closing
+            .recv_timeout(Duration::from_secs(5))
+            .expect("bounded console close");
+        closer.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match chunks.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(bytes) => {
+                    screen.extend(bytes.unwrap());
+                    assert!(screen.len() <= 65536, "unbounded fixture output");
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!("console output did not reach EOF"),
+            }
+        }
+        reader.join().unwrap();
+        let screen = String::from_utf8_lossy(&screen);
+        assert!(status.success(), "{status}: {screen:?}");
+        for expected in [
+            "conpty-ready",
+            "conpty-stderr",
+            "conpty-input-ok final-partial",
+        ] {
+            assert!(screen.contains(expected), "missing {expected}: {screen:?}");
+        }
+    }
+
+    #[test]
+    fn conpty_child_uses_its_console_from_a_redirected_parent() {
+        use std::os::windows::process::CommandExt;
+        use std::process::Stdio;
+        use std::time::{Duration, Instant};
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+
+        // If native startup/close wedges, killing this owner closes its job
+        // handles and ends its child. Hold only the process, not a job clone
+        // that would defeat KILL_ON_JOB_CLOSE during this fallback.
+        struct Fixture(std::process::Child);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                // SAFETY: the child process handle is owned throughout this
+                // bounded wait. No PID lookup or unrelated process is used.
+                unsafe { WaitForSingleObject(self.0.as_raw_handle() as HANDLE, 5_000) };
+            }
+        }
+        let mut command = conpty_fixture_command("conpty_redirected_parent_fixture");
+        let temporary = tempfile::tempdir().unwrap();
+        let diagnostic = temporary.path().join("conpty-failure.txt");
+        command
+            .env("AGENTDOCKER_TEST_CONPTY_DIAGNOSTIC", &diagnostic)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+        let mut owner = Fixture(command.spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = owner.0.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "redirected ConPTY fixture timed out"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            status.success(),
+            "redirected ConPTY fixture failed: {status}: {}",
+            std::fs::read_to_string(diagnostic).unwrap_or_default()
+        );
+    }
     #[test]
     fn arguments_are_quoted_by_the_c_runtime_rules() {
         assert_eq!(quoted(OsStr::new("plain")), "plain");

@@ -153,7 +153,13 @@ Work still required before platform support can be claimed:
   the keystroke reader and the size polling are in source and unexercised
   by the runner, which has no console.
 - The native Codex queue over the named pipe with the same peer checks.
-- Windows provider configuration and desktop application inventory.
+- Windows provider configuration and desktop application inventory. CLI PATH
+  inventory already recognizes `.exe`, `.com`, `.cmd` and `.bat`, but managed
+  launch currently resolves direct executables and passes them to `CreateProcessW`.
+  npm command shims need explicit argument-safe interpreter handling and native
+  provider trials; [the Windows launch contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)
+  requires an interpreter for batch files. A direct Python/EXE terminal smoke
+  does not establish npm-provider launch support.
 - Daemon service/session startup, per-user desktop installation, Start menu
   integration, updates/rollback and signed packages.
 - The daemon and CLI test suites on the Windows runner (they still carry
@@ -235,8 +241,17 @@ Windows run passed all 281 core/host tests, including console closure and disown
 but the test client timed out writing an inspection request over its synchronous
 named-pipe handle. That failed run remains in the existing verification record;
 the test client now uses bounded overlapped read/write operations and waits
-for cancellation before releasing native I/O storage. Native acceptance is
-being rerun, without treating the earlier incomplete run as a pass. The broader daemon/CLI test fixtures still contain Unix-only APIs
+for cancellation before releasing native I/O storage. That rerun passed transport and attach, but exposed a real terminal launch
+defect: without `STARTF_USESTDHANDLES`, Windows copied the detached owner's
+redirected handles into its ConPTY child, causing immediate input EOF and
+invisible output. The correction supplies explicit null standard handles for
+ConPTY, following the [Microsoft Terminal implementation](https://github.com/microsoft/terminal/discussions/15814).
+The console's startup pipe ends also remain open until child creation completes,
+as required by the [ConPTY startup sequence](https://learn.microsoft.com/en-us/windows/console/creating-a-pseudoconsole-session).
+A native regression launches a detached parent with redirected streams, then
+checks its child's three console handles, real keyboard input, stdout/stderr,
+exit and output EOF under bounded deadlines. Native acceptance of these
+corrections is pending; neither failed run is a pass. The broader daemon/CLI test fixtures still contain Unix-only APIs
 and do not yet compile as native Windows tests.
 
 Not in this slice: the desktop's own terminal pane on Windows (it reads
