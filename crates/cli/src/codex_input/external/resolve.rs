@@ -394,7 +394,17 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
             bail!("{error}");
         }
         let value = response.get("ok").context("invalid recovery response")?;
-        println!("{}", serde_json::to_string_pretty(value)?);
+        // A preview is a report and prints as one. A confirmation creates a
+        // resolution: its id alone goes to stdout, as every command that
+        // creates something prints its id, and the rest of the report goes
+        // to stderr for the person reading.
+        match value.get("resolution").and_then(Value::as_str) {
+            Some(resolution) => {
+                eprintln!("{}", serde_json::to_string_pretty(value)?);
+                println!("{resolution}");
+            }
+            None => println!("{}", serde_json::to_string_pretty(value)?),
+        }
         Ok(())
     })
     .await
