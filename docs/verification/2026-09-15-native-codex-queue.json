@@ -3972,6 +3972,60 @@
           "Other screens",
           "Project/agent terminal buttons in this observation"
         ]
+      },
+      "review_follow_up": {
+        "source_commit": "e609a3348555d944a61a736ddfeae1dcc8f60fe9",
+        "source_dirty": false,
+        "review_fix_commit": "53209db40b52ca035282397448b80b5aeec16f95",
+        "changes": [
+          "Two-second hook cap covers authentication only; offer/write respect the client deadline.",
+          "Confirmed manual readback emits its resolution id on stdout and diagnostic JSON on stderr; preview remains JSON."
+        ],
+        "native_trial": {
+          "result": "passed",
+          "provider_version": "codex-cli 0.154.0",
+          "cli_sha256": "2faa12cc6c6f10208055e1df51adf609ba7e325ce0a4df75839aca5320581629",
+          "daemon_sha256": "348f82b2a8acf86e9c86b3876f73868851a1420a07e26ac267c7052c663a48c2",
+          "idle_wake_seconds": 7.200709750002716,
+          "lost_hook_output": {
+            "retained_messages": [
+              "79154d3bcf1542bd",
+              "7ed42ea6abf94e9b",
+              "dbad8db28a5745cb"
+            ],
+            "paused": true,
+            "no_provider_receipt": true,
+            "no_blind_resubmission": true
+          },
+          "manual_readback_recovery": {
+            "message": "79154d3bcf1542bd",
+            "resolution": "08d80e41f8d74fb088042f3b13d5c576",
+            "native_receipt_for_manually_read_message": false,
+            "stale_confirmation_refused": true,
+            "lost_response_retry_after_restart": true,
+            "later_inputs_received_in_order": [
+              "7ed42ea6abf94e9b",
+              "dbad8db28a5745cb"
+            ],
+            "original_not_replayed": true
+          },
+          "same_live_tui": true,
+          "draft_preserved": true,
+          "busy_order_preserved": true,
+          "cleanup_errors": []
+        },
+        "installed": {
+          "candidate": "d21ba9e38a7b46d1added568d82567b1e3b91136e68acadd0d7c28784c7653d5",
+          "app_pid": 67610,
+          "receiver_pid": 67597,
+          "root_provider_pid": 51242,
+          "root_provider_birth": "2026-09-12T23:36:03.055103Z",
+          "serving_daemon_pid": 92608,
+          "serving_daemon_source": "705f924",
+          "daemon_reloaded": false,
+          "provider_identities_and_births_preserved": true,
+          "backup_integrity": "ok"
+        }
       }
     }
   }

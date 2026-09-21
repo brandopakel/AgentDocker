@@ -258,3 +258,9 @@ for the idle CPU/RSS sample. The report marks `idle_resources` as `not_run`;
 this mode supplies no idle performance evidence. The default command and CI
 continue to run that measurement. Smoke workflow windows remain behind the
 user's real app.
+
+The September 21 snapshot-only candidate `e609a334` passed the full gate and
+580 rendered workflow steps, but its installed 60-second observation was 17.66%
+of one core versus the prior 17.01%. Keep that unsuccessful comparison in the
+existing [integrated record](verification/2026-09-12-integrated-desktop.json);
+passing correctness tests does not establish a CPU improvement.

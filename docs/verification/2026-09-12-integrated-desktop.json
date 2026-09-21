@@ -6814,5 +6814,237 @@
       "Physical keyboard, IME and supported screen-reader trials",
       "Other-platform candidate acceptance; no idle performance measurement in this trial"
     ]
+  },
+  "ui_refresh_performance_2026_09_21": {
+    "source_commit": "e609a3348555d944a61a736ddfeae1dcc8f60fe9",
+    "source_dirty": false,
+    "candidate": "d21ba9e3",
+    "status": "Snapshot-only batching did not improve the installed CPU observation; performance remains open.",
+    "gate": {
+      "rust_passed": 1334,
+      "rust_skipped": 7,
+      "python_run": 104,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_package_release": "passed"
+    },
+    "native_workflow": {
+      "result": "passed",
+      "checks": 31,
+      "rendered_steps": 580,
+      "windows": 12,
+      "elapsed_seconds": 155.77439608296845,
+      "binary_sha256": {
+        "agentd": "348f82b2a8acf86e9c86b3876f73868851a1420a07e26ac267c7052c663a48c2",
+        "agentdocker": "2faa12cc6c6f10208055e1df51adf609ba7e325ce0a4df75839aca5320581629",
+        "agentdocker-ui": "7b74f0fc27d9438d42800d16250cae6894566822c81a57c484d9156a3d984735"
+      }
+    },
+    "installed_window": {
+      "pid": 67610,
+      "window": 48977,
+      "bounds": {
+        "width": 1180,
+        "height": 792
+      },
+      "screenshot_sha256": "f3d566b7c22a65dba63ff5ad0b33bc54835b3e874a4c5803deb09b53bc594ca6",
+      "observed": [
+        "Shared Chat selected",
+        "Project terminal and all three agent terminal buttons visible",
+        "Temporary projects collapsed",
+        "No clipping in captured window"
+      ]
+    },
+    "before": {
+      "candidate": "ff4efc61",
+      "pid": 44748,
+      "screen": "AgentDocker project shared Chat",
+      "native_window_bounds": {
+        "width": 1180,
+        "height": 792
+      },
+      "conditions": "No UI interaction; live coordinator and provider sessions, normal periodic snapshots and activity events. Not an isolated workstation benchmark.",
+      "elapsed_seconds": 60.06925499998033,
+      "cpu_seconds": 10.219999999999999,
+      "mean_one_core_percent": 17.013695275567084,
+      "samples": [
+        {
+          "at": "2026-09-21T18:50:47.858522+00:00",
+          "monotonic": 368551.97256025,
+          "sample": "44748  21.2 189904   2:57.55",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T18:50:52.869088+00:00",
+          "monotonic": 368556.980466791,
+          "sample": "44748  20.2 189904   2:59.06",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T18:50:57.874032+00:00",
+          "monotonic": 368561.985719333,
+          "sample": "44748   0.0 189904   2:59.49",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T18:51:02.874662+00:00",
+          "monotonic": 368566.986593375,
+          "sample": "44748  18.4 189904   3:00.58",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T18:51:07.883102+00:00",
+          "monotonic": 368571.994903041,
+          "sample": "44748   0.3 189904   3:01.28",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T18:51:12.888323+00:00",
+          "monotonic": 368577.000148791,
+          "sample": "44748  19.0 189904   3:02.34",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T18:51:17.891953+00:00",
+          "monotonic": 368582.004091125,
+          "sample": "44748   0.3 189904   3:02.74",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T18:51:22.895025+00:00",
+          "monotonic": 368587.007185541,
+          "sample": "44748   4.9 189904   3:03.79",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T18:51:27.900045+00:00",
+          "monotonic": 368592.012554958,
+          "sample": "44748   0.0 189904   3:04.20",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T18:51:32.909608+00:00",
+          "monotonic": 368597.021559875,
+          "sample": "44748  25.7 189904   3:04.99",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T18:51:37.916017+00:00",
+          "monotonic": 368602.028299708,
+          "sample": "44748   0.0 189904   3:05.94",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T18:51:42.921911+00:00",
+          "monotonic": 368607.033556333,
+          "sample": "44748  17.4 189904   3:07.37",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T18:51:47.929617+00:00",
+          "monotonic": 368612.04181525,
+          "sample": "44748   0.3 189904   3:07.77",
+          "status": 0
+        }
+      ]
+    },
+    "snapshot_batching_after": {
+      "candidate": "d21ba9e3",
+      "source": "e609a334",
+      "pid": 67610,
+      "screen": "AgentDocker project shared Chat",
+      "native_window_bounds": {
+        "width": 1180,
+        "height": 792
+      },
+      "conditions": "No UI interaction; live coordinator and provider sessions, normal periodic snapshots and activity events. Not an isolated workstation benchmark. Same window dimensions and screen as baseline.",
+      "elapsed_seconds": 60.1351697499631,
+      "cpu_seconds": 10.62,
+      "mean_one_core_percent": 17.660214553574978,
+      "samples": [
+        {
+          "at": "2026-09-21T19:11:16.876810+00:00",
+          "monotonic": 369781.003357083,
+          "sample": "67610  41.4 179968   0:03.49",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T19:11:21.889304+00:00",
+          "monotonic": 369786.01183775,
+          "sample": "67610  29.8 179920   0:04.32",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T19:11:26.902069+00:00",
+          "monotonic": 369791.026618208,
+          "sample": "67610   4.3 179920   0:05.01",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T19:11:31.914279+00:00",
+          "monotonic": 369796.040735916,
+          "sample": "67610  38.3 179920   0:05.63",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T19:11:36.930399+00:00",
+          "monotonic": 369801.053870666,
+          "sample": "67610   4.1 179920   0:06.29",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T19:11:41.934316+00:00",
+          "monotonic": 369806.0609145,
+          "sample": "67610  78.1 180400   0:07.56",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T19:11:46.948921+00:00",
+          "monotonic": 369811.074010041,
+          "sample": "67610   0.6 180400   0:08.49",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T19:11:51.957873+00:00",
+          "monotonic": 369816.085017416,
+          "sample": "67610  39.2 180400   0:09.15",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T19:11:56.969565+00:00",
+          "monotonic": 369821.094347916,
+          "sample": "67610   4.1 180400   0:10.25",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T19:12:01.977262+00:00",
+          "monotonic": 369826.103849625,
+          "sample": "67610  67.7 180400   0:11.08",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T19:12:06.986231+00:00",
+          "monotonic": 369831.111544166,
+          "sample": "67610   4.1 180400   0:11.69",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T19:12:11.999838+00:00",
+          "monotonic": 369836.124643375,
+          "sample": "67610  88.2 180400   0:13.00",
+          "status": 0
+        },
+        {
+          "at": "2026-09-21T19:12:17.013664+00:00",
+          "monotonic": 369841.138526833,
+          "sample": "67610   4.4 180400   0:14.11",
+          "status": 0
+        }
+      ]
+    },
+    "limits": [
+      "Live workstation observations, not a controlled battery or power benchmark.",
+      "No physical keyboard, IME or screen-reader acceptance.",
+      "Do not call snapshot batching a measured performance improvement."
+    ]
   }
 }
