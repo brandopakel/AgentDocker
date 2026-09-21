@@ -314,7 +314,21 @@ key is pressed — whatever asks for the focus meanwhile, the click included —
 while Tab and a focus the app moves to another control show it; losing focus
 forgets the click
 (`a_clicked_control_is_focused_without_a_ring_until_the_keyboard_asks`).
-Text inputs use Iced's native input-method support.
+Text inputs use Iced's native input-method support. Message and answer composers
+use Iced's multiline editor: plain Enter sends through the existing button action,
+Shift+Enter inserts a line, and clipboard paste retains line breaks. Native
+selection/copy/navigation bindings remain intact. Preedit and repeated Enter
+events never submit. The editor grows to 120 points and scrolls inside that
+bound; receipt/error feedback retains its separate bounded scroll area.
+Application drafts remain authoritative and limited to 16,000 characters;
+cursor/selection/preedit are widget-local and never restored as a submission.
+Changing destination resets focus. A send receipt, mention or notification edit
+refreshes the editor from the same draft used by the accessibility SetValue path.
+Native widget-event regressions cover these boundaries, including Unicode IME
+commit and multiline paste; they do not replace physical keyboard/IME trials.
+Unchanged view layouts retain the editor's shaped text so native captures keep
+their drawn glyphs. Edits, navigation, font changes and resized bounds reshape it;
+a renderer regression checks glyph availability across repeated layout passes.
 
 The rendered controls supply AccessKit labels, roles, values, actions, focus and
 physical-pixel bounds. The native adapter is installed before showing the window.
@@ -358,7 +372,9 @@ settle than release builds and are for review, not for the acceptance report.
 It drives the rendered controls' callbacks through question delivery, draft
 navigation, terminal attachment, channel messaging, setup preview/apply/undo,
 folder pinning, agent launch/stop, CLI commands, focus reveal, resizing, appearance
-and a second launch. Daemon and on-disk assertions verify outcomes. macOS also
+and a second launch. The Stop sequence waits for its control to disappear after confirmation, then
+checks that the exact launched record exited; two clicks alone are not success.
+Daemon and on-disk assertions verify outcomes. macOS also
 probes the app's native NSAccessibility hierarchy. The driver does not claim
 physical keyboard injection, provider consumption or a screen-reader trial.
 
@@ -372,9 +388,9 @@ or changing the saved conversation. This covers the Mac ARM CI failure at
 
 The standard suite includes strict lint, nextest, doctests, installer/package
 checks and release builds. Desktop CI packages and runs native workflow acceptance
-on macOS and Linux; Windows compiles the desktop/adapters and tests its existing
-core/host foundations. Full Windows daemon/ConPTY/service packaging remains
-separate platform work. Equivalent package size, launch time, memory and CPU
+on macOS and Linux; Windows builds and exercises the daemon/CLI over its native
+named pipe and tests the core/host foundations. ConPTY, full desktop/service
+packaging and real-provider Windows acceptance remain separate platform work. Equivalent package size, launch time, memory and CPU
 measurements must accompany release decisions, using exact binary provenance.
 See [distribution and signing](DESKTOP-DISTRIBUTION.md) for public release gates.
 

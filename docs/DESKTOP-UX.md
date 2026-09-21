@@ -331,10 +331,13 @@ could not keep them. A reply to a question goes to whoever asked it, wherever
 it was asked, since that is the reply that closes it. Nothing typed is sent
 twice on its own; what can be lost is said each time: a reply cut to a
 draft's 16,000 characters, a ninth kept reply, or one another workspace's
-window could not take. **Enter sends** in every composer — a
+window could not take. **Enter sends; Shift+Enter adds a line** in every composer — a
 conversation's, a thread's, the inbox reply, the session message and an
 answer — the same action as the button beside it, and nothing while the
-draft is empty or already sending. **+** beside the search starts a
+draft is empty or already sending. Pasted text keeps its line breaks. Longer
+messages scroll inside the composer, and unfinished multiline drafts survive
+switching conversations and reopening the window. Enter during an active IME
+composition does not send; held Enter does not repeat a send. **+** beside the search starts a
 conversation the way Slack's New message does: **Direct message** is one
 pick from the agents running here (in the selected project when one is);
 **Channel** is a name (kept to lowercase letters, digits and hyphens as it

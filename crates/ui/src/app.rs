@@ -5870,11 +5870,11 @@ pub(crate) mod tests {
         app.shell.thread = Some(root.clone());
         let _ = app.update(Message::ConversationDraft(
             own.as_str().to_owned(),
-            "for the conversation".into(),
+            "for the conversation\n日本語".into(),
         ));
         let _ = app.update(Message::ConversationDraft(
             key.clone(),
-            "for the thread".into(),
+            "for the thread\ncafé".into(),
         ));
         let _ = app.update(Message::SendConversation(key.clone()));
         let sent = requests
@@ -5891,11 +5891,11 @@ pub(crate) mod tests {
             .expect("the thread's words are sent");
         assert_eq!(sent.0, key);
         assert_eq!(sent.1, "agent-a");
-        assert_eq!(sent.2, "for the thread");
+        assert_eq!(sent.2, "for the thread\ncafé");
         assert_eq!(sent.3, Some(root));
         assert_eq!(
             app.shell.conversation_drafts[own.as_str()].text,
-            "for the conversation",
+            "for the conversation\n日本語",
             "the conversation's own draft is untouched"
         );
 
