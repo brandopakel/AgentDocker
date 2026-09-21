@@ -309,6 +309,8 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("wait_text", text="Agent launched"), step("click", id="project-tab-Agents"), step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="launched-terminal"), step("click", id="detach-terminal"),
                          step("click", id="stop-session"), step("wait_text", text="Confirm stop"), step("click", id="stop-session"),
+                         # A click can re-arm an expired confirmation; require the actual exit.
+                         step("wait_control", id="stop-session", present=False),
                          step("click", id="project-more"), step("click", id="project-tab-Console"), step("fill", id="console-command", text="ps --all"),
                          step("click", id="run-command"), step("wait_text", text="launched-from-iced"), step("capture", name="commands"),
                          step("click", id="settings"), step("click", id="dark-theme"), step("capture", name="settings-dark"),
@@ -570,11 +572,11 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="inbox"),
                         step("click", id=f"thread-{narrow['id']}"),
                         step("fill", id=f"answer-{draft_question}", text=answer_marker),
-                        step("fill", id=f"reply-{narrow['id']}", text="Keep this conversation draft"),
+                        step("fill", id=f"reply-{narrow['id']}", text="Keep this conversation draft\nSecond line 日本語"),
                         step("click", id=f"thread-{routed}"),
                         step("wait_control", id=f"reply-{narrow['id']}", present=True),
                         step("wait_control", id=f"reply-thread-{routed}", present=True),
-                        step("fill", id=f"reply-thread-{routed}", text="Keep this thread draft"),
+                        step("fill", id=f"reply-thread-{routed}", text="Keep this thread draft\nSecond line 日本語"),
                         step("capture", name="maximum-columns-1200"),
                         step("resize", width=1000, height=760),
                         step("wait_control", id=f"reply-{narrow['id']}", present=False),
@@ -582,9 +584,9 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("capture", name="thread-fallback-1000"),
                         step("click", id="close-thread"),
                         step("wait_control", id=f"reply-{narrow['id']}", present=True),
-                        step("wait_text", text="Keep this conversation draft"),
+                        step("wait_text", text="Keep this conversation draft\nSecond line 日本語"),
                         step("click", id=f"thread-{routed}"),
-                        step("wait_text", text="Keep this thread draft"),
+                        step("wait_text", text="Keep this thread draft\nSecond line 日本語"),
                         step("resize", width=1200, height=760),
                         step("wait_control", id=f"reply-{narrow['id']}", present=True),
                         step("click", id="settings"), step("click", id="larger-ui"),
@@ -592,21 +594,21 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("click", id="larger-ui"), step("click", id="inbox"),
                         step("wait_control", id=f"reply-{narrow['id']}", present=False),
                         step("wait_control", id=f"reply-thread-{routed}", present=True),
-                        step("wait_text", text="Keep this thread draft"),
+                        step("wait_text", text="Keep this thread draft\nSecond line 日本語"),
                         step("capture", name="zoom-without-resize"),
                         step("resize", width=2000, height=900),
                         step("wait_control", id=f"reply-{narrow['id']}", present=True),
                         step("wait_control", id=f"reply-thread-{routed}", present=True),
-                        step("wait_text", text="Keep this conversation draft"),
-                        step("wait_text", text="Keep this thread draft"),
+                        step("wait_text", text="Keep this conversation draft\nSecond line 日本語"),
+                        step("wait_text", text="Keep this thread draft\nSecond line 日本語"),
                         step("capture", name="expanded-columns"),
                         step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                         step("click", id="project-more"), step("click", id="project-tab-Channels"),
                         step("click", id=f"reply-channel-{room['id']}"),
-                        step("fill", id="channel-message", text="Keep this channel across reopen"),
+                        step("fill", id="channel-message", text="Keep this channel across reopen\nSecond line 日本語"),
                         step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                         step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
-                        step("fill", id="session-message-text", text="Keep this session across reopen"),
+                        step("fill", id="session-message-text", text="Keep this session across reopen\nSecond line 日本語"),
                         step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                         step("click", id="project-more"), step("click", id="project-tab-Board"),
                         step("fill", id="task-title", text="Unfiled card café 日本語"),
@@ -623,10 +625,10 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 draft_paths = list((state / "drafts").glob("*/drafts.json"))
                 assert len(draft_paths) == 1, draft_paths
                 saved_drafts = json.loads(draft_paths[0].read_text())
-                assert saved_drafts["sessions"][narrow["id"]] == "Keep this session across reopen", saved_drafts
-                assert "Keep this conversation draft" in saved_drafts["conversations"].values(), saved_drafts
-                assert "Keep this thread draft" in saved_drafts["conversations"].values(), saved_drafts
-                assert saved_drafts["channels"][room["id"]] == "Keep this channel across reopen", saved_drafts
+                assert saved_drafts["sessions"][narrow["id"]] == "Keep this session across reopen\nSecond line 日本語", saved_drafts
+                assert "Keep this conversation draft\nSecond line 日本語" in saved_drafts["conversations"].values(), saved_drafts
+                assert "Keep this thread draft\nSecond line 日本語" in saved_drafts["conversations"].values(), saved_drafts
+                assert saved_drafts["channels"][room["id"]] == "Keep this channel across reopen\nSecond line 日本語", saved_drafts
                 assert saved_drafts["answers"][draft_question] == answer_marker, saved_drafts
                 assert saved_drafts["boards"][str(project)] == {
                     "title": "Unfiled card café 日本語", "acceptance": "Check reopen without filing"
@@ -644,18 +646,18 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                     step("click", id=f"thread-{narrow['id']}"),
                     step("resize", width=1800, height=900),
                     step("wait_text", text=answer_marker),
-                    step("wait_text", text="Keep this conversation draft"),
+                    step("wait_text", text="Keep this conversation draft\nSecond line 日本語"),
                     step("click", id=f"thread-{routed}"),
-                    step("wait_text", text="Keep this thread draft"),
+                    step("wait_text", text="Keep this thread draft\nSecond line 日本語"),
                     step("capture", name="restored-conversation-and-thread"),
                     step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                     step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
-                    step("wait_text", text="Keep this session across reopen"),
+                    step("wait_text", text="Keep this session across reopen\nSecond line 日本語"),
                     step("capture", name="restored-session"),
                     step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                     step("click", id="project-more"), step("click", id="project-tab-Channels"),
                     step("click", id=f"reply-channel-{room['id']}"),
-                    step("wait_text", text="Keep this channel across reopen"),
+                    step("wait_text", text="Keep this channel across reopen\nSecond line 日本語"),
                     step("capture", name="restored-channel"),
                     step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
                     step("click", id="project-more"), step("click", id="project-tab-Board"),
@@ -677,7 +679,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 assert not any("Keep this channel across reopen" in json.dumps(m.get("payload")) for m in channel_inputs)
                 channel_history = rpc(endpoint, {"op": "history", "conversation": f"channel:{room['id']}", "limit": 100})["messages"]
                 assert not any("Keep this channel across reopen" in json.dumps(m) for m in channel_history)
-                checks.append("normal_close_flushes_hidden_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them")
+                checks.append("normal_close_flushes_multiline_conversation_thread_session_channel_and_answer_drafts_and_reopen_never_sends_them")
                 rpc(endpoint, {"op": "stop", "agent": narrow["id"], "force": False})
                 until(lambda: rpc(endpoint, {"op": "inspect", "agent": narrow["id"]})["agent"]["status"]["state"] == "exited")
 
