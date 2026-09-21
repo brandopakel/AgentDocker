@@ -231,13 +231,26 @@ The third run completed replacement and ordered model delivery, then caught the
 short interval between daemon acknowledgement and the receiver's completion
 write. Acceptance now waits for both durable checkpoints before asserting order.
 
-The candidate has targeted scanner, ledger and real socket lost-journal/ACK
-regressions. `--scenario active-hook-resolve` adds actual Codex/loopback-model
-acceptance for dropped hook output, readback, stale confirmation refusal, lost
-confirmation response, receiver restart and ordered later delivery. Final gate,
-that runtime trial and installed resolution remain pending; the old queued ID is
-retained until verified recovery. Provider receipt and task completion remain
-separate from this manual action.
+Source `13565901` passed 26 targeted regressions and the full gate: 1,314 Rust
+tests (seven skipped), 104 Python checks (one skipped), lint, doctests, packaging
+and release. The actual Codex 0.154.0/loopback-model `active-hook-resolve` trial
+passed dropped hook output, full readback, stale-confirmation refusal, lost reply,
+receiver restart and ordered later delivery. The version-3 replacement trial
+preserved the provider, token and six old receipts; a peer answer and two human
+messages reached one active turn in order in 14.81 seconds. Failed fixture
+attempts remain in the [existing evidence](verification/2026-09-15-native-codex-queue.json).
+
+The September 21 receiver-only activation replaced PID 60959 with 28370 while
+Codex PID 51242, daemon PID 92608, provider binding and token remained. After
+reading the complete original coworker audit, Codex explicitly resolved only
+`343b8636571449a0` under audit `83f6f80a3c4a49b492e3d980cd5f7ec1`.
+That ID has no native receipt. The next original message `55360dd5dc354f89` and
+later handoffs then arrived automatically with exact native receipts. The
+receiver lives in a permanent private release directory; older version-3 CLIs
+refuse its version-4 ledger. Further receiver operations must use a compatible
+CLI; never restore an old ledger over already acknowledged input. Fresh idle,
+throughput and sustained-use acceptance remain open. Provider receipt and task
+completion remain separate from manual readback.
 
 Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human

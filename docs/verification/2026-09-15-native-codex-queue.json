@@ -3092,7 +3092,7 @@
         ]
       }
     ],
-    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait. The sanitized tool timeline shows about 50 seconds between tool boundaries and a 45-second coordinator sleep before the first peer context. Attribute the 104\u2013119 seconds to end-to-end context latency, not daemon/polling latency alone.",
+    "interpretation": "The first peer input waited behind two earlier system notices. Current external service keeps one outstanding attempt and the active hook offers one queue head per tool boundary. This contributes head-of-line/tool-boundary delay; this trace does not separately measure every native queue/API wait. The sanitized tool timeline shows about 50 seconds between tool boundaries and a 45-second coordinator sleep before the first peer context. Attribute the 104–119 seconds to end-to-end context latency, not daemon/polling latency alone.",
     "acceptance_remaining": "Reduce and measure busy delivery latency and system-notice backlog while preserving FIFO human/peer ordering, exact receipt recovery, unavailable-provider gates and no duplicate execution. Three ordered receipts do not establish prompt-like latency or sustained throughput.",
     "private_evidence": "/private/tmp/agentdocker-live-active-burst-20260917.json",
     "provider_route_review": {
@@ -3335,5 +3335,286 @@
       "candidate": "486c5dd04fbe96b102dac08d2e223e72049f8f651926f87fd3c55352626ca268",
       "result": "passed"
     }
+  },
+  "retained_hook_recovery_2026_09_21": {
+    "date_utc": "2026-09-21",
+    "binary_source": "1356590181b4192eb86e69ec6e29ca02d94d7e1f",
+    "status": "Implemented and installed for the recorded existing Codex session; exact later native receipts resumed. Broader provider, lifecycle, sustained-use and release acceptance remain open.",
+    "observed_failure": {
+      "message": "343b8636571449a0",
+      "offered_at": "2026-09-19T03:09:10.108802Z",
+      "hook_request": "b9b17751be2d447e98a12c139f77ac04",
+      "old_receiver_source": "c0a7c566",
+      "old_receiver_pid": 60959,
+      "old_pause_reason": "hook transcript receipt exceeds bounded recovery suffix",
+      "fixed_suffix_scan_bytes": 63346532,
+      "fixed_end_offset": 783726691,
+      "records": 3118,
+      "largest_record_bytes": 11253082,
+      "exact_tagged_receipt_found": false,
+      "diagnostic_tool_output_is_not_native_proof": true
+    },
+    "gate": {
+      "source": "1356590181b4192eb86e69ec6e29ca02d94d7e1f",
+      "rust_passed": 1314,
+      "rust_skipped": 7,
+      "python_run": 104,
+      "python_skipped": 1,
+      "fmt_clippy_doctests_package_release": "passed",
+      "log": "/private/tmp/agentdocker-input-recovery-gate-20260921.log",
+      "targeted_tests_passed": 26
+    },
+    "manual_recovery_trial": {
+      "artifact_directory": "/private/tmp/agentdocker-input-readback-native-20260921",
+      "result_sha256": "7c0942fc2752cf7d858efbdf4d307acf43360568bbbbe94ba92b8b79a4a7cd15",
+      "started_at": "2026-09-21T17:44:17.791904+00:00",
+      "scenario": "active-hook-resolve",
+      "active_peer_kind": "chat",
+      "reload_enabled": false,
+      "result": "passed",
+      "driver_sha256": "59e5ed376df3b082d870eebc864c7473ef81d9efb43cddb57d7e40e7e30f9a66",
+      "source": {
+        "commit": "1356590181b4192eb86e69ec6e29ca02d94d7e1f",
+        "dirty": false,
+        "rust_and_driver_sha256": "7c79031955384fd829cf539a9f88488e68b6052dd89758aca7c9c57a39138842"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "72e1b03303fe83153318d8ab4c81a3bf102bc753b9e6a9360bb559fc2354fa17",
+      "daemon_sha256": "348f82b2a8acf86e9c86b3876f73868851a1420a07e26ac267c7052c663a48c2",
+      "fixture_hook_trust": "one-off vetted private fixture hooks; no saved user policy changed",
+      "pid": 97047,
+      "thread": "01a0c511-9386-7782-b007-19ae54278657",
+      "agent": "5bab504349304243ada6bc4a03685ae8",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.202137416985352,
+      "cross_process_receipt": {
+        "thread": "01a0c511-9386-7782-b007-19ae54278657",
+        "turn": "01a0c511-ba87-7be1-8f60-99a30f84611b",
+        "item": "01a0c511-ba9a-7b50-b43d-6e9870074827"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "145554aaef4045d8"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0c511-9386-7782-b007-19ae54278657",
+          "turn": "01a0c512-2fc6-7e52-8f3b-c55e183b8472",
+          "item": "01a0c512-2fdb-7173-8b02-888ae19482ee"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "idle_wake_after_receiver_crash": true,
+      "lost_hook_output": {
+        "retained_messages": [
+          "5e03474b059543a5",
+          "c527a54de53a4700",
+          "c95b7a7ddd144001"
+        ],
+        "paused": true,
+        "no_provider_receipt": true,
+        "no_blind_resubmission": true
+      },
+      "manual_readback_recovery": {
+        "message": "5e03474b059543a5",
+        "resolution": "0ae926094b23477f8827b12a9d7eed9f",
+        "native_receipt_for_manually_read_message": false,
+        "stale_confirmation_refused": true,
+        "lost_response_retry_after_restart": true,
+        "later_inputs_received_in_order": [
+          "c527a54de53a4700",
+          "c95b7a7ddd144001"
+        ],
+        "original_not_replayed": true
+      },
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 21,
+      "agentdocker_integration": true,
+      "cleanup_errors": [],
+      "raw_result_sha256": "c93e39bdc38337bdf0b664d4edcebf07e3333169e09bf7209cbccf44f7691cb8"
+    },
+    "receiver_upgrade_trial": {
+      "artifact_directory": "/private/tmp/agentdocker-input-upgrade-native4-20260921",
+      "result_sha256": "019874ffeca32da8a561d6fcc6276adbd2a96e650930bb74a68cb04b52afd6ae",
+      "started_at": "2026-09-21T17:52:32.673788+00:00",
+      "scenario": "controller-upgrade",
+      "active_peer_kind": "answer",
+      "reload_enabled": false,
+      "result": "passed",
+      "driver_sha256": "7fd952557aee2a755c22b51d38c2e92682cc031861e858bc07862c8a47e37d18",
+      "source": {
+        "commit": "bdc2e6755a2059535672de2706664f1a9f23b456",
+        "dirty": false,
+        "rust_and_driver_sha256": "6a14a6ab47d4c0148f45d1abd37b43224424c6500c7db9bc26b02b33aa5130e2"
+      },
+      "provider_version": "codex-cli 0.154.0",
+      "cli_sha256": "72e1b03303fe83153318d8ab4c81a3bf102bc753b9e6a9360bb559fc2354fa17",
+      "daemon_sha256": "348f82b2a8acf86e9c86b3876f73868851a1420a07e26ac267c7052c663a48c2",
+      "fixture_hook_trust": "one-off vetted private fixture hooks; no saved user policy changed",
+      "pid": 22953,
+      "thread": "01a0c519-1f00-7bd0-9a78-4bcbafe26b31",
+      "agent": "8ff5528ac66a4df0958a2c478776b42d",
+      "automatic_hook_bootstrap": true,
+      "idle_wake_seconds": 7.560380165989045,
+      "cross_process_receipt": {
+        "thread": "01a0c519-1f00-7bd0-9a78-4bcbafe26b31",
+        "turn": "01a0c519-460d-7e71-84f2-3cf0d62f339d",
+        "item": "01a0c519-4622-7093-b6f4-6565bc3bda33"
+      },
+      "no_conversation_resume": true,
+      "daemon_receipt": {
+        "messages": [
+          "96096e862ed84af4"
+        ],
+        "receipt": {
+          "provider": "codex",
+          "thread": "01a0c519-1f00-7bd0-9a78-4bcbafe26b31",
+          "turn": "01a0c519-bb4e-70e2-a844-9049026e5a13",
+          "item": "01a0c519-bb67-7271-ae28-86b6b32bfb9a"
+        }
+      },
+      "completed_receipts": 5,
+      "automatic_receiver_restart_no_replay": true,
+      "idle_wake_after_receiver_crash": true,
+      "receiver_upgrade": {
+        "before": {
+          "pid": 25423,
+          "started_at": "2026-09-21T17:53:15.765564Z"
+        },
+        "after": {
+          "pid": 26204,
+          "started_at": "2026-09-21T17:53:28.764118Z"
+        },
+        "initial_ledger_version": 3,
+        "provider_preserved": true,
+        "token_and_binding_preserved": true,
+        "prior_completed_receipts": 6,
+        "pending_native_queue_id": "01a0c519-edac-7310-835e-e89514eafd4b",
+        "initial_cli_sha256": "24335ae0c0c26971c2d0b8ad2cbf9fdb241b90d5b6c940aa2946e0dfd55184d1"
+      },
+      "active_hook": {
+        "messages": [
+          "b5cdca5d6cae4952",
+          "a3857778ec964c78",
+          "6bd629f26d5a4336"
+        ],
+        "receipts": [
+          {
+            "message": "b5cdca5d6cae4952",
+            "receipt": {
+              "thread": "01a0c519-1f00-7bd0-9a78-4bcbafe26b31",
+              "turn": "01a0c519-e736-7ae0-92b5-a6cd2c5225c8",
+              "item": "msg_01a0c519-ffeb-7552-a8c4-ff6b69e03be0"
+            }
+          },
+          {
+            "message": "a3857778ec964c78",
+            "receipt": {
+              "thread": "01a0c519-1f00-7bd0-9a78-4bcbafe26b31",
+              "turn": "01a0c519-e736-7ae0-92b5-a6cd2c5225c8",
+              "item": "msg_01a0c51a-0c9d-72f0-bf89-713a8c255c94"
+            }
+          },
+          {
+            "message": "6bd629f26d5a4336",
+            "receipt": {
+              "thread": "01a0c519-1f00-7bd0-9a78-4bcbafe26b31",
+              "turn": "01a0c519-e736-7ae0-92b5-a6cd2c5225c8",
+              "item": "msg_01a0c51a-195c-7821-9b21-ae1d7e7ac311"
+            }
+          }
+        ],
+        "seconds": 14.814772874990012,
+        "same_turn": true,
+        "model_requests": 5,
+        "original_provider_pid": 22953
+      },
+      "same_live_tui": true,
+      "draft_preserved": true,
+      "busy_order_preserved": true,
+      "model_requests": 13,
+      "agentdocker_integration": true,
+      "controller_survivors": [],
+      "cleanup_errors": [],
+      "raw_result_sha256": "f20abf03913a762f48221da9be0dd30ce421c5c65527731f8fb2e780b69312c0"
+    },
+    "retained_fixture_failures": [
+      {
+        "artifact_directory": "/private/tmp/agentdocker-input-upgrade-native-20260921",
+        "failure": "Scenario observed the preceding idle input before its receiver ACK; wait now names the exact upgrade input."
+      },
+      {
+        "artifact_directory": "/private/tmp/agentdocker-input-upgrade-native2-20260921",
+        "failure": "Old hook consumed the target before replacement; private fixture holds hook forwarding through replacement while the native queue entry remains pending."
+      },
+      {
+        "artifact_directory": "/private/tmp/agentdocker-input-upgrade-native3-20260921",
+        "failure": "Replacement and ordered model input passed; assertion raced the receiver completion save after daemon ACK. Wait now observes both durable checkpoints."
+      }
+    ],
+    "independent_review": {
+      "source": "13565901",
+      "rust_unchanged_through": "bdc2e675",
+      "result": "No blocking finding after review of migration, endpoint identity, exact readback and lost response/restart phases. Upgrade command may commit yet await readiness while a missing head remains paused; older v3 CLI refuses v4."
+    },
+    "installed": {
+      "receiver_source": "1356590181b4192eb86e69ec6e29ca02d94d7e1f",
+      "receiver_pid": 28370,
+      "provider_pid_unchanged": 51242,
+      "daemon_pid_unchanged": 92608,
+      "ledger_version": 4,
+      "binding_and_token_preserved": true,
+      "native_receipts_before": 128,
+      "backup": {
+        "backup": "/private/tmp/agentdocker-before-input-recovery-20260921",
+        "ledger_sha256": "ddfeb51b8756d9a28aabc6760a74e14438d152138930dcecf0a1267a727023c8",
+        "version": 3,
+        "message": "343b8636571449a0",
+        "native_receipts": 128,
+        "provider": {
+          "process": {
+            "pid": 51242,
+            "started_at": "2026-09-12T23:36:03.055103Z"
+          },
+          "session": "01a089b2-c485-7361-b64c-a72f724e00a4",
+          "profile": "/Users/brandopakel/.codex"
+        }
+      },
+      "upgrade_command_exit": 0,
+      "manual_resolution": "83f6f80a3c4a49b492e3d980cd5f7ec1",
+      "manually_resolved_message": "343b8636571449a0",
+      "full_original_envelope_read_before_confirmation": true,
+      "manual_message_has_native_receipt": false,
+      "first_later_native_delivery": {
+        "process_started_at": "2026-09-12T23:36:03.055103Z",
+        "paused": false,
+        "pause_reason": null,
+        "reported_at": "2026-09-21T17:55:06.068963Z",
+        "received": {
+          "messages": [
+            "55360dd5dc354f89"
+          ],
+          "receipt": {
+            "provider": "codex",
+            "thread": "01a089b2-c485-7361-b64c-a72f724e00a4",
+            "turn": "01a0c4c5-9716-7690-9c12-65d8000ce8ec",
+            "item": "msg_01a0c51b-6cf6-7dc0-9338-8a749fa153d9"
+          }
+        },
+        "received_at": "2026-09-21T17:55:06.069382Z"
+      },
+      "artifact_directory": "/private/tmp/agentdocker-before-input-recovery-20260921",
+      "release_location": "~/.agentdocker/receiver-releases/1356590181b4192eb86e69ec6e29ca02d94d7e1f"
+    },
+    "limits": [
+      "Manual readback is explicit operator action, not automatic provider delivery or a model receipt.",
+      "The scanner bounds memory and scans a fixed EOF; no fixed worst-case latency is claimed.",
+      "Newly receiving historical handoffs during an active turn does not close fresh idle, sleep/reboot, throughput or other-provider acceptance.",
+      "Receiver-only activation preserved the original provider and serving daemon; this is not a new public desktop release."
+    ]
   }
 }
