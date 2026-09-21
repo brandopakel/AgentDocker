@@ -10,7 +10,7 @@
 // suspended process and resumes it, which is the same idea and a
 // different implementation; until that exists the module is Unix-only.
 pub mod installation;
-#[cfg(unix)]
+#[cfg_attr(windows, path = "launch/windows.rs")]
 pub mod launch;
 pub mod lock;
 pub mod policy_file;
@@ -39,7 +39,7 @@ pub mod dirs;
 pub mod handoff;
 pub mod multiplexer;
 pub mod notify;
-#[cfg(unix)]
+#[cfg_attr(windows, path = "pty/windows.rs")]
 pub mod pty;
 #[cfg_attr(windows, path = "transport/windows.rs")]
 pub mod transport;

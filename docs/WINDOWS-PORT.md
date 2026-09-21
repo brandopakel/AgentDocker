@@ -121,11 +121,6 @@ the only place to observe them.
 What the slice refuses on Windows, in words rather than with a hang or a
 crash, and what that means for a person:
 
-- Managed sessions: `run`, `launch` and the desktop's launch answer that
-  managed sessions are not available on Windows yet; `attach` says the same.
-  Sessions started by the person and reached through hooks and MCP are the
-  way in — the `hook claude-code` and `hook codex` adapters and the `mcp`
-  server are stdio and the pipe, and run.
 - The native Codex queue (`codex-queue`): its hook endpoint is a Unix socket
   checked by peer credentials. The Codex hook adapter sees no receiver and
   takes its ordinary path, so a Codex session on Windows reads its messages
@@ -146,8 +141,9 @@ crash, and what that means for a person:
 
 Work still required before platform support can be claimed:
 
-- ConPTY terminal input/output/resize and a session owner that survives the
-  daemon, so managed sessions and `attach` exist; then restart recovery.
+- `attach` from a real Windows console, by a person: the console modes,
+  the keystroke reader and the size polling are in source and unexercised
+  by the runner, which has no console.
 - The native Codex queue over the named pipe with the same peer checks.
 - Windows provider configuration and desktop application inventory.
 - Daemon service/session startup, per-user desktop installation, Start menu
@@ -158,6 +154,58 @@ Work still required before platform support can be claimed:
 
 The supported download/platform matrix remains unchanged until those acceptance
 stages pass. See [native delivery](NATIVE-DELIVERY.md) for the macOS/Linux stack.
+
+## Slice two: managed sessions on Windows
+
+In source: a managed session on Windows is the same session owner, the
+same wire and the same daemon-side controller as on macOS and Linux
+(`agentdocker_core::session`: `Activate`, keystrokes, window sizes, output
+from an offset, the exit acknowledgement; the owner outliving any daemon),
+with the platform pieces below answering what the Unix pieces do. `run`,
+`run --tty`, `logs`, `stop` and `attach` are no longer refused on
+Windows. The table is what each Unix piece is and what answers it.
+
+| Unix piece | Where | Windows answer |
+| --- | --- | --- |
+| The terminal pair: `posix_openpt`, the child gets the slave as its standard streams and controlling terminal | `host::pty::Pty` | A pseudo console: `CreatePseudoConsole` over two pipes; the daemon side reads the output pipe and writes the input pipe; the child is created with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`. There is no slave to hand over: the attribute is what binds the child. |
+| The launch gate: fork, hold before exec until the record is durable, `exec denied` on refusal, the pid and birth readable meanwhile | `host::launch::{prepare, Pending, OwnedChild}` | `CreateProcessW` with `CREATE_SUSPENDED` (plus `EXTENDED_STARTUPINFO_PRESENT` for the console attribute and `CREATE_NEW_PROCESS_GROUP`): the pid and the birth time are readable from the handle while the first thread has never run; `activate` is `ResumeThread`, refusal is `TerminateProcess` of a process that never executed an instruction. Rust's `Command` cannot carry the attribute list on stable (`raw_attribute` is unstable), so this is a direct `CreateProcessW` with the standard command-line quoting and an environment block built from the launch. |
+| The process group the daemon signals: `setsid` in the child, `kill(-pid)` | `take_controlling_terminal`, `OwnedChild::drop`, `group_exists` | A Job Object the owner holds, the child assigned to it before it resumes (`CREATE_SUSPENDED` makes that a certainty, not a race). Stop is `TerminateJobObject`; "does the group still exist" is the job's active process count. The job has no kill-on-close, so a daemon that dies takes nothing with it — the owner holds the handle. A Ctrl-C is written into the pseudo console's input (`\x03`), which the console turns into the child's `CTRL_C_EVENT`; there is no `SIGTERM`, so the graceful stop is that, then the job after the grace period. The child is not created in a new process group of its own: that flag makes a process ignore Ctrl-C and a child inherits the ignoring, so the owner clears its own inherited ignore before creating the child. A piped child has nothing to be asked with; its polite stop is the end. The daemon's own liveness question about a group (`group_exists`) is answered by the leader's liveness, since only the owner holds the job. |
+| Window size: `TIOCSWINSZ` and `SIGWINCH` | `Pty::resize` | `ResizePseudoConsole`; the console tells the child. |
+| The owner's socket: `<home>/sessions/<agent>.sock`, `0600`, a lock beside it | `owner::serve`, `supervisor::Controller::connect` | The shared named pipe (`agentdocker_host::ipc`, protected DACL, same-user peer check) under a per-agent name derived from the home and the id; the lock stays a file in `sessions/`. |
+| The owner survives the daemon: its own session, `SIGHUP` ignored | `owner::main` | Started with `DETACHED_PROCESS \| CREATE_NEW_PROCESS_GROUP` and, if the daemon is ever inside a job, `CREATE_BREAKAWAY_FROM_JOB`; the client's standard handles are non-inheritable before the start (as `command::detach` does for the daemon), so the owner holds none of the daemon's pipes. |
+| Liveness and identity of the owner and the child | `procinfo::{alive, start_time, end}` | Already on Windows since slice one: the handle's creation time, `end` from the very handle it terminates. |
+| `attach`: raw mode, the window size, cancellable readiness-driven stdin, `Ctrl-]` | `pty::{RawMode, window_size, nonblocking_input}`, `cli::attach` | `SetConsoleMode`: input without line, echo and processed input, with virtual-terminal input; output with virtual-terminal processing; both restored on drop. The size from `GetConsoleScreenBufferInfo`'s window; a resize seen by polling it, since there is no signal. A console input handle is waitable, so readiness-driven reading is `WaitForMultipleObjects` on it and a cancel event. |
+| The log: every byte of output appended | `owner::write_log` | Unchanged: the output pipe's bytes. |
+
+Where it lives: `crates/host/src/pty/windows.rs` (the pseudo console,
+`window_size`, `RawMode` over console modes) and
+`crates/host/src/launch/windows.rs` (the suspended creation, the
+attribute list, the job, the standard command-line quoting and the
+environment block); `crates/agentd/src/owner.rs` and `supervisor.rs` are
+one source for every platform, over `agentdocker_host::ipc` (the owner's
+endpoint is `session::endpoint`: the socket on Unix, a private pipe named
+for the home and the agent on Windows, the lock and the exit file still
+files in the sessions directory); `crates/cli/src/attach.rs` with
+`attach/input_windows.rs` (a console reader thread, cancelled on drop,
+handing UTF-16 keystrokes on as UTF-8; the window size looked at four
+times a second in place of `SIGWINCH`).
+
+What the smoke checks for it, on every platform and on the Windows runner:
+a piped managed command runs under an owner and its output reaches its
+log; a terminal command runs on its own console, what is typed through
+the attach wire reaches it and its answer comes back on the screen and
+into its log; `stop` ends a terminal session through its owner; a session
+outlives a daemon that is ended abruptly, as a crash would end it (a
+deliberate `daemon stop` stops managed sessions first, by design), the
+next daemon finds it running under its owner, and stops it through that
+owner. What the smoke cannot check: `attach`
+from a real console (it has none; the console modes, the reader thread
+and the size polling wait for a person at a Windows terminal), and a
+provider's own tool under a pseudo console.
+
+Not in this slice: the desktop's own terminal pane on Windows (it reads
+the same protocol; its rendering is the desktop slice), provider
+inventory, services, installer.
 
 ## Local connection boundary
 

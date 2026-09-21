@@ -8,6 +8,7 @@ Windows is checked to be an explicit refusal, never a hang or a crash.
 Portable on purpose: the same steps run on macOS/Linux, so the script is
 checked before the Windows runner ever sees it."""
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -129,6 +130,61 @@ def main():
             lines.append(f"{candidate} owner={owner.stdout.strip()}\n{listing.stdout.strip()}")
         return "\n" + "\n".join(lines)
 
+    def transport_endpoint():
+        """Where the daemon listens, as `daemon status` prints it."""
+        status = run("daemon", "status")
+        for line in status.stdout.splitlines():
+            if line.startswith("daemon ") and " at " in line:
+                return line.split(" at ", 1)[1].split(" (pid")[0].strip()
+        raise AssertionError(f"daemon status names no endpoint: {status.stdout!r}")
+
+    class Wire:
+        """A line-framed connection to the daemon: a Unix socket or a
+        named pipe, opened the way any script would open it."""
+
+        def __init__(self, where):
+            if os.name == "nt":
+                self.file = open(where, "r+b", buffering=0)
+                self.sock = None
+            else:
+                import socket
+                self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.sock.settimeout(15)
+                self.sock.connect(where)
+                self.file = self.sock.makefile("rwb", buffering=0)
+
+        def send(self, frame):
+            self.file.write((json.dumps(frame) + "\n").encode())
+            self.file.flush()
+
+        def line(self):
+            raw = self.file.readline()
+            if not raw:
+                return None
+            return json.loads(raw)
+
+        def close(self):
+            try:
+                self.file.close()
+            finally:
+                if self.sock is not None:
+                    self.sock.close()
+
+    def agent_status(name):
+        listing = run("ps", "--no-discover", "--all")
+        for line in listing.stdout.splitlines():
+            if f" {name} " in f" {line} ":
+                return line
+        return ""
+
+    def wait_status(name, wanted, seconds=20):
+        deadline = time.time() + seconds
+        line = agent_status(name)
+        while wanted not in line and time.time() < deadline:
+            time.sleep(0.25)
+            line = agent_status(name)
+        return line
+
     def wait_exit(process, seconds=10):
         for _ in range(int(seconds * 10)):
             if process.poll() is not None:
@@ -177,6 +233,47 @@ def main():
             step("daemon reload is refused on Windows in words", reload.returncode != 0 and "Windows" in (reload.stderr + reload.stdout), (reload.stderr + reload.stdout).strip())
             launch = run("run", "--name", "smoke-managed", "--", "cmd", "/c", "echo", "hi", check=False, timeout=20)
             step("a managed launch is refused on Windows in words", launch.returncode != 0 and "not available on Windows" in (launch.stderr + launch.stdout), (launch.stderr + launch.stdout).strip())
+        # Managed sessions: the daemon starts a session owner, which holds
+        # the child, its pipes or its terminal and its log. A piped command's
+        # output reaches its log; a terminal command is typed into through
+        # the attach wire and answers on its screen; a stop through the
+        # owner ends a child that would otherwise run on.
+        piped = run("run", "--name", "smoke-pipes", "--runtime", "custom", "--", sys.executable, "-c", "import sys; print('piped hello'); print('to stderr', file=sys.stderr)")
+        line = wait_status("smoke-pipes", "exited")
+        logs = run("logs", "smoke-pipes", check=False)
+        step("a piped managed command runs under a session owner and its output reaches its log", "exited" in line and "piped hello" in logs.stdout and "to stderr" in logs.stdout, (line + " | " + logs.stdout.strip())[:600])
+        run("run", "--name", "smoke-tty", "--tty", "--runtime", "custom", "--", sys.executable, "-c", "import sys; print('tty hello', flush=True); line = sys.stdin.readline(); print('got ' + line.strip(), flush=True)")
+        line = wait_status("smoke-tty", "running")
+        step("a terminal managed command is running on its own console", "running" in line, line)
+        screen = b""
+        wire = Wire(transport_endpoint())
+        try:
+            wire.send({"op": "attach", "agent": "smoke-tty", "cols": 80, "rows": 24})
+            ready = wire.line()
+            step("the attach wire answers events_ready for a terminal session", ready is not None and ready.get("type") == "events_ready", json.dumps(ready)[:300])
+            # Enter is a carriage return on a Windows console, a newline on a Unix terminal.
+            wire.send({"op": "attach_input", "data": base64.b64encode(b"abc\r" if os.name == "nt" else b"abc\n").decode()})
+            deadline = time.time() + 15
+            while time.time() < deadline and b"got abc" not in screen:
+                frame = wire.line()
+                if frame is None:
+                    break
+                if frame.get("type") == "output":
+                    screen += base64.b64decode(frame.get("data", ""))
+                elif frame.get("type") == "end":
+                    break
+        finally:
+            wire.close()
+        text = screen.decode(errors="replace")
+        step("what is typed through the attach wire reaches the agent's terminal and its answer comes back on the screen", "tty hello" in text and "got abc" in text, text[-400:])
+        line = wait_status("smoke-tty", "exited")
+        logs = run("logs", "smoke-tty", check=False)
+        step("the terminal session ends and its screen is in its log", "exited" in line and "got abc" in logs.stdout, (line + " | " + logs.stdout.strip())[-400:])
+        run("run", "--name", "smoke-stop", "--tty", "--runtime", "custom", "--", sys.executable, "-c", "import time; print('sleeping', flush=True); time.sleep(120)")
+        line = wait_status("smoke-stop", "running")
+        stopped = run("stop", "smoke-stop", check=False, timeout=20)
+        line = wait_status("smoke-stop", "exited", seconds=15)
+        step("stop ends a managed terminal session through its owner", stopped.returncode == 0 and "exited" in line, (stopped.stderr.strip() or stopped.stdout.strip()) + " | " + line)
         # Stopping an agent by pid checks the recorded birth before ending anything.
         helper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], cwd=project, env=env)
         try:
@@ -192,12 +289,25 @@ def main():
                 helper.kill()
                 helper.wait()
         if user_service is None:
-            stop = run("daemon", "stop")
-            step("daemon stop ends the daemon", wait_exit(daemon), stop.stdout.strip())
+            # A session owner outlives a daemon that dies: this daemon is
+            # ended abruptly, as a crash would end it (a deliberate `daemon
+            # stop` stops managed sessions first, by design), the next
+            # daemon finds the session still running under its owner, and
+            # stops it through that owner.
+            run("run", "--name", "smoke-survivor", "--tty", "--runtime", "custom", "--", sys.executable, "-c", "import time; print('surviving', flush=True); time.sleep(120)")
+            line = wait_status("smoke-survivor", "running")
+            step("a terminal session is running before the daemon dies", "running" in line, line)
+            daemon.kill()
+            step("the daemon is ended abruptly, leaving the session to its owner", wait_exit(daemon), str(daemon.returncode))
             # The ordinary first run: a client with nothing to talk to starts
             # the daemon itself and waits for it to listen.
             started = run("daemon", "start", extra_env={"AGENTDOCKER_NO_AUTOSTART": ""}, timeout=30)
             step("daemon start brings up a daemon on demand for this home", started.returncode == 0 and "agentd" in started.stdout, started.stdout.strip())
+            line = wait_status("smoke-survivor", "running", seconds=15)
+            step("the new daemon finds the session still running under its owner", "running" in line, line)
+            stopped = run("stop", "smoke-survivor", check=False, timeout=20)
+            line = wait_status("smoke-survivor", "exited", seconds=15)
+            step("the reattached session is stopped through its owner", stopped.returncode == 0 and "exited" in line, (stopped.stderr.strip() or stopped.stdout.strip()) + " | " + line)
             stop = run("daemon", "stop")
             step("daemon stop ends the daemon a client started", "stopped" in stop.stdout and run("ping", check=False, timeout=10).returncode != 0, stop.stdout.strip())
             # A fresh home that no daemon has made yet: the first command a

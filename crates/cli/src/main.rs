@@ -1,22 +1,7 @@
 //! `agentdocker`: command-line client for `agentd`.
 
 mod agentfile;
-// Attaching a terminal is a PTY relay; Windows has no ConPTY relay yet
-// and says so.
-#[cfg(unix)]
 mod attach;
-#[cfg(windows)]
-mod attach {
-    use anyhow::Result;
-
-    use crate::client::Client;
-
-    pub async fn run(_client: &Client, agent: &str) -> Result<()> {
-        anyhow::bail!(
-            "attaching a terminal is not available on Windows yet; {agent} still receives messages and answers questions through its own tools"
-        )
-    }
-}
 mod client;
 mod codex_input;
 mod connector;

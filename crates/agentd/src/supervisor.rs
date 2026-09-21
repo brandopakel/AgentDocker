@@ -14,22 +14,24 @@
 //! owner still there and reattaches (`reattach`) instead of relaunching.
 
 use std::collections::VecDeque;
-use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(unix)]
+use agentdocker_core::session::socket_path;
 use agentdocker_core::session::{
-    ExitReport, FORMAT, OwnerCommand, OwnerHello, OwnerReport, SessionOwner, exit_path, socket_path,
+    ExitReport, FORMAT, OwnerCommand, OwnerHello, OwnerReport, SessionOwner, endpoint, exit_path,
 };
 use agentdocker_core::{AgentId, AgentRecord, AgentStatus};
+use agentdocker_host::ipc::{OwnedReadHalf, OwnedWriteHalf, Stream};
 use anyhow::Context;
 use chrono::Utc;
+#[cfg(unix)]
 use nix::sys::signal::kill;
+#[cfg(unix)]
 use nix::unistd::Pid;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::daemon::Daemon;
@@ -90,7 +92,7 @@ impl Controller {
     async fn connect(socket: &Path, within: Duration) -> anyhow::Result<Self> {
         let deadline = tokio::time::Instant::now() + within;
         let stream = loop {
-            match UnixStream::connect(socket).await {
+            match Stream::connect(socket).await {
                 Ok(stream) => break stream,
                 Err(error) if tokio::time::Instant::now() >= deadline => {
                     return Err(error).with_context(|| {
@@ -243,7 +245,7 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
     anyhow::ensure!(!record.spec.command.is_empty(), "empty command");
     daemon.validate_native_launch(record)?;
     let launch = launch_for(daemon, record);
-    let socket = socket_path(&daemon.home, &record.id);
+    let socket = endpoint(&daemon.home, &record.id);
     // A stale exit file from an earlier life of this id must not be read
     // as this launch's exit; if it cannot be cleared, nothing launches.
     match std::fs::remove_file(exit_path(&daemon.home, &record.id)) {
@@ -260,10 +262,12 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
                 .env("AGENTDOCKER_HOME", &daemon.home)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::inherit())
-                // Its own group: a signal meant for a managed agent's group,
-                // or for the daemon's, must never reach the owner.
-                .process_group(0);
+                .stderr(std::process::Stdio::inherit());
+            // Its own group: a signal meant for a managed agent's group,
+            // or for the daemon's, must never reach the owner. On Windows
+            // that is a detached process in its own group, holding none of
+            // the daemon's handles.
+            agentdocker_host::command::detach(&mut command);
             let mut child = command.spawn().context("cannot start the session owner")?;
             let mut stdin = child.stdin.take().expect("piped");
             let text = serde_json::to_vec(&launch)?;
@@ -396,7 +400,7 @@ fn validate_identity(
 /// already finished. Identities are checked against the record: a
 /// recycled owner pid or a different child is refused.
 pub async fn reattach(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Reattached> {
-    let socket = socket_path(&daemon.home, &record.id);
+    let socket = endpoint(&daemon.home, &record.id);
     let exit = exit_path(&daemon.home, &record.id);
     let owner = record
         .owner
@@ -466,7 +470,7 @@ pub enum Reattached {
 /// can retire immediately; a slow owner must not delay recovery of other agents.
 /// Keep the report if acknowledgement or cleanup cannot be completed safely.
 pub(crate) async fn acknowledge_recovered_exit(home: std::path::PathBuf, report: ExitReport) {
-    let socket = socket_path(&home, &report.agent);
+    let socket = endpoint(&home, &report.agent);
     if owner_alive(&report.owner) {
         let acknowledged = async {
             let mut controller = Controller::connect(&socket, Duration::from_millis(500)).await?;
@@ -615,7 +619,7 @@ impl Spawned {
     /// and child must be the ones this supervision started with, and the
     /// screen resumes from the last byte shown.
     async fn reconnect(&mut self, home: &Path, id: &AgentId) -> anyhow::Result<()> {
-        let socket = socket_path(home, id);
+        let socket = endpoint(home, id);
         let mut controller = Controller::connect(&socket, Duration::from_secs(10)).await?;
         let hello = controller.hello().await?;
         validate_identity(&hello, id, &self.owner, self.pid, self.process_started_at)?;
@@ -839,6 +843,7 @@ pub fn supervise(
             }
             OwnerLink::Detached => {}
         }
+        #[cfg(unix)]
         let _ = std::fs::remove_file(socket_path(&daemon.home, &id));
         // After the exit is recorded, so a reader of the event stream
         // sees the agent end before it sees it start again.
@@ -852,6 +857,10 @@ pub fn supervise(
 /// report's fields spelled out.
 pub(crate) fn describe_exit(report: &ExitReport) -> String {
     match (report.code, report.signal) {
+        #[cfg(windows)]
+        (Some(code), _) if code as u32 == agentdocker_host::launch::ENDED_BY_OWNER => {
+            "it was ended".to_owned()
+        }
         (Some(code), _) => format!("it ended with exit code {code}"),
         (None, Some(signal)) => format!("it was ended by signal {signal}"),
         (None, None) if report.log_flushed => {
@@ -873,15 +882,25 @@ pub(crate) fn exit_status(report: &ExitReport) -> AgentStatus {
 
 /// Whether a validated dedicated group still has any processes. Uncertainty
 /// retains protection rather than reporting a running writer as exited.
+/// On Windows the group is the child's job, which only its owner holds;
+/// the daemon asks whether the group's leader is alive, and the owner is
+/// what ends the job's descendants before it reports the exit.
 pub(crate) fn group_exists(group: u32) -> bool {
-    let Ok(group) = i32::try_from(group) else {
-        return false;
-    };
-    group > 0
-        && matches!(
-            kill(Pid::from_raw(-group), None),
-            Ok(()) | Err(nix::errno::Errno::EPERM)
-        )
+    #[cfg(unix)]
+    {
+        let Ok(group) = i32::try_from(group) else {
+            return false;
+        };
+        group > 0
+            && matches!(
+                kill(Pid::from_raw(-group), None),
+                Ok(()) | Err(nix::errno::Errno::EPERM)
+            )
+    }
+    #[cfg(windows)]
+    {
+        group > 0 && agentdocker_host::procinfo::alive(group)
+    }
 }
 
 #[cfg(test)]
@@ -934,7 +953,7 @@ mod tests {
     /// call's. Split UTF-8 and a following frame are included.
     #[tokio::test]
     async fn a_cancelled_read_keeps_the_partial_frame() {
-        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (mut client, server) = agentdocker_host::ipc::pair().await.unwrap();
         let (reader, _writer) = server.into_split();
         let mut reader = BufReader::new(reader);
         let mut partial = Vec::new();
@@ -970,7 +989,7 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("exceeds"), "{error}");
         // EOF mid-frame is an error, EOF between frames is the end.
-        let (mut client, server) = tokio::net::UnixStream::pair().unwrap();
+        let (mut client, server) = agentdocker_host::ipc::pair().await.unwrap();
         let (reader, _writer) = server.into_split();
         let mut reader = BufReader::new(reader);
         let mut partial = Vec::new();

@@ -10,17 +10,10 @@
 //! binary is [`main`] and nothing else.
 
 pub mod daemon;
-#[cfg(unix)]
 mod owner;
 pub mod reconcile;
 mod server;
 mod store;
-// Managed sessions (owner processes, PTYs, descriptor handover) are Unix
-// today; Windows gets the same supervisor surface answering `unavailable`.
-#[cfg(unix)]
-mod supervisor;
-#[cfg(windows)]
-#[path = "supervisor_windows.rs"]
 mod supervisor;
 #[cfg(unix)]
 mod takeover;
@@ -140,17 +133,10 @@ pub fn main() -> anyhow::Result<()> {
 /// daemon when they cannot connect, and two may race to do so.
 pub fn run(args: Args) -> anyhow::Result<()> {
     if args.session_owner {
-        #[cfg(unix)]
-        {
-            let launch: owner::Launch =
-                serde_json::from_reader(std::io::stdin().lock()).map_err(|error| {
-                    anyhow::anyhow!("session owner expects a launch on stdin: {error}")
-                })?;
-            let code = owner::main(launch)?;
-            std::process::exit(code);
-        }
-        #[cfg(windows)]
-        anyhow::bail!("session owners are not available on Windows yet");
+        let launch: owner::Launch = serde_json::from_reader(std::io::stdin().lock())
+            .map_err(|error| anyhow::anyhow!("session owner expects a launch on stdin: {error}"))?;
+        let code = owner::main(launch)?;
+        std::process::exit(code);
     }
     serve(args)
 }
