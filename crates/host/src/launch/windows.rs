@@ -263,7 +263,7 @@ pub fn prepare_with(command: Command, console: Option<HPCON>) -> io::Result<Pend
     // launcher gets the plain directory, by the same round-trip rule as
     // its script; any other program takes the directory as given.
     let workdir: Option<OsString> = match command.get_current_dir() {
-        Some(dir) if batch => Some(OsString::from(user_path(dir)?)),
+        Some(dir) if batch => Some(batch_workdir(dir)?),
         Some(dir) => Some(dir.as_os_str().to_os_string()),
         None => None,
     };
@@ -761,6 +761,24 @@ fn user_path(path: &Path) -> io::Result<String> {
     }
 }
 
+/// The directory cmd.exe starts a batch launcher in: the plain form of
+/// the checkout, and never a network (UNC) directory — cmd.exe does not
+/// start in one; it says so and runs in the Windows directory instead,
+/// which is a project command in the wrong folder. Refused up front.
+fn batch_workdir(dir: &Path) -> io::Result<OsString> {
+    let plain = user_path(dir)?;
+    if plain.starts_with(r"\\") || plain.starts_with("//") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cmd.exe cannot run a batch launcher in a network directory: {}",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(OsString::from(plain))
+}
+
 /// `GetFullPathNameW` of `path`: what the plain path rules make of it.
 fn full_path_name(path: &str) -> io::Result<String> {
     use windows_sys::Win32::Storage::FileSystem::GetFullPathNameW;
@@ -1123,8 +1141,11 @@ mod tests {
     /// A relative script is the one this process sees, made absolute
     /// before cmd.exe runs it from the child's own directory: a script of
     /// the same name in the child's directory is not the one that runs.
+    /// A relative path needs a working directory of its own, so this runs
+    /// as a fixture process started in `here` (`relative_script_fixture`).
     #[test]
     fn a_relative_script_is_resolved_here_not_in_the_childs_directory() {
+        use std::process::Stdio;
         let tmp = tempfile::tempdir().unwrap();
         let here = tmp.path().join("here");
         let there = tmp.path().join("there");
@@ -1132,11 +1153,39 @@ mod tests {
         std::fs::create_dir_all(&there).unwrap();
         std::fs::write(here.join("which.cmd"), "@echo off\r\necho ran-here\r\n").unwrap();
         std::fs::write(there.join("which.cmd"), "@echo off\r\necho ran-there\r\n").unwrap();
-        let mut command = Command::new(here.join("which.cmd"));
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "launch::tests::relative_script_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .current_dir(&here)
+            .env("AGENTDOCKER_TEST_RELATIVE_THERE", &there)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("relative-fixture-ok"),
+            "{stdout}\n{stderr}"
+        );
+    }
+
+    /// The fixture: started in `here`, it names the script relatively and
+    /// runs it from `there`; what runs must be `here`'s.
+    #[test]
+    #[ignore = "subprocess fixture for a_relative_script_is_resolved_here_not_in_the_childs_directory"]
+    fn relative_script_fixture() {
+        let there = PathBuf::from(std::env::var_os("AGENTDOCKER_TEST_RELATIVE_THERE").unwrap());
+        let mut command = Command::new(r".\which.cmd");
         command.current_dir(&there);
         let program = resolve_program(&command).unwrap();
         assert!(
-            program.is_absolute() && program.starts_with(&here),
+            program.is_absolute() && program.ends_with(r"here\which.cmd"),
             "{}",
             program.display()
         );
@@ -1151,6 +1200,27 @@ mod tests {
         );
         while owned.try_wait().unwrap().is_none() {
             std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        println!("relative-fixture-ok");
+    }
+
+    /// A batch launcher's working directory is the plain checkout, and a
+    /// network directory is refused before anything is created: cmd.exe
+    /// would run there in the Windows directory instead and say so only
+    /// on stderr.
+    #[test]
+    fn a_batch_launchers_working_directory_is_plain_and_never_a_network_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical = std::fs::canonicalize(tmp.path()).unwrap();
+        let plain = batch_workdir(&canonical).unwrap();
+        assert!(
+            !plain.to_string_lossy().starts_with(r"\\?\"),
+            "{}",
+            plain.to_string_lossy()
+        );
+        for unc in [r"\\?\UNC\server\share\repo", r"\\server\share\repo"] {
+            let error = batch_workdir(Path::new(unc)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{unc}");
         }
     }
 

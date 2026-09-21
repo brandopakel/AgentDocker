@@ -176,10 +176,15 @@ Work still required before platform support can be claimed:
   session's checkout is given to cmd.exe as a plain path too: a canonical
   Windows path is verbatim, and cmd.exe started in one falls back to the
   Windows directory ("UNC paths are not supported"), which the first runner
-  showed — a provider would have run in the wrong folder. A cold machine's
-  first start of `agentd.exe` waits on the system's scan of the new
-  executable, so a client starting the daemon on demand allows ten seconds
-  on Windows (three elsewhere). Host
+  showed — a provider would have run in the wrong folder. A checkout on a
+  network share (a UNC path) is refused for a batch launcher before
+  anything is created, for the same reason: cmd.exe would run in the
+  Windows directory and say so only on stderr. A cold runner
+  missed the client's three seconds for a first start of a fresh
+  `agentd.exe`, with the daemon's log not yet written — what held it up
+  was not observed (the system's scan of a new executable is one
+  candidate) — so a client starting the daemon on demand allows ten
+  seconds on Windows (three elsewhere). Host
   tests on the runner: the batch line against the standard library's
   shape, a `.cmd` shim run through the gate with a space and a `&` intact
   in its arguments, a refused argument leaving a marker-writing shim
