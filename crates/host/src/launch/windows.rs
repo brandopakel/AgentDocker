@@ -743,7 +743,18 @@ fn batch_argument(line: &mut String, arg: &OsStr) -> io::Result<()> {
 /// space, a component the plain rules rewrite) is refused rather than
 /// handed to cmd as a different file.
 fn user_path(path: &Path) -> io::Result<String> {
-    let text = path.to_string_lossy().into_owned();
+    // Unicode only, as for arguments: a name with an unpaired surrogate
+    // would otherwise reach cmd.exe with that unit replaced — a different
+    // file's name.
+    let text = path
+        .to_str()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a batch launcher's paths must be Unicode",
+            )
+        })?
+        .to_owned();
     let plain = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         format!(r"\\{rest}")
     } else if let Some(rest) = text.strip_prefix(r"\\?\") {
@@ -1135,6 +1146,20 @@ mod tests {
         );
         let dotted = PathBuf::from(format!(r"\\?\{}", plain.replace("shim.cmd", "shim.cmd.")));
         let error = user_path(&dotted).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        // A name that is not Unicode — an unpaired surrogate — is refused
+        // rather than given to cmd.exe with that unit replaced.
+        let unpaired = PathBuf::from(OsString::from_wide(&[
+            b'C' as u16,
+            b':' as u16,
+            b'\\' as u16,
+            0xD800,
+            b'.' as u16,
+            b'c' as u16,
+            b'm' as u16,
+            b'd' as u16,
+        ]));
+        let error = user_path(&unpaired).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
