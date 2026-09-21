@@ -8,8 +8,8 @@ use super::icons::{Icon, icon};
 use super::style::{Colors, alpha, weight};
 use super::*;
 use crate::controls::{
-    Kind, block_button, button as action, custom, danger, input, input_submitting, primary,
-    segment, tab,
+    Kind, block_button, button as action, composer, custom, danger, input, input_submitting,
+    primary, segment, tab,
 };
 use iced::{
     Center, Element, Fill, Font,
@@ -2088,7 +2088,7 @@ impl App {
                 let send = (!sending && !value.trim().is_empty() && self.connected.is_ok())
                     .then_some(Message::SendSession(draft_key));
                 body = body
-                    .push(input_submitting(
+                    .push(composer(
                         "session-message-text",
                         "Message this agent…",
                         value,
@@ -2534,7 +2534,7 @@ impl App {
             let owner = id.to_owned();
             let mut composer = column![
                 row![
-                    input_submitting(
+                    composer(
                         format!("reply-{id}"),
                         "Message…",
                         &draft,
@@ -2884,7 +2884,7 @@ impl App {
                     let send = (enabled && !answer.trim().is_empty())
                         .then_some(Message::Answer(id.clone()));
                     body = body
-                        .push(input_submitting(
+                        .push(composer(
                             format!("answer-{id}"),
                             if presentation.is_some() {
                                 "Or write an answer"
@@ -3182,11 +3182,16 @@ impl App {
                 }
                 body = body.push(
                     row![
-                        input(
+                        composer(
                             "channel-message",
                             "Message",
                             &draft.text,
                             Message::ChannelDraft,
+                            draft.sending.is_none(),
+                            (draft.sending.is_none()
+                                && self.connected.is_ok()
+                                && !draft.text.trim().is_empty())
+                            .then_some(Message::SendChannel),
                         ),
                         primary(
                             "send-channel",

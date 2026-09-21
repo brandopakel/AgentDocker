@@ -10,7 +10,7 @@ use super::view::{
 };
 use super::*;
 use crate::controls::{
-    Kind, button as action, custom, input_enabled, input_submitting, primary, segment,
+    Kind, button as action, composer, custom, input_enabled, input_submitting, primary, segment,
 };
 use agentdocker_core::conversation::line_of;
 use agentdocker_core::journal::ago;
@@ -955,7 +955,7 @@ impl App {
     }
 
     /// The composer under a conversation or a thread: the draft, its
-    /// receipt or error, and Send. Enter sends.
+    /// receipt or error, and Send. Enter sends; Shift+Enter inserts a line.
     /// The composer of a conversation, or of a thread in it when `root` is
     /// given: each keeps its own draft, and only the thread's sets `reply_to`.
     fn composer(
@@ -987,7 +987,7 @@ impl App {
         // Enter sends, as it does everywhere people type to each other;
         // the button beside it is the same action for the pointer.
         let input = row![
-            input_submitting(
+            composer(
                 input_id,
                 &placeholder,
                 &text_now,
@@ -1126,7 +1126,7 @@ impl App {
                     .height(iced::Shrink)
                     .id(format!("composer-feedback-{key}")),
             )
-            .max_height((available_height - 48.0).clamp(0.0, 180.0)),
+            .max_height((available_height - 124.0).clamp(0.0, 180.0)),
         ]
         .spacing(4)
         .into()

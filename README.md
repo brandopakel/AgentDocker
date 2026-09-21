@@ -39,10 +39,11 @@ The first coworker rollout targets **macOS, Linux and native Windows**. Each
 platform needs a downloadable candidate and its own first-run acceptance; the
 Windows foundations alone do not satisfy that requirement.
 
-Projects are moving to shared chat first, with clearly named agents and terminal
+Projects open to shared chat first, with clearly named agents and terminal
 access beside the conversation. **Open project terminal** starts a shell in the
-project folder; **Agents** opens the session list. That interface is installed as a local preview
-and awaits final integration. Board, history and technical activity remain
+project folder; **Agents** opens the session list. The shared-chat interface is merged
+and installed as an earlier local preview. Message composers now support multiple
+lines: **Enter** sends, **Shift+Enter** adds a line. Board, history and technical activity remain
 available under More. The [remaining-work tracker](docs/REMAINING-WORK.md)
 separates completed implementation, unmerged changes and release acceptance.
 

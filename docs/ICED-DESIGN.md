@@ -314,7 +314,18 @@ key is pressed — whatever asks for the focus meanwhile, the click included —
 while Tab and a focus the app moves to another control show it; losing focus
 forgets the click
 (`a_clicked_control_is_focused_without_a_ring_until_the_keyboard_asks`).
-Text inputs use Iced's native input-method support.
+Text inputs use Iced's native input-method support. Message and answer composers
+use Iced's multiline editor: plain Enter sends through the existing button action,
+Shift+Enter inserts a line, and clipboard paste retains line breaks. Native
+selection/copy/navigation bindings remain intact. Preedit and repeated Enter
+events never submit. The editor grows to 120 points and scrolls inside that
+bound; receipt/error feedback retains its separate bounded scroll area.
+Application drafts remain authoritative and limited to 16,000 characters;
+cursor/selection/preedit are widget-local and never restored as a submission.
+Changing destination resets focus. A send receipt, mention or notification edit
+refreshes the editor from the same draft used by the accessibility SetValue path.
+Native widget-event regressions cover these boundaries, including Unicode IME
+commit and multiline paste; they do not replace physical keyboard/IME trials.
 
 The rendered controls supply AccessKit labels, roles, values, actions, focus and
 physical-pixel bounds. The native adapter is installed before showing the window.
