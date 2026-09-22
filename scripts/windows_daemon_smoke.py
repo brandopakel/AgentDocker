@@ -55,6 +55,17 @@ class FirstStart:
         return ", ".join(parts)
 
 
+def describe_probe(last, result):
+    """What the last probe said: its exception when it raised (the latest
+    word, even after an earlier probe returned a failure), else the last
+    returned result's stderr, else that no probe was possible."""
+    if isinstance(last, Exception):
+        return f"{type(last).__name__}: {last}"
+    if result is not None:
+        return result.stderr.strip()
+    return "no probe"
+
+
 def wait_first_start(start, probe, alive, budget=90.0, clock=time.monotonic, sleep=time.sleep):
     """Start a daemon with `start()` and probe it with `probe(timeout)` until
     it answers (a probe returns True), it exits (`alive()` is False), or
@@ -553,7 +564,7 @@ def main():
         answered = first.answered is not None
         detail = first.describe()
         if not answered:
-            said = last_probe["result"].stderr.strip() if "result" in last_probe else f"{first.probe!r}" if first.probe is not None else "no probe"
+            said = describe_probe(first.probe, last_probe.get("result"))
             detail += f"; ping said: {said}; daemon log: {daemon_log.read_text(errors='replace').strip()[-600:]!r}"
             if first.exited:
                 detail = f"the daemon exited with {daemon.returncode} before answering; " + detail + acl_report(home)

@@ -82,9 +82,6 @@ class FixtureSetupCleanup(unittest.TestCase):
             self.assertEqual(report.read_text(), "previous evidence")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class FirstStartTiming(unittest.TestCase):
     """The smoke's first daemon start is timed and bounded by the clock,
@@ -148,6 +145,17 @@ class FirstStartTiming(unittest.TestCase):
         self.assertIsNone(result.exited)
         self.assertEqual(result.describe(), "process created 2.00 s after the request, answered 10.0 s after creation")
 
+    def test_a_raised_probe_after_a_failed_one_is_what_the_report_says(self):
+        # A failed ping fills the last returned result; the next probe raises:
+        # the report carries the exception, not the stale stderr.
+        class Result:
+            stderr = "cannot reach agentd (stale)\n"
+
+        said = WINDOWS_SMOKE.describe_probe(AssertionError("ping did not exit within 1 s"), Result())
+        self.assertEqual(said, "AssertionError: ping did not exit within 1 s")
+        self.assertEqual(WINDOWS_SMOKE.describe_probe(False, Result()), "cannot reach agentd (stale)")
+        self.assertEqual(WINDOWS_SMOKE.describe_probe(None, None), "no probe")
+
     def test_a_daemon_that_exits_first_is_said_so(self):
         result = WINDOWS_SMOKE.wait_first_start(
             lambda: None, lambda timeout: False, lambda: False, budget=90.0,
@@ -155,3 +163,6 @@ class FirstStartTiming(unittest.TestCase):
         self.assertTrue(result.exited)
         self.assertIsNone(result.answered)
 
+
+if __name__ == "__main__":
+    unittest.main()
