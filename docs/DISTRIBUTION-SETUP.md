@@ -230,6 +230,23 @@ Windows promotion refusal and exact-byte retention have fixture coverage. The
 protected-tag Windows job, hosted ZIP download and independent-machine/provider
 acceptance remain unverified until the candidate is released and tried.
 
+## First coworker preview candidate
+
+The source candidate is **0.2.0-beta.1**, with matching workspace packages,
+internal dependency requirements and lockfile entries. The legacy macOS bundle
+helper reads this version from the workspace when no override is supplied.
+The intended tag is `v0.2.0-beta.1`; changing the source version does not create a
+tag, publish assets or install them. Publication remains open until the final
+integrated source passes its gates and the protected-tag workflow finishes.
+
+Before announcing the preview, download its actual hosted archives and sidecar
+checksums, verify package provenance, and exercise the explicit-version install
+route on macOS/Linux and ZIP extraction on Windows. Check that GitHub's stable
+latest release, the stable update feed and Homebrew tap have not moved. Then
+record first-run provider and restart acceptance on each declared platform in
+the existing verification index. A Windows portable trial gives early feedback;
+it does not complete the installer/service/update or native Codex input work.
+
 ## Order
 
 1. Complete: the tap and v0.1.0 formula exist; publishing configuration names were

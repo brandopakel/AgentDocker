@@ -13,7 +13,7 @@ set -eu
 
 binary=${1:?usage: bundle-macos.sh <binary> <output-dir> [version]}
 outdir=${2:?usage: bundle-macos.sh <binary> <output-dir> [version]}
-version=${3:-0.1.0}
+version=${3:-}
 # The CLI and daemon travel with the app: its Runtimes and Installation
 # screens shell out to `agentdocker`, and an app installed on its own
 # would find whatever happens to be on PATH, or nothing.
@@ -26,6 +26,9 @@ for tool in agentdocker agentd; do
 done
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -z "$version" ]; then
+    version=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["workspace"]["package"]["version"])' "$root/Cargo.toml")
+fi
 app="$outdir/AgentDocker.app"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
