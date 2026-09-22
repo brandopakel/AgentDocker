@@ -13,6 +13,15 @@ SPEC.loader.exec_module(BUILD)
 
 
 class NativeBuildMetadata(unittest.TestCase):
+    def test_windows_executable_metadata_is_checked_without_starting_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "agentd.exe"
+            metadata = {"format": 1, "version": "0.1.0", "os": "windows", "arch": "x86_64", "state_schema": 23}
+            executable.write_text("import sys\nassert sys.argv[1:] == ['--build-info']\nprint(" + repr(json.dumps(metadata)) + ")\n")
+            self.assertEqual(BUILD.daemon_metadata(executable, "x86_64-pc-windows-msvc", "0.1.0", [sys.executable]), metadata)
+            with self.assertRaises(ValueError):
+                BUILD.daemon_metadata(executable, "aarch64-pc-windows-msvc", "0.1.0", [sys.executable])
+
     def test_reported_contract_and_incompatible_builds(self):
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "target daemon"

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +46,8 @@ def daemon_metadata(executable, target, version, runner):
         raise RuntimeError("cannot execute the built daemon; cross builds need a compatible --schema-runner") from error
     metadata = json.loads(output)
     schema = metadata.get("state_schema")
-    os_name = "macos" if "apple-darwin" in target else "linux" if "linux" in target else None
+    os_name = ("macos" if "apple-darwin" in target else "linux" if "linux" in target
+               else "windows" if "windows" in target else None)
     arch = target.split("-", 1)[0]
     if (metadata.get("format") != 1 or metadata.get("version") != version
             or os_name is None or metadata.get("os") != os_name or metadata.get("arch") != arch):
@@ -56,7 +58,7 @@ def daemon_metadata(executable, target, version, runner):
 
 
 def build(target, schema_runner=()):
-    subprocess.run(["python3", str(ROOT / "scripts/build_storage.py")], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run([sys.executable, str(ROOT / "scripts/build_storage.py")], check=True, stdout=subprocess.DEVNULL)
     rustc = subprocess.check_output(["rustc", "-Vv"], text=True)
     host = next(line.removeprefix("host: ") for line in rustc.splitlines() if line.startswith("host: "))
     target = target or host
@@ -84,7 +86,8 @@ def build(target, schema_runner=()):
         "format": 1, **before, "target": target, "version": version, "rustc": rustc,
         "state_schema": metadata["state_schema"], "installation_lock": metadata.get("installation_lock", 0),
         "launcher_redirect": metadata.get("launcher_redirect", 0), "binary_directory": str(directory),
-        "binary_sha256": {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in BINARIES},
+        "binary_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                          for path in executables.values()},
     }
     (directory / "native-build.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
