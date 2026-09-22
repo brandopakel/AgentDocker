@@ -50,6 +50,10 @@ late older run cannot replace a newer preview. The release body records the
 highest promoted version before upload; if clobber removes the old feed and the
 upload fails, an older retry still cannot take over. A same-version retry must
 use identical canonical feed bytes.
+If the record names version N but the asset still contains N-1 (or is absent),
+retry N: an N-1 retry deliberately reports `preserved_newer`. An empty feed asset
+left in GitHub's `starter` state is repairable only by that exact recorded
+version; unrelated or nonempty unfinished assets are refused.
 
 If the versioned release is published but channel promotion fails, repair only
 the channel from reviewed `main`:

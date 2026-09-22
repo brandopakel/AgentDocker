@@ -284,6 +284,7 @@ def windows(args, stage, info):
         "Keep agentdocker.exe and agentd.exe beside it. No Rust or Python is needed.\n"
         "The command line is .\\agentdocker.exe from PowerShell in that folder.\n\n"
         "This preview has no installer, automatic updater or Windows service.\n"
+        "This ZIP is not included in the desktop update feeds.\n"
         "Before removing or replacing this folder, finish managed work, quit the app,\n"
         "and run .\\agentdocker.exe daemon stop to stop its sessions and daemon.\n"
         "The app's per-user state is stored separately and is preserved.\n"

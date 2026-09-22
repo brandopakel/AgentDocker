@@ -64,10 +64,14 @@ class GitHub:
         result = subprocess.run(
             ["gh", "api", "--include", f"repos/{self.repo}/releases/tags/{tag}"],
             capture_output=True, timeout=120)
-        headers, separator, body = result.stdout.replace(b"\r\n", b"\n").partition(b"\n\n")
-        status = re.match(rb"HTTP/[0-9.]+ ([0-9]{3})", headers)
-        if not separator or not status:
-            raise RuntimeError("GitHub release lookup returned no HTTP status")
+        body = result.stdout.replace(b"\r\n", b"\n")
+        while True:
+            headers, separator, body = body.partition(b"\n\n")
+            status = re.match(rb"HTTP/[0-9.]+ ([0-9]{3})", headers)
+            if not separator or not status:
+                raise RuntimeError("GitHub release lookup returned no HTTP status")
+            if not body.startswith(b"HTTP/"):
+                break
         if status[1] == b"404":
             return None
         if result.returncode or status[1] != b"200":
@@ -115,7 +119,7 @@ class GitHub:
                      "--draft=false", "--prerelease", "--latest=false")
 
 
-def assets(release):
+def assets(release, repair_feed=False):
     if not isinstance(release, dict):
         raise ValueError("release has an invalid asset inventory")
     entries = release.get("assets")
@@ -126,7 +130,12 @@ def assets(release):
         if not isinstance(asset, dict):
             raise ValueError("release has an invalid asset entry")
         name = asset.get("name")
-        if not isinstance(name, str) or name in result or asset.get("state") != "uploaded":
+        # GitHub can retain an empty starter asset after a failed upload.
+        # Only the recognized channel's exact-version retry opts into this;
+        # versioned assets and unrelated or nonempty unfinished assets stay strict.
+        starter = (repair_feed and name == FEED and asset.get("state") == "starter"
+                   and type(asset.get("size")) is int and asset["size"] == 0)
+        if not isinstance(name, str) or name in result or (asset.get("state") != "uploaded" and not starter):
             raise ValueError("release contains ambiguous or unfinished assets")
         result[name] = asset
     return result
@@ -222,10 +231,10 @@ def promotion(github, tag):
             raise ValueError("same-version preview feed bytes changed")
         if requested == previous and record["source_commit"] != source:
             raise ValueError("same-version preview source changed")
-        inventory = assets(channel)
+        inventory = assets(channel, repair_feed=requested == previous)
         if set(inventory) - {FEED}:
             raise ValueError("channel contains unrelated assets; preserved")
-        if FEED in inventory:
+        if FEED in inventory and inventory[FEED]["state"] == "uploaded":
             existing = github.download(inventory[FEED])
             existing_tag, _ = feed_tag(existing)
             if version_key(existing_tag) > previous:

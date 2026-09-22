@@ -22,6 +22,7 @@ class FakeGitHub:
         self.blobs = {}
         self.writes = []
         self.fail_upload = False
+        self.leave_starter = False
         self.fail_publish = False
         self.corrupt_upload = False
 
@@ -80,6 +81,10 @@ class FakeGitHub:
         channel = self.releases[CHANNEL.CHANNEL]
         channel["assets"] = []  # gh --clobber may remove the previous asset first.
         if self.fail_upload:
+            if self.leave_starter:
+                starter = self.asset(CHANNEL.FEED, b"")
+                starter["state"] = "starter"
+                channel["assets"] = [starter]
             raise RuntimeError("upload failed after delete")
         data = feed.read_bytes() + (b" " if self.corrupt_upload else b"")
         channel["assets"] = [self.asset(CHANNEL.FEED, data)]
@@ -142,6 +147,43 @@ class PreviewChannel(unittest.TestCase):
                 self.assertIs(self.github.releases[CHANNEL.CHANNEL]["draft"], True)
                 setattr(self.github, failure, False)
                 self.assertEqual(self.promote()["action"], "promoted")
+
+    def test_empty_starter_feed_is_repaired_only_at_the_recorded_version(self):
+        self.github.fail_upload = self.github.leave_starter = True
+        with self.assertRaises(RuntimeError):
+            self.promote()
+        self.github.fail_upload = False
+        self.github.writes.clear()
+        with self.assertRaisesRegex(ValueError, "unfinished assets"):
+            self.promote(self.new)
+        self.assertEqual(self.github.writes, [])
+        self.assertEqual(self.promote()["action"], "promoted")
+
+    def test_starter_repair_preserves_feed_identity_and_unrelated_assets(self):
+        for change in ["canonical_bytes", "unrelated", "nonempty", "versioned"]:
+            with self.subTest(change=change):
+                self.setUp()
+                self.github.fail_upload = self.github.leave_starter = True
+                with self.assertRaises(RuntimeError):
+                    self.promote()
+                self.github.fail_upload = False
+                channel = self.github.releases[CHANNEL.CHANNEL]
+                if change == "canonical_bytes":
+                    value = json.loads(self.github.download(CHANNEL.assets(self.github.releases[self.old])[CHANNEL.FEED]))
+                    value["changed"] = True
+                    self.github.set_feed(self.old, value)
+                elif change == "unrelated":
+                    channel["assets"][0]["name"] = "unrelated.json"
+                elif change == "nonempty":
+                    channel["assets"][0]["size"] = 1
+                else:
+                    self.github.releases[self.old]["assets"][-1]["state"] = "starter"
+                original = copy.deepcopy(channel)
+                self.github.writes.clear()
+                with self.assertRaises(ValueError):
+                    self.promote()
+                self.assertEqual(channel, original)
+                self.assertEqual(self.github.writes, [])
 
     def test_readback_failure_does_not_publish_new_channel(self):
         self.github.corrupt_upload = True
@@ -245,6 +287,20 @@ class GitHubTransport(unittest.TestCase):
                 with self.subTest(changes=changes), self.assertRaises(ValueError):
                     self.github.download({**asset, **changes})
             self.assertEqual(command.call_count, 3)
+
+    def test_lookup_uses_final_http_header_block(self):
+        for status, code in [(200, 0), (404, 1), (403, 1)]:
+            response = (f'HTTP/1.1 100 Continue\r\n\r\nHTTP/2.0 {status} Test\r\n\r\n'
+                        '{"tag_name":"v0.1.0"}').encode()
+            result = subprocess.CompletedProcess([], code, response)
+            with self.subTest(status=status), patch.object(CHANNEL.subprocess, "run", return_value=result):
+                if status == 200:
+                    self.assertEqual(self.github.release("v0.1.0")["tag_name"], "v0.1.0")
+                elif status == 404:
+                    self.assertIsNone(self.github.release("v0.1.0"))
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "HTTP 403"):
+                        self.github.release("v0.1.0")
 
     def test_mutating_commands_only_target_nonlatest_preview_channel(self):
         with patch.object(self.github, "command") as command:
