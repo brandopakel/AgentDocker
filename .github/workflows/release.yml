@@ -8,14 +8,19 @@ jobs:
   validate:
     if: github.ref_protected
     runs-on: ubuntu-latest
+    outputs:
+      preview: ${{ steps.tag.outputs.preview }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       - name: Validate tag before building
+        id: tag
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: python3 packaging/desktop/release.py validate --tag "$RELEASE_TAG"
+        run: |
+          python3 packaging/desktop/release.py validate --tag "$RELEASE_TAG"
+          python3 -c 'import os, sys; sys.path.insert(0, "packaging/desktop"); import release; print("preview=" + str(release.preview(os.environ["RELEASE_TAG"])).lower())' >> "$GITHUB_OUTPUT"
   build:
     needs: validate
     if: github.ref_protected
@@ -123,6 +128,53 @@ jobs:
           name: desktop-release-${{ matrix.target }}
           path: dist/
           if-no-files-found: error
+  windows-preview:
+    name: Accepted Windows x64 portable preview
+    needs: validate
+    if: needs.validate.outputs.preview == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: windows-portable-release
+      - name: Build exact native source
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          python scripts/build_native.py --target x86_64-pc-windows-msvc > artifacts/native-build.json
+      - name: Accept the extracted portable archive
+        timeout-minutes: 10
+        run: python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-package
+      - name: Verify acceptance and prepare prerelease assets
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $sourceCommit = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python packaging/desktop/release.py windows-preview --native-manifest artifacts/native-build.json --accepted artifacts/windows-package --tag "$env:RELEASE_TAG" --source "$sourceCommit" --output dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-preview-release
+          path: dist/
+          if-no-files-found: error
+      - name: Preserve Windows acceptance diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-preview-diagnostics
+          path: |
+            artifacts/native-build.json
+            artifacts/windows-package/package-acceptance.json
+            artifacts/windows-package/smoke/
+          if-no-files-found: warn
   feed:
     name: Verify complete desktop update feed
     needs: desktop
@@ -185,7 +237,15 @@ jobs:
             agentdocker-app.rb
           if-no-files-found: error
   publish:
-    needs: [build, desktop, feed, formula]
+    needs: [validate, build, desktop, windows-preview, feed, formula]
+    # A stable tag deliberately skips Windows. A prerelease must pass its
+    # extracted-archive acceptance; no failed job is bypassed by this guard.
+    if: >-
+      ${{ !cancelled() && needs.validate.result == 'success' &&
+          needs.build.result == 'success' && needs.desktop.result == 'success' &&
+          needs.feed.result == 'success' && needs.formula.result == 'success' &&
+          ((needs.validate.outputs.preview == 'true' && needs.windows-preview.result == 'success') ||
+           (needs.validate.outputs.preview == 'false' && needs.windows-preview.result == 'skipped')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -198,6 +258,26 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: desktop-release-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: update-feed
+          path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: formula
+          path: dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        if: needs.validate.outputs.preview == 'true'
+        with:
+          name: windows-preview-release
           merge-multiple: true
           path: dist
       - name: Publish verified artifacts
@@ -210,6 +290,9 @@ jobs:
           else
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --draft
           fi
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > release-notes.md
+          python3 packaging/desktop/release.py notes --tag "$RELEASE_TAG" --file release-notes.md
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
           gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
           # A 404 means the first stable release; other lookup failures are
           # rejected by publication(), leaving the draft intact.

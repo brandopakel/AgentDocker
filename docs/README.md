@@ -2,8 +2,11 @@
 
 AgentDocker runs agents natively on the person's own computer: a per-host
 daemon, a CLI and a desktop app. Docker and Podman are an optional addition,
-never a requirement. macOS and Linux are the delivered hosts; Windows has the
-daemon and CLI on a real runner and its sessions in review.
+never a requirement. macOS has local acceptance and Linux has graphical/package
+CI coverage.
+Windows managed sessions, ConPTY and portable ZIP packaging are merged and
+exercised on a native runner. A current coworker desktop release and independent
+machine acceptance remain open on all three platforms.
 
 Sixteen documents, each the current contract for one thing. Dated audits,
 plans and reviews from the way here were removed on September 21, 2026 and

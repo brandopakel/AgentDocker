@@ -17,6 +17,7 @@ import tempfile
 HERE = Path(__file__).resolve().parent
 TARGETS = {"aarch64-apple-darwin", "x86_64-apple-darwin",
            "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"}
+WINDOWS_TARGET = "x86_64-pc-windows-msvc"
 SIGNING_ENV = ("MACOS_CERTIFICATE_BASE64", "MACOS_CERTIFICATE_PASSWORD",
                "MACOS_SIGNING_IDENTITY", "MACOS_NOTARY_KEY", "MACOS_NOTARY_KEY_ID",
                "MACOS_NOTARY_ISSUER")
@@ -183,11 +184,102 @@ def collect(directory, output, tag):
     return value
 
 
+def windows_preview(native_manifest, accepted, output, tag, source):
+    """Publishable assets from the exact portable bytes accepted on Windows.
+
+    This does not rebuild or run a package, and never adds Windows to the
+    installer/update feed. The native trial must have finished first.
+    """
+    if not preview(tag):
+        raise ValueError("unsigned Windows portable assets require a prerelease tag")
+    requested = version(tag)
+    build = json.loads(native_manifest.read_text(encoding="utf-8"))
+    info = json.loads((accepted / "manifest.json").read_text(encoding="utf-8"))
+    report = json.loads((accepted / "package-acceptance.json").read_text(encoding="utf-8"))
+    observed = json.loads((accepted / "smoke/windows-daemon-smoke.json").read_text(encoding="utf-8"))
+    if (build.get("version") != requested or build.get("source_dirty") is not False
+            or build.get("target") != WINDOWS_TARGET or build.get("source_commit") != source):
+        raise ValueError("Windows preview requires a matching clean native build")
+    for key in ("source_commit", "source_tree", "source_input_sha256", "source_dirty",
+                "version", "target", "state_schema", "installation_lock", "launcher_redirect",
+                "binary_sha256"):
+        if info.get(key) != build.get(key):
+            raise ValueError(f"Windows preview differs from its native build: {key}")
+    if (info.get("format") != 1 or info.get("product") != "agentdocker"
+            or info.get("signing") != "unsigned" or info.get("notarized") is not False
+            or info.get("distribution") != "portable-preview"):
+        raise ValueError("Windows preview package metadata is invalid")
+    for key, length in (("source_commit", 40), ("source_tree", 40), ("source_input_sha256", 64)):
+        if not re.fullmatch("[0-9a-f]{" + str(length) + "}", info.get(key, "")):
+            raise ValueError(f"Windows preview source metadata is invalid: {key}")
+    for key in ("source_commit", "source_input_sha256", "binary_sha256", "artifacts"):
+        if report.get(key) != info.get(key):
+            raise ValueError(f"Windows acceptance belongs to another package: {key}")
+    steps = observed.get("steps", [])
+    desktop = observed.get("desktop", {})
+    native = desktop.get("native_result", {})
+    if (report.get("result") != "passed" or observed.get("result") != "passed"
+            or observed.get("binary_sha256") != info["binary_sha256"]
+            or not steps or any(step.get("ok") is not True for step in steps)
+            or type(report.get("steps")) is not int or report["steps"] != len(steps)
+            or report.get("desktop") != desktop or desktop.get("result") != "passed"
+            or native.get("result") != "passed" or native.get("connected") is not True):
+        raise ValueError("Windows archive acceptance is missing, failed or inconsistent")
+    packager = module("package")
+    screenshot = accepted / "smoke/desktop/window.png"
+    if packager.sha256(screenshot) != desktop.get("screenshot_sha256"):
+        raise ValueError("Windows acceptance screenshot differs from its report")
+    name = "agentdocker-desktop-" + WINDOWS_TARGET + ".zip"
+    if set(info.get("artifacts", {})) != {name}:
+        raise ValueError("Windows preview requires exactly its portable ZIP")
+    if output.exists():
+        raise FileExistsError("release output already exists")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    spec = importlib.util.spec_from_file_location(
+        "windows_package_smoke", HERE.parents[1] / "scripts/windows_package_smoke.py")
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+    with tempfile.TemporaryDirectory(prefix=".agentdocker-windows-release-", dir=output.parent) as temporary:
+        root = Path(temporary)
+        assets = root / "assets"
+        assets.mkdir()
+        archive = assets / name
+        # Verify the staged bytes: a concurrent source replacement cannot
+        # publish different bytes from the ones whose acceptance was checked.
+        shutil.copyfile(accepted / name, archive)
+        if (archive.stat().st_size != info.get("size", {}).get("archive_bytes", {}).get(name)
+                or archive.stat().st_size > 40 * 1024 ** 2):
+            raise ValueError("Windows preview archive size differs from its manifest")
+        app = smoke.extract_checked(archive, root / "extracted", info)
+        (assets / (name + ".sha256")).write_text(info["artifacts"][name] + "  " + name + "\n")
+        (assets / "windows-preview-manifest.json").write_text(json.dumps(info, indent=2) + "\n")
+        (assets / "windows-preview-acceptance.json").write_text(json.dumps(report, indent=2) + "\n")
+        shutil.copyfile(app / "README.txt", assets / "WINDOWS-PREVIEW.txt")
+        assets.rename(output)
+    return info
+
+
+def preview_notes(tag, notes):
+    marker = "<!-- agentdocker-windows-preview -->"
+    if not preview(tag) or marker in notes:
+        return notes
+    return (marker + "\nWindows x64 is an **unsigned portable preview**. Extract the whole ZIP "
+            "and open `AgentDocker/agentdocker-ui.exe`; keep its sibling executables together. "
+            "It has no Windows installer, service or automatic updater. Finish managed work, "
+            "quit the app and run `.\\agentdocker.exe daemon stop` before replacing its folder. "
+            "Native runner checks passed; clean-machine and actual-provider trials remain open. "
+            "See `WINDOWS-PREVIEW.txt` and the attached acceptance report.\n\n" + notes)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     package_parser = commands.add_parser("package")
     package_parser.add_argument("--native-manifest", type=Path, required=True)
+    windows_parser = commands.add_parser("windows-preview")
+    windows_parser.add_argument("--native-manifest", type=Path, required=True)
+    windows_parser.add_argument("--accepted", type=Path, required=True)
+    windows_parser.add_argument("--source", required=True, help="expected checked-out release commit")
     feed_parser = commands.add_parser("feed")
     feed_parser.add_argument("--directory", type=Path, required=True)
     validate_parser = commands.add_parser("validate")
@@ -195,7 +287,10 @@ if __name__ == "__main__":
     publication_parser = commands.add_parser("publication")
     publication_parser.add_argument("--tag", required=True)
     publication_parser.add_argument("--latest", type=Path, required=True)
-    for command in (package_parser, feed_parser):
+    notes_parser = commands.add_parser("notes")
+    notes_parser.add_argument("--tag", required=True)
+    notes_parser.add_argument("--file", type=Path, required=True)
+    for command in (package_parser, feed_parser, windows_parser):
         command.add_argument("--tag", required=True)
         command.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -203,6 +298,10 @@ if __name__ == "__main__":
         prepare(args.native_manifest, args.output, args.tag)
     elif args.command == "feed":
         collect(args.directory, args.output, args.tag)
+    elif args.command == "windows-preview":
+        windows_preview(args.native_manifest, args.accepted, args.output, args.tag, args.source)
+    elif args.command == "notes":
+        args.file.write_text(preview_notes(args.tag, args.file.read_text(encoding="utf-8")), encoding="utf-8")
     elif args.command == "publication":
         print("true" if publication(args.tag, json.loads(args.latest.read_text())) else "false")
     else:
