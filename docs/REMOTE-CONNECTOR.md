@@ -123,7 +123,7 @@ what it reads on web pages.
 
 | Command | What it does |
 | --- | --- |
-| `connector serve [--public-url <https://…>] [--tunnel tailscale [--tunnel-port 443\|8443\|10000] [--tailscale <path>] \| --tunnel cloudflared [--tunnel-name <name>] [--cloudflared <path>]] [--bind 127.0.0.1:0] [--project <path>] [--allow-callback <url>]… [--allow-from <cidr>\|anthropic\|@<file>]… [--client-ip-header <name>]` | Serve every project on this machine; `--project` is the one proposed first at consent. Prints the MCP URL, the pairing code, the admitted addresses and the vendors' setup steps, and writes `$AGENTDOCKER_HOME/connector/serve.json` (mode 0600; `agentdocker_host::connector::Serving`, which the desktop reads too) with the same for `status`. Plain `http://` is accepted only for a loopback host, for a trial without a tunnel. |
+| `connector serve [--public-url <https://…>] [--tunnel tailscale [--tunnel-port 443\|8443\|10000] [--tailscale <path>] \| --tunnel cloudflared [--tunnel-name <name>] [--cloudflared <path>]] [--bind 127.0.0.1:0] [--project <path>] [--allow-callback <url>]… [--allow-from <cidr>\|anthropic\|openai\|@<file>]… [--client-ip-header <name>]` | Serve every project on this machine; `--project` is the one proposed first at consent. Prints the MCP URL, the pairing code, the admitted addresses and the vendors' setup steps, and writes `$AGENTDOCKER_HOME/connector/serve.json` (mode 0600; `agentdocker_host::connector::Serving`, which the desktop reads too) with the same for `status`. Plain `http://` is accepted only for a loopback host, for a trial without a tunnel. |
 | `connector status` | Whether a connector is serving here: its address, listening socket, pairing code, proposed project, tunnel, admitted prefixes, and how many browser agents the daemon holds live. |
 | `connector install <serve arguments> [--dry-run]` | Run the connector as a login service — a launchd agent (`dev.agentdocker.connector`) or a systemd user unit — with those arguments, `AGENTDOCKER_HOME` and a PATH that includes where cloudflared was found; its log is `$AGENTDOCKER_HOME/connector/serve.log`. A quick tunnel gets a new hostname at every start and says so. |
 | `connector uninstall [--dry-run]` | Remove the service. |
@@ -136,13 +136,26 @@ Behind a tunnel every TCP peer is the tunnel, so the address worth checking is
 the one it writes into a header: `cf-connecting-ip` for cloudflared,
 `x-forwarded-for` for Tailscale Funnel and most others; the connector picks the
 right one for a tunnel it runs (`--client-ip-header` otherwise). `--allow-from` takes a CIDR, `anthropic` (its published
-connector range, `160.79.104.0/21`) or `@<file>` — OpenAI's feed
-(`https://openai.com/chatgpt-connectors.json`, a few hundred prefixes that
-change; keep it fresh with `curl -o`) or one CIDR per line — and re-reads a file
-when it changes. It gates `/register`, `/token` and `/mcp`; the consent page is
+connector range, `160.79.104.0/21`), `openai` (its automatically refreshed feed),
+or `@<file>` (a local feed JSON or one CIDR per line, re-read when changed).
+It gates `/register`, `/token` and `/mcp`; the consent page is
 the person's browser and is never gated; the metadata stays open. A refused
 address is logged. With no `--allow-from`, every address is admitted and the
 OAuth flow is the only gate.
+
+`--allow-from openai` fetches only
+[`https://openai.com/chatgpt-connectors.json`](https://openai.com/chatgpt-connectors.json)
+before starting the listener or tunnel, then once an hour after each attempt.
+The fetch uses HTTPS without redirects, a 10-second global timeout, a 256 KiB
+body limit and at most 4,096 prefixes. Every entry must parse, match its declared
+IP family and have a nonzero prefix length; empty or partially malformed feeds
+are refused. A startup failure stops startup. A later failure logs the error
+and retains the whole last valid in-memory list until a later refresh succeeds;
+there is no allow-all fallback or disk cache. Restart requires a successful
+fresh fetch. Changes apply without restarting active OAuth sessions, and the
+status prefix count is updated after a successful refresh. Sleep/wake does not
+trigger catch-up requests. Explicit CIDRs, `anthropic` and `@<file>` do not
+trigger network refreshes or change their existing configuration.
 
 ## Security limits, stated
 
@@ -151,9 +164,10 @@ OAuth flow is the only gate.
 - Only the vendors' own hosted surfaces can complete the flow, because only
   their callbacks can be registered or named by a metadata document, and a
   metadata document is fetched only from their hosts. Knowing the URL is not
-  enough. The fetch is the connector's one outbound request; a `client_id`
-  naming any other host never causes one, so the authorization server cannot
-  be pointed at an address of an attacker's choosing.
+  enough. A `client_id` naming any other host never causes a fetch, so the
+  authorization server cannot be pointed at an address of an attacker's
+  choosing. The optional `openai` admission preset makes a separate periodic
+  request only to the fixed vendor feed above.
 - Every request is bounded: 8 KiB request line, 32 KiB of headers, 1 MiB body,
   15 s to arrive, 64 connections, one request per connection, chunked bodies
   refused. TLS, keep-alive and any client-IP allowlisting are the tunnel's.

@@ -113,7 +113,7 @@ pub struct ServeArgs {
     /// Where the tailscale CLI is, when not on PATH, in the usual places or in the macOS app.
     #[arg(long, requires = "tunnel")]
     pub tailscale: Option<PathBuf>,
-    /// Only admit the vendors' own addresses at /register, /token and /mcp: a CIDR, `anthropic` (its published range), or `@<file>` (OpenAI's feed JSON or one CIDR per line, re-read when it changes). Needs the tunnel's client-address header.
+    /// Only admit these addresses at /register, /token and /mcp: a CIDR, `anthropic`, `openai` (its HTTPS feed, refreshed hourly), or `@<file>` (local feed JSON or CIDRs, re-read when changed). Needs the tunnel's client-address header.
     #[arg(long = "allow-from")]
     pub allow_from: Vec<String>,
     /// The header the tunnel writes the client address into (cloudflared: cf-connecting-ip, the default with --tunnel cloudflared).
@@ -1049,6 +1049,12 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
     if let Response::Error { message, .. } = client.call(&Request::Ping).await? {
         bail!("the daemon is not answering: {message}");
     }
+    let allowlist = net::Allowlist::parse(&args.allow_from, &args.client_ip_header())?;
+    if let Some(list) = &allowlist {
+        // Fail before opening a tunnel when the explicitly selected preset
+        // cannot establish its initial admission list.
+        list.refresh_openai().await?;
+    }
     let listener = TcpListener::bind(&args.bind)
         .await
         .with_context(|| format!("cannot listen on {}", args.bind))?;
@@ -1088,7 +1094,6 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
             "--public-url is required without --tunnel: the HTTPS address your tunnel publishes this connector at"
         ),
     };
-    let allowlist = net::Allowlist::parse(&args.allow_from, &args.client_ip_header())?;
     let prefixes = allowlist.as_ref().map(net::Allowlist::len).unwrap_or(0);
     let home = agentdocker_host::dirs::home();
     let path = state_path();
@@ -1155,6 +1160,8 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
     let limit = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     let mut shutdown = shutdown_signal();
     let mut tunnel_check = tokio::time::interval(std::time::Duration::from_secs(2));
+    let refresh = refresh_allowlist(connector.allowlist.as_ref(), &home, serving.clone());
+    tokio::pin!(refresh);
     let outcome = loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -1195,6 +1202,7 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
                     ));
                 }
             }
+            _ = &mut refresh => unreachable!("allowlist refresh loop does not terminate"),
             _ = &mut shutdown => {
                 eprintln!("agentdocker connector: stopping");
                 break Ok(());
@@ -1206,6 +1214,34 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
         t.stop().await;
     }
     outcome
+}
+
+/// Polled beside HTTP acceptance, rather than detached: shutdown drops the
+/// loop, so an in-flight bounded fetch cannot later rewrite the status file.
+async fn refresh_allowlist(
+    list: Option<&net::Allowlist>,
+    home: &Path,
+    mut serving: service::Serving,
+) {
+    let Some(list) = list.filter(|list| list.auto_refresh()) else {
+        return std::future::pending().await;
+    };
+    loop {
+        // Sleep after each attempt: one request at a time, no catch-up burst
+        // after sleep/wake, and no immediate retry loop during an outage.
+        tokio::time::sleep(net::REFRESH_INTERVAL).await;
+        match list.refresh_openai().await {
+            Ok(()) => {
+                serving.allowlist_prefixes = list.len();
+                if let Err(error) = service::write_status(home, &serving) {
+                    eprintln!("agentdocker connector: could not update prefix count: {error}");
+                }
+            }
+            Err(error) => eprintln!(
+                "agentdocker connector: OpenAI egress refresh failed; keeping last valid list: {error:#}"
+            ),
+        }
+    }
 }
 
 /// Ctrl-C, or the SIGTERM a service manager sends.
