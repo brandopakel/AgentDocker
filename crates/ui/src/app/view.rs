@@ -373,6 +373,79 @@ impl App {
             Screen::Questions | Screen::Runtimes | Screen::Settings | Screen::Desktop
         )
     }
+    /// The footer while the daemon is older than this window: what is wrong,
+    /// the one thing that fixes it, and what that costs before it is done.
+    fn daemon_notice(&self, c: Colors) -> Option<Element<'_, Message>> {
+        let version = self.daemon_behind_now()?;
+        let connected = self.connected.is_ok();
+        let row = if self.daemon_restarting() {
+            row![
+                dot(c.amber, 7.0, c),
+                small("Restarting the background service…", c).width(Fill),
+            ]
+        } else if self.shell.confirm_daemon_restart {
+            let (stop, back) = self.restart_cost();
+            let cost = match (stop, back) {
+                (0, _) => "Sessions keep running and reconnect on their own.".to_owned(),
+                (n, 0) => format!(
+                    "{n} session{} AgentDocker started will stop. Sessions started in a terminal keep running.",
+                    if n == 1 { "" } else { "s" }
+                ),
+                (n, m) => format!(
+                    "{n} session{} AgentDocker started will stop and {m} will start again. Sessions started in a terminal keep running.",
+                    if n == 1 { "" } else { "s" }
+                ),
+            };
+            row![
+                dot(c.amber, 7.0, c),
+                small(format!("Restart the background service now? {cost}"), c).width(Fill),
+                primary(
+                    "daemon-restart-confirm",
+                    "Restart",
+                    connected.then_some(Message::RestartDaemon),
+                ),
+                action(
+                    "daemon-restart-cancel",
+                    "Cancel",
+                    Some(Message::ConfirmDaemonRestart(false)),
+                    false,
+                ),
+            ]
+        } else {
+            row![
+                dot(c.amber, 7.0, c),
+                small(
+                    format!(
+                        "The background service is running an older version ({version}) than this app ({}). Restart it to finish updating.",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                    c
+                )
+                .width(Fill),
+                action(
+                    "daemon-restart",
+                    "Restart background service…",
+                    connected.then_some(Message::ConfirmDaemonRestart(true)),
+                    false,
+                ),
+            ]
+        };
+        Some(
+            container(row.spacing(8).align_y(Center))
+                .padding([6, 14])
+                .width(Fill)
+                .style(move |_| container::Style {
+                    border: iced::Border {
+                        color: c.line,
+                        width: 1.0,
+                        radius: 0.0.into(),
+                    },
+                    ..c.surface(c.sidebar, false)
+                })
+                .into(),
+        )
+    }
+
     /// The words for what an agent is doing, live or finished.
     pub(super) fn activity_label(&self, agent: &AgentRecord) -> String {
         let id = agent.id.to_string();
@@ -878,6 +951,9 @@ impl App {
     /// version. Said here once, so the rail and the pages need not repeat it.
     fn footer(&self, c: Colors) -> Element<'_, Message> {
         let connected = self.connected.is_ok();
+        if let Some(notice) = self.daemon_notice(c) {
+            return notice;
+        }
         container(
             row![
                 dot(if connected { c.green } else { c.amber }, 7.0, c),

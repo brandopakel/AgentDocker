@@ -89,6 +89,8 @@ pub(super) struct State {
     /// this is which. Wide windows show both and ignore it.
     pub inbox_open: bool,
     pub needs_you_expanded: bool,
+    /// The footer is asking whether to restart the daemon.
+    pub confirm_daemon_restart: bool,
     pub pending_answer_reveal: Option<MessageId>,
     pub reveal_next_question: bool,
     /// An archived message now on view that the next tick scrolls to.
@@ -569,6 +571,10 @@ pub enum Message {
     /// The Needs-you strip's **Review**: open that session with its
     /// delivery review already unfolded, wherever the person was.
     ReviewSession(String),
+    /// Ask, or stop asking, whether to restart an out-of-date daemon.
+    ConfirmDaemonRestart(bool),
+    /// Restart it: the CLI beside the window starts the installed release.
+    RestartDaemon,
     /// Put away an ended session's undelivered-messages notice; the
     /// messages stay queued.
     DismissDelivery(String),
@@ -2152,6 +2158,14 @@ impl App {
                         .begin()
                 {
                     self.send(Cmd::ChannelSend(id, text));
+                }
+            }
+            Message::ConfirmDaemonRestart(asking) => self.shell.confirm_daemon_restart = asking,
+            Message::RestartDaemon => {
+                if !self.daemon_restarting {
+                    self.daemon_restarting = true;
+                    self.shell.confirm_daemon_restart = false;
+                    self.send(Cmd::RestartDaemon);
                 }
             }
             Message::Setup(args) => {

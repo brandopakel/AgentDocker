@@ -450,6 +450,17 @@ downloads only after **Allow preview builds**. When nothing has been published y
 update published yet**; a check that fails says **Could not check for
 updates** and why (no connection to GitHub, say), never *Installation failed*.
 
+The footer says whether the window is connected. When the background service
+(the daemon) is older than the app — an older version, or another installed
+release of the same version, which is what an update installed underneath a
+running daemon looks like — the footer says so, with both versions, and offers
+**Restart background service…**. Its confirmation says what a restart costs:
+how many sessions AgentDocker itself started will stop (and how many are set to
+start again); sessions started in a terminal keep running and reconnect. A
+request the older service has never heard of reads *The background service is
+older than this app…* instead of the service's parser error, and no screen
+shows raw error codes or Rust debug output.
+
 **Manage installation and retained versions** previews installation, rollback,
 cleanup and launcher removal. Apply is tied to the reviewed payload or cleanup
 plan and refuses stale inputs. Running versions and agents remain protected by
