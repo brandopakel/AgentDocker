@@ -194,6 +194,15 @@ fn fetch_inner(url: &str, destination: &Path, max_bytes: u64, local_preview: boo
     Ok(())
 }
 
+/// Whether the installer may take this release without Gatekeeper's policy
+/// assessment. The explicit flag says yes to any local preview. Staying on
+/// the preview channel is consent to its next build, but only an ad-hoc
+/// build (`local-preview`, which Gatekeeper would refuse) skips the
+/// assessment: a Developer-ID-signed preview is still assessed.
+fn accepts_ad_hoc(local_preview: bool, preview_consent: bool, release: &FeedRelease) -> bool {
+    local_preview || (preview_consent && release.signing == "local-preview")
+}
+
 /// The feeds a check reads. A prerelease was installed from the preview
 /// channel, so it keeps looking there; a stable one looks there only when
 /// preview builds are allowed. Either way the stable feed is read too:
@@ -623,6 +632,7 @@ fn run_with_home(
     let on_preview = !parse_version(baseline)?.pre.is_empty();
     let preview_consent = options.local_preview || (feed.channel == "preview" && on_preview);
     let preview_consent_required = feed.channel == "preview" && !preview_consent;
+    let accept_ad_hoc = accepts_ad_hoc(options.local_preview, preview_consent, &release);
     let minimum_schema = super::required_state_schema(active, state_home)?;
     ensure!(
         !update_available || release.state_schema >= minimum_schema,
@@ -751,7 +761,7 @@ fn run_with_home(
         source,
         candidate.clone(),
         !options.apply,
-        preview_consent,
+        accept_ad_hoc,
         Some(candidate.id.clone()),
         expect_current,
         options.socket.clone(),
@@ -842,6 +852,29 @@ mod tests {
         let preview = feed("preview", target, "https://example.invalid/a.zip");
         assert!(select(&preview, target, false, true).is_ok());
         assert!(select(&preview, target, false, false).is_err());
+    }
+
+    #[test]
+    fn staying_on_the_preview_channel_skips_gatekeeper_only_for_an_ad_hoc_build() {
+        let target = host_target();
+        let mut signed =
+            feed("preview", target, "https://example.invalid/a.zip").releases[0].clone();
+        signed.signing = "developer-id".into();
+        let mut ad_hoc = signed.clone();
+        ad_hoc.signing = "local-preview".into();
+        assert!(
+            !accepts_ad_hoc(false, true, &signed),
+            "a signed preview is assessed"
+        );
+        assert!(accepts_ad_hoc(false, true, &ad_hoc));
+        assert!(
+            !accepts_ad_hoc(false, false, &ad_hoc),
+            "no consent, no skip"
+        );
+        assert!(
+            accepts_ad_hoc(true, false, &signed),
+            "the explicit flag is broader"
+        );
     }
 
     #[test]
