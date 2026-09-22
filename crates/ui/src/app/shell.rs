@@ -89,6 +89,8 @@ pub(super) struct State {
     /// this is which. Wide windows show both and ignore it.
     pub inbox_open: bool,
     pub needs_you_expanded: bool,
+    /// The session being renamed and the name typed so far.
+    pub renaming: Option<(String, String)>,
     /// Processes a Connect was pressed for, until the daemon answers.
     pub adopting: BTreeSet<u32>,
     /// The footer is asking whether to restart the daemon.
@@ -573,6 +575,11 @@ pub enum Message {
     /// The Needs-you strip's **Review**: open that session with its
     /// delivery review already unfolded, wherever the person was.
     ReviewSession(String),
+    /// Start, edit, submit or cancel renaming a session.
+    StartRename(String),
+    RenameDraft(String),
+    SubmitRename,
+    CancelRename,
     /// Open the launch form (the header's Launch agent…); only its own
     /// Close closes it.
     OpenLaunch,
@@ -2006,6 +2013,37 @@ impl App {
                     }
                 }
             }
+            Message::StartRename(id) => {
+                let current = self
+                    .agents
+                    .iter()
+                    .find(|a| a.id.as_str() == id)
+                    .filter(|a| !a.name_is_generated())
+                    .map(|a| a.spec.name.clone())
+                    .unwrap_or_default();
+                self.shell.renaming = Some((id, current));
+            }
+            Message::RenameDraft(text) => {
+                if let Some((_, draft)) = &mut self.shell.renaming {
+                    *draft = text
+                        .chars()
+                        .take(agentdocker_core::agent::NAME_CHARS)
+                        .collect();
+                }
+            }
+            Message::SubmitRename => {
+                if self.connected.is_ok()
+                    && let Some((id, name)) = self.shell.renaming.take()
+                {
+                    let name = name.trim().to_owned();
+                    if agentdocker_core::agent::check_name(&name).is_ok() {
+                        self.send(Cmd::Rename(id, name));
+                    } else {
+                        self.shell.renaming = Some((id, name));
+                    }
+                }
+            }
+            Message::CancelRename => self.shell.renaming = None,
             Message::OpenLaunch => {
                 if !self.shell.launch {
                     return self.update(Message::ShowLaunch);
@@ -5022,7 +5060,14 @@ mod tests {
             app.shell.launch_runtime = Some(runtime.into());
             app.shell.launch_name.clear();
             let generated = AgentRecord::new(app.launch_spec().unwrap(), true, Utc::now());
-            assert_eq!(app.display_name(&generated), runtime_label(runtime));
+            assert_eq!(
+                app.display_name(&generated),
+                format!(
+                    "{} · {}",
+                    runtime_label(runtime),
+                    super::naming::word_for(generated.id.as_str())
+                )
+            );
             app.shell.launch_name = "reviewer-cafe".into();
             let chosen = AgentRecord::new(app.launch_spec().unwrap(), true, Utc::now());
             assert_eq!(app.display_name(&chosen), "reviewer-cafe");

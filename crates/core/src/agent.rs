@@ -399,6 +399,33 @@ pub fn check_role(role: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The longest name a person can give an agent, in characters.
+pub const NAME_CHARS: usize = 64;
+
+/// Whether `name` can be given to an agent by `rename`: one to
+/// [`NAME_CHARS`] characters, no control characters or surrounding space,
+/// and none of the spellings that address something other than an agent
+/// (`project`, `all`, `project:…`, `topic:…`, `role:…`).
+pub fn check_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() || name.chars().count() > NAME_CHARS {
+        return Err("a name is one to sixty-four characters");
+    }
+    if name.trim() != name {
+        return Err("a name neither starts nor ends with a space");
+    }
+    if name.chars().any(char::is_control) {
+        return Err("a name has no control characters");
+    }
+    if matches!(name, "project" | "all" | "user")
+        || ["project:", "topic:", ROLE_PREFIX]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+    {
+        return Err("that name is how something else is addressed; pick another");
+    }
+    Ok(())
+}
+
 /// Label an adapter sets when it made the name up from a runtime and an
 /// identifier rather than a person choosing it.
 pub const NAME_LABEL: &str = "name";
@@ -637,5 +664,28 @@ mod restart_tests {
             serde_json::from_str::<AgentSpec>(&json).unwrap().restart,
             RestartPolicy::Always
         );
+    }
+
+    #[test]
+    fn a_chosen_name_is_short_printable_and_never_another_address() {
+        for good in ["Release helper", "reviewer-2", "Codex · Otter", "é"] {
+            assert!(check_name(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            " lead",
+            "trail ",
+            "a\nb",
+            "project",
+            "all",
+            "user",
+            "project:x",
+            "topic:y",
+            "role:reviewer",
+        ] {
+            assert!(check_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(check_name(&"x".repeat(NAME_CHARS)).is_ok());
+        assert!(check_name(&"x".repeat(NAME_CHARS + 1)).is_err());
     }
 }

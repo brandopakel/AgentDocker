@@ -1,11 +1,13 @@
 //! What a session is called on screen.
 //!
 //! Adapters register sessions as `<runtime>-<pid or session id>`, which
-//! nobody wants to read. A generated name is shown as the tool — *Claude
-//! Code*, *Codex* — and, once the project holds more than one session of
-//! that tool, with the first eight characters of the session's id: *Claude
-//! Code · 0180d761*. The id is the session's for good, so the name does
-//! not change while the session lives or after: a peer ending renames
+//! nobody wants to read, and eight hex digits of an id told three Claude
+//! sessions apart only to a machine. A generated name is shown as the tool
+//! and a word the session's id picks from a fixed list — *Claude Code ·
+//! Otter*, *Codex · Heron* — with the id's first four characters after the
+//! word only when another session of that tool in the project drew the same
+//! word. The id is the session's for good, so the name does not change
+//! while the session lives or after: a peer ending renames
 //! nobody, a branch switch renames nothing — the branch is a fact about
 //! the checkout, shown under the name where a row has room for it, never
 //! part of the name — and pruning old records can only shorten a name
@@ -26,8 +28,34 @@ use agentdocker_core::AgentRecord;
 
 use super::runtime_label;
 
-/// How much of an id a name carries.
-const ID_CHARS: usize = 8;
+/// How much of an id tells two sessions with one word apart.
+const TIE_CHARS: usize = 4;
+
+/// The words a generated name draws from: short, distinct when spoken,
+/// none a word that already means something here (no "agent", "task").
+const WORDS: [&str; 96] = [
+    "Otter", "Heron", "Falcon", "Badger", "Lynx", "Marten", "Puffin", "Ibis", "Wren", "Finch",
+    "Robin", "Swift", "Kestrel", "Osprey", "Egret", "Crane", "Plover", "Tern", "Gannet", "Petrel",
+    "Raven", "Magpie", "Jay", "Lark", "Starling", "Sparrow", "Owl", "Kite", "Hawk", "Eagle",
+    "Condor", "Pelican", "Stork", "Toucan", "Parrot", "Macaw", "Dove", "Quail", "Grouse",
+    "Pheasant", "Fox", "Wolf", "Bear", "Moose", "Elk", "Bison", "Yak", "Ibex", "Gazelle", "Impala",
+    "Zebra", "Giraffe", "Okapi", "Tapir", "Panda", "Koala", "Wombat", "Lemur", "Gibbon", "Tamarin",
+    "Beaver", "Hare", "Rabbit", "Squirrel", "Chipmunk", "Hedgehog", "Mole", "Shrew", "Vole",
+    "Ferret", "Stoat", "Weasel", "Mink", "Seal", "Walrus", "Dolphin", "Orca", "Narwhal", "Beluga",
+    "Manatee", "Turtle", "Tortoise", "Gecko", "Iguana", "Newt", "Salmon", "Trout", "Pike",
+    "Marlin", "Tuna", "Octopus", "Squid", "Crab", "Lobster", "Starfish", "Coral",
+];
+
+/// The word an id draws: FNV-1a over the id's bytes, so it is the same on
+/// every machine, in every build, for as long as the list is.
+pub(crate) fn word_for(id: &str) -> &'static str {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in id.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    WORDS[(hash % WORDS.len() as u64) as usize]
+}
 
 /// The names of one snapshot of records: built from the list the daemon
 /// gave and its alias table, consulted for one name at a time.
@@ -63,33 +91,45 @@ impl<'a> Naming<'a> {
             return agent.spec.name.clone();
         }
         let tool = runtime_label(&agent.spec.runtime);
-        if self.company(agent) {
-            format!("{tool} · {}", self.short_id(agent))
-        } else {
-            tool
+        let me = self.canonical(agent.id.as_str());
+        let word = word_for(me);
+        let rivals = self.same_word(agent, word);
+        if rivals.is_empty() {
+            return format!("{tool} · {word}");
         }
+        // The shortest prefix of the id, from four characters, that no
+        // other session with this word shares.
+        let length = (TIE_CHARS..=me.chars().count())
+            .find(|&n| {
+                let mine: String = me.chars().take(n).collect();
+                rivals
+                    .iter()
+                    .all(|theirs| theirs.chars().take(n).collect::<String>() != mine)
+            })
+            .unwrap_or(me.chars().count());
+        let tie: String = me.chars().take(length).collect();
+        format!("{tool} · {word} {tie}")
     }
 
-    /// The first characters of the id a record is known by now.
-    pub fn short_id(&self, agent: &AgentRecord) -> String {
-        self.canonical(agent.id.as_str())
-            .chars()
-            .take(ID_CHARS)
-            .collect()
-    }
-
-    /// Whether the project holds another session of this record's tool,
-    /// counting each identity once, so the tool's name alone would not
-    /// say which.
-    fn company(&self, agent: &AgentRecord) -> bool {
+    /// The ids of the other sessions of this tool in the project that drew
+    /// the same word, each identity once.
+    fn same_word(&self, agent: &AgentRecord, word: &str) -> Vec<&'a str> {
         let me = self.canonical(agent.id.as_str());
         let project = agent.project.as_ref().map(|p| p.id());
-        self.agents.iter().any(|a| {
-            a.name_is_generated()
-                && a.spec.runtime == agent.spec.runtime
-                && a.project.as_ref().map(|p| p.id()) == project
-                && self.canonical(a.id.as_str()) != me
-        })
+        let mut ids: Vec<&'a str> = self
+            .agents
+            .iter()
+            .filter(|a| {
+                a.name_is_generated()
+                    && a.spec.runtime == agent.spec.runtime
+                    && a.project.as_ref().map(|p| p.id()) == project
+            })
+            .map(|a| self.canonical(a.id.as_str()))
+            .filter(|theirs| *theirs != me && word_for(theirs) == word)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
     }
 
     /// Whether a record is a former id of another: shown under that one,
@@ -111,6 +151,31 @@ impl<'a> Naming<'a> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_generated_word_is_stable_and_a_shared_word_is_told_apart() {
+        assert_eq!(
+            word_for("0180d7615186449087095d7aa15ec0bb"),
+            word_for("0180d7615186449087095d7aa15ec0bb")
+        );
+        // Find two ids that draw the same word and check the tie-break.
+        let base = word_for("tie-0");
+        let other = (1..10_000)
+            .map(|n| format!("tie-{n}"))
+            .find(|id| word_for(id) == base)
+            .expect("a collision within ten thousand ids");
+        let a = record("codex-1", "codex", "tie-0", "/p/a");
+        let b = record("codex-2", "codex", &other, "/p/a");
+        let aliases = BTreeMap::new();
+        let agents = vec![a.clone(), b.clone()];
+        let names = Naming::new(&agents, &aliases);
+        assert!(
+            names
+                .display(&a)
+                .starts_with(&format!("Codex · {base} tie-"))
+        );
+        assert_ne!(names.display(&a), names.display(&b));
+    }
+
     use super::*;
     use agentdocker_core::{AgentId, AgentStatus, VcsState};
     use chrono::{Duration, Utc};
@@ -163,8 +228,14 @@ mod tests {
         on(&mut second, "feature/x");
         let agents = vec![second.clone(), first.clone()];
         let names = Naming::new(&agents, &aliases);
-        assert_eq!(names.display(&first), "Codex · 0180d761");
-        assert_eq!(names.display(&second), "Codex · ac5c138c");
+        assert_eq!(
+            names.display(&first),
+            format!("Codex · {}", word_for(first.id.as_str()))
+        );
+        assert_eq!(
+            names.display(&second),
+            format!("Codex · {}", word_for(second.id.as_str()))
+        );
         assert_eq!(names.context(&second).as_deref(), Some("on feature/x"));
         // The second switches branch, the first ends: the same two names.
         on(&mut second, "main");
@@ -172,8 +243,14 @@ mod tests {
         first.created_at += Duration::seconds(5);
         let agents = vec![second.clone(), first.clone()];
         let names = Naming::new(&agents, &aliases);
-        assert_eq!(names.display(&first), "Codex · 0180d761");
-        assert_eq!(names.display(&second), "Codex · ac5c138c");
+        assert_eq!(
+            names.display(&first),
+            format!("Codex · {}", word_for(first.id.as_str()))
+        );
+        assert_eq!(
+            names.display(&second),
+            format!("Codex · {}", word_for(second.id.as_str()))
+        );
         // Another tool, or another project, is company for nobody here.
         let claude = record(
             "claude-code-1",
@@ -189,9 +266,19 @@ mod tests {
         );
         let agents = vec![claude.clone(), elsewhere.clone(), first.clone()];
         let names = Naming::new(&agents, &aliases);
-        assert_eq!(names.display(&claude), "Claude Code");
-        assert_eq!(names.display(&elsewhere), "Codex");
-        assert_eq!(names.display(&first), "Codex", "alone in its project again");
+        assert_eq!(
+            names.display(&claude),
+            format!("Claude Code · {}", word_for(claude.id.as_str()))
+        );
+        assert_eq!(
+            names.display(&elsewhere),
+            format!("Codex · {}", word_for(elsewhere.id.as_str()))
+        );
+        assert_eq!(
+            names.display(&first),
+            format!("Codex · {}", word_for(first.id.as_str())),
+            "alone in its project again, and the same name"
+        );
         // A record the list does not hold reads as its tool; a chosen name
         // as chosen.
         let stranger = record(
@@ -202,8 +289,8 @@ mod tests {
         );
         assert_eq!(
             names.display(&stranger),
-            "Codex · dea064bb",
-            "the list holds a peer"
+            format!("Codex · {}", word_for("dea064bbfcfd4617a6280bf52465f1ce")),
+            "a record the list does not hold still has its word"
         );
         let mut chosen = record(
             "reviewer",
@@ -237,8 +324,13 @@ mod tests {
             twin_b.clone(),
         ];
         let names = Naming::new(&agents, &aliases);
-        assert_eq!(names.display(&former), "Claude Code · id-curre");
-        assert_eq!(names.display(&current), "Claude Code · id-curre");
+        let current_name = format!("Claude Code · {}", word_for("id-current"));
+        assert_eq!(
+            names.display(&former),
+            current_name,
+            "a former id shows as its current one"
+        );
+        assert_eq!(names.display(&current), current_name);
         assert!(names.folded(&former));
         assert!(!names.folded(&current));
         assert_eq!(
@@ -246,14 +338,16 @@ mod tests {
             Some("id-current")
         );
         assert_eq!(names.canonical("id-former"), "id-current");
-        assert_eq!(names.display(&twin_a), "Claude Code · id-twin-");
-        assert_eq!(names.display(&twin_b), "Claude Code · id-twin-");
+        // Two records, one generated name and no alias: two names, each
+        // its own id's word (with a tie-break if they drew the same one).
+        assert_ne!(names.display(&twin_a), names.display(&twin_b));
+        assert!(names.display(&twin_a).starts_with("Claude Code · "));
         assert!(!names.folded(&twin_a) && !names.folded(&twin_b));
         // Only the former id and the current one on the list: one identity,
-        // so the tool alone.
+        // so one name.
         let agents = vec![former.clone(), current.clone()];
         let names = Naming::new(&agents, &aliases);
-        assert_eq!(names.display(&current), "Claude Code");
-        assert_eq!(names.display(&former), "Claude Code");
+        assert!(names.display(&current).starts_with("Claude Code · "));
+        assert_eq!(names.display(&former), names.display(&current));
     }
 }

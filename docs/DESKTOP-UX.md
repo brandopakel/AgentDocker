@@ -266,13 +266,18 @@ Project tabs provide:
 Sessions are shown by name. Default app launches and adapter-generated names
 carry the same generated-name marker. A name generated from a runtime and
 an identifier (the record says so, or it is exactly that adapter's form for the
-record's own pid or session) reads as the tool — `Codex`, `Claude Code` —
-and, once the project holds another session of that tool, with the first
-eight characters of the session's own id: `Claude Code · 0180d761`. The id
-is the session's for good, so nothing renames it: not a peer ending, not a
-branch switch — the branch is shown under the name (`on main`, and in the
-sessions list beside what the session is doing), never in it — and pruning
-old records can only shorten a name back to the tool. A former id after a
+record's own pid or session) reads as the tool and a word the session's id
+picks from a fixed list of animals — `Claude Code · Otter`, `Codex · Heron` —
+with the shortest distinguishing start of the id after the word only when
+another session of that tool in the project drew the same one (`Codex · Wren
+0180`). The id is the session's for good, so nothing renames it: not a peer
+ending, not a branch switch — the branch is shown under the name (`on main`,
+and in the sessions list beside what the session is doing), never in it — and
+the word is the same alone as in company. **Rename…** in the session panel
+gives a live session a name of your choosing (up to 64 characters, unique
+among live sessions; the daemon keeps it, so every screen, the CLI and other
+agents see it), and the Launch form's name field names a session as it
+starts; left empty, a name is made up. A former id after a
 reconciliation reads under the id it stands for now and is not listed as an
 agent of its own; two records that merely share a generated name stay two
 records. A name somebody chose is shown as chosen, whatever it looks like,
@@ -296,7 +301,7 @@ unread, draft and history — then, folded behind **From AgentDocker (n)**, what
 AgentDocker itself writes: the rooms it opens between two checkouts, named
 `Contested paths (303)` by how many paths they are about, and the
 **AgentDocker → agent** notices per agent; conversations two agents had with
-each other sit behind **Between agents** (read as `Codex · 0180d761 ↔ Claude Code`,
+each other sit behind **Between agents** (read as `Codex · Heron ↔ Claude Code · Otter`,
 so two pairs of the same tools are told apart); a search box filters by
 name. Ended sessions' conversations sit behind **Earlier (n)**, eight at a time
 with **Show older**. Every row is

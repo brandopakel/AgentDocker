@@ -2295,6 +2295,57 @@ impl App {
                 }
             }
         }
+        // A name of one's choosing, for a live session: the daemon keeps it
+        // unique and every other view follows.
+        if agent.status.is_live() && agent.spec.runtime != agentdocker_core::HUMAN_RUNTIME {
+            match &self.shell.renaming {
+                Some((renaming, draft)) if renaming == &id => {
+                    let valid = agentdocker_core::agent::check_name(draft.trim());
+                    body = body.push(
+                        column![
+                            crate::controls::input_submitting(
+                                "rename-session",
+                                "A name for this session",
+                                draft,
+                                Message::RenameDraft,
+                                true,
+                                (self.connected.is_ok() && valid.is_ok())
+                                    .then_some(Message::SubmitRename),
+                            ),
+                            row![
+                                primary(
+                                    "rename-save",
+                                    "Save name",
+                                    (self.connected.is_ok() && valid.is_ok())
+                                        .then_some(Message::SubmitRename),
+                                ),
+                                action(
+                                    "rename-cancel",
+                                    "Cancel",
+                                    Some(Message::CancelRename),
+                                    false
+                                ),
+                            ]
+                            .spacing(6),
+                        ]
+                        .spacing(6),
+                    );
+                    if let Err(reason) = valid
+                        && !draft.is_empty()
+                    {
+                        body = body.push(small(reason, c));
+                    }
+                }
+                _ => {
+                    body = body.push(action(
+                        "rename-session",
+                        "Rename…",
+                        Some(Message::StartRename(id.clone())),
+                        false,
+                    ));
+                }
+            }
+        }
         body = body.push(action(
             "session-details",
             if self.shell.session_details {
@@ -2424,7 +2475,7 @@ impl App {
             .push(choices.wrap())
             .push(input(
                 "launch-name",
-                "Session name (optional)",
+                "Name (optional; one is made up otherwise)",
                 &self.shell.launch_name,
                 Message::LaunchName,
             ))
