@@ -33,11 +33,11 @@ Run an isolated daemon for manual testing: `AGENTDOCKER_HOME=/tmp/ad-test agentd
 
 ## Documentation contract
 
-The docs are the record of what the repository does and how far it is delivered — sixteen documents, each the current contract for one thing, and no dated plans, audits or reviews (those were cut on September 21, 2026; history keeps them). A new document needs a reason a line in an existing one cannot serve. Every change that alters behaviour, a contract or a delivery status updates them in the same PR, whoever makes it:
+The docs are the record of what the repository does and how far it is delivered — each document the current contract for one thing, and no dated plans, audits or reviews (those were cut on September 21, 2026; history keeps them). A new document needs a reason a line in an existing one cannot serve. Every change that alters behaviour, a contract or a delivery status updates them in the same PR, whoever makes it:
 
 - `docs/ARCHITECTURE.md` for a protocol, event, error code, schema or semantic change (the request/response table, the events list, the phase rows).
 - `docs/REMAINING-WORK.md` for the disposition of an open item: what is now in source, what evidence exists, what is still open. Close a row only with evidence, and say what remains.
-- `docs/README.md` (the docs index): a new document is linked there, and the audit table's row for a document changes when that document's delivery state changes.
+- `docs/README.md` (the docs index): a new document is linked there. The index says what each document is for and carries no status.
 - One line in `docs/verification/INDEX.md` for a trial on real binaries (date, what, source sha, result); the full evidence stays where the trial ran and in the PR, not in the repository.
 - `docs/GUIDE.md`, `docs/DESKTOP-UX.md` or the root `README.md` when a command, tool or screen changes for the person using it.
 

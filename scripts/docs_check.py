@@ -117,7 +117,7 @@ def docs_considered(base):
         "code changed with no documentation change and no commit saying why: "
         + ", ".join(code[:8])
         + (" ..." if len(code) > 8 else "")
-        + "; update the affected doc (ARCHITECTURE.md for protocol or semantics, REMAINING-WORK.md and the docs/README.md row for status, "
+        + "; update the affected doc (ARCHITECTURE.md for protocol or semantics, REMAINING-WORK.md for status, "
         "GUIDE.md or README.md for usage, a line in docs/verification/INDEX.md for a trial) or add a `Docs: ...` line to a commit message explaining why none is due"
     ]
 
