@@ -59,16 +59,10 @@ filetime = "0.2"
 incremental = false
 debug = 1
 
-# Ship optimized native executables without compiler symbols or unused code.
+# Optimize the linked dependency graph for the release archive size budget.
+# Keep unwind semantics; release benchmarks guard runtime performance.
 [profile.release]
 strip = "symbols"
-lto = "thin"
-
-# The command parser and daemon orchestration favor compact release code.
-# Keep core coordination, host utilities and desktop rendering at the normal
-# optimization level; the CLI archive must remain within its 30 MiB budget.
-[profile.release.package.agentdocker]
 opt-level = "s"
-
-[profile.release.package.agentd]
-opt-level = "s"
+lto = "fat"
+codegen-units = 1
