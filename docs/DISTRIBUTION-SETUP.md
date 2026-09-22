@@ -40,6 +40,53 @@ through the workflow, or leave a manually created release as a draft for it to
 finish. A protected-tag run, hosted downloads, update/rollback and independent
 machine acceptance remain necessary; generated assets alone do not establish them.
 
+### Preview update channel
+
+After a versioned prerelease publishes, the workflow copies its verified
+`updates-preview.json` to this fixed URL:
+
+```text
+https://github.com/brandopakel/AgentDocker/releases/download/channel-preview/updates-preview.json
+```
+
+The `channel-preview` release is itself a prerelease with `latest=false` and
+contains only the feed. Download URLs still name immutable versioned releases;
+the stable latest-release endpoint and Homebrew tap remain unchanged. Clients
+keep downloads manual and activation explicit. A stable installation must opt
+into previews; an existing preview installation has already chosen that channel.
+Before the first successful promotion, the channel URL returns 404.
+
+The `channel-preview` tag remains at its first promotion's commit; subsequent
+promotions replace only the feed and its record. Use the feed's versioned URLs
+and source identities, not the channel tag's commit, to identify a build. The
+feed has four fixed macOS/Linux targets. Adding Windows requires a feed and
+client compatibility change first; its current portable ZIP is excluded.
+
+The publisher checks the actual versioned release, source commit, four target
+assets, sizes and available GitHub digests before copying the feed. Promotions
+and repairs share the publication lock and compare semantic versions, so a
+late older run cannot replace a newer preview. The release body records the
+highest promoted version before upload; if clobber removes the old feed and the
+upload fails, an older retry still cannot take over. A same-version retry must
+use identical canonical feed bytes.
+If the record names version N but the asset still contains N-1 (or is absent),
+retry N: an N-1 retry deliberately reports `preserved_newer`. An empty feed asset
+left in GitHub's `starter` state is repairable only by that exact recorded
+version; unrelated or nonempty unfinished assets are refused.
+
+If the versioned release is published but channel promotion fails, repair only
+the channel from reviewed `main`:
+
+```sh
+gh workflow run preview-channel.yml --ref main -f release_tag=v0.2.0-beta.2
+```
+
+Use the actual already-published prerelease tag. This does not rebuild artifacts
+or edit the versioned release. A new channel stays draft until its uploaded
+feed verifies. Existing channel bodies/assets that do not match the publisher's
+format are preserved and require investigation. Hosted feed and client
+acceptance remain necessary after the first real promotion.
+
 ## The Homebrew tap
 
 The tap and publishing configuration are present. The release generator builds

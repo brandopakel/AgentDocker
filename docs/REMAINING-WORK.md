@@ -18,6 +18,9 @@ below. They are not silently removed from scope to declare v1 done.
 ## The road to v1: a release other people can install and try
 
 A coworker preview and a stable release have different acceptance requirements.
+The preview publisher now provides a separate `channel-preview` feed and an
+independent repair workflow; it still needs its first successful publication and
+hosted client update/rollback trial. See [distribution setup](DISTRIBUTION-SETUP.md#preview-update-channel).
 The existing workflow permits an explicitly labeled unsigned **prerelease**;
 a **stable** macOS release requires Developer ID signing and notarization.
 The next version and supported-platform promise must match the candidate we test.

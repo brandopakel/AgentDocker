@@ -303,6 +303,14 @@ jobs:
             *-*) gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false ;;
             *) gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$make_latest" ;;
           esac
+  preview-channel:
+    needs: [validate, publish]
+    if: needs.validate.outputs.preview == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/preview-channel.yml
+    with:
+      release_tag: ${{ github.ref_name }}
   tap:
     name: Publish Homebrew after release assets
     needs: publish
