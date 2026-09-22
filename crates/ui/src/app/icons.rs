@@ -48,8 +48,6 @@ pub enum Icon {
     Add,
     /// Two stacked bars: sessions.
     Sessions,
-    /// A pulse line: activity.
-    Activity,
     /// A speech bubble: channels.
     Channels,
     /// Three dots: more.
@@ -162,17 +160,6 @@ impl Glyph {
                         Path::rounded_rectangle(p(x, 3.0), iced::Size::new(3.0, 10.0), 1.0.into());
                     frame.stroke(&column, stroke);
                 }
-            }
-            Icon::Activity => {
-                let pulse = Path::new(|b| {
-                    b.move_to(p(2.0, 8.5));
-                    b.line_to(p(5.0, 8.5));
-                    b.line_to(p(6.8, 4.0));
-                    b.line_to(p(9.2, 12.5));
-                    b.line_to(p(11.0, 8.5));
-                    b.line_to(p(14.0, 8.5));
-                });
-                frame.stroke(&pulse, stroke);
             }
             Icon::Channels => {
                 let bubble = Path::new(|b| {

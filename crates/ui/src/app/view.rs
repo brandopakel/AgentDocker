@@ -622,13 +622,15 @@ impl App {
             ));
         }
         let mut header = row![header_left].spacing(16).align_y(Center);
-        if matches!(self.screen, Screen::Agents | Screen::Chat)
+        // The project's hold and its one primary action stay in the header
+        // on every project screen: they vanished on Board and History.
+        if in_project
             && !narrow
             && let Some(pause) = self.pause_controls(c)
         {
             header = header.push(pause);
         }
-        if matches!(self.screen, Screen::Agents | Screen::Chat)
+        if in_project
             && !narrow
             && let Some(launch) = self.launch_button()
         {
@@ -647,13 +649,14 @@ impl App {
         }
         // Narrow, the hold has its own line under the header rather than
         // none: a pause is not a thing to lose with the width.
-        if matches!(self.screen, Screen::Agents | Screen::Chat)
+        if in_project
             && narrow
             && let Some(pause) = self.pause_controls(c)
         {
             project_actions = project_actions.push(pause);
         }
-        if self.screen == Screen::Chat
+        if in_project
+            && self.screen != Screen::Agents
             && narrow
             && let Some(launch) = self.launch_button()
         {
@@ -661,9 +664,6 @@ impl App {
         }
         if in_project && self.shell.catalog.selected().is_some() {
             content = content.push(project_actions.wrap());
-        }
-        if self.screen == Screen::Chat && self.shell.launch {
-            content = content.push(self.launch_view(c));
         }
         if let Err(error) = &self.connected {
             content = content.push(attention(
@@ -739,6 +739,7 @@ impl App {
             for (screen, label, glyph) in [
                 (Screen::Chat, "Chat", Icon::Channels),
                 (Screen::Agents, "Agents", Icon::Sessions),
+                (Screen::Board, "Board", Icon::Board),
             ] {
                 let selected = self.screen == screen
                     || (screen == Screen::Agents && self.screen == Screen::Terminal);
@@ -754,16 +755,16 @@ impl App {
                     selected,
                 ));
             }
-            let more_selected = self.shell.more
-                || matches!(
-                    self.screen,
-                    Screen::Board
-                        | Screen::Journal
-                        | Screen::Channels
-                        | Screen::Leases
-                        | Screen::Console
-                        | Screen::Usage
-                );
+            // Underlined only on one of its own screens: with its drawer open
+            // over Agents, two tabs read as selected at once.
+            let more_selected = matches!(
+                self.screen,
+                Screen::Journal
+                    | Screen::Channels
+                    | Screen::Leases
+                    | Screen::Console
+                    | Screen::Usage
+            );
             tabs = tabs.push(tab(
                 "project-more",
                 "More",
@@ -790,43 +791,22 @@ impl App {
         if in_project && self.shell.more {
             let queued = self.queued_channel_messages();
             let mut more = row![
-                row![
-                    icon(Icon::Board, c.muted, 14.0),
-                    action(
-                        "project-tab-Board",
-                        "Board",
-                        Some(Message::Navigate(Screen::Board)),
-                        self.screen == Screen::Board
-                    )
-                ]
-                .spacing(6)
-                .align_y(Center),
-                row![
-                    icon(Icon::Activity, c.muted, 14.0),
-                    action(
-                        "project-tab-Journal",
-                        "History",
-                        Some(Message::Navigate(Screen::Journal)),
-                        self.screen == Screen::Journal
-                    )
-                ]
-                .spacing(6)
-                .align_y(Center),
-                row![
-                    icon(Icon::Channels, c.muted, 14.0),
-                    action(
-                        "project-tab-Channels",
-                        if queued > 0 {
-                            format!("Channels ({queued} waiting)")
-                        } else {
-                            "Channels".to_owned()
-                        },
-                        Some(Message::Navigate(Screen::Channels)),
-                        self.screen == Screen::Channels
-                    )
-                ]
-                .spacing(6)
-                .align_y(Center),
+                action(
+                    "project-tab-Journal",
+                    "History",
+                    Some(Message::Navigate(Screen::Journal)),
+                    self.screen == Screen::Journal
+                ),
+                action(
+                    "project-tab-Channels",
+                    if queued > 0 {
+                        format!("Channels ({queued} waiting)")
+                    } else {
+                        "Channels".to_owned()
+                    },
+                    Some(Message::Navigate(Screen::Channels)),
+                    self.screen == Screen::Channels
+                ),
                 action(
                     "project-tab-Leases",
                     "Files in use",
@@ -866,10 +846,11 @@ impl App {
                         false,
                     ));
             }
-            content = content.push(card(
-                column![eyebrow("Advanced", c), more.wrap()].spacing(10),
-                c,
-            ));
+            content = content.push(card(more.wrap(), c));
+        }
+        // Under the tabs, where the chat it stands in for would be.
+        if self.screen == Screen::Chat && self.shell.launch {
+            content = content.push(self.launch_view(c));
         }
         if self.shell.adding {
             content = content.push(card(
@@ -902,6 +883,9 @@ impl App {
             ));
         }
         let body = match self.screen {
+            // The launch form takes the page; squeezed above the chat into
+            // the header's 45% it hid its own Launch and Close.
+            Screen::Chat if self.shell.launch => column![].into(),
             Screen::Chat => self.project_chat_view(c),
             Screen::Agents => self.sessions(c),
             Screen::Board => self.board_view(c),
@@ -919,7 +903,7 @@ impl App {
         };
         // Chat owns the remaining viewport so its composer never depends on
         // scrolling past the header. Large forms and notices scroll above it.
-        let workspace: Element<'_, Message> = if self.screen == Screen::Chat {
+        let workspace: Element<'_, Message> = if self.screen == Screen::Chat && !self.shell.launch {
             column![
                 container(scrollable(content).height(iced::Shrink))
                     .max_height(self.shell.height / self.scale_factor() * 0.45),
@@ -1281,9 +1265,16 @@ impl App {
         }
         nav = nav
             .push(
+                // A thin bar: the default one took a name's last letters
+                // whenever the list scrolled.
                 scrollable(projects)
                     .id("sidebar-projects")
-                    .spacing(6)
+                    .direction(iced::widget::scrollable::Direction::Vertical(
+                        iced::widget::scrollable::Scrollbar::new()
+                            .width(4)
+                            .scroller_width(4)
+                            .spacing(2),
+                    ))
                     .height(Fill),
             )
             .push(Space::new().height(6))
@@ -2191,13 +2182,12 @@ impl App {
                                         .color(c.amber),
                                 );
                             }
+                            Ok(log) if log.is_empty() => {
+                                body = body.push(small("The session log is empty.", c));
+                            }
                             Ok(log) => {
-                                let log = if log.is_empty() {
-                                    "The session log is empty."
-                                } else {
-                                    log.as_str()
-                                };
-                                body = body.push(scrollable(text(log).size(12)).height(120));
+                                body =
+                                    body.push(scrollable(text(log.as_str()).size(12)).height(120));
                             }
                         }
                     } else {
@@ -2316,7 +2306,18 @@ impl App {
             self.shell.session_details,
         ));
         if self.shell.session_details {
-            let mut details = column![kv("Session", agent.id.to_string(), c)].spacing(6);
+            // The full id is 32 hex digits with nowhere to wrap: shown short,
+            // copied whole.
+            let mut details = column![
+                kv("Session", agent.id.short().to_string(), c),
+                action(
+                    "copy-session-id",
+                    "Copy session ID",
+                    Some(Message::CopyGuidance(agent.id.to_string())),
+                    false
+                ),
+            ]
+            .spacing(6);
             details = details.push(kv(
                 "Folder",
                 agent
@@ -3625,7 +3626,7 @@ impl App {
             row![
                 input(
                     "console-command",
-                    "agentdocker command",
+                    "A command, e.g. ps, leases or journal",
                     &self.console_input,
                     Message::ConsoleInput
                 ),
@@ -3645,21 +3646,32 @@ impl App {
                 action(
                     "previous-command",
                     "Previous",
-                    Some(Message::Recall(true)),
+                    (!self.console_history.is_empty()).then_some(Message::Recall(true)),
                     false
                 ),
-                action("next-command", "Next", Some(Message::Recall(false)), false)
+                action(
+                    "next-command",
+                    "Next",
+                    (!self.console_history.is_empty()).then_some(Message::Recall(false)),
+                    false
+                )
             ]
             .spacing(6),
-            container(
-                text(self.console_output.clone())
-                    .font(Font::MONOSPACE)
-                    .size(self.settings.terminal_size)
-                    .color(ink)
-            )
-            .padding(14)
-            .width(Fill)
-            .style(move |_| c.surface(ground, true))
+            // No empty black box before anything has run.
+            if self.console_output.is_empty() {
+                Element::from(note("Output appears here.", c))
+            } else {
+                container(
+                    text(self.console_output.clone())
+                        .font(Font::MONOSPACE)
+                        .size(self.settings.terminal_size)
+                        .color(ink),
+                )
+                .padding(14)
+                .width(Fill)
+                .style(move |_| c.surface(ground, true))
+                .into()
+            }
         ]
         .spacing(12)
         .into()

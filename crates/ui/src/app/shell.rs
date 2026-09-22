@@ -2020,6 +2020,15 @@ impl App {
                 if self.shell.launch {
                     self.shell.selected = None;
                     self.shell.session_filter = super::sessions::Filter::Current;
+                    // The form lives on Chat and Agents; from Board or
+                    // History, Launch agent… goes to Agents to show it.
+                    if !matches!(self.screen, Screen::Chat | Screen::Agents) {
+                        // Navigating resets the session view, the form with
+                        // it; it is opened again on arrival.
+                        let task = self.update(Message::Navigate(Screen::Agents));
+                        self.shell.launch = true;
+                        return task;
+                    }
                 }
             }
             Message::LaunchRuntime(runtime) => {

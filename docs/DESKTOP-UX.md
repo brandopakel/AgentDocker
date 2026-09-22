@@ -35,7 +35,14 @@ With no saved selection, the app opens on **All projects**, with sessions groupe
 under their project names. A saved project or Other sessions view is restored.
 **Projects** in the sidebar returns to All projects. Choosing a project opens
 its shared **Chat**, with the agents working there beside it. **Agents** opens the
-session list. **More** holds Board, History and the coordination tools.
+session list and **Board** the project's cards. **More** opens a row of History,
+Channels, Files in use, AgentDocker commands, Usage and the project's Pin and
+Forget; it is underlined only while one of those screens is open. **Pause…** and
+**Launch agent…** stay in the header on every project screen; launching from
+Board or History goes to Agents with the form open, and on Chat the form takes
+the place of the conversation until it is closed. A session's Details shows its
+short ID with **Copy session ID**. The Commands screen offers **Previous** and
+**Next** only once a command has run, and shows no output box before then.
 Opening an agent takes you to its project and selects that session.
 
 **Open project terminal**, in the project header, opens a fresh native terminal
