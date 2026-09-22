@@ -46,10 +46,18 @@ agents open their existing Terminal tab without sending any input. If the agent
 belongs to another app, the action explains that the original app is needed.
 This does not start a second copy of an agent.
 
-**Needs you** shows unanswered questions (**Answer**) and paused message
-delivery (**Review**, which opens that session with its delivery review
-already unfolded and its log requested — also when the session was already
-selected). Finished sessions keep their **Done** badge on the row. Question previews use at
+**Needs you** shows unanswered questions (**Answer**; a question from a session
+that has since ended says so before you write), live sessions that are not
+receiving messages (**Review**, which opens that session with its delivery
+review already unfolded, the reason in plain words, and its log requested —
+also when the session was already selected; while the app is disconnected it
+opens the session instead), and ended sessions that still hold messages no
+model took (*Codex · … ended with 2 messages not delivered*). Opening one of
+those says how many are kept and that resuming the conversation delivers them;
+**Dismiss** puts the notice away for that process without touching the
+messages, and a resumed session is a new notice. An ended session with nothing
+waiting is simply ended: it sits in Earlier, not in Needs you.
+Finished sessions keep their **Done** badge on the row. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
 Inbox. The first three items are shown; **Show more** expands the same list and
@@ -111,7 +119,7 @@ appear under **Other sessions**.
 
 **Current** shows live sessions; **Needs input** shows this project's
 unanswered, unexpired questions, including questions from a session that has
-since finished. Ended sessions are not a tab: they sit in one collapsed
+since finished, and the same delivery items as Needs you. Ended sessions are not a tab: they sit in one collapsed
 **Earlier (n)** group under the current ones, including previous runs with the
 same name, and a search that finds one opens the group. The group opens on
 its newest eight; **Show older** adds eight more each time, and closing the

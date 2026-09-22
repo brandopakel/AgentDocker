@@ -386,20 +386,24 @@ impl App {
                 .kind
                 .label()
                 .to_owned()
-        } else if self.delivery_paused(agent) {
-            "delivery paused".to_owned()
+        } else if self.delivery_paused(agent) && agent.status.is_live() {
+            "not receiving messages".to_owned()
+        } else if self.ended_with_undelivered(agent) {
+            format!("ended {}", undelivered_phrase(self.undelivered(agent)))
         } else if agent.status.is_live() {
             match self.activity.get(&id) {
                 None | Some(Activity::Unknown) => "running, no signal yet".to_owned(),
                 Some(activity) => activity.label().to_owned(),
             }
+        } else if let agentdocker_core::AgentStatus::Failed { reason } = &agent.status {
+            format!("failed: {reason}")
         } else {
-            agent.status.to_string()
+            "ended".to_owned()
         }
     }
     /// The colour that goes with [`Self::activity_label`].
     fn activity_color(&self, agent: &AgentRecord, c: Colors) -> iced::Color {
-        if self.needs_input(&agent.id.to_string()) || self.delivery_paused(agent) {
+        if self.needs_input(&agent.id.to_string()) || self.delivery_needs_you(agent) {
             c.amber
         } else if agent.status.is_live() {
             // Green is a report, not a heartbeat: a process we only know is
@@ -1353,8 +1357,15 @@ impl App {
             items.push((
                 dot(c.amber, 8.0, c),
                 format!(
-                    "{} asks: {}",
+                    "{} {}: {}",
                     self.name_of(&question.from),
+                    // An answer is kept for an ended session, but nobody
+                    // is reading it now; say so before the person writes.
+                    if self.agent_live(&question.from) {
+                        "asks"
+                    } else {
+                        "asked before its session ended"
+                    },
                     compact_question(&question.text)
                 ),
                 action(
@@ -1368,28 +1379,47 @@ impl App {
         for agent in self
             .agents
             .iter()
-            .filter(|a| self.delivery_paused(a) && self.has_project(a.project.as_ref()))
+            .filter(|a| self.delivery_needs_you(a) && self.has_project(a.project.as_ref()))
         {
-            let (reason, control, label) =
+            let name = self.display_name(agent);
+            let (line, control, label) =
                 if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
                     (
-                        state.issue.as_ref().expect("blocked").kind.label(),
+                        format!(
+                            "{name}: {}",
+                            state.issue.as_ref().expect("blocked").kind.label()
+                        ),
                         "provider",
                         "Details",
                     )
+                } else if agent.status.is_live() {
+                    (
+                        format!("{name}: messages are not being delivered"),
+                        "review",
+                        "Review",
+                    )
                 } else {
-                    ("message delivery needs review", "review", "Review")
+                    (
+                        format!(
+                            "{name} ended {}",
+                            undelivered_phrase(self.undelivered(agent))
+                        ),
+                        "review",
+                        "Review",
+                    )
                 };
             // Review opens the session with its delivery review unfolded;
             // Details opens the session, whose header carries the block.
-            let open = if control == "review" {
+            // The review reads the session log, so while disconnected
+            // Review opens the session and says it is the last known state.
+            let open = if control == "review" && self.connected.is_ok() {
                 Message::ReviewSession(agent.id.to_string())
             } else {
                 Message::OpenSession(agent.id.to_string())
             };
             items.push((
                 dot(c.amber, 8.0, c),
-                format!("{}: {reason}", self.display_name(agent)),
+                line,
                 action(
                     format!("needs-you-{control}-{}", agent.id),
                     label,
@@ -1955,8 +1985,8 @@ impl App {
             if self.connected.is_err() {
                 status.push("Last known".to_owned());
             }
-            if paused {
-                status.push("Delivery paused".to_owned());
+            if paused && agent.status.is_live() {
+                status.push("Not receiving messages".to_owned());
             } else if agent.status.is_live() {
                 status.push(self.input_readiness(agent).to_owned());
             }
@@ -2009,7 +2039,39 @@ impl App {
                     false,
                 ));
             }
-            if paused {
+            // An ended session: its messages are kept in its queue. Say how
+            // many, how to get them delivered, and let the person put the
+            // notice away. Nothing waiting means nothing to review.
+            if paused && !agent.status.is_live() {
+                if self.ended_with_undelivered(agent) {
+                    body = body.push(
+                        text(format!(
+                            "This session ended {}.",
+                            undelivered_phrase(self.undelivered(agent))
+                        ))
+                        .size(13)
+                        .color(c.amber),
+                    );
+                    body = body.push(note(
+                        "They are kept. Resume the conversation from its project folder and they are delivered to it; nothing is sent anywhere else.",
+                        c,
+                    ));
+                    if !self.notice_dismissed(agent) {
+                        body = body.push(action(
+                            "dismiss-delivery",
+                            "Dismiss",
+                            Some(Message::DismissDelivery(id.clone())),
+                            false,
+                        ));
+                    }
+                } else {
+                    body = body.push(small(
+                        "Session ended. Nothing is waiting to be delivered.",
+                        c,
+                    ));
+                }
+            }
+            if paused && agent.status.is_live() {
                 body = body.push(action(
                     "review-delivery",
                     if self.shell.review_delivery {
@@ -2020,11 +2082,14 @@ impl App {
                     self.connected.is_ok().then_some(Message::ReviewDelivery),
                     false,
                 ));
+                if self.connected.is_err() {
+                    body = body.push(small("Reconnect to the daemon to read the session log.", c));
+                }
                 if self.shell.review_delivery {
                     if let Some(reason) = delivery.and_then(|d| d.pause_reason.as_deref()) {
-                        body = body.push(text(reason.to_owned()).size(13).color(c.amber));
+                        body = body.push(text(plain_pause_reason(reason)).size(13).color(c.amber));
                     }
-                    body = body.push(note("Input is retained. Check the receipt and session log before restarting or sending it again.", c));
+                    body = body.push(note("Messages to this session are kept, not lost. Check the log below before restarting it or sending again.", c));
                     if let Some((log_agent, result)) = &self.session_log
                         && log_agent == &id
                     {
@@ -2038,7 +2103,7 @@ impl App {
                             }
                             Ok(log) => {
                                 let log = if log.is_empty() {
-                                    "No retained log output."
+                                    "The session log is empty."
                                 } else {
                                     log.as_str()
                                 };
@@ -4415,6 +4480,36 @@ impl App {
     }
 }
 
+/// How an ended session's undelivered messages read after "ended".
+fn undelivered_phrase(count: Option<usize>) -> String {
+    match count {
+        Some(1) => "with 1 message not delivered".to_owned(),
+        Some(n) => format!("with {n} messages not delivered"),
+        None => "before its messages were delivered".to_owned(),
+    }
+}
+
+/// The daemon's reason for pausing delivery, in the person's words. The
+/// daemon's own text stays in the session log and the CLI; this is what the
+/// app says about it. Unknown reasons are shown as they are.
+pub(super) fn plain_pause_reason(reason: &str) -> String {
+    use agentdocker_core::input::{
+        PAUSE_CONTROLLER_ENDED, PAUSE_CONTROLLER_RESTART_FAILED, PAUSE_RECEIVER_UPGRADING,
+    };
+    match reason {
+        PAUSE_CONTROLLER_ENDED => {
+            "The helper that hands messages to this session stopped.".to_owned()
+        }
+        PAUSE_CONTROLLER_RESTART_FAILED => {
+            "The helper that hands messages to this session could not be started again.".to_owned()
+        }
+        PAUSE_RECEIVER_UPGRADING => {
+            "Message delivery is being updated; it resumes on its own.".to_owned()
+        }
+        other => other.to_owned(),
+    }
+}
+
 /// Keep full question bodies in the review screen, with a bounded first line here.
 fn compact_question(value: &str) -> String {
     let first = value.lines().next().unwrap_or_default();
@@ -4476,6 +4571,31 @@ pub(super) fn split_style(c: Colors) -> iced::widget::pane_grid::Style {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn daemon_pause_reasons_read_in_the_persons_words() {
+        use agentdocker_core::input::{
+            PAUSE_CONTROLLER_ENDED, PAUSE_CONTROLLER_RESTART_FAILED, PAUSE_RECEIVER_UPGRADING,
+        };
+        for reason in [
+            PAUSE_CONTROLLER_ENDED,
+            PAUSE_CONTROLLER_RESTART_FAILED,
+            PAUSE_RECEIVER_UPGRADING,
+        ] {
+            let plain = super::plain_pause_reason(reason);
+            assert_ne!(plain, reason);
+            assert!(!plain.contains("controller") && !plain.contains("receiver"));
+        }
+        assert_eq!(super::plain_pause_reason("something new"), "something new");
+        assert_eq!(
+            super::undelivered_phrase(Some(1)),
+            "with 1 message not delivered"
+        );
+        assert_eq!(
+            super::undelivered_phrase(Some(3)),
+            "with 3 messages not delivered"
+        );
+    }
+
     use super::{remaining_fraction, spoken_payload};
     use chrono::{Duration, Utc};
     use serde_json::json;

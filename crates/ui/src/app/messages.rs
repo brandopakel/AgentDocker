@@ -119,7 +119,7 @@ impl App {
         }
     }
 
-    fn agent_live(&self, id: &str) -> bool {
+    pub(super) fn agent_live(&self, id: &str) -> bool {
         let id = self.canonical_agent(id);
         self.agents
             .iter()

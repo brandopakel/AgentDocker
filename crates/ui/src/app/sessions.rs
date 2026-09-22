@@ -35,8 +35,54 @@ impl App {
                 .is_some_and(|d| d.paused_for(agent.process_started_at))
     }
 
+    /// Messages this session holds that no model has taken: the queue plus
+    /// what the binding could not prove it handed over. `None` while the
+    /// queue count is unknown (no activity snapshot yet).
+    pub(super) fn undelivered(&self, agent: &AgentRecord) -> Option<usize> {
+        let uncertain = agent
+            .input_binding
+            .as_ref()
+            .map_or(0, |binding| binding.uncertain.len());
+        self.queued_inputs
+            .get(agent.id.as_str())
+            .map(|queued| queued + uncertain)
+    }
+
+    /// An ended session whose paused delivery still holds messages, or
+    /// might: the one case where an ended session asks something of the
+    /// person. Ended with nothing waiting is simply ended.
+    pub(super) fn ended_with_undelivered(&self, agent: &AgentRecord) -> bool {
+        !agent.status.is_live()
+            && agent
+                .input_delivery
+                .as_ref()
+                .is_some_and(|d| d.paused_for(agent.process_started_at))
+            && self.undelivered(agent) != Some(0)
+    }
+
+    /// Whether the person dismissed this ended session's notice.
+    pub(super) fn notice_dismissed(&self, agent: &AgentRecord) -> bool {
+        self.shell
+            .catalog
+            .is_dismissed(agent.id.as_str(), agent.process_started_at)
+    }
+
+    /// Paused delivery that asks something of the person: a provider
+    /// block, a live session whose delivery stopped, or an ended session
+    /// still holding messages that nobody has dismissed.
+    pub(super) fn delivery_needs_you(&self, agent: &AgentRecord) -> bool {
+        if agentdocker_core::provider_block(agent, &self.agents).is_some() {
+            return true;
+        }
+        if !self.delivery_paused(agent) {
+            return false;
+        }
+        agent.status.is_live()
+            || (self.ended_with_undelivered(agent) && !self.notice_dismissed(agent))
+    }
+
     fn needs_attention(&self, agent: &AgentRecord) -> bool {
-        self.needs_input(agent.id.as_str()) || self.delivery_paused(agent)
+        self.needs_input(agent.id.as_str()) || self.delivery_needs_you(agent)
     }
 
     pub(super) fn session_records(&self, filter: Filter) -> Vec<&AgentRecord> {
@@ -200,6 +246,88 @@ mod tests {
             app.session_records(Filter::NeedsInput).is_empty(),
             "an old pause cannot describe a successor process"
         );
+    }
+
+    /// An ended session with paused delivery asks for the person only while
+    /// messages are left: with none it is just ended, with some it stays
+    /// in Needs input until they are dismissed, and dismissing keeps them.
+    #[test]
+    fn ended_sessions_need_the_person_only_while_messages_wait_and_until_dismissed() {
+        let mut app = app();
+        let mut ended = record("ended");
+        let now = Utc::now();
+        ended.status = AgentStatus::Exited { code: None };
+        ended.process_started_at = Some(now);
+        ended.input_delivery = Some(agentdocker_core::InputDelivery {
+            process_started_at: now,
+            paused: true,
+            pause_reason: Some(agentdocker_core::input::PAUSE_CONTROLLER_ENDED.into()),
+            reported_at: now,
+            received: None,
+            received_at: None,
+        });
+        app.agents.push(ended.clone());
+        let id = ended.id.to_string();
+
+        // Nothing queued: ended, not waiting on anyone.
+        app.queued_inputs.insert(id.clone(), 0);
+        assert!(!app.ended_with_undelivered(&app.agents[0]));
+        assert!(!app.delivery_needs_you(&app.agents[0]));
+        assert!(app.session_records(Filter::NeedsInput).is_empty());
+        assert_eq!(app.session_records(Filter::Earlier)[0].id, ended.id);
+
+        // Two queued: the one thing it still asks of the person.
+        app.queued_inputs.insert(id.clone(), 2);
+        assert_eq!(app.undelivered(&app.agents[0]), Some(2));
+        assert!(app.delivery_needs_you(&app.agents[0]));
+        assert_eq!(app.session_records(Filter::NeedsInput)[0].id, ended.id);
+
+        // Dismissed: off Needs input, the count and the queue untouched.
+        let _ = app.update(Message::DismissDelivery(id.clone()));
+        assert!(app.notice_dismissed(&app.agents[0]));
+        assert!(!app.delivery_needs_you(&app.agents[0]));
+        assert!(app.session_records(Filter::NeedsInput).is_empty());
+        assert_eq!(app.undelivered(&app.agents[0]), Some(2));
+        assert_eq!(app.shell.catalog.dismissed.len(), 1);
+        // Dismissing twice records nothing new.
+        let _ = app.update(Message::DismissDelivery(id));
+        assert_eq!(app.shell.catalog.dismissed.len(), 1);
+
+        // A resumed process is a different notice: the old dismissal does
+        // not hide it.
+        app.agents[0].process_started_at = Some(now + chrono::Duration::seconds(5));
+        app.agents[0]
+            .input_delivery
+            .as_mut()
+            .unwrap()
+            .process_started_at = now + chrono::Duration::seconds(5);
+        assert!(!app.notice_dismissed(&app.agents[0]));
+        assert!(app.delivery_needs_you(&app.agents[0]));
+    }
+
+    /// A live session whose delivery stopped always needs the person;
+    /// dismissal is only for ended ones.
+    #[test]
+    fn live_paused_delivery_is_never_dismissed_away() {
+        let mut app = app();
+        let mut live = record("live");
+        let now = Utc::now();
+        live.process_started_at = Some(now);
+        live.input_delivery = Some(agentdocker_core::InputDelivery {
+            process_started_at: now,
+            paused: true,
+            pause_reason: None,
+            reported_at: now,
+            received: None,
+            received_at: None,
+        });
+        app.agents.push(live.clone());
+        app.queued_inputs.insert(live.id.to_string(), 0);
+        assert!(app.delivery_needs_you(&app.agents[0]));
+        app.shell
+            .catalog
+            .dismiss(live.id.as_str(), live.process_started_at);
+        assert!(app.delivery_needs_you(&app.agents[0]));
     }
 
     #[test]

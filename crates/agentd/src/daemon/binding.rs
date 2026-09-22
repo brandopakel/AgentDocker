@@ -183,7 +183,11 @@ impl Daemon {
                     state.transition_binding(&id, &binding, now, |record| {
                         // A fresh heartbeat from the controller that just
                         // died must not keep showing delivery as verified.
-                        pause_delivery(record, "the bound controller ended", now);
+                        pause_delivery(
+                            record,
+                            agentdocker_core::input::PAUSE_CONTROLLER_ENDED,
+                            now,
+                        );
                         record
                             .input_binding
                             .as_mut()
@@ -198,7 +202,11 @@ impl Daemon {
                 ControllerStep::Exhausted => {
                     let mut state = lock(&self.state);
                     state.transition_binding(&id, &binding, now, |record| {
-                        pause_delivery(record, "the bound controller could not be restarted", now);
+                        pause_delivery(
+                            record,
+                            agentdocker_core::input::PAUSE_CONTROLLER_RESTART_FAILED,
+                            now,
+                        );
                         let binding = record.input_binding.as_mut().expect("checked");
                         binding.restart.exhausted = true;
                         EventKind::InputRestartsExhausted {
@@ -821,7 +829,11 @@ impl State {
             ..Default::default()
         };
         let binding = binding.clone();
-        pause_delivery(&mut record, "the input receiver is being upgraded", now);
+        pause_delivery(
+            &mut record,
+            agentdocker_core::input::PAUSE_RECEIVER_UPGRADING,
+            now,
+        );
         let mut event = Event::new(
             EventKind::InputControllerUpgraded {
                 agent: id.clone(),
