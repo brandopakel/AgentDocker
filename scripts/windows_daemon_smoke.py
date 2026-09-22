@@ -473,25 +473,34 @@ def main():
     try:
         subprocess.run(["git", "init", "-q"], cwd=project, check=True)
         log = open(daemon_log, "wb")
+        # Bounded by the clock, not by a count of pings, and timed: on the
+        # extracted archive's runner (run 35675002937) the daemon was alive
+        # but had neither answered nor written its log within the step's
+        # ping budget, and that budget was a count of pings. This is a
+        # diagnostic allowance of ninety seconds that records what a first
+        # start takes — creation, then readiness — not a claim about the
+        # client's own ten-second start bound, which later steps exercise
+        # on a binary the system has already run.
+        requested_at = time.monotonic()
         daemon = subprocess.Popen([str(daemon_binary)], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
-        # Bounded by the clock, not by a count of pings: the first start of
-        # a fresh executable on a cold Windows runner has taken more than
-        # twenty seconds before it wrote a line of its log (the extracted
-        # archive's daemon, run 35675002937), and a count of pings was that
-        # long. Ninety seconds is the bound; how long it took is recorded.
-        started_at = time.time()
+        created_at = time.monotonic()
+        budget = 90.0
         while True:
             time.sleep(0.1)
-            probe = run("ping", check=False, timeout=10)
-            if probe.returncode == 0 or daemon.poll() is not None or time.time() - started_at > 90:
+            remaining = budget - (time.monotonic() - requested_at)
+            if remaining <= 0:
                 break
-        came_up = f"answered after {time.time() - started_at:.1f} s"
-        detail = came_up if probe.returncode == 0 else probe.stderr.strip()
+            probe = run("ping", check=False, timeout=max(1, min(10, remaining)))
+            if probe.returncode == 0 or daemon.poll() is not None:
+                break
+        ready_at = time.monotonic()
+        timing = f"process created {created_at - requested_at:.2f} s after the request, answered {ready_at - created_at:.1f} s after creation"
+        detail = timing if probe.returncode == 0 else probe.stderr.strip()
         if daemon.poll() is not None:
             detail = f"the daemon exited with {daemon.returncode} before answering; ping said: {detail}"
             detail += f"; daemon log: {daemon_log.read_text(errors='replace').strip()[-600:]}" + acl_report(home)
         elif probe.returncode != 0:
-            detail = f"no answer within {time.time() - started_at:.0f} s; ping said: {detail}; daemon log: {daemon_log.read_text(errors='replace').strip()[-600:]!r}"
+            detail = f"no answer within {ready_at - requested_at:.0f} s ({timing.split(', ')[0]}); ping said: {detail}; daemon log: {daemon_log.read_text(errors='replace').strip()[-600:]!r}"
         step("the daemon answers ping over the local transport", probe.returncode == 0, detail)
         status = run("daemon", "status")
         step("daemon status names the serving executable", str(daemon_binary.name) in status.stdout, status.stdout.strip())
