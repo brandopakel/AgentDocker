@@ -3,6 +3,7 @@
 
 use super::reader::Runtime;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
     fs::{self, ReadDir},
@@ -14,7 +15,7 @@ pub const MAX_ROOTS: usize = 16;
 pub const MAX_FILES: usize = 10_000;
 const MAX_ENTRIES: usize = 100_000;
 const MAX_DEPTH: usize = 32;
-const PASS_ENTRIES: usize = 512;
+pub const PASS_ENTRIES: usize = 512;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Root {
@@ -22,7 +23,7 @@ pub struct Root {
     pub path: PathBuf,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
     pub runtime: Runtime,
     pub path: PathBuf,
@@ -37,10 +38,79 @@ pub struct Page {
     pub complete: bool,
 }
 
-struct Directory {
+/// A durable frontier contains paths and directory-entry fingerprints only.
+/// Restoring it replays each open directory's accepted prefix before advancing;
+/// an OS enumeration order change refuses coverage rather than skipping names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Checkpoint {
+    version: u32,
+    roots: VecDeque<Root>,
+    stack: Vec<DirectoryCheckpoint>,
+    entries: usize,
+    files: usize,
+    incomplete: bool,
+    exhausted: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct DirectoryCheckpoint {
     runtime: Runtime,
     depth: usize,
-    entries: ReadDir,
+    path: PathBuf,
+    seen: usize,
+    prefix: [u8; 32],
+}
+
+struct Directory {
+    state: DirectoryCheckpoint,
+    entries: Option<ReadDir>,
+    replay: Option<DirectoryCheckpoint>,
+}
+
+fn valid_path(path: &std::path::Path) -> bool {
+    path.is_absolute() && path.to_str().is_some_and(|p| p.len() <= 8192)
+}
+
+impl Directory {
+    fn open(path: PathBuf, runtime: Runtime, depth: usize) -> std::io::Result<Self> {
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(std::io::Error::other("not a real directory"));
+        }
+        let entries = fs::read_dir(&path)?;
+        Ok(Self {
+            state: DirectoryCheckpoint {
+                runtime,
+                depth,
+                path,
+                seen: 0,
+                prefix: [0; 32],
+            },
+            entries: Some(entries),
+            replay: None,
+        })
+    }
+
+    fn remember(&mut self, entry: &std::io::Result<fs::DirEntry>, kind: Option<&fs::FileType>) {
+        let mut hash = Sha256::new();
+        hash.update(self.state.prefix);
+        match entry {
+            Ok(entry) => {
+                hash.update([0]);
+                hash.update(entry.file_name().as_encoded_bytes());
+                hash.update([match kind {
+                    Some(k) if k.is_file() => 1,
+                    Some(k) if k.is_dir() => 2,
+                    Some(k) if k.is_symlink() => 3,
+                    Some(_) => 4,
+                    None => 5,
+                }]);
+            }
+            Err(_) => hash.update([1]),
+        }
+        self.state.prefix = hash.finalize().into();
+        self.state.seen += 1;
+    }
 }
 
 pub struct Walk {
@@ -54,7 +124,7 @@ pub struct Walk {
 
 impl Walk {
     pub fn new(roots: Vec<Root>) -> Result<Self, &'static str> {
-        if roots.len() > MAX_ROOTS || roots.iter().any(|root| !root.path.is_absolute()) {
+        if roots.len() > MAX_ROOTS || roots.iter().any(|root| !valid_path(&root.path)) {
             return Err("usage discovery requires at most sixteen absolute roots");
         }
         Ok(Self {
@@ -64,6 +134,69 @@ impl Walk {
             files: 0,
             incomplete: false,
             exhausted: false,
+        })
+    }
+
+    pub fn finished(&self) -> bool {
+        self.exhausted
+    }
+
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            version: 1,
+            roots: self.roots.clone(),
+            stack: self
+                .stack
+                .iter()
+                .map(|d| d.replay.as_ref().unwrap_or(&d.state).clone())
+                .collect(),
+            entries: self.entries,
+            files: self.files,
+            incomplete: self.incomplete,
+            exhausted: self.exhausted,
+        }
+    }
+
+    pub fn resume(saved: Checkpoint) -> Result<Self, &'static str> {
+        if saved.version != 1
+            || saved.roots.len() > MAX_ROOTS
+            || saved.stack.len() > MAX_DEPTH
+            || saved.entries > MAX_ENTRIES + 1
+            || saved.files > MAX_FILES + 1
+            || saved.roots.iter().any(|r| !valid_path(&r.path))
+            || saved
+                .stack
+                .iter()
+                .any(|d| !valid_path(&d.path) || d.seen > saved.entries || d.depth >= MAX_DEPTH)
+            || saved.stack.first().is_some_and(|d| d.depth != 0)
+            || saved.stack.windows(2).any(|pair| {
+                pair[1].path.parent() != Some(pair[0].path.as_path())
+                    || pair[1].depth != pair[0].depth + 1
+                    || pair[1].runtime != pair[0].runtime
+            })
+            || (saved.exhausted && (!saved.roots.is_empty() || !saved.stack.is_empty()))
+        {
+            return Err("invalid usage discovery checkpoint");
+        }
+        Ok(Self {
+            roots: saved.roots,
+            stack: saved
+                .stack
+                .into_iter()
+                .map(|d| Directory {
+                    state: DirectoryCheckpoint {
+                        seen: 0,
+                        prefix: [0; 32],
+                        ..d.clone()
+                    },
+                    entries: None,
+                    replay: Some(d),
+                })
+                .collect(),
+            entries: saved.entries,
+            files: saved.files,
+            incomplete: saved.incomplete,
+            exhausted: saved.exhausted,
         })
     }
 
@@ -85,12 +218,8 @@ impl Walk {
                 match fs::symlink_metadata(&root.path) {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                     Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
-                        match fs::read_dir(root.path) {
-                            Ok(entries) => self.stack.push(Directory {
-                                runtime: root.runtime,
-                                depth: 0,
-                                entries,
-                            }),
+                        match Directory::open(root.path, root.runtime, 0) {
+                            Ok(directory) => self.stack.push(directory),
                             Err(_) => self.gap(&mut page, "usage root cannot be enumerated"),
                         }
                     }
@@ -98,13 +227,60 @@ impl Walk {
                 }
                 continue;
             }
-            let directory = self.stack.last_mut().expect("directory present");
-            let runtime = directory.runtime;
-            let depth = directory.depth;
-            let Some(entry) = directory.entries.next() else {
+            // Verify ancestors before opening a retained child path. A replaced
+            // or redirected root must refuse before child enumeration resumes.
+            let last = self.stack.len() - 1;
+            let index = self
+                .stack
+                .iter()
+                .position(|d| d.replay.is_some())
+                .unwrap_or(last);
+            let directory = &mut self.stack[index];
+            if directory.entries.is_none() {
+                match Directory::open(
+                    directory.state.path.clone(),
+                    directory.state.runtime,
+                    directory.state.depth,
+                ) {
+                    Ok(opened) => directory.entries = opened.entries,
+                    Err(_) => {
+                        self.gap(&mut page, "usage discovery directory cannot be resumed");
+                        self.finish();
+                        break;
+                    }
+                }
+            }
+            if let Some(replay) = &directory.replay
+                && directory.state.seen == replay.seen
+            {
+                if directory.state.prefix != replay.prefix {
+                    self.gap(&mut page, "usage discovery directory prefix changed");
+                    self.finish();
+                    break;
+                }
+                directory.replay = None;
+                if index != last {
+                    continue;
+                }
+            }
+            let runtime = directory.state.runtime;
+            let depth = directory.state.depth;
+            let Some(entry) = directory.entries.as_mut().expect("directory opened").next() else {
+                if directory.replay.is_some() {
+                    self.gap(&mut page, "usage discovery directory prefix changed");
+                    self.finish();
+                    break;
+                }
                 self.stack.pop();
                 continue;
             };
+            let kind = entry.as_ref().ok().and_then(|entry| entry.file_type().ok());
+            directory.remember(&entry, kind.as_ref());
+            if directory.replay.is_some() {
+                // Rechecking old entries consumes this page's work allowance,
+                // never another source or global entry allowance.
+                continue;
+            }
             self.entries += 1;
             if self.entries > MAX_ENTRIES {
                 self.gap(&mut page, "usage discovery entry limit reached");
@@ -118,9 +294,9 @@ impl Walk {
                     continue;
                 }
             };
-            let kind = match entry.file_type() {
-                Ok(kind) => kind,
-                Err(_) => {
+            let kind = match kind {
+                Some(kind) => kind,
+                None => {
                     self.gap(&mut page, "usage entry type cannot be read");
                     continue;
                 }
@@ -130,12 +306,15 @@ impl Walk {
                     self.gap(&mut page, "usage discovery depth limit reached");
                     continue;
                 }
-                match fs::read_dir(entry.path()) {
-                    Ok(entries) => self.stack.push(Directory {
-                        runtime,
-                        depth: depth + 1,
-                        entries,
-                    }),
+                if !valid_path(&entry.path()) {
+                    self.gap(
+                        &mut page,
+                        "usage path is not representable within its limit",
+                    );
+                    continue;
+                }
+                match Directory::open(entry.path(), runtime, depth + 1) {
+                    Ok(directory) => self.stack.push(directory),
                     Err(_) => self.gap(&mut page, "usage directory cannot be enumerated"),
                 }
             } else if entry.path().extension().is_some_and(|ext| ext == "jsonl") {
@@ -184,6 +363,118 @@ impl Walk {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serialized_frontier_resumes_without_reemitting_a_verified_prefix() {
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("nested");
+        fs::create_dir(&nested).unwrap();
+        for n in 0..900 {
+            fs::write(nested.join(format!("{n}.jsonl")), "").unwrap();
+        }
+        let mut walk = Walk::new(vec![Root {
+            runtime: Runtime::Claude,
+            path: temp.path().to_owned(),
+        }])
+        .unwrap();
+        let first = walk.next_page();
+        assert!(!first.finished);
+        assert!(!first.sources.is_empty());
+        let saved = serde_json::to_vec(&walk.checkpoint()).unwrap();
+        drop(walk);
+        let mut resumed = Walk::resume(serde_json::from_slice(&saved).unwrap()).unwrap();
+        let mut seen: std::collections::BTreeSet<_> =
+            first.sources.into_iter().map(|s| s.path).collect();
+        loop {
+            let page = resumed.next_page();
+            for source in page.sources {
+                assert!(
+                    seen.insert(source.path),
+                    "replayed directory entries must not reemit sources"
+                );
+            }
+            if page.finished {
+                assert!(page.complete, "{:?}", page.gaps);
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 900);
+    }
+
+    #[test]
+    fn changed_directory_prefix_refuses_completion_after_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        for n in 0..600 {
+            fs::write(temp.path().join(format!("{n}.jsonl")), "").unwrap();
+        }
+        let mut walk = Walk::new(vec![Root {
+            runtime: Runtime::Codex,
+            path: temp.path().to_owned(),
+        }])
+        .unwrap();
+        let first = walk.next_page();
+        let saved = walk.checkpoint();
+        fs::remove_file(&first.sources[0].path).unwrap();
+        let mut resumed = Walk::resume(saved).unwrap();
+        loop {
+            let page = resumed.next_page();
+            assert!(page.sources.is_empty());
+            if page.finished {
+                assert!(!page.complete);
+                assert!(
+                    page.gaps
+                        .contains(&"usage discovery directory prefix changed")
+                );
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_bounds_are_checked_before_opening_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let walk = Walk::new(vec![Root {
+            runtime: Runtime::Claude,
+            path: temp.path().to_owned(),
+        }])
+        .unwrap();
+        let mut saved = walk.checkpoint();
+        saved.entries = MAX_ENTRIES + 2;
+        assert!(Walk::resume(saved).is_err());
+        let mut saved = walk.checkpoint();
+        saved.roots[0].path = PathBuf::from("relative");
+        assert!(Walk::resume(saved).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn redirected_parent_refuses_before_resuming_the_same_child_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("logs");
+        let child = root.join("child");
+        fs::create_dir_all(&child).unwrap();
+        for n in 0..600 {
+            fs::write(child.join(format!("{n}.jsonl")), "").unwrap();
+        }
+        let mut walk = Walk::new(vec![Root {
+            runtime: Runtime::Claude,
+            path: root.clone(),
+        }])
+        .unwrap();
+        let first = walk.next_page();
+        assert!(!first.sources.is_empty());
+        let saved = walk.checkpoint();
+        let moved = temp.path().join("moved");
+        fs::rename(&root, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &root).unwrap();
+        let page = Walk::resume(saved).unwrap().next_page();
+        assert!(page.finished && !page.complete);
+        assert!(page.sources.is_empty());
+        assert!(
+            page.gaps
+                .contains(&"usage discovery directory cannot be resumed")
+        );
+    }
 
     #[test]
     fn discovery_is_incremental_and_does_not_claim_special_files() {

@@ -1209,6 +1209,24 @@ are unknown, never zero. The design:
   estimate. These estimates are neither additional provider tokens nor a precise
   measure of billed overhead; never add them to the provider total.
 
+Usage discovery persists its directory frontier and a manifest of at most 10,000
+captured files. Each page, its coverage and its event commit together; consuming
+a file removes its manifest entry in the same transaction as its samples and
+file cursor. A daemon restart resumes the same generation and snapshot watermark,
+including any remaining files, rather than starting directory discovery again.
+Changed configured roots start a new generation. On restart, open directories
+replay their saved entry-name/type fingerprints in bounded passes, ancestors
+first. A changed prefix, redirected directory or unreadable frontier leaves
+coverage incomplete; it never authorizes skipping unverified entries. Directory
+ordering need not be stable: a different order conservatively refuses that
+snapshot, and the next generation retries. Completed file-prefix proofs remain
+ephemeral and are reverified after restart. Only paths, accounting metadata and
+fingerprints persist, never transcript contents. Discovery keeps its existing
+16-root, 100,000-entry, 32-depth and 512-entry/25 ms cooperative page bounds;
+replaying a large directory can require several pages after each restart. The
+pending-file lookup uses an indexed priority order; completion clears the frontier
+and remaining manifest state. Long-term sample/baseline retention is separate.
+
 The collector now holds an ephemeral reader session that verifies a saved prefix
 in bounded passes (up to 4 MiB / 100 ms each) before parsing. A scan rechecks its
 new bounded suffix and generation before committing; a restart discards the
