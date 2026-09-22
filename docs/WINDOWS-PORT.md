@@ -184,7 +184,11 @@ Work still required before platform support can be claimed:
   `agentd.exe`, with the daemon's log not yet written — what held it up
   was not observed (the system's scan of a new executable is one
   candidate) — so a client starting the daemon on demand allows ten
-  seconds on Windows (three elsewhere). Host
+  seconds on Windows (three elsewhere). The same class showed on the
+  extracted archive's daemon, which took more than twenty seconds before
+  its first log line: the smoke's first daemon start is bounded by the
+  clock at ninety seconds rather than by a count of pings, and records
+  how long it took. Host
   tests on the runner: the batch line against the standard library's
   shape, a `.cmd` shim run through the gate with a space and a `&` intact
   in its arguments, a refused argument leaving a marker-writing shim

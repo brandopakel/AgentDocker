@@ -474,15 +474,24 @@ def main():
         subprocess.run(["git", "init", "-q"], cwd=project, check=True)
         log = open(daemon_log, "wb")
         daemon = subprocess.Popen([str(daemon_binary)], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
-        for _ in range(100):
+        # Bounded by the clock, not by a count of pings: the first start of
+        # a fresh executable on a cold Windows runner has taken more than
+        # twenty seconds before it wrote a line of its log (the extracted
+        # archive's daemon, run 35675002937), and a count of pings was that
+        # long. Ninety seconds is the bound; how long it took is recorded.
+        started_at = time.time()
+        while True:
             time.sleep(0.1)
             probe = run("ping", check=False, timeout=10)
-            if probe.returncode == 0 or daemon.poll() is not None:
+            if probe.returncode == 0 or daemon.poll() is not None or time.time() - started_at > 90:
                 break
-        detail = probe.stderr.strip()
+        came_up = f"answered after {time.time() - started_at:.1f} s"
+        detail = came_up if probe.returncode == 0 else probe.stderr.strip()
         if daemon.poll() is not None:
             detail = f"the daemon exited with {daemon.returncode} before answering; ping said: {detail}"
             detail += f"; daemon log: {daemon_log.read_text(errors='replace').strip()[-600:]}" + acl_report(home)
+        elif probe.returncode != 0:
+            detail = f"no answer within {time.time() - started_at:.0f} s; ping said: {detail}; daemon log: {daemon_log.read_text(errors='replace').strip()[-600:]!r}"
         step("the daemon answers ping over the local transport", probe.returncode == 0, detail)
         status = run("daemon", "status")
         step("daemon status names the serving executable", str(daemon_binary.name) in status.stdout, status.stdout.strip())
