@@ -160,6 +160,13 @@ pub struct ReplyRecovery {
 /// How many failed replies the window keeps at once.
 pub const REPLY_RECOVERIES: usize = 8;
 
+/// The clock sweep while the window has focus: "12s ago" labels, the
+/// status line clearing, a question's time left.
+pub const FOCUSED_SWEEP: Duration = Duration::from_secs(2);
+/// The same sweep while it does not: nobody reads those labels, and each
+/// tick paints the whole window.
+pub const UNFOCUSED_SWEEP: Duration = Duration::from_secs(30);
+
 /// Each room keeps its own draft; receipts clear only an untouched submission.
 #[derive(Clone, Debug, Default)]
 pub(super) struct ChannelDraft {
@@ -713,11 +720,18 @@ pub enum Message {
     Accessibility(crate::accessibility::Snapshot),
 }
 
+/// A wake becomes one frame, a moment later: the answers to a sweep (seven
+/// snapshots asked for at once) land within a few milliseconds of each
+/// other, and every frame paints the whole window, so the wakes that
+/// arrive while this waits are folded into the one it sends.
+const WAKE_SETTLE: Duration = Duration::from_millis(40);
+
 async fn notifications(mut output: iced::futures::channel::mpsc::Sender<Message>) {
     use iced::futures::SinkExt;
     let wake = Wake::default();
     loop {
         wake.notified().await;
+        tokio::time::sleep(WAKE_SETTLE).await;
         if output.send(Message::Tick).await.is_err() {
             break;
         }
@@ -866,10 +880,18 @@ impl App {
         }
         Subscription::batch([
             Subscription::run(updates),
+            // Every tick is a whole frame: the software renderer paints the
+            // window again for any message, on a Retina display a tenth of
+            // a second of one core. What changes state arrives through the
+            // wake above; the sweep only keeps the clock-dependent labels
+            // and the status line honest, so it can be slow while nobody is
+            // looking at the window.
             iced::time::every(if self.smoke.is_some() {
                 Duration::from_millis(100)
+            } else if self.shell.unfocused {
+                UNFOCUSED_SWEEP
             } else {
-                Duration::from_secs(2)
+                FOCUSED_SWEEP
             })
             .map(|_| Message::Tick),
             iced::event::listen_with(|event, status, _| match event {

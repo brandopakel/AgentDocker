@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, VecDeque};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(unix)]
 use std::process::Stdio;
@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agentdocker_core::AgentId;
+use agentdocker_core::paths;
 use agentdocker_core::session::{
     ACTIVATE_WITHIN_SECS, ChildIdentity, ExitReport, FORMAT, OwnerCommand, OwnerHello, OwnerReport,
     endpoint, exit_path, socket_path,
@@ -331,7 +332,6 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
             .with_context(|| format!("cannot open {}", log_path.display()))
     })
     .await??;
-    let log = tokio::fs::File::from_std(log);
 
     // The control socket exists before the command is prepared, so the
     // daemon's connect never races the gate.
@@ -510,7 +510,7 @@ async fn supervise(
     shared: Arc<Shared>,
     pending: Pending,
     child: ChildIdentity,
-    log: tokio::fs::File,
+    log: std::fs::File,
     terminal_io: Option<(std::fs::File, std::fs::File)>,
     keystrokes: Option<mpsc::Receiver<Vec<u8>>>,
     mut activated: watch::Receiver<bool>,
@@ -571,7 +571,12 @@ async fn supervise(
     let mut tasks = tokio::task::JoinSet::new();
     // The log writer is joined on its own: its result is what `log_flushed`
     // means, and it ends only after every pump has dropped its sender.
-    let log_task = tokio::spawn(write_log(log, sink));
+    let log_task = tokio::spawn(write_rotating_log(
+        shared.launch.log.clone(),
+        log,
+        sink,
+        LOG_CAP,
+    ));
     let mut input_task = None;
     match terminal_io {
         Some((reader, writer)) => {
@@ -1110,16 +1115,58 @@ async fn pump<R: AsyncRead + Unpin>(
     Ok(())
 }
 
+/// Append lines to `log` until every sender is gone. Past `cap` bytes
+/// (counting `written`, what the sink already held), `rotate` supplies
+/// a fresh sink for the rest.
 async fn write_log<W: AsyncWrite + Unpin>(
     mut log: W,
     mut rx: mpsc::Receiver<String>,
+    mut written: u64,
+    cap: u64,
+    mut rotate: impl FnMut() -> anyhow::Result<W>,
 ) -> anyhow::Result<()> {
     while let Some(line) = rx.recv().await {
+        if written > 0 && written + line.len() as u64 > cap {
+            log.flush().await.context("cannot flush agent log")?;
+            log = rotate()?;
+            written = 0;
+        }
         log.write_all(line.as_bytes())
             .await
             .context("cannot write agent log")?;
+        written += line.len() as u64;
     }
     log.flush().await.context("cannot flush agent log")
+}
+
+/// Captured output on disk is bounded: a log that would grow past this
+/// many bytes is moved to `<name>.log.1` (replacing the previous move)
+/// and started over, so an agent that talks for weeks holds at most two
+/// of these.
+const LOG_CAP: u64 = 8 * 1024 * 1024;
+
+/// `write_log` for the file at `path`, opened in append mode as `log`,
+/// rotating it at `cap` bytes. The rotation is a rename and an open,
+/// done inline: this process serves one agent and nothing else waits.
+async fn write_rotating_log(
+    path: PathBuf,
+    log: std::fs::File,
+    rx: mpsc::Receiver<String>,
+    cap: u64,
+) -> anyhow::Result<()> {
+    let written = log.metadata().map(|m| m.len()).unwrap_or(0);
+    write_log(tokio::fs::File::from_std(log), rx, written, cap, || {
+        rotate_log(&path).map(tokio::fs::File::from_std)
+    })
+    .await
+}
+
+fn rotate_log(path: &Path) -> anyhow::Result<std::fs::File> {
+    let rotated = paths::rotated_log(path);
+    std::fs::rename(path, &rotated)
+        .with_context(|| format!("cannot rotate {} to {}", path.display(), rotated.display()))?;
+    agentdocker_host::dirs::private_file(path, true, true)
+        .with_context(|| format!("cannot reopen {}", path.display()))
 }
 
 #[cfg(test)]
@@ -1241,7 +1288,9 @@ mod tests {
         let (writer, mut reader) = tokio::io::duplex(8);
         let (tx, rx) = mpsc::channel(1);
         let mut tasks = tokio::task::JoinSet::new();
-        tasks.spawn(write_log(writer, rx));
+        tasks.spawn(write_log(writer, rx, 0, u64::MAX, || {
+            anyhow::bail!("no rotation")
+        }));
         tasks.spawn(pump(&b"first\nlast without newline"[..], "out", tx));
         let mut written = String::new();
         reader.read_to_string(&mut written).await.unwrap();
@@ -1256,12 +1305,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_log_rotates_at_its_cap_and_keeps_one_earlier_half() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.log");
+        let file = agentdocker_host::dirs::private_file(&path, true, true).unwrap();
+        let (tx, rx) = mpsc::channel(1);
+        let writer = tokio::spawn(write_rotating_log(path.clone(), file, rx, 40));
+        for n in 1..=6 {
+            // Sixteen bytes a line: the cap holds two, the third rotates.
+            tx.send(format!("line {n:<10}\n")).await.unwrap();
+        }
+        drop(tx);
+        writer.await.unwrap().unwrap();
+        let live = std::fs::read_to_string(&path).unwrap();
+        let earlier = std::fs::read_to_string(paths::rotated_log(&path)).unwrap();
+        assert_eq!(earlier.lines().count(), 2, "{earlier:?}");
+        assert!(earlier.starts_with("line 3"), "{earlier:?}");
+        assert_eq!(live.lines().count(), 2, "{live:?}");
+        assert!(live.starts_with("line 5"), "{live:?}");
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().count() == 2,
+            "only the live log and one rotation remain"
+        );
+    }
+
+    #[tokio::test]
     async fn a_failed_log_sink_is_reported_and_every_task_finishes() {
         let (writer, reader) = tokio::io::duplex(8);
         drop(reader);
         let (tx, rx) = mpsc::channel(1);
         let mut tasks = tokio::task::JoinSet::new();
-        tasks.spawn(write_log(writer, rx));
+        tasks.spawn(write_log(writer, rx, 0, u64::MAX, || {
+            anyhow::bail!("no rotation")
+        }));
         tasks.spawn(pump(&b"first\nsecond\nthird\n"[..], "out", tx));
         let mut errors = Vec::new();
         while let Some(result) = tokio::time::timeout(Duration::from_secs(2), tasks.join_next())

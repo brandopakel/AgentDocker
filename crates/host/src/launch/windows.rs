@@ -22,6 +22,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -234,18 +235,39 @@ pub fn prepare_with(command: Command, console: Option<HPCON>) -> io::Result<Pend
     // SAFETY: a null handler with `false` clears this process's own
     // ignore-Ctrl-C attribute; nothing is registered.
     unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0) };
-    let program = resolve_program(command.get_program())?;
-    let mut line = quoted(program.as_os_str());
-    for arg in command.get_args() {
-        line.push(' ');
-        line.push_str(&quoted(arg));
-    }
+    let program = resolve_program(&command)?;
+    // A batch launcher (an npm-installed provider is one) cannot be
+    // started by itself: cmd.exe runs it, with the standard library's own
+    // batch command line and argument rules, so what the child sees is
+    // what `Command` would have given it.
+    let batch = crate::command::is_batch_launcher(&program);
+    let (program, line) = if batch {
+        (
+            command_prompt()?,
+            batch_command_line(&program, command.get_args())?,
+        )
+    } else {
+        let mut line = quoted(program.as_os_str());
+        for arg in command.get_args() {
+            line.push(' ');
+            line.push_str(&quoted(arg));
+        }
+        (program, line)
+    };
     let mut line_wide: Vec<u16> = OsStr::new(&line).encode_wide().chain([0]).collect();
     let program_wide: Vec<u16> = program.as_os_str().encode_wide().chain([0]).collect();
     let environment = environment_block(&command);
-    let workdir_wide: Option<Vec<u16>> = command
-        .get_current_dir()
-        .map(|dir| dir.as_os_str().encode_wide().chain([0]).collect());
+    // cmd.exe refuses a verbatim working directory ("UNC paths are not
+    // supported", then the Windows directory instead — the first runner
+    // showed it), and a canonical Windows path is verbatim. A batch
+    // launcher gets the plain directory, by the same round-trip rule as
+    // its script; any other program takes the directory as given.
+    let workdir: Option<OsString> = match command.get_current_dir() {
+        Some(dir) if batch => Some(batch_workdir(dir)?),
+        Some(dir) => Some(dir.as_os_str().to_os_string()),
+        None => None,
+    };
+    let workdir_wide: Option<Vec<u16>> = workdir.map(|dir| dir.encode_wide().chain([0]).collect());
 
     // The job the child belongs to from before its first instruction.
     // SAFETY: a fresh, unnamed job with default security.
@@ -555,52 +577,256 @@ fn pipe() -> io::Result<(OwnedHandle, OwnedHandle)> {
     })
 }
 
-/// The program as `Command` would find it: a path with a directory part
-/// is taken as given (with `.exe` tried when it has no extension); a bare
-/// name is looked up on `PATH`, `.exe` appended when it has no extension.
-fn resolve_program(program: &OsStr) -> io::Result<PathBuf> {
-    let given = Path::new(program);
-    let with_exe = |path: &Path| -> PathBuf {
-        if path.extension().is_some() {
-            path.to_path_buf()
-        } else {
-            let mut named = path.as_os_str().to_os_string();
-            named.push(".exe");
-            PathBuf::from(named)
-        }
-    };
-    if given.components().count() > 1 || given.is_absolute() {
-        if given.is_file() {
-            return Ok(given.to_path_buf());
-        }
-        let named = with_exe(given);
-        if named.is_file() {
-            return Ok(named);
-        }
-        return Err(io::Error::new(
+/// The program as a shell would find it, and as the runtime inventory
+/// finds it (`command::find_program`): a path with a directory part is
+/// taken as given, or with each launcher extension in `PATHEXT` order
+/// when it has none; a bare name is looked up on `PATH` the same way —
+/// never in the working directory, which a bare name does not name.
+fn resolve_program(command: &Command) -> io::Result<PathBuf> {
+    let given = Path::new(command.get_program());
+    let not_found = || {
+        io::Error::new(
             io::ErrorKind::NotFound,
             format!("program not found: {}", given.display()),
-        ));
+        )
+    };
+    let name = given
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(not_found)?;
+    // The child's PATH and PATHEXT, not this process's: the command's
+    // overrides are what the environment block gives the child, so the
+    // lookup sees the same variables the child will.
+    let pathext = effective_env(command, "PATHEXT");
+    if given.components().count() > 1 || given.is_absolute() {
+        // Checked and returned as an absolute path: a relative script
+        // would otherwise be checked against this process's directory and
+        // run by cmd.exe from the child's.
+        let absolute = if given.is_absolute() {
+            given.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(given)
+        };
+        if absolute.is_file() {
+            return Ok(absolute);
+        }
+        let dir = absolute.parent().map(Path::to_path_buf).unwrap_or_default();
+        return crate::command::find_program_with(&[dir], name, pathext.as_deref())
+            .ok_or_else(not_found);
     }
-    let candidates = [given.to_path_buf(), with_exe(given)];
-    if let Some(found) = candidates.iter().find(|candidate| candidate.is_file()) {
-        return Ok(found.clone());
-    }
-    for dir in std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-        .unwrap_or_default()
-    {
-        for candidate in &candidates {
-            let full = dir.join(candidate);
-            if full.is_file() {
-                return Ok(full);
-            }
+    let dirs: Vec<PathBuf> = effective_env(command, "PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    crate::command::find_program_with(&dirs, name, pathext.as_deref()).ok_or_else(not_found)
+}
+
+/// A variable as the child will see it: the command's override when it
+/// has one (matched without case, as Windows keys are), removed when the
+/// command removes it, else this process's own.
+fn effective_env(command: &Command, key: &str) -> Option<OsString> {
+    for (name, value) in command.get_envs() {
+        if name.to_string_lossy().eq_ignore_ascii_case(key) {
+            return value.map(OsStr::to_os_string);
         }
     }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!("program not found: {}", given.display()),
-    ))
+    std::env::var_os(key)
+}
+
+/// `cmd.exe` from the system directory, as the standard library runs a
+/// batch file with.
+fn command_prompt() -> io::Result<PathBuf> {
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buffer = vec![0u16; 260];
+    // SAFETY: the buffer's length is what is passed; the call writes at
+    // most that many units and returns the length needed.
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+    if length == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length as usize > buffer.len() {
+        buffer = vec![0u16; length as usize];
+        // SAFETY: as above, with a buffer of the length asked for.
+        let again = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+        if again == 0 || again as usize > buffer.len() {
+            return Err(io::Error::last_os_error());
+        }
+        buffer.truncate(again as usize);
+    } else {
+        buffer.truncate(length as usize);
+    }
+    Ok(PathBuf::from(OsString::from_wide(&buffer)).join("cmd.exe"))
+}
+
+/// The command line the standard library builds to run a batch file:
+/// `cmd.exe /e:ON /v:OFF /d /c ""script" args…"` — the whole command in
+/// one extra pair of quotes, the script quoted, and every argument by
+/// `batch_argument`'s rules. A script path with a `"` or a trailing `\`
+/// cannot be named to cmd; a verbatim (`\\?\`) path is given as the plain
+/// path cmd understands.
+pub fn batch_command_line<'a>(
+    script: &Path,
+    args: impl IntoIterator<Item = &'a OsStr>,
+) -> io::Result<String> {
+    let script = user_path(script)?;
+    if script.contains('"') || script.ends_with('\\') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a batch file's name may not contain `\"` or end with `\\`",
+        ));
+    }
+    let mut line = String::from("cmd.exe /e:ON /v:OFF /d /c \"");
+    line.push('"');
+    line.push_str(&script);
+    line.push('"');
+    for arg in args {
+        line.push(' ');
+        batch_argument(&mut line, arg)?;
+    }
+    line.push('"');
+    Ok(line)
+}
+
+/// One argument for a batch file, by the standard library's rules: `\r`
+/// and `\n` refused (they would truncate the command line), `%` turned
+/// into `%%cd:~,%` so `%VAR%` is never expanded, quoted unless made only
+/// of characters cmd leaves alone, `"` doubled inside quotes and the
+/// backslashes before one doubled too.
+fn batch_argument(line: &mut String, arg: &OsStr) -> io::Result<()> {
+    let text = arg.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "batch file arguments must be Unicode",
+        )
+    })?;
+    if text.contains(['\r', '\n', '\0']) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "batch file arguments are invalid",
+        ));
+    }
+    const UNQUOTED: &str = r"#$*+-./:?@\_";
+    let quote = text.is_empty()
+        || text.ends_with('\\')
+        || text.chars().any(|c| {
+            (c.is_ascii() && !(c.is_ascii_alphanumeric() || UNQUOTED.contains(c))) || c.is_control()
+        });
+    if quote {
+        line.push('"');
+    }
+    let mut backslashes = 0;
+    for c in text.chars() {
+        if c == '\\' {
+            backslashes += 1;
+        } else {
+            if c == '"' {
+                line.extend(std::iter::repeat_n('\\', backslashes));
+                line.push('"');
+            } else if c == '%' {
+                line.push_str("%%cd:~,");
+            }
+            backslashes = 0;
+        }
+        line.push(c);
+    }
+    if quote {
+        line.extend(std::iter::repeat_n('\\', backslashes));
+        line.push('"');
+    }
+    Ok(())
+}
+
+/// A path as cmd.exe understands it: the verbatim prefix a canonical
+/// Windows path carries is not one cmd accepts. The prefix comes off only
+/// when the plain form names the same path — `GetFullPathNameW` gives it
+/// back unchanged — as the standard library decides it; a verbatim path
+/// the plain form would normalise into something else (a trailing dot or
+/// space, a component the plain rules rewrite) is refused rather than
+/// handed to cmd as a different file.
+fn user_path(path: &Path) -> io::Result<String> {
+    // Unicode only, as for arguments: a name with an unpaired surrogate
+    // would otherwise reach cmd.exe with that unit replaced — a different
+    // file's name.
+    let text = path
+        .to_str()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a batch launcher's paths must be Unicode",
+            )
+        })?
+        .to_owned();
+    let plain = if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        rest.to_owned()
+    } else {
+        return Ok(text);
+    };
+    if full_path_name(&plain)? == plain {
+        Ok(plain)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{text} cannot be named to cmd.exe without its verbatim prefix"),
+        ))
+    }
+}
+
+/// The directory cmd.exe starts a batch launcher in: the plain form of
+/// the checkout, and never a network (UNC) directory — cmd.exe does not
+/// start in one; it says so and runs in the Windows directory instead,
+/// which is a project command in the wrong folder. Refused up front.
+fn batch_workdir(dir: &Path) -> io::Result<OsString> {
+    let plain = user_path(dir)?;
+    if plain.starts_with(r"\\") || plain.starts_with("//") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "cmd.exe cannot run a batch launcher in a network directory: {}",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(OsString::from(plain))
+}
+
+/// `GetFullPathNameW` of `path`: what the plain path rules make of it.
+fn full_path_name(path: &str) -> io::Result<String> {
+    use windows_sys::Win32::Storage::FileSystem::GetFullPathNameW;
+    let wide: Vec<u16> = OsStr::new(path).encode_wide().chain([0]).collect();
+    let mut buffer = vec![0u16; 1024];
+    // SAFETY: the name is nul-terminated and the buffer's length is what
+    // is passed; the call writes at most that many units.
+    let length = unsafe {
+        GetFullPathNameW(
+            wide.as_ptr(),
+            buffer.len() as u32,
+            buffer.as_mut_ptr(),
+            null_mut(),
+        )
+    };
+    if length == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length as usize > buffer.len() {
+        buffer = vec![0u16; length as usize];
+        // SAFETY: as above, with the length asked for.
+        let again = unsafe {
+            GetFullPathNameW(
+                wide.as_ptr(),
+                buffer.len() as u32,
+                buffer.as_mut_ptr(),
+                null_mut(),
+            )
+        };
+        if again == 0 || again as usize > buffer.len() {
+            return Err(io::Error::last_os_error());
+        }
+        buffer.truncate(again as usize);
+    } else {
+        buffer.truncate(length as usize);
+    }
+    Ok(String::from_utf16_lossy(&buffer))
 }
 
 /// One argument quoted by the rules `CommandLineToArgvW` and the C runtime
@@ -877,6 +1103,255 @@ mod tests {
             std::fs::read_to_string(diagnostic).unwrap_or_default()
         );
     }
+    /// A batch launcher's command line is the standard library's: the whole
+    /// command in one extra pair of quotes, the script quoted with its
+    /// verbatim prefix gone, arguments quoted unless made of safe
+    /// characters, `%` neutralised, and a line-breaking argument refused.
+    #[test]
+    fn a_batch_command_line_follows_the_standard_librarys_rules() {
+        let args = ["hello world", "a&b", "100%", "plain", "", "back\\"];
+        let line = batch_command_line(
+            Path::new(r"\\?\C:\tools\shim.cmd"),
+            args.iter().map(OsStr::new),
+        )
+        .unwrap();
+        assert_eq!(
+            line,
+            r#"cmd.exe /e:ON /v:OFF /d /c ""C:\tools\shim.cmd" "hello world" "a&b" "100%%cd:~,%" plain "" "back\\"""#
+        );
+        let refused =
+            batch_command_line(Path::new(r"C:\tools\shim.cmd"), [OsStr::new("x\ny")]).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// A canonical (verbatim) script path is given to cmd.exe as the plain
+    /// path only when that plain path names the same file; a verbatim path
+    /// whose plain form the path rules would rewrite — a trailing dot here
+    /// — is refused rather than run as some other file.
+    #[test]
+    fn a_verbatim_script_path_is_given_plainly_only_when_it_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = tmp.path().join("shim.cmd");
+        std::fs::write(&shim, "@echo off\r\n").unwrap();
+        let canonical = std::fs::canonicalize(&shim).unwrap();
+        assert!(
+            canonical.to_string_lossy().starts_with(r"\\?\"),
+            "{}",
+            canonical.display()
+        );
+        let plain = user_path(&canonical).unwrap();
+        assert!(
+            !plain.starts_with(r"\\?\") && plain.ends_with("shim.cmd"),
+            "{plain}"
+        );
+        let dotted = PathBuf::from(format!(r"\\?\{}", plain.replace("shim.cmd", "shim.cmd.")));
+        let error = user_path(&dotted).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        // A name that is not Unicode — an unpaired surrogate — is refused
+        // rather than given to cmd.exe with that unit replaced.
+        let unpaired = PathBuf::from(OsString::from_wide(&[
+            b'C' as u16,
+            b':' as u16,
+            b'\\' as u16,
+            0xD800,
+            b'.' as u16,
+            b'c' as u16,
+            b'm' as u16,
+            b'd' as u16,
+        ]));
+        let error = user_path(&unpaired).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    /// A relative script is the one this process sees, made absolute
+    /// before cmd.exe runs it from the child's own directory: a script of
+    /// the same name in the child's directory is not the one that runs.
+    /// A relative path needs a working directory of its own, so this runs
+    /// as a fixture process started in `here` (`relative_script_fixture`).
+    #[test]
+    fn a_relative_script_is_resolved_here_not_in_the_childs_directory() {
+        use std::process::Stdio;
+        let tmp = tempfile::tempdir().unwrap();
+        let here = tmp.path().join("here");
+        let there = tmp.path().join("there");
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::create_dir_all(&there).unwrap();
+        std::fs::write(here.join("which.cmd"), "@echo off\r\necho ran-here\r\n").unwrap();
+        std::fs::write(there.join("which.cmd"), "@echo off\r\necho ran-there\r\n").unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "launch::tests::relative_script_fixture",
+                "--ignored",
+                "--nocapture",
+            ])
+            .current_dir(&here)
+            .env("AGENTDOCKER_TEST_RELATIVE_THERE", &there)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("relative-fixture-ok"),
+            "{stdout}\n{stderr}"
+        );
+    }
+
+    /// The fixture: started in `here`, it names the script relatively and
+    /// runs it from `there`; what runs must be `here`'s.
+    #[test]
+    #[ignore = "subprocess fixture for a_relative_script_is_resolved_here_not_in_the_childs_directory"]
+    fn relative_script_fixture() {
+        let there = PathBuf::from(std::env::var_os("AGENTDOCKER_TEST_RELATIVE_THERE").unwrap());
+        let mut command = Command::new(r".\which.cmd");
+        command.current_dir(&there);
+        let program = resolve_program(&command).unwrap();
+        assert!(
+            program.is_absolute() && program.ends_with(r"here\which.cmd"),
+            "{}",
+            program.display()
+        );
+        let pending = prepare(command).expect("a suspended cmd.exe");
+        let mut owned = pending.activate().expect("resumed");
+        let mut stdout = owned.take_stdout().expect("a stdout pipe");
+        let mut text = String::new();
+        stdout.read_to_string(&mut text).unwrap();
+        assert!(
+            text.contains("ran-here") && !text.contains("ran-there"),
+            "{text:?}"
+        );
+        while owned.try_wait().unwrap().is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        println!("relative-fixture-ok");
+    }
+
+    /// A batch launcher's working directory is the plain checkout, and a
+    /// network directory is refused before anything is created: cmd.exe
+    /// would run there in the Windows directory instead and say so only
+    /// on stderr.
+    #[test]
+    fn a_batch_launchers_working_directory_is_plain_and_never_a_network_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical = std::fs::canonicalize(tmp.path()).unwrap();
+        let plain = batch_workdir(&canonical).unwrap();
+        assert!(
+            !plain.to_string_lossy().starts_with(r"\\?\"),
+            "{}",
+            plain.to_string_lossy()
+        );
+        for unc in [r"\\?\UNC\server\share\repo", r"\\server\share\repo"] {
+            let error = batch_workdir(Path::new(unc)).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{unc}");
+        }
+    }
+
+    /// The child's own `PATHEXT` and `PATH` decide the lookup when the
+    /// command overrides them: with `.CMD;.EXE`, the shim wins over the
+    /// executable beside it, and the directory comes from the command's
+    /// `PATH`, not this process's.
+    #[test]
+    fn the_childs_pathext_and_path_decide_a_bare_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(dir.join("both.cmd"), "@echo off\r\n").unwrap();
+        std::fs::write(dir.join("both.exe"), "MZ").unwrap();
+        let cmd_first = crate::command::find_program_with(
+            std::slice::from_ref(&dir),
+            "both",
+            Some(OsStr::new(".CMD;.EXE")),
+        )
+        .unwrap();
+        assert!(cmd_first.ends_with("both.cmd"), "{}", cmd_first.display());
+        let exe_first = crate::command::find_program_with(
+            std::slice::from_ref(&dir),
+            "both",
+            Some(OsStr::new(".EXE;.CMD")),
+        )
+        .unwrap();
+        assert!(exe_first.ends_with("both.exe"), "{}", exe_first.display());
+        let mut command = Command::new("both");
+        command.env("Path", &dir).env("pathext", ".CMD;.EXE");
+        assert_eq!(resolve_program(&command).unwrap(), dir.join("both.cmd"));
+        let mut removed = Command::new("both");
+        removed.env("Path", &dir).env_remove("PATHEXT");
+        assert_eq!(
+            resolve_program(&removed).unwrap(),
+            dir.join("both.exe"),
+            "the default order puts exe first"
+        );
+    }
+
+    /// A `.cmd` launcher — the shape of an npm-installed provider — runs
+    /// under the gate like any program: through cmd.exe, with its
+    /// arguments intact, its output piped, in its job.
+    #[test]
+    fn a_batch_launcher_runs_under_cmd_with_its_arguments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = tmp.path().join("shim.cmd");
+        std::fs::write(&shim, "@echo off\r\necho shim-args %1 %2\r\n").unwrap();
+        let mut command = Command::new(&shim);
+        command.args(["hello world", "a&b"]);
+        let pending = prepare(command).expect("a suspended cmd.exe");
+        let mut owned = pending.activate().expect("resumed");
+        let mut stdout = owned.take_stdout().expect("a stdout pipe");
+        let mut text = String::new();
+        stdout.read_to_string(&mut text).expect("read to the end");
+        assert!(
+            text.contains("shim-args \"hello world\" \"a&b\""),
+            "{text:?}"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while owned.try_wait().expect("wait").is_none() {
+            assert!(std::time::Instant::now() < deadline, "cmd.exe did not exit");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// An argument cmd would rewrite is refused before anything runs: the
+    /// launcher that would have left a marker leaves none.
+    #[test]
+    fn a_refused_batch_argument_runs_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let shim = tmp.path().join("shim.cmd");
+        let marker = tmp.path().join("marker.txt");
+        std::fs::write(
+            &shim,
+            format!("@echo off\r\necho ran > \"{}\"\r\n", marker.display()),
+        )
+        .unwrap();
+        let mut command = Command::new(&shim);
+        command.arg("first line\nsecond line");
+        let Err(error) = prepare(command) else {
+            panic!("a line-breaking argument was accepted");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!marker.exists(), "a refused launch ran the launcher");
+    }
+
+    /// A bare name resolves the way a shell resolves it: by launcher
+    /// extension in `PATHEXT`'s order, never a data file, never a relative
+    /// directory.
+    #[test]
+    fn a_bare_launcher_name_resolves_by_pathext_precedence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        std::fs::write(dir.join("shim.cmd"), "@echo off\r\n").unwrap();
+        std::fs::write(dir.join("shim.txt"), "not a launcher").unwrap();
+        let found = crate::command::find_program(std::slice::from_ref(&dir), "shim").unwrap();
+        assert!(found.ends_with("shim.cmd"), "{}", found.display());
+        assert!(crate::command::find_program(std::slice::from_ref(&dir), "shim.txt").is_none());
+        assert!(crate::command::find_program(&[PathBuf::from("relative")], "shim").is_none());
+        // An executable beside the shim wins, as PATHEXT orders them.
+        std::fs::write(dir.join("shim.exe"), "MZ").unwrap();
+        let found = crate::command::find_program(&[dir], "shim").unwrap();
+        assert!(found.ends_with("shim.exe"), "{}", found.display());
+    }
+
     #[test]
     fn arguments_are_quoted_by_the_c_runtime_rules() {
         assert_eq!(quoted(OsStr::new("plain")), "plain");

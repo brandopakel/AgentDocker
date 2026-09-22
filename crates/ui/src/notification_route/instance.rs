@@ -16,6 +16,9 @@ const MAX_REQUEST: usize = agentdocker_host::notify::ACTION_BYTES
     + 6 * (super::RECOVERY_CHARS + super::RECOVERY_REASON_CHARS)
     + 1024;
 const REQUEST_TIME: Duration = Duration::from_millis(500);
+/// How many times a launch takes the instance lock again after finding it
+/// on a file that was removed under it.
+const LOCK_ATTEMPTS: u32 = 3;
 
 pub enum Launch {
     Primary(Instance),
@@ -93,13 +96,47 @@ fn start_with(
     initial: Activation,
     handler: Handler,
 ) -> io::Result<Launch> {
+    start_locked(home, daemon, initial, handler, lock::try_exclusive_existing)
+}
+
+/// `start_with`, taking the instance lock through `take`: the real lock, or
+/// a test's stand-in for one whose file goes between its open and its lock.
+fn start_locked(
+    home: &Path,
+    daemon: &Path,
+    initial: Activation,
+    handler: Handler,
+    mut take: impl FnMut(&Path) -> io::Result<Option<lock::Lock>>,
+) -> io::Result<Launch> {
     let (directory, socket) = location(home, daemon);
-    dirs::ensure_private_dir(&directory)?;
     let lock_path = directory.join("instance.lock");
-    dirs::private_file(&lock_path, true, false)?;
-    let Some(held) = lock::try_exclusive_existing(&lock_path)? else {
-        forward(home, daemon, &initial)?;
-        return Ok(Launch::Forwarded);
+    // A lock is on a file, not a name. A window that is exiting removes
+    // its lock file and directory while it still holds the lock; a launch
+    // arriving meanwhile can find them gone between its own steps, or can
+    // lock a file that was unlinked between its open and its lock, which
+    // excludes nobody. Either way it starts over, the directory made
+    // afresh, a bounded number of times.
+    let mut attempts = 0;
+    let held = loop {
+        attempts += 1;
+        let taken = dirs::ensure_private_dir(&directory)
+            .and_then(|()| dirs::private_file(&lock_path, true, false).map(drop))
+            .and_then(|()| take(&lock_path));
+        match taken {
+            Ok(Some(held)) if held.is_at(&lock_path)? => break held,
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                forward(home, daemon, &initial)?;
+                return Ok(Launch::Forwarded);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        if attempts == LOCK_ATTEMPTS {
+            return Err(io::Error::other(
+                "desktop activation lock kept changing under this launch",
+            ));
+        }
     };
     remove_stale(&socket, &directory)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -136,6 +173,11 @@ fn start_with(
         drop(listener);
         #[cfg(unix)]
         remove_owned(&socket, &owned);
+        // Nothing of ours stays behind: the lock file goes while we still
+        // hold it, and the directory when it is empty. A launch that has
+        // meanwhile made its own lock and socket keeps its directory.
+        let _ = std::fs::remove_file(&lock_path);
+        let _ = std::fs::remove_dir(&directory);
     })?;
     Ok(Launch::Primary(Instance {
         stop: Some(stop),
@@ -313,6 +355,76 @@ mod tests {
             panic!("replacement instance")
         };
         drop(next);
+        let (directory, _) = location(home.path(), &daemon);
+        assert!(!directory.exists(), "{}", directory.display());
+    }
+
+    #[test]
+    fn a_launch_whose_lock_file_went_takes_the_lock_on_the_file_the_name_has_now() {
+        let home = tempfile::tempdir().unwrap();
+        let daemon = home.path().join("daemon.sock");
+        let (directory, _) = location(home.path(), &daemon);
+        // What an exiting window does while it still holds the lock,
+        // landing on this launch twice: the file and directory go before
+        // the launch opens the lock (a missing path), then a file the
+        // launch has opened goes before it locks it (a lock on nothing).
+        // The launch starts over each time and holds the file the name has
+        // by then.
+        let mut takes = 0;
+        let taken = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = taken.clone();
+        let Launch::Primary(first) = start_locked(
+            home.path(),
+            &daemon,
+            Activation::Focus,
+            Arc::new(|_| Ok(())),
+            |path| {
+                takes += 1;
+                if takes == 1 {
+                    std::fs::remove_file(path)?;
+                    std::fs::remove_dir(path.parent().unwrap())?;
+                }
+                let held = lock::try_exclusive_existing(path)?;
+                if takes == 2 {
+                    std::fs::remove_file(path)?;
+                    std::fs::remove_dir(path.parent().unwrap())?;
+                }
+                seen.lock().unwrap().push(takes);
+                Ok(held)
+            },
+        )
+        .unwrap() else {
+            panic!("primary")
+        };
+        assert_eq!(
+            *taken.lock().unwrap(),
+            vec![2, 3],
+            "the first take found no file"
+        );
+        assert!(
+            lock::try_exclusive_existing(&directory.join("instance.lock"))
+                .unwrap()
+                .is_none(),
+            "the launch holds the lock the name has now"
+        );
+        drop(first);
+        assert!(!directory.exists());
+
+        // A file that keeps going is given up on, not looped on.
+        let error = start_locked(
+            home.path(),
+            &daemon,
+            Activation::Focus,
+            Arc::new(|_| Ok(())),
+            |path| {
+                let held = lock::try_exclusive_existing(path)?;
+                std::fs::remove_file(path)?;
+                Ok(held)
+            },
+        )
+        .err()
+        .expect("a lock that never settles is an error");
+        assert!(error.to_string().contains("kept changing"), "{error}");
     }
 
     #[test]

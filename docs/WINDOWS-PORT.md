@@ -167,13 +167,55 @@ Work still required before platform support can be claimed:
   the keystroke reader and the size polling are in source and unexercised
   by the runner, which has no console.
 - The native Codex queue over the named pipe with the same peer checks.
-- Windows provider configuration and desktop application inventory. CLI PATH
-  inventory already recognizes `.exe`, `.com`, `.cmd` and `.bat`, but managed
-  launch currently resolves direct executables and passes them to `CreateProcessW`.
-  npm command shims need explicit argument-safe interpreter handling and native
-  provider trials; [the Windows launch contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)
-  requires an interpreter for batch files. A direct Python/EXE terminal smoke
-  does not establish npm-provider launch support.
+- Windows provider configuration: a provider's own tool under a pseudo
+  console, and a person's setup on a Windows machine. What is in source: an
+  npm-installed provider is a `.cmd` shim on `PATH` (`claude.cmd`,
+  `codex.cmd` beside `node.exe`), and the launch gate now starts one the way
+  a shell and the standard library do — one resolver for the runtime
+  inventory and the launch (`command::find_program`: a bare name by
+  launcher extension in `PATHEXT`'s order, never a data file, never the
+  working directory), and a batch launcher run by `cmd.exe` from the
+  system directory with the standard library's own batch command line
+  (`cmd.exe /e:ON /v:OFF /d /c ""script" args…"`) and argument rules: a
+  line-breaking argument is refused before anything runs, `%` is
+  neutralised, arguments are quoted unless made of characters cmd leaves
+  alone, and a canonical `\\?\` path is given as the plain path cmd
+  understands only when the plain path names the same file (a verbatim
+  path the plain rules would rewrite is refused, never run as another
+  file). The lookup uses the child's own `PATH` and `PATHEXT` — the
+  command's overrides over this process's, matched without case — and a
+  relative script is made absolute where it was checked, so cmd.exe running
+  from the child's directory runs that file and not a namesake there. The
+  session's checkout is given to cmd.exe as a plain path too: a canonical
+  Windows path is verbatim, and cmd.exe started in one falls back to the
+  Windows directory ("UNC paths are not supported"), which the first runner
+  showed — a provider would have run in the wrong folder. A checkout on a
+  network share (a UNC path) is refused for a batch launcher before
+  anything is created, for the same reason: cmd.exe would run in the
+  Windows directory and say so only on stderr. A cold runner
+  missed the client's three seconds for a first start of a fresh
+  `agentd.exe`, with the daemon's log not yet written — what held it up
+  was not observed (the system's scan of a new executable is one
+  candidate) — so a client starting the daemon on demand allows ten
+  seconds on Windows (three elsewhere). On the extracted archive's runner the
+  smoke's own first daemon was alive but had neither answered nor written
+  its log within the step's ping budget, which was a count of pings: the
+  step is now a ninety-second diagnostic allowance by the clock that
+  records what a first start takes — process creation, then readiness —
+  so the next run says the number; it makes no claim about the client's
+  own bound, which later steps exercise on a binary the system has already
+  run. Host
+  tests on the runner: the batch line against the standard library's
+  shape, a `.cmd` shim run through the gate with a space and a `&` intact
+  in its arguments, a refused argument leaving a marker-writing shim
+  unrun, `PATHEXT` precedence between `shim.exe` and `shim.cmd` in both
+  orders from the command's own variables, a relative script run from a
+  different child directory, and a verbatim path refused when its plain
+  form would not round-trip. The smoke's shim also prints its working
+  directory, which must be the session's checkout. The smoke starts a managed session from a shim on the
+  daemon's `PATH` by its bare name and reads its arguments back from its
+  log. Not established: a real provider's shim (Node under the pseudo
+  console) — that is the provider trial.
 - Daemon service/session startup, per-user desktop installation, Start menu
   integration, updates/rollback and signed packages.
 - The daemon and CLI test suites on the Windows runner (they still carry
