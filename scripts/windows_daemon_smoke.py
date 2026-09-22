@@ -29,6 +29,63 @@ def terminal_record(record):
     return record is None or record["status"]["state"] in ("exited", "failed")
 
 
+class FirstStart:
+    """What a daemon's first start took, by a monotonic clock: the process
+    was created `created` seconds after it was requested, and `answered`
+    seconds after creation (None when it never answered within the
+    budget). `probe` is the last probe's result, or None when the budget
+    was gone before a probe could be made (a process creation that itself
+    took the whole allowance); `exited` says the daemon ended first."""
+
+    def __init__(self):
+        self.created = None
+        self.answered = None
+        self.probe = None
+        self.exited = None
+        self.elapsed = None
+
+    def describe(self):
+        parts = [f"process created {self.created:.2f} s after the request"]
+        if self.answered is not None:
+            parts.append(f"answered {self.answered:.1f} s after creation")
+        elif self.probe is None:
+            parts.append(f"no probe was possible within {self.elapsed:.0f} s")
+        else:
+            parts.append(f"no answer within {self.elapsed:.0f} s")
+        return ", ".join(parts)
+
+
+def wait_first_start(start, probe, alive, budget=90.0, clock=time.monotonic, sleep=time.sleep):
+    """Start a daemon with `start()` and probe it with `probe(timeout)` until
+    it answers (a probe returns True), it exits (`alive()` is False), or
+    `budget` seconds pass from the request. Every probe's timeout stays
+    within what is left of the budget, and the budget's expiry is handled
+    before a probe as well as after one, so a slow process creation still
+    ends in a result rather than an error. A probe that raises (its own
+    bound expired) counts as no answer and keeps the timing."""
+    result = FirstStart()
+    requested_at = clock()
+    start()
+    result.created = clock() - requested_at
+    while True:
+        sleep(0.1)
+        remaining = budget - (clock() - requested_at)
+        if remaining <= 0:
+            break
+        try:
+            result.probe = probe(min(10.0, remaining))
+        except Exception as error:
+            result.probe = error
+        if result.probe is True:
+            result.answered = clock() - requested_at - result.created
+            break
+        if not alive():
+            result.exited = True
+            break
+    result.elapsed = clock() - requested_at
+    return result
+
+
 def wait_terminal(inspect, name, seconds=10):
     deadline = time.monotonic() + seconds
     while True:
@@ -481,27 +538,26 @@ def main():
         # start takes — creation, then readiness — not a claim about the
         # client's own ten-second start bound, which later steps exercise
         # on a binary the system has already run.
-        requested_at = time.monotonic()
-        daemon = subprocess.Popen([str(daemon_binary)], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
-        created_at = time.monotonic()
-        budget = 90.0
-        while True:
-            time.sleep(0.1)
-            remaining = budget - (time.monotonic() - requested_at)
-            if remaining <= 0:
-                break
-            probe = run("ping", check=False, timeout=max(1, min(10, remaining)))
-            if probe.returncode == 0 or daemon.poll() is not None:
-                break
-        ready_at = time.monotonic()
-        timing = f"process created {created_at - requested_at:.2f} s after the request, answered {ready_at - created_at:.1f} s after creation"
-        detail = timing if probe.returncode == 0 else probe.stderr.strip()
-        if daemon.poll() is not None:
-            detail = f"the daemon exited with {daemon.returncode} before answering; ping said: {detail}"
-            detail += f"; daemon log: {daemon_log.read_text(errors='replace').strip()[-600:]}" + acl_report(home)
-        elif probe.returncode != 0:
-            detail = f"no answer within {ready_at - requested_at:.0f} s ({timing.split(', ')[0]}); ping said: {detail}; daemon log: {daemon_log.read_text(errors='replace').strip()[-600:]!r}"
-        step("the daemon answers ping over the local transport", probe.returncode == 0, detail)
+        started = {}
+        last_probe = {}
+
+        def start_daemon():
+            started["process"] = subprocess.Popen([str(daemon_binary)], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+
+        def probe_daemon(timeout):
+            last_probe["result"] = run("ping", check=False, timeout=timeout)
+            return last_probe["result"].returncode == 0
+
+        first = wait_first_start(start_daemon, probe_daemon, lambda: started["process"].poll() is None)
+        daemon = started["process"]
+        answered = first.answered is not None
+        detail = first.describe()
+        if not answered:
+            said = last_probe["result"].stderr.strip() if "result" in last_probe else f"{first.probe!r}" if first.probe is not None else "no probe"
+            detail += f"; ping said: {said}; daemon log: {daemon_log.read_text(errors='replace').strip()[-600:]!r}"
+            if first.exited:
+                detail = f"the daemon exited with {daemon.returncode} before answering; " + detail + acl_report(home)
+        step("the daemon answers ping over the local transport", answered, detail)
         status = run("daemon", "status")
         step("daemon status names the serving executable", str(daemon_binary.name) in status.stdout, status.stdout.strip())
         if args.desktop:
