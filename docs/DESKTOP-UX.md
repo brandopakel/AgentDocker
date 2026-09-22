@@ -121,6 +121,13 @@ even while one runs or is selected; the live count sits on the fold. Pinning
 one moves it up. Sessions whose project is unknown
 appear under **Other sessions**.
 
+A session that asked something shows **Answer**, which opens that exact
+question, as the project chat's **Answer N questions** does for the oldest
+waiting one. A closed channel offers no **Write to channel**; with **All
+projects** chosen, Channels lists every project's channels, so **Reviews** from
+a conversation always lands on its channel. Copy buttons say *Copied to the
+clipboard*.
+
 **Current** shows live sessions; **Needs input** shows this project's
 unanswered, unexpired questions, including questions from a session that has
 since finished, and the same delivery items as Needs you. Ended sessions are not a tab: they sit in one collapsed
@@ -186,13 +193,15 @@ to hold: they read the reason as a `pause` message, the daemon refuses their
 new leases until **Resume**, and the header shows **Paused · reason** while
 it holds (what an agent already holds, it keeps; your own actions are not
 held; only you can pause or resume, an agent asks with a message).
-**Launch agent…** chooses an installed CLI and starts it at the project root shown
+**Launch agent…** opens the form (pressing it again leaves it open; the form's
+own **Close** closes it) to choose an installed CLI and start it at the project root shown
 in the header. Claude and Codex launches default to **Idle messages: On**;
 turning it off visibly warns that messages may wait. Claude still requires its
 channel consent. Other tools disclose that automatic idle delivery is unavailable.
 This launch choice does not connect or restart an existing session.
 **Connect** under **Running here, not connected** adopts a discovered process for
-coordination; the row names the tool and the folder it runs in, not a
+coordination (it reads **Connecting…** and cannot be pressed again until the
+daemon answers, and the result names the session or says why not); the row names the tool and the folder it runs in, not a
 process number. Known Codex Node launchers with a native Codex child are
 omitted from discovery, as is Codex's `app-server` sidecar (an API helper a
 receiver or reviewer speaks to, never a session) and anything a bound

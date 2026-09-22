@@ -335,6 +335,8 @@ enum Msg {
     UpdateChecked(Result<serde_json::Value, String>),
     /// Which daemon answered the last ping.
     Daemon(DaemonInfo),
+    /// A Connect's outcome for that process: the session's name, or why not.
+    Adopted(u32, Result<String, String>),
     /// How a restart of the daemon went.
     DaemonRestarted(Result<(), String>),
     Console(String),
@@ -848,10 +850,12 @@ impl App {
                         board.pending_more = None;
                     }
                 }
+                Cmd::Adopt(pid) => {
+                    self.shell.adopting.remove(&pid);
+                }
                 Cmd::TaskMove { .. }
                 | Cmd::TaskAssign { .. }
                 | Cmd::TaskArchive(_)
-                | Cmd::Adopt(_)
                 | Cmd::AdoptAll
                 | Cmd::Stop(_)
                 | Cmd::ResumeProvider(..)
@@ -1256,6 +1260,13 @@ impl App {
                 }
                 Msg::Status(text) => self.say(text),
                 Msg::Desktop(result) => self.desktop.receive(result),
+                Msg::Adopted(pid, result) => {
+                    self.shell.adopting.remove(&pid);
+                    match result {
+                        Ok(name) => self.say(format!("Connected {name}")),
+                        Err(error) => self.say(format!("Could not connect that session: {error}")),
+                    }
+                }
                 Msg::Daemon(info) => {
                     if self.own_release.is_none() {
                         self.own_release = agentdocker_host::procinfo::executable_path()
@@ -2866,19 +2877,18 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             );
             Some(Msg::MessagesDismissed(message, Ok(())))
         }
-        Cmd::Adopt(pid) => Some(
-            match client
-                .call(&Request::Adopt {
-                    pid,
-                    name: None,
-                    runtime: None,
-                })
-                .with_context(|| format!("pid {pid}"))?
-            {
-                Response::Agent { agent } => Msg::Status(format!("adopted {}", agent.spec.name)),
-                _ => Msg::Status(format!("adopted pid {pid}")),
-            },
-        ),
+        Cmd::Adopt(pid) => {
+            let result = match client.call(&Request::Adopt {
+                pid,
+                name: None,
+                runtime: None,
+            })? {
+                Response::Agent { agent } => Ok(agent.spec.name),
+                Response::Error { message, .. } => Err(crate::client::explain(&message)),
+                other => Err(unexpected_reply(&other)),
+            };
+            Some(Msg::Adopted(pid, result))
+        }
         Cmd::AdoptAll => {
             let Response::Processes { processes } = client.call(&Request::Discover)? else {
                 return Ok(None);

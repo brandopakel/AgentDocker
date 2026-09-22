@@ -1521,9 +1521,12 @@ impl App {
                     ),
                     action(
                         format!("needs-you-connect-{}", process.pid),
-                        "Connect",
-                        self.connected
-                            .is_ok()
+                        if self.shell.adopting.contains(&process.pid) {
+                            "Connecting…"
+                        } else {
+                            "Connect"
+                        },
+                        (self.connected.is_ok() && !self.shell.adopting.contains(&process.pid))
                             .then_some(Message::Adopt(process.pid)),
                         false,
                     ),
@@ -1684,7 +1687,7 @@ impl App {
             "launch-agent",
             "Launch agent…",
             (self.connected.is_ok() && self.shell.project_available != Some(false))
-                .then_some(Message::ShowLaunch),
+                .then_some(Message::OpenLaunch),
         ))
     }
 
@@ -1808,9 +1811,12 @@ impl App {
                         .width(Fill),
                         action(
                             format!("adopt-{}", process.pid),
-                            "Connect",
-                            self.connected
-                                .is_ok()
+                            if self.shell.adopting.contains(&process.pid) {
+                                "Connecting…"
+                            } else {
+                                "Connect"
+                            },
+                            (self.connected.is_ok() && !self.shell.adopting.contains(&process.pid))
                                 .then_some(Message::Adopt(process.pid)),
                             false
                         ),
@@ -2197,11 +2203,17 @@ impl App {
                 }
             }
         }
-        if self.needs_input(&id) {
+        // Answer opens the exact question, the way Needs you does; the
+        // Messages screen alone would show no question selected.
+        if let Some(question) = self
+            .questions
+            .iter()
+            .find(|q| q.from == id && !q.expired(Utc::now()))
+        {
             body = body.push(primary(
                 "session-reply",
-                "Reply in Inbox",
-                Some(Message::Navigate(Screen::Questions)),
+                "Answer",
+                Some(Message::OpenQuestion(question.id.clone())),
             ));
         }
         if agent.managed && agent.spec.tty && agent.status.is_live() {
@@ -3260,7 +3272,14 @@ impl App {
         for channel in self
             .channels
             .iter()
-            .filter(|ch| Some(&ch.project) == selected.as_ref())
+            // With no project chosen (All projects) every channel is shown;
+            // "Reviews" from a conversation lands here from anywhere and
+            // must not find "No channels yet" about the one just open.
+            .filter(|ch| {
+                selected
+                    .as_ref()
+                    .is_none_or(|project| &ch.project == project)
+            })
         {
             count += 1;
             let id = channel.id.to_string();
@@ -3314,9 +3333,9 @@ impl App {
             body = body.push(action(
                 format!("reply-channel-{id}"),
                 "Write to channel",
-                self.connected
-                    .is_ok()
-                    .then_some(Message::ChannelTarget(id.clone())),
+                // A closed channel takes no messages: the control would do
+                // nothing, so it is not offered as if it would.
+                (self.connected.is_ok() && open).then_some(Message::ChannelTarget(id.clone())),
                 self.shell.channel_target.as_deref() == Some(id.as_str()),
             ));
             if self.shell.channel_target.as_deref() == Some(id.as_str()) {

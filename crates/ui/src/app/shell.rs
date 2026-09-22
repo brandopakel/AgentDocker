@@ -89,6 +89,8 @@ pub(super) struct State {
     /// this is which. Wide windows show both and ignore it.
     pub inbox_open: bool,
     pub needs_you_expanded: bool,
+    /// Processes a Connect was pressed for, until the daemon answers.
+    pub adopting: BTreeSet<u32>,
     /// The footer is asking whether to restart the daemon.
     pub confirm_daemon_restart: bool,
     pub pending_answer_reveal: Option<MessageId>,
@@ -571,6 +573,9 @@ pub enum Message {
     /// The Needs-you strip's **Review**: open that session with its
     /// delivery review already unfolded, wherever the person was.
     ReviewSession(String),
+    /// Open the launch form (the header's Launch agent…); only its own
+    /// Close closes it.
+    OpenLaunch,
     /// Ask, or stop asking, whether to restart an out-of-date daemon.
     ConfirmDaemonRestart(bool),
     /// Restart it: the CLI beside the window starts the installed release.
@@ -1847,7 +1852,10 @@ impl App {
                     }
                 }
             }
-            Message::CopyGuidance(text) => return iced::clipboard::write(text),
+            Message::CopyGuidance(text) => {
+                self.say("Copied to the clipboard");
+                return iced::clipboard::write(text);
+            }
             Message::DeliveryDetails(target) => {
                 let draft = match target {
                     DeliveryTarget::Conversation(key) => {
@@ -1970,7 +1978,12 @@ impl App {
                 }
             }
             Message::Adopt(pid) => {
-                if self.connected.is_ok() && self.discovered.iter().any(|p| p.pid == pid) {
+                // Once per press until the daemon answers: a second press
+                // would send a second adoption of the same process.
+                if self.connected.is_ok()
+                    && self.discovered.iter().any(|p| p.pid == pid)
+                    && self.shell.adopting.insert(pid)
+                {
                     self.send(Cmd::Adopt(pid));
                 }
             }
@@ -1991,6 +2004,11 @@ impl App {
                     } else {
                         self.confirm_stop = Some((id, Instant::now()));
                     }
+                }
+            }
+            Message::OpenLaunch => {
+                if !self.shell.launch {
+                    return self.update(Message::ShowLaunch);
                 }
             }
             Message::ShowLaunch => {
@@ -4643,6 +4661,44 @@ mod tests {
         // not — it stays a way in, never a way out.
         let _ = app.update(Message::ReviewSession("paused-claude".into()));
         assert!(app.shell.review_delivery);
+    }
+
+    /// The header's Launch agent… opens the form and never closes it; a
+    /// Connect is sent once until the daemon answers; a copy says so.
+    #[test]
+    fn launch_opens_only_connect_sends_once_and_a_copy_is_confirmed() {
+        let (mut app, commands, _) = app();
+        app.shell
+            .catalog
+            .remember(ProjectRef::directory("/work/repo"), true);
+        app.shell.catalog.selected = Some("/work/repo".into());
+        let _ = app.update(Message::OpenLaunch);
+        assert!(app.shell.launch);
+        let _ = app.update(Message::OpenLaunch);
+        assert!(app.shell.launch, "pressing it again leaves the form open");
+
+        app.discovered.push(DiscoveredProcess {
+            pid: 4242,
+            ppid: 1,
+            runtime: "codex".into(),
+            command: "codex".into(),
+            cwd: None,
+            project: None,
+            started_at: None,
+            session: None,
+        });
+        let _ = commands.try_iter().count();
+        let _ = app.update(Message::Adopt(4242));
+        let _ = app.update(Message::Adopt(4242));
+        let adopts = commands
+            .try_iter()
+            .filter(|cmd| matches!(cmd, Cmd::Adopt(4242)))
+            .count();
+        assert_eq!(adopts, 1, "a second press waits for the first answer");
+        assert!(app.shell.adopting.contains(&4242));
+
+        let _ = app.update(Message::CopyGuidance("resume".into()));
+        assert!(app.status.contains("Copied"), "{}", app.status);
     }
 
     /// The Earlier groups (ended sessions, earlier conversations) open on a
