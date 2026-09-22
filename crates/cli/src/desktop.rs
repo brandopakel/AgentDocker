@@ -1486,6 +1486,9 @@ fn perform(
     };
     report["activation"] = json!(daemon["summary"]);
     report["daemon"] = daemon;
+    if changed {
+        report["retention"] = maintenance::after_activation(layout, &_held);
+    }
     Ok(report)
 }
 
