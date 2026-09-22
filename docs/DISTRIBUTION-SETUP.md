@@ -5,6 +5,29 @@ Apple signing/notarization still needs a private developer identity and actual
 release acceptance. Other engineering and platform work is tracked in
 [Remaining work](REMAINING-WORK.md); distribution setup is one part of delivery.
 
+## Release workflow and retry policy
+
+A protected `v*` tag triggers `.github/workflows/release.yml`; editing the
+workflow does not publish anything. The tag version must match `Cargo.toml`
+and the recorded build must have clean source. Tags exclude `+build` metadata.
+The workflow builds CLI archives and four native desktop targets: Apple
+Silicon, Intel Mac, Linux x86_64 and Linux ARM64. The graphical Linux packages
+use GNU libc; the separate CLI-only Linux archives use musl.
+
+`packaging/desktop/release.py` prepares archives, checksums and target manifests.
+The desktop feed requires all four targets from the same source, version and
+schema, and verifies the archive bytes. Stable tags produce `updates.json`;
+prerelease tags produce `updates-preview.json`, remain GitHub prereleases and
+require explicit preview acceptance. Prereleases leave the stable latest-release
+endpoint and Homebrew tap unchanged; older maintenance releases cannot move
+either backwards.
+
+Assets are uploaded to a draft before publication. An upload failure leaves the
+draft for a retry; an already published release is refused. Create releases
+through the workflow, or leave a manually created release as a draft for it to
+finish. A protected-tag run, hosted downloads, update/rollback and independent
+machine acceptance remain necessary; generated assets alone do not establish them.
+
 ## The Homebrew tap
 
 The tap and publishing configuration are present. The release generator builds
@@ -118,22 +141,94 @@ notifications are not permitted: Notifications are not allowed for this applicat
 That probe did not isolate signing from notification authorization and bundle
 registration. Its result does not establish that paying for membership or
 adding a signature alone fixes posting or navigation. The
-[notification audit](NOTIFICATION-ROUTING-AUDIT.md) keeps those checks separate:
+notification audit (NOTIFICATION-ROUTING-AUDIT.md in git history) keeps those checks separate:
 actual Notification Center clicks must open the right destination while the app
 is active, backgrounded or closed, including retained drafts and expired targets.
 Physical installed-app acceptance remains open.
 
 The packaging pipeline accepts `--identity` and `--notary-profile` through
-`packaging/desktop/package.py`. Local previews can be ad-hoc signed; the stable
-protected-tag workflow requires a Developer ID Application identity and
-successful notarization. Follow [release automation](RELEASE-AUTOMATION.md) for
-private credential configuration. Verify signing, notarization, stapling and
-Gatekeeper against the final app/DMG on an independent Mac before publication.
-These acceptance steps remain necessary after the credentials are configured.
+`packaging/desktop/package.py`. Stable Mac releases require a Developer ID
+Application identity and successful notarization. Configure these repository or
+organization secrets for the protected-tag workflow:
+
+| Secret | Content |
+| --- | --- |
+| `MACOS_CERTIFICATE_BASE64` | Base64 of the exported `.p12` certificate and private key |
+| `MACOS_CERTIFICATE_PASSWORD` | Certificate export password; an empty password is supported |
+| `MACOS_SIGNING_IDENTITY` | Full `Developer ID Application: …` identity |
+| `MACOS_NOTARY_KEY` | App Store Connect team API private key, including PEM delimiters |
+| `MACOS_NOTARY_KEY_ID` | API key ID |
+| `MACOS_NOTARY_ISSUER` | Team API issuer ID |
+
+The Mac job checks this configuration before its native build. Unsigned
+prereleases can use ad-hoc signing with no signing secrets; partial signing
+configuration is an error. Stable publication requires complete credentials
+and successful notarization. An empty certificate password is valid, but its
+environment variable must still be supplied.
+
+Packaging creates a temporary private keychain and notarization profile,
+imports the certificate, then signs and notarizes the package. It restores the
+original keychain settings and removes the temporary keychain even if packaging
+fails. Credential files are private and are never release artifacts. The jobs
+use ephemeral GitHub-hosted Mac runners.
+
+Verify signing, notarization, stapling and Gatekeeper against the final app/DMG
+on an independent Mac before publication. These acceptance steps remain
+necessary after the credentials are configured.
 
 The source-built app and CLI can continue local testing while release setup is
 unfinished. The current published CLI/formula remains v0.1.0; the newer installed
 local app is identified by its source commit, not that shared version string.
+
+## Windows portable preview
+
+The Windows packaging path targets `x86_64-pc-windows-msvc`. It builds a ZIP
+with `agentdocker-ui.exe`, `agentdocker.exe` and `agentd.exe` together in the
+`AgentDocker` folder, build metadata, licenses and opening instructions. The
+packager checks native-build hashes again after copying and the PE x64 executable headers before
+publishing the directory. The manifest and sidecar checksum identify the exact
+archive; this preview is unsigned, without Authenticode or installer/update
+support. Prerelease tags attach this separately tested Windows portable ZIP;
+stable tags and the four-target update feeds remain macOS/Linux. Windows ARM64
+is not claimed. The protected-tag publication path still needs its first live run.
+
+On a native Windows build host, from the repository root in PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force artifacts | Out-Null
+python scripts/build_native.py --target x86_64-pc-windows-msvc > artifacts/native-build.json
+python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package
+```
+
+The supplied build manifest must match the source-input and executable hashes
+in the binary directory's manifest. The Windows workflow runs this trial before exposing its
+`windows-desktop-preview-x86_64` artifact. It verifies the ZIP, extracts it
+outside the checkout into a path containing spaces and Unicode, verifies every
+executable against the manifest, removes the original staging payload, and runs
+the daemon/CLI/terminal and fresh-home GUI trial on those extracted files.
+The smoke's executable hashes must match the archive's hashes. A checksum,
+runner trial and CI artifact do not establish publisher authentication or
+clean-machine/provider acceptance. Those tests and the user installer, service,
+update and rollback path remain in [Remaining work](REMAINING-WORK.md).
+The Windows workflow ran this trial on `13e87591` (run 35666723079): 284 native tests and 51/51 steps on the extracted bytes; the line is in the [verification index](verification/INDEX.md).
+
+Prerelease tags also build an **unsigned Windows x64 portable ZIP**. The Windows
+job extracts that archive outside the build directory and runs the native
+daemon/CLI/terminal/desktop trial before `release.py windows-preview` prepares
+assets. Promotion checks the clean tag/build provenance, exact archived EXE
+hashes, successful step results, GUI result and screenshot hash. It rechecks the
+staged ZIP before exposing the output directory. A failed Windows build or trial
+blocks the prerelease; stable tags skip this preview-only job.
+
+Windows assets have separate `windows-preview-manifest.json` and
+`windows-preview-acceptance.json` files and `WINDOWS-PREVIEW.txt` instructions.
+They are not inputs to the four-target update feed. Release notes identify the
+unsigned portable preview and its missing Windows installer, service and updater.
+The public upload selects only release assets, excluding diagnostic artifacts.
+
+Windows promotion refusal and exact-byte retention have fixture coverage. The
+protected-tag Windows job, hosted ZIP download and independent-machine/provider
+acceptance remain unverified until the candidate is released and tried.
 
 ## Order
 

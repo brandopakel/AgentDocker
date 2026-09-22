@@ -143,7 +143,7 @@ Without fresh provider observations or recent coordination, activity is unknown.
 Recent coordination can establish working; an explicit provider stop produces
 provisional idle that expires or is superseded by newer activity. Process
 presence, provider configuration and observed activity are separate facts.
-See [Activity and messaging](ACTIVITY-AND-MESSAGING.md).
+See [messaging](ARCHITECTURE.md#messaging).
 
 A Claude Code session you start in a terminal sees messages only at its next
 prompt, unless it was started with the channel flag
@@ -214,7 +214,7 @@ already sent input is never automatically replayed.
 spacing. Project selection and appearance are saved privately in `workspace.json`;
 `ui.json` remains the settings compatibility file. Settings also opens installation,
 rollback, launcher removal and retained-version cleanup. These operations preview
-exact changes and preserve running releases; see [desktop distribution](DESKTOP-DISTRIBUTION.md).
+exact changes and preserve running releases; see [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md).
 
 ---
 

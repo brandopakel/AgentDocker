@@ -45,10 +45,11 @@ Windows x64 desktop packaging now produces an unsigned ZIP containing the three
 opening instructions. The Windows workflow builds release binaries, checks PE
 architecture, and runs its full daemon/CLI/terminal/desktop trial only after
 extracting that ZIP outside the checkout into a path containing spaces and
-Unicode. This archive path is awaiting native CI acceptance; it does not close
-Windows installer/update/rollback, services, clean-machine or actual-provider
+Unicode. This archive path passed its native run on `13e87591` (run 35666723079: 284
+native tests, 51/51 steps on the extracted bytes); it does not close Windows
+installer/update/rollback, services, clean-machine or actual-provider
 acceptance. The public tag workflow still has no Windows target. See
-[desktop distribution](DESKTOP-DISTRIBUTION.md#windows-portable-preview).
+[distribution setup](DISTRIBUTION-SETUP.md#windows-portable-preview).
 
 ## Slice one: the daemon and the CLI answer
 
@@ -67,7 +68,7 @@ client with nothing to talk to starts the daemon and waits for it to
 listen), `daemon stop` ends that one too, and on a home no daemon has made
 yet a plain `ping` creates it and starts a daemon. Its report is the run's
 `windows-daemon-smoke` artifact — on `7b3fd108` all 17 steps passed on
-Windows Server 2025, the [record](verification/2026-09-19-windows-slice-one.json)
+Windows Server 2025, the [record](verification/INDEX.md)
 carries the report and the three failed runs before it; the same script
 runs on macOS and Linux, so it is checked before the runner sees it —
 there it ends its private
@@ -180,7 +181,7 @@ Work still required before platform support can be claimed:
   real-provider integration and sustained lifecycle trials.
 
 The supported download/platform matrix remains unchanged until those acceptance
-stages pass. See [native delivery](NATIVE-DELIVERY.md) for the macOS/Linux stack.
+stages pass. See [ARCHITECTURE.md](ARCHITECTURE.md#process-supervision) for the macOS/Linux stack and [verification/INDEX.md](verification/INDEX.md) for its trials.
 
 ## Slice two: managed sessions on Windows
 

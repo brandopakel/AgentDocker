@@ -61,7 +61,7 @@ def signing_config(environment, required):
     if not any(values.values()) and not required:
         return None
     if not all(present):
-        raise ValueError("Mac releases need all signing/notary variables; see docs/RELEASE-AUTOMATION.md")
+        raise ValueError("Mac releases need all signing/notary variables; see docs/DISTRIBUTION-SETUP.md")
     if not values["MACOS_SIGNING_IDENTITY"].startswith("Developer ID Application:"):
         raise ValueError("Mac releases require a Developer ID Application identity")
     try:

@@ -20,7 +20,7 @@ the existing Codex session auto-started its receiver and offered a queued peer
 message. That message automatically started the next ordinary turn without
 another human prompt, with its exact provider receipt and queue acknowledgement.
 This is one installed existing-session acceptance, recorded in the
-[native queue evidence](verification/2026-09-15-native-codex-queue.json). An accepted hook
+[native queue evidence](verification/INDEX.md). An accepted hook
 configuration is needed to start a receiver for an existing terminal. Setup now
 includes `SessionStart`, which verifies identity and starts the receiver without
 asserting working/idle activity or consuming hook context. Actual CLI 0.154.0
@@ -83,7 +83,7 @@ and ambiguous-submission recovery. The schema-20 historical-answer migration pas
 The later `2a7656c` binary source passed the full
 964-Rust/70-Python gate. Zero-prompt reopen, final CI and installation remain open;
 see the
-[delivery audit](MESSAGE-DELIVERY-AUDIT.md). Repeat the trials with
+delivery audit (MESSAGE-DELIVERY-AUDIT.md in git history). Repeat the trials with
 `python3 scripts/native_codex_queue_smoke.py --help` for the required binary paths
 and scenario choices. Each run saves a sanitized result beside private traces.
 `--reload --scenario question` additionally hands the private daemon over while
@@ -128,7 +128,7 @@ queue ID and uncertain-input retention without resubmission, using the real
 daemon supervisor. The long-busy defect is fixed and has bounded acceptance;
 installed-session verification still gates delivery. Trial 25 was a
 separate fixture input failure; trial 26 is the application defect. Both are
-retained in the [source-specific evidence](verification/2026-09-15-native-codex-queue.json).
+retained in the [source-specific evidence](verification/INDEX.md).
 Use the existing driver's `--scenario long-busy` to hold a direct user turn for
 65 seconds, require both human/peer inputs to remain queued without a receipt or
 pause, then verify their ordered consumption and receiver crash recovery.
@@ -183,7 +183,7 @@ the old failure and delivered the peer answer plus two human messages in order
 in the same turn on the fix. The installed `c0a7c56` receiver then delivered the
 original blocked answer without manual queue acknowledgement. #202 merged as
 `14f1c519`; broader startup and throughput limits remain. See
-`peer_answer_active_hook_2026_09_18` in the [native queue record](verification/2026-09-15-native-codex-queue.json).
+`peer_answer_active_hook_2026_09_18` in the [native queue record](verification/INDEX.md).
 
 ### Retained hook recovery (merged September 21)
 
@@ -245,7 +245,7 @@ passed dropped hook output, full readback, stale-confirmation refusal, lost repl
 receiver restart and ordered later delivery. The version-3 replacement trial
 preserved the provider, token and six old receipts; a peer answer and two human
 messages reached one active turn in order in 14.81 seconds. Failed fixture
-attempts remain in the [existing evidence](verification/2026-09-15-native-codex-queue.json).
+attempts remain in the [existing evidence](verification/INDEX.md).
 
 The September 21 receiver-only activation replaced PID 60959 with 28370 while
 Codex PID 51242, daemon PID 92608, provider binding and token remained. After
@@ -321,7 +321,7 @@ inputs reached the same active turn in 8.7 seconds with separate exact receipts;
 the dropped-output trial retained all three IDs, paused, and did not invent a
 receipt or replay. Baseline idle wake, draft/FIFO preservation and receiver crash
 recovery passed. The old-binary failure and initial receipt-reader failure remain
-in the [existing evidence](verification/2026-09-15-native-codex-queue.json).
+in the [existing evidence](verification/INDEX.md).
 Review follow-up `e896111` authenticates the claimed hook PID with kernel Unix
 peer credentials before queue access. Its full 1,094-Rust/84-Python gate passed
 (seven skipped), and both actual-client scenarios passed again with an explicit
@@ -375,7 +375,7 @@ the live provider, token, binding time and six prior receipts, retired the old
 receiver, and delivered three messages exactly once in FIFO order during the
 same active turn in 14.85 seconds including the handover. Cleanup found no
 surviving controllers. See the receiver-upgrade section of the existing
-[native queue evidence](verification/2026-09-15-native-codex-queue.json).
+[native queue evidence](verification/INDEX.md).
 A second actual trial used two installed packages in a disposable prefix: pins
 were held while the receivers ran, released at cleanup, and the retired release
 was pruned after activating a third package. The provider and six old receipts
@@ -419,7 +419,7 @@ AgentDocker MCP `send_message` supplies a correlated peer reply.
 Terminal lines are limited to 16,000 UTF-8 bytes. Invalid or oversized lines
 produce a local error and are skipped; the controller keeps running and accepts
 the next complete line. The bounded reader retains its place when provider
-events interrupt a partial read. The [review trial](verification/2026-09-11-codex-input-review.json)
+events interrupt a partial read. The [review trial](verification/INDEX.md)
 reproduced the old controller exit and verified the correction with actual
 Codex and an owned raw PTY, followed by terminal, human and peer queue receipts.
 
@@ -500,7 +500,7 @@ older-version record without rewriting bytes. Restored command records cannot ca
 The implementation passed 61 focused input tests and the full 974-Rust/70-Python
 release gate. A private-profile actual Codex trial denied the connection before
 emitting an approval callback; actual managed-network provider, native UI and
-final integration acceptance remain open. See the [retained trial](verification/2026-09-11-codex-input-review.json). `writeStdin`,
+final integration acceptance remain open. See the [retained trial](verification/INDEX.md). `writeStdin`,
 broader permission forms and elicitation still need their own handling.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
@@ -522,7 +522,7 @@ retained uncertainty. Turn completion discards old item snapshots. Non-null `gra
 is refused because it can describe session-wide write authority. Allow sends
 only `accept`; it never sends `acceptForSession`. Empty diffs are currently
 refused. File presentations and their receipts require delivery-record version
-6; an older record cannot claim to contain them. The [file-review trial](verification/2026-09-12-file-change-review.json)
+6; an older record cannot claim to contain them. The [file-review trial](verification/INDEX.md)
 passed 848 Rust tests, 65 Python checks and 19 native review/draft/restart steps.
 Actual Codex Allow created exactly the reviewed fixture file; Deny left it absent.
 Each completed three ordered peer/human/peer inputs and retained one provider
@@ -557,7 +557,7 @@ and remain unsupported. The omitted/null environment ID and Codex's reserved
 require delivery-record version 7;
 older records cannot claim this review meaning. Codex 0.153.4, installed at trial time, exposed
 the request-permissions tool as a disabled feature under development. The
-[permission trial](verification/2026-09-12-permission-review.json) at `7051471`
+[permission trial](verification/INDEX.md) at `7051471`
 passed 856 Rust tests, 65 Python checks and actual Codex Allow/Deny with three
 ordered peer/human/peer inputs each,
 one exact human/provider resolution and one controller/conversation. Allow
@@ -599,7 +599,7 @@ daemon. Protocol errors and explicit daemon refusals stop immediately. Each retr
 reads the retained queue again; it neither submits a provider turn nor acknowledges
 a message. Socket tests verify a discarded read response, bounded exhaustion and
 no retry for an uncertain acknowledgement or malformed response. The
-[read-reconnect trial](verification/2026-09-12-queue-read-reconnect.json) passed
+[read-reconnect trial](verification/INDEX.md) passed
 850 Rust tests, 65 Python checks and an actual Codex read-response cut while file
 approval was pending. The previous controller stopped; the correction kept the
 same controller/conversation, resolved the approval once and completed three
@@ -610,7 +610,7 @@ Periodic readiness refresh is bounded diagnostic metadata: a refused or timed-ou
 Queue acknowledgements, question publication, activity/receipt writes and other
 failed RPCs still pause delivery;
 a lost write response cannot prove whether the daemon accepted that operation.
-The [687e57f reconnect trial](verification/2026-09-12-provider-event-reconnect.json)
+The [687e57f reconnect trial](verification/INDEX.md)
 passed 839 Rust tests, 65 Python checks and an actual Codex event-connection cut
 while command approval was pending. Checked replay resolved that answer once,
 kept the same controller/conversation and completed three ordered peer/human
@@ -633,7 +633,7 @@ unmatched human answers stay queued and pause input instead of becoming new turn
 Up to 128 detailed MCP receipts rotate only after acknowledgement and a later
 turn; their older question routes share the 10,000-ID bound above.
 
-The [MCP receipt trial](verification/2026-09-11-mcp-answer-receipts.json) retains
+The [MCP receipt trial](verification/INDEX.md) retains
 the failed extra-input baseline and passing actual Codex normal/crash recovery
 cases at `f42a8b0`. The crash cut let Codex consume the tool answer while its
 controller was stopped, then recovered the receipt from provider history after
@@ -650,18 +650,18 @@ those review surfaces before treating the adapter as a general replacement for
 the provider terminal. Automatic provider review and configured approval policy
 are not overridden.
 
-The [provider-question trial](verification/2026-09-11-provider-question-receipts.json)
+The [provider-question trial](verification/INDEX.md)
 at `de9d6b2` passed 803 Rust tests, 65 Python checks, 123 native workflow steps and
 actual Codex Allow, Deny, cancelled-reply and queued-answer crash cases. Approval
 answers did not become extra ordinary turns, and cancellation did not authorize
 a later reply. PR #104 merged as `8103a0e` after final CI and source inspection.
-The [structured Iced controls](verification/2026-09-11-structured-questions.json)
+The [structured Iced controls](verification/INDEX.md)
 passed 808 Rust tests, 65 Python checks and 137 native workflow steps; actual
 Codex Allow and Deny each passed six rendered control steps at the earlier
 `cb17213` checkpoint. PR #105 merged as `7110670` after its 809-test review
 correction, final CI and actual source inspection.
 
-The [verified implementation](verification/2026-09-11-codex-input-bridge.json)
+The [verified implementation](verification/INDEX.md)
 passed fourteen targeted tests, the full gate with 784 Rust tests and 65 Python
 checks, and 123 native workflow steps. An actual
 Codex 0.153.4 trial delivered peer/human/peer input in order, received three
@@ -676,9 +676,9 @@ session shows queue count and the latest receipt; **Review delivery** opens the
 reason and recent saved logs without resending input, restarting a provider or
 changing the draft. Paused exited sessions remain in **Needs input**. The latest
 UI receipt covers ordinary inputs; native question and MCP answer receipts keep
-their existing ledger paths. The [status checkpoint](verification/2026-09-12-input-delivery-status.json)
+their existing ledger paths. The [status checkpoint](verification/INDEX.md)
 records actual Codex receipt/late-answer acceptance and native restart checks.
-PR #108 merged after final CI and actual source inspection at `5778212`. The [delivery audit](MESSAGE-DELIVERY-AUDIT.md)
+PR #108 merged after final CI and actual source inspection at `5778212`. The delivery audit (MESSAGE-DELIVERY-AUDIT.md in git history)
 retains the other open review surfaces and acceptance cases.
 The existing installation and active sessions have not been switched.
 
@@ -709,7 +709,7 @@ baseline and receiver-restart checks (38 total model requests, 36 queue
 receipts). The first burst input took 9.03 seconds and the last 299.15 seconds;
 the current one-outstanding-offer receiver follows Codex's queue polling cadence.
 This proves bounded durability/order, not low-latency burst handling or paid-model
-throughput. The retained [native trial record](verification/2026-09-15-native-codex-queue.json)
+throughput. The retained [native trial record](verification/INDEX.md)
 includes the exact source, driver and binary hashes.
 
 Final review corrections preserve a live bootstrap marker but allow a dead
@@ -740,7 +740,7 @@ input reached the same active turn, wrong-turn and idle steering were refused,
 and no production profile or conversation changed. Source `13c3e40` passed 1,010 Rust tests, 77 Python checks and private actual-Codex
 bridge trials for CLI human/peer/broadcast input in one busy turn and supervised
 lost-reply recovery without resubmission. Fixture failures and passing reruns are
-retained in [input evidence](verification/2026-09-11-codex-input-review.json).
+retained in [input evidence](verification/INDEX.md).
 Final integration `7fbb8c4` passed 1,015 Rust tests and 77 Python checks,
 including legacy-record migration and duplicate-item receipt rejection. Both
 actual-client scenarios passed again on its immutable release binaries; the
@@ -775,7 +775,7 @@ the refused message queued once, with an explicit pause and no resubmission.
 Busy, no-active-turn and lost-reply scenarios also passed. The prior binary
 failed the changed-turn trial as expected; both results and the full
 1,077-Rust/84-Python gate are retained in the existing
-[reload evidence](verification/2026-09-16-reload-controller-episode.json).
+[reload evidence](verification/INDEX.md).
 
 ### September 17 active peer burst
 
@@ -793,7 +793,7 @@ other two. These are end-to-end context delays including gaps between tools
 and an explicit coordinator wait, not 104–119 seconds of daemon or RPC work.
 The trace does not isolate every native queue/API wait.
 
-The [existing queue record](verification/2026-09-15-native-codex-queue.json) retains
+The [existing queue record](verification/INDEX.md) retains
 all three IDs, timestamps and receipt hashes. Bounded batching and scheduling
 need further engineering/measurement with exact recovery and no duplicate
 execution preserved. The [documented active-turn steering API](https://learn.chatgpt.com/docs/app-server#steer-an-active-turn)
