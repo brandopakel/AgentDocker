@@ -125,7 +125,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentd"
-version = "0.1.0"
+version = "0.2.0-beta.1"
 dependencies = [
  "agentdocker-core",
  "agentdocker-host",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "agentdocker"
-version = "0.1.0"
+version = "0.2.0-beta.1"
 dependencies = [
  "agentd",
  "agentdocker-core",
@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "agentdocker-core"
-version = "0.1.0"
+version = "0.2.0-beta.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "agentdocker-host"
-version = "0.1.0"
+version = "0.2.0-beta.1"
 dependencies = [
  "agentdocker-core",
  "chrono",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "agentdocker-ui"
-version = "0.1.0"
+version = "0.2.0-beta.1"
 dependencies = [
  "accesskit",
  "accesskit_macos",
