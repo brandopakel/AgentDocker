@@ -63,3 +63,12 @@ debug = 1
 [profile.release]
 strip = "symbols"
 lto = "thin"
+
+# The command parser and daemon orchestration favor compact release code.
+# Keep core coordination, host utilities and desktop rendering at the normal
+# optimization level; the CLI archive must remain within its 30 MiB budget.
+[profile.release.package.agentdocker]
+opt-level = "s"
+
+[profile.release.package.agentd]
+opt-level = "s"
