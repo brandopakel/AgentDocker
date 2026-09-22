@@ -40,8 +40,15 @@ https://github.com/brandopakel/AgentDocker/releases/download/channel-preview/upd
 The `channel-preview` release is itself a prerelease with `latest=false` and
 contains only the feed. Download URLs still name immutable versioned releases;
 the stable latest-release endpoint and Homebrew tap remain unchanged. Clients
-must retain explicit preview download and activation consent. Before the first
-successful promotion, the channel URL returns 404.
+keep downloads manual and activation explicit. A stable installation must opt
+into previews; an existing preview installation has already chosen that channel.
+Before the first successful promotion, the channel URL returns 404.
+
+The `channel-preview` tag remains at its first promotion's commit; subsequent
+promotions replace only the feed and its record. Use the feed's versioned URLs
+and source identities, not the channel tag's commit, to identify a build. The
+feed has four fixed macOS/Linux targets. Adding Windows requires a feed and
+client compatibility change first; its current portable ZIP is excluded.
 
 The publisher checks the actual versioned release, source commit, four target
 assets, sizes and available GitHub digests before copying the feed. Promotions
