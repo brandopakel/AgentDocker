@@ -569,6 +569,9 @@ pub enum Message {
     /// The Needs-you strip's **Review**: open that session with its
     /// delivery review already unfolded, wherever the person was.
     ReviewSession(String),
+    /// Put away an ended session's undelivered-messages notice; the
+    /// messages stay queued.
+    DismissDelivery(String),
     ResumeProvider(String, chrono::DateTime<Utc>),
     RetryController(String),
     ComposeSession,
@@ -1669,6 +1672,17 @@ impl App {
                 tasks.push(self.update(Message::OpenSession(id.clone())));
                 if self.shell.selected.as_deref() == Some(id.as_str()) {
                     tasks.push(self.update(Message::ReviewDelivery));
+                }
+            }
+            Message::DismissDelivery(id) => {
+                if let Some(agent) = self.agents.iter().find(|a| a.id.as_str() == id)
+                    && self.shell.catalog.dismiss(
+                        agent.id.as_str(),
+                        agent.process_started_at,
+                        agent.pid,
+                    )
+                {
+                    self.shell.changed();
                 }
             }
             Message::ReviewDelivery => {

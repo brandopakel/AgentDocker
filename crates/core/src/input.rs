@@ -51,6 +51,13 @@ impl InputReadiness {
     }
 }
 
+/// Why the daemon paused an agent's input delivery. The daemon writes these
+/// as `pause_reason`; clients that explain a pause in their own words match
+/// on them, so they live here rather than as literals on either side.
+pub const PAUSE_CONTROLLER_ENDED: &str = "the bound controller ended";
+pub const PAUSE_CONTROLLER_RESTART_FAILED: &str = "the bound controller could not be restarted";
+pub const PAUSE_RECEIVER_UPGRADING: &str = "the input receiver is being upgraded";
+
 /// Contact with a particular adapter is separate from generic agent activity.
 /// These observations contain no provider configuration or message contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
