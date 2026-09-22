@@ -18,7 +18,19 @@ use GNU libc; the separate CLI-only Linux archives use musl.
 The desktop feed requires all four targets from the same source, version and
 schema, and verifies the archive bytes. Stable tags produce `updates.json`;
 prerelease tags produce `updates-preview.json`, remain GitHub prereleases and
-require explicit preview acceptance. Prereleases leave the stable latest-release
+require explicit preview acceptance. GitHub's `latest` never names a prerelease,
+so the preview feed also has one fixed address, the `channel-preview` release
+(`releases/download/channel-preview/updates-preview.json`), which only moves
+forward. `agentdocker desktop update` without `--feed` reads the stable feed,
+plus that one on a prerelease installation or with `--local-preview`, and takes
+the newer. A prerelease installation takes the next preview without new
+consent; a stable one downloads a preview build only with `--local-preview`,
+and `file://` sources always need that flag. Staying on the preview channel
+skips Gatekeeper's policy assessment only for a build the feed marks
+`local-preview` (ad-hoc, which Gatekeeper would refuse); a Developer-ID-signed
+preview is still assessed. Only `--local-preview` itself skips it for any
+build. A channel with
+nothing published (404) is reported as `published: false`, not as a failure. Prereleases leave the stable latest-release
 endpoint and Homebrew tap unchanged; older maintenance releases cannot move
 either backwards.
 

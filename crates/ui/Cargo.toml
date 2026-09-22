@@ -18,6 +18,7 @@ agentdocker-core.workspace = true
 agentdocker-host.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
+semver.workspace = true
 iced.workspace = true
 png.workspace = true
 tokio.workspace = true

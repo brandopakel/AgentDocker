@@ -35,7 +35,14 @@ With no saved selection, the app opens on **All projects**, with sessions groupe
 under their project names. A saved project or Other sessions view is restored.
 **Projects** in the sidebar returns to All projects. Choosing a project opens
 its shared **Chat**, with the agents working there beside it. **Agents** opens the
-session list. **More** holds Board, History and the coordination tools.
+session list and **Board** the project's cards. **More** opens a row of History,
+Channels, Files in use, AgentDocker commands, Usage and the project's Pin and
+Forget; it is underlined only while one of those screens is open. **Pause…** and
+**Launch agent…** stay in the header on every project screen; launching from
+Board or History goes to Agents with the form open, and on Chat the form takes
+the place of the conversation until it is closed. A session's Details shows its
+short ID with **Copy session ID**. The Commands screen offers **Previous** and
+**Next** only once a command has run, and shows no output box before then.
 Opening an agent takes you to its project and selects that session.
 
 **Open project terminal**, in the project header, opens a fresh native terminal
@@ -121,6 +128,13 @@ even while one runs or is selected; the live count sits on the fold. Pinning
 one moves it up. Sessions whose project is unknown
 appear under **Other sessions**.
 
+A session that asked something shows **Answer**, which opens that exact
+question, as the project chat's **Answer N questions** does for the oldest
+waiting one. A closed channel offers no **Write to channel**; with **All
+projects** chosen, Channels lists every project's channels, so **Reviews** from
+a conversation always lands on its channel. Copy buttons say *Copied to the
+clipboard*.
+
 **Current** shows live sessions; **Needs input** shows this project's
 unanswered, unexpired questions, including questions from a session that has
 since finished, and the same delivery items as Needs you. Ended sessions are not a tab: they sit in one collapsed
@@ -186,13 +200,15 @@ to hold: they read the reason as a `pause` message, the daemon refuses their
 new leases until **Resume**, and the header shows **Paused · reason** while
 it holds (what an agent already holds, it keeps; your own actions are not
 held; only you can pause or resume, an agent asks with a message).
-**Launch agent…** chooses an installed CLI and starts it at the project root shown
+**Launch agent…** opens the form (pressing it again leaves it open; the form's
+own **Close** closes it) to choose an installed CLI and start it at the project root shown
 in the header. Claude and Codex launches default to **Idle messages: On**;
 turning it off visibly warns that messages may wait. Claude still requires its
 channel consent. Other tools disclose that automatic idle delivery is unavailable.
 This launch choice does not connect or restart an existing session.
 **Connect** under **Running here, not connected** adopts a discovered process for
-coordination; the row names the tool and the folder it runs in, not a
+coordination (it reads **Connecting…** and cannot be pressed again until the
+daemon answers, and the result names the session or says why not); the row names the tool and the folder it runs in, not a
 process number. Known Codex Node launchers with a native Codex child are
 omitted from discovery, as is Codex's `app-server` sidecar (an API helper a
 receiver or reviewer speaks to, never a session) and anything a bound
@@ -402,13 +418,13 @@ screen, project, session or conversation, or another notification — or
 losing the daemon ends the search, and a page that arrives late moves
 nothing.
 
-Tools shows **Input receiver active** only with a fresh report from a receiver
-bound to a live session. **Connected · messages wait for its next prompt**
+Tools shows **Receiving messages** only with a fresh report from the message
+delivery bound to a live session. **Connected · messages wait for its next prompt**
 requires recent MCP or hook contact and no input route at all — the session
 is in touch, but nothing reaches it while it is idle — and activity and
 configuration alone cannot establish it; a session whose receiver is paused
-reads **Connected · input receiver paused** and one whose receiver has stopped
-reporting **Connected · input receiver silent**, since a prompt does not
+reads **Connected · messages paused** and one whose delivery has stopped
+reporting **Connected · not heard from recently**, since a prompt does not
 release what such a route holds. Other states distinguish **Needs setup · missing …** (which says
 what: the MCP entry, the hooks, or the one or two hook events a release began
 to require, so a machine wired before that release reads as missing
@@ -419,10 +435,10 @@ Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
 **Set up**. **Details** holds versions, commands, per-channel configuration and
 each live session's contact and delivery evidence, plus **Review setup**,
 **Check connections** and **Setup history**; **Other supported tools** expands
-the inventory. Delivery distinguishes an active receiver awaiting its first
-receipt, verified delivery, paused delivery and stale evidence; with words
-queued behind a current receiver that no receipt names it reads **Queued ·
-awaiting provider receipt**, since an earlier receipt says nothing about them
+the inventory. Delivery distinguishes **Ready for messages** (nothing taken
+yet), **Receiving messages**, **Not receiving messages** and **Not heard from
+recently**; with words queued behind current delivery that no receipt names it
+reads **Sent · waiting for the agent to take it**, since an earlier receipt says nothing about them
 (a message still in the queue with a receipt from the current process counts
 as delivered). The session
 inspector shows the same readiness alongside the queue and latest receipt.
@@ -439,7 +455,27 @@ spacing. Preferences are stored privately in the AgentDocker state directory.
 A malformed preference file is preserved and reported rather than silently reset.
 **Daily update checks** is off by default. Enable it to check once per day while
 the app is open; a known update appears in the footer. Download and installation
-remain explicit actions.
+remain explicit actions. A check reads the stable channel and, on a preview
+(beta) installation or once **Allow preview builds** is on, the preview channel
+too, and offers the newer: a beta user is offered the final release. A beta
+installation moves from one preview build to the next without asking again
+(an ad-hoc-signed preview is not checked by Gatekeeper, as it could not pass;
+a signed one still is);
+on a stable installation a newer preview build is shown with its version and
+downloads only after **Allow preview builds**. When nothing has been published yet the check says **No
+update published yet**; a check that fails says **Could not check for
+updates** and why (no connection to GitHub, say), never *Installation failed*.
+
+The footer says whether the window is connected. When the background service
+(the daemon) is older than the app — an older version, or another installed
+release of the same version, which is what an update installed underneath a
+running daemon looks like — the footer says so, with both versions, and offers
+**Restart background service…**. Its confirmation says what a restart costs:
+how many sessions AgentDocker itself started will stop (and how many are set to
+start again); sessions started in a terminal keep running and reconnect. A
+request the older service has never heard of reads *The background service is
+older than this app…* instead of the service's parser error, and no screen
+shows raw error codes or Rust debug output.
 
 **Manage installation and retained versions** previews installation, rollback,
 cleanup and launcher removal. Apply is tied to the reviewed payload or cleanup

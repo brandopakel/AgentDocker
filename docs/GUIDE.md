@@ -115,7 +115,7 @@ The app remembers the selected project and keeps quiet projects available.
 - **Current** shows live sessions. **History** keeps completed runs, including
   older runs with the same name. No records are deleted by these filters.
 - **Needs input** shows unanswered questions from this project. Select a session
-  and use **Reply in Inbox** to answer it.
+  and use **Answer** to open its question.
 - Select a session for **Open terminal**, **Stop session…**, or **Details**.
   Stopping requires **Confirm stop** within five seconds. External agents stay
   in the terminal or application where they started.

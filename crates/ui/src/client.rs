@@ -29,7 +29,21 @@ pub struct RemoteError {
 
 impl std::fmt::Display for RemoteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.code, self.message)
+        f.write_str(&explain(&self.message))
+    }
+}
+
+/// What an older daemon means when it cannot parse a request this app
+/// sends: it has never heard of it. The window says so, and what fixes it.
+pub const OLDER_DAEMON: &str = "The background service is older than this app and cannot do this yet. Restart it from the notice at the bottom of the window.";
+
+/// A daemon error in words a person can act on. The daemon's own sentence is
+/// kept, except where it is a parser's list of every request it knows.
+pub fn explain(message: &str) -> String {
+    if message.starts_with("malformed request: unknown variant") {
+        OLDER_DAEMON.to_owned()
+    } else {
+        message.to_owned()
     }
 }
 impl std::error::Error for RemoteError {}

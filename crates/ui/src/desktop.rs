@@ -69,6 +69,11 @@ impl Panel {
             return Some(args);
         }
         if operation == "update" {
+            // A preview build is downloaded only with the person's consent
+            // to preview builds; the check may say one exists without it.
+            if self.preview_consent_needed() {
+                return None;
+            }
             return self.update_available().map(|_| self.command("update"));
         }
         let mut args = self.command(operation);
@@ -166,6 +171,17 @@ impl Panel {
             args.push("--local-preview".into());
         }
         args
+    }
+
+    /// The newest release is a preview build and preview builds are not
+    /// allowed here yet.
+    pub fn preview_consent_needed(&self) -> bool {
+        !self.local_preview
+            && self
+                .update
+                .as_ref()
+                .or_else(|| self.report.as_ref()?.get("update"))
+                .is_some_and(|update| update["preview_consent_required"] == true)
     }
 
     /// The newer version the last check or preview found, if any.
@@ -452,5 +468,21 @@ mod tests {
         p.receive(Ok(json!({"preview": false})));
         assert!(p.error.is_none());
         assert!(p.report.is_some());
+    }
+
+    #[test]
+    fn a_preview_build_downloads_only_with_consent_to_preview_builds() {
+        let mut panel = Panel::default();
+        panel.receive_update(Ok(json!({"update": {
+            "update_available": true,
+            "preview_consent_required": true,
+            "available": {"version": "0.2.0-beta.2"}}})));
+        assert_eq!(panel.update_available(), Some("0.2.0-beta.2"));
+        assert!(panel.preview_consent_needed());
+        assert_eq!(panel.preview("update"), None, "no download without consent");
+        panel.local_preview = true;
+        assert!(!panel.preview_consent_needed());
+        let args = panel.preview("update").unwrap();
+        assert!(args.iter().any(|a| a == "--local-preview"), "{args:?}");
     }
 }

@@ -189,7 +189,7 @@ fn send_reports_recipient_input_status_without_polluting_the_message_id() {
         assert!(stderr.contains("provider receipt unconfirmed"));
         if current {
             assert!(stderr.contains("Claude reviewer"));
-            assert!(stderr.contains("messages may wait for another prompt"));
+            assert!(stderr.contains("Messages may wait for its next prompt"));
             assert!(stderr.contains("claude --resume session-123"));
         } else {
             assert!(stderr.contains("readiness unavailable"));

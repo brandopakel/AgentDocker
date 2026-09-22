@@ -34,6 +34,10 @@ use super::{Activation, Layout, inspect, perform};
 /// the newest release, so the URL never changes.
 pub const DEFAULT_FEED: &str =
     "https://github.com/brandopakel/AgentDocker/releases/latest/download/updates.json";
+/// Where the newest prerelease's feed is kept. GitHub's `latest` never
+/// names a prerelease, so each prerelease also publishes its feed to this one
+/// fixed release, which only moves forward.
+pub const PREVIEW_FEED: &str = "https://github.com/brandopakel/AgentDocker/releases/download/channel-preview/updates-preview.json";
 /// Environment override for the feed, so a fixture can point the app at a
 /// local feed without a flag reaching through the desktop screen.
 pub const FEED_ENV: &str = "AGENTDOCKER_UPDATE_FEED";
@@ -43,7 +47,10 @@ const ARCHIVE_MAX_BYTES: u64 = 80 * 1024 * 1024;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub struct Options {
-    pub feed: String,
+    /// One feed to read, from `--feed` or the environment. `None` reads the
+    /// stable feed, and the preview channel too when this installation is a
+    /// prerelease or preview builds are allowed.
+    pub feed: Option<String>,
     pub check: bool,
     pub apply: bool,
     pub local_preview: bool,
@@ -187,6 +194,45 @@ fn fetch_inner(url: &str, destination: &Path, max_bytes: u64, local_preview: boo
     Ok(())
 }
 
+/// Whether the installer may take this release without Gatekeeper's policy
+/// assessment. The explicit flag says yes to any local preview. Staying on
+/// the preview channel is consent to its next build, but only an ad-hoc
+/// build (`local-preview`, which Gatekeeper would refuse) skips the
+/// assessment: a Developer-ID-signed preview is still assessed.
+fn accepts_ad_hoc(local_preview: bool, preview_consent: bool, release: &FeedRelease) -> bool {
+    local_preview || (preview_consent && release.signing == "local-preview")
+}
+
+/// The feeds a check reads. A prerelease was installed from the preview
+/// channel, so it keeps looking there; a stable one looks there only when
+/// preview builds are allowed. Either way the stable feed is read too:
+/// 0.2.0 supersedes 0.2.0-beta.3, and a beta user is offered it.
+fn feeds_for(explicit: Option<&str>, local_preview: bool, baseline: &str) -> Result<Vec<String>> {
+    if let Some(feed) = explicit {
+        return Ok(vec![feed.to_owned()]);
+    }
+    let mut feeds = vec![DEFAULT_FEED.to_owned()];
+    if local_preview || !parse_version(baseline)?.pre.is_empty() {
+        feeds.push(PREVIEW_FEED.to_owned());
+    }
+    Ok(feeds)
+}
+
+/// Whether a fetch failed because nothing is published at that address: an
+/// HTTP 404 for an `https://` feed (curl's `--fail` makes it an error), or a
+/// missing file for a `file://` fixture. A missing `curl` is also an io
+/// NotFound, so that arm is for `file://` alone: a machine that cannot
+/// fetch anything must not be told nothing was published.
+fn not_published(url: &str, error: &anyhow::Error) -> bool {
+    if url.starts_with("file://") {
+        return error
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .any(|io| io.kind() == std::io::ErrorKind::NotFound);
+    }
+    format!("{error:#}").contains("returned error: 404")
+}
+
 fn file_sha256(path: &Path) -> Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
@@ -196,7 +242,15 @@ fn file_sha256(path: &Path) -> Result<String> {
 
 /// Validate a feed and pick the release for this machine. A universal Mac
 /// archive stands in when no architecture-specific one is listed.
-fn select(feed: &Feed, target: &str, local_preview: bool) -> Result<FeedRelease> {
+/// `read_preview` lets a check read a preview feed so it can say one exists;
+/// `local_preview` is the person's consent to preview builds and local
+/// archives, which a download still needs.
+fn select(
+    feed: &Feed,
+    target: &str,
+    local_preview: bool,
+    read_preview: bool,
+) -> Result<FeedRelease> {
     ensure!(
         feed.format == 1 && feed.product == "agentdocker",
         "unsupported update feed"
@@ -207,7 +261,7 @@ fn select(feed: &Feed, target: &str, local_preview: bool) -> Result<FeedRelease>
         feed.channel
     );
     ensure!(
-        feed.channel == "stable" || local_preview,
+        feed.channel == "stable" || local_preview || read_preview,
         "this is a preview feed; pass --local-preview to accept preview builds"
     );
     ensure!(!feed.releases.is_empty(), "update feed is empty");
@@ -512,24 +566,73 @@ fn run_with_home(
     state_home: &Path,
 ) -> Result<()> {
     let target = host_target();
-    // A check must leave no trace, so the feed lands in scratch; only a
-    // download creates the private staging area beside the versions.
-    let scratch = tempfile::tempdir()?;
-    let feed_file = scratch.path().join("updates.json");
-    fetch(
-        &options.feed,
-        &feed_file,
-        FEED_MAX_BYTES,
-        options.local_preview,
-    )
-    .context("cannot fetch the update feed")?;
-    let feed: Feed = serde_json::from_slice(&std::fs::read(&feed_file)?)
-        .context("the update feed is not valid JSON of the expected shape")?;
-    let release = select(&feed, target, options.local_preview)?;
     let installed = active.map(|a| a.current.version.as_str());
     let running = env!("CARGO_PKG_VERSION");
     let baseline = installed.unwrap_or(running);
+    // A prerelease was installed from the preview channel, so it keeps
+    // looking there; a stable one looks there only when preview builds are
+    // allowed. Either way the stable feed is read too: 0.2.0 supersedes
+    // 0.2.0-beta.3, and a beta user is offered it.
+    let feeds = feeds_for(options.feed.as_deref(), options.local_preview, baseline)?;
+    // A check must leave no trace, so the feeds land in scratch; only a
+    // download creates the private staging area beside the versions.
+    let scratch = tempfile::tempdir()?;
+    let mut found: Option<(Feed, FeedRelease, String)> = None;
+    let mut unpublished = Vec::new();
+    for (index, url) in feeds.iter().enumerate() {
+        let feed_file = scratch.path().join(format!("updates-{index}.json"));
+        if let Err(error) = fetch(url, &feed_file, FEED_MAX_BYTES, options.local_preview) {
+            // A channel nothing has been published to yet is an answer, not
+            // a failure; anything else (no network, a refused TLS
+            // handshake, a malformed URL) is.
+            if not_published(url, &error) {
+                unpublished.push(url.clone());
+                continue;
+            }
+            return Err(error).context("cannot fetch the update feed");
+        }
+        let feed: Feed = serde_json::from_slice(&std::fs::read(&feed_file)?)
+            .context("the update feed is not valid JSON of the expected shape")?;
+        // Reading a preview feed is always allowed here, so `select`'s channel
+        // gate does not refuse it: a check has to be able to say a preview
+        // exists. The consent to download one is checked below
+        // (`preview_consent_required`), before anything is staged.
+        let release = select(&feed, target, options.local_preview, true)?;
+        let newer = match &found {
+            None => true,
+            Some((_, best, _)) => {
+                compare_versions(&release.version, &best.version)? == Ordering::Greater
+            }
+        };
+        if newer {
+            found = Some((feed, release, url.clone()));
+        }
+    }
+    let Some((feed, release, feed_url)) = found else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({"update": {
+                "feeds": feeds,
+                "unpublished": unpublished,
+                "published": false,
+                "installed_version": installed,
+                "running_version": running,
+                "update_available": false,
+                "note": "No release has been published to these update channels yet.",
+            }}))?
+        );
+        return Ok(());
+    };
     let update_available = compare_versions(&release.version, baseline)? == Ordering::Greater;
+    // A prerelease installation already chose the preview channel: moving
+    // it from one beta to the next needs no new consent. A stable one
+    // needs --local-preview before a preview build is downloaded, and the
+    // installer's acceptance of an ad-hoc signature follows the same
+    // consent. file:// sources stay behind the explicit flag alone.
+    let on_preview = !parse_version(baseline)?.pre.is_empty();
+    let preview_consent = options.local_preview || (feed.channel == "preview" && on_preview);
+    let preview_consent_required = feed.channel == "preview" && !preview_consent;
+    let accept_ad_hoc = accepts_ad_hoc(options.local_preview, preview_consent, &release);
     let minimum_schema = super::required_state_schema(active, state_home)?;
     ensure!(
         !update_available || release.state_schema >= minimum_schema,
@@ -548,7 +651,9 @@ fn run_with_home(
         None => "no daemon answered; the next launch starts the installed version",
     };
     let mut update = json!({
-        "feed": options.feed,
+        "feed": feed_url,
+        "unpublished": unpublished,
+        "published": true,
         "channel": feed.channel,
         "policy": feed.policy,
         "target": target,
@@ -563,6 +668,7 @@ fn run_with_home(
             "archive": release.archive,
         },
         "update_available": update_available,
+        "preview_consent_required": update_available && preview_consent_required,
         "state_schema_change": schema_change,
         "live_agents": live,
         "daemon": guidance,
@@ -574,6 +680,11 @@ fn run_with_home(
         );
         return Ok(());
     }
+    ensure!(
+        !preview_consent_required,
+        "{} is a preview build; pass --local-preview to download and install preview builds",
+        release.version
+    );
     // Download once per version; a complete, matching archive is reused.
     layout.ensure_root()?;
     let staging = layout.root.join("downloads");
@@ -650,7 +761,7 @@ fn run_with_home(
         source,
         candidate.clone(),
         !options.apply,
-        options.local_preview,
+        accept_ad_hoc,
         Some(candidate.id.clone()),
         expect_current,
         options.socket.clone(),
@@ -696,7 +807,7 @@ mod tests {
             &layout,
             None,
             Options {
-                feed: format!("file://{}", feed.display()),
+                feed: Some(format!("file://{}", feed.display())),
                 check: false,
                 apply: true,
                 local_preview: true,
@@ -714,6 +825,106 @@ mod tests {
             "must refuse before creating installation or staging"
         );
         assert!(!payload.exists());
+    }
+
+    #[test]
+    fn prereleases_follow_the_preview_channel_and_still_read_stable() {
+        assert_eq!(
+            feeds_for(None, false, "0.2.0").unwrap(),
+            vec![DEFAULT_FEED.to_owned()]
+        );
+        assert_eq!(
+            feeds_for(None, false, "0.2.0-beta.1").unwrap(),
+            vec![DEFAULT_FEED.to_owned(), PREVIEW_FEED.to_owned()]
+        );
+        assert_eq!(
+            feeds_for(None, true, "0.2.0").unwrap(),
+            vec![DEFAULT_FEED.to_owned(), PREVIEW_FEED.to_owned()]
+        );
+        assert_eq!(
+            feeds_for(Some("file:///x.json"), false, "0.2.0-beta.1").unwrap(),
+            vec!["file:///x.json".to_owned()],
+            "an explicit feed is the only feed"
+        );
+        // Reading a preview feed is how a check finds one; selecting it for
+        // a download without consent is still refused.
+        let target = host_target();
+        let preview = feed("preview", target, "https://example.invalid/a.zip");
+        assert!(select(&preview, target, false, true).is_ok());
+        assert!(select(&preview, target, false, false).is_err());
+    }
+
+    #[test]
+    fn staying_on_the_preview_channel_skips_gatekeeper_only_for_an_ad_hoc_build() {
+        let target = host_target();
+        let mut signed =
+            feed("preview", target, "https://example.invalid/a.zip").releases[0].clone();
+        signed.signing = "developer-id".into();
+        let mut ad_hoc = signed.clone();
+        ad_hoc.signing = "local-preview".into();
+        assert!(
+            !accepts_ad_hoc(false, true, &signed),
+            "a signed preview is assessed"
+        );
+        assert!(accepts_ad_hoc(false, true, &ad_hoc));
+        assert!(
+            !accepts_ad_hoc(false, false, &ad_hoc),
+            "no consent, no skip"
+        );
+        assert!(
+            accepts_ad_hoc(true, false, &signed),
+            "the explicit flag is broader"
+        );
+    }
+
+    #[test]
+    fn a_channel_with_nothing_published_is_an_answer_not_a_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("no-feed-here.json");
+        let error = fetch(
+            &format!("file://{}", missing.display()),
+            &tmp.path().join("out.json"),
+            FEED_MAX_BYTES,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            not_published(&format!("file://{}", missing.display()), &error),
+            "{error:#}"
+        );
+        assert!(not_published(
+            "https://x",
+            &anyhow::anyhow!(
+                "download of https://x failed: curl: (56) The requested URL returned error: 404"
+            )
+        ));
+        assert!(!not_published(
+            "https://x",
+            &anyhow::anyhow!(
+                "download of https://x failed: curl: (6) Could not resolve host: github.com"
+            )
+        ));
+        // No curl on this machine is an io NotFound too; for an https feed
+        // it is a failure to fetch, not an empty channel.
+        let no_curl = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound))
+            .context("cannot run curl to fetch the update");
+        assert!(!not_published("https://x", &no_curl));
+        // The whole check reports it as unpublished and exits cleanly.
+        let layout = Layout::new(tmp.path().join("uninstalled")).unwrap();
+        run_with_home(
+            &layout,
+            None,
+            Options {
+                feed: Some(format!("file://{}", missing.display())),
+                check: true,
+                apply: false,
+                local_preview: true,
+                socket: None,
+            },
+            &tmp.path().join("state"),
+        )
+        .unwrap();
+        assert!(!layout.prefix.exists(), "a check leaves no trace");
     }
 
     #[test]
@@ -797,18 +1008,18 @@ mod tests {
             let mut invalid = feed("stable", target, "https://example.invalid/a.zip");
             invalid.releases[0].version = version.into();
             assert!(
-                select(&invalid, target, false).is_err(),
+                select(&invalid, target, false, false).is_err(),
                 "accepted version {version}"
             );
         }
         let mut duplicate = feed("stable", target, "https://example.invalid/a.zip");
         duplicate.releases.push(duplicate.releases[0].clone());
-        assert!(select(&duplicate, target, false).is_err());
+        assert!(select(&duplicate, target, false, false).is_err());
         for (source, schema) in [("invalid".into(), 10), ("a".repeat(40), 0)] {
             let mut invalid = feed("stable", target, "https://example.invalid/a.zip");
             invalid.releases[0].source_commit = source;
             invalid.releases[0].state_schema = schema;
-            assert!(select(&invalid, target, false).is_err());
+            assert!(select(&invalid, target, false, false).is_err());
         }
     }
 
@@ -890,6 +1101,7 @@ mod tests {
             &feed("stable", host, "https://example.invalid/a.zip"),
             host,
             false,
+            false,
         )
         .unwrap();
         assert_eq!(chosen.target, host);
@@ -902,6 +1114,7 @@ mod tests {
             select(
                 &feed("stable", other, "https://example.invalid/a.zip"),
                 host,
+                false,
                 false
             )
             .is_err()
@@ -914,6 +1127,7 @@ mod tests {
                     "https://example.invalid/a.zip",
                 ),
                 host,
+                false,
                 false,
             )
             .unwrap();
@@ -928,6 +1142,7 @@ mod tests {
             select(
                 &feed("preview", host, "https://example.invalid/a.zip"),
                 host,
+                false,
                 false
             )
             .is_err()
@@ -936,17 +1151,35 @@ mod tests {
             select(
                 &feed("preview", host, "https://example.invalid/a.zip"),
                 host,
-                true
+                true,
+                false
             )
             .is_ok()
         );
-        assert!(select(&feed("stable", host, "file:///tmp/a.zip"), host, false).is_err());
-        assert!(select(&feed("stable", host, "file:///tmp/a.zip"), host, true).is_ok());
+        assert!(
+            select(
+                &feed("stable", host, "file:///tmp/a.zip"),
+                host,
+                false,
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            select(
+                &feed("stable", host, "file:///tmp/a.zip"),
+                host,
+                true,
+                false
+            )
+            .is_ok()
+        );
         assert!(
             select(
                 &feed("stable", host, "http://example.invalid/a.zip"),
                 host,
-                true
+                true,
+                false
             )
             .is_err()
         );
@@ -981,12 +1214,12 @@ mod tests {
         let host = host_target();
         let mut bad = feed("stable", host, "https://example.invalid/a.zip");
         bad.releases[0].archive.sha256 = "zz".repeat(32);
-        assert!(select(&bad, host, false).is_err());
+        assert!(select(&bad, host, false, false).is_err());
         let mut huge = feed("stable", host, "https://example.invalid/a.zip");
         huge.releases[0].archive.bytes = ARCHIVE_MAX_BYTES + 1;
-        assert!(select(&huge, host, false).is_err());
+        assert!(select(&huge, host, false, false).is_err());
         let mut renamed = feed("stable", host, "https://example.invalid/a.zip");
         renamed.releases[0].archive.name = "agentdocker.tar.gz".into();
-        assert!(select(&renamed, host, false).is_err());
+        assert!(select(&renamed, host, false, false).is_err());
     }
 }
