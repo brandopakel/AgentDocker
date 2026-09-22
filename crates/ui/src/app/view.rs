@@ -4330,9 +4330,9 @@ impl App {
             body = body.push(action(
                 "desktop-local",
                 if p.local_preview {
-                    "Local preview signatures allowed"
+                    "Preview builds allowed"
                 } else {
-                    "Allow locally signed preview builds"
+                    "Allow preview builds"
                 },
                 (!p.busy).then_some(Message::DesktopLocal(!p.local_preview)),
                 p.local_preview,
@@ -4394,21 +4394,42 @@ impl App {
                 .as_str()
                 .or(update["running_version"].as_str())
                 .unwrap_or("unknown");
-            let mut facts = column![
-                heading(
-                    if update["update_available"] == true {
-                        format!("Version {available} is available")
-                    } else {
-                        "You have the newest release".to_owned()
-                    },
-                    16
-                ),
-                kv("Installed", installed, c),
-                kv("Available", available, c),
-                kv("Channel", value(update, "channel"), c),
-                kv("Daemon", value(update, "daemon"), c),
-            ]
-            .spacing(6);
+            let mut facts = if update["published"] == false {
+                // Nothing on either channel yet: an answer, not a failure.
+                column![
+                    heading("No update published yet", 16),
+                    kv("Installed", installed, c),
+                    note(
+                        "Nothing newer has been published for this installation. Check again later.",
+                        c
+                    ),
+                ]
+                .spacing(6)
+            } else {
+                column![
+                    heading(
+                        if update["update_available"] == true {
+                            format!("Version {available} is available")
+                        } else {
+                            "You have the newest release".to_owned()
+                        },
+                        16
+                    ),
+                    kv("Installed", installed, c),
+                    kv("Available", available, c),
+                    kv("Channel", value(update, "channel"), c),
+                    kv("Daemon", value(update, "daemon"), c),
+                ]
+                .spacing(6)
+            };
+            if p.preview_consent_needed() {
+                facts = facts.push(note(
+                    format!(
+                        "{available} is a preview build. Allow preview builds above to download it."
+                    ),
+                    c,
+                ));
+            }
             if update["state_schema_change"] == true {
                 facts = facts.push(note(
                     "This release changes the daemon's state schema: after installing, rollback needs a matching state backup.",

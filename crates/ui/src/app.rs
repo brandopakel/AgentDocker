@@ -3229,10 +3229,51 @@ fn desktop_with_timeout(args: &[String], timeout: Duration) -> Result<serde_json
     let output =
         agentdocker_host::command::run(&cwd, &argv, timeout).map_err(|error| error.to_string())?;
     if !output.success {
-        return Err(format!("Installation failed: {}", output.text.trim()));
+        return Err(desktop_failure(args, &output.text));
     }
     serde_json::from_str(&output.stdout)
         .map_err(|error| format!("Invalid installation reply: {error}"))
+}
+
+/// What a failed `agentdocker desktop …` says in the window: which operation
+/// failed, and why in a sentence. A check that could not reach the network
+/// is not an installation that failed, and curl's exit codes are not the
+/// reason a person can act on. The CLI's own text is the fallback.
+pub(crate) fn desktop_failure(args: &[String], output: &str) -> String {
+    let operation = args
+        .iter()
+        .find(|arg| !arg.starts_with("--") && !arg.contains('/'))
+        .map(String::as_str);
+    let checking = args.iter().any(|arg| arg == "--check");
+    let what = match operation {
+        Some("update") if checking => "Could not check for updates",
+        Some("update") => "Could not download the update",
+        Some("rollback") => "Could not roll back",
+        Some("prune") => "Could not clean up old versions",
+        Some("uninstall") => "Could not remove the installation",
+        Some("status") => "Could not read the installation",
+        _ => "Installation failed",
+    };
+    let offline = [
+        "Could not resolve host",
+        "Failed to connect",
+        "Connection timed out",
+        "Operation timed out",
+        "Network is unreachable",
+    ];
+    if offline.iter().any(|needle| output.contains(needle)) {
+        return format!(
+            "{what}: GitHub could not be reached. Check the internet connection and try again."
+        );
+    }
+    // The CLI prints `Error: <context>: <cause>`; the last line carries it.
+    let reason = output
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .unwrap_or("no reason given")
+        .trim_start_matches("Error: ");
+    format!("{what}: {reason}")
 }
 
 fn spawn_events(client: Arc<Client>, tx: SyncSender<Msg>, ctx: Wake) {
@@ -3481,6 +3522,27 @@ pub(crate) struct Seek {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn a_failed_desktop_command_names_what_failed_in_plain_words() {
+        let check: Vec<String> = ["update", "--check"].map(String::from).into();
+        assert_eq!(
+            super::desktop_failure(
+                &check,
+                "Error: cannot fetch the update feed: download of https://x failed: curl: (6) Could not resolve host: github.com"
+            ),
+            "Could not check for updates: GitHub could not be reached. Check the internet connection and try again."
+        );
+        let rollback: Vec<String> = ["--prefix", "/tmp/p", "rollback"].map(String::from).into();
+        assert_eq!(
+            super::desktop_failure(&rollback, "Error: no previous version is retained\n"),
+            "Could not roll back: no previous version is retained"
+        );
+        assert!(
+            !super::desktop_failure(&check, "Error: x").starts_with("Installation failed"),
+            "a check is not an installation"
+        );
+    }
+
     use super::*;
 
     /// The Tools row says what setup is missing: the one hook event a
