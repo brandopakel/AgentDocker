@@ -30,18 +30,39 @@ pub(crate) enum Change<'a> {
 
 impl Store {
     pub(crate) fn usage_discovery(&self) -> Result<Option<Progress>> {
-        self.document("usage", "discovery")
+        let progress: Option<Progress> = self.document("usage", "discovery")?;
+        if let Some(progress) = &progress {
+            anyhow::ensure!(
+                progress.generation > 0
+                    && progress
+                        .jobs
+                        .checked_add(progress.failures)
+                        .is_some_and(|n| n <= MAX_FILES),
+                "invalid saved discovery counts"
+            );
+        }
+        Ok(progress)
     }
 
     pub(crate) fn usage_next_job(&self) -> Result<Option<Job>> {
         self.conn
             .query_row(
-                "SELECT json FROM usage_discovery_jobs ORDER BY priority DESC,id LIMIT 1",
+                "SELECT id,json FROM usage_discovery_jobs ORDER BY priority DESC,id LIMIT 1",
                 [],
-                |r| r.get::<_, String>(0),
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
             )
             .optional()?
-            .map(|s| serde_json::from_str(&s).map_err(Into::into))
+            .map(|(id, json)| {
+                let job: Job = serde_json::from_str(&json)?;
+                anyhow::ensure!(
+                    job.id < MAX_FILES
+                        && i64::try_from(job.id)? == id
+                        && job.source.path.is_absolute()
+                        && job.source.path.to_str().is_some_and(|p| p.len() <= 8192),
+                    "invalid saved discovery job"
+                );
+                Ok(job)
+            })
             .transpose()
     }
 
@@ -119,6 +140,44 @@ impl Store {
 mod tests {
     use super::*;
     use agentdocker_host::usage::{discovery::Walk, reader::Runtime};
+
+    #[test]
+    fn corrupt_saved_counts_and_job_identity_are_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("source.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let roots = vec![Root {
+            runtime: Runtime::Claude,
+            path: temp.path().to_owned(),
+        }];
+        let progress = Progress {
+            frontier: Walk::new(roots.clone()).unwrap().checkpoint(),
+            roots,
+            generation: 1,
+            jobs: usize::MAX,
+            failures: 1,
+        };
+        store.put_document("usage", "discovery", &progress).unwrap();
+        assert!(store.usage_discovery().is_err());
+        let job = Job {
+            id: 1,
+            source: Source {
+                runtime: Runtime::Claude,
+                path: path.clone(),
+            },
+            captured: reader::Cursor::capture(&path, Runtime::Claude).unwrap(),
+            priority: false,
+        };
+        store
+            .conn
+            .execute(
+                "INSERT INTO usage_discovery_jobs VALUES (0,0,?1)",
+                [serde_json::to_string(&job).unwrap()],
+            )
+            .unwrap();
+        assert!(store.usage_next_job().is_err());
+    }
 
     #[test]
     fn discovery_pages_and_finished_jobs_rollback_with_their_event() {
