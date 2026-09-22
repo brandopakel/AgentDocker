@@ -704,7 +704,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 return datetime.now(timezone.utc).isoformat()
             def readiness_window(name, expected):
                 conversation = "dm:" + ":".join(sorted([human["id"], receiver["id"]]))
-                input_status = "Idle delivery not verified" if name == "readiness-contact" else expected
+                input_status = "Messages may wait for its next prompt" if name == "readiness-contact" else expected
                 send_probe = []
                 if name == "readiness-activity":
                     send_probe = [
@@ -744,7 +744,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                      step("wait_text", text=input_status), step("capture", name=name+"-composer")])
             rpc(endpoint, {"op": "report_activity", "agent": receiver["id"],
                            "observation": {"activity": "working", "observed_at": now()}})
-            report["activity_only_window"] = readiness_window("readiness-activity", "Idle delivery not verified")
+            report["activity_only_window"] = readiness_window("readiness-activity", "Messages may wait for its next prompt")
             probes = [m for m in rpc(endpoint, {"op": "inbox", "agent": receiver["id"], "drain": False})["messages"]
                       if m.get("payload", {}).get("text") == "Send readiness acceptance probe"]
             assert len(probes) == 1, probes
@@ -758,13 +758,13 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                "observed_at": now(), "report": value})
             input_report({"state": "ready"})
             # The send probe remains queued: a live receiver is not a receipt.
-            report["ready_window"] = readiness_window("readiness-ready", "Queued · awaiting provider receipt")
+            report["ready_window"] = readiness_window("readiness-ready", "Sent · waiting for the agent to take it")
             message = rpc(endpoint, {"op": "send", "from": human["id"], "to": receiver["id"],
                                      "kind": "chat", "payload": {"text": "readiness fixture"}})["message"]
             input_report({"state": "received", "input": {"messages": [probes[0]["id"], message], "receipt": {"provider": "claude_channel"}}})
-            report["received_window"] = readiness_window("readiness-received", "Delivery verified")
+            report["received_window"] = readiness_window("readiness-received", "Receiving messages")
             input_report({"state": "paused", "reason": "Fixture transport is disconnected"})
-            report["paused_window"] = readiness_window("readiness-paused", "Delivery paused")
+            report["paused_window"] = readiness_window("readiness-paused", "Not receiving messages")
             checks.append("rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause")
             input_report({"state": "ready"})
             rpc(endpoint, {"op": "report_provider", "agent": receiver["id"],

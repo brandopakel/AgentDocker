@@ -465,7 +465,7 @@ impl App {
             format!("ended {}", undelivered_phrase(self.undelivered(agent)))
         } else if agent.status.is_live() {
             match self.activity.get(&id) {
-                None | Some(Activity::Unknown) => "running, no signal yet".to_owned(),
+                None | Some(Activity::Unknown) => "running".to_owned(),
                 Some(activity) => activity.label().to_owned(),
             }
         } else if let agentdocker_core::AgentStatus::Failed { reason } = &agent.status {
@@ -531,7 +531,7 @@ impl App {
             .get(agent.id.as_str())
             .is_some_and(|count| *count > 0)
         {
-            return "Queued · awaiting provider receipt";
+            return "Sent · waiting for the agent to take it";
         }
         readiness.label()
     }
@@ -959,9 +959,9 @@ impl App {
                 dot(if connected { c.green } else { c.amber }, 7.0, c),
                 small(
                     if connected {
-                        "Connected to the local daemon"
+                        "Connected to the background service"
                     } else {
-                        "Reconnecting to the local daemon…"
+                        "Reconnecting to the background service…"
                     },
                     c
                 )
@@ -1803,7 +1803,7 @@ impl App {
                                     .cwd
                                     .as_ref()
                                     .map(|cwd| shorten_home(cwd))
-                                    .unwrap_or_else(|| format!("pid {}", process.pid)),
+                                    .unwrap_or_else(|| "folder unknown".to_owned()),
                                 c
                             )
                         ]
@@ -2076,7 +2076,10 @@ impl App {
                 status.push(queue);
             }
             if let Some(received_at) = delivery.and_then(|d| d.received_at) {
-                status.push(format!("Last receipt {}", ago(Utc::now(), received_at)));
+                status.push(format!(
+                    "Last took a message {}",
+                    ago(Utc::now(), received_at)
+                ));
             }
             if !status.is_empty() {
                 body = body.push(small(status.join(" · "), c));
@@ -2107,14 +2110,14 @@ impl App {
             if let Some(binding) = agent.input_binding.as_ref().filter(|b| b.restart.exhausted) {
                 body = body.push(small(
                     format!(
-                        "The input receiver could not be started again after {} attempts. Queued input is kept.",
+                        "Message delivery could not be restarted after {} tries. Its messages are kept.",
                         binding.restart.attempts
                     ),
                     c,
                 ));
                 body = body.push(action(
                     "retry-receiver",
-                    "Retry receiver",
+                    "Restart message delivery",
                     self.connected
                         .is_ok()
                         .then(|| Message::RetryController(agent.id.to_string())),
@@ -2332,7 +2335,7 @@ impl App {
                 details = details.push(kv("Checkout", vcs.describe(), c));
             }
             if let Some(session) = &agent.session {
-                details = details.push(kv("Terminal", format!("{session:?}"), c));
+                details = details.push(kv("Terminal", session.describe(), c));
             }
             if let Some(guidance) =
                 super::send_readiness::reconnect(agent, &self.agents, "inspector", c)
@@ -3314,8 +3317,15 @@ impl App {
             for review in &channel.reviews {
                 body = body.push(
                     text(format!(
-                        "{:?} by {} on {}: {}",
-                        review.verdict, review.by_name, review.of_name, review.note
+                        "{} · {} on {}'s work: {}",
+                        match review.verdict {
+                            agentdocker_core::channel::Verdict::Approve => "Approved",
+                            agentdocker_core::channel::Verdict::Changes => "Changes asked for",
+                            agentdocker_core::channel::Verdict::Comment => "Comment",
+                        },
+                        review.by_name,
+                        review.of_name,
+                        review.note
                     ))
                     .size(14),
                 );
@@ -3407,7 +3417,7 @@ impl App {
             return list
                 .push(empty(
                     "No activity recorded yet",
-                    "Commits, joins, leases and notes from this project will appear here.",
+                    "Commits, arrivals, finished work and notes from this project appear here.",
                     None,
                     c,
                 ))
@@ -3457,9 +3467,9 @@ impl App {
 
     fn coordination(&self, c: Colors) -> Element<'_, Message> {
         let mut list = column![
-            heading("Resource coordination", 18),
+            heading("Files in use", 18),
             note(
-                "Leases describe cooperative access reported to AgentDocker.",
+                "What each agent has said it is working on. Others wait, or ask, before touching the same thing.",
                 c
             )
         ]
@@ -3476,8 +3486,16 @@ impl App {
             let left = remaining_fraction(lease.acquired_at, lease.expires_at, now);
             let mut body = column![
                 row![
-                    heading(lease.resource.to_string(), 15).width(Fill),
-                    pill(format!("{:?}", lease.mode), c.accent_soft, c.accent_ink, c)
+                    heading(resource_label(&lease.resource.to_string()), 15).width(Fill),
+                    pill(
+                        match lease.mode {
+                            agentdocker_core::LeaseMode::Exclusive => "Only this agent",
+                            agentdocker_core::LeaseMode::Shared => "Shared",
+                        },
+                        c.accent_soft,
+                        c.accent_ink,
+                        c
+                    )
                 ]
                 .spacing(10)
                 .align_y(Center),
@@ -3503,7 +3521,7 @@ impl App {
         }
         if count == 0 {
             list = list.push(empty(
-                "No leases held",
+                "Nothing in use",
                 "When an agent claims a file or resource in this project it appears here.",
                 None,
                 c,
@@ -3723,11 +3741,11 @@ impl App {
             // prompt; with a route that is paused or silent, they wait for
             // that to be put right.
             let (mark, word) = if ready {
-                (c.green, "Input receiver active".to_owned())
+                (c.green, "Receiving messages".to_owned())
             } else if reporting && paused {
-                (c.amber, "Connected · input receiver paused".to_owned())
+                (c.amber, "Connected · messages paused".to_owned())
             } else if reporting && stale {
-                (c.amber, "Connected · input receiver silent".to_owned())
+                (c.amber, "Connected · not heard from recently".to_owned())
             } else if reporting {
                 (
                     c.cyan,
@@ -3958,7 +3976,7 @@ impl App {
                         if runtime.name == "claude-code" {
                             "Hooks cannot start an idle turn. New Claude launches use Idle messages: On and require channel consent. Existing sessions need a safe reconnect; queued messages stay with their current record."
                         } else {
-                            "Hooks cannot start an idle turn. Native Codex sessions need a connected queue receiver. New launches here use Idle messages: On."
+                            "Hooks cannot start an idle turn. Codex sessions need their message delivery connected. New launches here use Idle messages: On."
                         },
                         c,
                     ));
@@ -4601,6 +4619,16 @@ impl App {
     }
 }
 
+/// A held resource as a person reads it: a path as a path (home as `~`),
+/// anything else as `kind: value`.
+fn resource_label(key: &str) -> String {
+    match key.split_once(':') {
+        Some(("path", path)) => shorten_home(std::path::Path::new(path)),
+        Some((kind, value)) => format!("{kind}: {value}"),
+        None => key.to_owned(),
+    }
+}
+
 /// How an ended session's undelivered messages read after "ended".
 fn undelivered_phrase(count: Option<usize>) -> String {
     match count {
@@ -4750,7 +4778,10 @@ mod tests {
             !app.tool_reports("codex"),
             "leases and coordination are not adapter contact"
         );
-        assert_eq!(app.input_readiness(&agent), "Idle delivery not verified");
+        assert_eq!(
+            app.input_readiness(&agent),
+            "Messages may wait for its next prompt"
+        );
         agent.adapter_contacts.insert(
             AdapterKind::Mcp,
             AdapterContact {
@@ -4766,7 +4797,7 @@ mod tests {
         );
         assert_eq!(
             app.input_readiness(&agent),
-            "Idle delivery not verified",
+            "Messages may wait for its next prompt",
             "MCP contact does not prove idle wake"
         );
         agent.input_delivery = Some(InputDelivery {
@@ -4777,10 +4808,7 @@ mod tests {
             received: None,
             received_at: None,
         });
-        assert_eq!(
-            app.input_readiness(&agent),
-            "Receiver active, awaiting first receipt"
-        );
+        assert_eq!(app.input_readiness(&agent), "Ready for messages");
         // Words queued behind a current receiver that no receipt covers are
         // waiting on the provider; an earlier receipt does not make them
         // delivered, and a receipt for them does, acknowledged or not.
@@ -4788,7 +4816,7 @@ mod tests {
         app.awaiting_receipt.insert(agent.id.to_string(), 2);
         assert_eq!(
             app.input_readiness(&agent),
-            "Queued · awaiting provider receipt"
+            "Sent · waiting for the agent to take it"
         );
         agent.input_delivery.as_mut().unwrap().received = Some(agentdocker_core::ReceivedInput {
             messages: vec!["m1".to_owned().into()],
@@ -4798,10 +4826,10 @@ mod tests {
         app.awaiting_receipt.insert(agent.id.to_string(), 1);
         assert_eq!(
             app.input_readiness(&agent),
-            "Queued · awaiting provider receipt"
+            "Sent · waiting for the agent to take it"
         );
         app.awaiting_receipt.insert(agent.id.to_string(), 0);
-        assert_eq!(app.input_readiness(&agent), "Delivery verified");
+        assert_eq!(app.input_readiness(&agent), "Receiving messages");
         agent.input_delivery.as_mut().unwrap().received = None;
         agent.input_delivery.as_mut().unwrap().received_at = None;
         app.queued_inputs.remove(agent.id.as_str());
@@ -4812,10 +4840,10 @@ mod tests {
             !app.tool_reports("codex"),
             "a new process cannot inherit contact"
         );
-        assert_eq!(app.input_readiness(&agent), "No recent receiver signal");
+        assert_eq!(app.input_readiness(&agent), "Not heard from recently");
         agent.process_started_at = Some(birth);
         agent.input_delivery.as_mut().unwrap().paused = true;
-        assert_eq!(app.input_readiness(&agent), "Delivery paused");
+        assert_eq!(app.input_readiness(&agent), "Not receiving messages");
         app.connected = Err("offline".into());
         assert!(!app.tool_reports("codex"));
         assert_eq!(app.input_readiness(&agent), "Readiness unavailable");

@@ -1795,7 +1795,16 @@ impl App {
     /// read them. The author is found by id, never by name: two records can
     /// share a name and only one of them wrote the line.
     fn journal_line(&self, entry: &agentdocker_core::JournalEntry) -> String {
-        let line = entry.line();
+        // The journal's own line is what agents read ("released" is their
+        // word for handing a lease back); a person reads what happened.
+        let mut line = entry.line();
+        if entry.kind == agentdocker_core::JournalKind::Release {
+            line = if entry.paths.is_empty() {
+                line.replacen(" released", " finished", 1)
+            } else {
+                line.replacen(" released ", " finished with ", 1)
+            };
+        }
         let Some(id) = entry.agent.as_ref() else {
             return line;
         };
@@ -2903,23 +2912,23 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                     })
                     .with_context(|| {
                         format!(
-                            "adopted {adopted} process(es); failed at pid {}",
-                            process.pid
+                            "Connected {adopted} session{} before one could not be connected",
+                            if adopted == 1 { "" } else { "s" }
                         )
                     })?;
                 adopted += 1;
             }
-            Some(Msg::Status(format!("adopted {adopted} process(es)")))
+            Some(Msg::Status(format!(
+                "Connected {adopted} session{}",
+                if adopted == 1 { "" } else { "s" }
+            )))
         }
         Cmd::Stop(agent) => {
             client.call(&Request::Stop {
-                agent: agent.clone(),
+                agent,
                 force: false,
             })?;
-            Some(Msg::Status(format!(
-                "stopping {}",
-                agent.chars().take(12).collect::<String>()
-            )))
+            Some(Msg::Status("Stopping the session…".into()))
         }
         Cmd::ResumeProvider(agent, blocked_at) => {
             let response = client.call(&Request::ResumeProvider { agent, blocked_at })?;
@@ -4928,7 +4937,7 @@ pub(crate) mod tests {
             );
             assert!(messages.iter().any(|message| match message {
                 Msg::Status(text) | Msg::Disconnected(text) =>
-                    text.contains("adopted 1 process(es); failed at pid 102"),
+                    text.contains("Connected 1 session before one could not be connected"),
                 _ => false,
             }));
         }

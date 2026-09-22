@@ -411,13 +411,13 @@ screen, project, session or conversation, or another notification — or
 losing the daemon ends the search, and a page that arrives late moves
 nothing.
 
-Tools shows **Input receiver active** only with a fresh report from a receiver
-bound to a live session. **Connected · messages wait for its next prompt**
+Tools shows **Receiving messages** only with a fresh report from the message
+delivery bound to a live session. **Connected · messages wait for its next prompt**
 requires recent MCP or hook contact and no input route at all — the session
 is in touch, but nothing reaches it while it is idle — and activity and
 configuration alone cannot establish it; a session whose receiver is paused
-reads **Connected · input receiver paused** and one whose receiver has stopped
-reporting **Connected · input receiver silent**, since a prompt does not
+reads **Connected · messages paused** and one whose delivery has stopped
+reporting **Connected · not heard from recently**, since a prompt does not
 release what such a route holds. Other states distinguish **Needs setup · missing …** (which says
 what: the MCP entry, the hooks, or the one or two hook events a release began
 to require, so a machine wired before that release reads as missing
@@ -428,10 +428,10 @@ Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
 **Set up**. **Details** holds versions, commands, per-channel configuration and
 each live session's contact and delivery evidence, plus **Review setup**,
 **Check connections** and **Setup history**; **Other supported tools** expands
-the inventory. Delivery distinguishes an active receiver awaiting its first
-receipt, verified delivery, paused delivery and stale evidence; with words
-queued behind a current receiver that no receipt names it reads **Queued ·
-awaiting provider receipt**, since an earlier receipt says nothing about them
+the inventory. Delivery distinguishes **Ready for messages** (nothing taken
+yet), **Receiving messages**, **Not receiving messages** and **Not heard from
+recently**; with words queued behind current delivery that no receipt names it
+reads **Sent · waiting for the agent to take it**, since an earlier receipt says nothing about them
 (a message still in the queue with a receipt from the current process counts
 as delivered). The session
 inspector shows the same readiness alongside the queue and latest receipt.
