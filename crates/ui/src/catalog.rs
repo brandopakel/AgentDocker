@@ -47,11 +47,14 @@ pub struct Catalog {
     pub dismissed: Vec<Dismissed>,
 }
 
-/// One dismissed notice: the session and the process it was about.
+/// One dismissed notice: the session and the process it was about, by birth
+/// and pid, so a resumed process whose birth is unknown is still a new notice.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Dismissed {
     pub agent: String,
     pub process_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 impl Catalog {
@@ -101,10 +104,11 @@ impl Catalog {
         &self,
         agent: &str,
         process_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        pid: Option<u32>,
     ) -> bool {
         self.dismissed
             .iter()
-            .any(|d| d.agent == agent && d.process_started_at == process_started_at)
+            .any(|d| d.agent == agent && d.process_started_at == process_started_at && d.pid == pid)
     }
 
     /// Dismiss a notice; false when it already was.
@@ -112,8 +116,9 @@ impl Catalog {
         &mut self,
         agent: &str,
         process_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        pid: Option<u32>,
     ) -> bool {
-        if self.is_dismissed(agent, process_started_at) {
+        if self.is_dismissed(agent, process_started_at, pid) {
             return false;
         }
         if self.dismissed.len() >= MAX_DISMISSED {
@@ -122,6 +127,7 @@ impl Catalog {
         self.dismissed.push(Dismissed {
             agent: agent.to_owned(),
             process_started_at,
+            pid,
         });
         true
     }
@@ -554,18 +560,24 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let mut catalog = Catalog::default();
         let at = Some(chrono::Utc::now());
-        assert!(catalog.dismiss("a", at));
-        assert!(!catalog.dismiss("a", at), "once is enough");
-        assert!(catalog.is_dismissed("a", at));
+        assert!(catalog.dismiss("a", at, Some(7)));
+        assert!(!catalog.dismiss("a", at, Some(7)), "once is enough");
+        assert!(catalog.is_dismissed("a", at, Some(7)));
         assert!(
-            !catalog.is_dismissed("a", None),
+            !catalog.is_dismissed("a", None, Some(7)),
             "another process is another notice"
         );
+        // Two processes of unknown birth are still told apart by pid.
+        assert!(catalog.dismiss("b", None, Some(1)));
+        assert!(!catalog.is_dismissed("b", None, Some(2)));
         for n in 0..MAX_DISMISSED + 10 {
-            catalog.dismiss(&format!("x{n}"), None);
+            catalog.dismiss(&format!("x{n}"), None, None);
         }
         assert_eq!(catalog.dismissed.len(), MAX_DISMISSED);
-        assert!(!catalog.is_dismissed("a", at), "the oldest go first");
+        assert!(
+            !catalog.is_dismissed("a", at, Some(7)),
+            "the oldest go first"
+        );
         catalog.save(home.path()).unwrap();
         let loaded = Catalog::load(home.path()).unwrap();
         assert_eq!(loaded.dismissed, catalog.dismissed);

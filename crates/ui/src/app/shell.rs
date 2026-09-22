@@ -1676,10 +1676,11 @@ impl App {
             }
             Message::DismissDelivery(id) => {
                 if let Some(agent) = self.agents.iter().find(|a| a.id.as_str() == id)
-                    && self
-                        .shell
-                        .catalog
-                        .dismiss(agent.id.as_str(), agent.process_started_at)
+                    && self.shell.catalog.dismiss(
+                        agent.id.as_str(),
+                        agent.process_started_at,
+                        agent.pid,
+                    )
                 {
                     self.shell.changed();
                 }

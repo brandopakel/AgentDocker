@@ -55,8 +55,12 @@ opens the session instead), and ended sessions that still hold messages no
 model took (*Codex · … ended with 2 messages not delivered*). Opening one of
 those says how many are kept and that resuming the conversation delivers them;
 **Dismiss** puts the notice away for that process without touching the
-messages, and a resumed session is a new notice. An ended session with nothing
-waiting is simply ended: it sits in Earlier, not in Needs you.
+messages, and a resumed session is a new notice. An ended session held by a
+provider limit can be dismissed the same way, since it can report no recovery.
+The count is the larger of the queue and the input the receiver could not
+prove it handed over, never their sum. Right after launch, before the first
+activity snapshot, nothing is shown rather than a guess. An ended session with
+nothing waiting is simply ended: it sits in Earlier, not in Needs you.
 Finished sessions keep their **Done** badge on the row. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in

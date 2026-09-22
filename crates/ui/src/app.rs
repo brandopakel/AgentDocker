@@ -501,6 +501,10 @@ pub struct App {
     /// is sent.
     pause_states: BTreeMap<String, PauseControl>,
     queued_inputs: BTreeMap<String, usize>,
+    /// Whether any activity snapshot has arrived. Before the first one
+    /// every queue count is unknown, and unknown must not read as "holding
+    /// messages" for every ended session on each launch.
+    activity_seen: bool,
     /// Per agent, the queued inputs no current receipt covers.
     awaiting_receipt: BTreeMap<String, usize>,
     session_log: Option<(String, Result<String, String>)>,
@@ -632,6 +636,7 @@ impl App {
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
+            activity_seen: false,
             awaiting_receipt: BTreeMap::new(),
             session_log: None,
         }
@@ -705,6 +710,7 @@ impl App {
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
+            activity_seen: false,
             awaiting_receipt: BTreeMap::new(),
             session_log: None,
             dismissing: std::collections::BTreeSet::new(),
@@ -1121,6 +1127,7 @@ impl App {
                 Msg::Pauses(pauses) => self.pauses = pauses,
                 Msg::Paused(request, result) => self.complete_pause(request, result),
                 Msg::Activity(activity) => {
+                    self.activity_seen = true;
                     self.queued_inputs = activity
                         .iter()
                         .filter_map(|a| a.queued_inputs.map(|count| (a.agent.to_string(), count)))

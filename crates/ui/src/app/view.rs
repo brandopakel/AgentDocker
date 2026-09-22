@@ -2056,20 +2056,25 @@ impl App {
                         "They are kept. Resume the conversation from its project folder and they are delivered to it; nothing is sent anywhere else.",
                         c,
                     ));
-                    if !self.notice_dismissed(agent) {
-                        body = body.push(action(
-                            "dismiss-delivery",
-                            "Dismiss",
-                            Some(Message::DismissDelivery(id.clone())),
-                            false,
-                        ));
-                    }
                 } else {
                     body = body.push(small(
                         "Session ended. Nothing is waiting to be delivered.",
                         c,
                     ));
                 }
+            }
+            // Every notice an ended session raises can be put away: it can
+            // report no recovery, so a block or a count would otherwise stay.
+            if !agent.status.is_live()
+                && self.delivery_needs_you(agent)
+                && !self.notice_dismissed(agent)
+            {
+                body = body.push(action(
+                    "dismiss-delivery",
+                    "Dismiss",
+                    Some(Message::DismissDelivery(id.clone())),
+                    false,
+                ));
             }
             if paused && agent.status.is_live() {
                 body = body.push(action(
