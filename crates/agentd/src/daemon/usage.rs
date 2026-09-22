@@ -59,14 +59,9 @@ fn roots(config: &UsageConfig) -> Result<Vec<Root>, String> {
             path,
         }))
         .collect();
-    if roots.len() > agentdocker_host::usage::discovery::MAX_ROOTS
-        || roots.iter().any(|root| !root.path.is_absolute())
-    {
-        return Err(
-            "effective usage discovery requires at most sixteen absolute roots, including defaults"
-                .into(),
-        );
-    }
+    // Use the walk's own root validation here so configuration/query errors
+    // explain every constraint before the worker attempts discovery.
+    Walk::new(roots.clone()).map_err(str::to_owned)?;
     Ok(roots)
 }
 
@@ -392,7 +387,7 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                 && collection.discovery_generation == Some(progress.generation)
         })
         .and_then(|(progress, collection)| {
-            Walk::resume(progress.frontier.clone())
+            Walk::resume(progress.frontier.clone(), &sources)
                 .ok()
                 .map(|walk| (progress, collection, walk))
         });
@@ -743,6 +738,26 @@ mod tests {
             Response::Usage { report } => report,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn usage_query_explains_a_parent_component_in_configured_roots() {
+        let (temp, daemon, _, _) = fixture();
+        let root = temp.path().join("logs/../logs");
+        let config = format!(
+            "[usage]\nenabled=true\nclaude_roots=[{}]\n",
+            serde_json::to_string(&root).unwrap()
+        );
+        std::fs::write(temp.path().join("agentd.toml"), config).unwrap();
+        let response = daemon.usage(Query::default()).await;
+        let Response::Error { code, message, .. } = response else {
+            panic!("invalid roots must not silently report empty usage");
+        };
+        assert_eq!(code, ErrorCode::Invalid);
+        assert_eq!(
+            message,
+            "usage discovery roots must not contain parent ('..') components; use a direct absolute path"
+        );
     }
 
     #[tokio::test]

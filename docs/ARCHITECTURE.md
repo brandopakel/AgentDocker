@@ -1017,7 +1017,9 @@ Initial collector and CLI/MCP/UI are merged in #194 (`615ae79`). Clean source `8
 Final source review and integration are complete; activation on the serving
 coordinator and broader acceptance remain. The opt-in `[usage]` section in
 `agentd.toml` accepts `enabled = true`, `retention_days = 30` (1–3650), and
-optional absolute `codex_roots` / `claude_roots`. Empty lists use the standard
+optional absolute `codex_roots` / `claude_roots` without parent (`..`) path
+components. Root validation is shared by configuration, queries and discovery;
+invalid roots return an explanatory `invalid` query error. Empty lists use the standard
 provider log directories. Disabled collection reports unknown coverage and never
 scans transcripts in a private test daemon implicitly.
 
@@ -1214,7 +1216,9 @@ captured files. Each page, its coverage and its event commit together; consuming
 a file removes its manifest entry in the same transaction as its samples and
 file cursor. A daemon restart resumes the same generation and snapshot watermark,
 including any remaining files, rather than starting directory discovery again.
-Changed configured roots start a new generation. On restart, open directories
+Changed configured roots start a new generation. A saved frontier must match the
+configured root order and runtime, and its remaining roots must be the matching
+suffix; a rewritten frontier cannot select unrelated directories. On restart, open directories
 replay their saved entry-name/type fingerprints in bounded passes, ancestors
 first. A changed prefix, redirected directory or unreadable frontier leaves
 coverage incomplete; it never authorizes skipping unverified entries. Directory
@@ -1223,7 +1227,9 @@ snapshot, and the next generation retries. Completed file-prefix proofs remain
 ephemeral and are reverified after restart. Only paths, accounting metadata and
 fingerprints persist, never transcript contents. Discovery keeps its existing
 16-root, 100,000-entry, 32-depth and 512-entry/25 ms cooperative page bounds;
-replaying a large directory can require several pages after each restart. The
+replaying a large directory takes time proportional to its saved entry count
+and can take seconds after each restart (up to roughly 25 seconds for 100,000
+entries with the collector's inter-page waits, excluding slower filesystem I/O). The
 pending-file lookup uses an indexed priority order; completion clears the frontier
 and remaining manifest state. Long-term sample/baseline retention is separate.
 

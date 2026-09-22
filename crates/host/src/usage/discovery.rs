@@ -68,7 +68,14 @@ struct Directory {
 }
 
 fn valid_path(path: &std::path::Path) -> bool {
-    path.is_absolute() && path.to_str().is_some_and(|p| p.len() <= 8192)
+    path.is_absolute()
+        && path.to_str().is_some_and(|p| p.len() <= 8192)
+        && !path.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
 }
 
 impl Directory {
@@ -124,8 +131,28 @@ pub struct Walk {
 
 impl Walk {
     pub fn new(roots: Vec<Root>) -> Result<Self, &'static str> {
-        if roots.len() > MAX_ROOTS || roots.iter().any(|root| !valid_path(&root.path)) {
-            return Err("usage discovery requires at most sixteen absolute roots");
+        if roots.len() > MAX_ROOTS {
+            return Err(
+                "usage discovery supports at most sixteen roots, including provider defaults",
+            );
+        }
+        for root in &roots {
+            if !root.path.is_absolute() {
+                return Err("usage discovery roots must be absolute paths");
+            }
+            if root.path.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            }) {
+                return Err(
+                    "usage discovery roots must not contain parent ('..') components; use a direct absolute path",
+                );
+            }
+            if !valid_path(&root.path) {
+                return Err("usage discovery root paths must be UTF-8 and at most 8192 bytes");
+            }
         }
         Ok(Self {
             roots: roots.into(),
@@ -157,7 +184,24 @@ impl Walk {
         }
     }
 
-    pub fn resume(saved: Checkpoint) -> Result<Self, &'static str> {
+    pub fn resume(saved: Checkpoint, roots: &[Root]) -> Result<Self, &'static str> {
+        let Some(started) = roots.len().checked_sub(saved.roots.len()) else {
+            return Err("usage discovery checkpoint has unrelated roots");
+        };
+        if roots.len() > MAX_ROOTS
+            || roots.iter().any(|r| !valid_path(&r.path))
+            || !roots[started..].iter().eq(saved.roots.iter())
+            || saved.stack.first().is_some_and(|directory| {
+                started
+                    .checked_sub(1)
+                    .and_then(|index| roots.get(index))
+                    .is_none_or(|root| {
+                        root.path != directory.path || root.runtime != directory.runtime
+                    })
+            })
+        {
+            return Err("usage discovery checkpoint has unrelated roots");
+        }
         if saved.version != 1
             || saved.roots.len() > MAX_ROOTS
             || saved.stack.len() > MAX_DEPTH
@@ -372,17 +416,17 @@ mod tests {
         for n in 0..900 {
             fs::write(nested.join(format!("{n}.jsonl")), "").unwrap();
         }
-        let mut walk = Walk::new(vec![Root {
+        let roots = vec![Root {
             runtime: Runtime::Claude,
             path: temp.path().to_owned(),
-        }])
-        .unwrap();
+        }];
+        let mut walk = Walk::new(roots.clone()).unwrap();
         let first = walk.next_page();
         assert!(!first.finished);
         assert!(!first.sources.is_empty());
         let saved = serde_json::to_vec(&walk.checkpoint()).unwrap();
         drop(walk);
-        let mut resumed = Walk::resume(serde_json::from_slice(&saved).unwrap()).unwrap();
+        let mut resumed = Walk::resume(serde_json::from_slice(&saved).unwrap(), &roots).unwrap();
         let mut seen: std::collections::BTreeSet<_> =
             first.sources.into_iter().map(|s| s.path).collect();
         loop {
@@ -407,15 +451,15 @@ mod tests {
         for n in 0..600 {
             fs::write(temp.path().join(format!("{n}.jsonl")), "").unwrap();
         }
-        let mut walk = Walk::new(vec![Root {
+        let roots = vec![Root {
             runtime: Runtime::Codex,
             path: temp.path().to_owned(),
-        }])
-        .unwrap();
+        }];
+        let mut walk = Walk::new(roots.clone()).unwrap();
         let first = walk.next_page();
         let saved = walk.checkpoint();
         fs::remove_file(&first.sources[0].path).unwrap();
-        let mut resumed = Walk::resume(saved).unwrap();
+        let mut resumed = Walk::resume(saved, &roots).unwrap();
         loop {
             let page = resumed.next_page();
             assert!(page.sources.is_empty());
@@ -433,17 +477,76 @@ mod tests {
     #[test]
     fn checkpoint_bounds_are_checked_before_opening_directories() {
         let temp = tempfile::tempdir().unwrap();
-        let walk = Walk::new(vec![Root {
+        let roots = vec![Root {
             runtime: Runtime::Claude,
             path: temp.path().to_owned(),
-        }])
-        .unwrap();
+        }];
+        let walk = Walk::new(roots.clone()).unwrap();
         let mut saved = walk.checkpoint();
         saved.entries = MAX_ENTRIES + 2;
-        assert!(Walk::resume(saved).is_err());
+        assert!(Walk::resume(saved, &roots).is_err());
         let mut saved = walk.checkpoint();
         saved.roots[0].path = PathBuf::from("relative");
-        assert!(Walk::resume(saved).is_err());
+        assert!(Walk::resume(saved, &roots).is_err());
+    }
+
+    #[test]
+    fn resumed_frontier_is_bound_to_the_configured_root_order_and_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let current = temp.path().join("current");
+        fs::create_dir(&current).unwrap();
+        for n in 0..600 {
+            fs::write(current.join(format!("{n}.jsonl")), "").unwrap();
+        }
+        let roots: Vec<_> = [
+            temp.path().join("missing"),
+            current.clone(),
+            temp.path().join("later"),
+        ]
+        .into_iter()
+        .map(|path| Root {
+            runtime: Runtime::Claude,
+            path,
+        })
+        .collect();
+        let mut walk = Walk::new(roots.clone()).unwrap();
+        assert!(!walk.next_page().finished);
+        let saved = walk.checkpoint();
+        assert_eq!(saved.roots.len(), 1);
+        assert_eq!(saved.stack[0].path, current);
+        assert!(Walk::resume(saved.clone(), &roots).is_ok());
+
+        let mut changed = saved.clone();
+        changed.stack[0].path = temp.path().to_owned();
+        assert!(Walk::resume(changed, &roots).is_err());
+        let mut changed = saved.clone();
+        changed.stack[0].runtime = Runtime::Codex;
+        assert!(Walk::resume(changed, &roots).is_err());
+        let mut changed = saved.clone();
+        changed.roots[0].path = temp.path().join("unconfigured");
+        assert!(Walk::resume(changed, &roots).is_err());
+        let mut changed = saved.clone();
+        changed.stack.push(DirectoryCheckpoint {
+            path: current.join(".."),
+            depth: 1,
+            ..changed.stack[0].clone()
+        });
+        assert!(Walk::resume(changed, &roots).is_err());
+        assert!(
+            Walk::new(vec![Root {
+                runtime: Runtime::Claude,
+                path: current.join("..")
+            }])
+            .is_err()
+        );
+
+        let mut resumed = Walk::resume(saved, &roots).unwrap();
+        while !resumed.next_page().finished {}
+        assert!(
+            Walk::resume(resumed.checkpoint(), &roots)
+                .unwrap()
+                .finished()
+        );
     }
 
     #[cfg(unix)]
@@ -456,18 +559,18 @@ mod tests {
         for n in 0..600 {
             fs::write(child.join(format!("{n}.jsonl")), "").unwrap();
         }
-        let mut walk = Walk::new(vec![Root {
+        let roots = vec![Root {
             runtime: Runtime::Claude,
             path: root.clone(),
-        }])
-        .unwrap();
+        }];
+        let mut walk = Walk::new(roots.clone()).unwrap();
         let first = walk.next_page();
         assert!(!first.sources.is_empty());
         let saved = walk.checkpoint();
         let moved = temp.path().join("moved");
         fs::rename(&root, &moved).unwrap();
         std::os::unix::fs::symlink(&moved, &root).unwrap();
-        let page = Walk::resume(saved).unwrap().next_page();
+        let page = Walk::resume(saved, &roots).unwrap().next_page();
         assert!(page.finished && !page.complete);
         assert!(page.sources.is_empty());
         assert!(
