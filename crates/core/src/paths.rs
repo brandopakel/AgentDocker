@@ -212,9 +212,28 @@ pub fn daemon_log(home: &Path) -> PathBuf {
     home.join("agentd.log")
 }
 
+/// The earlier half of a captured log: `<name>.log.1` beside `<name>.log`,
+/// where a writer that reached its cap moved what it had written so far.
+pub fn rotated_log(log: &Path) -> PathBuf {
+    let mut name = log
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".1");
+    log.with_file_name(name)
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_rotated_log_sits_beside_the_live_one() {
+        assert_eq!(
+            rotated_log(Path::new("/home/me/.agentdocker/logs/abc.log")),
+            PathBuf::from("/home/me/.agentdocker/logs/abc.log.1")
+        );
+    }
 
     #[test]
     fn long_homes_get_a_short_stable_socket_directory() {
