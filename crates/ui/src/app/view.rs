@@ -1380,13 +1380,20 @@ impl App {
                 } else {
                     ("message delivery needs review", "review", "Review")
                 };
+            // Review opens the session with its delivery review unfolded;
+            // Details opens the session, whose header carries the block.
+            let open = if control == "review" {
+                Message::ReviewSession(agent.id.to_string())
+            } else {
+                Message::OpenSession(agent.id.to_string())
+            };
             items.push((
                 dot(c.amber, 8.0, c),
                 format!("{}: {reason}", self.display_name(agent)),
                 action(
                     format!("needs-you-{control}-{}", agent.id),
                     label,
-                    Some(Message::OpenSession(agent.id.to_string())),
+                    Some(open),
                     false,
                 ),
             ));

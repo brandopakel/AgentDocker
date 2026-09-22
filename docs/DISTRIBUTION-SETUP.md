@@ -118,7 +118,7 @@ notifications are not permitted: Notifications are not allowed for this applicat
 That probe did not isolate signing from notification authorization and bundle
 registration. Its result does not establish that paying for membership or
 adding a signature alone fixes posting or navigation. The
-[notification audit](NOTIFICATION-ROUTING-AUDIT.md) keeps those checks separate:
+notification audit (NOTIFICATION-ROUTING-AUDIT.md in git history) keeps those checks separate:
 actual Notification Center clicks must open the right destination while the app
 is active, backgrounded or closed, including retained drafts and expired targets.
 Physical installed-app acceptance remains open.
@@ -126,14 +126,45 @@ Physical installed-app acceptance remains open.
 The packaging pipeline accepts `--identity` and `--notary-profile` through
 `packaging/desktop/package.py`. Local previews can be ad-hoc signed; the stable
 protected-tag workflow requires a Developer ID Application identity and
-successful notarization. Follow [release automation](RELEASE-AUTOMATION.md) for
-private credential configuration. Verify signing, notarization, stapling and
+successful notarization. The private credential configuration is the
+repository secrets above. Verify signing, notarization, stapling and
 Gatekeeper against the final app/DMG on an independent Mac before publication.
 These acceptance steps remain necessary after the credentials are configured.
 
 The source-built app and CLI can continue local testing while release setup is
 unfinished. The current published CLI/formula remains v0.1.0; the newer installed
 local app is identified by its source commit, not that shared version string.
+
+## Windows portable preview
+
+The Windows packaging path targets `x86_64-pc-windows-msvc`. It builds a ZIP
+with `agentdocker-ui.exe`, `agentdocker.exe` and `agentd.exe` together in the
+`AgentDocker` folder, build metadata, licenses and opening instructions. The
+packager checks native-build hashes again after copying and the PE x64 executable headers before
+publishing the directory. The manifest and sidecar checksum identify the exact
+archive; this preview is unsigned, without Authenticode or installer/update
+support. Tag release feeds remain macOS/Linux until the Windows distribution
+path is accepted. Windows ARM64 is not claimed.
+
+On a native Windows build host, from the repository root in PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force artifacts | Out-Null
+python scripts/build_native.py --target x86_64-pc-windows-msvc > artifacts/native-build.json
+python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package
+```
+
+The supplied build manifest must match the source-input and executable hashes
+in the binary directory's manifest. The Windows workflow runs this trial before exposing its
+`windows-desktop-preview-x86_64` artifact. It verifies the ZIP, extracts it
+outside the checkout into a path containing spaces and Unicode, verifies every
+executable against the manifest, removes the original staging payload, and runs
+the daemon/CLI/terminal and fresh-home GUI trial on those extracted files.
+The smoke's executable hashes must match the archive's hashes. A checksum,
+runner trial and CI artifact do not establish publisher authentication or
+clean-machine/provider acceptance. Those tests and the user installer, service,
+update and rollback path remain in [Remaining work](REMAINING-WORK.md).
+The Windows workflow ran this trial on `13e87591` (run 35666723079): 284 native tests and 51/51 steps on the extracted bytes; the line is in the [verification index](verification/INDEX.md).
 
 ## Order
 

@@ -46,7 +46,7 @@ The clean `72942b0e` documentation audit (runtime source `14f1c519`) passed
 six shared/disjoint 1/10/100-client socket cases. The 100-client disjoint case
 completed 10,000 claim/release cycles with p95 29.17 ms and p99 34.90 ms.
 Before/after source and executable manifests matched. The
-[existing integrated record](verification/2026-09-12-integrated-desktop.json)
+[existing integrated record](verification/INDEX.md)
 retains every case's counts, timing, provenance and the private artifact hash.
 
 The build campaign had an exclusive lease; actual provider sessions remained
@@ -98,7 +98,7 @@ A managed-workspace launch failure keeps the original daemon response even when 
 
 Native graphical failures record connection state, inventory count, whether the expected fixture was discovered, screenshot-request state, update ticks and elapsed time. These fields help distinguish discovery/connection failures from rendering failures without recording discovered command lines. A passing rerun does not diagnose a prior failure.
 
-The native transport check retains its refused observation in `capture/transport-failure.json`: process index/PID/exit status, `lsof` return code and stdout/stderr capped at 2,048 characters each, including partial timeout output. If that file cannot be written, the observation and capture error remain in the transport exception. The workflow result records the original exception before cleanup; cleanup and reporting failures are retained separately and cannot replace it, including a closed or unencodable diagnostic stream. A cleanup failure also invalidates an otherwise passing result. Any unexpected inspector result still fails acceptance. The [September 15 Linux ARM refusal](verification/2026-09-12-integrated-desktop.json) predates these diagnostics and remains unexplained; the original helper discarded the evidence needed to distinguish an observed TCP socket from an inspection error.
+The native transport check retains its refused observation in `capture/transport-failure.json`: process index/PID/exit status, `lsof` return code and stdout/stderr capped at 2,048 characters each, including partial timeout output. If that file cannot be written, the observation and capture error remain in the transport exception. The workflow result records the original exception before cleanup; cleanup and reporting failures are retained separately and cannot replace it, including a closed or unencodable diagnostic stream. A cleanup failure also invalidates an otherwise passing result. Any unexpected inspector result still fails acceptance. The [September 15 Linux ARM refusal](verification/INDEX.md) predates these diagnostics and remains unexplained; the original helper discarded the evidence needed to distinguish an observed TCP socket from an inspection error.
 
 **Keep the graphical fixture visible and retain renderer diagnostics.**
 The current desktop uses Iced with tiny-skia. Run `scripts/desktop_smoke.py` for
@@ -158,7 +158,7 @@ are diagnostic evidence: logging can affect timings, and the five-second read
 timeout and no-retry policy are unchanged.
 
 The integrated `e008831` disjoint 100-client campaign failed at release-response
-read after its other five workloads completed. Its [source-bound failure record](verification/2026-09-07-integration-benchmark-failure.json)
+read after its other five workloads completed. Its [source-bound failure record](verification/INDEX.md)
 remains open; empty daemon stderr did not distinguish state contention from
 storage or host scheduling delays. Capture new evidence before assigning a
 cause or treating a later successful run as a resolution.
@@ -193,13 +193,13 @@ Cargo commands do not invoke the storage preflight; run
 `python3 scripts/build_storage.py` first. This bounds the campaign workflow,
 not all disk use by arbitrary programs.
 
-The [first state timing diagnostic campaign](verification/2026-09-07-state-timing-diagnostic.json)
+The [first state timing diagnostic campaign](verification/INDEX.md)
 passed at `ef3fd7b` without reaching the 250 ms logging threshold. Its eight
 Bencher reports use a separate diagnostic testbed. The earlier integrated
 timeout remains unresolved; compare this campaign only with its recorded mode
 and shared-runner limitations in mind.
 
-The [d06a117 macOS failure](verification/2026-09-07-macos-capture-failure.json)
+The [d06a117 macOS failure](verification/INDEX.md)
 records a capture request followed by failed `Occluded` surface acquisitions,
 then a visible, focused, unoccluded viewport at timeout. The pinned eframe
 0.36.1 source drains capture commands before acquisition, and egui-wgpu drops
@@ -268,5 +268,5 @@ user's real app.
 The September 21 snapshot-only candidate `e609a334` passed the full gate and
 580 rendered workflow steps, but its installed 60-second observation was 17.66%
 of one core versus the prior 17.01%. Keep that unsuccessful comparison in the
-existing [integrated record](verification/2026-09-12-integrated-desktop.json);
+existing [integrated record](verification/INDEX.md);
 passing correctness tests does not establish a CPU improvement.

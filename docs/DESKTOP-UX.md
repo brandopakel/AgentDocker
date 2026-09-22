@@ -47,7 +47,9 @@ belongs to another app, the action explains that the original app is needed.
 This does not start a second copy of an agent.
 
 **Needs you** shows unanswered questions (**Answer**) and paused message
-delivery (**Review**). Finished sessions keep their **Done** badge on the row. Question previews use at
+delivery (**Review**, which opens that session with its delivery review
+already unfolded and its log requested — also when the session was already
+selected). Finished sessions keep their **Done** badge on the row. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
 Inbox. The first three items are shown; **Show more** expands the same list and
