@@ -23,7 +23,9 @@ so the preview feed also has one fixed address, the `channel-preview` release
 (`releases/download/channel-preview/updates-preview.json`), which only moves
 forward. `agentdocker desktop update` without `--feed` reads the stable feed,
 plus that one on a prerelease installation or with `--local-preview`, and takes
-the newer; a preview build downloads only with `--local-preview`. A channel with
+the newer. A prerelease installation takes the next preview without new
+consent; a stable one downloads a preview build only with `--local-preview`,
+and `file://` sources always need that flag. A channel with
 nothing published (404) is reported as `published: false`, not as a failure. Prereleases leave the stable latest-release
 endpoint and Homebrew tap unchanged; older maintenance releases cannot move
 either backwards.

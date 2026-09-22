@@ -209,16 +209,19 @@ fn feeds_for(explicit: Option<&str>, local_preview: bool, baseline: &str) -> Res
     Ok(feeds)
 }
 
-/// Whether a fetch failed because nothing is published at that address:
-/// an HTTP 404 from curl (`--fail` makes it an error), or a local fixture
-/// file that does not exist.
-fn not_published(error: &anyhow::Error) -> bool {
-    let text = format!("{error:#}");
-    text.contains("returned error: 404")
-        || error
+/// Whether a fetch failed because nothing is published at that address: an
+/// HTTP 404 for an `https://` feed (curl's `--fail` makes it an error), or a
+/// missing file for a `file://` fixture. A missing `curl` is also an io
+/// NotFound, so that arm is for `file://` alone: a machine that cannot
+/// fetch anything must not be told nothing was published.
+fn not_published(url: &str, error: &anyhow::Error) -> bool {
+    if url.starts_with("file://") {
+        return error
             .chain()
             .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
-            .any(|io| io.kind() == std::io::ErrorKind::NotFound)
+            .any(|io| io.kind() == std::io::ErrorKind::NotFound);
+    }
+    format!("{error:#}").contains("returned error: 404")
 }
 
 fn file_sha256(path: &Path) -> Result<String> {
@@ -573,7 +576,7 @@ fn run_with_home(
             // A channel nothing has been published to yet is an answer, not
             // a failure; anything else (no network, a refused TLS
             // handshake, a malformed URL) is.
-            if not_published(&error) {
+            if not_published(url, &error) {
                 unpublished.push(url.clone());
                 continue;
             }
@@ -581,8 +584,10 @@ fn run_with_home(
         }
         let feed: Feed = serde_json::from_slice(&std::fs::read(&feed_file)?)
             .context("the update feed is not valid JSON of the expected shape")?;
-        // Reading a preview feed is allowed so a check can say a preview
-        // exists; downloading one still needs --local-preview (below).
+        // Reading a preview feed is always allowed here, so `select`'s channel
+        // gate does not refuse it: a check has to be able to say a preview
+        // exists. The consent to download one is checked below
+        // (`preview_consent_required`), before anything is staged.
         let release = select(&feed, target, options.local_preview, true)?;
         let newer = match &found {
             None => true,
@@ -599,6 +604,7 @@ fn run_with_home(
             "{}",
             serde_json::to_string_pretty(&json!({"update": {
                 "feeds": feeds,
+                "unpublished": unpublished,
                 "published": false,
                 "installed_version": installed,
                 "running_version": running,
@@ -609,7 +615,14 @@ fn run_with_home(
         return Ok(());
     };
     let update_available = compare_versions(&release.version, baseline)? == Ordering::Greater;
-    let preview_consent_required = feed.channel == "preview" && !options.local_preview;
+    // A prerelease installation already chose the preview channel: moving
+    // it from one beta to the next needs no new consent. A stable one
+    // needs --local-preview before a preview build is downloaded, and the
+    // installer's acceptance of an ad-hoc signature follows the same
+    // consent. file:// sources stay behind the explicit flag alone.
+    let on_preview = !parse_version(baseline)?.pre.is_empty();
+    let preview_consent = options.local_preview || (feed.channel == "preview" && on_preview);
+    let preview_consent_required = feed.channel == "preview" && !preview_consent;
     let minimum_schema = super::required_state_schema(active, state_home)?;
     ensure!(
         !update_available || release.state_schema >= minimum_schema,
@@ -629,6 +642,7 @@ fn run_with_home(
     };
     let mut update = json!({
         "feed": feed_url,
+        "unpublished": unpublished,
         "published": true,
         "channel": feed.channel,
         "policy": feed.policy,
@@ -737,7 +751,7 @@ fn run_with_home(
         source,
         candidate.clone(),
         !options.apply,
-        options.local_preview,
+        preview_consent,
         Some(candidate.id.clone()),
         expect_current,
         options.socket.clone(),
@@ -841,13 +855,27 @@ mod tests {
             true,
         )
         .unwrap_err();
-        assert!(not_published(&error), "{error:#}");
-        assert!(not_published(&anyhow::anyhow!(
-            "download of https://x failed: curl: (56) The requested URL returned error: 404"
-        )));
-        assert!(!not_published(&anyhow::anyhow!(
-            "download of https://x failed: curl: (6) Could not resolve host: github.com"
-        )));
+        assert!(
+            not_published(&format!("file://{}", missing.display()), &error),
+            "{error:#}"
+        );
+        assert!(not_published(
+            "https://x",
+            &anyhow::anyhow!(
+                "download of https://x failed: curl: (56) The requested URL returned error: 404"
+            )
+        ));
+        assert!(!not_published(
+            "https://x",
+            &anyhow::anyhow!(
+                "download of https://x failed: curl: (6) Could not resolve host: github.com"
+            )
+        ));
+        // No curl on this machine is an io NotFound too; for an https feed
+        // it is a failure to fetch, not an empty channel.
+        let no_curl = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound))
+            .context("cannot run curl to fetch the update");
+        assert!(!not_published("https://x", &no_curl));
         // The whole check reports it as unpublished and exits cleanly.
         let layout = Layout::new(tmp.path().join("uninstalled")).unwrap();
         run_with_home(

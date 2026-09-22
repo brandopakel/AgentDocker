@@ -3240,10 +3240,32 @@ fn desktop_with_timeout(args: &[String], timeout: Duration) -> Result<serde_json
 /// is not an installation that failed, and curl's exit codes are not the
 /// reason a person can act on. The CLI's own text is the fallback.
 pub(crate) fn desktop_failure(args: &[String], output: &str) -> String {
-    let operation = args
-        .iter()
-        .find(|arg| !arg.starts_with("--") && !arg.contains('/'))
-        .map(String::as_str);
+    // The operation is the first bare word that is not a flag's value, so
+    // `--prefix <dir>` (or a future `--channel preview`) is never taken for it.
+    let mut words = args.iter().map(String::as_str);
+    let mut operation = None;
+    while let Some(arg) = words.next() {
+        if let Some(flag) = arg.strip_prefix("--") {
+            if !flag.contains('=')
+                && matches!(
+                    flag,
+                    "prefix"
+                        | "from"
+                        | "feed"
+                        | "keep"
+                        | "channel"
+                        | "expect-plan"
+                        | "expect-release"
+                        | "expect-current"
+                )
+            {
+                words.next();
+            }
+            continue;
+        }
+        operation = Some(arg);
+        break;
+    }
     let checking = args.iter().any(|arg| arg == "--check");
     let what = match operation {
         Some("update") if checking => "Could not check for updates",
@@ -3540,6 +3562,14 @@ pub(crate) mod tests {
         assert!(
             !super::desktop_failure(&check, "Error: x").starts_with("Installation failed"),
             "a check is not an installation"
+        );
+        let with_value: Vec<String> = ["--prefix", "status", "update", "--check"]
+            .map(String::from)
+            .into();
+        assert!(
+            super::desktop_failure(&with_value, "Error: x")
+                .starts_with("Could not check for updates"),
+            "a flag's value is never the operation"
         );
     }
 

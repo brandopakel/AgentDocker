@@ -441,9 +441,10 @@ A malformed preference file is preserved and reported rather than silently reset
 the app is open; a known update appears in the footer. Download and installation
 remain explicit actions. A check reads the stable channel and, on a preview
 (beta) installation or once **Allow preview builds** is on, the preview channel
-too, and offers the newer: a beta user is offered the final release. A newer
-preview build is shown with its version and downloads only after **Allow
-preview builds**. When nothing has been published yet the check says **No
+too, and offers the newer: a beta user is offered the final release. A beta
+installation moves from one preview build to the next without asking again;
+on a stable installation a newer preview build is shown with its version and
+downloads only after **Allow preview builds**. When nothing has been published yet the check says **No
 update published yet**; a check that fails says **Could not check for
 updates** and why (no connection to GitHub, say), never *Installation failed*.
 
