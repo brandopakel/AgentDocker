@@ -16,9 +16,14 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
 BINARIES = ("agentdocker", "agentd", "agentdocker-ui")
+
+
+def binary_names(target):
+    return tuple(name + (".exe" if "windows" in target else "") for name in BINARIES)
 
 
 def run(*args, **kwargs):
@@ -38,6 +43,7 @@ def validate_inputs(args):
     supported = {
         "aarch64-apple-darwin", "x86_64-apple-darwin", "universal-apple-darwin",
         "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc",
     }
     if args.target not in supported:
         raise ValueError("unsupported desktop target")
@@ -47,6 +53,8 @@ def validate_inputs(args):
         raise ValueError("notarization requires a Developer ID Application identity")
     if args.identity and args.identity != "-" and "apple-darwin" not in args.target:
         raise ValueError("Developer ID signing is only for macOS")
+    if "apple-darwin" not in args.target and (args.notary_profile or args.dmg):
+        raise ValueError("notarization and DMG output are only for macOS")
     if args.build_number < 1:
         raise ValueError("build number must be positive")
     manifests = []
@@ -70,9 +78,10 @@ def validate_inputs(args):
         if manifest.get("target") != expected_target:
             raise ValueError("build provenance target does not match the package")
         manifests.append(manifest)
-        for name in BINARIES:
+        for name in binary_names(args.target):
             path = directory / name
-            if not path.is_file() or path.is_symlink() or not path.stat().st_mode & 0o111:
+            if (not path.is_file() or path.is_symlink()
+                    or ("windows" not in args.target and not path.stat().st_mode & 0o111)):
                 raise ValueError(f"missing executable regular binary: {path}")
             if sha256(path) != manifest.get("binary_sha256", {}).get(name):
                 raise ValueError(f"binary changed after its verified build: {name}")
@@ -99,7 +108,7 @@ def metadata(args):
 
 def copy_binaries(args, destination):
     destination.mkdir(parents=True)
-    for name in BINARIES:
+    for name in binary_names(args.target):
         source = args.binary_dir / name
         target = destination / name
         if args.second_binary_dir:
@@ -113,12 +122,37 @@ def copy_binaries(args, destination):
             expected = 62 if args.target.startswith("x86_64-") else 183
             if len(header) != 64 or header[:6] != b"\x7fELF\x02\x01" or struct.unpack_from("<H", header, 18)[0] != expected:
                 raise ValueError(f"{name} does not match the declared Linux architecture")
+        elif "windows" in args.target:
+            validate_windows_binary(target)
         else:
             actual = set(subprocess.check_output(["/usr/bin/lipo", "-archs", str(target)], text=True).split())
             expected = {"arm64", "x86_64"} if args.second_binary_dir else {
                 "arm64" if args.target.startswith("aarch64-") else "x86_64"}
             if actual != expected:
                 raise ValueError(f"{name} has unexpected architectures: {actual}")
+
+
+def validate_windows_binary(path):
+    """Check the PE machine/image headers, not just an .exe filename.
+
+    https://learn.microsoft.com/en-us/windows/win32/debug/pe-format
+    This is an architecture check; the native archive trial checks execution.
+    """
+    with path.open("rb") as binary:
+        dos = binary.read(64)
+        if len(dos) != 64 or dos[:2] != b"MZ":
+            raise ValueError(f"{path.name} is not a Windows PE executable")
+        offset = struct.unpack_from("<I", dos, 60)[0]
+        if offset < 64 or offset > path.stat().st_size - 26:
+            raise ValueError(f"{path.name} has a truncated Windows PE header")
+        binary.seek(offset)
+        header = binary.read(26)
+        machine = struct.unpack_from("<H", header, 4)[0]
+        optional_size, flags, magic = struct.unpack_from("<HHH", header, 20)
+        if (header[:4] != b"PE\0\0" or machine != 0x8664 or magic != 0x20B
+                or optional_size < 112 or offset + 24 + optional_size > path.stat().st_size
+                or not flags & 0x0002 or flags & 0x2000):
+            raise ValueError(f"{path.name} does not match the declared Windows x64 executable architecture")
 
 
 def zip_app(app, archive):
@@ -232,8 +266,49 @@ def linux(args, stage, info):
     return app, archive, app / "bin"
 
 
-def package(args):
+def windows(args, stage, info):
+    # A portable preview: no system configuration, updater or service implied.
+    info["signing"] = "unsigned"
+    info["distribution"] = "portable-preview"
+    app = stage / "AgentDocker"
+    copy_binaries(args, app)
+    actual_hashes = {name: sha256(app / name) for name in binary_names(args.target)}
+    if actual_hashes != info["binary_sha256"]:
+        raise ValueError("Windows binary changed between build verification and packaging")
+    copy_licenses(app / "licenses")
+    shutil.copyfile(ROOT / "LICENSE", app / "licenses/LICENSE-AgentDocker.txt")
+    (app / "build.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+    (app / "README.txt").write_text(
+        "AgentDocker for Windows x64 - unsigned portable preview\n\n"
+        "Extract the entire ZIP into a folder you own before opening agentdocker-ui.exe.\n"
+        "Keep agentdocker.exe and agentd.exe beside it. No Rust or Python is needed.\n"
+        "The command line is .\\agentdocker.exe from PowerShell in that folder.\n\n"
+        "This preview has no installer, automatic updater or Windows service.\n"
+        "Before removing or replacing this folder, finish managed work, quit the app,\n"
+        "and run .\\agentdocker.exe daemon stop to stop its sessions and daemon.\n"
+        "The app's per-user state is stored separately and is preserved.\n"
+        "Windows may show an unrecognized-app warning: this preview is not signed.\n"
+        "Only run a download from the AgentDocker repository whose checksum you verified.\n\n"
+        "Platform limitations and trial reporting:\n"
+        "https://github.com/brandopakel/AgentDocker/blob/main/docs/REMAINING-WORK.md\n",
+        encoding="utf-8")
+    archive = stage / f"agentdocker-desktop-{args.target}.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
+        for path in sorted(app.rglob("*")):
+            if path.is_file():
+                bundle.write(path, path.relative_to(stage).as_posix())
+    return app, archive, app
+
+
+def package(args, expected_build=None):
     provenance = validate_inputs(args)
+    # Callers that retained build_native's stdout must not silently substitute a
+    # different directory manifest with the same commit/version/target.
+    if expected_build is not None:
+        for key in ("format", "source_commit", "source_tree", "source_input_sha256", "source_dirty",
+                    "target", "version", "state_schema", "installation_lock", "launcher_redirect", "binary_sha256"):
+            if expected_build.get(key) != provenance.get(key):
+                raise ValueError(f"native build manifest differs from the supplied build evidence: {key}")
     if args.output.exists():
         raise FileExistsError("output already exists; use a fresh directory to preserve prior artifacts")
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -244,10 +319,12 @@ def package(args):
         info.update({key: provenance[key] for key in ["source_tree", "source_input_sha256", "source_dirty", "state_schema"]})
         info["installation_lock"] = provenance.get("installation_lock", 0)
         info["launcher_redirect"] = provenance.get("launcher_redirect", 0)
-        build = macos if "apple-darwin" in args.target else linux
+        if "windows" in args.target:
+            info["binary_sha256"] = provenance["binary_sha256"]
+        build = macos if "apple-darwin" in args.target else windows if "windows" in args.target else linux
         app, archive, binaries = build(args, stage, info)
         info["size"] = measure_sizes(app, [p for p in stage.iterdir() if p.suffix in {".zip", ".gz", ".dmg"}], 2 if args.second_binary_dir else 1)
-        info["binary_sha256"] = {name: sha256(binaries / name) for name in BINARIES}
+        info["binary_sha256"] = {name: sha256(binaries / name) for name in binary_names(args.target)}
         info["artifacts"] = {path.name: sha256(path) for path in stage.iterdir() if path.is_file() and path.suffix in {".zip", ".gz", ".dmg"}}
         for name, checksum in info["artifacts"].items():
             (stage / f"{name}.sha256").write_text(f"{checksum}  {name}\n")

@@ -137,6 +137,7 @@ dependencies = [
  "nix 0.29.0",
  "notify",
  "rusqlite",
+ "same-file",
  "serde",
  "serde_json",
  "sha2",

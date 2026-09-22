@@ -278,7 +278,7 @@ each one by pid.
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
 | `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour`), each count with its coverage (`~` where some samples did not say, `—` where none did), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on, and the overhead AgentDocker injected — *not measured* until it is; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
 | `inspect <agent>` | Everything known about one agent, as JSON |
-| `logs <agent>` | An agent's captured output; `-f` to follow, `--compress` for an rtk view |
+| `logs <agent>` | An agent's captured output, at most 16 MiB kept per agent (the newest 8 MiB and the 8 MiB before them); `-f` to follow, `--compress` for an rtk view |
 | `validation <id>` | The retained log of one validation; `--compress` for an rtk view |
 | `events` | The daemon's event stream; `[[webhooks]]` in `agentd.toml` posts a signed copy of chosen kinds to an address you name (see [webhooks](ARCHITECTURE.md#events)) |
 | `ping` | Check the daemon is reachable |
