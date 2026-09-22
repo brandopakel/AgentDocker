@@ -1,17 +1,6 @@
 # Documentation
 
-AgentDocker runs agents natively on the person's own computer: a per-host
-daemon, a CLI and a desktop app. Docker and Podman are an optional addition,
-never a requirement. macOS has local acceptance and Linux has graphical/package
-CI coverage.
-Windows managed sessions, ConPTY and portable ZIP packaging are merged and
-exercised on a native runner. A current coworker desktop release and independent
-machine acceptance remain open on all three platforms.
-
-Sixteen documents, each the current contract for one thing. Dated audits,
-plans and reviews from the way here were removed on September 21, 2026 and
-live in git history (`git log -- docs`); nothing is added back as a document
-when a line in an existing one will do.
+What each document is for. Status lives in [remaining work](REMAINING-WORK.md), not here.
 
 ## Using it
 
@@ -36,9 +25,9 @@ when a line in an existing one will do.
 
 ## Where it stands
 
-- [Remaining work](REMAINING-WORK.md) — the road to v1 and every open row, with evidence; close a row only with evidence.
+- [Remaining work](REMAINING-WORK.md) — the road to v1 and every open item, with its evidence.
 - [Testing and benchmarks](TESTING-AND-BENCHMARKS.md) — the standard gate, coverage, fuzzing, benchmarks, and how results are reported.
 - [Local trial](LOCAL-TRIAL.md) — the first-run and sustained-use trials on real machines.
 - [Distribution setup](DISTRIBUTION-SETUP.md) — the tap, the release workflow, what a Developer ID is for.
-- [Verification records](verification/INDEX.md) — one line per trial on real binaries; a new trial is a line here, not a file.
+- [Verification records](verification/INDEX.md) — one line per trial on real binaries.
 - [Real-engine verification](../tests/containers/README.md) — the separate Docker/Podman evidence.
