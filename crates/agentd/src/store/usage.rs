@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
+pub(crate) mod discovery;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Attribution {
     pub agent: Option<String>,
@@ -43,6 +45,7 @@ pub(crate) struct Ingest<'a> {
     pub retained_since: DateTime<Utc>,
     pub now: DateTime<Utc>,
     pub event_seq: u64,
+    pub finished_job: Option<usize>,
 }
 
 fn fingerprint<T: Serialize>(value: &T) -> Result<String> {
@@ -60,8 +63,12 @@ impl Store {
         gaps: &[(&str, &str)],
         now: DateTime<Utc>,
         seq: u64,
+        discovery: Option<discovery::Change<'_>>,
     ) -> Result<Event> {
         let tx = self.conn.unchecked_transaction()?;
+        if let Some(change) = discovery {
+            self.usage_discovery_change(change)?;
+        }
         let mut count = 0;
         for (key, reason) in gaps {
             count += self.usage_gap(key, None, now, None, reason)?;
@@ -337,6 +344,9 @@ impl Store {
         self.conn.execute("INSERT INTO usage_files VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET json=excluded.json",
             params![batch.key, serde_json::to_string(batch.progress)?])?;
         self.put_document("usage", "collection", batch.collection)?;
+        if let Some(id) = batch.finished_job {
+            self.usage_discovery_change(discovery::Change::FinishedJob(id))?;
+        }
         self.prune_usage(batch.retained_since)?;
         let mut event = Event::new(
             EventKind::UsageRecorded {
@@ -556,6 +566,7 @@ mod tests {
             retained_since: cutoff,
             now: at(20),
             event_seq: store.max_event_seq()? + 1,
+            finished_job: None,
         })
     }
 

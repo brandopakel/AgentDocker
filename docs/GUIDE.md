@@ -191,8 +191,10 @@ retention_days = 30
 
 The running daemon picks it up on its next collection cycle. It reads supported
 local Codex and Claude Code logs; it retains accounting metadata, not message
-text. Optional `codex_roots` and `claude_roots` are arrays of absolute directories;
-empty arrays use the provider defaults. Turning collection off retains available
+text. Optional `codex_roots` and `claude_roots` are arrays of absolute directories
+without parent (`..`) path components; use a direct path rather than one that
+walks up to a parent. Invalid roots produce an explanatory query error. Empty
+arrays use the provider defaults. Turning collection off retains available
 totals. Increasing retention does not restore previously discarded history.
 AgentDocker's own injected overhead remains **not measured** until that separate
 instrumentation is implemented.
