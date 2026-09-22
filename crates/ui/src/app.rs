@@ -1267,7 +1267,12 @@ impl App {
                 Msg::DaemonRestarted(result) => {
                     self.daemon_restarting = false;
                     match result {
-                        Ok(()) => self.say("The background service restarted"),
+                        Ok(()) => {
+                            self.say("The background service restarted");
+                            // Ask again now, so the notice clears without
+                            // waiting for a reconnect to notice.
+                            self.send(Cmd::Ping);
+                        }
                         Err(error) => {
                             self.say(format!("Could not restart the background service: {error}"))
                         }
@@ -2573,6 +2578,9 @@ fn spawn_worker(
         // In-flight subprocesses keep their existing deadlines; joining happens
         // on this background worker, never on the UI thread.
         cancelled.store(true, std::sync::atomic::Ordering::Release);
+        // Every lane's sender, dropped before its worker is joined: a lane
+        // missing here keeps its worker waiting and the join below never
+        // returns. Add a lane to both lists.
         drop((consoles, setups, desktops, updates, restarts));
         for worker in [
             console_worker,
