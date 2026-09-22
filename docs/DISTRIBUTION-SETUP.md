@@ -233,7 +233,8 @@ acceptance remain unverified until the candidate is released and tried.
 ## First coworker preview candidate
 
 The source candidate is **0.2.0-beta.1**, with matching workspace packages,
-internal dependency requirements and lockfile entries. The legacy macOS bundle
+internal dependency requirements and entries in both Cargo lockfiles (including
+the excluded fuzz workspace). The legacy macOS bundle
 helper reads this version from the workspace when no override is supplied.
 The intended tag is `v0.2.0-beta.1`; changing the source version does not create a
 tag, publish assets or install them. Publication remains open until the final
