@@ -7,7 +7,7 @@ tunnel to the production daemon, each vendor registered its client by DCR, the
 person consented with the pairing code, and each browser agent delivered a
 message to keel's terminal sessions — first from a terminal-run connector, then
 from the connector installed as a login service with a vendor-egress allowlist
-([record](verification/2026-09-12-integrated-desktop.json), `remote_connector_2026_09_17`, `vendor_acceptance`
+([record](verification/INDEX.md), `remote_connector_2026_09_17`, `vendor_acceptance`
 and `service_acceptance`). The production connector now runs on `--tunnel
 tailscale`, this machine's own `*.ts.net` name, with both vendors connected
 (`stable_host_acceptance`); a quick cloudflared tunnel's hostname is ephemeral
@@ -183,7 +183,7 @@ It is not woken. A message to a browser agent waits in its inbox until the
 hosted model calls `read_inbox` — which it does only when the person's prompt
 leads it to. Nothing in the vendors' connector model lets a server start a
 turn. Terminal agents, by contrast, can be woken through their own adapters
-([the message audit](MESSAGE-DELIVERY-AUDIT.md)).
+(MESSAGE-DELIVERY-AUDIT.md in git history).
 
 One more thing to know: a connector added to a Claude account appears in every
 Claude surface of that account, Claude Code sessions included, as that

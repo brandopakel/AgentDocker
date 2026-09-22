@@ -76,7 +76,7 @@ with all six external provider processes unchanged. These bounded private
 trials do not certify the user's still-plain sessions: each needs reconnect and
 provider consent before its own idle-pause acceptance. Exact sources, receipts,
 earlier failed trials and activation are in the
-[existing delivery record](verification/2026-09-12-input-delivery-status.json).
+[existing delivery record](verification/INDEX.md).
 
 For an external relaunch outside the app, the registration path below applies.
 A session that comes back as a new process takes up the record it ended
@@ -272,7 +272,7 @@ receipts during waiting calls, daemon/MCP restart, idle transport offers, and
 broken or unread stdout. It speaks MCP itself; passing it does not prove that a
 Claude model received or acted on a message.
 
-The [September 11 source-pinned trial](verification/2026-09-11-claude-channel-input.json)
+The [September 11 source-pinned trial](verification/INDEX.md)
 used actual Claude Code 2.1.268 with the AgentDocker adapter. Idle peer input
 started a turn without another prompt; peer and canonical-user messages queued
 during a 45-second tool call, then received ordered explicit receipts and
@@ -288,7 +288,7 @@ concurrent-session trial, despite the private profile. Authentication, MCP
 entries, provider settings and the other monitored files were unchanged.
 Attribution of those counter changes is unproven; no user files were restored.
 
-The [managed-launch trial](verification/2026-09-11-managed-claude-input.json)
+The [managed-launch trial](verification/INDEX.md)
 at `78fc835` used `run --claude-channel`, the daemon's managed PTY and normal
 `attach`. Its first model turn came from a queued peer message, without a typed
 model prompt. A second canonical-user message preserved an unsubmitted draft.
@@ -301,13 +301,13 @@ trial covers the checkbox; it does not replace this actual-provider evidence.
 The [owned Codex input adapter](CODEX-INPUT.md) and durable desktop receipt
 status are implemented. Actual-provider reconnect/ambiguous receipt,
 additional versions/policies and sustained-use acceptance remain in the
-[message delivery audit](MESSAGE-DELIVERY-AUDIT.md).
+message delivery audit (MESSAGE-DELIVERY-AUDIT.md in git history).
 
 
 ### September 12: Claude questions use the normal channel queue
 
 PR #105 merged as `7110670` and PR #106 as `90c9e24` after final CI and actual
-source inspections. The [Claude question checkpoint](verification/2026-09-12-claude-question-queue.json)
+source inspections. The [Claude question checkpoint](verification/INDEX.md)
 then reproduced a human answer appearing both in the blocking MCP result and
 a channel input without its reply ID. Channel questions now return the posted
 question ID immediately; their answers arrive once through the normal queue
@@ -334,7 +334,7 @@ reason and recent saved logs without changing the queue or current draft.
 Paused sessions remain in **Needs input** after exit. An unavailable count from
 an older daemon is not shown as zero; a disconnected window labels cached status.
 
-The [status evidence](verification/2026-09-12-input-delivery-status.json) includes
+The [status evidence](verification/INDEX.md) includes
 seven transport scenarios and an actual Claude 2.1.269 trial with three ordered
 receipts/replies under one identity. That bounded trial used one initial typed
 authorization turn. An earlier unprimed trial requested further authorization;
@@ -356,7 +356,7 @@ agent-ID lock when SessionStart folds an MCP-first registration. A channel that
 has already initialized is not folded behind its offered head. Source `b5ea76c`
 passes the full 1,094-Rust/84-Python gate (seven skipped) and the actual daemon/MCP
 transport regression; the older binary admits a second channel and fails. See
-[existing channel evidence](verification/2026-09-11-claude-channel-input.json).
+[existing channel evidence](verification/INDEX.md).
 At this September 17 checkpoint actual Claude relaunch/model idle wake was
 not tested. The September 18 **Reconnect here** evidence above later covers
 those cases for its named provider session and candidate.
@@ -368,7 +368,7 @@ includes resume-like prompt text after `--`. Local backend fixtures cover both
 startup orders, wrong/missing generations, a silent daemon, timeout, and control
 and explicit receipts before readiness. These do not establish actual provider
 startup/consent or an idle model reply; those remain open in the
-[existing channel record](verification/2026-09-11-claude-channel-input.json).
+[existing channel record](verification/INDEX.md).
 
 September 17 resumption follow-up: PR #179 keeps the latest capture per path
 and eligible open channel memberships in the same transaction as the queue and
@@ -381,7 +381,7 @@ self-review refusal and transaction rollback. The earlier observation-only
 fixture failed against the preceding runtime and passed with that fix.
 This is source/transport evidence, not installed Claude model acceptance.
 The startup ordering guard above remains. Results are in the
-[existing channel record](verification/2026-09-11-claude-channel-input.json).
+[existing channel record](verification/INDEX.md).
 
 The board integration also migrates a card's typed assignee and creator when
 an eligible identity folds. Card text, column, timestamps and archive state stay

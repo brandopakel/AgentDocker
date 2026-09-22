@@ -1,6 +1,6 @@
 # AgentDocker — notes for coding agents
 
-Native local orchestration for AI agents: a per-host daemon (`agentd`) plus a CLI (`agentdocker`) that give agents of any vendor a registry, supervised processes, messaging, and time-limited leases on shared resources. Read `docs/PRODUCT-DIRECTION.md` for the native desktop target and delivery order, `README.md` for the model and `docs/ARCHITECTURE.md` for the protocol and semantics.
+Native local orchestration for AI agents: a per-host daemon (`agentd`) plus a CLI (`agentdocker`) that give agents of any vendor a registry, supervised processes, messaging, and time-limited leases on shared resources. Read `README.md` for the model, `docs/README.md` for what each document is for, `docs/ARCHITECTURE.md` for the protocol and semantics and `docs/REMAINING-WORK.md` for the road to v1.
 
 ## Layout
 
@@ -33,15 +33,15 @@ Run an isolated daemon for manual testing: `AGENTDOCKER_HOME=/tmp/ad-test agentd
 
 ## Documentation contract
 
-The docs are the record of what the repository does and how far it is delivered. Every change that alters behaviour, a contract or a delivery status updates them in the same PR, whoever makes it:
+The docs are the record of what the repository does and how far it is delivered — sixteen documents, each the current contract for one thing, and no dated plans, audits or reviews (those were cut on September 21, 2026; history keeps them). A new document needs a reason a line in an existing one cannot serve. Every change that alters behaviour, a contract or a delivery status updates them in the same PR, whoever makes it:
 
 - `docs/ARCHITECTURE.md` for a protocol, event, error code, schema or semantic change (the request/response table, the events list, the phase rows).
 - `docs/REMAINING-WORK.md` for the disposition of an open item: what is now in source, what evidence exists, what is still open. Close a row only with evidence, and say what remains.
 - `docs/README.md` (the docs index): a new document is linked there, and the audit table's row for a document changes when that document's delivery state changes.
-- A verification record under `docs/verification/` for a trial on real binaries, with build provenance; then `python3 scripts/docs_check.py --write-index`, which regenerates the records section of `docs/README.md`.
+- One line in `docs/verification/INDEX.md` for a trial on real binaries (date, what, source sha, result); the full evidence stays where the trial ran and in the PR, not in the repository.
 - `docs/GUIDE.md`, `docs/DESKTOP-UX.md` or the root `README.md` when a command, tool or screen changes for the person using it.
 
-`python3 scripts/docs_check.py` runs in `scripts/verify.sh check` and in CI: the docs index must list every document, every relative link must resolve, its verification records section must be current, and a change under `crates/`, `scripts/`, `packaging/`, `.github/`, `install.sh` or `Makefile` must come with a documentation change or with a commit whose message has a line starting `Docs:` saying why none is due (`Docs: unchanged, a rename with no behaviour change`). That line is a statement to reviewers, not a way around the contract.
+`python3 scripts/docs_check.py` runs in `scripts/verify.sh check` and in CI: the docs index must list every document, every relative link must resolve, and a change under `crates/`, `scripts/`, `packaging/`, `.github/`, `install.sh` or `Makefile` must come with a documentation change or with a commit whose message has a line starting `Docs:` saying why none is due (`Docs: unchanged, a rename with no behaviour change`). That line is a statement to reviewers, not a way around the contract.
 
 ## Standard verification workflow
 

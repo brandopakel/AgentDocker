@@ -51,7 +51,7 @@ If the reload reply is lost or unexpected, the installer probes the serving
 daemon again without replaying the reload. Its report sets `reloaded` to `null`
 (unknown), preserves `before`, and shows the newly observed `serving` daemon
 or `null` if none answers. What the gate still waits for is in
-[Live daemon upgrades](LIVE-DAEMON-UPGRADES.md).
+[REMAINING-WORK.md](REMAINING-WORK.md), safe live daemon replacement.
 
 ## First install over a hand-copied app
 
@@ -101,7 +101,7 @@ the copy in the backup folder is the rollback for it.
 published release (Homebrew tap or `install.sh`) and later runs
 `agentdocker desktop update`, or presses **Check for updates** in Settings →
 Installation, which verifies and previews the newer release before installing
-it for the next launch. See [Desktop distribution](DESKTOP-DISTRIBUTION.md).
+it for the next launch. See [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md).
 
 ## Other targets
 
@@ -127,4 +127,4 @@ reads the artifact directory the build reports.
 Requirements: Rust (see `rust-version` in `crates/ui/Cargo.toml`), Python 3.11+,
 and on macOS the Xcode command-line tools. End users of a packaged app need
 none of these. Public, signed builds are described in
-[Desktop distribution](DESKTOP-DISTRIBUTION.md).
+Desktop distribution (in git history).
