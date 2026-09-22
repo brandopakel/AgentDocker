@@ -948,6 +948,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn usage_manifest_retains_a_partly_scanned_file_until_its_last_batch() {
+        let (temp, daemon, config, root) = fixture();
+        let content: String = (0..5000)
+            .map(|n| record(&format!("response-{n}"), 1))
+            .collect();
+        std::fs::write(root.join("large.jsonl"), content).unwrap();
+        collect_generation_bounded(&Arc::downgrade(&daemon), &config, 2);
+        let first = query(&daemon).await;
+        assert!(first.rows[0].samples > 0 && first.rows[0].samples < 5000);
+        assert_eq!(first.coverage.collection.pending_files, Some(1));
+        assert!(
+            lock(&daemon.state)
+                .store
+                .usage_next_job()
+                .unwrap()
+                .is_some()
+        );
+        drop(daemon);
+        let daemon =
+            Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.coverage.collection.discovery_generation, Some(1));
+        assert_eq!(report.coverage.collection.pending_files, Some(0));
+        assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+        assert_eq!(report.rows[0].samples, 5000);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(5000));
+        assert_eq!(report.coverage.source_gaps, 0);
+        assert!(
+            lock(&daemon.state)
+                .store
+                .usage_next_job()
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn usage_matches_only_unambiguous_sessions_and_reconciles_retained_samples() {
         let (_temp, daemon, config, root) = fixture();
         std::fs::write(root.join("source.jsonl"), record("first", 4)).unwrap();
