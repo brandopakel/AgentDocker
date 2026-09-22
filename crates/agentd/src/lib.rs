@@ -411,6 +411,12 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     daemon.stop_all().await;
     let _ = std::fs::remove_file(&daemon.socket);
     let _ = std::fs::remove_file(&restricted);
+    // A long home's sockets lived in a short `/tmp` directory: with them
+    // gone it is empty, and goes.
+    let socket_dir = paths::socket_dir(&daemon.home);
+    if socket_dir != daemon.home {
+        let _ = std::fs::remove_dir(&socket_dir);
+    }
     result
 }
 

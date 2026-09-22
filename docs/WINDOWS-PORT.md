@@ -55,7 +55,7 @@ client with nothing to talk to starts the daemon and waits for it to
 listen), `daemon stop` ends that one too, and on a home no daemon has made
 yet a plain `ping` creates it and starts a daemon. Its report is the run's
 `windows-daemon-smoke` artifact — on `7b3fd108` all 17 steps passed on
-Windows Server 2025, the [record](verification/2026-09-19-windows-slice-one.json)
+Windows Server 2025, the [record](verification/INDEX.md)
 carries the report and the three failed runs before it; the same script
 runs on macOS and Linux, so it is checked before the runner sees it —
 there it ends its private
@@ -203,7 +203,7 @@ Work still required before platform support can be claimed:
   real-provider integration and sustained lifecycle trials.
 
 The supported download/platform matrix remains unchanged until those acceptance
-stages pass. See [native delivery](NATIVE-DELIVERY.md) for the macOS/Linux stack.
+stages pass. See [ARCHITECTURE.md](ARCHITECTURE.md#process-supervision) for the macOS/Linux stack and [verification/INDEX.md](verification/INDEX.md) for its trials.
 
 ## Slice two: managed sessions on Windows
 
