@@ -213,7 +213,8 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 steps = [step("click", id=f"project-{project}"),
                          step("wait_control", id="project-terminal", present=True),
                          step("wait_control", id=f"chat-terminal-{agent['id']}", present=True),
-                         step("wait_control", id="project-tab-Board", present=False),
+                         # Board is a tab beside Chat and Agents, not behind More.
+                         step("wait_control", id="project-tab-Board", present=True),
                          step("wait_text", text="#everyone"), step("capture", name="project-chat-default"),
                          step("click", id="project-tab-Agents"), step("wait_text", text="terminal-fixture"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("wait_control", id=f"session-{previous['id']}", present=False), step("capture", name="projects-live"),
@@ -461,7 +462,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                  # action below) and the card shows its holder; the person
                                  # opens it, reads what done means, moves it on and archives it.
                                  step("resize", width=1180, height=760), step("click", id="projects"),
-                                 step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="project-more"), step("click", id="project-tab-Board"),
+                                 step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="project-tab-Board"),
                                  step("wait_control", id="task-title", present=True),
                                  step("wait_control", id=f"task-{card['id']}", present=True),
                                  step("fill", id="task-title", text="Write the fixture notes"),
@@ -610,7 +611,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
                         step("fill", id="session-message-text", text="Keep this session across reopen\nSecond line 日本語"),
                         step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
-                        step("click", id="project-more"), step("click", id="project-tab-Board"),
+                        step("click", id="project-tab-Board"),
                         step("fill", id="task-title", text="Unfiled card café 日本語"),
                         step("fill", id="task-acceptance", text="Check reopen without filing"),
                     ]
@@ -660,7 +661,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                     step("wait_text", text="Keep this channel across reopen\nSecond line 日本語"),
                     step("capture", name="restored-channel"),
                     step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
-                    step("click", id="project-more"), step("click", id="project-tab-Board"),
+                    step("click", id="project-tab-Board"),
                     step("wait_text", text="Unfiled card café 日本語"),
                     step("wait_text", text="Check reopen without filing"),
                     step("capture", name="restored-board-draft"),
