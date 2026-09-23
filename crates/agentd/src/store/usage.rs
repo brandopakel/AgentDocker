@@ -112,12 +112,15 @@ impl Store {
 
     /// Move at most 256 retained contributions per transaction. Already
     /// attributed samples are immutable history, even if the live agent moves.
-    /// The caller resolves an unambiguous runtime/session before this operation.
+    /// The caller resolves an unambiguous runtime/session before this operation,
+    /// and `window` bounds the sample times this attribution takes.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn usage_reconcile(
         &self,
         runtime: &str,
         session: &str,
         attribution: Option<&Attribution>,
+        window: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
         retained_since: DateTime<Utc>,
         now: DateTime<Utc>,
         seq: u64,
@@ -132,11 +135,19 @@ impl Store {
         };
         let agent = attribution.agent.as_ref().expect("attributed agent");
         let retained_since = self.usage_retained_since(retained_since)?;
-        let mut statement = self.conn.prepare("SELECT source_id,contribution FROM usage_samples WHERE at>=?1 AND contribution IS NOT NULL AND json_extract(contribution,'$.bucket.attribution.agent') IS NULL AND json_extract(contribution,'$.bucket.runtime')=?2 AND json_extract(contribution,'$.session')=?3 ORDER BY source_id LIMIT 256")?;
+        let mut statement = self.conn.prepare("SELECT source_id,contribution FROM usage_samples WHERE at>=?1 AND contribution IS NOT NULL AND json_extract(contribution,'$.bucket.attribution.agent') IS NULL AND json_extract(contribution,'$.bucket.runtime')=?2 AND json_extract(contribution,'$.session')=?3 AND (?4 IS NULL OR at>=?4) AND (?5 IS NULL OR at<?5) ORDER BY source_id LIMIT 256")?;
+        let (from, until) = window;
         let records = statement
-            .query_map(params![text(retained_since), runtime, session], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?
+            .query_map(
+                params![
+                    text(retained_since),
+                    runtime,
+                    session,
+                    from.map(text),
+                    until.map(text)
+                ],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut count = 0;
         for (id, value) in records {
@@ -800,6 +811,56 @@ mod tests {
         assert_eq!(store.usage_retained_since(at(0)).unwrap(), at(3));
     }
 
+    /// A resumed session's samples split at the resume: each registration
+    /// takes only the samples inside its window.
+    #[test]
+    fn usage_reconciliation_takes_only_the_samples_inside_its_window() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        ingest(
+            &store,
+            &progress,
+            "source",
+            vec![
+                (sample("before", 1, 7, false), Attribution::default()),
+                (sample("after", 5, 11, false), Attribution::default()),
+            ],
+            at(0),
+        )
+        .unwrap();
+        let to = |agent: &str| Attribution {
+            agent: Some(agent.into()),
+            project: Some("project".into()),
+        };
+        for (agent, window) in [
+            ("ended", (None, Some(at(3)))),
+            ("resumed", (Some(at(3)), None)),
+        ] {
+            store
+                .usage_reconcile(
+                    "codex",
+                    "session",
+                    Some(&to(agent)),
+                    window,
+                    at(0),
+                    at(20),
+                    store.max_event_seq().unwrap() + 1,
+                )
+                .unwrap()
+                .expect("one sample moved");
+        }
+        let rows = report(&store, 0, 21).rows;
+        let input = |agent: &str| {
+            rows.iter()
+                .find(|row| row.key.as_deref() == Some(agent))
+                .and_then(|row| row.counters.input_tokens.sum)
+        };
+        assert_eq!(input("ended"), Some(7));
+        assert_eq!(input("resumed"), Some(11));
+        assert!(rows.iter().all(|row| row.key.is_some()), "{rows:?}");
+    }
+
     #[test]
     fn usage_reconciliation_failure_rolls_back_cursor_buckets_and_event_together() {
         let temp = tempfile::tempdir().unwrap();
@@ -825,6 +886,7 @@ mod tests {
                     "codex",
                     "session",
                     Some(&attribution),
+                    (None, None),
                     at(0),
                     at(20),
                     before + 1
@@ -853,6 +915,7 @@ mod tests {
                     "codex",
                     "session",
                     Some(&attribution),
+                    (None, None),
                     at(0),
                     at(20),
                     before + 1
@@ -876,6 +939,7 @@ mod tests {
                 "codex",
                 "session",
                 Some(&attribution),
+                (None, None),
                 at(0),
                 at(20),
                 before + 1,
@@ -994,6 +1058,7 @@ mod tests {
                 "codex",
                 "session",
                 Some(&attribution),
+                (None, None),
                 at(0),
                 at(20),
                 store.max_event_seq().unwrap() + 1,
@@ -1010,6 +1075,7 @@ mod tests {
                     "codex",
                     "session",
                     Some(&attribution),
+                    (None, None),
                     at(0),
                     at(20),
                     store.max_event_seq().unwrap() + 1
@@ -1037,6 +1103,7 @@ mod tests {
                     "codex",
                     "session",
                     Some(&moved),
+                    (None, None),
                     at(0),
                     at(20),
                     store.max_event_seq().unwrap() + 1

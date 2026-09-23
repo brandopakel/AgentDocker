@@ -1032,7 +1032,10 @@ live session IDs, captures each file generation, and reads outside the daemon
 state lock. File cursors, dedupe fingerprints, cumulative baselines, hourly
 buckets, gaps and `usage_recorded {generation, samples, gaps}` commit together
 under the coordinator fence. `usage_reconciled {agent, samples}` moves retained
-unattributed contributions only after unique runtime/session resolution;
+unattributed contributions only after runtime/session resolution: a session
+resumed under a new agent has several registrations, and each takes the
+samples made while it was current (from its first registration until the
+next; the first also takes earlier ones; simultaneous registrations take none);
 previously attributed history does not follow a moved agent. Replay fingerprints
 and baselines survive aggregate retention. New tables are additive and preserve
 the existing schema-23 meanings. No transcript text is retained.
@@ -1120,7 +1123,9 @@ are unknown, never zero. The design:
 - **Historical attribution.** Match by runtime plus provider session, following
   registered identity aliases. Store the resulting `agent_id?` and `project_id?`
   on the usage bucket at ingestion; deleting, moving or retiring a current agent
-  cannot move its historical usage into another project. Unmatched or ambiguous
+  cannot move its historical usage into another project. A session with several
+  registrations (resumed after its agent ended) attributes each sample to the
+  registration current at the sample's time. Unmatched or ambiguous
   sessions remain unattributed, with unknown project, until an explicit
   idempotent reconciliation has enough evidence. Reconciliation uses the
   retained sample identities and their bucket contributions, not a second
