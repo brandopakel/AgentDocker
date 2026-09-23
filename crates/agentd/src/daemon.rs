@@ -618,12 +618,14 @@ fn same_agent(a: &AgentRecord, b: &AgentRecord) -> bool {
 /// itself when nothing is left, and the short `/tmp` directory a long
 /// home falls back to when it is empty too: a machine that runs test
 /// daemons by the hundred, or one person's daemon for a year, keeps
-/// nothing in `/tmp` for a daemon that is gone.
-pub(crate) fn sweep_sessions(home: &std::path::Path) {
+/// nothing in `/tmp` for a daemon that is gone. Returns true while an owner
+/// still holds its lock, so shutdown can wait for acknowledged owners to retire.
+pub(crate) fn sweep_sessions(home: &std::path::Path) -> bool {
     let dir = agentdocker_core::session::sessions_dir(home);
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        return;
+        return false;
     };
+    let mut held_owners = false;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "lock") {
@@ -633,8 +635,13 @@ pub(crate) fn sweep_sessions(home: &std::path::Path) {
         // until both files are gone: an owner for the same id that opens
         // the lock file meanwhile finds it taken, not an inode about to be
         // unlinked from under a lock it just won.
-        let Ok(Some(_held)) = agentdocker_host::lock::try_exclusive_existing(&path) else {
-            continue;
+        let _held = match agentdocker_host::lock::try_exclusive_existing(&path) {
+            Ok(Some(held)) => held,
+            Ok(None) => {
+                held_owners = true;
+                continue;
+            }
+            Err(_) => continue,
         };
         let exit = path.with_extension("exit");
         if exit.exists() {
@@ -650,6 +657,7 @@ pub(crate) fn sweep_sessions(home: &std::path::Path) {
     if short != home && dir.starts_with(&short) {
         let _ = std::fs::remove_dir(&short);
     }
+    held_owners
 }
 
 /// The agent a file under `logs/` belongs to: `<id>.log`, `<id>.log.1`
@@ -983,9 +991,19 @@ impl Daemon {
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        // Owners of this daemon have gone (or were given their time): what
-        // they left in the session directory that nobody holds goes too.
-        sweep_sessions(&self.home);
+        // Successful live handover returns from serve() before stop_all();
+        // successor-owned sessions never reach this shutdown sweep.
+        // Recording an exit removes its supervision entry before the owner
+        // receives the acknowledgement and releases its lock. Wait within the
+        // same shutdown budget for that retirement, then sweep once it is safe.
+        // Held locks and unacknowledged exit reports remain protected.
+        while sweep_sessions(&self.home) {
+            if tokio::time::Instant::now() >= deadline {
+                warn!("session owners did not finish retirement; held files retained");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
     }
 
     fn stop(&self, reference: &str, force: bool) -> Response {
@@ -9169,6 +9187,36 @@ mod tests {
             .cloned()
             .unwrap();
         assert_eq!(stale, before, "a fenced return changes nothing in memory");
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_an_acknowledged_owner_to_release_its_lock() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let sessions = agentdocker_core::session::sessions_dir(dir.path());
+        std::fs::create_dir_all(&sessions).unwrap();
+        let path = sessions.join("retiring.lock");
+        let held = agentdocker_host::lock::try_exclusive(&path)
+            .unwrap()
+            .unwrap();
+        // Exit persistence has already removed the supervision entry, but
+        // its owner still holds the lock while processing acknowledgement.
+        let mut stopping = Box::pin(daemon.stop_all());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut stopping)
+                .await
+                .is_err(),
+            "shutdown must wait for the owner after its registry exit"
+        );
+        assert!(path.exists(), "a held owner lock must not be removed");
+        drop(held);
+        tokio::time::timeout(std::time::Duration::from_secs(2), stopping)
+            .await
+            .expect("shutdown completes after owner retirement");
+        assert!(
+            !sessions.exists(),
+            "the final sweep removes the released lock"
+        );
     }
 
     /// A daemon that stops leaves nothing of its sessions behind that
