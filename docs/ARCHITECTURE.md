@@ -736,7 +736,8 @@ plan hash rechecked at apply. Host installation helpers give each managed
 binary a shared lifetime pin; cleanup holds the exclusive pin through deletion
 and rechecks content identity. Pins outlive deleted versions to prevent inode
 replacement races. Active, rollback, legacy unpinned and running versions remain;
-an installed user service protects retained binaries and blocks uninstall.
+an installed daemon or connector user service protects retained binaries and
+blocks uninstall, including stopped services that hold no running-process pin.
 The macOS Applications entry is an intact signed copy whose three entry points redirect to the selected immutable release before dispatch. External launcher ownership and exact retained payload hashes permit replacement without modifying signed metadata. An atomic app exchange follows activation; a failed exchange restores the previous activation. App publication and pointer selection are separate filesystem operations, and a surviving older copy follows the selected release. Package metadata records `launcher_redirect: 1`. Selecting an older payload retains a compatible launcher copy and protects its backing release from cleanup; a fresh legacy-only install is refused before activation. The visible copy may therefore have newer metadata than the selected release after rollback; installation status reports the selected version. These are local host operations, not daemon protocol mutations. They preserve
 state/provider configuration and do not replace a running daemon. See
 [LOCAL-BUILD.md](LOCAL-BUILD.md) for the commands and [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md) for the limitations.

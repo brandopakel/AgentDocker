@@ -96,7 +96,7 @@ fn plan(
     let Some(keep) = keep else {
         ensure!(
             !service_installed,
-            "a user service is installed; preview its removal with agentdocker daemon uninstall --dry-run before removing desktop launchers"
+            "a daemon or connector user service is installed; remove its registration before removing desktop launchers"
         );
         for (path, _) in layout.links() {
             if path.symlink_metadata().is_ok() {
@@ -229,16 +229,31 @@ fn service_installed(layout: &Layout) -> Result<bool> {
     if let Some(home) = std::env::home_dir() {
         homes.push(home);
     }
+    service_installed_in(&homes)
+}
+
+fn service_installed_in(homes: &[PathBuf]) -> Result<bool> {
+    let names = if cfg!(target_os = "macos") {
+        [
+            "Library/LaunchAgents/dev.agentdocker.agentd.plist",
+            "Library/LaunchAgents/dev.agentdocker.connector.plist",
+        ]
+    } else {
+        [
+            ".config/systemd/user/agentd.service",
+            ".config/systemd/user/agentdocker-connector.service",
+        ]
+    };
     for home in homes {
-        let path = home.join(if cfg!(target_os = "macos") {
-            "Library/LaunchAgents/dev.agentdocker.agentd.plist"
-        } else {
-            ".config/systemd/user/agentd.service"
-        });
-        match path.symlink_metadata() {
-            Ok(_) => return Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
+        for name in names {
+            // A stopped service has no lifetime pin, but still needs its
+            // executable at its next start. Even a redirected or unreadable
+            // definition protects retained versions; do not guess its target.
+            match home.join(name).symlink_metadata() {
+                Ok(_) => return Ok(true),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
     }
     Ok(false)
@@ -461,6 +476,36 @@ mod tests {
         assert_eq!(layout.active().unwrap(), before);
         assert!(layout.payload(&current).exists());
         assert_eq!(std::fs::read_to_string(changed).unwrap(), "preserve");
+    }
+
+    #[test]
+    fn a_stopped_connector_registration_protects_its_unpinned_executable() {
+        let (_temp, layout) = fixture();
+        let other_home = tempfile::tempdir().unwrap();
+        let homes = [layout.prefix.clone(), other_home.path().to_owned()];
+        let old = retained(&layout, "connector-executable", 1);
+        let current = retained(&layout, "active", 1);
+        layout.activate(current, None).unwrap();
+        let name = if cfg!(target_os = "macos") {
+            "Library/LaunchAgents/dev.agentdocker.connector.plist"
+        } else {
+            ".config/systemd/user/agentdocker-connector.service"
+        };
+        assert!(!service_installed_in(&homes).unwrap());
+        for home in &homes {
+            let unit = home.join(name);
+            std::fs::create_dir_all(unit.parent().unwrap()).unwrap();
+            std::fs::write(&unit, "stopped fixture connector").unwrap();
+            let service = service_installed_in(&homes).unwrap();
+            assert!(service);
+            assert_eq!(prune_activated(&layout, service).unwrap(), (0, 2));
+            assert!(layout.payload(&old).exists());
+            assert!(plan(&layout, None, false, service).is_err());
+            std::fs::remove_file(&unit).unwrap();
+            assert!(!service_installed_in(&homes).unwrap());
+        }
+        assert_eq!(prune_activated(&layout, false).unwrap(), (1, 1));
+        assert!(!layout.payload(&old).exists());
     }
 
     #[cfg(target_os = "macos")]
