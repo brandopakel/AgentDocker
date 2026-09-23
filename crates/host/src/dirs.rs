@@ -73,34 +73,6 @@ pub fn create_private_file(path: &Path) -> io::Result<std::fs::File> {
     Ok(file)
 }
 
-#[cfg(test)]
-mod private_creation_tests {
-    use super::*;
-    use std::io::{Read, Write};
-
-    #[test]
-    fn private_creation_is_exclusive_and_readable_as_user_owned_state() {
-        let root = tempfile::tempdir().unwrap();
-        let state = root.path().join("state");
-        secure_state_dir(&state).unwrap();
-        let path = state.join("receipt");
-        create_private_file(&path)
-            .unwrap()
-            .write_all(b"original")
-            .unwrap();
-        assert_eq!(
-            create_private_file(&path).unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        let mut contents = String::new();
-        read_private_file(&path)
-            .unwrap()
-            .read_to_string(&mut contents)
-            .unwrap();
-        assert_eq!(contents, "original");
-    }
-}
-
 /// Open an existing private file for reading only: a regular file with
 /// one link, owned by this user, not writable by others, opened without
 /// following a symlink, and checked again on the handle so what was
@@ -409,5 +381,33 @@ mod tests {
         let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod private_creation_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    #[test]
+    fn private_creation_is_exclusive_and_readable_as_user_owned_state() {
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("state");
+        secure_state_dir(&state).unwrap();
+        let path = state.join("receipt");
+        create_private_file(&path)
+            .unwrap()
+            .write_all(b"original")
+            .unwrap();
+        assert_eq!(
+            create_private_file(&path).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        let mut contents = String::new();
+        read_private_file(&path)
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
+        assert_eq!(contents, "original");
     }
 }
