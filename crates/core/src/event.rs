@@ -96,6 +96,13 @@ pub enum EventKind {
         agent: AgentId,
         observation: crate::ActivityObservation,
     },
+    /// A person gave an agent a name; `name` is the new one.
+    AgentRenamed {
+        agent: AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<ProjectId>,
+        name: String,
+    },
     /// An agent was given a role, or `None` when it was taken away.
     RoleSet {
         agent: AgentId,

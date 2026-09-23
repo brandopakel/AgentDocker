@@ -1853,6 +1853,7 @@ impl Daemon {
                 lock(&self.state).report_activity(&agent, observation, Utc::now())
             }
             Request::Role { agent, role } => lock(&self.state).set_role(&agent, role, Utc::now()),
+            Request::Rename { agent, name } => lock(&self.state).rename(&agent, name, Utc::now()),
             Request::ReportAdapter {
                 agent,
                 adapter,
@@ -2441,6 +2442,11 @@ impl Daemon {
         let mut labels = ended.spec.labels.clone();
         labels.extend(spec.labels.clone());
         labels.insert("session_id".to_owned(), session.clone());
+        // The record keeps its own name, so it keeps what that name is: a
+        // launch's generated-name label must not relabel a chosen one.
+        if let Some(kind) = ended.spec.labels.get(agentdocker_core::agent::NAME_LABEL) {
+            labels.insert(agentdocker_core::agent::NAME_LABEL.to_owned(), kind.clone());
+        }
         record.spec = AgentSpec {
             name: ended.spec.name.clone(),
             labels,
@@ -5089,6 +5095,65 @@ impl State {
         );
         event.seq = self.next_seq;
         let committed = self.persist("role", |store| store.agent_transition(&record, &event));
+        if committed == Persisted::Committed {
+            *self.registry.get_mut(&id).expect("resolved agent") = record.clone();
+            self.next_seq += 1;
+            let _ = self.events.send(event);
+        }
+        self.write_failure()
+            .unwrap_or(Response::Agent { agent: record })
+    }
+
+    /// Give a live agent the name a person chose
+    /// ([`agentdocker_core::agent::check_name`]): unique among live agents,
+    /// said as `agent_renamed`, the generated-name label dropped so the name
+    /// reads as chosen. The same name again is nothing; the id, and every
+    /// reference by id, is untouched.
+    pub(super) fn rename(&mut self, reference: &str, name: String, now: DateTime<Utc>) -> Response {
+        if let Err(reason) = agentdocker_core::agent::check_name(&name) {
+            return Response::error(ErrorCode::Invalid, reason);
+        }
+        let id = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        let mut record = self.registry.get(&id).expect("resolved agent").clone();
+        if !record.status.is_live() {
+            return Response::error(ErrorCode::Invalid, "a finished agent keeps its name");
+        }
+        if record.spec.name == name && !record.name_is_generated() {
+            return Response::Agent { agent: record };
+        }
+        if self
+            .registry
+            .live()
+            .any(|other| other.id != id && other.spec.name == name)
+        {
+            return Response::error(
+                ErrorCode::NameTaken,
+                format!("an agent named `{name}` is already live; pick another name"),
+            );
+        }
+        record.spec.name = name.clone();
+        // Marked chosen, not merely unlabelled: a name spelled like the
+        // adapter's own (`codex-<pid>`) must not be inferred generated again.
+        record.spec.labels.insert(
+            agentdocker_core::agent::NAME_LABEL.to_owned(),
+            agentdocker_core::agent::CHOSEN_NAME.to_owned(),
+        );
+        let mut event = agentdocker_core::Event::new(
+            EventKind::AgentRenamed {
+                agent: id.clone(),
+                project: record
+                    .project
+                    .as_ref()
+                    .map(agentdocker_core::ProjectRef::id),
+                name,
+            },
+            now,
+        );
+        event.seq = self.next_seq;
+        let committed = self.persist("rename", |store| store.agent_transition(&record, &event));
         if committed == Persisted::Committed {
             *self.registry.get_mut(&id).expect("resolved agent") = record.clone();
             self.next_seq += 1;

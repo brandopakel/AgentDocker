@@ -1443,10 +1443,16 @@ impl App {
             summary.kind,
             ConversationKind::Channel | ConversationKind::Collision
         ) {
+            // An overlap room is folded on Channels: going to it on purpose
+            // opens the fold, or Reviews would land where it is hidden.
             title_row = title_row.push(action(
                 "open-channel-tools",
                 "Reviews",
-                Some(Message::Navigate(Screen::Channels)),
+                Some(if summary.kind == ConversationKind::Collision {
+                    Message::ReviewOverlaps
+                } else {
+                    Message::Navigate(Screen::Channels)
+                }),
                 false,
             ));
         }
@@ -2019,7 +2025,11 @@ mod tests {
         );
         assert_eq!(
             app.conversation_label(&pair),
-            "Codex · agent-a ↔ Codex · agent-b"
+            format!(
+                "Codex · {} ↔ Codex · {}",
+                super::naming::word_for("agent-a"),
+                super::naming::word_for("agent-b")
+            )
         );
         let with_claude = summary(
             agentdocker_core::ConversationId::dm("agent-c", "agent-b").as_str(),
@@ -2029,7 +2039,11 @@ mod tests {
         );
         assert_eq!(
             app.conversation_label(&with_claude),
-            "Codex · agent-b ↔ Claude Code"
+            format!(
+                "Codex · {} ↔ Claude Code · {}",
+                super::naming::word_for("agent-b"),
+                super::naming::word_for("agent-c")
+            )
         );
         let contested = summary(
             "channel:ee3cbc67d8b7",
@@ -2049,7 +2063,10 @@ mod tests {
         let notice = summary("notices:agent-b", "notices", "", 0);
         assert_eq!(
             app.conversation_label(&notice),
-            "AgentDocker → Codex · agent-b"
+            format!(
+                "AgentDocker → Codex · {}",
+                super::naming::word_for("agent-b")
+            )
         );
         assert_eq!(app.tool_of("agent-c"), "Claude Code");
 
@@ -2066,8 +2083,9 @@ mod tests {
             "",
             0,
         );
-        assert_eq!(app.conversation_label(&old_key), "Codex · agent-a");
-        assert_eq!(app.conversation_label(&new_key), "Codex · agent-a");
+        let agent_a = format!("Codex · {}", super::naming::word_for("agent-a"));
+        assert_eq!(app.conversation_label(&old_key), agent_a);
+        assert_eq!(app.conversation_label(&new_key), agent_a);
         // The older key keeps unread and a draft: it is not hidden, it is
         // moved under Earlier, and the badge still counts it.
         let mut old_key = old_key;

@@ -208,6 +208,9 @@ pub fn event_line(event: &Event) -> String {
                 observation.activity
             )
         }
+        EventKind::AgentRenamed { agent, name, .. } => {
+            format!("renamed   {} {name}", agent.short())
+        }
         EventKind::RoleSet {
             agent,
             role: Some(role),

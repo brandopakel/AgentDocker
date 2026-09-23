@@ -399,11 +399,42 @@ pub fn check_role(role: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The longest name a person can give an agent, in characters.
+pub const NAME_CHARS: usize = 64;
+
+/// Whether `name` can be given to an agent by `rename`: one to
+/// [`NAME_CHARS`] characters, no control characters or surrounding space,
+/// and none of the spellings that address something other than an agent
+/// (`project`, `all`, `project:…`, `topic:…`, `role:…`).
+pub fn check_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() || name.chars().count() > NAME_CHARS {
+        return Err("a name is one to sixty-four characters");
+    }
+    if name.trim() != name {
+        return Err("a name neither starts nor ends with a space");
+    }
+    if name.chars().any(char::is_control) {
+        return Err("a name has no control characters");
+    }
+    if matches!(name, "project" | "all" | "user")
+        || ["project:", "topic:", ROLE_PREFIX]
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+    {
+        return Err("that name is how something else is addressed; pick another");
+    }
+    Ok(())
+}
+
 /// Label an adapter sets when it made the name up from a runtime and an
 /// identifier rather than a person choosing it.
 pub const NAME_LABEL: &str = "name";
 /// The value of [`NAME_LABEL`] for a made-up name.
 pub const GENERATED_NAME: &str = "generated";
+/// The value of [`NAME_LABEL`] for a name a person chose with `rename`. It
+/// overrides every inference from the name's shape: `codex-96813` chosen for
+/// the process 96813 is a chosen name, not the adapter's.
+pub const CHOSEN_NAME: &str = "chosen";
 
 impl AgentRecord {
     /// The role this agent holds, when it has one.
@@ -416,8 +447,10 @@ impl AgentRecord {
     /// recognised only by the exact form an adapter produces from this
     /// record's own pid or session id, never by how the name looks.
     pub fn name_is_generated(&self) -> bool {
-        if self.spec.labels.get(NAME_LABEL).map(String::as_str) == Some(GENERATED_NAME) {
-            return true;
+        match self.spec.labels.get(NAME_LABEL).map(String::as_str) {
+            Some(GENERATED_NAME) => return true,
+            Some(CHOSEN_NAME) => return false,
+            _ => {}
         }
         let name = self.spec.name.as_str();
         if let Some(pid) = self.pid
@@ -637,5 +670,28 @@ mod restart_tests {
             serde_json::from_str::<AgentSpec>(&json).unwrap().restart,
             RestartPolicy::Always
         );
+    }
+
+    #[test]
+    fn a_chosen_name_is_short_printable_and_never_another_address() {
+        for good in ["Release helper", "reviewer-2", "Codex · Otter", "é"] {
+            assert!(check_name(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            " lead",
+            "trail ",
+            "a\nb",
+            "project",
+            "all",
+            "user",
+            "project:x",
+            "topic:y",
+            "role:reviewer",
+        ] {
+            assert!(check_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(check_name(&"x".repeat(NAME_CHARS)).is_ok());
+        assert!(check_name(&"x".repeat(NAME_CHARS + 1)).is_err());
     }
 }

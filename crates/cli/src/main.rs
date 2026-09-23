@@ -470,6 +470,13 @@ enum Command {
     },
     /// Give an agent a role, so `role:<name>` names it as a recipient.
     Role(RoleArgs),
+    /// Give a live agent a name of your choosing (its id stays the same).
+    Rename {
+        /// Agent id, name or unique prefix.
+        agent: String,
+        /// The new name: up to 64 characters, unique among live agents.
+        name: String,
+    },
     /// Bring an ended Claude Code session back under its own record, with
     /// its conversation and live messages, as a process the daemon runs.
     Reconnect(ReconnectArgs),
@@ -2527,6 +2534,12 @@ async fn run() -> Result<()> {
                     Some(role) => println!("{} is the {role}", agent.spec.name),
                     None => println!("{} has no role", agent.spec.name),
                 }
+            }
+        }
+        Command::Rename { agent, name } => {
+            if let Response::Agent { agent } = client.call(&Request::Rename { agent, name }).await?
+            {
+                println!("{} is now {}", agent.id.short(), agent.spec.name);
             }
         }
         Command::Inspect { agent } => {

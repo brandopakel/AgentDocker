@@ -356,7 +356,11 @@ impl App {
     pub(super) fn has_project(&self, project: Option<&ProjectRef>) -> bool {
         match self.selected_root() {
             Some(root) => project.is_some_and(|p| p.root == root),
-            None if self.shell.catalog.unassigned => project.is_none(),
+            // A session started in `/` or the home folder has a project
+            // only in name; it is one of the Other sessions.
+            None if self.shell.catalog.unassigned => {
+                project.is_none_or(|p| self.shell.catalog.broad_unpinned(&p.root))
+            }
             None => true,
         }
     }
@@ -1250,12 +1254,16 @@ impl App {
                 }
             }
         }
-        if self
-            .agents
-            .iter()
-            .any(|a| a.project.is_none() && a.spec.runtime != agentdocker_core::HUMAN_RUNTIME)
-            || self.discovered.iter().any(|p| p.project.is_none())
-        {
+        if self.agents.iter().any(|a| {
+            a.project
+                .as_ref()
+                .is_none_or(|p| self.shell.catalog.broad_unpinned(&p.root))
+                && a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
+        }) || self.discovered.iter().any(|p| {
+            p.project
+                .as_ref()
+                .is_none_or(|p| self.shell.catalog.broad_unpinned(&p.root))
+        }) {
             projects = projects.push(block_button(
                 "unassigned",
                 "Other sessions",
@@ -2295,6 +2303,57 @@ impl App {
                 }
             }
         }
+        // A name of one's choosing, for a live session: the daemon keeps it
+        // unique and every other view follows.
+        if agent.status.is_live() && agent.spec.runtime != agentdocker_core::HUMAN_RUNTIME {
+            match &self.shell.renaming {
+                Some((renaming, draft)) if renaming == &id => {
+                    let valid = agentdocker_core::agent::check_name(draft.trim());
+                    body = body.push(
+                        column![
+                            crate::controls::input_submitting(
+                                "rename-session",
+                                "A name for this session",
+                                draft,
+                                Message::RenameDraft,
+                                true,
+                                (self.connected.is_ok() && valid.is_ok())
+                                    .then_some(Message::SubmitRename),
+                            ),
+                            row![
+                                primary(
+                                    "rename-save",
+                                    "Save name",
+                                    (self.connected.is_ok() && valid.is_ok())
+                                        .then_some(Message::SubmitRename),
+                                ),
+                                action(
+                                    "rename-cancel",
+                                    "Cancel",
+                                    Some(Message::CancelRename),
+                                    false
+                                ),
+                            ]
+                            .spacing(6),
+                        ]
+                        .spacing(6),
+                    );
+                    if let Err(reason) = valid
+                        && !draft.is_empty()
+                    {
+                        body = body.push(small(reason, c));
+                    }
+                }
+                _ => {
+                    body = body.push(action(
+                        "rename-session",
+                        "Rename…",
+                        Some(Message::StartRename(id.clone())),
+                        false,
+                    ));
+                }
+            }
+        }
         body = body.push(action(
             "session-details",
             if self.shell.session_details {
@@ -2424,7 +2483,7 @@ impl App {
             .push(choices.wrap())
             .push(input(
                 "launch-name",
-                "Session name (optional)",
+                "Name (optional; one is made up otherwise)",
                 &self.shell.launch_name,
                 Message::LaunchName,
             ))
@@ -3272,25 +3331,54 @@ impl App {
             c
         )]
         .spacing(14);
-        let mut count = 0;
-        for channel in self
+        // With no project chosen (All projects) every channel is shown;
+        // "Reviews" from a conversation lands here from anywhere and must not
+        // find "No channels yet" about the one just open. Channels agents
+        // opened come first; the rooms AgentDocker opens when checkouts
+        // overlap sit folded behind Overlaps (n), as Messages folds them.
+        let on_view: Vec<_> = self
             .channels
             .iter()
-            // With no project chosen (All projects) every channel is shown;
-            // "Reviews" from a conversation lands here from anywhere and
-            // must not find "No channels yet" about the one just open.
             .filter(|ch| {
                 selected
                     .as_ref()
                     .is_none_or(|project| &ch.project == project)
             })
-        {
-            count += 1;
+            .collect();
+        let is_overlap = |ch: &&agentdocker_core::Channel| {
+            matches!(
+                ch.subject,
+                agentdocker_core::ChannelSubject::Contested { .. }
+            )
+        };
+        let overlaps = on_view.iter().filter(|ch| is_overlap(ch)).count();
+        let named: Vec<_> = on_view
+            .iter()
+            .filter(|ch| !is_overlap(ch))
+            .copied()
+            .collect();
+        let folded: Vec<_> = on_view
+            .iter()
+            .filter(|ch| is_overlap(ch))
+            .copied()
+            .collect();
+        let count = on_view.len();
+        // Open, the fold sits where the overlap rooms begin.
+        let fold_at = (overlaps > 0 && self.shell.overlaps_open).then_some(named.len());
+        let mut shown = named;
+        if self.shell.overlaps_open {
+            shown.extend(folded);
+        }
+        for (index, channel) in shown.into_iter().enumerate() {
+            if fold_at == Some(index) {
+                list = list.push(self.overlaps_toggle(overlaps, c));
+            }
             let id = channel.id.to_string();
             let open = channel.is_open();
+            let (title, detail) = channel_heading(channel);
             let mut body = column![
                 row![
-                    heading(channel.title(), 17).width(Fill),
+                    heading(title, 17).width(Fill),
                     pill(
                         if open { "Open" } else { "Closed" },
                         if open { alpha(c.green, 0.16) } else { c.raised },
@@ -3300,21 +3388,12 @@ impl App {
                 ]
                 .spacing(10)
                 .align_y(Center),
-                small(
-                    format!(
-                        "{} members · {}",
-                        channel.members.len(),
-                        channel
-                            .members
-                            .iter()
-                            .map(|id| self.name_of(id.as_str()))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                    c
-                )
+                small(self.members_line(&channel.members), c)
             ]
             .spacing(6);
+            if let Some(detail) = detail {
+                body = body.push(small(detail, c));
+            }
             for review in &channel.reviews {
                 body = body.push(
                     text(format!(
@@ -3401,6 +3480,11 @@ impl App {
                 container(card(body.spacing(10), c)).id(format!("notification-channel-{id}")),
             );
         }
+        // Folded, the overlap rooms are not in the loop: the fold that
+        // opens them follows the named channels.
+        if overlaps > 0 && !self.shell.overlaps_open {
+            list = list.push(self.overlaps_toggle(overlaps, c));
+        }
         if count == 0 {
             list = list.push(empty(
                 "No channels yet",
@@ -3410,6 +3494,53 @@ impl App {
             ));
         }
         list.into()
+    }
+
+    /// The fold for AgentDocker's overlap rooms on the Channels screen.
+    fn overlaps_toggle(&self, count: usize, c: Colors) -> Element<'_, Message> {
+        row![
+            action(
+                "channels-overlaps",
+                format!(
+                    "{} Overlaps ({count})",
+                    if self.shell.overlaps_open {
+                        "▾"
+                    } else {
+                        "▸"
+                    }
+                ),
+                Some(Message::ToggleOverlaps),
+                false,
+            ),
+            small(
+                "Rooms AgentDocker opens when two checkouts change the same files",
+                c
+            ),
+        ]
+        .spacing(10)
+        .align_y(Center)
+        .into()
+    }
+
+    /// Who is in a channel, in one line: the count and at most four names.
+    fn members_line(&self, members: &[agentdocker_core::AgentId]) -> String {
+        const NAMED: usize = 4;
+        let names: Vec<String> = members
+            .iter()
+            .take(NAMED)
+            .map(|id| self.name_of(id.as_str()))
+            .collect();
+        let rest = members.len().saturating_sub(NAMED);
+        let who = if rest > 0 {
+            format!("{} and {rest} more", names.join(", "))
+        } else {
+            names.join(", ")
+        };
+        format!(
+            "{} member{} · {who}",
+            members.len(),
+            if members.len() == 1 { "" } else { "s" }
+        )
     }
 
     fn journal_view(&self, c: Colors) -> Element<'_, Message> {
@@ -4631,6 +4762,30 @@ impl App {
     }
 }
 
+/// A channel's heading and, for an overlap room, the paths it is about in
+/// one bounded line: "Contested paths (338)" over "view.rs, shell.rs and
+/// 336 more", never the list itself as a title.
+fn channel_heading(channel: &agentdocker_core::Channel) -> (String, Option<String>) {
+    match &channel.subject {
+        agentdocker_core::ChannelSubject::Contested { paths } if !paths.is_empty() => {
+            const NAMED: usize = 3;
+            let named: Vec<String> = paths
+                .iter()
+                .take(NAMED)
+                .map(|p| p.display().to_string())
+                .collect();
+            let rest = paths.len().saturating_sub(NAMED);
+            let detail = if rest > 0 {
+                format!("{} and {rest} more", named.join(", "))
+            } else {
+                named.join(", ")
+            };
+            (format!("Contested paths ({})", paths.len()), Some(detail))
+        }
+        _ => (channel.title(), None),
+    }
+}
+
 /// A held resource as a person reads it: a path as a path (home as `~`),
 /// anything else as `kind: value`.
 fn resource_label(key: &str) -> String {
@@ -4688,12 +4843,24 @@ fn parent_folder(path: &std::path::Path) -> String {
     let Some(parent) = path.parent() else {
         return path.display().to_string();
     };
-    let shown = shorten_home(parent);
-    let parts: Vec<&str> = shown.split('/').filter(|p| !p.is_empty()).collect();
-    if parts.len() <= 3 {
-        shown
-    } else {
-        format!("…/{}/{}", parts[parts.len() - 2], parts[parts.len() - 1])
+    // The part that tells two folders of one name apart comes first, so a
+    // clipped line still carries it: `agentdocker-delivery · /private/tmp`,
+    // not `/private/tmp/agentd…`.
+    let Some(name) = parent.file_name() else {
+        return shorten_home(parent);
+    };
+    match parent.parent() {
+        Some(above) if above.parent().is_some() => {
+            let shown = shorten_home(above);
+            let parts: Vec<&str> = shown.split('/').filter(|p| !p.is_empty()).collect();
+            let above = if parts.len() <= 3 {
+                shown
+            } else {
+                format!("…/{}", parts[parts.len() - 1])
+            };
+            format!("{} · {above}", name.to_string_lossy())
+        }
+        _ => name.to_string_lossy().into_owned(),
     }
 }
 
@@ -4732,6 +4899,20 @@ pub(super) fn split_style(c: Colors) -> iced::widget::pane_grid::Style {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_shared_folder_name_is_told_apart_by_its_parent_first() {
+        assert_eq!(
+            super::parent_folder(std::path::Path::new(
+                "/private/tmp/agentdocker-delivery/workspace"
+            )),
+            "agentdocker-delivery · /private/tmp"
+        );
+        assert_eq!(
+            super::parent_folder(std::path::Path::new("/srv/workspace")),
+            "srv"
+        );
+    }
+
     #[test]
     fn daemon_pause_reasons_read_in_the_persons_words() {
         use agentdocker_core::input::{
