@@ -1575,3 +1575,7 @@ saved recovery phase available; no receipt failure is reported as applied.
 Provider setup and health recognize the native Windows `agentdocker.exe` basename
 (case insensitive on Windows) as the direct MCP or hook executable. Unix keeps
 exact executable-name matching; wrappers and extra suffixes remain unverified.
+
+MCP onboarding extracts bundled skill frontmatter and section boundaries from
+either LF or Windows checkout CRLF. The original bundled bytes and skill
+installation stamps are unchanged; only instruction slicing accepts both forms.

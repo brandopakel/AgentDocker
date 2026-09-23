@@ -404,3 +404,10 @@ checks and 30 separate fresh-home starts on physical AWBP. Claude 2.1.280
 configuration add succeeded but health still rejected the `.exe` basename;
 Windows-native executable recognition and a package health check now cover this
 case in source. Rebuilt actual-Claude health/undo and model receipt remain open.
+
+An actual Claude 2.1.280 managed ConPTY trial authenticated and accepted local
+channel consent, then exposed a native MCP startup panic: the bundled skill
+frontmatter parser assumed LF while the Windows checkout embedded CRLF. The
+parser now accepts both line endings, and the extracted-package driver checks
+manual and channel MCP initialization, instructions and messaging tools. Rebuilt
+provider delivery and receipt acceptance remain required.

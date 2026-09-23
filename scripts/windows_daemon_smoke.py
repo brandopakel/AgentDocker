@@ -512,6 +512,66 @@ def main():
         step("native setup refuses a changed provider configuration without overwriting it",
              refused.returncode != 0 and config.read_text(encoding="utf-8") == changed)
 
+    def mcp_trial():
+        import queue
+        identity = run("register", "--name", "smoke-mcp", "--runtime", "claude-code",
+                       "--pid", str(os.getpid())).stdout.strip()
+        for channel in [False, True]:
+            mode = "channel" if channel else "manual"
+            child_env = dict(env, AGENTDOCKER_AGENT_ID=identity)
+            argv = [str(cli), "mcp", "--runtime", "claude-code"]
+            if channel:
+                child_env["AGENTDOCKER_CLAUDE_CHANNEL_INPUT"] = "1"
+                argv.append("--claude-channel")
+            errors = root / f"mcp-{mode}.stderr"
+            responses = queue.Queue()
+            with errors.open("wb") as stderr:
+                process = subprocess.Popen(argv, cwd=project, env=child_env, stdin=subprocess.PIPE,
+                                           stdout=subprocess.PIPE, stderr=stderr)
+                def read_responses():
+                    try:
+                        while True:
+                            line = process.stdout.readline(2 * 1024 * 1024 + 1)
+                            if not line:
+                                responses.put(None)
+                                return
+                            if len(line) > 2 * 1024 * 1024:
+                                raise ValueError("MCP fixture response exceeds bound")
+                            responses.put(json.loads(line))
+                    except Exception as error:
+                        responses.put(error)
+                reader = threading.Thread(target=read_responses, daemon=True)
+                reader.start()
+                def request(identifier, method, params):
+                    process.stdin.write((json.dumps({"jsonrpc": "2.0", "id": identifier,
+                                                    "method": method, "params": params}) + "\n").encode())
+                    process.stdin.flush()
+                    value = responses.get(timeout=10)
+                    assert isinstance(value, dict) and value.get("id") == identifier and "result" in value, f"MCP {mode} {method}: {value}"
+                    return value["result"]
+                try:
+                    initialized = request(1, "initialize", {"protocolVersion": "2025-06-18"})
+                    instructions = initialized.get("instructions", "")
+                    assert "AgentDocker coordination" in instructions
+                    assert ("## Manual inbox delivery" in instructions) == (not channel)
+                    if channel:
+                        assert initialized["capabilities"]["experimental"]["claude/channel"] == {}
+                    process.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+                    process.stdin.flush()
+                    names = {tool["name"] for tool in request(2, "tools/list", {})["tools"]}
+                    assert {"send_message", "whoami"} <= names
+                    step(f"native {mode} MCP initializes with bundled instructions and messaging tools", True)
+                finally:
+                    process.stdin.close()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                    reader.join(timeout=2)
+                    process.stdout.close()
+            assert process.returncode == 0 and not reader.is_alive(), f"MCP {mode} did not exit cleanly: {errors.read_text(encoding='utf-8', errors='replace')[:1500]}"
+
     def desktop_trial():
         nonlocal window
         desktop_home = base / f"agentdocker-smoke-{token}-desktop"
@@ -614,6 +674,7 @@ def main():
         status = run("daemon", "status")
         step("daemon status names the serving executable", str(daemon_binary.name) in status.stdout, status.stdout.strip())
         setup_trial()
+        mcp_trial()
         if args.desktop:
             desktop_trial()
         first = run("register", "--name", "smoke-one", "--runtime", "custom", "--pid", str(os.getpid()))

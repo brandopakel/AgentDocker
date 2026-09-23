@@ -81,3 +81,8 @@ starts on #237 package `9064c5f3`. Actual Claude 2.1.280 configuration add passe
 but health rejected the Windows executable suffix. The native-name correction
 and package health regression await final CI and rebuilt provider acceptance.
 The separate intermittent CI first-start failure remains unexplained.
+
+Actual Windows Claude authentication and channel consent succeeded, but its MCP
+process then panicked while slicing CRLF bundled skill frontmatter. #237 adds
+line-ending-independent parsing and native manual/channel MCP startup checks;
+real model message receipt remains open until rebuilt acceptance passes.
