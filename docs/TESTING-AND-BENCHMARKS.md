@@ -108,6 +108,13 @@ CI stores JUnit, coverage, benchmark provenance/results, and fuzz reproducers. S
 
 The performance workflow contains an optional trusted-main reporting job, but this project intentionally leaves GitHub Bencher credentials unset. Its report job may be skipped while benchmark generation and artifact checks pass. Download artifacts, verify before/after manifests and exact source identity, then upload with the privately configured helper. Never copy the key into a tracked file, release artifact or GitHub secret. Set thresholds after baseline calibration. See [LOCAL-TRIAL.md](LOCAL-TRIAL.md) for desktop, failure and real-agent acceptance work still needed.
 
+The native Codex queue fixture uses unbuffered app-server pipes for its timed
+read-only receipt queries: Python read-ahead must not hide a complete queued
+response from the next file-descriptor readiness check. Independent Ubuntu with
+Codex 0.155.1 passed idle/draft/busy delivery and receiver recovery after this
+fixture correction; the preceding timed-out trial remains retained. Its model
+endpoint is a loopback fixture, so this does not establish real-account acceptance.
+
 ## Retaining failed acceptance evidence
 
 A managed-workspace launch failure keeps the original daemon response even when no agent record exists. The fixture attempts ownership collection for partially created containers separately; inspection or log-capture errors cannot replace the primary failure. Both workspace and relay runs write a failed result plus at most 2 MiB of daemon log beside the requested result path, where CI retains them. Authentication directories and databases are not copied.
