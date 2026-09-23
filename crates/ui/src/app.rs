@@ -1772,6 +1772,11 @@ impl App {
     }
 
     fn name_of(&self, id: &str) -> String {
+        // The daemon writes its own notices (overlap rooms, receipts) as
+        // `agentd`; that author is AgentDocker, not an unknown session.
+        if id == "agentd" {
+            return "AgentDocker".to_owned();
+        }
         let id = self.canonical_agent(id);
         self.agents
             .iter()

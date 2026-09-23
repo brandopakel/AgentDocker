@@ -125,8 +125,13 @@ fixture's workspace, a trial's worktree). Until you toggle it the fold is
 automatic — open while one of them has a live session or is the selected
 project, closed otherwise — and from then on it is as you left it, closable
 even while one runs or is selected; the live count sits on the fold. Pinning
-one moves it up. Sessions whose project is unknown
-appear under **Other sessions**.
+one moves it up. Two projects with one folder name (four `workspace`
+fixtures, say) show the folder above each first — `agentdocker-delivery ·
+/private/tmp` — so a clipped line still tells them apart. Sessions whose
+project is unknown, or was only the filesystem root or your home folder (where
+a session runs when nobody chose a folder), appear under **Other sessions**:
+discovery never makes `/` or the home folder a project, and entries it made
+before are dropped, though you can still add either yourself.
 
 A session that asked something shows **Answer**, which opens that exact
 question, as the project chat's **Answer N questions** does for the oldest
@@ -240,6 +245,11 @@ Project tabs provide:
 - **Agents:** current sessions, connection details and reconnect actions.
 - **More → Board / History:** task cards and the recent durable journal.
 - **More → Channels:** project rooms, membership, reviews and queued messages.
+  Channels agents opened come first; the rooms AgentDocker opens when two
+  checkouts change the same files sit folded behind **▸ Overlaps (n)**, each
+  titled **Contested paths (n)** with the first few paths under it. Members
+  read as a count and at most four names, and AgentDocker's own notices are
+  signed AgentDocker.
   Its label counts messages waiting for you. Each room retains its own draft
   across navigation and failed delivery; viewing does not drain your inbox.
 - **More → Files in use:** current leases and their holders.

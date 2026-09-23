@@ -89,6 +89,8 @@ pub(super) struct State {
     /// this is which. Wide windows show both and ignore it.
     pub inbox_open: bool,
     pub needs_you_expanded: bool,
+    /// Whether the Channels screen shows AgentDocker's overlap rooms.
+    pub overlaps_open: bool,
     /// The session being renamed and the name typed so far.
     pub renaming: Option<(String, String)>,
     /// Processes a Connect was pressed for, until the daemon answers.
@@ -575,6 +577,8 @@ pub enum Message {
     /// The Needs-you strip's **Review**: open that session with its
     /// delivery review already unfolded, wherever the person was.
     ReviewSession(String),
+    /// Show or fold the overlap rooms AgentDocker opened.
+    ToggleOverlaps,
     /// Start, edit, submit or cancel renaming a session.
     StartRename(String),
     RenameDraft(String),
@@ -2044,6 +2048,7 @@ impl App {
                 }
             }
             Message::CancelRename => self.shell.renaming = None,
+            Message::ToggleOverlaps => self.shell.overlaps_open = !self.shell.overlaps_open,
             Message::OpenLaunch => {
                 if !self.shell.launch {
                     return self.update(Message::ShowLaunch);
