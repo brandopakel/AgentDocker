@@ -65,6 +65,9 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
                 if let Some(path) = crate::skill::path(spec.name, &roots) {
                     paths.push(path);
                 }
+                if spec.name == "opencode" {
+                    paths.push(crate::opencode_plugin::path(&roots));
+                }
             }
         }
         Some(mutation::Guard::acquire(paths)?)
@@ -154,35 +157,70 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
             if let Some(mutation) = &mutation {
                 mutation.covers(&path)?;
             }
-            let before = guided::read_config(&path)?;
-            let after = crate::skill::installed_document();
-            if before.as_deref() == Some(after.as_str()) {
-                report(spec.name, "coordination skill", &path, Outcome::Present);
-            } else if before
-                .as_deref()
-                .is_some_and(|text| !crate::skill::unmodified_install(text))
-            {
-                eprintln!(
-                    "{}: existing coordination skill preserved at {}; use `agentdocker skill` to compare",
-                    spec.name,
-                    path.display()
-                );
-            } else {
-                if !dry_run {
-                    write_config(&path, before.as_deref(), &after)?;
-                }
-                report(
-                    spec.name,
-                    "coordination skill",
-                    &path,
-                    if dry_run {
-                        Outcome::Planned
-                    } else {
-                        Outcome::Added
-                    },
-                );
-            }
+            install_document(
+                spec.name,
+                "coordination skill",
+                &path,
+                &crate::skill::installed_document(),
+                crate::skill::unmodified_install,
+                "use `agentdocker skill` to compare",
+                dry_run,
+            )?;
         }
+        // OpenCode's hooks are its plugin: without it an edit to a held file
+        // is not refused and messages never reach the session.
+        if spec.name == "opencode" {
+            let path = crate::opencode_plugin::path(&roots);
+            if let Some(mutation) = &mutation {
+                mutation.covers(&path)?;
+            }
+            install_document(
+                spec.name,
+                "AgentDocker plugin",
+                &path,
+                &crate::opencode_plugin::document(&exe),
+                crate::opencode_plugin::unmodified_install,
+                "remove it to have setup write the current one",
+                dry_run,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Write a document AgentDocker owns (a skill, a plugin) unless it is
+/// already current or someone edited the copy that is there.
+fn install_document(
+    runtime: &str,
+    what: &str,
+    path: &Path,
+    after: &str,
+    unmodified: fn(&str) -> bool,
+    preserved_hint: &str,
+    dry_run: bool,
+) -> Result<()> {
+    let before = guided::read_config(path)?;
+    if before.as_deref() == Some(after) {
+        report(runtime, what, path, Outcome::Present);
+    } else if before.as_deref().is_some_and(|text| !unmodified(text)) {
+        eprintln!(
+            "{runtime}: existing {what} preserved at {}; {preserved_hint}",
+            path.display()
+        );
+    } else {
+        if !dry_run {
+            write_config(path, before.as_deref(), after)?;
+        }
+        report(
+            runtime,
+            what,
+            path,
+            if dry_run {
+                Outcome::Planned
+            } else {
+                Outcome::Added
+            },
+        );
     }
     Ok(())
 }
@@ -689,6 +727,42 @@ mod tests {
     /// OpenCode's own shape: an `mcp` object, one command array, enabled;
     /// other settings kept, a second run changes nothing, a file with
     /// comments is refused, and detection agrees with what was written.
+    /// Ordinary `setup opencode` writes the plugin beside the MCP entry,
+    /// recognises its own copy on a second run and never overwrites an
+    /// edited one; a preview writes nothing.
+    #[test]
+    fn opencode_setup_installs_the_plugin_and_keeps_an_edited_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let roots = agentdocker_host::runtimes::Roots {
+            home: temp.path().to_path_buf(),
+            ..agentdocker_host::runtimes::Roots::from_env()
+        };
+        let path = crate::opencode_plugin::path(&roots);
+        let exe = Path::new("/usr/local/bin/agentdocker");
+        let install = |dry_run| {
+            install_document(
+                "opencode",
+                "AgentDocker plugin",
+                &path,
+                &crate::opencode_plugin::document(exe),
+                crate::opencode_plugin::unmodified_install,
+                "remove it",
+                dry_run,
+            )
+        };
+        install(true).unwrap();
+        assert!(!path.exists(), "a preview writes nothing");
+        install(false).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(written, crate::opencode_plugin::document(exe));
+        install(false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+        let edited = written.replace("timeout: 5000", "timeout: 9000");
+        std::fs::write(&path, &edited).unwrap();
+        install(false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+    }
+
     #[test]
     fn opencode_registration_uses_its_own_shape_and_is_detected() {
         let dir = tempfile::tempdir().unwrap();
