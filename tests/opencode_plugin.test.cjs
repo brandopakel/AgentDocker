@@ -210,6 +210,34 @@ const tests = {
     assert.ok(!acknowledged.includes("message-m"), `acknowledged ${acknowledged}`)
   },
 
+  // OpenCode accepts a wake-up only after its turn already failed: the late
+  // acceptance does not put the messages in flight for a later turn.
+  async "a wake-up accepted after its turn failed is not acknowledged"() {
+    let accept
+    const t = await start({
+      answers: (e) =>
+        e.hook_event_name === "Stop"
+          ? { decision: "block", reason: "Message M", agentdocker: { agent: "agent-a", delivered: M } }
+          : null,
+      // The first prompt is held; the re-offer after the failed turn is
+      // refused, so the test ends with the message still queued.
+      prompt: () =>
+        accept
+          ? Promise.resolve({ error: { name: "Busy" } })
+          : new Promise((resolve) => (accept = () => resolve({ data: undefined }))),
+    })
+    const woken = t.event("session.idle")
+    await t.run()
+    await t.event("session.error")
+    accept()
+    await woken
+    await t.plugin["chat.message"]({ sessionID: "s" })
+    await t.plugin["experimental.chat.system.transform"]({ sessionID: "s" }, { system: [] })
+    await t.event("session.idle")
+    const acknowledged = t.delivered().flatMap((c) => c.delivered.flatMap((d) => d.messages))
+    assert.ok(!acknowledged.includes("message-m"), `acknowledged ${acknowledged}`)
+  },
+
   // Text that reached a completed turn is acknowledged; an errored turn's
   // is not.
   async "a completed turn acknowledges what it carried and an errored one does not"() {

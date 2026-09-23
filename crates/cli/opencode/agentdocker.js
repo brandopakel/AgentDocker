@@ -69,6 +69,9 @@ export const AgentDocker = async ({ directory, client }) => {
   const idle = new Set()
   const waking = new Set()
   const retries = new Map()
+  // Bumped when a session's turn errors or the session goes: a wake-up
+  // submitted before then and accepted after carries nothing into flight.
+  const generation = new Map()
   const base = (session, name) => ({ hook_event_name: name, session_id: session, cwd: directory })
 
   // Keep an answer's context until a request carries it. A message can be
@@ -127,6 +130,7 @@ export const AgentDocker = async ({ directory, client }) => {
       if (answer?.decision !== "block" || !answer.reason) return false
       busy(session)
       const entries = carried(answer)
+      const submitted = generation.get(session) ?? 0
       try {
         // The SDK resolves a refused request with `{ error }` unless asked to
         // throw; either way a refusal is not an acceptance.
@@ -136,6 +140,9 @@ export const AgentDocker = async ({ directory, client }) => {
           throwOnError: true,
         })
         if (result?.error) throw result.error
+        // Accepted too late to count: its turn already failed, so the
+        // messages stay queued and are offered again.
+        if ((generation.get(session) ?? 0) !== submitted) return true
         inflight.set(session, [...(inflight.get(session) ?? []), ...entries])
         return true
       } catch {
@@ -252,11 +259,14 @@ export const AgentDocker = async ({ directory, client }) => {
         if (!(await wake(session))) watch(session)
       } else if (event.type === "session.error") {
         // The turn did not complete: nothing it carried is acknowledged,
-        // so AgentDocker offers those messages again.
+        // so AgentDocker offers those messages again, and a wake-up still
+        // waiting for OpenCode's answer is void.
         inflight.delete(session)
+        generation.set(session, (generation.get(session) ?? 0) + 1)
       } else if (event.type === "session.deleted") {
         busy(session)
         hook(base(session, "SessionEnd"))
+        generation.set(session, (generation.get(session) ?? 0) + 1)
         for (const map of [orientation, pending, inflight, agents]) map.delete(session)
       }
     },
