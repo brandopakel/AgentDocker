@@ -475,23 +475,23 @@ def main():
         profile.mkdir()
         original = 'model = "unrelated-fixture"\n'
         config = profile / "config.toml"
-        config.write_text(original)
+        config.write_text(original, encoding="utf-8")
         setup_home = base / f"agentdocker-smoke-{token}-setup"
         homes.append(setup_home)
         setup_env = {"AGENTDOCKER_HOME": str(setup_home), "CODEX_HOME": str(profile)}
         prepared = json.loads(run("setup", "codex", "--preview", "--json", extra_env=setup_env).stdout)
         receipt = setup_home / "setup" / (prepared["id"] + ".json")
-        saved = json.loads(receipt.read_text())
+        saved = json.loads(receipt.read_text(encoding="utf-8"))
         assert saved["changes"] and not saved["delegated"]
         assert all(Path(change["path"]).resolve().is_relative_to(profile.resolve())
                    for change in saved["changes"]), "setup escaped the private provider profile"
         step("native setup preview publishes its receipt without changing provider configuration",
-             config.read_text() == original and saved["phase"] == "prepared")
+             config.read_text(encoding="utf-8") == original and saved["phase"] == "prepared")
         run("setup", "--apply", prepared["id"], "--json", extra_env=setup_env)
         step("native setup applies exact planned MCP, hook and skill files",
              all(Path(change["path"]).read_bytes() == change["after"].encode("utf-8")
                  for change in saved["changes"])
-             and json.loads(receipt.read_text())["phase"] == "applied")
+             and json.loads(receipt.read_text(encoding="utf-8"))["phase"] == "applied")
         health = json.loads(run("setup", "codex", "--health", "--json", extra_env=setup_env).stdout)
         runtime = health["runtimes"][0]
         step("native setup health recognizes the installed executable",
@@ -504,13 +504,13 @@ def main():
              all((Path(change["path"]).read_bytes() == change["before"].encode("utf-8"))
                  if change["before"] is not None else not Path(change["path"]).exists()
                  for change in saved["changes"])
-             and json.loads(receipt.read_text())["phase"] == "undone")
+             and json.loads(receipt.read_text(encoding="utf-8"))["phase"] == "undone")
         next_plan = json.loads(run("setup", "codex", "--preview", "--json", extra_env=setup_env).stdout)
         changed = original + '# user edit after preview\n'
-        config.write_text(changed)
+        config.write_text(changed, encoding="utf-8")
         refused = run("setup", "--apply", next_plan["id"], "--json", check=False, extra_env=setup_env)
         step("native setup refuses a changed provider configuration without overwriting it",
-             refused.returncode != 0 and config.read_text() == changed)
+             refused.returncode != 0 and config.read_text(encoding="utf-8") == changed)
 
     def desktop_trial():
         nonlocal window

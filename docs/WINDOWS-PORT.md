@@ -382,8 +382,8 @@ sets identical last-write times explicitly; a timing delay is not its fix.
 
 ## Provider setup publication
 
-The physical Windows 11 Home build26200 trial on AWBP passed53 extracted-package
-daemon/CLI/ConPTY/window checks on source35996b28, after moving private test state
+The physical Windows 11 Home build 26200 trial on AWBP passed 53 extracted-package
+daemon/CLI/ConPTY/window checks on source 35996b28, after moving private test state
 out of a Temp directory writable by other sandbox identities. The original
 refusal remains evidence; no existing Temp permissions were changed.
 
