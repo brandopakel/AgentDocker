@@ -286,7 +286,8 @@ class GitHubTransport(unittest.TestCase):
         full_page = [{"tag_name": f"v0.1.{i}"} for i in range(100)]
         with patch.object(self.github, "command", side_effect=[json.dumps(full_page).encode(), json.dumps([draft]).encode()]):
             self.assertEqual(self.github.draft_channel(), draft)
-        for pages in [[draft, draft], {}, [None]]:
+        for pages in [[draft, draft], {}, [None], [{"draft": True}],
+                      [{"tag_name": None}], [{"tag_name": 7}]]:
             with self.subTest(entries=pages), patch.object(self.github, "command", return_value=json.dumps(pages).encode()):
                 with self.assertRaises(ValueError):
                     self.github.draft_channel()
@@ -299,6 +300,19 @@ class GitHubTransport(unittest.TestCase):
                 self.github.draft_channel()
         with patch.object(self.github, "command", return_value=b"[]"):
             self.assertIsNone(self.github.draft_channel())
+
+    def test_malformed_inventory_never_reaches_channel_creation(self):
+        fake = FakeGitHub()
+        tag = "v0.2.0-beta.2"
+        fake.candidate(tag)
+        missing = subprocess.CompletedProcess([], 1, b"HTTP/2.0 404 Not Found\r\n\r\n{}")
+        candidate = fake.release(tag)
+        with patch.object(CHANNEL.subprocess, "run", return_value=missing), \
+                patch.object(self.github, "command", return_value=b'[{"draft":true}]'), \
+                patch.object(fake, "release", side_effect=lambda value: candidate if value == tag else self.github.release(value)):
+            with self.assertRaisesRegex(ValueError, "invalid release inventory"):
+                CHANNEL.promotion(fake, tag)
+        self.assertEqual(fake.writes, [])
 
     def test_only_404_means_missing_release(self):
         for status, code in [(200, 0), (404, 1), (403, 1), (500, 1)]:

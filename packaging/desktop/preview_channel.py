@@ -88,7 +88,9 @@ class GitHub:
             entries = json.loads(self.command(
                 "api", f"repos/{self.repo}/releases?per_page=100&page={page}"))
             if (not isinstance(entries, list) or len(entries) > 100
-                    or any(not isinstance(entry, dict) for entry in entries)):
+                    or any(not isinstance(entry, dict)
+                           or not isinstance(entry.get("tag_name"), str)
+                           for entry in entries)):
                 raise ValueError("invalid release inventory while looking for the draft channel")
             matches.extend(entry for entry in entries if entry.get("tag_name") == CHANNEL)
             if len(matches) > 1:

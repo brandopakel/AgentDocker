@@ -90,7 +90,8 @@ acceptance remain necessary after the first real promotion.
 GitHub's release-by-tag endpoint only returns published releases. On a channel
 404, the publisher also checks the authenticated release inventory for the
 draft, across at most ten pages of 100 releases. Ambiguous matches, malformed
-responses, lookup failures or a larger inventory fail without changing any
+responses (including entries without a string tag name), lookup failures or a
+larger inventory fail without changing any
 release. This lets initial publication and interrupted-publication repair
 verify uploaded draft assets before exposing the feed.
 
