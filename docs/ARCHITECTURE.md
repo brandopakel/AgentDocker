@@ -1252,7 +1252,9 @@ new bounded suffix and generation before committing; a restart discards the
 proof and rehashes the saved prefix. An appended generation of the same file may
 retain parser state only after all accepted prefix bytes match. Rewrites,
 replacement, truncation or a changing snapshot keep coverage incomplete and
-require an explicit gap/replay. No transcript bytes enter durable cursors; only
+require an explicit gap/replay. A version-3 parser cursor first verifies its old
+prefix, then replays from zero using version 4 without inventing a source-change
+gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
 The standalone reader API retains its earlier 16 MiB whole-prefix limit.
 The 22+ MiB reader regression and the updated daemon partial-tail/restart trial
