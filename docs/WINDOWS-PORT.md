@@ -379,3 +379,41 @@ and length alone missed an equal-size replacement in native Windows CI. Reads
 open regular files without following a final reparse point and compare the
 handle's stamp before and after the bounded read. The replacement regression
 sets identical last-write times explicitly; a timing delay is not its fix.
+
+## Provider setup and message acceptance
+
+Setup publishes flushed receipts and configuration files through the host's
+native helper (write-through moves on Windows; rename and directory sync on
+Unix). Undo uses native deletion without a directory-file open. Receipt staging
+uses exclusive current-user-owned private-state creation, including elevated
+runs. Executable recognition accepts the native `.exe` suffix; bundled skill
+frontmatter accepts LF and CRLF. These correct failures observed on the physical
+Windows test host; original failed runs remain in the verification index.
+
+Actual Claude 2.1.280 configuration acceptance on `d736d483` passed preview,
+selected-profile registration, health, exact undo, changed-entry refusal and
+malformed-state refusal. User configuration was unchanged and scratch removed.
+
+The later `137547c0` CI package passed 61 native daemon/CLI/ConPTY/window checks,
+including manual/channel MCP startup and a real managed SessionStart that binds
+the provider session without changing its agent ID, PID or owner. Native Windows
+ancestry inspection and root-only verified binding allow lifecycle hooks to
+recover automatic channel receipts; child hooks cannot bind or acknowledge the
+root session.
+
+Using that same package, actual Claude 2.1.280 passed four correlated replies
+with automatic durable receipts while explicit ACK tools were unavailable. The
+trial preserved an unsent terminal draft, queued a message during a real
+`sleep 8` tool call, and received its reply after the tool. Owned processes ended
+and user configuration hashes were unchanged. It reused existing account
+authentication in a private profile; it does not establish fresh-account
+onboarding, physical keyboard input, sustained use, or final hosted-package acceptance. Source and archive pins are in the
+[verification index](verification/INDEX.md) and [#241 evidence](https://github.com/brandopakel/AgentDocker/pull/241#issuecomment-5787871075).
+
+An additional actual-provider trial on those bytes queued a message, restarted
+the private daemon and used the ordinary CLI reconnect command. Agent identity,
+conversation and queued ID survived; the queued message and subsequent idle
+message both received correlated replies and automatic receipts. Claude required
+local-development channel consent again. The scheduled task was removed and no
+owned processes remained. This is bounded restart/reopen evidence, not reboot
+or multi-day acceptance.

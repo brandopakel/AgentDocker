@@ -514,6 +514,132 @@ mod tests {
     /// is the one live agent holding it in the sender's project. The
     /// same role again is nothing; none is not found and two are
     /// ambiguous; a finished agent has no role; a role is one word.
+    /// A person renames a live agent: the id stays, the name is unique among
+    /// live agents, reserved spellings are refused, and the name survives a
+    /// restart.
+    #[tokio::test]
+    async fn a_live_agent_can_be_renamed_once_uniquely_and_it_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _root) = fixture(&tmp).await;
+        let rename = |agent: &'static str, name: &'static str| {
+            let daemon = daemon.clone();
+            async move {
+                daemon
+                    .handle(Request::Rename {
+                        agent: agent.into(),
+                        name: name.into(),
+                    })
+                    .await
+            }
+        };
+        let Response::Agent { agent: before } = daemon
+            .handle(Request::Inspect {
+                agent: "sender".into(),
+            })
+            .await
+        else {
+            panic!("sender is registered")
+        };
+        let Response::Agent { agent } = rename("sender", "Release helper").await else {
+            panic!("renamed")
+        };
+        assert_eq!(agent.id, before.id, "the id stays");
+        assert_eq!(agent.spec.name, "Release helper");
+        assert!(!agent.name_is_generated());
+        // The new name resolves; another live agent cannot take it.
+        assert!(matches!(
+            daemon
+                .handle(Request::Inspect {
+                    agent: "Release helper".into()
+                })
+                .await,
+            Response::Agent { .. }
+        ));
+        assert!(matches!(
+            rename("recipient", "Release helper").await,
+            Response::Error {
+                code: ErrorCode::NameTaken,
+                ..
+            }
+        ));
+        for reserved in ["project", "role:reviewer", "topic:x", " padded", ""] {
+            assert!(
+                matches!(
+                    daemon
+                        .handle(Request::Rename {
+                            agent: "recipient".into(),
+                            name: reserved.into(),
+                        })
+                        .await,
+                    Response::Error {
+                        code: ErrorCode::Invalid,
+                        ..
+                    }
+                ),
+                "{reserved:?} refused"
+            );
+        }
+        // The same name again changes nothing.
+        assert!(matches!(
+            rename("Release helper", "Release helper").await,
+            Response::Agent { .. }
+        ));
+        // A chosen name spelled like the adapter's own form stays chosen,
+        // and choosing it again is nothing.
+        let pid = std::process::id();
+        let legacy_name = format!("codex-{pid}");
+        let Response::Agent { agent: legacy } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: legacy_name.clone(),
+                    runtime: "codex".into(),
+                    ..AgentSpec::default()
+                },
+                pid: Some(pid),
+                session: None,
+            })
+            .await
+        else {
+            panic!("registered")
+        };
+        assert!(
+            legacy.name_is_generated(),
+            "the adapter's own spelling reads generated"
+        );
+        let Response::Agent { agent: chosen } = daemon
+            .handle(Request::Rename {
+                agent: legacy.id.to_string(),
+                name: legacy_name.clone(),
+            })
+            .await
+        else {
+            panic!("renamed")
+        };
+        assert!(!chosen.name_is_generated(), "chosen overrides the shape");
+        let Response::Agent { agent: again } = daemon
+            .handle(Request::Rename {
+                agent: legacy.id.to_string(),
+                name: legacy_name.clone(),
+            })
+            .await
+        else {
+            panic!("renamed again")
+        };
+        assert_eq!(again, chosen, "choosing it again changes nothing");
+        drop(daemon);
+        let reopened =
+            Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
+        let Response::Agent { agent } = reopened
+            .handle(Request::Inspect {
+                agent: before.id.to_string(),
+            })
+            .await
+        else {
+            panic!("still registered")
+        };
+        assert_eq!(agent.spec.name, "Release helper", "the name was committed");
+    }
+
     #[tokio::test]
     async fn a_role_is_set_once_and_names_the_projects_holder() {
         let tmp = tempfile::tempdir().unwrap();

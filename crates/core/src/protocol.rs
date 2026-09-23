@@ -324,6 +324,12 @@ pub enum Request {
         #[serde(default)]
         role: Option<String>,
     },
+    /// Give a live agent the name a person chose. Unique among live agents;
+    /// the record keeps its id, so references by id are untouched.
+    Rename {
+        agent: String,
+        name: String,
+    },
     /// A provider lifecycle observation, separate from process liveness.
     /// Older observations are ignored; observations expire after five minutes.
     ReportActivity {

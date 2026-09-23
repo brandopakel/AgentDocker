@@ -37,6 +37,9 @@ impl DeferredArgs {
 }
 
 pub(crate) async fn schedule(client: &Client, input: &HookInput) -> Result<()> {
+    if input.agent_id.is_some() {
+        return Ok(());
+    }
     let Some(transcript) = input.transcript_path.as_deref() else {
         return Ok(());
     };

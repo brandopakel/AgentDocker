@@ -157,6 +157,8 @@ enum Cmd {
     SessionLog(String),
     /// Ask which daemon serves: its version and the executable it runs.
     Ping,
+    /// Give a live session the name a person typed.
+    Rename(String, String),
     /// Restart the daemon through the CLI beside this app, which starts
     /// the installed release.
     RestartDaemon,
@@ -1674,7 +1676,7 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
-            EventKind::RoleSet { .. } => self.send(Cmd::Agents),
+            EventKind::RoleSet { .. } | EventKind::AgentRenamed { .. } => self.send(Cmd::Agents),
             EventKind::LeaseClaimed { .. }
             | EventKind::LeaseRenewed { .. }
             | EventKind::LeaseReleased { .. }
@@ -1770,6 +1772,11 @@ impl App {
     }
 
     fn name_of(&self, id: &str) -> String {
+        // The daemon writes its own notices (overlap rooms, receipts) as
+        // `agentd`; that author is AgentDocker, not an unknown session.
+        if id == "agentd" {
+            return "AgentDocker".to_owned();
+        }
         let id = self.canonical_agent(id);
         self.agents
             .iter()
@@ -2677,6 +2684,15 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             } => Some(Msg::Journal(project, head_seq, entries)),
             _ => None,
         },
+        Cmd::Rename(agent, name) => Some(Msg::Status(
+            match client.call(&Request::Rename { agent, name })? {
+                Response::Agent { agent } => format!("Renamed to {}", agent.spec.name),
+                Response::Error { message, .. } => {
+                    format!("Could not rename: {}", crate::client::explain(&message))
+                }
+                other => unexpected_reply(&other),
+            },
+        )),
         Cmd::Ping => match client.call(&Request::Ping)? {
             Response::Pong {
                 version,
@@ -6167,7 +6183,7 @@ pub(crate) mod tests {
         ];
         assert!(app.display_name(&labelled).starts_with("Codex"));
         assert!(app.display_name(&by_pid).starts_with("Codex"));
-        assert_eq!(app.display_name(&by_session), "Claude Code");
+        assert!(app.display_name(&by_session).starts_with("Claude Code · "));
         assert_eq!(app.display_name(&chosen_hex), "codex-cafe");
         assert_eq!(app.display_name(&chosen_pid_elsewhere), "codex-51242");
         assert_eq!(app.display_name(&chosen), "reviewer");
@@ -6527,17 +6543,20 @@ pub(crate) mod tests {
         second.id = agentdocker_core::AgentId::from("ac5c138c2b3f4d8f90c5924988419055");
         second.created_at = now + chrono::Duration::seconds(1);
         app.agents = vec![second.clone(), first.clone()];
-        assert_eq!(app.display_name(&first), "Codex · 0180d761");
-        assert_eq!(app.display_name(&second), "Codex · ac5c138c");
+        let first_name = format!("Codex · {}", naming::word_for(first.id.as_str()));
+        let second_name = format!("Codex · {}", naming::word_for(second.id.as_str()));
+        assert_ne!(first_name, second_name);
+        assert_eq!(app.display_name(&first), first_name);
+        assert_eq!(app.display_name(&second), second_name);
         first.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
         app.agents = vec![second.clone(), first.clone()];
-        assert_eq!(
-            app.display_name(&second),
-            "Codex · ac5c138c",
-            "nobody is renamed"
-        );
+        assert_eq!(app.display_name(&second), second_name, "nobody is renamed");
         app.agents = vec![first.clone()];
-        assert_eq!(app.display_name(&first), "Codex", "alone: the tool");
+        assert_eq!(
+            app.display_name(&first),
+            first_name,
+            "alone, the same name: it never depends on company"
+        );
     }
 
     #[test]
@@ -6558,7 +6577,10 @@ pub(crate) mod tests {
         }))
         .unwrap();
         let line = app.journal_line(&entry);
-        assert!(line.contains("Codex · newer-id"), "{line}");
+        assert!(
+            line.contains(&format!("Codex · {}", naming::word_for("newer-id"))),
+            "{line}"
+        );
         assert!(!line.contains("codex-2"), "{line}");
         // A line whose author is not on record is left as it is.
         let unknown: agentdocker_core::JournalEntry = serde_json::from_value(serde_json::json!({

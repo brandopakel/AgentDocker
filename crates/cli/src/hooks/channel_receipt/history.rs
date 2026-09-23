@@ -186,16 +186,27 @@ mod tests {
             ),
         )
         .unwrap();
+        // A pass can return without reading when a concurrently spawned test
+        // process inherited the history lock for a moment; that is a retry,
+        // not a window. Count only real windows, within a bounded time.
         let mut windows = 0;
-        let found = (0..8).any(|_| {
-            find(root.path(), &path, &agent, &message, |window| {
+        let mut found = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !found && windows < 8 && std::time::Instant::now() < deadline {
+            found = find(root.path(), &path, &agent, &message, |window| {
                 windows += 1;
                 assert!(window.len() <= WINDOW as usize);
                 window.contains(&proof)
             })
-            .unwrap()
-        });
-        assert!(found && windows > 1 && windows < 8);
+            .unwrap();
+            if !found {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        assert!(
+            found && windows > 1 && windows < 8,
+            "found={found} windows={windows}"
+        );
         for entry in std::fs::read_dir(root.path().join("channel-receipts")).unwrap() {
             let data = std::fs::read(entry.unwrap().path()).unwrap();
             assert!(data.len() < 1024);
@@ -254,23 +265,45 @@ mod tests {
             .unwrap()
         );
         std::fs::write(&path, "record\n").unwrap();
-        assert!(
-            find(root.path(), &path, &agent, &message, |_| {
+        // A pass that finds the history lock briefly held by a concurrently
+        // spawned test process returns without reading; only a pass that read
+        // the window and saw its source replaced is the case under test.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let mut read = false;
+            let result = find(root.path(), &path, &agent, &message, |_| {
+                read = true;
                 std::fs::rename(&path, root.path().join("old")).unwrap();
                 std::fs::write(&path, "replacement\n").unwrap();
                 true
-            })
-            .is_err()
-        );
+            });
+            if read {
+                assert!(result.is_err(), "a replaced source proves nothing");
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the window was never read"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let key = format!("{:x}", Sha256::digest(agent.id.as_str().as_bytes()));
-        let _guard = lock::try_exclusive_existing(
-            &root
-                .path()
-                .join("channel-receipts")
-                .join(format!("{key}.lock")),
-        )
-        .unwrap()
-        .unwrap();
+        let lock_path = root
+            .path()
+            .join("channel-receipts")
+            .join(format!("{key}.lock"));
+        // The same inherited-lock race: wait, bounded, until this test holds it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let _guard = loop {
+            if let Some(guard) = lock::try_exclusive_existing(&lock_path).unwrap() {
+                break guard;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the lock was never free"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
         assert!(
             !find(root.path(), &path, &agent, &message, |_| panic!(
                 "concurrent scan"

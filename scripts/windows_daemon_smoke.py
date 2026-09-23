@@ -470,6 +470,108 @@ def main():
             line = agent_status(name)
         return line
 
+    def setup_trial():
+        profile = root / "codex profile"
+        profile.mkdir()
+        original = 'model = "unrelated-fixture"\n'
+        config = profile / "config.toml"
+        config.write_text(original, encoding="utf-8")
+        setup_home = base / f"agentdocker-smoke-{token}-setup"
+        homes.append(setup_home)
+        setup_env = {"AGENTDOCKER_HOME": str(setup_home), "CODEX_HOME": str(profile)}
+        prepared = json.loads(run("setup", "codex", "--preview", "--json", extra_env=setup_env).stdout)
+        receipt = setup_home / "setup" / (prepared["id"] + ".json")
+        saved = json.loads(receipt.read_text(encoding="utf-8"))
+        assert saved["changes"] and not saved["delegated"]
+        assert all(Path(change["path"]).resolve().is_relative_to(profile.resolve())
+                   for change in saved["changes"]), "setup escaped the private provider profile"
+        step("native setup preview publishes its receipt without changing provider configuration",
+             config.read_text(encoding="utf-8") == original and saved["phase"] == "prepared")
+        run("setup", "--apply", prepared["id"], "--json", extra_env=setup_env)
+        step("native setup applies exact planned MCP, hook and skill files",
+             all(Path(change["path"]).read_bytes() == change["after"].encode("utf-8")
+                 for change in saved["changes"])
+             and json.loads(receipt.read_text(encoding="utf-8"))["phase"] == "applied")
+        health = json.loads(run("setup", "codex", "--health", "--json", extra_env=setup_env).stdout)
+        runtime = health["runtimes"][0]
+        step("native setup health recognizes the installed executable",
+             runtime["mcp_configuration"] == "wired"
+             and any(check["channel"] == "mcp" and check["status"] == "executable_available"
+                     for check in runtime["checks"]))
+        run("setup", "--apply", prepared["id"], "--json", extra_env=setup_env)
+        run("setup", "--undo", prepared["id"], "--json", extra_env=setup_env)
+        step("native setup undo restores existing configuration and removes only its new files",
+             all((Path(change["path"]).read_bytes() == change["before"].encode("utf-8"))
+                 if change["before"] is not None else not Path(change["path"]).exists()
+                 for change in saved["changes"])
+             and json.loads(receipt.read_text(encoding="utf-8"))["phase"] == "undone")
+        next_plan = json.loads(run("setup", "codex", "--preview", "--json", extra_env=setup_env).stdout)
+        changed = original + '# user edit after preview\n'
+        config.write_text(changed, encoding="utf-8")
+        refused = run("setup", "--apply", next_plan["id"], "--json", check=False, extra_env=setup_env)
+        step("native setup refuses a changed provider configuration without overwriting it",
+             refused.returncode != 0 and config.read_text(encoding="utf-8") == changed)
+
+    def mcp_trial():
+        import queue
+        identity = run("register", "--name", "smoke-mcp", "--runtime", "claude-code",
+                       "--pid", str(os.getpid())).stdout.strip()
+        for channel in [False, True]:
+            mode = "channel" if channel else "manual"
+            child_env = dict(env, AGENTDOCKER_AGENT_ID=identity)
+            argv = [str(cli), "mcp", "--runtime", "claude-code"]
+            if channel:
+                child_env["AGENTDOCKER_CLAUDE_CHANNEL_INPUT"] = "1"
+                argv.append("--claude-channel")
+            errors = root / f"mcp-{mode}.stderr"
+            responses = queue.Queue()
+            with errors.open("wb") as stderr:
+                process = subprocess.Popen(argv, cwd=project, env=child_env, stdin=subprocess.PIPE,
+                                           stdout=subprocess.PIPE, stderr=stderr)
+                def read_responses():
+                    try:
+                        while True:
+                            line = process.stdout.readline(2 * 1024 * 1024 + 1)
+                            if not line:
+                                responses.put(None)
+                                return
+                            if len(line) > 2 * 1024 * 1024:
+                                raise ValueError("MCP fixture response exceeds bound")
+                            responses.put(json.loads(line))
+                    except Exception as error:
+                        responses.put(error)
+                reader = threading.Thread(target=read_responses, daemon=True)
+                reader.start()
+                def request(identifier, method, params):
+                    process.stdin.write((json.dumps({"jsonrpc": "2.0", "id": identifier,
+                                                    "method": method, "params": params}) + "\n").encode())
+                    process.stdin.flush()
+                    value = responses.get(timeout=10)
+                    assert isinstance(value, dict) and value.get("id") == identifier and "result" in value, f"MCP {mode} {method}: {value}"
+                    return value["result"]
+                try:
+                    initialized = request(1, "initialize", {"protocolVersion": "2025-06-18"})
+                    instructions = initialized.get("instructions", "")
+                    assert "AgentDocker coordination" in instructions
+                    assert ("## Manual inbox delivery" in instructions) == (not channel)
+                    if channel:
+                        assert initialized["capabilities"]["experimental"]["claude/channel"] == {}
+                    process.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+                    process.stdin.flush()
+                    names = {tool["name"] for tool in request(2, "tools/list", {})["tools"]}
+                    assert {"send_message", "whoami"} <= names
+                    step(f"native {mode} MCP initializes with bundled instructions and messaging tools", True)
+                finally:
+                    process.stdin.close()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                    reader.join(timeout=2)
+                    process.stdout.close()
+            assert process.returncode == 0 and not reader.is_alive(), f"MCP {mode} did not exit cleanly: {errors.read_text(encoding='utf-8', errors='replace')[:1500]}"
+
     def desktop_trial():
         nonlocal window
         desktop_home = base / f"agentdocker-smoke-{token}-desktop"
@@ -571,6 +673,8 @@ def main():
         step("the daemon answers ping over the local transport", answered, detail)
         status = run("daemon", "status")
         step("daemon status names the serving executable", str(daemon_binary.name) in status.stdout, status.stdout.strip())
+        setup_trial()
+        mcp_trial()
         if args.desktop:
             desktop_trial()
         first = run("register", "--name", "smoke-one", "--runtime", "custom", "--pid", str(os.getpid()))
@@ -599,6 +703,31 @@ def main():
             step("daemon install is refused on Windows in words", install.returncode != 0 and "not available on Windows" in install.stderr, install.stderr.strip())
             reload = run("daemon", "reload", check=False, timeout=20)
             step("daemon reload is refused on Windows in words", reload.returncode != 0 and "Windows" in (reload.stderr + reload.stdout), (reload.stderr + reload.stdout).strip())
+        # A managed Claude identity exists before its first hook knows the
+        # provider session ID. Exercise the real hook binary/process ancestry;
+        # a synthetic provider here does not claim an actual model receipt.
+        hook_fixture = project / "managed-hook.py"
+        hook_fixture.write_text(
+            "import json, os, subprocess, sys, time\n"
+            "event={'hook_event_name':'SessionStart','session_id':'native-hook-fixture','cwd':os.getcwd()}\n"
+            "for _ in range(2):\n"
+            " p=subprocess.run([sys.argv[1],'hook','claude-code'],input=json.dumps(event),text=True,capture_output=True,timeout=5)\n"
+            " print(p.stdout, p.stderr, flush=True)\n"
+            " assert p.returncode == 0\n"
+            "time.sleep(30)\n", encoding="utf-8")
+        run("run", "--name", "smoke-managed-hook", "--runtime", "claude-code", "--", sys.executable, str(hook_fixture), str(cli))
+        hook_agent = inspect_agent("smoke-managed-hook")
+        hook_id, hook_pid = hook_agent["id"], hook_agent["pid"]
+        hook_deadline = time.monotonic() + 10
+        while hook_agent["spec"]["labels"].get("session_id") != "native-hook-fixture" and time.monotonic() < hook_deadline:
+            time.sleep(.1)
+            hook_agent = inspect_agent("smoke-managed-hook")
+        step("the native SessionStart hook binds a managed session without replacing its identity or owner",
+             hook_agent["spec"]["labels"].get("session_id") == "native-hook-fixture"
+             and hook_agent["id"] == hook_id and hook_agent["pid"] == hook_pid
+             and hook_agent["managed"] and hook_agent.get("owner") is not None, hook_agent)
+        run("stop", "smoke-managed-hook")
+        wait_status("smoke-managed-hook", "exited")
         # Managed sessions: the daemon starts a session owner, which holds
         # the child, its pipes or its terminal and its log. A piped command's
         # output reaches its log; a terminal command is typed into through

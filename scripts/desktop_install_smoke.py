@@ -242,9 +242,12 @@ def trial(args):
                             subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(extra)], check=True)
                         installed = cli("install", "--from", extra)
                         extra_ids.append(installed["candidate"]["id"])
+                        assert installed["retention"]["completed"], installed["retention"]
+                        assert installed["retention"]["removed_versions"] == int(generation == 3)
                     cleanup = cli("prune", "--preview")
                     second_path = root_install / "versions" / second_id
-                    assert cleanup["maintenance"]["remove"] == [str(second_path)]
+                    assert not second_path.exists(), "activation must prune the obsolete unpinned version"
+                    assert cleanup["maintenance"]["remove"] == []
                     first_retained = next(entry for entry in cleanup["maintenance"]["retained"]
                                           if Path(entry["path"]).name == first_id)
                     pinned = json.loads((first / META).read_text()).get("installation_lock") == 1
@@ -253,7 +256,7 @@ def trial(args):
                     cli("prune", "--expect-plan", cleanup["plan_id"])
                     assert not second_path.exists()
                     assert rpc(environment["AGENTDOCKER_SOCKET"], "ping")["type"] == "pong"
-                    result["scenarios"].append("cleanup retains active, rollback and running or legacy binaries")
+                    result["scenarios"].append("automatic activation cleanup removes obsolete binaries and retains active, rollback and running or legacy binaries")
                     removal = cli("uninstall", "--preview")
                     cli("uninstall", "--expect-plan", removal["plan_id"])
                     assert cli("status")["installation"] is None

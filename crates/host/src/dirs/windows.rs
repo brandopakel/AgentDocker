@@ -579,6 +579,13 @@ pub fn private_file(path: &Path, create: bool, append: bool) -> io::Result<File>
     open(path, &protection, false, false, append)
 }
 
+/// Create user-owned private state without accepting an existing path.
+pub fn create_private_file(path: &Path) -> io::Result<File> {
+    let protection = Protection::new()?;
+    let _ancestors = guard_ancestors(path, &protection)?;
+    open(path, &protection, false, true, false)
+}
+
 fn create_directory(
     path: &Path,
     protection: &Protection,

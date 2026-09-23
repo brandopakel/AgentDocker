@@ -8,7 +8,7 @@
 //! |--------------------|------------------------------------------------------------------------|
 //! | `SessionStart`     | register the session as an agent; tell the model who else is running, hand it queued messages and the project journal since it last looked |
 //! | `UserPromptSubmit` | hand the model queued messages and new journal entries as context      |
-//! | `PreToolUse`       | claim `path:<file>` before Edit/Write/MultiEdit/NotebookEdit; deny the edit on conflict |
+//! | `PreToolUse`       | claim `path:<file>` before Edit/Write/MultiEdit/NotebookEdit, and each file a Codex `apply_patch` names; deny the edit on conflict |
 //! | `PostToolUse`      | hand the model queued messages as context                              |
 //! | `Stop`             | release every lease with the transcript's last message as the journal summary; block once when messages wait |
 //! | `StopFailure`      | retain queued work and report the provider interruption without releasing leases or waking the model |
@@ -110,6 +110,10 @@ pub enum Host {
 /// The fields of a Claude Code hook event this adapter looks at.
 #[derive(Deserialize, Debug, Default, Clone)]
 pub struct HookInput {
+    /// Present for subagent hooks, which must not bind the root session or
+    /// recover its channel receipts even when they inherit its environment.
+    #[serde(default)]
+    pub agent_id: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
@@ -483,11 +487,15 @@ pub async fn claude_code<B: Backend>(
         "UserPromptSubmit" | "PostToolUse" => {
             let me = ensure_registered(backend, input).await?;
             if input.hook_event_name == "PostToolUse" {
-                if let Some(path) = edited_path(input) {
+                let paths = edited_paths(input);
+                if !paths.is_empty() {
                     backend
                         .call(Request::Observe {
                             agent: me.id.to_string(),
-                            paths: vec![path.to_string_lossy().into_owned()],
+                            paths: paths
+                                .iter()
+                                .map(|path| path.to_string_lossy().into_owned())
+                                .collect(),
                         })
                         .await?;
                 }
@@ -541,59 +549,69 @@ pub async fn claude_code<B: Backend>(
                     .await?;
                 return Ok(None);
             }
-            let Some(path) = edited_path(input) else {
+            let paths = edited_paths(input);
+            if paths.is_empty() {
                 return Ok(None);
-            };
+            }
             let me = ensure_registered(backend, input).await?;
-            match backend
-                .call(Request::Stale {
-                    agent: me.id.to_string(),
-                    paths: vec![path.to_string_lossy().into_owned()],
-                })
-                .await?
-            {
-                Response::Stale { stale } if !stale.is_empty() => {
-                    return Ok(Some(json!({
-                        "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                            "permissionDecisionReason": format!("AgentDocker: your context is stale. Read {} again before editing. {}", path.display(), stale.iter().map(|s| s.reason.as_str()).collect::<Vec<_>>().join("; ")) }
-                    })));
+            // One edit can touch several files (a Codex patch names each);
+            // every one is checked and claimed, and the first conflict
+            // refuses the whole edit.
+            for path in &paths {
+                match backend
+                    .call(Request::Stale {
+                        agent: me.id.to_string(),
+                        paths: vec![path.to_string_lossy().into_owned()],
+                    })
+                    .await?
+                {
+                    Response::Stale { stale } if !stale.is_empty() => {
+                        return Ok(Some(json!({
+                            "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                "permissionDecisionReason": format!("AgentDocker: your context is stale. Read {} again before editing. {}", path.display(), stale.iter().map(|s| s.reason.as_str()).collect::<Vec<_>>().join("; ")) }
+                        })));
+                    }
+                    Response::Error { message, .. } => {
+                        eprintln!(
+                            "agentdocker hook: staleness check failed: {message}; continuing lease protection"
+                        );
+                    }
+                    _ => {}
                 }
-                Response::Error { message, .. } => {
-                    eprintln!(
-                        "agentdocker hook: staleness check failed: {message}; continuing lease protection"
-                    );
+                let response = backend
+                    .call(Request::Claim {
+                        agent: me.id.to_string(),
+                        resource: format!("path:{}", path.display()),
+                        mode: LeaseMode::Exclusive,
+                        amount: None,
+                        ttl_secs: opts.ttl,
+                        note: Some(format!(
+                            "editing in {} session {}",
+                            runtime_word(&me.spec.runtime),
+                            me.spec.name
+                        )),
+                        wait_secs: 0,
+                        // Taken for this edit, not asked for: the turn's end
+                        // gives it back. What the agent claimed itself stays.
+                        automatic: true,
+                    })
+                    .await?;
+                match response {
+                    Response::Error {
+                        code: ErrorCode::Conflict,
+                        message,
+                        details,
+                    } => return Ok(Some(deny_output(path, &message, details.as_ref()))),
+                    Response::Error { message, .. } => {
+                        eprintln!(
+                            "agentdocker hook: could not claim {}: {message}",
+                            path.display()
+                        );
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
-            let response = backend
-                .call(Request::Claim {
-                    agent: me.id.to_string(),
-                    resource: format!("path:{}", path.display()),
-                    mode: LeaseMode::Exclusive,
-                    amount: None,
-                    ttl_secs: opts.ttl,
-                    note: Some(format!("editing in Claude Code session {}", me.spec.name)),
-                    wait_secs: 0,
-                    // Taken for this edit, not asked for: the turn's end
-                    // gives it back. What the agent claimed itself stays.
-                    automatic: true,
-                })
-                .await?;
-            match response {
-                Response::Error {
-                    code: ErrorCode::Conflict,
-                    message,
-                    details,
-                } => Ok(Some(deny_output(&path, &message, details.as_ref()))),
-                Response::Error { message, .. } => {
-                    eprintln!(
-                        "agentdocker hook: could not claim {}: {message}",
-                        path.display()
-                    );
-                    Ok(None)
-                }
-                _ => Ok(None),
-            }
+            Ok(None)
         }
         "Stop" => {
             let Some(me) = session_agent(backend, input).await? else {
@@ -683,6 +701,93 @@ fn read_path(input: &HookInput) -> Option<PathBuf> {
         .unwrap_or(".");
     let base = input.cwd.clone().or_else(|| std::env::current_dir().ok())?;
     Some(agentdocker_host::project::canonical(&base.join(raw)))
+}
+
+/// What a runtime's name reads as in a lease note.
+fn runtime_word(runtime: &str) -> &str {
+    match runtime {
+        "claude-code" => "Claude Code",
+        "codex" => "Codex",
+        other => other,
+    }
+}
+
+/// Every file a tool call is about to change. Claude Code's edit tools
+/// name one file each. A Codex `apply_patch` call names each file on a
+/// structural header line. Nested calls arrive independently; the outer
+/// code-mode script and arbitrary shell writes are not parsed here.
+pub fn edited_paths(input: &HookInput) -> Vec<PathBuf> {
+    if let Some(path) = edited_path(input) {
+        return vec![path];
+    }
+    match (input.tool_name.as_deref(), input.tool_input.as_ref()) {
+        (Some(tool), Some(tool_input)) if PATCH_TOOLS.contains(&tool) => {
+            patch_paths(tool_input, input.cwd.as_deref())
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The tools whose input is a patch. Codex runs a code-mode script's nested
+/// calls through the hooks one by one, so the nested `apply_patch` is seen
+/// with its own input (`tool_input.command`); the outer script is not read,
+/// where an example or a computed string would mislead.
+const PATCH_TOOLS: &[&str] = &["apply_patch"];
+
+/// The files named by the canonical patch input, absolute
+/// (relative ones against `cwd`), each once, in order.
+pub fn patch_paths(tool_input: &Value, cwd: Option<&Path>) -> Vec<PathBuf> {
+    // The patch itself: `command` (Codex's canonical apply_patch input, and
+    // what the OpenCode plugin sends), or the input when it is the bare
+    // patch string, or `input` (the freeform tool's field). Nothing else.
+    let texts: Vec<&str> = [
+        tool_input.get("command").and_then(Value::as_str),
+        tool_input.as_str(),
+        tool_input.get("input").and_then(Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for text in texts {
+        // Only structural header lines count: a line that begins with the
+        // header, the whole rest of it the path (quotes, apostrophes and
+        // backslashes included). A header quoted inside an added line is
+        // content, not a file this patch touches.
+        for line in text.lines() {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let Some(raw) = [
+                "*** Update File: ",
+                "*** Add File: ",
+                "*** Delete File: ",
+                "*** Move to: ",
+            ]
+            .iter()
+            .find_map(|header| line.strip_prefix(header)) else {
+                continue;
+            };
+            if raw.is_empty() {
+                continue;
+            }
+            let path = PathBuf::from(raw);
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                match cwd {
+                    Some(cwd) => cwd.join(path),
+                    None => match std::env::current_dir() {
+                        Ok(dir) => dir.join(path),
+                        Err(_) => continue,
+                    },
+                }
+            };
+            let path = normalize(&absolute);
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
 }
 
 pub fn edited_path(input: &HookInput) -> Option<PathBuf> {
@@ -865,9 +970,13 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
             .ok()
             .is_some_and(|id| !id.is_empty());
         if explicit {
-            return Ok(me);
+            let pid = (input.hook_event_name == "SessionStart" && input.agent_id.is_none())
+                .then(host_pid)
+                .flatten();
+            return bind_start_session(backend, input, me, pid).await;
         }
-        let verified = host_pid()
+        let pid = host_pid();
+        let verified = pid
             .and_then(|pid| {
                 let started = agentdocker_host::procinfo::start_time(pid)?;
                 let here = input.cwd.as_ref()?.canonicalize().ok()?;
@@ -881,7 +990,7 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
             })
             .unwrap_or(false);
         if verified {
-            return Ok(me);
+            return bind_start_session(backend, input, me, pid).await;
         }
     }
     let mut labels = std::collections::BTreeMap::from([
@@ -920,21 +1029,95 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
     }
 }
 
+/// Managed launches already have a registry row before Claude chooses a session
+/// ID. Bind that ID through the daemon's atomic registration path, with the
+/// same physical-process checks as an external hook. An inherited ID alone is
+/// not sufficient evidence, and an existing different session is never replaced.
+async fn bind_start_session<B: Backend>(
+    backend: &B,
+    input: &HookInput,
+    me: AgentRecord,
+    pid: Option<u32>,
+) -> Result<AgentRecord> {
+    if input.hook_event_name != "SessionStart"
+        || input.agent_id.is_some()
+        || !agentdocker_core::identity::plain_session_id(&input.session_id)
+        || me
+            .spec
+            .labels
+            .get("session_id")
+            .is_some_and(|s| !s.is_empty())
+    {
+        return Ok(me);
+    }
+    let Some((pid, started, here)) = pid.and_then(|pid| {
+        Some((
+            pid,
+            agentdocker_host::procinfo::start_time(pid)?,
+            input.cwd.as_ref()?.canonicalize().ok()?,
+        ))
+    }) else {
+        return Ok(me);
+    };
+    if !same_hook_session(&me, &input.session_id, pid, started, &here) {
+        return Ok(me);
+    }
+    let mut spec = me.spec.clone();
+    spec.labels
+        .insert("session_id".into(), input.session_id.clone());
+    match backend
+        .call(Request::Register {
+            spec,
+            pid: Some(pid),
+            session: agentdocker_host::multiplexer::own(),
+        })
+        .await?
+    {
+        Response::Agent { agent }
+            if agent.id == me.id
+                && same_hook_session(&agent, &input.session_id, pid, started, &here)
+                && agent.spec.labels.get("session_id") == Some(&input.session_id) =>
+        {
+            Ok(agent)
+        }
+        Response::Error { message, .. } => bail!("session binding refused: {message}"),
+        _ => bail!("session binding did not preserve the verified Claude identity"),
+    }
+}
+
 /// The pid of the Claude Code process, for the daemon's liveness check.
 /// Hooks run under a shell, so walk up past any shells to the first real
 /// ancestor. `None` if that can't be worked out; the agent then relies on
 /// `SessionEnd` to leave.
 fn host_pid() -> Option<u32> {
-    let mut pid = parent_id();
+    host_pid_from(parent_id(), parent_of)
+}
+
+fn host_pid_from(
+    mut pid: u32,
+    mut parent: impl FnMut(u32) -> Option<(u32, String)>,
+) -> Option<u32> {
     for _ in 0..6 {
-        let (ppid, comm) = parent_of(pid)?;
+        let (ppid, comm) = parent(pid)?;
         let name = Path::new(&comm)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(&comm)
             .trim_start_matches('-')
             .to_owned();
-        if !SHELLS.contains(&name.as_str()) {
+        let shell = SHELLS.contains(&name.as_str());
+        #[cfg(windows)]
+        let shell = shell
+            || [
+                "sh.exe",
+                "bash.exe",
+                "cmd.exe",
+                "powershell.exe",
+                "pwsh.exe",
+            ]
+            .iter()
+            .any(|s| name.eq_ignore_ascii_case(s));
+        if !shell {
             return Some(pid);
         }
         pid = ppid;
@@ -942,6 +1125,7 @@ fn host_pid() -> Option<u32> {
     None
 }
 
+#[cfg(unix)]
 fn parent_of(pid: u32) -> Option<(u32, String)> {
     let output = std::process::Command::new("ps")
         .args(["-o", "ppid=,comm=", "-p", &pid.to_string()])
@@ -952,6 +1136,12 @@ fn parent_of(pid: u32) -> Option<(u32, String)> {
     let ppid = parts.next()?.parse().ok()?;
     let comm = parts.collect::<Vec<_>>().join(" ");
     Some((ppid, comm))
+}
+
+#[cfg(windows)]
+fn parent_of(pid: u32) -> Option<(u32, String)> {
+    let process = agentdocker_host::procinfo::inspect(pid)?;
+    Some((process.ppid, process.argv.first()?.clone()))
 }
 
 /// Tell the daemon which branch and commit the session's directory is on.
@@ -1550,6 +1740,105 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn managed_session_start_binds_once_without_changing_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let pid = std::process::id();
+        let mut event = input("SessionStart");
+        event.cwd = Some(root.path().to_owned());
+        let mut original = agent("chosen-name", true);
+        original.pid = Some(pid);
+        original.process_started_at = agentdocker_host::procinfo::start_time(pid);
+        original.spec.workdir = event.cwd.clone();
+        original.spec.labels.remove("session_id");
+        original.managed = true;
+        let mut bound = original.clone();
+        bound
+            .spec
+            .labels
+            .insert("session_id".into(), event.session_id.clone());
+        let backend = Mock::with(vec![Response::Agent {
+            agent: bound.clone(),
+        }]);
+        let result = bind_start_session(&backend, &event, original.clone(), Some(pid))
+            .await
+            .unwrap();
+        assert_eq!(result, bound);
+        assert!(
+            matches!(&backend.requests()[0], Request::Register { spec, pid: Some(p), .. }
+            if *p == pid && spec.name == original.spec.name
+                && spec.labels.get("session_id") == Some(&event.session_id))
+        );
+        let again = bind_start_session(&backend, &event, result, Some(pid))
+            .await
+            .unwrap();
+        assert_eq!(again, bound);
+        assert_eq!(backend.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn session_binding_requires_root_start_and_exact_process_checkout() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let pid = std::process::id();
+        for case in 0..9 {
+            let mut event = input("SessionStart");
+            event.cwd = Some(root.path().to_owned());
+            let mut me = agent("managed", true);
+            me.pid = Some(pid);
+            me.process_started_at = agentdocker_host::procinfo::start_time(pid);
+            me.spec.workdir = event.cwd.clone();
+            me.spec.labels.remove("session_id");
+            let mut observed = Some(pid);
+            match case {
+                0 => event.agent_id = Some("child".into()),
+                1 => event.hook_event_name = "PostToolUse".into(),
+                2 => event.session_id.clear(),
+                3 => me.process_started_at = None,
+                4 => me.pid = Some(u32::MAX),
+                5 => me.spec.runtime = "codex".into(),
+                6 => event.cwd = Some(other.path().to_owned()),
+                7 => {
+                    me.spec
+                        .labels
+                        .insert("session_id".into(), "another-session".into());
+                }
+                _ => observed = None,
+            }
+            let backend = Mock::with(vec![]);
+            assert_eq!(
+                bind_start_session(&backend, &event, me.clone(), observed)
+                    .await
+                    .unwrap(),
+                me
+            );
+            assert!(backend.requests().is_empty(), "case {case}");
+        }
+    }
+
+    #[test]
+    fn hook_ancestry_skips_shells_but_is_bounded() {
+        assert_eq!(
+            host_pid_from(10, |pid| match pid {
+                10 => Some((20, "bash".into())),
+                20 => Some((30, "claude".into())),
+                _ => None,
+            }),
+            Some(20)
+        );
+        assert_eq!(host_pid_from(10, |_| None), None);
+        assert_eq!(host_pid_from(10, |pid| Some((pid + 1, "sh".into()))), None);
+        #[cfg(windows)]
+        assert_eq!(
+            host_pid_from(10, |pid| match pid {
+                10 => Some((20, "C:\\Program Files\\Git\\bin\\BASH.EXE".into())),
+                20 => Some((30, "C:\\Users\\fixture\\claude.exe".into())),
+                _ => None,
+            }),
+            Some(20)
+        );
+    }
+
     fn digest_reply(text: &str) -> Response {
         use agentdocker_core::{Digest, ProjectRef};
         Response::Digest {
@@ -1711,6 +2000,10 @@ mod tests {
     async fn session_start_and_prompts_carry_the_journal_digest() {
         use agentdocker_core::ProjectRef;
         let mut me = agent("claude-01234567", true);
+        // This orientation fixture is already bound; binding has separate tests.
+        me.spec
+            .labels
+            .insert("session_id".into(), input("SessionStart").session_id);
         me.project = Some(ProjectRef::directory("/work/alpha"));
         let backend = Mock::with(vec![
             Response::Agent { agent: me.clone() },
@@ -2187,6 +2480,96 @@ mod tests {
         ));
     }
 
+    /// Patch headers preserve whole file names and resolve relative paths
+    /// against the cwd; outer code-mode scripts are not patch input.
+    #[test]
+    fn codex_patches_name_every_file_they_touch() {
+        let mut ev = input("PreToolUse");
+        ev.cwd = Some("/tmp/project".into());
+        ev.tool_name = Some("apply_patch".into());
+        ev.tool_input = Some(json!({
+            "input": "*** Begin Patch\n*** Update File: /tmp/project/a.py\n@@\n-x\n+y\n*** Add File: b.py\n+new\n*** End Patch"
+        }));
+        let paths = edited_paths(&ev);
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert!(paths[0].ends_with("a.py") && paths[1].ends_with("b.py"));
+        assert!(paths.iter().all(|p| p.is_absolute()));
+
+        // A move names its source and its destination; a new file is found
+        // though it does not exist yet.
+        ev.tool_input = Some(json!({
+            "command": "*** Begin Patch\n*** Update File: /tmp/project/old.py\n*** Move to: /tmp/project/new/place.py\n@@\n-a\n+b\n*** End Patch"
+        }));
+        let paths = edited_paths(&ev);
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert!(paths[0].ends_with("old.py") && paths[1].ends_with("place.py"));
+
+        // A header is a whole line: apostrophes, quotes and backslashes stay
+        // in the name, CRLF endings are line ends, and a header quoted
+        // inside an added line is content, not a file.
+        ev.tool_input = Some(json!({
+            "command": "*** Begin Patch\r\n*** Update File: /tmp/project/it's \"q\".py\r\n@@\r\n+print(\"*** Update File: unrelated.py\")\r\n*** Add File: /tmp/project/dir\\new.py\r\n+x\r\n*** End Patch"
+        }));
+        let paths = edited_paths(&ev);
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert!(
+            paths[0].to_string_lossy().ends_with("it's \"q\".py"),
+            "{paths:?}"
+        );
+        assert!(
+            paths[1].to_string_lossy().ends_with("dir\\new.py"),
+            "{paths:?}"
+        );
+        assert!(!paths.iter().any(|p| p.ends_with("unrelated.py")));
+
+        // Trailing spaces belong to a Unix file name, not the CRLF ending.
+        ev.tool_input = Some(json!({
+            "command": "*** Begin Patch\r\n*** Update File: /tmp/project/trailing.py \r\n@@\r\n-a\r\n+b\r\n*** End Patch"
+        }));
+        let paths = edited_paths(&ev);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].file_name().unwrap(), "trailing.py ");
+
+        // The outer code-mode script is not read: its nested apply_patch
+        // arrives as its own hook with its own input.
+        ev.tool_name = Some("exec".into());
+        ev.tool_input = Some(json!({
+            "input": "text(await tools.apply_patch(\"*** Begin Patch\\n*** Update File: /tmp/project/util.py\\n*** End Patch\"));"
+        }));
+        assert!(edited_paths(&ev).is_empty());
+        // Claude's edit tools are unchanged.
+        ev.tool_name = Some("Edit".into());
+        ev.tool_input = Some(json!({ "file_path": "/tmp/project/c.py" }));
+        assert_eq!(edited_paths(&ev).len(), 1);
+    }
+
+    /// A Codex patch on a file another agent holds is refused, the same
+    /// way a Claude Code edit is.
+    #[tokio::test]
+    async fn a_codex_patch_on_a_held_file_is_denied() {
+        let me = agent("codex-01234567", true);
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Stale { stale: vec![] },
+            Response::Error {
+                code: ErrorCode::Conflict,
+                message: "held by refactor-peer".into(),
+                details: Some(json!({ "held_by": [{ "note": "refactoring util.py" }] })),
+            },
+        ]);
+        let mut ev = input("PreToolUse");
+        ev.tool_name = Some("apply_patch".into());
+        ev.tool_input = Some(json!({
+            "command": "*** Begin Patch\n*** Update File: /tmp/util.py\n@@\n+x\n*** End Patch"
+        }));
+        let out = claude_code(&backend, &ev, &opts()).await.unwrap().unwrap();
+        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+        let reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap();
+        assert!(reason.contains("refactor-peer") && reason.contains("refactoring util.py"));
+    }
+
     #[tokio::test]
     async fn pre_tool_use_is_silent_when_claim_succeeds() {
         let backend = Mock::with(vec![
@@ -2242,6 +2625,9 @@ mod tests {
     async fn session_start_names_project_mates_before_strangers() {
         use agentdocker_core::ProjectRef;
         let mut me = agent("claude-01234567", true);
+        me.spec
+            .labels
+            .insert("session_id".into(), input("SessionStart").session_id);
         me.project = Some(ProjectRef::directory("/work/alpha"));
         let mut mate = agent("mate", true);
         mate.project = Some(ProjectRef::directory("/work/alpha"));

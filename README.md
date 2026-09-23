@@ -75,7 +75,7 @@ v0.1.0; they do not install the desktop shown in current development screenshots
 For a source trial today, follow [the local build instructions](docs/LOCAL-BUILD.md)
 at an agreed commit. The release checklist is in [Remaining work](docs/REMAINING-WORK.md#the-road-to-v1-a-release-other-people-can-install-and-try).
 
-The next coworker preview is being prepared as **0.2.0-beta.1**. This source
+The next coworker preview is being prepared as **0.2.0-beta.2**. This source
 version is not a published download. Its candidate targets macOS and Linux on
 ARM64/x86-64, plus an unsigned Windows x64 portable ZIP. Windows installer,
 service, updater and native Codex idle-input support remain unfinished; use
@@ -270,7 +270,7 @@ agentdocker hook install claude-code          # writes ./.claude/settings.json (
 |---|---|
 | `SessionStart` | registers the session as agent `claude-<session>`; tells the model who else is running, hands it queued messages and the project journal since it last looked |
 | `PreToolUse` on Read/Grep/Glob | records what is about to be read, so a later change to it is noticed |
-| `PreToolUse` on Edit/Write/MultiEdit/NotebookEdit | refuses the edit if the file changed since it was read; otherwise claims `path:<file>` first, and if another agent holds it, the edit is **denied** with the holder's name and note |
+| `PreToolUse` on Edit/Write/MultiEdit/NotebookEdit, and on every file a Codex `apply_patch` names | refuses the edit if the file changed since it was read; otherwise claims `path:<file>` first, and if another agent holds it, the edit is **denied** with the holder's name and note |
 | `UserPromptSubmit`, `PostToolUse` | delivers messages from other agents as context, as they arrive; a prompt also carries new journal entries |
 | `Stop` | releases every lease, quoting the model's last message as the journal summary; if messages arrived while it was working, blocks the stop so the model reads them first (`--no-wake` disables) |
 | `SessionEnd` | releases and deregisters |

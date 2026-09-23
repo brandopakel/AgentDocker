@@ -80,6 +80,11 @@ impl Catalog {
             .projects
             .retain(|entry| entry.project.root.is_absolute());
         catalog.hidden.retain(|root| root.is_absolute());
+        // Entries discovery made for `/` or the home folder before it stopped
+        // doing so; a pinned one is the person's and stays.
+        catalog
+            .projects
+            .retain(|entry| entry.pinned || !is_broad(&entry.project.root));
         let excess = catalog.dismissed.len().saturating_sub(MAX_DISMISSED);
         catalog.dismissed.drain(..excess);
         anyhow::ensure!(
@@ -132,8 +137,24 @@ impl Catalog {
         true
     }
 
+    /// Whether a root is too broad to be a project unless the person pins
+    /// it: the filesystem root or the home folder, where a session started
+    /// because nobody chose a folder. Its sessions are Other sessions.
+    pub fn broad_unpinned(&self, root: &Path) -> bool {
+        is_broad(root)
+            && !self
+                .projects
+                .iter()
+                .any(|e| e.pinned && e.project.root == root)
+    }
+
     pub fn remember(&mut self, project: ProjectRef, pin: bool) -> bool {
         if !project.root.is_absolute() {
+            return false;
+        }
+        // Discovery never makes `/` or the home folder a project; the
+        // person still can, by adding it.
+        if !pin && is_broad(&project.root) {
             return false;
         }
         if pin {
@@ -311,6 +332,14 @@ fn is_temporary_under(root: &Path, temp: &Path) -> bool {
     (!shared && (root.starts_with(temp) || root.starts_with(&private)))
         || root.starts_with("/private/var/folders")
         || root.starts_with("/var/folders")
+}
+
+/// The filesystem root or the home folder: where a session runs when nobody
+/// chose a folder for it.
+pub fn is_broad(root: &Path) -> bool {
+    // `std::env::home_dir` reads HOME and, on Windows, falls back to
+    // USERPROFILE: an interactive Windows session often has no HOME.
+    root.parent().is_none() || std::env::home_dir().is_some_and(|home| home == root)
 }
 
 /// Whether a folder is scratch: under the per-user temporary directory
@@ -581,5 +610,39 @@ mod tests {
         catalog.save(home.path()).unwrap();
         let loaded = Catalog::load(home.path()).unwrap();
         assert_eq!(loaded.dismissed, catalog.dismissed);
+    }
+
+    #[test]
+    fn the_root_and_home_are_not_projects_unless_pinned() {
+        let home = std::env::home_dir().unwrap();
+        let mut catalog = Catalog::default();
+        assert!(!catalog.remember(ProjectRef::directory("/"), false));
+        assert!(!catalog.remember(ProjectRef::directory(&home), false));
+        assert!(catalog.projects.is_empty());
+        assert!(catalog.broad_unpinned(Path::new("/")));
+        assert!(
+            !catalog.broad_unpinned(&home.join("code")),
+            "a folder in home is a project"
+        );
+        // The person can still make one a project, by adding (pinning) it.
+        assert!(catalog.remember(ProjectRef::directory(&home), true));
+        assert!(!catalog.broad_unpinned(&home));
+        // Saved unpinned entries from before are dropped on load.
+        let dir = tempfile::tempdir().unwrap();
+        let mut old = Catalog::default();
+        old.projects.push(Entry {
+            project: ProjectRef::directory("/"),
+            pinned: false,
+            label: None,
+        });
+        old.projects.push(Entry {
+            project: ProjectRef::directory(&home),
+            pinned: true,
+            label: None,
+        });
+        old.save(dir.path()).unwrap();
+        let loaded = Catalog::load(dir.path()).unwrap();
+        assert_eq!(loaded.projects.len(), 1);
+        assert_eq!(loaded.projects[0].project.root, home);
     }
 }

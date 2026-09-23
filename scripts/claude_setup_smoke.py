@@ -20,7 +20,7 @@ def digest(path):
 def run(binary, manifest_path, output):
     output.mkdir(mode=0o700)
     manifest = json.loads(manifest_path.read_text())
-    assert digest(binary) == manifest['binary_sha256']['agentdocker']
+    assert digest(binary) == manifest['binary_sha256'][binary.name]
     report = {
         'scope': 'Actual binary preview/apply/health/undo with installed Claude MCP configuration CLI; no model session',
         'source_commit': manifest['source_commit'],
@@ -34,23 +34,24 @@ def run(binary, manifest_path, output):
     started = time.monotonic()
     scratch = None
     try:
-        with tempfile.TemporaryDirectory(prefix='ad-claude-setup-', dir='/tmp') as directory:
+        with tempfile.TemporaryDirectory(prefix='ad-claude-setup-') as directory:
             scratch = Path(directory).resolve()
             profile_a, profile_b = scratch/'profile-a', scratch/'profile-b'
             profile_a.mkdir(); profile_b.mkdir()
             state = scratch/'state'
             for profile in [profile_a, profile_b]:
                 (profile/'.claude.json').write_text(json.dumps({'mcpServers': {
-                    'unrelated-fixture': {'type':'stdio','command':'/usr/bin/true','args':[],'env':{}}
+                    'unrelated-fixture': {'type':'stdio','command': 'cmd.exe' if os.name == 'nt' else '/usr/bin/true',
+                                          'args': ['/d', '/c', 'exit', '0'] if os.name == 'nt' else [], 'env':{}}
                 }})+'\n')
             original_b = (profile_b/'.claude.json').read_bytes()
             hooks = profile_a/'settings.json'
             original_hooks = json.dumps({'hooks': {'UserPromptSubmit': [
-                {'hooks': [{'type':'command', 'command':'/usr/bin/true'}]}
+                {'hooks': [{'type':'command', 'command': 'cmd.exe /d /c exit 0' if os.name == 'nt' else '/usr/bin/true'}]}
             ]}})+'\n'
             hooks.write_text(original_hooks)
             env = {k:v for k,v in os.environ.items() if not k.startswith(('AGENTDOCKER_', 'CLAUDE', 'ANTHROPIC'))}
-            env.update(AGENTDOCKER_HOME=str(state), AGENTDOCKER_SOCKET=str(scratch/'absent.sock'),
+            env.update(AGENTDOCKER_HOME=str(state), AGENTDOCKER_SOCKET=(rf'\\.\pipe\{scratch.name}-absent' if os.name == 'nt' else str(scratch/'absent.sock')),
                        AGENTDOCKER_NO_AUTOSTART='1', DISABLE_TELEMETRY='1', DISABLE_ERROR_REPORTING='1')
 
             def call(name, profile, args, success=True):
@@ -70,9 +71,13 @@ def run(binary, manifest_path, output):
                 plan = call(name, profile_a, ['claude-code', '--preview'])
                 private = json.loads((state/'setup'/f'{plan["id"]}.json').read_text())
                 assert len(private['delegated']) == 1, 'preview did not plan selected-profile MCP registration'
-                assert Path(private['delegated'][0]['config_dir']) == profile_a
-                assert Path(private['delegated'][0]['path']) == profile_a/'.claude.json'
-                assert all(Path(c['path']).is_relative_to(profile_a) for c in private['changes'])
+                saved_profile = Path(private['delegated'][0]['config_dir'])
+                # Rust canonicalization uses the Windows extended-path prefix.
+                # Compare existing files by identity; planned paths share the
+                # canonical spelling recorded in the saved profile.
+                assert saved_profile.samefile(profile_a), 'saved MCP profile is not profile A'
+                assert Path(private['delegated'][0]['path']).samefile(profile_a/'.claude.json'), 'saved MCP file is not in profile A'
+                assert all(Path(c['path']).is_relative_to(saved_profile) for c in private['changes']), 'planned changes leave profile A'
                 return plan, private
 
             def provider_state():
@@ -96,8 +101,8 @@ def run(binary, manifest_path, output):
             health = call('health-a', profile_a, ['claude-code', '--health'])
             runtime = health['runtimes'][0]
             assert runtime['name'] == 'claude-code'
-            assert runtime['mcp_configuration'] == 'wired' and runtime['hooks_configuration'] == 'wired'
-            assert all(check['status'] == 'executable_available' for check in runtime['checks'])
+            assert runtime['mcp_configuration'] == 'wired' and runtime['hooks_configuration'] == 'wired', 'health does not recognize installed MCP and hooks'
+            assert all(check['status'] == 'executable_available' for check in runtime['checks']), 'health reports an unavailable configured executable'
             assert not health['daemon_reachable'], 'fixture must not connect to production daemon'
             report['checks'].append('health agrees on selected-profile MCP and hooks; isolated absent daemon remains disconnected')
             call('undo-from-b', profile_b, ['--undo', first['id']])
@@ -137,7 +142,7 @@ def run(binary, manifest_path, output):
             assert not (scratch/'absent.sock').exists()
             report['result'] = 'passed'
     except Exception as error:
-        report['error'] = str(error)
+        report['error'] = type(error).__name__ + ': ' + str(error)
     finally:
         report['elapsed_seconds'] = time.monotonic()-started
         report['cleanup'] = {
