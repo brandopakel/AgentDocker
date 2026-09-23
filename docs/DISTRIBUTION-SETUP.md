@@ -303,11 +303,12 @@ acceptance remain unverified until the candidate is released and tried.
 
 ## First coworker preview candidate
 
-The source candidate is **0.2.0-beta.1**, with matching workspace packages,
+The failed immutable `v0.2.0-beta.1` tag remains at `d46db1f2`; it published no
+release. The replacement source candidate is **0.2.0-beta.2**, with matching workspace packages,
 internal dependency requirements and entries in both Cargo lockfiles (including
 the excluded fuzz workspace). The legacy macOS bundle
 helper reads this version from the workspace when no override is supplied.
-The intended tag is `v0.2.0-beta.1`; changing the source version does not create a
+The intended tag is `v0.2.0-beta.2`; changing the source version does not create a
 tag, publish assets or install them. Publication remains open until the final
 integrated source passes its gates and the protected-tag workflow finishes.
 

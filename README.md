@@ -75,7 +75,7 @@ v0.1.0; they do not install the desktop shown in current development screenshots
 For a source trial today, follow [the local build instructions](docs/LOCAL-BUILD.md)
 at an agreed commit. The release checklist is in [Remaining work](docs/REMAINING-WORK.md#the-road-to-v1-a-release-other-people-can-install-and-try).
 
-The next coworker preview is being prepared as **0.2.0-beta.1**. This source
+The next coworker preview is being prepared as **0.2.0-beta.2**. This source
 version is not a published download. Its candidate targets macOS and Linux on
 ARM64/x86-64, plus an unsigned Windows x64 portable ZIP. Windows installer,
 service, updater and native Codex idle-input support remain unfinished; use
