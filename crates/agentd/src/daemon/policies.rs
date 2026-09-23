@@ -169,6 +169,39 @@ impl Daemon {
 
     /// Resolve selectors and refuse before creating a worktree, process or engine object.
     pub(super) async fn admit_run(&self, record: &mut AgentRecord) -> Result<(), Box<Response>> {
+        // Match registration's physical checkout identity, including callers
+        // that use the protocol directly rather than the CLI. Resolve outside
+        // the state lock, before policy loading or any launch side effect.
+        if let Some(workdir) = record.spec.workdir.clone() {
+            let given = workdir.clone();
+            let resolved = tokio::task::spawn_blocking(move || {
+                let path = std::fs::canonicalize(workdir)?;
+                if !path.is_dir() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "working directory is not a directory",
+                    ));
+                }
+                Ok(path)
+            })
+            .await
+            .map_err(|_| {
+                Box::new(Response::error(
+                    ErrorCode::Internal,
+                    "the working-directory resolver failed",
+                ))
+            })?
+            .map_err(|error| {
+                Box::new(Response::error(
+                    ErrorCode::Invalid,
+                    format!(
+                        "cannot resolve the working directory {}: {error}",
+                        given.display()
+                    ),
+                ))
+            })?;
+            record.spec.workdir = Some(resolved);
+        }
         if record.spec.name.is_empty() {
             record.spec.name = default_name(&record.id);
         }
