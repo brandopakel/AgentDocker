@@ -33,7 +33,7 @@ The next version and supported-platform promise must match the candidate we test
 | 4 | First run from the README | Fresh-state #199 CLI rehearsal passed (`newcomer_first_run_2026_09_18` in the [integrated record](verification/INDEX.md)); empty-provider-profile preview/apply/undo also passed on installed `ce82d06`. No fresh OS-user, actual first-profile model session or second-machine desktop acceptance is claimed. | Install each platform's actual candidate on a clean account/machine, add a coworker's project, preview/apply one provider integration, complete provider consent, verify a real idle/busy message and restart/reopen with drafts intact. Test the download without development checkout paths or existing user configuration. |
 | 5 | App-guided Claude reconnect and idle receipt | **Complete for the recorded managed Claude trial.** #199/#196 are merged. After the person's in-app consent, project probe `91b30d039e3c4d09` started the existing session's idle turn and reply `77976146612248b9` arrived about seven seconds later without keyboard input. See `user_session_idle_wake_2026_09_18` in the [input-delivery record](verification/INDEX.md). | Keep broader provider/version and pause-throughput acceptance open. A separate plain Claude process without the input channel is not made wakeable by this successful trial. |
 | 6 | Useful coworker bug reports | **Complete:** the [trial issue template](../.github/ISSUE_TEMPLATE/trial-report.md) is on main through #198. It requests actual app/daemon/runtime status and reproduction steps. | Testers use the template; redact private project paths, prompts and credentials before posting. |
-| 7 | Coworkers on all three platforms | **Required by the user for the first rollout:** macOS, Linux and native Windows. macOS has local evidence; Linux has graphical/package CI; Windows daemon/CLI, managed sessions and ConPTY are merged (#206/#214); its unsigned portable ZIP passed extracted-archive acceptance on a native runner (#219), but is not published. | Finish Windows provider setup, service and installer/update paths and native Codex input. Resolve the extracted executable first-start failure from #220; the longer diagnostic allowance in #218 does not establish a fix for the client startup bound. Produce each platform's candidate and run the same first-run, real-provider queue/idle/busy/limit, terminal, draft, sleep/restart and update/rollback cases on declared OS versions/architectures. macOS/Linux availability does not close Windows. |
+| 7 | Coworkers on all three platforms | **Required by the user for the first rollout:** macOS, Linux and native Windows. macOS has local evidence; Linux has graphical/package CI; Windows daemon/CLI, managed sessions and ConPTY are merged (#206/#214); its unsigned portable ZIP passed extracted-archive acceptance on a native runner (#219), but is not published. | Finish Windows provider setup, service and installer/update paths and native Codex input. Physical AWBP testing found setup receipt publication incorrectly opening a directory as a file; the native publication fix and expanded package regression are in review, with actual provider setup still to accept. Resolve the extracted executable first-start failure from #220; the longer diagnostic allowance in #218 does not establish a fix for the client startup bound. Produce each platform's candidate and run the same first-run, real-provider queue/idle/busy/limit, terminal, draft, sleep/restart and update/rollback cases on declared OS versions/architectures. macOS/Linux availability does not close Windows. |
 
 
 ## Delivered, acceptance remaining
@@ -75,3 +75,22 @@ Federation/host namespaces, cross-host leases/routing, the herdr focus bridge, a
 | Independent release acceptance | Run second-Mac, physical Intel, target-Linux and sustained actual-provider trials against the final candidate. |
 
 the operational sequence is in [local trial](LOCAL-TRIAL.md).
+
+Windows setup follow-up: physical AWBP passed 57 native checks and 30 fresh-home
+starts on #237 package `9064c5f3`. Actual Claude 2.1.280 configuration add passed,
+but health rejected the Windows executable suffix. The native-name correction passed native Windows CI and all six actual Claude
+configuration checks on rebuilt `d736d483`; the later MCP fix still awaits
+rebuilt provider delivery and receipt acceptance.
+The separate intermittent CI first-start failure remains unexplained.
+
+Actual Windows Claude authentication and channel consent succeeded, but its MCP
+process then panicked while slicing CRLF bundled skill frontmatter. #237 adds
+line-ending-independent parsing and native manual/channel MCP startup checks;
+real model message receipt remains open until rebuilt acceptance passes.
+
+The CRLF-fixed #237 Windows archive passed 60 native checks on physical AWBP;
+actual Claude sent READY and a correlated idle reply. The next trial retained
+the message without an automatic receipt for 120 seconds: managed startup had
+never bound `session_id`. Root-only verified startup binding and native hook
+ancestry are now under follow-up validation. Idle/busy/draft receipt acceptance
+remains open until that rebuilt trial passes.

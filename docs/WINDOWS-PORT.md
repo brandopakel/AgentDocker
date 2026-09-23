@@ -379,3 +379,42 @@ and length alone missed an equal-size replacement in native Windows CI. Reads
 open regular files without following a final reparse point and compare the
 handle's stamp before and after the bounded read. The replacement regression
 sets identical last-write times explicitly; a timing delay is not its fix.
+
+## Provider setup publication
+
+The physical Windows 11 Home build 26200 trial on AWBP passed 53 extracted-package
+daemon/CLI/ConPTY/window checks on source 35996b28, after moving private test state
+out of a Temp directory writable by other sandbox identities. The original
+refusal remains evidence; no existing Temp permissions were changed.
+
+That trial then reproduced a provider-setup failure: preview wrote its receipt
+but opening the containing directory for Unix-style syncing returned Access
+Denied. Setup now publishes flushed receipts and configuration files through
+the host's native helper (write-through moves on Windows; rename and directory
+sync on Unix). Undo uses native Windows deletion without attempting a directory
+file-open. Elevated CI also exposed Administrators-owned receipt staging from ordinary temporary-file creation; receipts now use exclusive current-user-owned private-state creation so later apply/undo can read them. The native package smoke covers preview, exact apply, repeat apply,
+undo and refusal after a user edit with an isolated Codex configuration fixture.
+This does not establish native Codex input or real-provider receipt. The separate
+Claude configuration trial can now run on Windows with the installed provider
+CLI and isolated profiles. Final Windows CI and actual-provider apply/undo
+acceptance remain required before treating setup as complete.
+
+The corrected portable package (`9064c5f3`, #237 synthetic merge) passed 57
+checks and 30 separate fresh-home starts on physical AWBP. Claude 2.1.280
+configuration add succeeded but health still rejected the `.exe` basename;
+Windows-native executable recognition and a package health check now cover this
+case in source. Rebuilt actual-Claude health/undo and model receipt remain open.
+
+An actual Claude 2.1.280 managed ConPTY trial authenticated and accepted local
+channel consent, then exposed a native MCP startup panic: the bundled skill
+frontmatter parser assumed LF while the Windows checkout embedded CRLF. The
+parser now accepts both line endings, and the extracted-package driver checks
+manual and channel MCP initialization, instructions and messaging tools. Rebuilt
+provider delivery and receipt acceptance remain required.
+
+Rebuilt setup acceptance passed all six actual Claude 2.1.280 configuration
+checks on physical AWBP using #237 source `d736d483` (synthetic merge of
+`8c45acf0`). Preview, selected-profile registration, health, exact undo,
+changed-entry refusal and malformed-state refusal passed with unchanged user
+configuration and removed scratch. This configuration trial invokes no model;
+the subsequent MCP CRLF fix still needs rebuilt provider-delivery acceptance.

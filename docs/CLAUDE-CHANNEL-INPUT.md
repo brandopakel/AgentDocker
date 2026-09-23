@@ -33,7 +33,11 @@ agentdocker run --runtime claude-code --tty --claude-channel -- claude
 
 This launch passes an inline MCP entry and the channel flag to the new process,
 using AgentDocker's matching absolute CLI path. It sets the input-mode variable
-on the managed parent so hooks cannot race channel delivery. It does not write
+on the managed parent so hooks cannot race channel delivery. The root `SessionStart` hook binds Claude's new session ID through atomic registration after verifying the process birth,
+PID and checkout. An inherited agent ID alone cannot authorize the binding.
+Subagent hooks cannot bind the root or recover its channel receipts; an existing
+different session ID is retained. Windows hook ancestry uses the native process
+table, including executable-suffixed shell wrappers. It does not write
 provider configuration files or take over existing sessions. Claude may still
 update its own usage counters. Other configured MCP entries remain available;
 an explicit competing MCP/channel configuration or print-mode command is rejected

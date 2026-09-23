@@ -1568,3 +1568,26 @@ replacement with a pending offer passes at `5b3d688`; PR #171 is merged after
 review and CI, and installed source `8d42db5` passed same-provider replacement
 and fresh active-turn CLI/peer input. Exact receipts and limits are recorded in
 [Codex input](CODEX-INPUT.md#receiver-upgrade-candidate).
+
+Setup receipt staging uses exclusive private-state creation: the current user owns the file even in an elevated Windows process, and an existing path is never reused.
+Setup receipts and configuration replacements flush their staged file before
+publication through `host::files::publish_staged`: Unix renames and syncs the
+parent directory, while Windows requests a same-directory write-through move.
+Windows setup does not open a directory as a regular file after publication or
+undo deletion. A failed publication still returns an error and leaves the
+saved recovery phase available; no receipt failure is reported as applied.
+
+Provider setup and health recognize the native Windows `agentdocker.exe` basename
+(case insensitive on Windows) as the direct MCP or hook executable. Unix keeps
+exact executable-name matching; wrappers and extra suffixes remain unverified.
+
+MCP onboarding extracts bundled skill frontmatter and section boundaries from
+either LF or Windows checkout CRLF. The original bundled bytes and skill
+installation stamps are unchanged; only instruction slicing accepts both forms.
+
+Managed Claude receipt binding: a root `SessionStart` hook joins its provider
+session ID to the existing managed record through `Register` after PID, process
+birth, runtime and physical checkout verification. The existing
+`AgentSessionBound` transaction preserves its ID, owner and queue. A child hook
+or conflicting session cannot bind or recover the root channel receipt. Native
+Windows ancestry uses the host process table rather than Unix `ps`.
