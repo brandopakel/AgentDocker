@@ -1399,8 +1399,8 @@ fn orientation(me: &AgentRecord, agents: &[AgentRecord], inbox: &[Envelope]) -> 
          with their name and note — coordinate instead of retrying. Talk to an agent with \
          AgentDocker's `send_message` tool, or to everyone in this project with the \
          destination `project` (where that tool is not connected, \
-         `agentdocker send --to <name> \"<text>\"`); their replies are handed to you \
-         here as they arrive. \
+         `agentdocker send --to <name> \"<text>\"` or `--to project`); their replies are \
+         handed to you here as they arrive. \
          `agentdocker ps` and `agentdocker leases` show the current state.",
     );
     if !inbox.is_empty() {
@@ -2658,6 +2658,11 @@ mod tests {
         assert!(text.contains("nowhere ("), "{text}");
         assert!(text.find("mate (").unwrap() < text.find("stranger (").unwrap());
         assert!(text.contains("`--to project`"), "{text}");
+        // The session's own MCP tool comes before the shell fallback.
+        assert!(
+            text.find("`send_message`").unwrap() < text.find("agentdocker send").unwrap(),
+            "{text}"
+        );
     }
 
     #[tokio::test]
