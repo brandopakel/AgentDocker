@@ -489,12 +489,13 @@ def main():
              config.read_text() == original and saved["phase"] == "prepared")
         run("setup", "--apply", prepared["id"], "--json", extra_env=setup_env)
         step("native setup applies exact planned MCP, hook and skill files",
-             all(Path(change["path"]).read_text() == change["after"] for change in saved["changes"])
+             all(Path(change["path"]).read_bytes() == change["after"].encode("utf-8")
+                 for change in saved["changes"])
              and json.loads(receipt.read_text())["phase"] == "applied")
         run("setup", "--apply", prepared["id"], "--json", extra_env=setup_env)
         run("setup", "--undo", prepared["id"], "--json", extra_env=setup_env)
         step("native setup undo restores existing configuration and removes only its new files",
-             all((Path(change["path"]).read_text() == change["before"])
+             all((Path(change["path"]).read_bytes() == change["before"].encode("utf-8"))
                  if change["before"] is not None else not Path(change["path"]).exists()
                  for change in saved["changes"])
              and json.loads(receipt.read_text())["phase"] == "undone")
