@@ -185,6 +185,31 @@ const tests = {
     assert.equal(t.delivered().length, 0)
   },
 
+  // A turn that ends while a wake-up's prompt is still unconfirmed does not
+  // acknowledge it, and a later refusal leaves it queued.
+  async "a wake-up that is refused after another turn ends is not acknowledged"() {
+    let refuse
+    const t = await start({
+      answers: (e) =>
+        e.hook_event_name === "Stop"
+          ? { decision: "block", reason: "Message M", agentdocker: { agent: "agent-a", delivered: M } }
+          : null,
+      prompt: () => new Promise((resolve) => (refuse = () => resolve({ error: { name: "BadRequest" } }))),
+    })
+    const woken = t.event("session.idle")
+    await t.run()
+    assert.equal(t.prompts.length, 1)
+    await t.plugin["chat.message"]({ sessionID: "s" })
+    await t.event("session.idle")
+    assert.equal(t.delivered().length, 0, "the unconfirmed wake-up is not acknowledged")
+    refuse()
+    await woken
+    await t.run()
+    await t.event("session.idle")
+    const acknowledged = t.delivered().flatMap((c) => c.delivered.flatMap((d) => d.messages))
+    assert.ok(!acknowledged.includes("message-m"), `acknowledged ${acknowledged}`)
+  },
+
   // Text that reached a completed turn is acknowledged; an errored turn's
   // is not.
   async "a completed turn acknowledges what it carried and an errored one does not"() {

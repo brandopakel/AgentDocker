@@ -114,9 +114,10 @@ export const AgentDocker = async ({ directory, client }) => {
 
   // Resume an idle session with what is waiting for it. One wake-up at a
   // time per session: the watch and its catch-up can both notice the same
-  // message. What the prompt carries is in flight from the moment it is
-  // submitted, so an error or idle callback that comes first sees it, and it
-  // is taken back if OpenCode refuses the prompt (the messages stay queued).
+  // message. What the prompt carries is only submitted until OpenCode
+  // accepts it: a turn that ends meanwhile does not acknowledge it, and a
+  // refusal drops it (the messages stay queued). Accepted, it is in flight
+  // and acknowledged when a turn after that completes.
   const wake = async (session) => {
     if (!idle.has(session) || waking.has(session)) return false
     waking.add(session)
@@ -126,7 +127,6 @@ export const AgentDocker = async ({ directory, client }) => {
       if (answer?.decision !== "block" || !answer.reason) return false
       busy(session)
       const entries = carried(answer)
-      inflight.set(session, [...(inflight.get(session) ?? []), ...entries])
       try {
         // The SDK resolves a refused request with `{ error }` unless asked to
         // throw; either way a refusal is not an acceptance.
@@ -136,11 +136,9 @@ export const AgentDocker = async ({ directory, client }) => {
           throwOnError: true,
         })
         if (result?.error) throw result.error
+        inflight.set(session, [...(inflight.get(session) ?? []), ...entries])
         return true
       } catch {
-        const left = (inflight.get(session) ?? []).filter((entry) => !entries.includes(entry))
-        if (left.length) inflight.set(session, left)
-        else inflight.delete(session)
         idle.add(session)
         watch(session)
         return false
