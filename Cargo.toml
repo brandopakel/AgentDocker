@@ -59,7 +59,10 @@ filetime = "0.2"
 incremental = false
 debug = 1
 
-# Ship optimized native executables without compiler symbols or unused code.
+# Optimize the linked dependency graph for the release archive size budget.
+# Keep unwind semantics; release benchmarks guard runtime performance.
 [profile.release]
 strip = "symbols"
-lto = "thin"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1

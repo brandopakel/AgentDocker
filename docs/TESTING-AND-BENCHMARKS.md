@@ -187,8 +187,9 @@ inactive caches with [Cargo clean](https://doc.rust-lang.org/cargo/commands/carg
 `--dry-run` first. Do not clean an active build/test directory, running binaries,
 or another session's cache. Each worktree keeps its own target directory.
 Workspace development builds disable incremental compilation, while keeping
-line-table debug information. Release builds retain the default optimization
-level, enable thin LTO and strip symbols. Direct
+line-table debug information. Release builds optimize the complete linked
+dependency graph for size, use one codegen unit with full LTO and strip symbols.
+Panic unwinding remains enabled; release benchmarks guard runtime performance. Direct
 Cargo commands do not invoke the storage preflight; run
 `python3 scripts/build_storage.py` first. This bounds the campaign workflow,
 not all disk use by arbitrary programs.
@@ -220,7 +221,10 @@ assign the same cause to earlier runs without matching evidence.
 The desktop packager refuses payloads above 100 MiB and each compressed download
 above 40 MiB per architecture (universal builds allow twice these totals). Its
 manifest records logical payload and archive bytes. The release workflow also
-limits the combined CLI/daemon payload to 30 MiB. CLI tarballs contain just those
+limits the combined CLI/daemon payload to 30 MiB. The same reusable CLI archive
+workflow runs all four release targets on PRs and main, so a protected tag is
+not the first size check. Failures report each executable and archive size.
+CLI tarballs contain just those
 two commands; desktop ZIPs contain one self-contained app with all three
 executables. Build caches and compiler dependencies are never download inputs.
 
