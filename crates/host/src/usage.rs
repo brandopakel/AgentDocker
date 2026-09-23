@@ -135,7 +135,7 @@ impl Codex {
                     label(&payload["cli_version"]).ok_or("Codex log version is missing")?;
                 // Fixtures establish these local formats. Future formats must
                 // earn support rather than silently borrowing old semantics.
-                if !matches!(version.as_str(), "0.153.4" | "0.154.0") {
+                if !matches!(version.as_str(), "0.153.4" | "0.154.0" | "0.155.1") {
                     return Err("unsupported Codex rollout version".into());
                 }
                 if self.session.as_ref().is_some_and(|old| old != &session) {
@@ -214,6 +214,9 @@ pub fn claude(record: &Value) -> Result<Option<Sample>, String> {
                 | "2.1.274"
                 | "2.1.275"
                 | "2.1.276"
+                | "2.1.277"
+                | "2.1.278"
+                | "2.1.280"
         )
     ) {
         return Err("unsupported Claude transcript version".into());
@@ -266,6 +269,55 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn observed_claude_patch_records_keep_top_level_accounting_authoritative() {
+        // Accounting-only records from installed 2.1.277/278/280 transcripts.
+        // Identifiers, timestamps and model names are synthetic; no content is
+        // retained. Nested cache/iteration totals must not be counted again,
+        // including a 2.1.278 record whose top-level counters are all zero.
+        let records = include_str!("usage/fixtures/claude-current-patches.jsonl");
+        let expected = [
+            [Some(19166), Some(0), Some(19164), Some(150), Some(65)],
+            [Some(41759), Some(24649), Some(17108), Some(276), Some(61)],
+            [Some(0), Some(0), Some(0), Some(0), Some(0)],
+            [Some(31131), Some(0), Some(31129), Some(6), None],
+        ];
+        assert_eq!(records.lines().count(), expected.len());
+        for (line, expected) in records.lines().zip(expected) {
+            let mut record: Value = serde_json::from_str(line).unwrap();
+            let parsed = claude(&record).unwrap().unwrap();
+            assert_eq!(parsed.counters.values(), expected);
+            record["version"] = json!("2.1.276");
+            assert_eq!(parsed, claude(&record).unwrap().unwrap());
+            record["version"] = json!("2.1.279");
+            assert!(claude(&record).is_err(), "unobserved patches stay unknown");
+        }
+    }
+
+    #[test]
+    fn observed_codex_patch_records_keep_cumulative_semantics_after_resume() {
+        let records: Vec<Value> = include_str!("usage/fixtures/codex-0.155.1.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let mut parser = Codex::default();
+        assert!(parser.feed(&records[0], true).unwrap().is_none());
+        let expected = [
+            [Some(15956), Some(13056), Some(0), Some(177), Some(0)],
+            [Some(32192), Some(28800), Some(0), Some(252), Some(0)],
+            [Some(48625), Some(44800), Some(0), Some(353), Some(0)],
+        ];
+        for (index, (record, expected)) in records[1..].iter().zip(expected).enumerate() {
+            let parsed = parser.feed(record, false).unwrap().unwrap();
+            assert_eq!(parsed.counters.values(), expected);
+            assert_eq!(parsed.semantics, Semantics::Cumulative);
+            assert_eq!(parsed.proves_zero_baseline, index == 0);
+            // A persisted cursor resumes the same family; totals are not
+            // mistaken for last-turn deltas or a second zero baseline.
+            parser = serde_json::from_str(&serde_json::to_string(&parser).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
     fn codex_uses_cumulative_totals_once_and_retains_only_usage_context() {
         let mut parser = Codex::default();
         parser.feed(&json!({"type":"session_meta","payload":{"id":"thread-a","cli_version":"0.154.0","model_provider":"local-fixture"}}), true).unwrap();
@@ -297,7 +349,7 @@ mod tests {
         let mut record = json!({"type":"event_msg","timestamp":"2026-09-16T12:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":totals,"last_token_usage":{"input_tokens":1,"output_tokens":1}}}});
         let mut parser = Codex::default();
         assert!(parser.feed(&record, false).is_err());
-        for version in ["0.153.4", "0.154.0"] {
+        for version in ["0.153.4", "0.154.0", "0.155.1"] {
             let mut supported = Codex::default();
             supported.feed(&json!({"type":"session_meta","payload":{"id":"thread-a","cli_version":version}}), true).unwrap();
             assert!(
@@ -333,6 +385,7 @@ mod tests {
         let mut record = json!({"type":"assistant","version":"2.1.270","sessionId":"session-a","uuid":"part-one","timestamp":"2026-09-16T12:00:00Z","message":{"id":"message-a","model":"model-a","content":[{"text":"PRIVATE"}],"usage":{"input_tokens":2,"cache_read_input_tokens":30,"cache_creation_input_tokens":15,"output_tokens":9,"output_tokens_details":{"thinking_tokens":3},"cache_creation":{"ephemeral_1h_input_tokens":15}}}});
         for version in [
             "2.1.268", "2.1.270", "2.1.271", "2.1.272", "2.1.273", "2.1.274", "2.1.275", "2.1.276",
+            "2.1.277", "2.1.278", "2.1.280",
         ] {
             record["version"] = json!(version);
             assert!(claude(&record).unwrap().is_some());

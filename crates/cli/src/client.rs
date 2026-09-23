@@ -488,14 +488,11 @@ fn absent(err: &std::io::Error) -> bool {
 /// log, the same home as this client. The binary beside ours is preferred
 /// so a build in `target/` starts the matching daemon; else `PATH`.
 fn spawn_agentd(socket: &Path, home: &Path) -> Result<std::process::Child> {
-    let exe = agentdocker_host::procinfo::executable_path()
-        .ok()
-        .and_then(|me| {
-            me.parent()
-                .map(|dir| dir.join(format!("agentd{}", std::env::consts::EXE_SUFFIX)))
-        })
-        .filter(|sibling| sibling.is_file())
-        .unwrap_or_else(|| PathBuf::from(format!("agentd{}", std::env::consts::EXE_SUFFIX)));
+    let exe = agentdocker_host::installation::daemon_to_start(
+        agentdocker_host::procinfo::executable_path()
+            .ok()
+            .as_deref(),
+    );
     agentdocker_host::dirs::secure_state_dir(home)?;
     let log_path = paths::daemon_log(home);
     let log = agentdocker_host::dirs::private_file(&log_path, true, true)

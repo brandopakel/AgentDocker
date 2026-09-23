@@ -26,7 +26,12 @@ Guided Claude Code setup installs the complete seven-event hooks adapter in `.cl
 ## Shared coordination skill
 
 Setup also installs the bundled [AgentDocker skill](../crates/cli/skills/agentdocker/SKILL.md)
-for Codex, Claude Code and Gemini CLI. MCP onboarding uses the same instruction
+for Codex, Claude Code and Gemini CLI. OpenCode reads skills from `~/.claude/skills`
+too, so it sees the Claude Code copy; for OpenCode, setup instead writes its MCP entry
+(`mcp` in `~/.config/opencode/opencode.json`) and the AgentDocker plugin
+(`~/.config/opencode/plugins/agentdocker.js`, stamped and undone like a skill, an
+edited copy preserved), which gives OpenCode the lease refusals, messages and idle
+wake-up Claude Code gets from its hooks. MCP onboarding uses the same instruction
 source, with receipt guidance selected for the active delivery adapter. The
 skill includes CLI equivalents, so its workflow is independent of a model vendor.
 `agentdocker skill` prints the installable file without contacting the daemon.

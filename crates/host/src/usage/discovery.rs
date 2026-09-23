@@ -564,15 +564,36 @@ mod tests {
             path: root.clone(),
         }];
         let mut walk = Walk::new(roots.clone()).unwrap();
-        let first = walk.next_page();
-        assert!(!first.sources.is_empty());
+        // A page may use its entire time budget opening the directories,
+        // especially under coverage. Establish the checkpoint precondition
+        // through bounded progress, without assuming one page emits a file.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let page = walk.next_page();
+            assert!(!page.finished && page.gaps.is_empty());
+            if !page.sources.is_empty() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "discovery made no file progress");
+        }
         let saved = walk.checkpoint();
         let moved = temp.path().join("moved");
         fs::rename(&root, &moved).unwrap();
         std::os::unix::fs::symlink(&moved, &root).unwrap();
-        let page = Walk::resume(saved, &roots).unwrap().next_page();
-        assert!(page.finished && !page.complete);
-        assert!(page.sources.is_empty());
+        let mut resumed = Walk::resume(saved, &roots).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let page = loop {
+            let page = resumed.next_page();
+            assert!(page.sources.is_empty());
+            if page.finished {
+                break page;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "redirected directory was not refused"
+            );
+        };
+        assert!(!page.complete);
         assert!(
             page.gaps
                 .contains(&"usage discovery directory cannot be resumed")

@@ -198,7 +198,10 @@ The #194 candidate adds **Projects → Usage** and `agentdocker usage`. Check th
 Choose the last day, week or month and group reported tokens by agent, model,
 provider, project or hour. `~` marks a partial count; `—` means the source did
 not report that counter. These are token totals, not a bill. The report shows
-the available time range, gaps and whether collection has caught up.
+the available time range, gaps and whether collection has caught up. The CLI
+names each agent or project row (`codex-96813`, `AgentDocker`) while AgentDocker
+still knows it, and shows its ID once it is gone; `(unattributed)` is usage no
+session could be matched to.
 The MCP `usage` tool reads the same stored report and advertises that it is
 read-only; querying usage does not enable collection or change its settings.
 
@@ -573,12 +576,14 @@ somebody checks that claim later. Evidence is kept whole.
 
 ### Planned daemon replacement
 
-`agentdocker daemon reload` currently returns `unavailable` and leaves the
-current daemon and agents running. The previous descriptor-only implementation
-killed real batch and PTY fixtures during runtime shutdown. Safe process and I/O
-transfer, successor readiness and upgrade-binary selection remain delivery
-blockers. Do not use ordinary daemon stop/start as a seamless upgrade: stopping
-terminates managed agents.
+`agentdocker daemon reload` requires `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the
+running daemon; without that gate it returns `unavailable` and leaves the daemon
+and agents running. The gated implementation transfers coordinator ownership to
+a checked successor while session owners retain managed processes and I/O.
+Broader actual-provider, attached-draft and uncertain-delivery acceptance remains
+open, so the gate stays experimental. See the
+[remaining acceptance work](REMAINING-WORK.md). Ordinary daemon stop/start is a
+separate operation: stopping terminates managed agents.
 
 ---
 
