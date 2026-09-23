@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Actual Codex hook delivery; private daemon, nonce-only messages, no inbox tools.
 
-Uses the installed provider's existing authentication. Never copies credentials,
-edits provider configuration, or changes persisted hook trust. Raw output stays
-in the explicitly selected private output directory.
+Uses a dedicated provider profile already authenticated through normal login.
+Never copies credentials, edits provider configuration, or changes persisted
+hook trust. Raw output stays in the selected private output directory.
 """
 import argparse
 import contextlib
@@ -14,6 +14,7 @@ from pathlib import Path
 import shlex
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,29 @@ import uuid
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
+def checked_provider_home(path):
+    """Only the fixture's inline hooks may use one-invocation hook trust."""
+    if path.is_symlink():
+        raise ValueError("the isolated provider profile must not be a symlink")
+    root = path.resolve(strict=True)
+    metadata = root.stat()
+    if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077):
+        raise ValueError("use an owned, private 0700 provider profile")
+    for name in ["config.toml", "hooks.json", "AGENTS.md", "AGENTS.override.md"]:
+        candidate = root / name
+        if candidate.exists() or candidate.is_symlink():
+            raise ValueError("use an isolated authenticated profile without " + name)
+    # Codex creates empty cache/staging directories on its first run. A cached
+    # plugin file or symlink requires source review outside this small fixture.
+    plugins = root / "plugins"
+    if plugins.is_symlink() or (plugins.exists() and not plugins.is_dir()):
+        raise ValueError("isolated provider plugins must be empty directories")
+    if plugins.exists() and any(p.is_symlink() or not p.is_dir() for p in plugins.rglob("*")):
+        raise ValueError("use an isolated authenticated profile without installed plugins")
+    return root
 
 
 def rpc(endpoint, value):
@@ -105,7 +129,7 @@ def trial(args):
     report = {"result": "failed", "scope": "actual Codex lifecycle context, no inbox tools",
               "driver_sha256": digest(Path(__file__)),
               "binary_sha256": {p.name: digest(p) for p in [cli, daemon_binary]}, "checks": []}
-    provider_root = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    provider_root = checked_provider_home(args.provider_home)
     monitored = [provider_root / name for name in ["config.toml", "hooks.json", "auth.json"]]
     before = {p: digest(p) for p in monitored}
     processes = []
@@ -118,7 +142,7 @@ def trial(args):
             env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_")}
             endpoint = str(root / "sock")
             env.update(AGENTDOCKER_HOME=str(root / "state"), AGENTDOCKER_SOCKET=endpoint,
-                       AGENTDOCKER_NO_AUTOSTART="1", RUST_LOG="warn")
+                       AGENTDOCKER_NO_AUTOSTART="1", CODEX_HOME=str(provider_root), RUST_LOG="warn")
             with (output / "daemon.log").open("wb") as log:
                 daemon = subprocess.Popen([str(daemon_binary)], env=env, cwd=project,
                     stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
@@ -142,7 +166,10 @@ def trial(args):
                 # endpoint explicitly so a fixture can never use the user daemon.
                 mcp_env = "{" + ",".join(key + "=" + json.dumps(env[key]) for key in
                     ["AGENTDOCKER_HOME", "AGENTDOCKER_SOCKET", "AGENTDOCKER_NO_AUTOSTART"]) + "}"
-                command = [args.codex, "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
+                # --ignore-user-config also suppresses inline hook overrides in
+                # the observed 0.155.1 CLI. Keep its config layer active only
+                # after the explicit isolated-profile preflight above.
+                command = [args.codex, "exec", "--ignore-rules", "--ephemeral",
                     "--skip-git-repo-check", "--sandbox", "read-only", "--dangerously-bypass-hook-trust", "--json",
                     "-c", "features.hooks=true", "-c", "approval_policy=\"never\"",
                     "-c", "mcp_servers.agentdocker={command=" + json.dumps(str(cli)) +
@@ -220,11 +247,13 @@ if __name__ == "__main__":
     parser.add_argument("--binary-dir", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--codex", default="codex")
+    parser.add_argument("--provider-home", type=Path,
+                        help="dedicated private authenticated Codex profile, without config/hooks/plugins")
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args()
     if args.helper:
         helper(args.helper)
     else:
-        if not args.binary_dir or not args.output or not 10 <= args.timeout <= 600:
-            parser.error("--binary-dir, --output and a 10–600 second timeout are required")
+        if not args.binary_dir or not args.output or not args.provider_home or not 10 <= args.timeout <= 600:
+            parser.error("--binary-dir, --output, --provider-home and a 10–600 second timeout are required")
         raise SystemExit(trial(args))

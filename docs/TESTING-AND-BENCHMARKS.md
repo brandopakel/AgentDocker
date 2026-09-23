@@ -26,6 +26,20 @@ The scheduled workflow runs bounded protocol, resource-key, engine-metadata and 
 
 ## Measurements and thresholds
 
+For an actual Codex lifecycle delivery trial, run
+`python3 scripts/codex_delivery_smoke.py --binary-dir <package>/bin --codex <complete-provider-bundle>/bin/codex --provider-home <private-authenticated-profile> --output <new-private-directory>`.
+Authenticate the dedicated mode-0700 profile through normal Codex login first;
+the driver never copies credentials. It refuses existing user config, hook sources
+and installed plugins before invoking the provider, so one-invocation hook trust
+applies only to the fixture's reviewed inline hooks. Empty generated plugin cache
+directories are allowed. Codex 0.155.1 with `--ignore-user-config` suppressed these
+inline hooks in the recorded Oracle trial; the corrected fixture keeps that layer
+active only in the checked profile. This follows the [official hook-source and
+trust contract](https://learn.chatgpt.com/docs/hooks). Managed policy remains in
+force; existing provider configuration/authentication files are checked unchanged.
+The test requires correlated replies and automatic receipts at all three lifecycle
+boundaries; it does not infer idle wake from hooks or MCP contact.
+
 Record p50/p95/p99 request and hook latency, throughput, stale-warning delay, missed stale detections and false alerts, restart/handoff recovery time, watcher queue gaps, fingerprint throughput, SQLite write latency and process memory. Use workloads with 1/10/100 concurrent agents and small/medium/large fixture checkouts, with cold and warm runs separated.
 
 Every result includes commit SHA, dirty-content identity if applicable, Rust/tool versions, OS/architecture, CPU, workload parameters and container engine/image identity when used. Different machines and engines are different Bencher testbeds. Establish repeated baselines before selecting regression thresholds; shared-runner timing is initially advisory. Correctness invariants are immediate hard failures. Promote performance checks to blocking only once measured variance supports the threshold; the hook's coordination/output phase retains its one-second deadline. Input and activity have separate budgets; do not label the complete invocation a one-second operation.
