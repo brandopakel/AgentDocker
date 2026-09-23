@@ -2692,7 +2692,10 @@ impl App {
         if let Some(channel) = &channel
             && self.channels.iter().any(|c| {
                 &c.id == channel
-                    && matches!(c.subject, agentdocker_core::ChannelSubject::Contested { .. })
+                    && matches!(
+                        c.subject,
+                        agentdocker_core::ChannelSubject::Contested { .. }
+                    )
             })
         {
             self.shell.overlaps_open = true;
