@@ -2000,6 +2000,10 @@ mod tests {
     async fn session_start_and_prompts_carry_the_journal_digest() {
         use agentdocker_core::ProjectRef;
         let mut me = agent("claude-01234567", true);
+        // This orientation fixture is already bound; binding has separate tests.
+        me.spec
+            .labels
+            .insert("session_id".into(), input("SessionStart").session_id);
         me.project = Some(ProjectRef::directory("/work/alpha"));
         let backend = Mock::with(vec![
             Response::Agent { agent: me.clone() },
@@ -2621,6 +2625,9 @@ mod tests {
     async fn session_start_names_project_mates_before_strangers() {
         use agentdocker_core::ProjectRef;
         let mut me = agent("claude-01234567", true);
+        me.spec
+            .labels
+            .insert("session_id".into(), input("SessionStart").session_id);
         me.project = Some(ProjectRef::directory("/work/alpha"));
         let mut mate = agent("mate", true);
         mate.project = Some(ProjectRef::directory("/work/alpha"));

@@ -7548,7 +7548,9 @@ mod tests {
         let daemon = open(&dir);
         let mut command = spec("managed-claude-binding");
         command.runtime = "claude-code".into();
-        command.workdir = Some(dir.path().to_owned());
+        // Match the CLI's physical checkout: macOS temp paths may use /var
+        // while Register resolves the same directory under /private/var.
+        command.workdir = Some(dir.path().canonicalize().unwrap());
         command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
         let Response::Agent { agent: original } =
             daemon.handle(Request::Run { spec: command }).await
@@ -7560,15 +7562,16 @@ mod tests {
         spec.labels
             .insert("session_id".into(), "managed-session".into());
         for _ in 0..2 {
-            let Response::Agent { agent } = daemon
+            let response = daemon
                 .handle(Request::Register {
                     spec: spec.clone(),
                     pid: original.pid,
                     session: None,
                 })
-                .await
-            else {
-                panic!("managed re-registration failed");
+                .await;
+            let Response::Agent { agent } = response else {
+                daemon.stop_all().await;
+                panic!("managed re-registration failed: {response:?}");
             };
             assert_eq!(agent.id, original.id);
             assert_eq!(agent.spec, spec);
