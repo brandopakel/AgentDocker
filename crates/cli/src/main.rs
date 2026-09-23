@@ -2925,7 +2925,7 @@ async fn run() -> Result<()> {
                 {
                     Response::Ok => (),
                     Response::InputOwned { .. } => bail!(
-                        "The input receiver owns these messages; only a confirmed provider receipt can acknowledge them."
+                        "This session's message delivery owns these messages; they are acknowledged only when its tool confirms it took them."
                     ),
                     other => bail!("unexpected acknowledgement response: {other:?}"),
                 }
@@ -2942,7 +2942,7 @@ async fn run() -> Result<()> {
                         }
                     }
                     Response::InputOwned { .. } => eprintln!(
-                        "The input receiver owns this queue. Use --peek to inspect it without consuming messages."
+                        "This session's message delivery owns this queue. Use --peek to look at it without taking the messages."
                     ),
                     other => bail!("unexpected inbox response: {other:?}"),
                 }

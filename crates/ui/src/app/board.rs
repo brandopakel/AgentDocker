@@ -214,7 +214,7 @@ impl App {
         if let Some((name, live, held)) = &holder {
             // One line for the name, clipped: a long name never pushes
             // the state off the card or wraps under the dot.
-            let mut who = row![
+            let who = row![
                 dot(if *live { c.green } else { c.faint }, 7.0, c),
                 container(
                     text(name.clone())
@@ -227,10 +227,11 @@ impl App {
             ]
             .spacing(6)
             .align_y(Center);
-            if !held && matches!(task.column, Column::InProgress | Column::Review) {
-                who = who.push(pill("not being worked on", alpha(c.amber, 0.2), c.amber, c));
-            }
             head = head.push(who);
+            // Its own line: beside the name it clipped the name to a letter.
+            if !held && matches!(task.column, Column::InProgress | Column::Review) {
+                head = head.push(pill("not being worked on", alpha(c.amber, 0.2), c.amber, c));
+            }
         } else if task.column == Column::Ready {
             head = head.push(pill("unassigned", c.accent_soft, c.accent_ink, c));
         }

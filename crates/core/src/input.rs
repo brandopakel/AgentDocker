@@ -42,14 +42,21 @@ impl InputReadiness {
     pub fn label(self) -> &'static str {
         match self {
             Self::SessionEnded => "Session ended",
-            Self::Unverified => "Idle delivery not verified",
-            Self::Paused => "Delivery paused",
-            Self::Stale => "No recent receiver signal",
-            Self::AwaitingFirstReceipt => "Receiver active, awaiting first receipt",
-            Self::Verified => "Delivery verified",
+            Self::Unverified => "Messages may wait for its next prompt",
+            Self::Paused => "Not receiving messages",
+            Self::Stale => "Not heard from recently",
+            Self::AwaitingFirstReceipt => "Ready for messages",
+            Self::Verified => "Receiving messages",
         }
     }
 }
+
+/// Why the daemon paused an agent's input delivery. The daemon writes these
+/// as `pause_reason`; clients that explain a pause in their own words match
+/// on them, so they live here rather than as literals on either side.
+pub const PAUSE_CONTROLLER_ENDED: &str = "the bound controller ended";
+pub const PAUSE_CONTROLLER_RESTART_FAILED: &str = "the bound controller could not be restarted";
+pub const PAUSE_RECEIVER_UPGRADING: &str = "the input receiver is being upgraded";
 
 /// Contact with a particular adapter is separate from generic agent activity.
 /// These observations contain no provider configuration or message contents.

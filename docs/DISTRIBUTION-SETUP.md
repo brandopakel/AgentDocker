@@ -18,7 +18,19 @@ use GNU libc; the separate CLI-only Linux archives use musl.
 The desktop feed requires all four targets from the same source, version and
 schema, and verifies the archive bytes. Stable tags produce `updates.json`;
 prerelease tags produce `updates-preview.json`, remain GitHub prereleases and
-require explicit preview acceptance. Prereleases leave the stable latest-release
+require explicit preview acceptance. GitHub's `latest` never names a prerelease,
+so the preview feed also has one fixed address, the `channel-preview` release
+(`releases/download/channel-preview/updates-preview.json`), which only moves
+forward. `agentdocker desktop update` without `--feed` reads the stable feed,
+plus that one on a prerelease installation or with `--local-preview`, and takes
+the newer. A prerelease installation takes the next preview without new
+consent; a stable one downloads a preview build only with `--local-preview`,
+and `file://` sources always need that flag. Staying on the preview channel
+skips Gatekeeper's policy assessment only for a build the feed marks
+`local-preview` (ad-hoc, which Gatekeeper would refuse); a Developer-ID-signed
+preview is still assessed. Only `--local-preview` itself skips it for any
+build. A channel with
+nothing published (404) is reported as `published: false`, not as a failure. Prereleases leave the stable latest-release
 endpoint and Homebrew tap unchanged; older maintenance releases cannot move
 either backwards.
 
@@ -27,6 +39,53 @@ draft for a retry; an already published release is refused. Create releases
 through the workflow, or leave a manually created release as a draft for it to
 finish. A protected-tag run, hosted downloads, update/rollback and independent
 machine acceptance remain necessary; generated assets alone do not establish them.
+
+### Preview update channel
+
+After a versioned prerelease publishes, the workflow copies its verified
+`updates-preview.json` to this fixed URL:
+
+```text
+https://github.com/brandopakel/AgentDocker/releases/download/channel-preview/updates-preview.json
+```
+
+The `channel-preview` release is itself a prerelease with `latest=false` and
+contains only the feed. Download URLs still name immutable versioned releases;
+the stable latest-release endpoint and Homebrew tap remain unchanged. Clients
+keep downloads manual and activation explicit. A stable installation must opt
+into previews; an existing preview installation has already chosen that channel.
+Before the first successful promotion, the channel URL returns 404.
+
+The `channel-preview` tag remains at its first promotion's commit; subsequent
+promotions replace only the feed and its record. Use the feed's versioned URLs
+and source identities, not the channel tag's commit, to identify a build. The
+feed has four fixed macOS/Linux targets. Adding Windows requires a feed and
+client compatibility change first; its current portable ZIP is excluded.
+
+The publisher checks the actual versioned release, source commit, four target
+assets, sizes and available GitHub digests before copying the feed. Promotions
+and repairs share the publication lock and compare semantic versions, so a
+late older run cannot replace a newer preview. The release body records the
+highest promoted version before upload; if clobber removes the old feed and the
+upload fails, an older retry still cannot take over. A same-version retry must
+use identical canonical feed bytes.
+If the record names version N but the asset still contains N-1 (or is absent),
+retry N: an N-1 retry deliberately reports `preserved_newer`. An empty feed asset
+left in GitHub's `starter` state is repairable only by that exact recorded
+version; unrelated or nonempty unfinished assets are refused.
+
+If the versioned release is published but channel promotion fails, repair only
+the channel from reviewed `main`:
+
+```sh
+gh workflow run preview-channel.yml --ref main -f release_tag=v0.2.0-beta.2
+```
+
+Use the actual already-published prerelease tag. This does not rebuild artifacts
+or edit the versioned release. A new channel stays draft until its uploaded
+feed verifies. Existing channel bodies/assets that do not match the publisher's
+format are preserved and require investigation. Hosted feed and client
+acceptance remain necessary after the first real promotion.
 
 ## The Homebrew tap
 

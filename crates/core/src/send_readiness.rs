@@ -70,11 +70,11 @@ impl<'de> Deserialize<'de> for SendIssue {
 impl SendIssue {
     pub fn label(self) -> &'static str {
         match self {
-            Self::UnknownSession => "Session record unavailable",
+            Self::UnknownSession => "Session not found",
             Self::SessionEnded => "Session ended",
-            Self::NoReceiver => "No verified input receiver; messages may wait for another prompt",
-            Self::ReceiverSilent => "No recent input receiver signal",
-            Self::DeliveryPaused => "Input delivery paused",
+            Self::NoReceiver => "Messages may wait for its next prompt",
+            Self::ReceiverSilent => "Not heard from recently",
+            Self::DeliveryPaused => "Not receiving messages",
             Self::ProviderBlocked(kind) => kind.label(),
             Self::Unknown => "Delivery status unavailable",
         }
@@ -151,23 +151,23 @@ impl RecipientReadiness {
     pub fn guidance(&self) -> String {
         match self.issue {
             SendIssue::Unknown => "The message was queued; check delivery details before sending again. This app does not recognize the newer delivery status.".into(),
-            SendIssue::UnknownSession => "Check the destination in AgentDocker before sending again; receipt is unconfirmed.".into(),
+            SendIssue::UnknownSession => "Check the destination in AgentDocker before sending again; whether the message arrived is not known.".into(),
             SendIssue::ProviderBlocked(_) => "Check the provider limit or sign-in, then explicitly resume input after recovery.".into(),
-            SendIssue::DeliveryPaused => "Review this session's delivery error before reconnecting; queued messages are retained.".into(),
-            SendIssue::SessionEnded => "Resume this conversation and reconnect its input receiver.".into(),
+            SendIssue::DeliveryPaused => "Review this session's delivery in AgentDocker before reconnecting it; its messages are kept.".into(),
+            SendIssue::SessionEnded => "Resume this conversation from its project folder; its messages are kept until it takes them.".into(),
             SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "claude-code" => {
                 match &self.resume_session {
                     Some(session) => format!("After saving work and exiting the current Claude session, resume from the same project folder with: AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 claude --resume {session} --dangerously-load-development-channels server:agentdocker. Complete Claude's channel consent; AgentDocker's MCP entry must include --claude-channel."),
                     None => "Resume Claude from its project folder with AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 and --dangerously-load-development-channels server:agentdocker, then complete its channel consent. See Tools for AgentDocker setup.".into(),
                 }
             }
-            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "codex" => "Open this session's Connection details in Tools and reconnect a supported input receiver. Until then, check its terminal; queueing alone cannot wake it.".into(),
+            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "codex" => "Open this session's details in Tools and reconnect its message delivery. Until then, check its terminal: a waiting message cannot wake it on its own.".into(),
             // No adapter exists for this runtime: nothing here can wake
             // it, and saying "reconnect a receiver" would send the person
             // looking for one. The message waits in its queue for the
             // agent's own read.
             SendIssue::NoReceiver | SendIssue::ReceiverSilent => format!(
-                "A {} session has no input receiver: the message waits in its queue until the agent reads it (agentdocker inbox --as {} or watch --as {}, or the MCP read_inbox tool); nothing here wakes it.",
+                "A {} session cannot be woken by a message: it waits until the agent reads its inbox (agentdocker inbox --as {} or watch --as {}, or the MCP read_inbox tool).",
                 self.runtime, self.agent.short(), self.agent.short()
             ),
         }
@@ -294,7 +294,7 @@ mod tests {
             let issue = RecipientReadiness::for_agent(&agent, agent.created_at, None).unwrap();
             let guidance = issue.guidance();
             assert!(
-                guidance.contains("has no input receiver"),
+                guidance.contains("cannot be woken by a message"),
                 "{runtime}: {guidance}"
             );
             assert!(
@@ -308,7 +308,7 @@ mod tests {
             RecipientReadiness::for_agent(&codex, codex.created_at, None)
                 .unwrap()
                 .guidance()
-                .contains("reconnect a supported input receiver")
+                .contains("reconnect its message delivery")
         );
     }
 

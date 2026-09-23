@@ -115,7 +115,7 @@ The app remembers the selected project and keeps quiet projects available.
 - **Current** shows live sessions. **History** keeps completed runs, including
   older runs with the same name. No records are deleted by these filters.
 - **Needs input** shows unanswered questions from this project. Select a session
-  and use **Reply in Inbox** to answer it.
+  and use **Answer** to open its question.
 - Select a session for **Open terminal**, **Stop session…**, or **Details**.
   Stopping requires **Confirm stop** within five seconds. External agents stay
   in the terminal or application where they started.
@@ -191,8 +191,10 @@ retention_days = 30
 
 The running daemon picks it up on its next collection cycle. It reads supported
 local Codex and Claude Code logs; it retains accounting metadata, not message
-text. Optional `codex_roots` and `claude_roots` are arrays of absolute directories;
-empty arrays use the provider defaults. Turning collection off retains available
+text. Optional `codex_roots` and `claude_roots` are arrays of absolute directories
+without parent (`..`) path components; use a direct path rather than one that
+walks up to a parent. Invalid roots produce an explanatory query error. Empty
+arrays use the provider defaults. Turning collection off retains available
 totals. Increasing retention does not restore previously discarded history.
 AgentDocker's own injected overhead remains **not measured** until that separate
 instrumentation is implemented.

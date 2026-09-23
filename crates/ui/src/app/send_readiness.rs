@@ -73,7 +73,7 @@ fn notice_content(
     .spacing(4);
     if draft.readiness_expanded {
         let mut details = column![small(
-            "Readiness when sent. Queue acceptance is not a provider receipt.",
+            "As it was when sent. Sent means waiting for the agent, not yet read.",
             c
         )]
         .spacing(8);

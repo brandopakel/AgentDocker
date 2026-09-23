@@ -373,6 +373,79 @@ impl App {
             Screen::Questions | Screen::Runtimes | Screen::Settings | Screen::Desktop
         )
     }
+    /// The footer while the daemon is older than this window: what is wrong,
+    /// the one thing that fixes it, and what that costs before it is done.
+    fn daemon_notice(&self, c: Colors) -> Option<Element<'_, Message>> {
+        let version = self.daemon_behind_now()?;
+        let connected = self.connected.is_ok();
+        let row = if self.daemon_restarting() {
+            row![
+                dot(c.amber, 7.0, c),
+                small("Restarting the background service…", c).width(Fill),
+            ]
+        } else if self.shell.confirm_daemon_restart {
+            let (stop, back) = self.restart_cost();
+            let cost = match (stop, back) {
+                (0, _) => "Sessions keep running and reconnect on their own.".to_owned(),
+                (n, 0) => format!(
+                    "{n} session{} AgentDocker started will stop. Sessions started in a terminal keep running.",
+                    if n == 1 { "" } else { "s" }
+                ),
+                (n, m) => format!(
+                    "{n} session{} AgentDocker started will stop and {m} will start again. Sessions started in a terminal keep running.",
+                    if n == 1 { "" } else { "s" }
+                ),
+            };
+            row![
+                dot(c.amber, 7.0, c),
+                small(format!("Restart the background service now? {cost}"), c).width(Fill),
+                primary(
+                    "daemon-restart-confirm",
+                    "Restart",
+                    connected.then_some(Message::RestartDaemon),
+                ),
+                action(
+                    "daemon-restart-cancel",
+                    "Cancel",
+                    Some(Message::ConfirmDaemonRestart(false)),
+                    false,
+                ),
+            ]
+        } else {
+            row![
+                dot(c.amber, 7.0, c),
+                small(
+                    format!(
+                        "The background service is running an older version ({version}) than this app ({}). Restart it to finish updating.",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                    c
+                )
+                .width(Fill),
+                action(
+                    "daemon-restart",
+                    "Restart background service…",
+                    connected.then_some(Message::ConfirmDaemonRestart(true)),
+                    false,
+                ),
+            ]
+        };
+        Some(
+            container(row.spacing(8).align_y(Center))
+                .padding([6, 14])
+                .width(Fill)
+                .style(move |_| container::Style {
+                    border: iced::Border {
+                        color: c.line,
+                        width: 1.0,
+                        radius: 0.0.into(),
+                    },
+                    ..c.surface(c.sidebar, false)
+                })
+                .into(),
+        )
+    }
+
     /// The words for what an agent is doing, live or finished.
     pub(super) fn activity_label(&self, agent: &AgentRecord) -> String {
         let id = agent.id.to_string();
@@ -386,20 +459,24 @@ impl App {
                 .kind
                 .label()
                 .to_owned()
-        } else if self.delivery_paused(agent) {
-            "delivery paused".to_owned()
+        } else if self.delivery_paused(agent) && agent.status.is_live() {
+            "not receiving messages".to_owned()
+        } else if self.ended_with_undelivered(agent) {
+            format!("ended {}", undelivered_phrase(self.undelivered(agent)))
         } else if agent.status.is_live() {
             match self.activity.get(&id) {
-                None | Some(Activity::Unknown) => "running, no signal yet".to_owned(),
+                None | Some(Activity::Unknown) => "running".to_owned(),
                 Some(activity) => activity.label().to_owned(),
             }
+        } else if let agentdocker_core::AgentStatus::Failed { reason } = &agent.status {
+            format!("failed: {reason}")
         } else {
-            agent.status.to_string()
+            "ended".to_owned()
         }
     }
     /// The colour that goes with [`Self::activity_label`].
     fn activity_color(&self, agent: &AgentRecord, c: Colors) -> iced::Color {
-        if self.needs_input(&agent.id.to_string()) || self.delivery_paused(agent) {
+        if self.needs_input(&agent.id.to_string()) || self.delivery_needs_you(agent) {
             c.amber
         } else if agent.status.is_live() {
             // Green is a report, not a heartbeat: a process we only know is
@@ -454,7 +531,7 @@ impl App {
             .get(agent.id.as_str())
             .is_some_and(|count| *count > 0)
         {
-            return "Queued · awaiting provider receipt";
+            return "Sent · waiting for the agent to take it";
         }
         readiness.label()
     }
@@ -545,13 +622,15 @@ impl App {
             ));
         }
         let mut header = row![header_left].spacing(16).align_y(Center);
-        if matches!(self.screen, Screen::Agents | Screen::Chat)
+        // The project's hold and its one primary action stay in the header
+        // on every project screen: they vanished on Board and History.
+        if in_project
             && !narrow
             && let Some(pause) = self.pause_controls(c)
         {
             header = header.push(pause);
         }
-        if matches!(self.screen, Screen::Agents | Screen::Chat)
+        if in_project
             && !narrow
             && let Some(launch) = self.launch_button()
         {
@@ -570,13 +649,14 @@ impl App {
         }
         // Narrow, the hold has its own line under the header rather than
         // none: a pause is not a thing to lose with the width.
-        if matches!(self.screen, Screen::Agents | Screen::Chat)
+        if in_project
             && narrow
             && let Some(pause) = self.pause_controls(c)
         {
             project_actions = project_actions.push(pause);
         }
-        if self.screen == Screen::Chat
+        if in_project
+            && self.screen != Screen::Agents
             && narrow
             && let Some(launch) = self.launch_button()
         {
@@ -584,9 +664,6 @@ impl App {
         }
         if in_project && self.shell.catalog.selected().is_some() {
             content = content.push(project_actions.wrap());
-        }
-        if self.screen == Screen::Chat && self.shell.launch {
-            content = content.push(self.launch_view(c));
         }
         if let Err(error) = &self.connected {
             content = content.push(attention(
@@ -662,6 +739,7 @@ impl App {
             for (screen, label, glyph) in [
                 (Screen::Chat, "Chat", Icon::Channels),
                 (Screen::Agents, "Agents", Icon::Sessions),
+                (Screen::Board, "Board", Icon::Board),
             ] {
                 let selected = self.screen == screen
                     || (screen == Screen::Agents && self.screen == Screen::Terminal);
@@ -677,16 +755,16 @@ impl App {
                     selected,
                 ));
             }
-            let more_selected = self.shell.more
-                || matches!(
-                    self.screen,
-                    Screen::Board
-                        | Screen::Journal
-                        | Screen::Channels
-                        | Screen::Leases
-                        | Screen::Console
-                        | Screen::Usage
-                );
+            // Underlined only on one of its own screens: with its drawer open
+            // over Agents, two tabs read as selected at once.
+            let more_selected = matches!(
+                self.screen,
+                Screen::Journal
+                    | Screen::Channels
+                    | Screen::Leases
+                    | Screen::Console
+                    | Screen::Usage
+            );
             tabs = tabs.push(tab(
                 "project-more",
                 "More",
@@ -713,43 +791,22 @@ impl App {
         if in_project && self.shell.more {
             let queued = self.queued_channel_messages();
             let mut more = row![
-                row![
-                    icon(Icon::Board, c.muted, 14.0),
-                    action(
-                        "project-tab-Board",
-                        "Board",
-                        Some(Message::Navigate(Screen::Board)),
-                        self.screen == Screen::Board
-                    )
-                ]
-                .spacing(6)
-                .align_y(Center),
-                row![
-                    icon(Icon::Activity, c.muted, 14.0),
-                    action(
-                        "project-tab-Journal",
-                        "History",
-                        Some(Message::Navigate(Screen::Journal)),
-                        self.screen == Screen::Journal
-                    )
-                ]
-                .spacing(6)
-                .align_y(Center),
-                row![
-                    icon(Icon::Channels, c.muted, 14.0),
-                    action(
-                        "project-tab-Channels",
-                        if queued > 0 {
-                            format!("Channels ({queued} waiting)")
-                        } else {
-                            "Channels".to_owned()
-                        },
-                        Some(Message::Navigate(Screen::Channels)),
-                        self.screen == Screen::Channels
-                    )
-                ]
-                .spacing(6)
-                .align_y(Center),
+                action(
+                    "project-tab-Journal",
+                    "History",
+                    Some(Message::Navigate(Screen::Journal)),
+                    self.screen == Screen::Journal
+                ),
+                action(
+                    "project-tab-Channels",
+                    if queued > 0 {
+                        format!("Channels ({queued} waiting)")
+                    } else {
+                        "Channels".to_owned()
+                    },
+                    Some(Message::Navigate(Screen::Channels)),
+                    self.screen == Screen::Channels
+                ),
                 action(
                     "project-tab-Leases",
                     "Files in use",
@@ -789,10 +846,11 @@ impl App {
                         false,
                     ));
             }
-            content = content.push(card(
-                column![eyebrow("Advanced", c), more.wrap()].spacing(10),
-                c,
-            ));
+            content = content.push(card(more.wrap(), c));
+        }
+        // Under the tabs, where the chat it stands in for would be.
+        if self.screen == Screen::Chat && self.shell.launch {
+            content = content.push(self.launch_view(c));
         }
         if self.shell.adding {
             content = content.push(card(
@@ -825,6 +883,9 @@ impl App {
             ));
         }
         let body = match self.screen {
+            // The launch form takes the page; squeezed above the chat into
+            // the header's 45% it hid its own Launch and Close.
+            Screen::Chat if self.shell.launch => column![].into(),
             Screen::Chat => self.project_chat_view(c),
             Screen::Agents => self.sessions(c),
             Screen::Board => self.board_view(c),
@@ -842,7 +903,7 @@ impl App {
         };
         // Chat owns the remaining viewport so its composer never depends on
         // scrolling past the header. Large forms and notices scroll above it.
-        let workspace: Element<'_, Message> = if self.screen == Screen::Chat {
+        let workspace: Element<'_, Message> = if self.screen == Screen::Chat && !self.shell.launch {
             column![
                 container(scrollable(content).height(iced::Shrink))
                     .max_height(self.shell.height / self.scale_factor() * 0.45),
@@ -874,14 +935,17 @@ impl App {
     /// version. Said here once, so the rail and the pages need not repeat it.
     fn footer(&self, c: Colors) -> Element<'_, Message> {
         let connected = self.connected.is_ok();
+        if let Some(notice) = self.daemon_notice(c) {
+            return notice;
+        }
         container(
             row![
                 dot(if connected { c.green } else { c.amber }, 7.0, c),
                 small(
                     if connected {
-                        "Connected to the local daemon"
+                        "Connected to the background service"
                     } else {
-                        "Reconnecting to the local daemon…"
+                        "Reconnecting to the background service…"
                     },
                     c
                 )
@@ -1201,9 +1265,16 @@ impl App {
         }
         nav = nav
             .push(
+                // A thin bar: the default one took a name's last letters
+                // whenever the list scrolled.
                 scrollable(projects)
                     .id("sidebar-projects")
-                    .spacing(6)
+                    .direction(iced::widget::scrollable::Direction::Vertical(
+                        iced::widget::scrollable::Scrollbar::new()
+                            .width(4)
+                            .scroller_width(4)
+                            .spacing(2),
+                    ))
                     .height(Fill),
             )
             .push(Space::new().height(6))
@@ -1353,8 +1424,15 @@ impl App {
             items.push((
                 dot(c.amber, 8.0, c),
                 format!(
-                    "{} asks: {}",
+                    "{} {}: {}",
                     self.name_of(&question.from),
+                    // An answer is kept for an ended session, but nobody
+                    // is reading it now; say so before the person writes.
+                    if self.agent_live(&question.from) {
+                        "asks"
+                    } else {
+                        "asked before its session ended"
+                    },
                     compact_question(&question.text)
                 ),
                 action(
@@ -1368,28 +1446,47 @@ impl App {
         for agent in self
             .agents
             .iter()
-            .filter(|a| self.delivery_paused(a) && self.has_project(a.project.as_ref()))
+            .filter(|a| self.delivery_needs_you(a) && self.has_project(a.project.as_ref()))
         {
-            let (reason, control, label) =
+            let name = self.display_name(agent);
+            let (line, control, label) =
                 if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
                     (
-                        state.issue.as_ref().expect("blocked").kind.label(),
+                        format!(
+                            "{name}: {}",
+                            state.issue.as_ref().expect("blocked").kind.label()
+                        ),
                         "provider",
                         "Details",
                     )
+                } else if agent.status.is_live() {
+                    (
+                        format!("{name}: messages are not being delivered"),
+                        "review",
+                        "Review",
+                    )
                 } else {
-                    ("message delivery needs review", "review", "Review")
+                    (
+                        format!(
+                            "{name} ended {}",
+                            undelivered_phrase(self.undelivered(agent))
+                        ),
+                        "review",
+                        "Review",
+                    )
                 };
             // Review opens the session with its delivery review unfolded;
             // Details opens the session, whose header carries the block.
-            let open = if control == "review" {
+            // The review reads the session log, so while disconnected
+            // Review opens the session and says it is the last known state.
+            let open = if control == "review" && self.connected.is_ok() {
                 Message::ReviewSession(agent.id.to_string())
             } else {
                 Message::OpenSession(agent.id.to_string())
             };
             items.push((
                 dot(c.amber, 8.0, c),
-                format!("{}: {reason}", self.display_name(agent)),
+                line,
                 action(
                     format!("needs-you-{control}-{}", agent.id),
                     label,
@@ -1415,9 +1512,12 @@ impl App {
                     ),
                     action(
                         format!("needs-you-connect-{}", process.pid),
-                        "Connect",
-                        self.connected
-                            .is_ok()
+                        if self.shell.adopting.contains(&process.pid) {
+                            "Connecting…"
+                        } else {
+                            "Connect"
+                        },
+                        (self.connected.is_ok() && !self.shell.adopting.contains(&process.pid))
                             .then_some(Message::Adopt(process.pid)),
                         false,
                     ),
@@ -1578,7 +1678,7 @@ impl App {
             "launch-agent",
             "Launch agent…",
             (self.connected.is_ok() && self.shell.project_available != Some(false))
-                .then_some(Message::ShowLaunch),
+                .then_some(Message::OpenLaunch),
         ))
     }
 
@@ -1694,7 +1794,7 @@ impl App {
                                     .cwd
                                     .as_ref()
                                     .map(|cwd| shorten_home(cwd))
-                                    .unwrap_or_else(|| format!("pid {}", process.pid)),
+                                    .unwrap_or_else(|| "folder unknown".to_owned()),
                                 c
                             )
                         ]
@@ -1702,9 +1802,12 @@ impl App {
                         .width(Fill),
                         action(
                             format!("adopt-{}", process.pid),
-                            "Connect",
-                            self.connected
-                                .is_ok()
+                            if self.shell.adopting.contains(&process.pid) {
+                                "Connecting…"
+                            } else {
+                                "Connect"
+                            },
+                            (self.connected.is_ok() && !self.shell.adopting.contains(&process.pid))
                                 .then_some(Message::Adopt(process.pid)),
                             false
                         ),
@@ -1955,8 +2058,8 @@ impl App {
             if self.connected.is_err() {
                 status.push("Last known".to_owned());
             }
-            if paused {
-                status.push("Delivery paused".to_owned());
+            if paused && agent.status.is_live() {
+                status.push("Not receiving messages".to_owned());
             } else if agent.status.is_live() {
                 status.push(self.input_readiness(agent).to_owned());
             }
@@ -1964,7 +2067,10 @@ impl App {
                 status.push(queue);
             }
             if let Some(received_at) = delivery.and_then(|d| d.received_at) {
-                status.push(format!("Last receipt {}", ago(Utc::now(), received_at)));
+                status.push(format!(
+                    "Last took a message {}",
+                    ago(Utc::now(), received_at)
+                ));
             }
             if !status.is_empty() {
                 body = body.push(small(status.join(" · "), c));
@@ -1995,21 +2101,58 @@ impl App {
             if let Some(binding) = agent.input_binding.as_ref().filter(|b| b.restart.exhausted) {
                 body = body.push(small(
                     format!(
-                        "The input receiver could not be started again after {} attempts. Queued input is kept.",
+                        "Message delivery could not be restarted after {} tries. Its messages are kept.",
                         binding.restart.attempts
                     ),
                     c,
                 ));
                 body = body.push(action(
                     "retry-receiver",
-                    "Retry receiver",
+                    "Restart message delivery",
                     self.connected
                         .is_ok()
                         .then(|| Message::RetryController(agent.id.to_string())),
                     false,
                 ));
             }
-            if paused {
+            // An ended session: its messages are kept in its queue. Say how
+            // many, how to get them delivered, and let the person put the
+            // notice away. Nothing waiting means nothing to review.
+            if paused && !agent.status.is_live() {
+                if self.ended_with_undelivered(agent) {
+                    body = body.push(
+                        text(format!(
+                            "This session ended {}.",
+                            undelivered_phrase(self.undelivered(agent))
+                        ))
+                        .size(13)
+                        .color(c.amber),
+                    );
+                    body = body.push(note(
+                        "They are kept. Resume the conversation from its project folder and they are delivered to it; nothing is sent anywhere else.",
+                        c,
+                    ));
+                } else {
+                    body = body.push(small(
+                        "Session ended. Nothing is waiting to be delivered.",
+                        c,
+                    ));
+                }
+            }
+            // Every notice an ended session raises can be put away: it can
+            // report no recovery, so a block or a count would otherwise stay.
+            if !agent.status.is_live()
+                && self.delivery_needs_you(agent)
+                && !self.notice_dismissed(agent)
+            {
+                body = body.push(action(
+                    "dismiss-delivery",
+                    "Dismiss",
+                    Some(Message::DismissDelivery(id.clone())),
+                    false,
+                ));
+            }
+            if paused && agent.status.is_live() {
                 body = body.push(action(
                     "review-delivery",
                     if self.shell.review_delivery {
@@ -2020,11 +2163,14 @@ impl App {
                     self.connected.is_ok().then_some(Message::ReviewDelivery),
                     false,
                 ));
+                if self.connected.is_err() {
+                    body = body.push(small("Reconnect to the daemon to read the session log.", c));
+                }
                 if self.shell.review_delivery {
                     if let Some(reason) = delivery.and_then(|d| d.pause_reason.as_deref()) {
-                        body = body.push(text(reason.to_owned()).size(13).color(c.amber));
+                        body = body.push(text(plain_pause_reason(reason)).size(13).color(c.amber));
                     }
-                    body = body.push(note("Input is retained. Check the receipt and session log before restarting or sending it again.", c));
+                    body = body.push(note("Messages to this session are kept, not lost. Check the log below before restarting it or sending again.", c));
                     if let Some((log_agent, result)) = &self.session_log
                         && log_agent == &id
                     {
@@ -2036,13 +2182,12 @@ impl App {
                                         .color(c.amber),
                                 );
                             }
+                            Ok(log) if log.is_empty() => {
+                                body = body.push(small("The session log is empty.", c));
+                            }
                             Ok(log) => {
-                                let log = if log.is_empty() {
-                                    "No retained log output."
-                                } else {
-                                    log.as_str()
-                                };
-                                body = body.push(scrollable(text(log).size(12)).height(120));
+                                body =
+                                    body.push(scrollable(text(log.as_str()).size(12)).height(120));
                             }
                         }
                     } else {
@@ -2051,11 +2196,17 @@ impl App {
                 }
             }
         }
-        if self.needs_input(&id) {
+        // Answer opens the exact question, the way Needs you does; the
+        // Messages screen alone would show no question selected.
+        if let Some(question) = self
+            .questions
+            .iter()
+            .find(|q| q.from == id && !q.expired(Utc::now()))
+        {
             body = body.push(primary(
                 "session-reply",
-                "Reply in Inbox",
-                Some(Message::Navigate(Screen::Questions)),
+                "Answer",
+                Some(Message::OpenQuestion(question.id.clone())),
             ));
         }
         if agent.managed && agent.spec.tty && agent.status.is_live() {
@@ -2155,7 +2306,18 @@ impl App {
             self.shell.session_details,
         ));
         if self.shell.session_details {
-            let mut details = column![kv("Session", agent.id.to_string(), c)].spacing(6);
+            // The full id is 32 hex digits with nowhere to wrap: shown short,
+            // copied whole.
+            let mut details = column![
+                kv("Session", agent.id.short().to_string(), c),
+                action(
+                    "copy-session-id",
+                    "Copy session ID",
+                    Some(Message::CopyGuidance(agent.id.to_string())),
+                    false
+                ),
+            ]
+            .spacing(6);
             details = details.push(kv(
                 "Folder",
                 agent
@@ -2174,7 +2336,7 @@ impl App {
                 details = details.push(kv("Checkout", vcs.describe(), c));
             }
             if let Some(session) = &agent.session {
-                details = details.push(kv("Terminal", format!("{session:?}"), c));
+                details = details.push(kv("Terminal", session.describe(), c));
             }
             if let Some(guidance) =
                 super::send_readiness::reconnect(agent, &self.agents, "inspector", c)
@@ -3114,7 +3276,14 @@ impl App {
         for channel in self
             .channels
             .iter()
-            .filter(|ch| Some(&ch.project) == selected.as_ref())
+            // With no project chosen (All projects) every channel is shown;
+            // "Reviews" from a conversation lands here from anywhere and
+            // must not find "No channels yet" about the one just open.
+            .filter(|ch| {
+                selected
+                    .as_ref()
+                    .is_none_or(|project| &ch.project == project)
+            })
         {
             count += 1;
             let id = channel.id.to_string();
@@ -3149,8 +3318,15 @@ impl App {
             for review in &channel.reviews {
                 body = body.push(
                     text(format!(
-                        "{:?} by {} on {}: {}",
-                        review.verdict, review.by_name, review.of_name, review.note
+                        "{} · {} on {}'s work: {}",
+                        match review.verdict {
+                            agentdocker_core::channel::Verdict::Approve => "Approved",
+                            agentdocker_core::channel::Verdict::Changes => "Changes asked for",
+                            agentdocker_core::channel::Verdict::Comment => "Comment",
+                        },
+                        review.by_name,
+                        review.of_name,
+                        review.note
                     ))
                     .size(14),
                 );
@@ -3168,9 +3344,9 @@ impl App {
             body = body.push(action(
                 format!("reply-channel-{id}"),
                 "Write to channel",
-                self.connected
-                    .is_ok()
-                    .then_some(Message::ChannelTarget(id.clone())),
+                // A closed channel takes no messages: the control would do
+                // nothing, so it is not offered as if it would.
+                (self.connected.is_ok() && open).then_some(Message::ChannelTarget(id.clone())),
                 self.shell.channel_target.as_deref() == Some(id.as_str()),
             ));
             if self.shell.channel_target.as_deref() == Some(id.as_str()) {
@@ -3242,7 +3418,7 @@ impl App {
             return list
                 .push(empty(
                     "No activity recorded yet",
-                    "Commits, joins, leases and notes from this project will appear here.",
+                    "Commits, arrivals, finished work and notes from this project appear here.",
                     None,
                     c,
                 ))
@@ -3292,9 +3468,9 @@ impl App {
 
     fn coordination(&self, c: Colors) -> Element<'_, Message> {
         let mut list = column![
-            heading("Resource coordination", 18),
+            heading("Files in use", 18),
             note(
-                "Leases describe cooperative access reported to AgentDocker.",
+                "What each agent has said it is working on. Others wait, or ask, before touching the same thing.",
                 c
             )
         ]
@@ -3311,8 +3487,16 @@ impl App {
             let left = remaining_fraction(lease.acquired_at, lease.expires_at, now);
             let mut body = column![
                 row![
-                    heading(lease.resource.to_string(), 15).width(Fill),
-                    pill(format!("{:?}", lease.mode), c.accent_soft, c.accent_ink, c)
+                    heading(resource_label(&lease.resource.to_string()), 15).width(Fill),
+                    pill(
+                        match lease.mode {
+                            agentdocker_core::LeaseMode::Exclusive => "Only this agent",
+                            agentdocker_core::LeaseMode::Shared => "Shared",
+                        },
+                        c.accent_soft,
+                        c.accent_ink,
+                        c
+                    )
                 ]
                 .spacing(10)
                 .align_y(Center),
@@ -3338,7 +3522,7 @@ impl App {
         }
         if count == 0 {
             list = list.push(empty(
-                "No leases held",
+                "Nothing in use",
                 "When an agent claims a file or resource in this project it appears here.",
                 None,
                 c,
@@ -3442,7 +3626,7 @@ impl App {
             row![
                 input(
                     "console-command",
-                    "agentdocker command",
+                    "A command, e.g. ps, leases or journal",
                     &self.console_input,
                     Message::ConsoleInput
                 ),
@@ -3462,21 +3646,32 @@ impl App {
                 action(
                     "previous-command",
                     "Previous",
-                    Some(Message::Recall(true)),
+                    (!self.console_history.is_empty()).then_some(Message::Recall(true)),
                     false
                 ),
-                action("next-command", "Next", Some(Message::Recall(false)), false)
+                action(
+                    "next-command",
+                    "Next",
+                    (!self.console_history.is_empty()).then_some(Message::Recall(false)),
+                    false
+                )
             ]
             .spacing(6),
-            container(
-                text(self.console_output.clone())
-                    .font(Font::MONOSPACE)
-                    .size(self.settings.terminal_size)
-                    .color(ink)
-            )
-            .padding(14)
-            .width(Fill)
-            .style(move |_| c.surface(ground, true))
+            // No empty black box before anything has run.
+            if self.console_output.is_empty() {
+                Element::from(note("Output appears here.", c))
+            } else {
+                container(
+                    text(self.console_output.clone())
+                        .font(Font::MONOSPACE)
+                        .size(self.settings.terminal_size)
+                        .color(ink),
+                )
+                .padding(14)
+                .width(Fill)
+                .style(move |_| c.surface(ground, true))
+                .into()
+            }
         ]
         .spacing(12)
         .into()
@@ -3558,11 +3753,11 @@ impl App {
             // prompt; with a route that is paused or silent, they wait for
             // that to be put right.
             let (mark, word) = if ready {
-                (c.green, "Input receiver active".to_owned())
+                (c.green, "Receiving messages".to_owned())
             } else if reporting && paused {
-                (c.amber, "Connected · input receiver paused".to_owned())
+                (c.amber, "Connected · messages paused".to_owned())
             } else if reporting && stale {
-                (c.amber, "Connected · input receiver silent".to_owned())
+                (c.amber, "Connected · not heard from recently".to_owned())
             } else if reporting {
                 (
                     c.cyan,
@@ -3793,7 +3988,7 @@ impl App {
                         if runtime.name == "claude-code" {
                             "Hooks cannot start an idle turn. New Claude launches use Idle messages: On and require channel consent. Existing sessions need a safe reconnect; queued messages stay with their current record."
                         } else {
-                            "Hooks cannot start an idle turn. Native Codex sessions need a connected queue receiver. New launches here use Idle messages: On."
+                            "Hooks cannot start an idle turn. Codex sessions need their message delivery connected. New launches here use Idle messages: On."
                         },
                         c,
                     ));
@@ -4260,9 +4455,9 @@ impl App {
             body = body.push(action(
                 "desktop-local",
                 if p.local_preview {
-                    "Local preview signatures allowed"
+                    "Preview builds allowed"
                 } else {
-                    "Allow locally signed preview builds"
+                    "Allow preview builds"
                 },
                 (!p.busy).then_some(Message::DesktopLocal(!p.local_preview)),
                 p.local_preview,
@@ -4324,21 +4519,42 @@ impl App {
                 .as_str()
                 .or(update["running_version"].as_str())
                 .unwrap_or("unknown");
-            let mut facts = column![
-                heading(
-                    if update["update_available"] == true {
-                        format!("Version {available} is available")
-                    } else {
-                        "You have the newest release".to_owned()
-                    },
-                    16
-                ),
-                kv("Installed", installed, c),
-                kv("Available", available, c),
-                kv("Channel", value(update, "channel"), c),
-                kv("Daemon", value(update, "daemon"), c),
-            ]
-            .spacing(6);
+            let mut facts = if update["published"] == false {
+                // Nothing on either channel yet: an answer, not a failure.
+                column![
+                    heading("No update published yet", 16),
+                    kv("Installed", installed, c),
+                    note(
+                        "Nothing newer has been published for this installation. Check again later.",
+                        c
+                    ),
+                ]
+                .spacing(6)
+            } else {
+                column![
+                    heading(
+                        if update["update_available"] == true {
+                            format!("Version {available} is available")
+                        } else {
+                            "You have the newest release".to_owned()
+                        },
+                        16
+                    ),
+                    kv("Installed", installed, c),
+                    kv("Available", available, c),
+                    kv("Channel", value(update, "channel"), c),
+                    kv("Daemon", value(update, "daemon"), c),
+                ]
+                .spacing(6)
+            };
+            if p.preview_consent_needed() {
+                facts = facts.push(note(
+                    format!(
+                        "{available} is a preview build. Allow preview builds above to download it."
+                    ),
+                    c,
+                ));
+            }
             if update["state_schema_change"] == true {
                 facts = facts.push(note(
                     "This release changes the daemon's state schema: after installing, rollback needs a matching state backup.",
@@ -4415,6 +4631,46 @@ impl App {
     }
 }
 
+/// A held resource as a person reads it: a path as a path (home as `~`),
+/// anything else as `kind: value`.
+fn resource_label(key: &str) -> String {
+    match key.split_once(':') {
+        Some(("path", path)) => shorten_home(std::path::Path::new(path)),
+        Some((kind, value)) => format!("{kind}: {value}"),
+        None => key.to_owned(),
+    }
+}
+
+/// How an ended session's undelivered messages read after "ended".
+fn undelivered_phrase(count: Option<usize>) -> String {
+    match count {
+        Some(1) => "with 1 message not delivered".to_owned(),
+        Some(n) => format!("with {n} messages not delivered"),
+        None => "before its messages were delivered".to_owned(),
+    }
+}
+
+/// The daemon's reason for pausing delivery, in the person's words. The
+/// daemon's own text stays in the session log and the CLI; this is what the
+/// app says about it. Unknown reasons are shown as they are.
+pub(super) fn plain_pause_reason(reason: &str) -> String {
+    use agentdocker_core::input::{
+        PAUSE_CONTROLLER_ENDED, PAUSE_CONTROLLER_RESTART_FAILED, PAUSE_RECEIVER_UPGRADING,
+    };
+    match reason {
+        PAUSE_CONTROLLER_ENDED => {
+            "The helper that hands messages to this session stopped.".to_owned()
+        }
+        PAUSE_CONTROLLER_RESTART_FAILED => {
+            "The helper that hands messages to this session could not be started again.".to_owned()
+        }
+        PAUSE_RECEIVER_UPGRADING => {
+            "Message delivery is being updated; it resumes on its own.".to_owned()
+        }
+        other => other.to_owned(),
+    }
+}
+
 /// Keep full question bodies in the review screen, with a bounded first line here.
 fn compact_question(value: &str) -> String {
     let first = value.lines().next().unwrap_or_default();
@@ -4476,6 +4732,31 @@ pub(super) fn split_style(c: Colors) -> iced::widget::pane_grid::Style {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn daemon_pause_reasons_read_in_the_persons_words() {
+        use agentdocker_core::input::{
+            PAUSE_CONTROLLER_ENDED, PAUSE_CONTROLLER_RESTART_FAILED, PAUSE_RECEIVER_UPGRADING,
+        };
+        for reason in [
+            PAUSE_CONTROLLER_ENDED,
+            PAUSE_CONTROLLER_RESTART_FAILED,
+            PAUSE_RECEIVER_UPGRADING,
+        ] {
+            let plain = super::plain_pause_reason(reason);
+            assert_ne!(plain, reason);
+            assert!(!plain.contains("controller") && !plain.contains("receiver"));
+        }
+        assert_eq!(super::plain_pause_reason("something new"), "something new");
+        assert_eq!(
+            super::undelivered_phrase(Some(1)),
+            "with 1 message not delivered"
+        );
+        assert_eq!(
+            super::undelivered_phrase(Some(3)),
+            "with 3 messages not delivered"
+        );
+    }
+
     use super::{remaining_fraction, spoken_payload};
     use chrono::{Duration, Utc};
     use serde_json::json;
@@ -4509,7 +4790,10 @@ mod tests {
             !app.tool_reports("codex"),
             "leases and coordination are not adapter contact"
         );
-        assert_eq!(app.input_readiness(&agent), "Idle delivery not verified");
+        assert_eq!(
+            app.input_readiness(&agent),
+            "Messages may wait for its next prompt"
+        );
         agent.adapter_contacts.insert(
             AdapterKind::Mcp,
             AdapterContact {
@@ -4525,7 +4809,7 @@ mod tests {
         );
         assert_eq!(
             app.input_readiness(&agent),
-            "Idle delivery not verified",
+            "Messages may wait for its next prompt",
             "MCP contact does not prove idle wake"
         );
         agent.input_delivery = Some(InputDelivery {
@@ -4536,10 +4820,7 @@ mod tests {
             received: None,
             received_at: None,
         });
-        assert_eq!(
-            app.input_readiness(&agent),
-            "Receiver active, awaiting first receipt"
-        );
+        assert_eq!(app.input_readiness(&agent), "Ready for messages");
         // Words queued behind a current receiver that no receipt covers are
         // waiting on the provider; an earlier receipt does not make them
         // delivered, and a receipt for them does, acknowledged or not.
@@ -4547,7 +4828,7 @@ mod tests {
         app.awaiting_receipt.insert(agent.id.to_string(), 2);
         assert_eq!(
             app.input_readiness(&agent),
-            "Queued · awaiting provider receipt"
+            "Sent · waiting for the agent to take it"
         );
         agent.input_delivery.as_mut().unwrap().received = Some(agentdocker_core::ReceivedInput {
             messages: vec!["m1".to_owned().into()],
@@ -4557,10 +4838,10 @@ mod tests {
         app.awaiting_receipt.insert(agent.id.to_string(), 1);
         assert_eq!(
             app.input_readiness(&agent),
-            "Queued · awaiting provider receipt"
+            "Sent · waiting for the agent to take it"
         );
         app.awaiting_receipt.insert(agent.id.to_string(), 0);
-        assert_eq!(app.input_readiness(&agent), "Delivery verified");
+        assert_eq!(app.input_readiness(&agent), "Receiving messages");
         agent.input_delivery.as_mut().unwrap().received = None;
         agent.input_delivery.as_mut().unwrap().received_at = None;
         app.queued_inputs.remove(agent.id.as_str());
@@ -4571,10 +4852,10 @@ mod tests {
             !app.tool_reports("codex"),
             "a new process cannot inherit contact"
         );
-        assert_eq!(app.input_readiness(&agent), "No recent receiver signal");
+        assert_eq!(app.input_readiness(&agent), "Not heard from recently");
         agent.process_started_at = Some(birth);
         agent.input_delivery.as_mut().unwrap().paused = true;
-        assert_eq!(app.input_readiness(&agent), "Delivery paused");
+        assert_eq!(app.input_readiness(&agent), "Not receiving messages");
         app.connected = Err("offline".into());
         assert!(!app.tool_reports("codex"));
         assert_eq!(app.input_readiness(&agent), "Readiness unavailable");

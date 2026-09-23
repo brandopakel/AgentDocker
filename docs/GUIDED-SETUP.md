@@ -117,11 +117,10 @@ different session's callback cannot establish that session's readiness.
 The managed Codex receiver and Claude channel refresh input readiness every
 30 seconds while their input loop is working. Periodic refresh attempts are bounded to 250 ms; a refusal or timeout does not end the input transport. Receipts still must persist before ACK. Reports expire after 90 seconds;
 an older process's report or receipt cannot make a replacement ready. Before
-the first exact receipt the session says **Receiver active, awaiting first
-receipt**. **Delivery verified** requires that receipt and current receiver
-evidence. Paused delivery, missing recent evidence and unavailable daemon state
-have distinct labels. Ordinary MCP/hooks contact says **Connected · idle
-delivery not verified**. For idle delivery, create a session with **Receive
+the first exact receipt the session says **Ready for messages**. **Receiving
+messages** requires that receipt and current receiver evidence. Paused delivery, missing recent evidence and unavailable daemon state
+have distinct labels. Ordinary MCP/hooks contact says **Connected · messages
+wait for its next prompt**. For idle delivery, create a session with **Receive
 messages while idle** enabled; setup cannot retrofit an existing provider
 process. Start a fresh session after applying setup and follow only integration
 prompts actually required by that provider.

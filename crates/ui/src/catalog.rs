@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 const MAX_PROJECTS: usize = 512;
 const MAX_STATE_BYTES: u64 = 2 * 1024 * 1024;
+/// Dismissed notices are per process generation; the oldest go first.
+const MAX_DISMISSED: usize = 256;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Entry {
@@ -38,6 +40,21 @@ pub struct Catalog {
     pub updates: crate::desktop::UpdateSchedule,
     /// The column widths the person dragged the window's dividers to.
     pub panes: crate::app::panes::Widths,
+    /// Ended sessions whose undelivered messages the person has seen and
+    /// dismissed from Needs you. The messages stay queued; only the notice
+    /// goes, and only for that process: a resumed session is a new notice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dismissed: Vec<Dismissed>,
+}
+
+/// One dismissed notice: the session and the process it was about, by birth
+/// and pid, so a resumed process whose birth is unknown is still a new notice.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Dismissed {
+    pub agent: String,
+    pub process_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
 }
 
 impl Catalog {
@@ -63,6 +80,8 @@ impl Catalog {
             .projects
             .retain(|entry| entry.project.root.is_absolute());
         catalog.hidden.retain(|root| root.is_absolute());
+        let excess = catalog.dismissed.len().saturating_sub(MAX_DISMISSED);
+        catalog.dismissed.drain(..excess);
         anyhow::ensure!(
             catalog.hidden.len() <= MAX_PROJECTS,
             "Too many removed folders"
@@ -78,6 +97,39 @@ impl Catalog {
             catalog.selected = catalog.projects.first().map(|e| e.project.root.clone());
         }
         Ok(catalog)
+    }
+
+    /// Whether the person dismissed the notice for this session's process.
+    pub fn is_dismissed(
+        &self,
+        agent: &str,
+        process_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        pid: Option<u32>,
+    ) -> bool {
+        self.dismissed
+            .iter()
+            .any(|d| d.agent == agent && d.process_started_at == process_started_at && d.pid == pid)
+    }
+
+    /// Dismiss a notice; false when it already was.
+    pub fn dismiss(
+        &mut self,
+        agent: &str,
+        process_started_at: Option<chrono::DateTime<chrono::Utc>>,
+        pid: Option<u32>,
+    ) -> bool {
+        if self.is_dismissed(agent, process_started_at, pid) {
+            return false;
+        }
+        if self.dismissed.len() >= MAX_DISMISSED {
+            self.dismissed.remove(0);
+        }
+        self.dismissed.push(Dismissed {
+            agent: agent.to_owned(),
+            process_started_at,
+            pid,
+        });
+        true
     }
 
     pub fn remember(&mut self, project: ProjectRef, pin: bool) -> bool {
@@ -501,5 +553,33 @@ mod tests {
         catalog.remember(worktree, false);
         assert_eq!(catalog.projects.len(), 1);
         assert!(catalog.projects[0].project.worktree.is_none());
+    }
+
+    #[test]
+    fn dismissed_notices_are_per_process_bounded_and_saved() {
+        let home = tempfile::tempdir().unwrap();
+        let mut catalog = Catalog::default();
+        let at = Some(chrono::Utc::now());
+        assert!(catalog.dismiss("a", at, Some(7)));
+        assert!(!catalog.dismiss("a", at, Some(7)), "once is enough");
+        assert!(catalog.is_dismissed("a", at, Some(7)));
+        assert!(
+            !catalog.is_dismissed("a", None, Some(7)),
+            "another process is another notice"
+        );
+        // Two processes of unknown birth are still told apart by pid.
+        assert!(catalog.dismiss("b", None, Some(1)));
+        assert!(!catalog.is_dismissed("b", None, Some(2)));
+        for n in 0..MAX_DISMISSED + 10 {
+            catalog.dismiss(&format!("x{n}"), None, None);
+        }
+        assert_eq!(catalog.dismissed.len(), MAX_DISMISSED);
+        assert!(
+            !catalog.is_dismissed("a", at, Some(7)),
+            "the oldest go first"
+        );
+        catalog.save(home.path()).unwrap();
+        let loaded = Catalog::load(home.path()).unwrap();
+        assert_eq!(loaded.dismissed, catalog.dismissed);
     }
 }

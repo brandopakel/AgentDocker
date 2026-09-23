@@ -175,9 +175,9 @@ enum DesktopCommand {
     Status,
     /// Check the published download feed and, unless --check, download, verify and preview the newer release; --apply installs it for the next launch.
     Update {
-        /// Feed URL (https://, or file:// with --local-preview). Defaults to the latest GitHub release asset, or AGENTDOCKER_UPDATE_FEED.
-        #[arg(long, env = update::FEED_ENV, default_value = update::DEFAULT_FEED)]
-        feed: String,
+        /// Feed URL (https://, or file:// with --local-preview), or AGENTDOCKER_UPDATE_FEED. Without it: the latest stable release's feed, plus the preview channel when this installation is a prerelease or --local-preview is given; the newest release wins.
+        #[arg(long, env = update::FEED_ENV)]
+        feed: Option<String>,
         /// Only report whether a newer release exists; download nothing.
         #[arg(long)]
         check: bool,
