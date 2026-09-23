@@ -36,7 +36,7 @@ Coordination types and state machines are pure; time-dependent operations accept
 
 ### `agentdocker-host` (`crates/host`)
 
-Shared host I/O: project/path discovery, Git/content inspection, process identity, installed-runtime/config inventory, bounded subprocesses, terminal operations, notifications, multiplexer queries and optional container transports. It owns no daemon registry or durable coordination state.
+Shared host I/O: project/path discovery, Git/content inspection, process identity, installed-runtime/config inventory, bounded subprocesses, terminal operations, notifications, multiplexer queries and optional container transports. It owns no daemon registry or durable coordination state. Windows IPC keeps protected user/SYSTEM pipe ACLs and same-user checks on both ends. The server identifies the connected client through its pipe token, without opening a client process across logon sessions; it restores the thread before returning or interpreting application input. Clients explicitly request `SECURITY_IDENTIFICATION` with `SECURITY_SQOS_PRESENT` so their identity is available before the first write, and retain server-process and pipe-ACL validation. [Windows connection boundary](WINDOWS-PORT.md#local-connection-boundary).
 
 ### `agentd` (`crates/agentd`)
 
