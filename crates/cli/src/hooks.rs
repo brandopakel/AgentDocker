@@ -869,9 +869,13 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
             .ok()
             .is_some_and(|id| !id.is_empty());
         if explicit {
-            return bind_start_session(backend, input, me, host_pid()).await;
+            let pid = (input.hook_event_name == "SessionStart" && input.agent_id.is_none())
+                .then(host_pid)
+                .flatten();
+            return bind_start_session(backend, input, me, pid).await;
         }
-        let verified = host_pid()
+        let pid = host_pid();
+        let verified = pid
             .and_then(|pid| {
                 let started = agentdocker_host::procinfo::start_time(pid)?;
                 let here = input.cwd.as_ref()?.canonicalize().ok()?;
@@ -885,7 +889,7 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
             })
             .unwrap_or(false);
         if verified {
-            return bind_start_session(backend, input, me, host_pid()).await;
+            return bind_start_session(backend, input, me, pid).await;
         }
     }
     let mut labels = std::collections::BTreeMap::from([
