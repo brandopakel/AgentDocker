@@ -354,6 +354,23 @@ fn checkpoint(
         .is_some_and(|daemon| daemon.usage_snapshot(collection, gaps, Some(change)))
 }
 
+fn finish_failed_job(
+    weak: &Weak<Daemon>,
+    collection: &mut Collection,
+    job: usize,
+    gaps: &[(&str, &str)],
+) -> bool {
+    let mut next = collection.clone();
+    if let Some(pending) = &mut next.pending_files {
+        *pending = pending.saturating_sub(1);
+    }
+    if !checkpoint(weak, &next, gaps, Change::FinishedJob(job)) {
+        return false;
+    }
+    *collection = next;
+    true
+}
+
 fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
     collect_generation_bounded(weak, config, usize::MAX);
 }
@@ -478,9 +495,9 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
         progress.frontier = frontier;
         if page.finished {
             collection.discovery_complete = page.complete;
-            collection.pending_files = page
-                .complete
-                .then_some((progress.jobs + progress.failures) as u64);
+            // Capture failures already have durable source gaps and no jobs.
+            // Gaps keep reported token coverage partial, not work pending.
+            collection.pending_files = page.complete.then_some(progress.jobs as u64);
             collection.pending_tail_files = page.complete.then_some(0);
             if page.complete {
                 collection.state = CollectionState::Scanning;
@@ -566,7 +583,7 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                 // Retry once from the captured generation. If the file changed
                 // after discovery, even the empty prefix refuses it this pass.
                 let Ok(session) = prepare(None) else {
-                    if !checkpoint(weak, &collection, &[], Change::FinishedJob(job_id)) {
+                    if !finish_failed_job(weak, &mut collection, job_id, &[]) {
                         return;
                     }
                     continue;
@@ -584,14 +601,14 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                 }
                 _ => {
                     let gap_key = format!("scan:{generation}:{key}");
-                    if !checkpoint(
+                    if !finish_failed_job(
                         weak,
-                        &collection,
+                        &mut collection,
+                        job_id,
                         &[(
                             &gap_key,
                             "usage source scan or prefix validation is incomplete",
                         )],
-                        Change::FinishedJob(job_id),
                     ) {
                         return;
                     }
@@ -601,20 +618,22 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
             let mut next = collection.clone();
             if batch.stop == reader::Stop::Budget && batch.cursor.offset() == previous_offset {
                 let gap_key = format!("budget:{generation}:{key}");
-                if !checkpoint(
+                if !finish_failed_job(
                     weak,
-                    &collection,
+                    &mut collection,
+                    job_id,
                     &[(&gap_key, "usage scan budget made no progress")],
-                    Change::FinishedJob(job_id),
                 ) {
                     return;
                 }
                 break;
             }
-            if matches!(
+            let finished = matches!(
                 batch.stop,
                 reader::Stop::Complete | reader::Stop::PendingTail
-            ) {
+            ) || (batch.stop == reader::Stop::Quarantined
+                && budget.bytes == 16 * 1024 * 1024);
+            if finished {
                 if let Some(pending) = &mut next.pending_files {
                     *pending = pending.saturating_sub(1);
                 }
@@ -627,11 +646,6 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
             let Some(daemon) = weak.upgrade() else {
                 return;
             };
-            let finished = matches!(
-                batch.stop,
-                reader::Stop::Complete | reader::Stop::PendingTail
-            ) || (batch.stop == reader::Stop::Quarantined
-                && budget.bytes == 16 * 1024 * 1024);
             let committed =
                 daemon.usage_batch(&key, &batch, &next, config, finished.then_some(job_id));
             drop(daemon);
@@ -873,6 +887,120 @@ mod tests {
             query(&daemon).await.rows[0].counters.input_tokens.sum,
             Some(4)
         );
+    }
+
+    #[tokio::test]
+    async fn usage_discovery_restarts_corrupt_metadata_without_fencing_accounting() {
+        for malformed in [false, true] {
+            let (temp, daemon, config, root) = fixture();
+            std::fs::write(root.join("source.jsonl"), record("source", 7)).unwrap();
+            collect_generation_bounded(&Arc::downgrade(&daemon), &config, 1);
+            {
+                let state = lock(&daemon.state);
+                assert!(state.store.usage_next_job().unwrap().is_some());
+                let mut value =
+                    serde_json::to_value(state.store.usage_discovery().unwrap().unwrap()).unwrap();
+                if malformed {
+                    value = serde_json::json!({"incompatible": true});
+                } else {
+                    value["jobs"] = serde_json::json!(usize::MAX);
+                    value["failures"] = serde_json::json!(1);
+                }
+                state
+                    .store
+                    .put_document("usage", "discovery", &value)
+                    .unwrap();
+            }
+            drop(daemon);
+            let daemon =
+                Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+            collect_generation(&Arc::downgrade(&daemon), &config);
+            let report = query(&daemon).await;
+            assert_eq!(report.coverage.collection.discovery_generation, Some(2));
+            assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+            assert_eq!(report.rows[0].samples, 1);
+            assert_eq!(report.rows[0].counters.input_tokens.sum, Some(7));
+            let state = lock(&daemon.state);
+            assert!(state.storage_error.is_none());
+            assert!(state.store.usage_next_job().unwrap().is_none());
+            assert!(state.store.usage_discovery().unwrap().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_capture_gaps_are_not_pending_jobs_after_restart() {
+        let (temp, daemon, config, root) = fixture();
+        std::fs::write(root.join("source.jsonl"), record("source", 7)).unwrap();
+        // Model a committed page that recorded a capture failure before the
+        // remaining roots. Its gap and failure count survive the restart.
+        let sources = roots(&config).unwrap();
+        let mut progress = Progress {
+            frontier: Walk::new(sources.clone()).unwrap().checkpoint(),
+            roots: sources,
+            generation: 1,
+            jobs: 0,
+            failures: 0,
+        };
+        let collection = Collection {
+            discovery_generation: Some(1),
+            snapshot_at: Some(Utc::now()),
+            scope: Scope {
+                roots: progress
+                    .roots
+                    .iter()
+                    .map(|root| root.path.display().to_string())
+                    .collect(),
+                ..Scope::default()
+            },
+            ..Collection::default()
+        };
+        assert!(checkpoint(
+            &Arc::downgrade(&daemon),
+            &collection,
+            &[],
+            Change::Start(&progress)
+        ));
+        progress.failures = 1;
+        assert!(checkpoint(
+            &Arc::downgrade(&daemon),
+            &collection,
+            &[("capture:fixture", "usage file could not be captured")],
+            Change::Page(&progress, &[])
+        ));
+        drop(daemon);
+        let daemon =
+            Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.coverage.collection.pending_files, Some(0));
+        assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+        assert_eq!(report.coverage.source_gaps, 1);
+        assert_eq!(
+            report.rows[0].counters.input_tokens.coverage,
+            usage::Coverage::Partial
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_removed_manifest_source_finishes_with_a_gap_not_pending_work() {
+        let (temp, daemon, config, root) = fixture();
+        let path = root.join("source.jsonl");
+        std::fs::write(&path, record("source", 7)).unwrap();
+        collect_generation_bounded(&Arc::downgrade(&daemon), &config, 1);
+        assert_eq!(
+            query(&daemon).await.coverage.collection.pending_files,
+            Some(1)
+        );
+        std::fs::remove_file(path).unwrap();
+        drop(daemon);
+        let daemon =
+            Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.coverage.collection.pending_files, Some(0));
+        assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+        assert_eq!(report.coverage.source_gaps, 1);
+        assert!(report.rows.is_empty());
     }
 
     #[tokio::test]

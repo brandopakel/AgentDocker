@@ -469,7 +469,7 @@ request, event or presentation variant; existing question/receipt ordering appli
 
 ## Process supervision
 
-`run` defaults to closed stdin and captured stdout/stderr; `--tty` instead supplies a controlling terminal with attach input/output. Pipe log lines carry timestamps and stream tags; terminal log lines carry an `out` tag and retain line boundaries. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM.
+`run` defaults to closed stdin and captured stdout/stderr; `--tty` instead supplies a controlling terminal with attach input/output. Pipe log lines carry timestamps and stream tags; terminal log lines carry an `out` tag and retain line boundaries. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM. Exit persistence may finish before its session owner receives acknowledgement and releases its lock. Shutdown therefore waits for held owner locks within the same eight-second shutdown budget and repeats the non-recursive cleanup sweep. A held lock or unacknowledged exit report remains protected when the budget expires.
 
 Supervision retains terminal/pipe readers, the input writer and log writer. After
 the child and its group finish, it closes terminal input and waits for output
@@ -1172,7 +1172,8 @@ are unknown, never zero. The design:
   null while enumeration is incomplete), `pending_tail_files` (nonnegative
   integer, null while discovery is incomplete), and `scope` (configured runtime
   roots and supported format versions). `caught_up` requires completed discovery,
-  committed scans through every fixed high-water offset in that generation and
+  committed scans through every fixed high-water offset in that generation or
+  an explicit source gap for each terminal failure, and
   `pending_tail_files: 0`. A captured partial tail keeps collection `scanning`
   until it completes or becomes an explicit source gap;
   it is coverage of that declared snapshot/scope, not of logs that appeared
@@ -1216,7 +1217,11 @@ captured files. Each page, its coverage and its event commit together; consuming
 a file removes its manifest entry in the same transaction as its samples and
 file cursor. A daemon restart resumes the same generation and snapshot watermark,
 including any remaining files, rather than starting directory discovery again.
-Changed configured roots start a new generation. A saved frontier must match the
+Changed configured roots or malformed restart metadata (including invalid saved
+counts) start a new generation and atomically clear the stale manifest. Actual
+SQLite read failures still fence storage. Terminal capture/scan gaps do not count
+as pending jobs; gaps independently keep token coverage partial even when the
+collector is caught up. A saved frontier must match the
 configured root order and runtime, and its remaining roots must be the matching
 suffix; a rewritten frontier cannot select unrelated directories. On restart, open directories
 replay their saved entry-name/type fingerprints in bounded passes, ancestors
