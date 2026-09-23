@@ -75,3 +75,9 @@ Federation/host namespaces, cross-host leases/routing, the herdr focus bridge, a
 | Independent release acceptance | Run second-Mac, physical Intel, target-Linux and sustained actual-provider trials against the final candidate. |
 
 the operational sequence is in [local trial](LOCAL-TRIAL.md).
+
+Windows setup follow-up: physical AWBP passed 57 native checks and 30 fresh-home
+starts on #237 package `9064c5f3`. Actual Claude 2.1.280 configuration add passed,
+but health rejected the Windows executable suffix. The native-name correction
+and package health regression await final CI and rebuilt provider acceptance.
+The separate intermittent CI first-start failure remains unexplained.

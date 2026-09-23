@@ -71,9 +71,13 @@ def run(binary, manifest_path, output):
                 plan = call(name, profile_a, ['claude-code', '--preview'])
                 private = json.loads((state/'setup'/f'{plan["id"]}.json').read_text())
                 assert len(private['delegated']) == 1, 'preview did not plan selected-profile MCP registration'
-                assert Path(private['delegated'][0]['config_dir']) == profile_a
-                assert Path(private['delegated'][0]['path']) == profile_a/'.claude.json'
-                assert all(Path(c['path']).is_relative_to(profile_a) for c in private['changes'])
+                saved_profile = Path(private['delegated'][0]['config_dir'])
+                # Rust canonicalization uses the Windows extended-path prefix.
+                # Compare existing files by identity; planned paths share the
+                # canonical spelling recorded in the saved profile.
+                assert saved_profile.samefile(profile_a), 'saved MCP profile is not profile A'
+                assert Path(private['delegated'][0]['path']).samefile(profile_a/'.claude.json'), 'saved MCP file is not in profile A'
+                assert all(Path(c['path']).is_relative_to(saved_profile) for c in private['changes']), 'planned changes leave profile A'
                 return plan, private
 
             def provider_state():
@@ -97,8 +101,8 @@ def run(binary, manifest_path, output):
             health = call('health-a', profile_a, ['claude-code', '--health'])
             runtime = health['runtimes'][0]
             assert runtime['name'] == 'claude-code'
-            assert runtime['mcp_configuration'] == 'wired' and runtime['hooks_configuration'] == 'wired'
-            assert all(check['status'] == 'executable_available' for check in runtime['checks'])
+            assert runtime['mcp_configuration'] == 'wired' and runtime['hooks_configuration'] == 'wired', 'health does not recognize installed MCP and hooks'
+            assert all(check['status'] == 'executable_available' for check in runtime['checks']), 'health reports an unavailable configured executable'
             assert not health['daemon_reachable'], 'fixture must not connect to production daemon'
             report['checks'].append('health agrees on selected-profile MCP and hooks; isolated absent daemon remains disconnected')
             call('undo-from-b', profile_b, ['--undo', first['id']])
@@ -138,7 +142,7 @@ def run(binary, manifest_path, output):
             assert not (scratch/'absent.sock').exists()
             report['result'] = 'passed'
     except Exception as error:
-        report['error'] = str(error)
+        report['error'] = type(error).__name__ + ': ' + str(error)
     finally:
         report['elapsed_seconds'] = time.monotonic()-started
         report['cleanup'] = {

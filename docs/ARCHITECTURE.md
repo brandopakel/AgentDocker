@@ -1571,3 +1571,7 @@ parent directory, while Windows requests a same-directory write-through move.
 Windows setup does not open a directory as a regular file after publication or
 undo deletion. A failed publication still returns an error and leaves the
 saved recovery phase available; no receipt failure is reported as applied.
+
+Provider setup and health recognize the native Windows `agentdocker.exe` basename
+(case insensitive on Windows) as the direct MCP or hook executable. Unix keeps
+exact executable-name matching; wrappers and extra suffixes remain unverified.

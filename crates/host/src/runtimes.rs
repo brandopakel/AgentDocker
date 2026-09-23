@@ -268,14 +268,28 @@ pub fn mcp_command_matches(
     marker: &str,
     runtime: &str,
 ) -> bool {
-    command
-        .and_then(|c| Path::new(c).file_name())
-        .and_then(|n| n.to_str())
-        == Some(marker)
+    command.is_some_and(|command| adapter_executable_matches(command, marker))
         && (args == ["mcp"]
             || args == ["mcp", "--runtime", runtime]
             || (runtime == "claude-code"
                 && args == ["mcp", "--runtime", "claude-code", "--claude-channel"]))
+}
+
+fn adapter_executable_matches(command: &str, marker: &str) -> bool {
+    let Some(name) = Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+    else {
+        return false;
+    };
+    #[cfg(windows)]
+    {
+        name.eq_ignore_ascii_case(marker) || name.eq_ignore_ascii_case(&format!("{marker}.exe"))
+    }
+    #[cfg(not(windows))]
+    {
+        name == marker
+    }
 }
 
 /// Whether the runtime's MCP configuration registers AgentDocker.
@@ -344,7 +358,7 @@ pub fn hook_command_matches_for(command: &str, marker: &str, runtime: &str) -> b
         return false;
     };
     words.len() == 3
-        && Path::new(&words[0]).file_name().and_then(|n| n.to_str()) == Some(marker)
+        && adapter_executable_matches(&words[0], marker)
         && words[1] == "hook"
         && words[2] == runtime
 }
@@ -519,6 +533,43 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn adapter_recognition_uses_native_executable_names() {
+        let directory = tempfile::tempdir().unwrap();
+        for (name, recognized) in [
+            ("agentdocker", true),
+            ("agentdocker.exe", cfg!(windows)),
+            ("AgentDocker.EXE", cfg!(windows)),
+            ("agentdocker.exe.bak", false),
+            ("agentdocker-wrapper.exe", false),
+        ] {
+            let executable = directory.path().join("path with spaces").join(name);
+            let command = executable.to_str().unwrap();
+            assert_eq!(
+                mcp_command_matches(
+                    Some(command),
+                    &["mcp", "--runtime", "claude-code", "--claude-channel"],
+                    "agentdocker",
+                    "claude-code"
+                ),
+                recognized,
+                "{command}"
+            );
+            let hook = claude_hook_command(&executable).unwrap();
+            assert_eq!(
+                hook_command_matches(&hook, "agentdocker"),
+                recognized,
+                "{hook}"
+            );
+            assert!(!mcp_command_matches(
+                Some(command),
+                &["mcp", "--runtime", "codex"],
+                "agentdocker",
+                "claude-code"
+            ));
+        }
+    }
 
     #[test]
     fn invalid_hook_files_are_unverified_instead_of_missing() {

@@ -492,6 +492,12 @@ def main():
              all(Path(change["path"]).read_bytes() == change["after"].encode("utf-8")
                  for change in saved["changes"])
              and json.loads(receipt.read_text())["phase"] == "applied")
+        health = json.loads(run("setup", "codex", "--health", "--json", extra_env=setup_env).stdout)
+        runtime = health["runtimes"][0]
+        step("native setup health recognizes the installed executable",
+             runtime["mcp_configuration"] == "wired"
+             and any(check["channel"] == "mcp" and check["status"] == "executable_available"
+                     for check in runtime["checks"]))
         run("setup", "--apply", prepared["id"], "--json", extra_env=setup_env)
         run("setup", "--undo", prepared["id"], "--json", extra_env=setup_env)
         step("native setup undo restores existing configuration and removes only its new files",

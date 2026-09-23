@@ -398,3 +398,9 @@ This does not establish native Codex input or real-provider receipt. The separat
 Claude configuration trial can now run on Windows with the installed provider
 CLI and isolated profiles. Final Windows CI and actual-provider apply/undo
 acceptance remain required before treating setup as complete.
+
+The corrected portable package (`9064c5f3`, #237 synthetic merge) passed 57
+checks and 30 separate fresh-home starts on physical AWBP. Claude 2.1.280
+configuration add succeeded but health still rejected the `.exe` basename;
+Windows-native executable recognition and a package health check now cover this
+case in source. Rebuilt actual-Claude health/undo and model receipt remain open.
