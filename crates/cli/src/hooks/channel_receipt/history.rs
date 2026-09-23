@@ -186,16 +186,24 @@ mod tests {
             ),
         )
         .unwrap();
+        // A pass can return without reading when a concurrently spawned test
+        // process inherited the history lock for a moment; that is a retry,
+        // not a window. Count only real windows, within a bounded time.
         let mut windows = 0;
-        let found = (0..8).any(|_| {
-            find(root.path(), &path, &agent, &message, |window| {
+        let mut found = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !found && windows < 8 && std::time::Instant::now() < deadline {
+            found = find(root.path(), &path, &agent, &message, |window| {
                 windows += 1;
                 assert!(window.len() <= WINDOW as usize);
                 window.contains(&proof)
             })
-            .unwrap()
-        });
-        assert!(found && windows > 1 && windows < 8);
+            .unwrap();
+            if !found {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        assert!(found && windows > 1 && windows < 8, "found={found} windows={windows}");
         for entry in std::fs::read_dir(root.path().join("channel-receipts")).unwrap() {
             let data = std::fs::read(entry.unwrap().path()).unwrap();
             assert!(data.len() < 1024);
