@@ -991,6 +991,8 @@ impl Daemon {
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
+        // Successful live handover returns from serve() before stop_all();
+        // successor-owned sessions never reach this shutdown sweep.
         // Recording an exit removes its supervision entry before the owner
         // receives the acknowledgement and releases its lock. Wait within the
         // same shutdown budget for that retirement, then sweep once it is safe.
