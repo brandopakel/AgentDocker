@@ -1296,6 +1296,16 @@ installed/provider-billing acceptance and sustained resource trials remain open.
 Only accounting metadata was retained; temporary raw transcript copies and the
 private trial databases were removed.
 
+Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278 and
+2.1.280 transcripts and Codex 0.155.1 rollouts extend that explicit version
+coverage. Top-level Claude counters remain authoritative: nested iteration/cache
+details are not added again, zero counters stay zero and absent reasoning remains
+unknown. Codex still reports cumulative snapshots. Unobserved patch versions are
+not assumed compatible. Parser cursor v4 replays prior scans with the same stable
+source identities, allowing newly supported records to be collected without
+recounting earlier accepted samples. Existing historical gaps remain visible;
+this change does not claim their reconciliation or provider-billing accuracy.
+
 Collection configuration is separate from scan progress: enabling collection or
 changing roots can leave a scan waiting to start, without meaning collection is
 off. The CLI and desktop use the explicit optional `enabled` field, and preserve
