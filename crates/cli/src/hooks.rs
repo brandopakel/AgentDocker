@@ -8,7 +8,7 @@
 //! |--------------------|------------------------------------------------------------------------|
 //! | `SessionStart`     | register the session as an agent; tell the model who else is running, hand it queued messages and the project journal since it last looked |
 //! | `UserPromptSubmit` | hand the model queued messages and new journal entries as context      |
-//! | `PreToolUse`       | claim `path:<file>` before Edit/Write/MultiEdit/NotebookEdit; deny the edit on conflict |
+//! | `PreToolUse`       | claim `path:<file>` before Edit/Write/MultiEdit/NotebookEdit, and each file a Codex `apply_patch` names; deny the edit on conflict |
 //! | `PostToolUse`      | hand the model queued messages as context                              |
 //! | `Stop`             | release every lease with the transcript's last message as the journal summary; block once when messages wait |
 //! | `StopFailure`      | retain queued work and report the provider interruption without releasing leases or waking the model |
@@ -487,11 +487,15 @@ pub async fn claude_code<B: Backend>(
         "UserPromptSubmit" | "PostToolUse" => {
             let me = ensure_registered(backend, input).await?;
             if input.hook_event_name == "PostToolUse" {
-                if let Some(path) = edited_path(input) {
+                let paths = edited_paths(input);
+                if !paths.is_empty() {
                     backend
                         .call(Request::Observe {
                             agent: me.id.to_string(),
-                            paths: vec![path.to_string_lossy().into_owned()],
+                            paths: paths
+                                .iter()
+                                .map(|path| path.to_string_lossy().into_owned())
+                                .collect(),
                         })
                         .await?;
                 }
@@ -545,59 +549,69 @@ pub async fn claude_code<B: Backend>(
                     .await?;
                 return Ok(None);
             }
-            let Some(path) = edited_path(input) else {
+            let paths = edited_paths(input);
+            if paths.is_empty() {
                 return Ok(None);
-            };
+            }
             let me = ensure_registered(backend, input).await?;
-            match backend
-                .call(Request::Stale {
-                    agent: me.id.to_string(),
-                    paths: vec![path.to_string_lossy().into_owned()],
-                })
-                .await?
-            {
-                Response::Stale { stale } if !stale.is_empty() => {
-                    return Ok(Some(json!({
-                        "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                            "permissionDecisionReason": format!("AgentDocker: your context is stale. Read {} again before editing. {}", path.display(), stale.iter().map(|s| s.reason.as_str()).collect::<Vec<_>>().join("; ")) }
-                    })));
+            // One edit can touch several files (a Codex patch names each);
+            // every one is checked and claimed, and the first conflict
+            // refuses the whole edit.
+            for path in &paths {
+                match backend
+                    .call(Request::Stale {
+                        agent: me.id.to_string(),
+                        paths: vec![path.to_string_lossy().into_owned()],
+                    })
+                    .await?
+                {
+                    Response::Stale { stale } if !stale.is_empty() => {
+                        return Ok(Some(json!({
+                            "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                "permissionDecisionReason": format!("AgentDocker: your context is stale. Read {} again before editing. {}", path.display(), stale.iter().map(|s| s.reason.as_str()).collect::<Vec<_>>().join("; ")) }
+                        })));
+                    }
+                    Response::Error { message, .. } => {
+                        eprintln!(
+                            "agentdocker hook: staleness check failed: {message}; continuing lease protection"
+                        );
+                    }
+                    _ => {}
                 }
-                Response::Error { message, .. } => {
-                    eprintln!(
-                        "agentdocker hook: staleness check failed: {message}; continuing lease protection"
-                    );
+                let response = backend
+                    .call(Request::Claim {
+                        agent: me.id.to_string(),
+                        resource: format!("path:{}", path.display()),
+                        mode: LeaseMode::Exclusive,
+                        amount: None,
+                        ttl_secs: opts.ttl,
+                        note: Some(format!(
+                            "editing in {} session {}",
+                            runtime_word(&me.spec.runtime),
+                            me.spec.name
+                        )),
+                        wait_secs: 0,
+                        // Taken for this edit, not asked for: the turn's end
+                        // gives it back. What the agent claimed itself stays.
+                        automatic: true,
+                    })
+                    .await?;
+                match response {
+                    Response::Error {
+                        code: ErrorCode::Conflict,
+                        message,
+                        details,
+                    } => return Ok(Some(deny_output(path, &message, details.as_ref()))),
+                    Response::Error { message, .. } => {
+                        eprintln!(
+                            "agentdocker hook: could not claim {}: {message}",
+                            path.display()
+                        );
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
-            let response = backend
-                .call(Request::Claim {
-                    agent: me.id.to_string(),
-                    resource: format!("path:{}", path.display()),
-                    mode: LeaseMode::Exclusive,
-                    amount: None,
-                    ttl_secs: opts.ttl,
-                    note: Some(format!("editing in Claude Code session {}", me.spec.name)),
-                    wait_secs: 0,
-                    // Taken for this edit, not asked for: the turn's end
-                    // gives it back. What the agent claimed itself stays.
-                    automatic: true,
-                })
-                .await?;
-            match response {
-                Response::Error {
-                    code: ErrorCode::Conflict,
-                    message,
-                    details,
-                } => Ok(Some(deny_output(&path, &message, details.as_ref()))),
-                Response::Error { message, .. } => {
-                    eprintln!(
-                        "agentdocker hook: could not claim {}: {message}",
-                        path.display()
-                    );
-                    Ok(None)
-                }
-                _ => Ok(None),
-            }
+            Ok(None)
         }
         "Stop" => {
             let Some(me) = session_agent(backend, input).await? else {
@@ -687,6 +701,99 @@ fn read_path(input: &HookInput) -> Option<PathBuf> {
         .unwrap_or(".");
     let base = input.cwd.clone().or_else(|| std::env::current_dir().ok())?;
     Some(agentdocker_host::project::canonical(&base.join(raw)))
+}
+
+/// What a runtime's name reads as in a lease note.
+fn runtime_word(runtime: &str) -> &str {
+    match runtime {
+        "claude-code" => "Claude Code",
+        "codex" => "Codex",
+        other => other,
+    }
+}
+
+/// Every file a tool call is about to change. Claude Code's edit tools
+/// name one file each. Codex edits through `apply_patch`, whose patch names
+/// each file on a header line (`*** Update File: <path>`, `*** Add File:`,
+/// `*** Delete File:`, `*** Move to:`); the call can arrive as `apply_patch`
+/// itself or inside another tool's input (its code-mode `exec` script calls
+/// `tools.apply_patch("*** Begin Patch\n*** Update File: …")`), so the
+/// headers are read from anywhere in the input, including a quoted string
+/// whose newlines are the two characters `\n`. A shell command that writes
+/// a file some other way is not seen here.
+pub fn edited_paths(input: &HookInput) -> Vec<PathBuf> {
+    if let Some(path) = edited_path(input) {
+        return vec![path];
+    }
+    match (input.tool_name.as_deref(), input.tool_input.as_ref()) {
+        (Some(tool), Some(tool_input)) if PATCH_TOOLS.contains(&tool) => {
+            patch_paths(tool_input, input.cwd.as_deref())
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The tools whose input is a patch. Codex runs a code-mode script's nested
+/// calls through the hooks one by one, so the nested `apply_patch` is seen
+/// with its own input (`tool_input.command`); the outer script is not read,
+/// where an example or a computed string would mislead.
+const PATCH_TOOLS: &[&str] = &["apply_patch"];
+
+/// The files a patch in any string of `tool_input` names, absolute
+/// (relative ones against `cwd`), each once, in order.
+pub fn patch_paths(tool_input: &Value, cwd: Option<&Path>) -> Vec<PathBuf> {
+    // The patch itself: `command` (Codex's canonical apply_patch input, and
+    // what the OpenCode plugin sends), or the input when it is the bare
+    // patch string, or `input` (the freeform tool's field). Nothing else.
+    let texts: Vec<&str> = [
+        tool_input.get("command").and_then(Value::as_str),
+        tool_input.as_str(),
+        tool_input.get("input").and_then(Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for text in texts {
+        // Only structural header lines count: a line that begins with the
+        // header, the whole rest of it the path (quotes, apostrophes and
+        // backslashes included). A header quoted inside an added line is
+        // content, not a file this patch touches.
+        for line in text.lines() {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let Some(raw) = [
+                "*** Update File: ",
+                "*** Add File: ",
+                "*** Delete File: ",
+                "*** Move to: ",
+            ]
+            .iter()
+            .find_map(|header| line.strip_prefix(header)) else {
+                continue;
+            };
+            let raw = raw.trim_end();
+            if raw.is_empty() {
+                continue;
+            }
+            let path = PathBuf::from(raw);
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                match cwd {
+                    Some(cwd) => cwd.join(path),
+                    None => match std::env::current_dir() {
+                        Ok(dir) => dir.join(path),
+                        Err(_) => continue,
+                    },
+                }
+            };
+            let path = normalize(&absolute);
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    paths
 }
 
 pub fn edited_path(input: &HookInput) -> Option<PathBuf> {
@@ -2373,6 +2480,89 @@ mod tests {
             Request::Claim { agent, resource, ttl_secs: 600, automatic: true, .. }
                 if agent == me.id.as_str() && resource.starts_with("path:/")
         ));
+    }
+
+    /// Codex edits through `apply_patch`, as its own tool or inside its
+    /// code-mode `exec` script; every file a patch names is found, with the
+    /// script's `\n` escapes and a relative path resolved against the cwd.
+    #[test]
+    fn codex_patches_name_every_file_they_touch() {
+        let mut ev = input("PreToolUse");
+        ev.cwd = Some("/tmp/project".into());
+        ev.tool_name = Some("apply_patch".into());
+        ev.tool_input = Some(json!({
+            "input": "*** Begin Patch\n*** Update File: /tmp/project/a.py\n@@\n-x\n+y\n*** Add File: b.py\n+new\n*** End Patch"
+        }));
+        let paths = edited_paths(&ev);
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert!(paths[0].ends_with("a.py") && paths[1].ends_with("b.py"));
+        assert!(paths.iter().all(|p| p.is_absolute()));
+
+        // A move names its source and its destination; a new file is found
+        // though it does not exist yet.
+        ev.tool_input = Some(json!({
+            "command": "*** Begin Patch\n*** Update File: /tmp/project/old.py\n*** Move to: /tmp/project/new/place.py\n@@\n-a\n+b\n*** End Patch"
+        }));
+        let paths = edited_paths(&ev);
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert!(paths[0].ends_with("old.py") && paths[1].ends_with("place.py"));
+
+        // A header is a whole line: apostrophes, quotes and backslashes stay
+        // in the name, CRLF endings are line ends, and a header quoted
+        // inside an added line is content, not a file.
+        ev.tool_input = Some(json!({
+            "command": "*** Begin Patch\r\n*** Update File: /tmp/project/it's \"q\".py\r\n@@\r\n+print(\"*** Update File: unrelated.py\")\r\n*** Add File: /tmp/project/dir\\new.py\r\n+x\r\n*** End Patch"
+        }));
+        let paths = edited_paths(&ev);
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert!(
+            paths[0].to_string_lossy().ends_with("it's \"q\".py"),
+            "{paths:?}"
+        );
+        assert!(
+            paths[1].to_string_lossy().ends_with("dir\\new.py"),
+            "{paths:?}"
+        );
+        assert!(!paths.iter().any(|p| p.ends_with("unrelated.py")));
+
+        // The outer code-mode script is not read: its nested apply_patch
+        // arrives as its own hook with its own input.
+        ev.tool_name = Some("exec".into());
+        ev.tool_input = Some(json!({
+            "input": "text(await tools.apply_patch(\"*** Begin Patch\\n*** Update File: /tmp/project/util.py\\n*** End Patch\"));"
+        }));
+        assert!(edited_paths(&ev).is_empty());
+        // Claude's edit tools are unchanged.
+        ev.tool_name = Some("Edit".into());
+        ev.tool_input = Some(json!({ "file_path": "/tmp/project/c.py" }));
+        assert_eq!(edited_paths(&ev).len(), 1);
+    }
+
+    /// A Codex patch on a file another agent holds is refused, the same
+    /// way a Claude Code edit is.
+    #[tokio::test]
+    async fn a_codex_patch_on_a_held_file_is_denied() {
+        let me = agent("codex-01234567", true);
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Stale { stale: vec![] },
+            Response::Error {
+                code: ErrorCode::Conflict,
+                message: "held by refactor-peer".into(),
+                details: Some(json!({ "held_by": [{ "note": "refactoring util.py" }] })),
+            },
+        ]);
+        let mut ev = input("PreToolUse");
+        ev.tool_name = Some("apply_patch".into());
+        ev.tool_input = Some(json!({
+            "command": "*** Begin Patch\n*** Update File: /tmp/util.py\n@@\n+x\n*** End Patch"
+        }));
+        let out = claude_code(&backend, &ev, &opts()).await.unwrap().unwrap();
+        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+        let reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap();
+        assert!(reason.contains("refactor-peer") && reason.contains("refactoring util.py"));
     }
 
     #[tokio::test]

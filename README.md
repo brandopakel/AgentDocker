@@ -270,7 +270,7 @@ agentdocker hook install claude-code          # writes ./.claude/settings.json (
 |---|---|
 | `SessionStart` | registers the session as agent `claude-<session>`; tells the model who else is running, hands it queued messages and the project journal since it last looked |
 | `PreToolUse` on Read/Grep/Glob | records what is about to be read, so a later change to it is noticed |
-| `PreToolUse` on Edit/Write/MultiEdit/NotebookEdit | refuses the edit if the file changed since it was read; otherwise claims `path:<file>` first, and if another agent holds it, the edit is **denied** with the holder's name and note |
+| `PreToolUse` on Edit/Write/MultiEdit/NotebookEdit, and on every file a Codex `apply_patch` names | refuses the edit if the file changed since it was read; otherwise claims `path:<file>` first, and if another agent holds it, the edit is **denied** with the holder's name and note |
 | `UserPromptSubmit`, `PostToolUse` | delivers messages from other agents as context, as they arrive; a prompt also carries new journal entries |
 | `Stop` | releases every lease, quoting the model's last message as the journal summary; if messages arrived while it was working, blocks the stop so the model reads them first (`--no-wake` disables) |
 | `SessionEnd` | releases and deregisters |
