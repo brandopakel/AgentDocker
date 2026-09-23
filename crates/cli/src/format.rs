@@ -991,6 +991,17 @@ pub fn usage_report(report: &agentdocker_core::usage::report::Report) {
             report.coverage.source_gaps
         );
     }
+    if let Some(tracking) = &report.coverage.tracking {
+        println!(
+            "Tracking: {} of {} bytes; SQLite files also contain indexes and other state",
+            tracking.logical_bytes, tracking.capacity_bytes
+        );
+        if tracking.capacity_gap {
+            println!(
+                "Tracking reached its storage limit: some records were not counted. Prior dedupe evidence was preserved; totals remain lower bounds."
+            );
+        }
+    }
     let state = match collection.state {
         CollectionState::Unknown if off => "off".to_owned(),
         CollectionState::Unknown

@@ -323,7 +323,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `task_update {agent, task, title?, acceptance?, assignee?, links?}` | `task {task}`, `error(forbidden\|invalid\|storage_unavailable)` | an agent edits only a card it holds with a live lease (`forbidden`, `details.hold: lapsed` otherwise). A hand by the person is a confirmed reassignment: the old holder's lease ends and, for a running agent, the new holder's `task:<id>` lease is taken in the same commit (`lease_released`/`lease_claimed` follow `task_updated`); handed to an agent that is not running, or taken away (`assignee: ""`), the card has no hold until somebody pulls it by name. Otherwise: the person edits any card's words and hands it to an agent (`assignee` an id, name or prefix; `""` takes it away); an agent edits only the words of a card it holds. Emits `task_updated`. |
 | `task_archive {agent, task}` | `ok`, `error(forbidden\|storage_unavailable)` | releases the card's leases in the same commit; an agent archives only a card it holds with a live lease. off the board, kept for the record: the person's to do, or the assignee's for a card in `done`. Archiving twice is `ok`. Emits `task_archived`. |
 | `tasks {project?, column?, archived?, offset?, limit?}` | `tasks {tasks: Task[], more}`, `error(storage_unavailable)` | one page of the board, Backlog to Done and oldest first within a column, from `offset`, at most `limit` cards (1–500; 100 by default) and within a page's byte budget (768 KiB of serialised cards; a page holds at least one card whatever its size), with `more` when the board goes on past them — the next page starts at `offset + tasks.len()`, so every card is reachable without a mutation. Read as a page from the store, so a board of long cards never fills a frame or holds the lock; archived cards only when asked; every project's when none is named. A read: served during a coordinator transfer. |
-| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage, overhead}` | Initial collector branch: read hourly local usage grouped by agent/model/provider/project/hour with explicit collection and counter coverage. Defaults to the last 24 hours; strict duration/RFC3339 bounds, retention rounding and unknown counters follow the contract below. More than 10,000 buckets or an overflowing grouped total refuses the query without disabling coordination. Served through the transfer fence. |
+| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage, overhead}` | Initial collector branch: read hourly local usage grouped by agent/model/provider/project/hour with explicit collection and counter coverage. Defaults to the last 24 hours; strict duration/RFC3339 bounds, retention rounding and unknown counters follow the contract below. More than 10,000 buckets or an overflowing grouped total refuses the query without disabling coordination. Optional `coverage.tracking` reports logical tracking bytes, capacity and a capacity gap for the requested range; admission is bounded without discarding dedupe evidence. Served through the transfer fence. |
 | `pause {from, project?, reason}` | `pause {pause: {project, by, reason, at}}`, `error(invalid\|forbidden\|not_found\|ambiguous\|backpressure\|storage_unavailable)` | the person tells a project's agents to hold: one `pause` message from `from` reaches every live agent in the project (archived under `#everyone`, payload `{text: "Pause: <reason>", reason}`) and the pause is written as a document in the same transaction — neither exists without the other, and a refused send (backpressure, storage) pauses nothing. Until it is lifted, `claim` from an agent in that project answers `paused` with the reason, a waiter queued before the pause included (what an agent holds, it keeps; the person's own claims are not held). A declared human sender may pause (`forbidden` for a nonhuman identity); the host socket trusts its owning OS user and `--from user` is not proof of human presence. The authenticated restricted/container endpoint cannot pause or resume a project; the reason is 1–400 characters; `project` is an id, root or unique prefix, the caller's own when absent; a second pause replaces the reason. The document is schema 23's: a daemon older than that refuses to open the database rather than open it and quietly not hold anyone, so rollback requires restoring a compatible pre-upgrade state backup while stopped, or retaining the newer daemon. Lifting a pause does not downgrade schema23 and does not make that state readable by schema22 — tried on real binaries in [the rollback refusal record](verification/INDEX.md): the installed schema-22 daemon exited with both numbers in its reason, the file unchanged, and the schema-23 daemon still listed the hold. Emits `project_paused`. |
 | `resume_project {from, project?}` | `ok`, `error(forbidden\|not_found\|ambiguous\|backpressure\|storage_unavailable)` | the person lifts the pause: a `resume` message reaches the project's live agents in the same transaction as the document's removal, and their leases are theirs again. `ok` for a project that is not paused. Emits `project_resumed`. |
 | `pauses` | `pauses {pauses: Pause[]}` | the projects that are paused, and why, oldest first |
@@ -1049,9 +1049,28 @@ These are supported-format fixtures, not actual provider billing acceptance.
 See the [existing integrated record](verification/INDEX.md)
 for exact source, failures, hashes and short coordination observations.
 Discovery restarts after a daemon restart; file scan progress is durable.
-Persistent discovery resumption, bounded long-term fingerprint/baseline storage,
-sustained resource acceptance, standalone scans and overhead instrumentation
-remain open. The collector's ephemeral prefix session handles large/growing
+Persistent discovery resumption is implemented. Persistent accounting tracking
+now has a 256 MiB admission budget: UTF-8 bytes in fingerprints/contributions,
+baselines, file cursors, buckets and gaps, plus a 128-byte allowance per row.
+SQLite indexes, page/WAL overhead and unrelated coordination state are additional;
+this is not a 256 MiB limit on the entire database file. One additive counter row
+and transactional insert/update/delete triggers maintain the total, with a one-time
+backfill for old stores. The separate discovery manifest retains its existing
+10,000-file/4 MiB-frontier bounds.
+
+A sample's baseline, bucket and fingerprint either all fit or are rolled back to
+a savepoint. A refused file cursor can be rediscovered; preserved dedupe evidence
+prevents recounting. Reconciliation that cannot fit leaves the old attribution
+and total intact. A single reserved, constant-size capacity gap keeps affected
+reports partial and appears in the CLI and desktop. Ordinary SQLite errors still
+propagate as storage failures. Retention can free contribution/bucket/gap space;
+accepted fingerprints and baselines are never discarded merely to admit new
+work. Existing stores already above budget remain intact and may shrink, but
+cannot grow through accounting admission. Increasing usable storage beyond the
+fixed budget or safely compacting long-lived dedupe evidence is not implemented.
+Older daemons retain their own admission policy; the new metadata does not change
+schema-23 accounting meanings. Sustained resource acceptance, standalone scans
+and overhead instrumentation remain open. The collector's ephemeral prefix session handles large/growing
 files in bounded passes; the standalone reader retains its 16 MiB validation
 limit. Overhead is returned as unknown until instrumented.
 
@@ -1173,6 +1192,9 @@ are unknown, never zero. The design:
   `retained_since` (UTC hour), `history_truncated`, `future_until_clamped` and
   `includes_current_hour` (booleans), plus `source_gaps` (a nonnegative integer
   count of known unreadable/unsupported/reset intervals in the requested scope).
+  Optional `coverage.tracking` contains `logical_bytes`, `capacity_bytes` and
+  `capacity_gap` (whether this range overlaps capacity-refused accounting).
+  Absence on an older daemon does not establish bounded tracking.
   `coverage.collection` contains `enabled` (boolean or null for an older report,
   read from current configuration), `state` (`unknown`, `scanning`, `caught_up`),
   `discovery_generation` (u64 or null), `snapshot_at` and `completed_at` (UTC

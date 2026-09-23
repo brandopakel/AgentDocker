@@ -206,6 +206,12 @@ without parent (`..`) path components; use a direct path rather than one that
 walks up to a parent. Invalid roots produce an explanatory query error. Empty
 arrays use the provider defaults. Turning collection off retains available
 totals. Increasing retention does not restore previously discarded history.
+Tracking metadata has a 256 MiB budget (database indexes and other state take
+additional space). When a new record cannot fit, the report says that the storage
+limit was reached and keeps totals partial. Earlier dedupe records are preserved
+so copied or replayed logs cannot count twice. Retention may free space, but the
+fixed tracking budget cannot currently be increased through configuration. Do not
+delete accounting tables to make space: doing so can invalidate deduplication.
 AgentDocker's own injected overhead remains **not measured** until that separate
 instrumentation is implemented.
 

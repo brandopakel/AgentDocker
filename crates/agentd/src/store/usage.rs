@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 pub(crate) mod discovery;
+mod tracking;
+pub(super) use tracking::init as tracking_init;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Attribution {
@@ -150,6 +152,8 @@ impl Store {
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut count = 0;
+        let mut tracking_refused = false;
+        let mut tracking_gaps = 0;
         for (id, value) in records {
             let mut contribution: Contribution = serde_json::from_str(&value)?;
             let mut destination = contribution.bucket.clone();
@@ -163,24 +167,43 @@ impl Store {
                 .usage_bucket(&contribution.bucket)?
                 .remove(&contribution.counters)
                 .map_err(anyhow::Error::msg)?;
-            self.write_usage_bucket(&contribution.bucket, &previous)?;
-            contribution.bucket = destination;
-            self.write_usage_bucket(&contribution.bucket, &next)?;
-            self.conn.execute(
-                "UPDATE usage_samples SET contribution=?1 WHERE source_id=?2",
-                params![serde_json::to_string(&contribution)?, id],
-            )?;
-            count += 1;
+            if self
+                .usage_bounded_write(|| {
+                    self.write_usage_bucket(&contribution.bucket, &previous)?;
+                    contribution.bucket = destination;
+                    self.write_usage_bucket(&contribution.bucket, &next)?;
+                    self.conn.execute(
+                        "UPDATE usage_samples SET contribution=?1 WHERE source_id=?2",
+                        params![serde_json::to_string(&contribution)?, id],
+                    )?;
+                    Ok(())
+                })?
+                .is_some()
+            {
+                count += 1;
+            } else {
+                tracking_gaps += self.usage_tracking_gap(now)?;
+                tracking_refused = true;
+            }
         }
         drop(statement);
-        let event = if count > 0 {
-            let mut event = Event::new(
+        let event = if count > 0 || tracking_refused {
+            let kind = if count > 0 {
                 EventKind::UsageReconciled {
                     agent: AgentId::from(agent.clone()),
                     samples: count,
-                },
-                now,
-            );
+                }
+            } else {
+                EventKind::UsageRecorded {
+                    generation: self
+                        .usage_collection()?
+                        .and_then(|c| c.discovery_generation)
+                        .unwrap_or(0),
+                    samples: 0,
+                    gaps: tracking_gaps,
+                }
+            };
+            let mut event = Event::new(kind, now);
             event.seq = seq;
             self.append_event(&event)?;
             Some(event)
@@ -205,155 +228,26 @@ impl Store {
         let mut samples: Vec<_> = batch.samples.iter().collect();
         samples.sort_by_key(|(sample, _)| sample.at);
         for (sample, attribution) in samples {
-            // The same provider record can be encountered with or without
-            // proof of the preceding file prefix. That evidence controls its
-            // first accounting decision; it is not different accounting on
-            // a replay. Keep compatibility with draft stores that hashed it.
-            let mut accounting = sample.clone();
-            accounting.proves_zero_baseline = false;
-            if sample.semantics == Semantics::Response {
-                // Claude emits several content records for one response, each
-                // with its own observation time. The first accepted record
-                // fixes the hour; later fragments must not move or recount it.
-                accounting.at = DateTime::<Utc>::UNIX_EPOCH;
-            }
-            let hash = fingerprint(&accounting)?;
-            let old: Option<(String, String)> = self
-                .conn
-                .query_row(
-                    "SELECT fingerprint,at FROM usage_samples WHERE source_id=?1",
-                    [&sample.source_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?;
-            if let Some((old, first_at)) = old {
-                if old != hash {
-                    let mut legacy = sample.clone();
-                    if sample.semantics == Semantics::Response {
-                        legacy.at = DateTime::parse_from_rfc3339(&first_at)?.with_timezone(&Utc);
-                    }
-                    legacy.proves_zero_baseline = false;
-                    let without_proof = fingerprint(&legacy)?;
-                    legacy.proves_zero_baseline = true;
-                    if old != without_proof && old != fingerprint(&legacy)? {
-                        gaps += self.usage_gap(
-                            &format!("conflict:{}", sample.source_id),
-                            None,
-                            sample.at,
-                            Some((&sample.runtime, &sample.session_id)),
-                            "source identity has conflicting accounting",
-                        )?;
-                    }
+            match self.usage_bounded_write(|| {
+                self.usage_ingest_sample(sample, attribution, retained_since)
+            })? {
+                Some((count, missing)) => {
+                    accepted += count;
+                    gaps += missing;
                 }
-                continue;
+                None => gaps += self.usage_tracking_gap(batch.now.max(sample.at))?,
             }
-            let contribution = match sample.semantics {
-                Semantics::Response => Some(sample.counters.clone()),
-                Semantics::Cumulative => {
-                    let key = serde_json::to_string(&(&sample.runtime, &sample.session_id))?;
-                    let previous: Option<Baseline> = self
-                        .conn
-                        .query_row(
-                            "SELECT json FROM usage_baselines WHERE key=?1",
-                            [&key],
-                            |r| r.get::<_, String>(0),
-                        )
-                        .optional()?
-                        .map(|s| serde_json::from_str(&s))
-                        .transpose()?;
-                    match usage::observe_cumulative(
-                        previous.as_ref(),
-                        sample.at,
-                        sample.counters.clone(),
-                        sample.proves_zero_baseline,
-                    ) {
-                        Ok(Some(observed)) => {
-                            if let Some(gap) = observed.gap {
-                                gaps += self.usage_gap(
-                                    &format!("baseline:{}", sample.source_id),
-                                    gap.since,
-                                    gap.until,
-                                    Some((&sample.runtime, &sample.session_id)),
-                                    "unknown initial history or counter reset",
-                                )?;
-                            }
-                            self.conn.execute("INSERT INTO usage_baselines VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET json=excluded.json",
-                                params![key, serde_json::to_string(&observed.baseline)?])?;
-                            observed.contribution
-                        }
-                        Ok(None) => None,
-                        Err(_) => {
-                            gaps += self.usage_gap(
-                                &format!("order:{}", sample.source_id),
-                                None,
-                                sample.at,
-                                Some((&sample.runtime, &sample.session_id)),
-                                "cumulative source is out of order or inconsistent",
-                            )?;
-                            None
-                        }
-                    }
-                }
-            };
-            let mut contribution = contribution
-                .filter(|_| usage::hour(sample.at) >= retained_since)
-                .map(|counters| Contribution {
-                    bucket: Bucket {
-                        attribution: attribution.clone(),
-                        runtime: sample.runtime.clone(),
-                        provider: sample.provider.clone(),
-                        model: sample.model.clone(),
-                        hour: usage::hour(sample.at),
-                    },
-                    session: sample.session_id.clone(),
-                    counters,
-                });
-            let counted = if let Some(contribution) = &contribution {
-                match self
-                    .usage_bucket(&contribution.bucket)?
-                    .add(&contribution.counters)
-                {
-                    Ok(aggregate) => {
-                        self.write_usage_bucket(&contribution.bucket, &aggregate)?;
-                        true
-                    }
-                    Err(_) => {
-                        gaps += self.usage_gap(
-                            &format!("overflow:{}", sample.source_id),
-                            None,
-                            sample.at,
-                            Some((&sample.runtime, &sample.session_id)),
-                            "usage bucket arithmetic exceeds its range",
-                        )?;
-                        false
-                    }
-                }
-            } else {
-                false
-            };
-            if !counted {
-                contribution = None;
-            }
-            self.conn.execute(
-                "INSERT INTO usage_samples VALUES (?1,?2,?3,?4)",
-                params![
-                    sample.source_id,
-                    hash,
-                    text(sample.at),
-                    contribution
-                        .as_ref()
-                        .map(serde_json::to_string)
-                        .transpose()?,
-                ],
-            )?;
-            accepted += 1;
         }
         for gap in batch.gaps {
             let key = fingerprint(&(batch.key, &batch.progress.cursor, gap.offset, &gap.reason))?;
             gaps += self.usage_gap(&key, None, batch.now, None, &gap.reason)?;
         }
-        self.conn.execute("INSERT INTO usage_files VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET json=excluded.json",
-            params![batch.key, serde_json::to_string(batch.progress)?])?;
+        if self.usage_bounded_write(|| {
+            Ok(self.conn.execute("INSERT INTO usage_files VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET json=excluded.json",
+                params![batch.key, serde_json::to_string(batch.progress)?])?)
+        })?.is_none() {
+            gaps += self.usage_tracking_gap(batch.now)?;
+        }
         self.put_document("usage", "collection", batch.collection)?;
         if let Some(id) = batch.finished_job {
             self.usage_discovery_change(discovery::Change::FinishedJob(id))?;
@@ -373,6 +267,157 @@ impl Store {
         Ok(event)
     }
 
+    fn usage_ingest_sample(
+        &self,
+        sample: &Sample,
+        attribution: &Attribution,
+        retained_since: DateTime<Utc>,
+    ) -> Result<(u64, u64)> {
+        let mut gaps = 0;
+        // The same provider record can be encountered with or without
+        // proof of the preceding file prefix. That evidence controls its
+        // first accounting decision; it is not different accounting on
+        // a replay. Keep compatibility with draft stores that hashed it.
+        let mut accounting = sample.clone();
+        accounting.proves_zero_baseline = false;
+        if sample.semantics == Semantics::Response {
+            // Claude emits several content records for one response, each
+            // with its own observation time. The first accepted record
+            // fixes the hour; later fragments must not move or recount it.
+            accounting.at = DateTime::<Utc>::UNIX_EPOCH;
+        }
+        let hash = fingerprint(&accounting)?;
+        let old: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT fingerprint,at FROM usage_samples WHERE source_id=?1",
+                [&sample.source_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((old, first_at)) = old {
+            if old != hash {
+                let mut legacy = sample.clone();
+                if sample.semantics == Semantics::Response {
+                    legacy.at = DateTime::parse_from_rfc3339(&first_at)?.with_timezone(&Utc);
+                }
+                legacy.proves_zero_baseline = false;
+                let without_proof = fingerprint(&legacy)?;
+                legacy.proves_zero_baseline = true;
+                if old != without_proof && old != fingerprint(&legacy)? {
+                    gaps += self.usage_gap(
+                        &format!("conflict:{}", sample.source_id),
+                        None,
+                        sample.at,
+                        Some((&sample.runtime, &sample.session_id)),
+                        "source identity has conflicting accounting",
+                    )?;
+                }
+            }
+            return Ok((0, gaps));
+        }
+        let contribution = match sample.semantics {
+            Semantics::Response => Some(sample.counters.clone()),
+            Semantics::Cumulative => {
+                let key = serde_json::to_string(&(&sample.runtime, &sample.session_id))?;
+                let previous: Option<Baseline> = self
+                    .conn
+                    .query_row(
+                        "SELECT json FROM usage_baselines WHERE key=?1",
+                        [&key],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .map(|s| serde_json::from_str(&s))
+                    .transpose()?;
+                match usage::observe_cumulative(
+                    previous.as_ref(),
+                    sample.at,
+                    sample.counters.clone(),
+                    sample.proves_zero_baseline,
+                ) {
+                    Ok(Some(observed)) => {
+                        if let Some(gap) = observed.gap {
+                            gaps += self.usage_gap(
+                                &format!("baseline:{}", sample.source_id),
+                                gap.since,
+                                gap.until,
+                                Some((&sample.runtime, &sample.session_id)),
+                                "unknown initial history or counter reset",
+                            )?;
+                        }
+                        self.conn.execute("INSERT INTO usage_baselines VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET json=excluded.json",
+                            params![key, serde_json::to_string(&observed.baseline)?])?;
+                        observed.contribution
+                    }
+                    Ok(None) => None,
+                    Err(_) => {
+                        gaps += self.usage_gap(
+                            &format!("order:{}", sample.source_id),
+                            None,
+                            sample.at,
+                            Some((&sample.runtime, &sample.session_id)),
+                            "cumulative source is out of order or inconsistent",
+                        )?;
+                        None
+                    }
+                }
+            }
+        };
+        let mut contribution = contribution
+            .filter(|_| usage::hour(sample.at) >= retained_since)
+            .map(|counters| Contribution {
+                bucket: Bucket {
+                    attribution: attribution.clone(),
+                    runtime: sample.runtime.clone(),
+                    provider: sample.provider.clone(),
+                    model: sample.model.clone(),
+                    hour: usage::hour(sample.at),
+                },
+                session: sample.session_id.clone(),
+                counters,
+            });
+        let counted = if let Some(contribution) = &contribution {
+            match self
+                .usage_bucket(&contribution.bucket)?
+                .add(&contribution.counters)
+            {
+                Ok(aggregate) => {
+                    self.write_usage_bucket(&contribution.bucket, &aggregate)?;
+                    true
+                }
+                Err(_) => {
+                    gaps += self.usage_gap(
+                        &format!("overflow:{}", sample.source_id),
+                        None,
+                        sample.at,
+                        Some((&sample.runtime, &sample.session_id)),
+                        "usage bucket arithmetic exceeds its range",
+                    )?;
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        if !counted {
+            contribution = None;
+        }
+        self.conn.execute(
+            "INSERT INTO usage_samples VALUES (?1,?2,?3,?4)",
+            params![
+                sample.source_id,
+                hash,
+                text(sample.at),
+                contribution
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()?,
+            ],
+        )?;
+        Ok((1, gaps))
+    }
+
     fn usage_gap(
         &self,
         key: &str,
@@ -381,17 +426,22 @@ impl Store {
         session: Option<(&str, &str)>,
         reason: &str,
     ) -> Result<u64> {
-        Ok(self.conn.execute(
-            "INSERT OR IGNORE INTO usage_gaps VALUES (?1,?2,?3,?4,?5,?6)",
-            params![
-                key,
-                since.map(text),
-                text(until),
-                session.map(|s| s.0),
-                session.map(|s| s.1),
-                reason,
-            ],
-        )? as u64)
+        match self.usage_bounded_write(|| {
+            Ok(self.conn.execute(
+                "INSERT OR IGNORE INTO usage_gaps VALUES (?1,?2,?3,?4,?5,?6)",
+                params![
+                    key,
+                    since.map(text),
+                    text(until),
+                    session.map(|s| s.0),
+                    session.map(|s| s.1),
+                    reason,
+                ],
+            )? as u64)
+        })? {
+            Some(count) => Ok(count),
+            None => self.usage_tracking_gap(until),
+        }
     }
 
     fn usage_bucket(&self, key: &Bucket) -> Result<Aggregate> {
@@ -510,6 +560,9 @@ impl Store {
                 includes_current_hour: range.includes_current_hour,
                 source_gaps,
                 collection,
+                tracking: Some(
+                    self.usage_tracking_report(range.effective_since, range.effective_until)?,
+                ),
             },
             overhead: Overhead::default(),
         }))
@@ -591,6 +644,190 @@ mod tests {
             )
             .unwrap()
             .unwrap()
+    }
+
+    fn tracking_bytes(store: &Store) -> i64 {
+        store
+            .conn
+            .query_row("SELECT bytes FROM usage_tracking", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn set_tracking_capacity(store: &Store, capacity: i64) {
+        store
+            .conn
+            .execute("UPDATE usage_tracking SET capacity=?1", [capacity])
+            .unwrap();
+    }
+
+    #[test]
+    fn usage_capacity_keeps_dedupe_and_baselines_with_one_durable_gap() {
+        let temp = tempfile::tempdir().unwrap();
+        let db = temp.path().join("state.db");
+        let store = Store::open(&db).unwrap();
+        let progress = progress(temp.path());
+        let mut first = sample("first", 2, 10, true);
+        first.proves_zero_baseline = true;
+        ingest(
+            &store,
+            &progress,
+            "file",
+            vec![(first.clone(), Attribution::default())],
+            at(0),
+        )
+        .unwrap();
+        let bytes = tracking_bytes(&store);
+        set_tracking_capacity(&store, bytes);
+        for index in 0..100 {
+            ingest(
+                &store,
+                &progress,
+                &format!("copy-{index}"),
+                vec![
+                    (
+                        sample(&format!("new-{index}"), 3, 20, true),
+                        Attribution::default(),
+                    ),
+                    (first.clone(), Attribution::default()),
+                ],
+                at(0),
+            )
+            .unwrap();
+        }
+        assert_eq!(tracking_bytes(&store), bytes);
+        assert_eq!(report(&store, 0, 20).coverage.source_gaps, 1);
+        let tracking = report(&store, 0, 20).coverage.tracking.unwrap();
+        assert_eq!(tracking.logical_bytes, bytes as u64);
+        assert_eq!(tracking.capacity_bytes, bytes as u64);
+        assert!(tracking.capacity_gap);
+        assert_eq!(
+            report(&store, 0, 20).rows[0].counters.input_tokens.sum,
+            Some(10)
+        );
+        for table in [
+            "usage_samples",
+            "usage_baselines",
+            "usage_files",
+            "usage_gaps",
+        ] {
+            let count: i64 = store
+                .conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 1, "{table}");
+        }
+        drop(store);
+        let store = Store::open(&db).unwrap();
+        assert_eq!(tracking_bytes(&store), bytes);
+        set_tracking_capacity(&store, 1_000_000);
+        ingest(
+            &store,
+            &progress,
+            "file",
+            vec![(sample("later", 4, 30, true), Attribution::default())],
+            at(0),
+        )
+        .unwrap();
+        assert_eq!(
+            report(&store, 0, 20).rows[0].counters.input_tokens.sum,
+            Some(30)
+        );
+        // The rejected cumulative record advanced neither its baseline nor
+        // dedupe identity. The next accepted delta includes it exactly once.
+        assert_eq!(report(&store, 0, 20).coverage.source_gaps, 1);
+    }
+
+    #[test]
+    fn usage_capacity_reconciliation_preserves_unattributed_totals_and_event() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::in_memory().unwrap();
+        let progress = progress(temp.path());
+        ingest(
+            &store,
+            &progress,
+            "file",
+            vec![(sample("one", 2, 10, false), Attribution::default())],
+            at(0),
+        )
+        .unwrap();
+        let bytes = tracking_bytes(&store);
+        set_tracking_capacity(&store, bytes);
+        let attribution = Attribution {
+            agent: Some("new-agent".repeat(100)),
+            project: Some("project".into()),
+        };
+        let event = store
+            .usage_reconcile(
+                "codex",
+                "session",
+                Some(&attribution),
+                (None, None),
+                at(0),
+                at(20),
+                store.max_event_seq().unwrap() + 1,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event.kind,
+            EventKind::UsageRecorded {
+                samples: 0,
+                gaps: 1,
+                ..
+            }
+        ));
+        assert_eq!(tracking_bytes(&store), bytes);
+        let result = report(&store, 0, 20);
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].key, None);
+        assert_eq!(result.rows[0].counters.input_tokens.sum, Some(10));
+        set_tracking_capacity(&store, 1_000_000);
+        store
+            .usage_reconcile(
+                "codex",
+                "session",
+                Some(&attribution),
+                (None, None),
+                at(0),
+                at(20),
+                store.max_event_seq().unwrap() + 1,
+            )
+            .unwrap();
+        let result = report(&store, 0, 20);
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].key, attribution.agent);
+        assert_eq!(result.rows[0].counters.input_tokens.sum, Some(10));
+    }
+
+    #[test]
+    fn usage_zero_capacity_advances_no_accounting_and_never_fences_coordination() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::in_memory().unwrap();
+        let progress = progress(temp.path());
+        set_tracking_capacity(&store, 0);
+        let event = ingest(
+            &store,
+            &progress,
+            "file",
+            vec![(sample("one", 2, 10, false), Attribution::default())],
+            at(0),
+        )
+        .unwrap();
+        assert!(matches!(
+            event.kind,
+            EventKind::UsageRecorded {
+                samples: 0,
+                gaps: 1,
+                ..
+            }
+        ));
+        assert!(store.usage_file("file").unwrap().is_none());
+        assert_eq!(tracking_bytes(&store), 0);
+        assert!(report(&store, 0, 20).rows.is_empty());
+        assert_eq!(report(&store, 0, 20).coverage.source_gaps, 1);
+        store
+            .put_document("fixture", "unrelated", &"coordination still writable")
+            .unwrap();
     }
 
     #[test]

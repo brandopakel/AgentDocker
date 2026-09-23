@@ -124,6 +124,14 @@ pub fn range_line(report: &Report) -> String {
             report.coverage.source_gaps
         ));
     }
+    if report
+        .coverage
+        .tracking
+        .as_ref()
+        .is_some_and(|t| t.capacity_gap)
+    {
+        line.push_str(" · tracking storage limit reached; some records were not counted");
+    }
     line
 }
 
@@ -346,6 +354,7 @@ mod tests {
                 future_until_clamped: false,
                 includes_current_hour: true,
                 source_gaps: 0,
+                tracking: None,
                 collection: Collection {
                     enabled: Some(true),
                     state,
@@ -360,6 +369,25 @@ mod tests {
             },
             overhead: Overhead::default(),
         }
+    }
+
+    #[test]
+    fn tracking_capacity_gap_is_visible_and_old_reports_still_decode() {
+        let mut report = report(vec![], CollectionState::CaughtUp, Some(1));
+        let old = serde_json::to_value(&report).unwrap();
+        assert!(old["coverage"].get("tracking").is_none());
+        let old: Report = serde_json::from_value(old).unwrap();
+        assert!(old.coverage.tracking.is_none());
+        assert!(!range_line(&old).contains("storage limit"));
+        report.coverage.tracking = Some(agentdocker_core::usage::report::Tracking {
+            logical_bytes: 1024,
+            capacity_bytes: 1024,
+            capacity_gap: true,
+        });
+        assert!(
+            range_line(&report)
+                .contains("tracking storage limit reached; some records were not counted")
+        );
     }
 
     #[test]
