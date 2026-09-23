@@ -128,10 +128,14 @@ export const AgentDocker = async ({ directory, client }) => {
       const entries = carried(answer)
       inflight.set(session, [...(inflight.get(session) ?? []), ...entries])
       try {
-        await client.session.promptAsync({
+        // The SDK resolves a refused request with `{ error }` unless asked to
+        // throw; either way a refusal is not an acceptance.
+        const result = await client.session.promptAsync({
           path: { id: session },
           body: { parts: [{ type: "text", text: answer.reason }] },
+          throwOnError: true,
         })
+        if (result?.error) throw result.error
         return true
       } catch {
         const left = (inflight.get(session) ?? []).filter((entry) => !entries.includes(entry))

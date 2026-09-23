@@ -163,6 +163,28 @@ const tests = {
     assert.equal(t.delivered().length, 0)
   },
 
+  // The SDK's default client resolves a refusal instead of throwing: it is
+  // still a refusal, and a later turn does not acknowledge what it carried.
+  async "a refusal the SDK resolves instead of throwing is still a refusal"() {
+    let block = true
+    const t = await start({
+      answers: (e) =>
+        e.hook_event_name === "Stop" && block
+          ? { decision: "block", reason: "Message M", agentdocker: { agent: "agent-a", delivered: M } }
+          : null,
+      prompt: () => Promise.resolve({ error: { name: "BadRequest" }, response: { status: 400 } }),
+    })
+    await t.event("session.idle")
+    assert.equal(t.prompts.length, 1)
+    assert.equal(t.prompts[0].throwOnError, true)
+    assert.equal(t.children.length, 1, "watching again")
+    block = false
+    await t.plugin["chat.message"]({ sessionID: "s" })
+    await t.plugin["experimental.chat.system.transform"]({ sessionID: "s" }, { system: [] })
+    await t.event("session.idle")
+    assert.equal(t.delivered().length, 0)
+  },
+
   // Text that reached a completed turn is acknowledged; an errored turn's
   // is not.
   async "a completed turn acknowledges what it carried and an errored one does not"() {
