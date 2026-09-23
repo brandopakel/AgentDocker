@@ -864,6 +864,7 @@ mod tests {
             Budget {
                 bytes: first.len() as u64 + 2,
                 record_bytes: first.len(),
+                records: MAX_RECORDS,
                 elapsed: Duration::from_secs(1),
             },
         )
@@ -877,6 +878,7 @@ mod tests {
                 Budget {
                     bytes: 501,
                     record_bytes: 500,
+                    records: MAX_RECORDS,
                     elapsed: Duration::from_secs(1),
                 }
             ),
@@ -889,6 +891,7 @@ mod tests {
             Budget {
                 bytes: 502,
                 record_bytes: 500,
+                records: MAX_RECORDS,
                 elapsed: Duration::from_secs(1),
             },
         )
@@ -1043,6 +1046,7 @@ mod tests {
         let limits = Budget {
             bytes: 300,
             record_bytes: 250,
+            records: MAX_RECORDS,
             elapsed: Duration::from_secs(1),
         };
         let first = scan(&path, Runtime::Codex, None, limits).unwrap();
