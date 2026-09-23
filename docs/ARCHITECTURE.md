@@ -1061,7 +1061,8 @@ backfill for old stores. The separate discovery manifest retains its existing
 A sample's baseline, bucket and fingerprint either all fit or are rolled back to
 a savepoint. A refused file cursor can be rediscovered; preserved dedupe evidence
 prevents recounting. Reconciliation that cannot fit leaves the old attribution
-and total intact. A single reserved, constant-size capacity gap keeps affected
+and total intact. Its first capacity gap emits an event; unchanged refusals
+on later reconciliation ticks do not append empty accounting events. A single reserved, constant-size capacity gap keeps affected
 reports partial and appears in the CLI and desktop. Ordinary SQLite errors still
 propagate as storage failures. Retention can free contribution/bucket/gap space;
 accepted fingerprints and baselines are never discarded merely to admit new

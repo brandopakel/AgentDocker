@@ -152,7 +152,6 @@ impl Store {
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut count = 0;
-        let mut tracking_refused = false;
         let mut tracking_gaps = 0;
         for (id, value) in records {
             let mut contribution: Contribution = serde_json::from_str(&value)?;
@@ -183,11 +182,12 @@ impl Store {
                 count += 1;
             } else {
                 tracking_gaps += self.usage_tracking_gap(now)?;
-                tracking_refused = true;
             }
         }
         drop(statement);
-        let event = if count > 0 || tracking_refused {
+        // A retained capacity marker already explains an unchanged refusal.
+        // Reconciliation must not append empty events on every full-store tick.
+        let event = if count > 0 || tracking_gaps > 0 {
             let kind = if count > 0 {
                 EventKind::UsageReconciled {
                     agent: AgentId::from(agent.clone()),
@@ -781,18 +781,43 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].key, None);
         assert_eq!(result.rows[0].counters.input_tokens.sum, Some(10));
+        let last_event = store.max_event_seq().unwrap();
+        for tick in 21..121 {
+            assert!(
+                store
+                    .usage_reconcile(
+                        "codex",
+                        "session",
+                        Some(&attribution),
+                        (None, None),
+                        at(0),
+                        at(tick),
+                        last_event + 1,
+                    )
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(store.max_event_seq().unwrap(), last_event);
+        assert_eq!(tracking_bytes(&store), bytes);
+        assert_eq!(report(&store, 0, 121).coverage.source_gaps, 1);
         set_tracking_capacity(&store, 1_000_000);
-        store
+        let recovered = store
             .usage_reconcile(
                 "codex",
                 "session",
                 Some(&attribution),
                 (None, None),
                 at(0),
-                at(20),
+                at(121),
                 store.max_event_seq().unwrap() + 1,
             )
+            .unwrap()
             .unwrap();
+        assert!(matches!(
+            recovered.kind,
+            EventKind::UsageReconciled { samples: 1, .. }
+        ));
         let result = report(&store, 0, 20);
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0].key, attribution.agent);
