@@ -735,8 +735,8 @@ pub fn edited_paths(input: &HookInput) -> Vec<PathBuf> {
 /// where an example or a computed string would mislead.
 const PATCH_TOOLS: &[&str] = &["apply_patch"];
 
-/// The files a patch in any string of `tool_input` names, absolute
-/// (relative ones against `cwd`), each once, in order.
+/// The files a patch names on its header lines, read from the patch text of
+/// `tool_input`, absolute (relative ones against `cwd`), each once, in order.
 pub fn patch_paths(tool_input: &Value, cwd: Option<&Path>) -> Vec<PathBuf> {
     // The patch itself: `command` (Codex's canonical apply_patch input, and
     // what the OpenCode plugin sends), or the input when it is the bare
@@ -767,7 +767,7 @@ pub fn patch_paths(tool_input: &Value, cwd: Option<&Path>) -> Vec<PathBuf> {
             .find_map(|header| line.strip_prefix(header)) else {
                 continue;
             };
-            let raw = raw.trim_end();
+            // Whole: a trailing space is a legal part of a file name.
             if raw.is_empty() {
                 continue;
             }
@@ -2336,6 +2336,9 @@ mod tests {
             "{paths:?}"
         );
         assert!(!paths.iter().any(|p| p.ends_with("unrelated.py")));
+        ev.tool_input = Some(json!({ "command": "*** Update File: /tmp/project/space \n+x" }));
+        let paths = edited_paths(&ev);
+        assert!(paths[0].to_string_lossy().ends_with("space "), "{paths:?}");
 
         // The outer code-mode script is not read: its nested apply_patch
         // arrives as its own hook with its own input.
