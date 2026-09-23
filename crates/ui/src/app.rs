@@ -155,6 +155,11 @@ enum Cmd {
     /// The person lifts a project's pause.
     ResumeProject(PauseRequest),
     SessionLog(String),
+    /// Ask which daemon serves: its version and the executable it runs.
+    Ping,
+    /// Restart the daemon through the CLI beside this app, which starts
+    /// the installed release.
+    RestartDaemon,
     /// Register the person at the keyboard, so agents can address them.
     Me,
     Questions,
@@ -328,6 +333,12 @@ enum Msg {
     Setup(Result<serde_json::Value, String>),
     Desktop(Result<serde_json::Value, String>),
     UpdateChecked(Result<serde_json::Value, String>),
+    /// Which daemon answered the last ping.
+    Daemon(DaemonInfo),
+    /// A Connect's outcome for that process: the session's name, or why not.
+    Adopted(u32, Result<String, String>),
+    /// How a restart of the daemon went.
+    DaemonRestarted(Result<(), String>),
     Console(String),
     Launched(Result<String, String>),
     /// An ended session is back under its own id with the process the
@@ -505,6 +516,11 @@ pub struct App {
     /// every queue count is unknown, and unknown must not read as "holding
     /// messages" for every ended session on each launch.
     activity_seen: bool,
+    /// The daemon that answered the last ping, kept while reconnecting.
+    daemon: Option<DaemonInfo>,
+    /// The installed release this window runs from, when it runs from one.
+    own_release: Option<String>,
+    daemon_restarting: bool,
     /// Per agent, the queued inputs no current receipt covers.
     awaiting_receipt: BTreeMap<String, usize>,
     session_log: Option<(String, Result<String, String>)>,
@@ -637,6 +653,9 @@ impl App {
             pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
             activity_seen: false,
+            daemon: None,
+            own_release: None,
+            daemon_restarting: false,
             awaiting_receipt: BTreeMap::new(),
             session_log: None,
         }
@@ -711,6 +730,9 @@ impl App {
             pause_states: BTreeMap::new(),
             queued_inputs: BTreeMap::new(),
             activity_seen: false,
+            daemon: None,
+            own_release: None,
+            daemon_restarting: false,
             awaiting_receipt: BTreeMap::new(),
             session_log: None,
             dismissing: std::collections::BTreeSet::new(),
@@ -762,6 +784,7 @@ impl App {
                     self.complete_pause(request, Err(reason.into()));
                 }
                 Cmd::Setup(_) => self.setup_busy = false,
+                Cmd::RestartDaemon => self.daemon_restarting = false,
                 Cmd::Desktop(_) => self.desktop.receive(Err(reason.into())),
                 Cmd::Console(_, _) => {
                     self.console_running = self.console_running.saturating_sub(1);
@@ -827,10 +850,12 @@ impl App {
                         board.pending_more = None;
                     }
                 }
+                Cmd::Adopt(pid) => {
+                    self.shell.adopting.remove(&pid);
+                }
                 Cmd::TaskMove { .. }
                 | Cmd::TaskAssign { .. }
                 | Cmd::TaskArchive(_)
-                | Cmd::Adopt(_)
                 | Cmd::AdoptAll
                 | Cmd::Stop(_)
                 | Cmd::ResumeProvider(..)
@@ -1200,6 +1225,7 @@ impl App {
                     if self.connected.is_err() {
                         self.connected = Ok(());
                         for cmd in [
+                            Cmd::Ping,
                             Cmd::Me,
                             Cmd::Agents,
                             Cmd::Leases,
@@ -1234,6 +1260,35 @@ impl App {
                 }
                 Msg::Status(text) => self.say(text),
                 Msg::Desktop(result) => self.desktop.receive(result),
+                Msg::Adopted(pid, result) => {
+                    self.shell.adopting.remove(&pid);
+                    match result {
+                        Ok(name) => self.say(format!("Connected {name}")),
+                        Err(error) => self.say(format!("Could not connect that session: {error}")),
+                    }
+                }
+                Msg::Daemon(info) => {
+                    if self.own_release.is_none() {
+                        self.own_release = agentdocker_host::procinfo::executable_path()
+                            .ok()
+                            .and_then(|path| installed_release(&path));
+                    }
+                    self.daemon = Some(info);
+                }
+                Msg::DaemonRestarted(result) => {
+                    self.daemon_restarting = false;
+                    match result {
+                        Ok(()) => {
+                            self.say("The background service restarted");
+                            // Ask again now, so the notice clears without
+                            // waiting for a reconnect to notice.
+                            self.send(Cmd::Ping);
+                        }
+                        Err(error) => {
+                            self.say(format!("Could not restart the background service: {error}"))
+                        }
+                    }
+                }
                 Msg::UpdateChecked(result) => {
                     if self.desktop.prefix.trim().is_empty() {
                         self.desktop.receive_update(result);
@@ -1740,7 +1795,16 @@ impl App {
     /// read them. The author is found by id, never by name: two records can
     /// share a name and only one of them wrote the line.
     fn journal_line(&self, entry: &agentdocker_core::JournalEntry) -> String {
-        let line = entry.line();
+        // The journal's own line is what agents read ("released" is their
+        // word for handing a lease back); a person reads what happened.
+        let mut line = entry.line();
+        if entry.kind == agentdocker_core::JournalKind::Release {
+            line = if entry.paths.is_empty() {
+                line.replacen(" released", " finished", 1)
+            } else {
+                line.replacen(" released ", " finished with ", 1)
+            };
+        }
         let Some(id) = entry.agent.as_ref() else {
             return line;
         };
@@ -2408,6 +2472,10 @@ fn spawn_worker(
             lane(tx.clone(), ctx.clone(), cancelled.clone(), |(): ()| {
                 Msg::UpdateChecked(check_update())
             });
+        let (restarts, restart_worker) =
+            lane(tx.clone(), ctx.clone(), cancelled.clone(), |(): ()| {
+                Msg::DaemonRestarted(restart_daemon())
+            });
         while let Ok(cmd) = rx.recv() {
             if cancelled.load(std::sync::atomic::Ordering::Acquire) {
                 break;
@@ -2419,6 +2487,9 @@ fn spawn_worker(
                 Cmd::Setup(args) => submit(&setups, args, |error| Msg::Setup(Err(error))),
                 Cmd::Desktop(args) => submit(&desktops, args, |error| Msg::Desktop(Err(error))),
                 Cmd::UpdateCheck => submit(&updates, (), |error| Msg::UpdateChecked(Err(error))),
+                Cmd::RestartDaemon => {
+                    submit(&restarts, (), |error| Msg::DaemonRestarted(Err(error)))
+                }
                 daemon => {
                     let answer = match &daemon {
                         Cmd::Answer(id, _) => Some(id.clone()),
@@ -2527,8 +2598,17 @@ fn spawn_worker(
         // In-flight subprocesses keep their existing deadlines; joining happens
         // on this background worker, never on the UI thread.
         cancelled.store(true, std::sync::atomic::Ordering::Release);
-        drop((consoles, setups, desktops, updates));
-        for worker in [console_worker, setup_worker, desktop_worker, update_worker] {
+        // Every lane's sender, dropped before its worker is joined: a lane
+        // missing here keeps its worker waiting and the join below never
+        // returns. Add a lane to both lists.
+        drop((consoles, setups, desktops, updates, restarts));
+        for worker in [
+            console_worker,
+            setup_worker,
+            desktop_worker,
+            update_worker,
+            restart_worker,
+        ] {
             let _ = worker.join();
         }
     })
@@ -2597,6 +2677,17 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             } => Some(Msg::Journal(project, head_seq, entries)),
             _ => None,
         },
+        Cmd::Ping => match client.call(&Request::Ping)? {
+            Response::Pong {
+                version,
+                executable,
+                ..
+            } => Some(Msg::Daemon(DaemonInfo {
+                version,
+                executable,
+            })),
+            _ => None,
+        },
         Cmd::Me => match client.call(&Request::Me {
             workdir: launched_in(),
         })? {
@@ -2621,8 +2712,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 limit,
             }) {
                 Ok(Response::Tasks { tasks, more }) => Ok((tasks, more)),
-                Ok(Response::Error { message, .. }) => Err(message),
-                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::Tasks(project, request, result))
@@ -2641,8 +2732,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 by,
             }) {
                 Ok(Response::Usage { report }) => Ok(report),
-                Ok(Response::Error { message, .. }) => Err(message),
-                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::Usage(project, request, result))
@@ -2663,8 +2754,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 links: Vec::new(),
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
-                Ok(Response::Error { message, .. }) => Err(message),
-                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::TaskCreated(project, request, result))
@@ -2676,8 +2767,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 column,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
-                Ok(Response::Error { message, .. }) => Err(message),
-                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::TaskChanged(result))
@@ -2692,8 +2783,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 links: None,
             }) {
                 Ok(Response::Task { .. }) => Ok(()),
-                Ok(Response::Error { message, .. }) => Err(message),
-                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::TaskChanged(result))
@@ -2704,8 +2795,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 task: task.to_string(),
             }) {
                 Ok(Response::Ok) => Ok(()),
-                Ok(Response::Error { message, .. }) => Err(message),
-                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::TaskChanged(result))
@@ -2721,7 +2812,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 reason,
             }) {
                 Ok(Response::Pause { .. }) => Ok(()),
-                Ok(other) => anyhow::bail!("Unexpected pause reply: {other:?}"),
+                Ok(other) => anyhow::bail!("{}", unexpected_reply(&other)),
                 Err(error) if error.downcast_ref::<RemoteError>().is_some() => {
                     Err(format!("{error:#}"))
                 }
@@ -2735,7 +2826,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 project: Some(request.project.clone()),
             }) {
                 Ok(Response::Ok) => Ok(()),
-                Ok(other) => anyhow::bail!("Unexpected resume reply: {other:?}"),
+                Ok(other) => anyhow::bail!("{}", unexpected_reply(&other)),
                 Err(error) if error.downcast_ref::<RemoteError>().is_some() => {
                     Err(format!("{error:#}"))
                 }
@@ -2795,19 +2886,18 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             );
             Some(Msg::MessagesDismissed(message, Ok(())))
         }
-        Cmd::Adopt(pid) => Some(
-            match client
-                .call(&Request::Adopt {
-                    pid,
-                    name: None,
-                    runtime: None,
-                })
-                .with_context(|| format!("pid {pid}"))?
-            {
-                Response::Agent { agent } => Msg::Status(format!("adopted {}", agent.spec.name)),
-                _ => Msg::Status(format!("adopted pid {pid}")),
-            },
-        ),
+        Cmd::Adopt(pid) => {
+            let result = match client.call(&Request::Adopt {
+                pid,
+                name: None,
+                runtime: None,
+            })? {
+                Response::Agent { agent } => Ok(agent.spec.name),
+                Response::Error { message, .. } => Err(crate::client::explain(&message)),
+                other => Err(unexpected_reply(&other)),
+            };
+            Some(Msg::Adopted(pid, result))
+        }
         Cmd::AdoptAll => {
             let Response::Processes { processes } = client.call(&Request::Discover)? else {
                 return Ok(None);
@@ -2822,29 +2912,30 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                     })
                     .with_context(|| {
                         format!(
-                            "adopted {adopted} process(es); failed at pid {}",
-                            process.pid
+                            "Connected {adopted} session{} before one could not be connected",
+                            if adopted == 1 { "" } else { "s" }
                         )
                     })?;
                 adopted += 1;
             }
-            Some(Msg::Status(format!("adopted {adopted} process(es)")))
+            Some(Msg::Status(format!(
+                "Connected {adopted} session{}",
+                if adopted == 1 { "" } else { "s" }
+            )))
         }
         Cmd::Stop(agent) => {
             client.call(&Request::Stop {
-                agent: agent.clone(),
+                agent,
                 force: false,
             })?;
-            Some(Msg::Status(format!(
-                "stopping {}",
-                agent.chars().take(12).collect::<String>()
-            )))
+            Some(Msg::Status("Stopping the session…".into()))
         }
         Cmd::ResumeProvider(agent, blocked_at) => {
             let response = client.call(&Request::ResumeProvider { agent, blocked_at })?;
             anyhow::ensure!(
                 matches!(response, Response::Ok),
-                "Provider resumption refused: {response:?}"
+                "Delivery could not be resumed: {}",
+                refusal(&response)
             );
             Some(Msg::Status(
                 "Delivery resumed; previously received input will not be replayed".into(),
@@ -2854,7 +2945,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             let response = client.call(&Request::RetryController { agent })?;
             anyhow::ensure!(
                 matches!(response, Response::Ok),
-                "Receiver retry refused: {response:?}"
+                "Message delivery could not be started again: {}",
+                refusal(&response)
             );
             Some(Msg::Status(
                 "The receiver will be started again within a second; queued input waits for it"
@@ -2971,8 +3063,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 project,
             }) {
                 Ok(Response::Channel { channel }) => Ok(channel.id),
-                Ok(Response::Error { message, .. }) => Err(message),
-                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::ChannelOpened(request, result))
@@ -2988,8 +3080,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 member: member.clone(),
             }) {
                 Ok(Response::Channel { channel }) => Ok(channel),
-                Ok(Response::Error { message, .. }) => Err(message),
-                Ok(other) => Err(format!("Unexpected reply: {other:?}")),
+                Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
             Some(Msg::ChannelInvited(request, member, result))
@@ -3017,7 +3109,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                     message,
                     readiness: recipient_readiness,
                 }),
-                other => Err(format!("Unexpected send response: {other:?}")),
+                other => Err(unexpected_reply(&other)),
             };
             Some(Msg::ConversationSent(draft, result))
         }
@@ -3090,6 +3182,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
         Cmd::Setup(args) => Some(Msg::Setup(setup(&args))),
         Cmd::Desktop(args) => Some(Msg::Desktop(desktop(&args))),
         Cmd::UpdateCheck => Some(Msg::UpdateChecked(check_update())),
+        Cmd::RestartDaemon => Some(Msg::DaemonRestarted(restart_daemon())),
         Cmd::Console(line, cwd) => Some(Msg::Console(console(&line, cwd.as_deref()))),
     })
 }
@@ -3177,6 +3270,120 @@ fn shell_words(line: &str) -> Option<Vec<String>> {
 /// with a CLI argument and reports "unknown argument: setup" from every
 /// button that shells out. Comparing against our own path costs one
 /// `canonicalize` and rules that out however the bundle is laid out.
+impl App {
+    /// The serving daemon's version when it is behind this window.
+    pub(crate) fn daemon_behind_now(&self) -> Option<&str> {
+        daemon_behind(
+            self.daemon.as_ref()?,
+            env!("CARGO_PKG_VERSION"),
+            self.own_release.as_deref(),
+        )
+    }
+
+    pub(crate) fn daemon_restarting(&self) -> bool {
+        self.daemon_restarting
+    }
+
+    /// What a daemon restart costs: live sessions AgentDocker started
+    /// stop with it, and those set to restore start again.
+    pub(crate) fn restart_cost(&self) -> (usize, usize) {
+        let managed: Vec<_> = self
+            .agents
+            .iter()
+            .filter(|a| a.managed && a.status.is_live())
+            .collect();
+        let restore = managed.iter().filter(|a| a.spec.restore).count();
+        (managed.len(), restore)
+    }
+}
+
+/// Which daemon answered: what it says it is and where it runs from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DaemonInfo {
+    pub version: String,
+    pub executable: Option<std::path::PathBuf>,
+}
+
+/// The installed release a path belongs to: the directory under the
+/// managed installation's `desktop/versions/`. `None` for anything else, a
+/// source build say, where only the version can be compared.
+pub(crate) fn installed_release(path: &std::path::Path) -> Option<String> {
+    let parts: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
+    parts
+        .windows(3)
+        .find(|w| w[0] == "desktop" && w[1] == "versions")
+        .and_then(|w| w[2].to_str())
+        .map(str::to_owned)
+}
+
+/// A daemon older than this window: an older version, or another installed
+/// release than the one this window runs from (two builds of one version
+/// differ only there). Its version, for the notice, when it is behind.
+pub(crate) fn daemon_behind<'a>(
+    daemon: &'a DaemonInfo,
+    own_version: &str,
+    own_release: Option<&str>,
+) -> Option<&'a str> {
+    let older = match (
+        semver::Version::parse(&daemon.version),
+        semver::Version::parse(own_version),
+    ) {
+        (Ok(theirs), Ok(ours)) => theirs.cmp_precedence(&ours) == std::cmp::Ordering::Less,
+        _ => false,
+    };
+    let other_release = own_release.is_some_and(|ours| {
+        daemon
+            .executable
+            .as_deref()
+            .and_then(installed_release)
+            .is_some_and(|theirs| theirs != ours)
+    });
+    (older || other_release).then_some(daemon.version.as_str())
+}
+
+/// A reply this window did not expect, named by its kind, not dumped.
+fn unexpected_reply(response: &Response) -> String {
+    let kind = serde_json::to_value(response)
+        .ok()
+        .and_then(|value| value["type"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into());
+    format!("The background service gave an answer this app did not expect ({kind}).")
+}
+
+/// Why the daemon said no, in its words, or what it said instead.
+fn refusal(response: &Response) -> String {
+    match response {
+        Response::Error { message, .. } => crate::client::explain(message),
+        other => unexpected_reply(other),
+    }
+}
+
+/// `agentdocker daemon restart` from the CLI beside this window: it asks the
+/// serving daemon to stop, then starts the installed release.
+fn restart_daemon() -> Result<(), String> {
+    let cli = beside("agentdocker");
+    let argv = vec![
+        cli.to_str().ok_or("CLI path is not UTF-8")?.to_owned(),
+        "daemon".into(),
+        "restart".into(),
+    ];
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let output = agentdocker_host::command::run(&cwd, &argv, Duration::from_secs(90))
+        .map_err(|error| error.to_string())?;
+    if output.success {
+        Ok(())
+    } else {
+        Err(output
+            .text
+            .lines()
+            .map(str::trim)
+            .rfind(|line| !line.is_empty())
+            .unwrap_or("no reason given")
+            .trim_start_matches("Error: ")
+            .to_owned())
+    }
+}
+
 fn beside(name: &str) -> std::path::PathBuf {
     let name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
     let me = agentdocker_host::procinfo::executable_path().ok();
@@ -3229,10 +3436,73 @@ fn desktop_with_timeout(args: &[String], timeout: Duration) -> Result<serde_json
     let output =
         agentdocker_host::command::run(&cwd, &argv, timeout).map_err(|error| error.to_string())?;
     if !output.success {
-        return Err(format!("Installation failed: {}", output.text.trim()));
+        return Err(desktop_failure(args, &output.text));
     }
     serde_json::from_str(&output.stdout)
         .map_err(|error| format!("Invalid installation reply: {error}"))
+}
+
+/// What a failed `agentdocker desktop …` says in the window: which operation
+/// failed, and why in a sentence. A check that could not reach the network
+/// is not an installation that failed, and curl's exit codes are not the
+/// reason a person can act on. The CLI's own text is the fallback.
+pub(crate) fn desktop_failure(args: &[String], output: &str) -> String {
+    // The operation is the first bare word that is not a flag's value, so
+    // `--prefix <dir>` (or a future `--channel preview`) is never taken for it.
+    let mut words = args.iter().map(String::as_str);
+    let mut operation = None;
+    while let Some(arg) = words.next() {
+        if let Some(flag) = arg.strip_prefix("--") {
+            if !flag.contains('=')
+                && matches!(
+                    flag,
+                    "prefix"
+                        | "from"
+                        | "feed"
+                        | "keep"
+                        | "channel"
+                        | "expect-plan"
+                        | "expect-release"
+                        | "expect-current"
+                )
+            {
+                words.next();
+            }
+            continue;
+        }
+        operation = Some(arg);
+        break;
+    }
+    let checking = args.iter().any(|arg| arg == "--check");
+    let what = match operation {
+        Some("update") if checking => "Could not check for updates",
+        Some("update") => "Could not download the update",
+        Some("rollback") => "Could not roll back",
+        Some("prune") => "Could not clean up old versions",
+        Some("uninstall") => "Could not remove the installation",
+        Some("status") => "Could not read the installation",
+        _ => "Installation failed",
+    };
+    let offline = [
+        "Could not resolve host",
+        "Failed to connect",
+        "Connection timed out",
+        "Operation timed out",
+        "Network is unreachable",
+    ];
+    if offline.iter().any(|needle| output.contains(needle)) {
+        return format!(
+            "{what}: GitHub could not be reached. Check the internet connection and try again."
+        );
+    }
+    // The CLI prints `Error: <context>: <cause>`; the last line carries it.
+    let reason = output
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .unwrap_or("no reason given")
+        .trim_start_matches("Error: ");
+    format!("{what}: {reason}")
 }
 
 fn spawn_events(client: Arc<Client>, tx: SyncSender<Msg>, ctx: Wake) {
@@ -3481,6 +3751,105 @@ pub(crate) struct Seek {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn a_daemon_behind_the_window_is_named_by_version_or_by_release() {
+        use std::path::Path;
+        let release = |id: &str| {
+            Some(
+                Path::new("/Users/p/.local/share/agentdocker/desktop/versions")
+                    .join(id)
+                    .join("AgentDocker.app/Contents/MacOS/agentd"),
+            )
+        };
+        assert_eq!(
+            super::installed_release(release("abc").unwrap().as_path()).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            super::installed_release(Path::new("/src/target/debug/agentd")),
+            None
+        );
+        let older = super::DaemonInfo {
+            version: "0.1.0".into(),
+            executable: None,
+        };
+        assert_eq!(
+            super::daemon_behind(&older, "0.2.0-beta.1", None),
+            Some("0.1.0")
+        );
+        let same = super::DaemonInfo {
+            version: "0.2.0-beta.1".into(),
+            executable: release("new"),
+        };
+        assert_eq!(
+            super::daemon_behind(&same, "0.2.0-beta.1", Some("new")),
+            None
+        );
+        // One version, two builds: only the release directory tells them apart.
+        let stale = super::DaemonInfo {
+            version: "0.2.0-beta.1".into(),
+            executable: release("old"),
+        };
+        assert_eq!(
+            super::daemon_behind(&stale, "0.2.0-beta.1", Some("new")),
+            Some("0.2.0-beta.1")
+        );
+        // A source build compares versions only; a newer daemon is not behind.
+        assert_eq!(super::daemon_behind(&stale, "0.2.0-beta.1", None), None);
+        let newer = super::DaemonInfo {
+            version: "0.3.0".into(),
+            executable: None,
+        };
+        assert_eq!(super::daemon_behind(&newer, "0.2.0-beta.1", None), None);
+    }
+
+    #[test]
+    fn an_older_daemon_that_cannot_parse_a_request_says_so_plainly() {
+        let raw = "malformed request: unknown variant `usage`, expected one of `ping`, `build_image` at line 1 column 132";
+        assert_eq!(crate::client::explain(raw), crate::client::OLDER_DAEMON);
+        assert_eq!(
+            crate::client::explain("recipient is paused"),
+            "recipient is paused"
+        );
+        let error = crate::client::RemoteError {
+            code: agentdocker_core::ErrorCode::Invalid,
+            message: raw.into(),
+        };
+        assert!(
+            !error.to_string().contains("Invalid"),
+            "no debug-formatted codes"
+        );
+    }
+
+    #[test]
+    fn a_failed_desktop_command_names_what_failed_in_plain_words() {
+        let check: Vec<String> = ["update", "--check"].map(String::from).into();
+        assert_eq!(
+            super::desktop_failure(
+                &check,
+                "Error: cannot fetch the update feed: download of https://x failed: curl: (6) Could not resolve host: github.com"
+            ),
+            "Could not check for updates: GitHub could not be reached. Check the internet connection and try again."
+        );
+        let rollback: Vec<String> = ["--prefix", "/tmp/p", "rollback"].map(String::from).into();
+        assert_eq!(
+            super::desktop_failure(&rollback, "Error: no previous version is retained\n"),
+            "Could not roll back: no previous version is retained"
+        );
+        assert!(
+            !super::desktop_failure(&check, "Error: x").starts_with("Installation failed"),
+            "a check is not an installation"
+        );
+        let with_value: Vec<String> = ["--prefix", "status", "update", "--check"]
+            .map(String::from)
+            .into();
+        assert!(
+            super::desktop_failure(&with_value, "Error: x")
+                .starts_with("Could not check for updates"),
+            "a flag's value is never the operation"
+        );
+    }
+
     use super::*;
 
     /// The Tools row says what setup is missing: the one hook event a
@@ -4568,7 +4937,7 @@ pub(crate) mod tests {
             );
             assert!(messages.iter().any(|message| match message {
                 Msg::Status(text) | Msg::Disconnected(text) =>
-                    text.contains("adopted 1 process(es); failed at pid 102"),
+                    text.contains("Connected 1 session before one could not be connected"),
                 _ => false,
             }));
         }
@@ -5535,7 +5904,11 @@ pub(crate) mod tests {
         app.drain();
         let received: Vec<_> = requests.try_iter().collect();
         assert!(app.connected.is_ok());
-        assert_eq!(received.len(), 11);
+        assert_eq!(received.len(), 12);
+        assert!(
+            received.iter().any(|cmd| matches!(cmd, Cmd::Ping)),
+            "which daemon serves is asked on every connection"
+        );
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Me)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Connector)));
         assert!(received.iter().any(|cmd| matches!(cmd, Cmd::Pauses)));

@@ -3,13 +3,13 @@
 //! the address worth checking is the one the tunnel writes into a header
 //! (`cf-connecting-ip` for cloudflared). The vendors publish their egress
 //! ranges: Anthropic's is one block; OpenAI's is a JSON feed of a few
-//! hundred prefixes that changes, so it is read from a file the person
-//! keeps fresh, never fetched from here.
+//! hundred prefixes that changes. The `openai` preset fetches that fixed
+//! HTTPS feed at startup and hourly; an explicit file remains local-only.
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 
@@ -19,6 +19,68 @@ use super::http::Request;
 /// connector documentation. Stable enough to name; still one line to
 /// change.
 pub const ANTHROPIC_EGRESS: &[&str] = &["160.79.104.0/21"];
+const OPENAI_FEED: &str = "https://openai.com/chatgpt-connectors.json";
+const MAX_FEED_BYTES: usize = 256 * 1024;
+const MAX_FEED_PREFIXES: usize = 4096;
+const FETCH_DEADLINE: Duration = Duration::from_secs(10);
+pub const REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// Parse every entry before replacing the active list. Unknown, empty,
+/// ambiguous or catch-all entries must not silently broaden admission.
+fn parse_openai_feed(text: &str) -> Result<Vec<Cidr>> {
+    if text.len() > MAX_FEED_BYTES {
+        bail!("OpenAI egress feed exceeds 256 KiB");
+    }
+    let feed: serde_json::Value =
+        serde_json::from_str(text).context("invalid OpenAI egress JSON")?;
+    let entries = feed["prefixes"]
+        .as_array()
+        .context("missing OpenAI prefixes")?;
+    if entries.is_empty() || entries.len() > MAX_FEED_PREFIXES {
+        bail!("OpenAI egress feed must contain 1..={MAX_FEED_PREFIXES} prefixes");
+    }
+    entries
+        .iter()
+        .map(|entry| {
+            let (text, v4) = match (entry.get("ipv4Prefix"), entry.get("ipv6Prefix")) {
+                (Some(value), None) => (value.as_str().context("invalid IPv4 prefix")?, true),
+                (None, Some(value)) => (value.as_str().context("invalid IPv6 prefix")?, false),
+                _ => bail!("OpenAI entry must name exactly one IP prefix"),
+            };
+            let cidr = Cidr::parse(text)?;
+            if !text.contains('/') || cidr.address.is_ipv4() != v4 || cidr.prefix == 0 {
+                bail!("OpenAI entry has an invalid family or catch-all prefix");
+            }
+            Ok(cidr)
+        })
+        .collect()
+}
+
+fn fetch_openai_feed() -> Result<Vec<Cidr>> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(FETCH_DEADLINE))
+        .max_redirects(0)
+        .https_only(true)
+        .http_status_as_error(false)
+        .user_agent(concat!("agentdocker/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into();
+    let mut response = agent
+        .get(OPENAI_FEED)
+        .header("Accept", "application/json")
+        .call()
+        .context("could not fetch OpenAI egress feed")?;
+    if response.status().as_u16() != 200 {
+        bail!("OpenAI egress feed returned HTTP {}", response.status());
+    }
+    let text = response
+        .body_mut()
+        .with_config()
+        .limit(MAX_FEED_BYTES as u64)
+        .read_to_string()
+        .context("could not read bounded OpenAI egress feed")?;
+    parse_openai_feed(&text)
+}
 
 /// An IPv4 or IPv6 prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,11 +95,13 @@ impl Cidr {
         let (address, prefix) = match text.split_once('/') {
             Some((address, prefix)) => (
                 address,
-                prefix
-                    .parse::<u8>()
-                    .with_context(|| format!("{text}: the prefix length is not a number"))?,
+                Some(
+                    prefix
+                        .parse::<u8>()
+                        .with_context(|| format!("{text}: the prefix length is not a number"))?,
+                ),
             ),
-            None => (text, u8::MAX),
+            None => (text, None),
         };
         let address: IpAddr = address
             .parse()
@@ -46,7 +110,7 @@ impl Cidr {
             IpAddr::V4(_) => 32,
             IpAddr::V6(_) => 128,
         };
-        let prefix = if prefix == u8::MAX { bits } else { prefix };
+        let prefix = prefix.unwrap_or(bits);
         if prefix > bits {
             bail!("{text}: the prefix length exceeds {bits}");
         }
@@ -113,17 +177,17 @@ struct FromFile {
     cidrs: Vec<Cidr>,
 }
 
-/// The allowlist as configured: literal prefixes, the Anthropic preset,
-/// and files re-read when they change, so a refreshed feed applies
-/// without a restart.
+/// Literal prefixes, vendor presets, and files re-read when they change.
+/// Automatic OpenAI updates replace one validated snapshot at a time.
 pub struct Allowlist {
     header: String,
     fixed: Vec<Cidr>,
     files: Mutex<Vec<FromFile>>,
+    openai: Option<Mutex<Vec<Cidr>>>,
 }
 
 impl Allowlist {
-    /// `values` are CIDRs, `anthropic`, or `@<path>`. `header` names the
+    /// `values` are CIDRs, `anthropic`, `openai`, or `@<path>`. `header` names the
     /// header the tunnel writes the client address into.
     pub fn parse(values: &[String], header: &str) -> Result<Option<Self>> {
         if values.is_empty() {
@@ -136,8 +200,13 @@ impl Allowlist {
         }
         let mut fixed = Vec::new();
         let mut files = Vec::new();
+        let mut openai = None;
         for value in values {
-            if value == "anthropic" {
+            if value == "openai" {
+                // Before the required initial fetch there are no admitted
+                // OpenAI addresses, never an implicit allow-all fallback.
+                openai = Some(Mutex::new(Vec::new()));
+            } else if value == "anthropic" {
                 fixed.extend(
                     ANTHROPIC_EGRESS
                         .iter()
@@ -159,6 +228,7 @@ impl Allowlist {
             header: header.to_ascii_lowercase(),
             fixed,
             files: Mutex::new(files),
+            openai,
         }))
     }
 
@@ -172,6 +242,35 @@ impl Allowlist {
                 .iter()
                 .map(|f| f.cidrs.len())
                 .sum::<usize>()
+            + self
+                .openai
+                .as_ref()
+                .map(|prefixes| prefixes.lock().unwrap_or_else(|e| e.into_inner()).len())
+                .unwrap_or(0)
+    }
+
+    pub fn auto_refresh(&self) -> bool {
+        self.openai.is_some()
+    }
+
+    pub async fn refresh_openai(&self) -> Result<()> {
+        self.refresh_with(fetch_openai_feed).await
+    }
+
+    async fn refresh_with<F>(&self, fetch: F) -> Result<()>
+    where
+        F: FnOnce() -> Result<Vec<Cidr>> + Send + 'static,
+    {
+        let Some(prefixes) = &self.openai else {
+            return Ok(());
+        };
+        // Network I/O never holds the admission lock or blocks the server's
+        // async executor. A failure preserves the entire last good snapshot.
+        let fresh = tokio::task::spawn_blocking(fetch)
+            .await
+            .context("OpenAI refresh worker failed")??;
+        *prefixes.lock().unwrap_or_else(|e| e.into_inner()) = fresh;
+        Ok(())
     }
 
     /// The client address the tunnel reports, when the header is there
@@ -189,6 +288,15 @@ impl Allowlist {
             return false;
         };
         if self.fixed.iter().any(|c| c.contains(ip)) {
+            return true;
+        }
+        if self.openai.as_ref().is_some_and(|prefixes| {
+            prefixes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|c| c.contains(ip))
+        }) {
             return true;
         }
         let mut files = self.files.lock().unwrap_or_else(|e| e.into_inner());
@@ -254,7 +362,14 @@ mod tests {
                 .unwrap()
                 .contains("8.8.8.8".parse().unwrap())
         );
-        for bad in ["10.0.0.0/33", "not-an-ip", "10.0.0.0/x", ""] {
+        for bad in [
+            "10.0.0.0/33",
+            "10.0.0.0/255",
+            "::1/255",
+            "not-an-ip",
+            "10.0.0.0/x",
+            "",
+        ] {
             assert!(Cidr::parse(bad).is_err(), "{bad}");
         }
     }
@@ -267,6 +382,147 @@ mod tests {
         let lines = "# vendor\n10.1.0.0/16   # office\n\n192.0.2.7\n";
         assert_eq!(parse_prefix_file(lines).unwrap().len(), 2);
         assert!(parse_prefix_file("{\"prefixes\": 5}").is_err());
+    }
+
+    #[test]
+    fn automatic_feed_rejects_partial_ambiguous_empty_and_oversized_lists() {
+        let valid =
+            r#"{"prefixes":[{"ipv4Prefix":"192.0.2.0/24"},{"ipv6Prefix":"2001:db8::/32"}]}"#;
+        assert_eq!(parse_openai_feed(valid).unwrap().len(), 2);
+        for bad in [
+            "not JSON",
+            "[]",
+            r#"{"prefixes":[]}"#,
+            r#"{"prefixes":[{}]}"#,
+            r#"{"prefixes":[{"ipv4Prefix":"192.0.2.0/24"},{"other":"unknown"}]}"#,
+            r#"{"prefixes":[{"ipv4Prefix":"0.0.0.0/0"}]}"#,
+            r#"{"prefixes":[{"ipv6Prefix":"::/0"}]}"#,
+            r#"{"prefixes":[{"ipv4Prefix":"192.0.2.0/255"}]}"#,
+            r#"{"prefixes":[{"ipv4Prefix":"192.0.2.1"}]}"#,
+            r#"{"prefixes":[{"ipv4Prefix":"2001:db8::/32"}]}"#,
+            r#"{"prefixes":[{"ipv6Prefix":"192.0.2.0/24"}]}"#,
+            r#"{"prefixes":[{"ipv4Prefix":true}]}"#,
+            r#"{"prefixes":[{"ipv4Prefix":"192.0.2.0/24","ipv6Prefix":"2001:db8::/32"}]}"#,
+        ] {
+            assert!(parse_openai_feed(bad).is_err(), "{bad}");
+        }
+        assert!(parse_openai_feed(&" ".repeat(MAX_FEED_BYTES + 1)).is_err());
+        let entry = serde_json::json!({"ipv4Prefix":"192.0.2.0/24"});
+        let maximum = serde_json::json!({"prefixes": vec![entry.clone(); MAX_FEED_PREFIXES]});
+        assert_eq!(
+            parse_openai_feed(&maximum.to_string()).unwrap().len(),
+            MAX_FEED_PREFIXES
+        );
+        let too_many = serde_json::json!({"prefixes": vec![entry; MAX_FEED_PREFIXES + 1]});
+        assert!(parse_openai_feed(&too_many.to_string()).is_err());
+    }
+
+    fn feed_for(address: &str) -> Result<Vec<Cidr>> {
+        parse_openai_feed(&serde_json::json!({"prefixes":[{"ipv4Prefix":address}]}).to_string())
+    }
+
+    #[tokio::test]
+    async fn refresh_replaces_the_snapshot_and_failures_preserve_last_good() {
+        let list = Allowlist::parse(&["openai".into(), "anthropic".into()], "x-forwarded-for")
+            .unwrap()
+            .unwrap();
+        assert!(list.auto_refresh());
+        assert_eq!(list.len(), 1, "no automatic admission before initial fetch");
+        assert!(!list.allows(&request_from("x-forwarded-for", "192.0.2.1")));
+        list.refresh_with(|| feed_for("192.0.2.0/24"))
+            .await
+            .unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list.allows(&request_from("x-forwarded-for", "192.0.2.1")));
+        assert!(list.allows(&request_from("x-forwarded-for", "160.79.104.1")));
+        assert!(
+            list.refresh_with(|| bail!("network unavailable"))
+                .await
+                .is_err()
+        );
+        assert!(
+            list.refresh_with(|| parse_openai_feed(r#"{"prefixes":[]}"#))
+                .await
+                .is_err()
+        );
+        assert!(list.allows(&request_from("x-forwarded-for", "192.0.2.1")));
+        assert!(!list.allows(&request_from("x-forwarded-for", "203.0.113.1")));
+        list.refresh_with(|| feed_for("203.0.113.0/24"))
+            .await
+            .unwrap();
+        assert!(!list.allows(&request_from("x-forwarded-for", "192.0.2.1")));
+        assert!(list.allows(&request_from("x-forwarded-for", "203.0.113.1")));
+        assert!(list.allows(&request_from("x-forwarded-for", "160.79.104.1")));
+    }
+
+    #[tokio::test]
+    async fn explicit_sources_never_fetch_and_initial_failure_does_not_allow_all() {
+        let fixed = Allowlist::parse(&["192.0.2.0/24".into()], "x-forwarded-for")
+            .unwrap()
+            .unwrap();
+        assert!(!fixed.auto_refresh());
+        fixed
+            .refresh_with(|| panic!("explicit CIDRs must not fetch"))
+            .await
+            .unwrap();
+        let automatic = Allowlist::parse(&["openai".into(), "openai".into()], "x-forwarded-for")
+            .unwrap()
+            .unwrap();
+        assert!(automatic.refresh_with(|| bail!("offline")).await.is_err());
+        assert_eq!(automatic.len(), 0);
+        assert!(!automatic.allows(&request_from("x-forwarded-for", "192.0.2.1")));
+        automatic
+            .refresh_with(|| feed_for("192.0.2.0/24"))
+            .await
+            .unwrap();
+        assert_eq!(
+            automatic.len(),
+            1,
+            "duplicate preset does not duplicate refreshes"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_flight_fetch_does_not_block_admission_or_apply_after_cancellation() {
+        let list = std::sync::Arc::new(
+            Allowlist::parse(&["openai".into()], "x-forwarded-for")
+                .unwrap()
+                .unwrap(),
+        );
+        list.refresh_with(|| feed_for("192.0.2.0/24"))
+            .await
+            .unwrap();
+        let (started, start) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let (finished, finish) = tokio::sync::oneshot::channel();
+        let updating = list.clone();
+        let job = tokio::spawn(async move {
+            updating
+                .refresh_with(move || {
+                    started.send(()).unwrap();
+                    released.blocking_recv().unwrap();
+                    let result = feed_for("203.0.113.0/24");
+                    finished.send(()).unwrap();
+                    result
+                })
+                .await
+        });
+        start.await.unwrap();
+        assert!(list.allows(&request_from("x-forwarded-for", "192.0.2.1")));
+        assert!(!list.allows(&request_from("x-forwarded-for", "203.0.113.1")));
+        job.abort();
+        assert!(job.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        finish.await.unwrap();
+        assert!(list.allows(&request_from("x-forwarded-for", "192.0.2.1")));
+        assert!(!list.allows(&request_from("x-forwarded-for", "203.0.113.1")));
+    }
+
+    #[test]
+    #[ignore = "live vendor endpoint; run explicitly for acceptance"]
+    fn live_openai_feed_is_accepted() {
+        let prefixes = fetch_openai_feed().unwrap();
+        assert!(!prefixes.is_empty() && prefixes.len() <= MAX_FEED_PREFIXES);
     }
 
     #[test]

@@ -42,11 +42,11 @@ impl InputReadiness {
     pub fn label(self) -> &'static str {
         match self {
             Self::SessionEnded => "Session ended",
-            Self::Unverified => "Idle delivery not verified",
-            Self::Paused => "Delivery paused",
-            Self::Stale => "No recent receiver signal",
-            Self::AwaitingFirstReceipt => "Receiver active, awaiting first receipt",
-            Self::Verified => "Delivery verified",
+            Self::Unverified => "Messages may wait for its next prompt",
+            Self::Paused => "Not receiving messages",
+            Self::Stale => "Not heard from recently",
+            Self::AwaitingFirstReceipt => "Ready for messages",
+            Self::Verified => "Receiving messages",
         }
     }
 }

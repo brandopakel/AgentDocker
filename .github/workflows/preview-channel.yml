@@ -1,0 +1,39 @@
+name: Preview update channel
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Published versioned prerelease whose verified feed may advance the channel
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published prerelease to promote or repair (for example v0.2.0-beta.2)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    # Manual repairs use reviewed main; protected-tag publication calls this
+    # workflow at its exact source. Neither path edits versioned releases.
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-publication
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Promote only a published verified preview, without moving backwards
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python3 packaging/desktop/preview_channel.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"

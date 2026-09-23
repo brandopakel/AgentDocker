@@ -1,11 +1,12 @@
 //! Local log collection runs off the coordination mutex. Only bounded accounting
 //! proposals enter a fenced SQLite transaction; rejected proposals move nothing.
 use super::*;
+use crate::store::usage::discovery::{Change, Job, Progress};
 use crate::store::usage::{Attribution as UsageAttribution, FileProgress, Ingest};
 use agentdocker_core::config::{DaemonConfig, UsageConfig};
 use agentdocker_core::usage::{self, Range, report::*};
 use agentdocker_host::usage::{
-    discovery::{Root, Source, Walk},
+    discovery::{Root, Walk},
     reader,
 };
 use std::sync::Weak;
@@ -58,14 +59,9 @@ fn roots(config: &UsageConfig) -> Result<Vec<Root>, String> {
             path,
         }))
         .collect();
-    if roots.len() > agentdocker_host::usage::discovery::MAX_ROOTS
-        || roots.iter().any(|root| !root.path.is_absolute())
-    {
-        return Err(
-            "effective usage discovery requires at most sixteen absolute roots, including defaults"
-                .into(),
-        );
-    }
+    // Use the walk's own root validation here so configuration/query errors
+    // explain every constraint before the worker attempts discovery.
+    Walk::new(roots.clone()).map_err(str::to_owned)?;
     Ok(roots)
 }
 
@@ -223,12 +219,17 @@ impl Daemon {
         std::thread::spawn(move || worker(weak));
     }
 
-    fn usage_snapshot(&self, collection: &Collection, gaps: &[(&str, &str)]) -> bool {
+    fn usage_snapshot(
+        &self,
+        collection: &Collection,
+        gaps: &[(&str, &str)],
+        change: Option<Change<'_>>,
+    ) -> bool {
         let mut state = lock(&self.state);
         let seq = state.next_seq;
         let mut event = None;
         let result = state.persist("usage coverage", |store| {
-            event = Some(store.usage_snapshot(collection, gaps, Utc::now(), seq)?);
+            event = Some(store.usage_snapshot(collection, gaps, Utc::now(), seq, change)?);
             Ok(())
         });
         if result != Persisted::Committed {
@@ -245,6 +246,7 @@ impl Daemon {
         batch: &reader::Batch,
         collection: &Collection,
         config: &UsageConfig,
+        finished_job: Option<usize>,
     ) -> bool {
         let mut state = lock(&self.state);
         let now = Utc::now();
@@ -293,6 +295,7 @@ impl Daemon {
                 retained_since: retained(now, config),
                 now,
                 event_seq: seq,
+                finished_job,
             })?);
             Ok(())
         });
@@ -338,21 +341,35 @@ fn worker(weak: Weak<Daemon>) {
 
 fn snapshot(weak: &Weak<Daemon>, collection: &Collection, gaps: &[(&str, &str)]) -> bool {
     weak.upgrade()
-        .is_some_and(|daemon| daemon.usage_snapshot(collection, gaps))
+        .is_some_and(|daemon| daemon.usage_snapshot(collection, gaps, None))
+}
+
+fn checkpoint(
+    weak: &Weak<Daemon>,
+    collection: &Collection,
+    gaps: &[(&str, &str)],
+    change: Change<'_>,
+) -> bool {
+    weak.upgrade()
+        .is_some_and(|daemon| daemon.usage_snapshot(collection, gaps, Some(change)))
 }
 
 fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
+    collect_generation_bounded(weak, config, usize::MAX);
+}
+
+// A bounded page allowance also lets restart trials stop at a committed frontier
+// without killing a process while it owns the coordination mutex.
+fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pages: usize) {
     let Ok(sources) = roots(config) else {
-        return;
-    };
-    let Ok(mut walk) = Walk::new(sources.clone()) else {
         return;
     };
     let Some(daemon) = weak.upgrade() else {
         return;
     };
-    let previous =
-        lock(&daemon.state).store_read("usage coverage", |store| store.usage_collection());
+    let previous = lock(&daemon.state).store_read("usage discovery", |store| {
+        Ok((store.usage_collection()?, store.usage_discovery()?))
+    });
     let live_sessions: Vec<String> = lock(&daemon.state)
         .registry
         .all()
@@ -360,93 +377,150 @@ fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
         .filter_map(|a| a.spec.labels.get("session_id").cloned())
         .collect();
     drop(daemon);
-    let Some(previous) = previous else {
+    let Some((previous_collection, previous_discovery)) = previous else {
         return;
     };
-    let Some(generation) = previous
-        .and_then(|c| c.discovery_generation)
-        .unwrap_or(0)
-        .checked_add(1)
-    else {
-        return;
-    };
-    let mut collection = Collection {
-        discovery_generation: Some(generation),
-        snapshot_at: Some(Utc::now()),
-        scope: Scope {
-            roots: sources
-                .iter()
-                .map(|s| s.path.display().to_string())
-                .collect(),
-            formats: vec![
-                "codex-rollout-0.153.4-0.154.0-v1".into(),
-                "claude-transcript-2.1.268-270-v1".into(),
-                "claude-transcript-2.1.271-276-v1".into(),
-            ],
-        },
-        ..Collection::default()
-    };
-    if !snapshot(weak, &collection, &[]) {
-        return;
-    }
-    let mut jobs: Vec<(Source, reader::Cursor)> = Vec::new();
-    let mut failures = 0;
-    loop {
-        let page = walk.next_page();
-        let keys: Vec<_> = page
-            .gaps
-            .iter()
-            .map(|reason| format!("discovery:{generation}:{reason}"))
-            .collect();
-        let gaps: Vec<_> = keys
-            .iter()
-            .zip(&page.gaps)
-            .map(|(k, r)| (k.as_str(), *r))
-            .collect();
-        if !gaps.is_empty() && !snapshot(weak, &collection, &gaps) {
+    let restored = previous_discovery
+        .zip(previous_collection.clone())
+        .filter(|(progress, collection)| {
+            progress.roots == sources
+                && collection.discovery_generation == Some(progress.generation)
+        })
+        .and_then(|(progress, collection)| {
+            Walk::resume(progress.frontier.clone(), &sources)
+                .ok()
+                .map(|walk| (progress, collection, walk))
+        });
+    let (mut progress, mut collection, mut walk) = if let Some(restored) = restored {
+        restored
+    } else {
+        let Some(generation) = previous_collection
+            .and_then(|c| c.discovery_generation)
+            .unwrap_or(0)
+            .checked_add(1)
+        else {
+            return;
+        };
+        let Ok(walk) = Walk::new(sources.clone()) else {
+            return;
+        };
+        let progress = Progress {
+            roots: sources.clone(),
+            generation,
+            frontier: walk.checkpoint(),
+            jobs: 0,
+            failures: 0,
+        };
+        let collection = Collection {
+            discovery_generation: Some(generation),
+            snapshot_at: Some(Utc::now()),
+            scope: Scope {
+                roots: sources
+                    .iter()
+                    .map(|s| s.path.display().to_string())
+                    .collect(),
+                formats: vec![
+                    "codex-rollout-0.153.4-0.154.0-v1".into(),
+                    "claude-transcript-2.1.268-270-v1".into(),
+                    "claude-transcript-2.1.271-276-v1".into(),
+                ],
+            },
+            ..Collection::default()
+        };
+        if !checkpoint(weak, &collection, &[], Change::Start(&progress)) {
             return;
         }
+        (progress, collection, walk)
+    };
+    let generation = progress.generation;
+    // Once the frontier is exhausted, the saved manifest is already complete:
+    // do not enumerate again or reset pending counts when resuming accounting.
+    while !walk.finished() {
+        if pages == 0 {
+            return;
+        }
+        pages -= 1;
+        let page = walk.next_page();
+        let mut reasons: Vec<(String, &str)> = page
+            .gaps
+            .iter()
+            .map(|reason| (format!("discovery:{generation}:{reason}"), *reason))
+            .collect();
+        let mut jobs = Vec::new();
         for source in page.sources {
             match reader::Cursor::capture(&source.path, source.runtime) {
-                Ok(cursor) => jobs.push((source, cursor)),
+                Ok(captured) => {
+                    let priority = live_sessions.iter().any(|id| {
+                        source
+                            .path
+                            .file_name()
+                            .is_some_and(|f| f.to_string_lossy().contains(id))
+                    });
+                    jobs.push(Job {
+                        id: progress.jobs,
+                        source,
+                        captured,
+                        priority,
+                    });
+                    progress.jobs += 1;
+                }
                 Err(_) => {
-                    failures += 1;
-                    let key = format!("capture:{generation}:{}", source.path.display());
-                    if !snapshot(
-                        weak,
-                        &collection,
-                        &[(&key, "usage file could not be captured")],
-                    ) {
-                        return;
-                    }
+                    progress.failures += 1;
+                    reasons.push((
+                        format!("capture:{generation}:{}", source.path.display()),
+                        "usage file could not be captured",
+                    ));
                 }
             }
         }
+        let frontier = walk.checkpoint();
+        let advanced = frontier != progress.frontier;
+        progress.frontier = frontier;
         if page.finished {
             collection.discovery_complete = page.complete;
-            collection.pending_files = page.complete.then_some(jobs.len() as u64 + failures);
+            collection.pending_files = page
+                .complete
+                .then_some((progress.jobs + progress.failures) as u64);
             collection.pending_tail_files = page.complete.then_some(0);
             if page.complete {
                 collection.state = CollectionState::Scanning;
             }
-            break;
         }
-        if !alive_wait(weak, 1) {
+        let gaps: Vec<_> = reasons
+            .iter()
+            .map(|(key, reason)| (key.as_str(), *reason))
+            .collect();
+        if (advanced || !jobs.is_empty() || !gaps.is_empty())
+            && !checkpoint(weak, &collection, &gaps, Change::Page(&progress, &jobs))
+        {
+            return;
+        }
+        if !page.finished && !alive_wait(weak, 1) {
             return;
         }
     }
-    jobs.sort_by_key(|(source, _)| {
-        !live_sessions.iter().any(|id| {
-            source
-                .path
-                .file_name()
-                .is_some_and(|f| f.to_string_lossy().contains(id))
-        })
-    });
-    if !snapshot(weak, &collection, &[]) {
-        return;
-    }
-    for (source, captured) in jobs {
+    loop {
+        if pages == 0 {
+            return;
+        }
+        let Some(daemon) = weak.upgrade() else {
+            return;
+        };
+        let job =
+            lock(&daemon.state).store_read("usage pending file", |store| store.usage_next_job());
+        drop(daemon);
+        let Some(job) = job else {
+            return;
+        };
+        let Some(Job {
+            id: job_id,
+            source,
+            captured,
+            ..
+        }) = job
+        else {
+            break;
+        };
         let key = serde_json::to_string(&(source.runtime, &source.path))
             .expect("serializable source path");
         let Some(daemon) = weak.upgrade() else {
@@ -492,6 +566,9 @@ fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
                 // Retry once from the captured generation. If the file changed
                 // after discovery, even the empty prefix refuses it this pass.
                 let Ok(session) = prepare(None) else {
+                    if !checkpoint(weak, &collection, &[], Change::FinishedJob(job_id)) {
+                        return;
+                    }
                     continue;
                 };
                 (session, 0)
@@ -507,13 +584,14 @@ fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
                 }
                 _ => {
                     let gap_key = format!("scan:{generation}:{key}");
-                    if !snapshot(
+                    if !checkpoint(
                         weak,
                         &collection,
                         &[(
                             &gap_key,
                             "usage source scan or prefix validation is incomplete",
                         )],
+                        Change::FinishedJob(job_id),
                     ) {
                         return;
                     }
@@ -523,10 +601,11 @@ fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
             let mut next = collection.clone();
             if batch.stop == reader::Stop::Budget && batch.cursor.offset() == previous_offset {
                 let gap_key = format!("budget:{generation}:{key}");
-                if !snapshot(
+                if !checkpoint(
                     weak,
                     &collection,
                     &[(&gap_key, "usage scan budget made no progress")],
+                    Change::FinishedJob(job_id),
                 ) {
                     return;
                 }
@@ -548,12 +627,22 @@ fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
             let Some(daemon) = weak.upgrade() else {
                 return;
             };
-            let committed = daemon.usage_batch(&key, &batch, &next, config);
+            let finished = matches!(
+                batch.stop,
+                reader::Stop::Complete | reader::Stop::PendingTail
+            ) || (batch.stop == reader::Stop::Quarantined
+                && budget.bytes == 16 * 1024 * 1024);
+            let committed =
+                daemon.usage_batch(&key, &batch, &next, config, finished.then_some(job_id));
             drop(daemon);
             if !committed {
                 return;
             }
             collection = next;
+            pages -= 1;
+            if pages == 0 {
+                return;
+            }
             previous_offset = batch.cursor.offset();
             match batch.stop {
                 reader::Stop::Complete | reader::Stop::PendingTail => break,
@@ -578,7 +667,7 @@ fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
         collection.state = CollectionState::CaughtUp;
         collection.completed_at = Some(Utc::now());
     }
-    let _ = snapshot(weak, &collection, &[]);
+    let _ = checkpoint(weak, &collection, &[], Change::Complete);
 }
 
 #[cfg(test)]
@@ -649,6 +738,26 @@ mod tests {
             Response::Usage { report } => report,
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn usage_query_explains_a_parent_component_in_configured_roots() {
+        let (temp, daemon, _, _) = fixture();
+        let root = temp.path().join("logs/../logs");
+        let config = format!(
+            "[usage]\nenabled=true\nclaude_roots=[{}]\n",
+            serde_json::to_string(&root).unwrap()
+        );
+        std::fs::write(temp.path().join("agentd.toml"), config).unwrap();
+        let response = daemon.usage(Query::default()).await;
+        let Response::Error { code, message, .. } = response else {
+            panic!("invalid roots must not silently report empty usage");
+        };
+        assert_eq!(code, ErrorCode::Invalid);
+        assert_eq!(
+            message,
+            "usage discovery roots must not contain parent ('..') components; use a direct absolute path"
+        );
     }
 
     #[tokio::test]
@@ -727,6 +836,7 @@ mod tests {
             "usage_baselines",
             "usage_files",
             "usage_gaps",
+            "usage_discovery_jobs",
         ] {
             let mut statement = conn.prepare(&format!("SELECT * FROM {table}")).unwrap();
             let columns = statement.column_count();
@@ -762,6 +872,131 @@ mod tests {
         assert_eq!(
             query(&daemon).await.rows[0].counters.input_tokens.sum,
             Some(4)
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_discovery_resumes_its_persisted_generation_after_reopen() {
+        let (temp, daemon, config, root) = fixture();
+        for n in 0..650 {
+            std::fs::write(root.join(format!("ignored-{n}.txt")), "").unwrap();
+        }
+        for n in 0..8 {
+            std::fs::write(
+                root.join(format!("source-{n}.jsonl")),
+                record(&format!("message-{n}"), 1),
+            )
+            .unwrap();
+        }
+        collect_generation_bounded(&Arc::downgrade(&daemon), &config, 1);
+        let first = query(&daemon).await;
+        assert_eq!(first.coverage.collection.discovery_generation, Some(1));
+        assert!(!first.coverage.collection.discovery_complete);
+        assert!(first.rows.is_empty());
+        assert_eq!(
+            lock(&daemon.state)
+                .store
+                .usage_discovery()
+                .unwrap()
+                .unwrap()
+                .generation,
+            1
+        );
+        drop(daemon);
+        let daemon =
+            Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.coverage.collection.discovery_generation, Some(1));
+        assert_eq!(
+            report.coverage.collection.snapshot_at,
+            first.coverage.collection.snapshot_at
+        );
+        assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+        assert_eq!(report.rows[0].samples, 8);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(8));
+        assert!(
+            lock(&daemon.state)
+                .store
+                .usage_discovery()
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            lock(&daemon.state)
+                .store
+                .usage_next_job()
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_manifest_resumes_remaining_jobs_without_rediscovery_or_double_counting() {
+        let (temp, daemon, config, root) = fixture();
+        for n in 0..3 {
+            std::fs::write(
+                root.join(format!("source-{n}.jsonl")),
+                record(&format!("message-{n}"), 2),
+            )
+            .unwrap();
+        }
+        collect_generation_bounded(&Arc::downgrade(&daemon), &config, 2);
+        let first = query(&daemon).await;
+        assert_eq!(first.rows[0].samples, 1);
+        assert_eq!(first.coverage.collection.pending_files, Some(2));
+        // A newly added log belongs to the next generation, not the retained snapshot.
+        std::fs::write(root.join("later.jsonl"), record("later", 100)).unwrap();
+        drop(daemon);
+        let daemon =
+            Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let resumed = query(&daemon).await;
+        assert_eq!(resumed.coverage.collection.discovery_generation, Some(1));
+        assert_eq!(resumed.rows[0].samples, 3);
+        assert_eq!(resumed.rows[0].counters.input_tokens.sum, Some(6));
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let next = query(&daemon).await;
+        assert_eq!(next.coverage.collection.discovery_generation, Some(2));
+        assert_eq!(next.rows[0].samples, 4);
+        assert_eq!(next.rows[0].counters.input_tokens.sum, Some(106));
+    }
+
+    #[tokio::test]
+    async fn usage_manifest_retains_a_partly_scanned_file_until_its_last_batch() {
+        let (temp, daemon, config, root) = fixture();
+        let content: String = (0..5000)
+            .map(|n| record(&format!("response-{n}"), 1))
+            .collect();
+        std::fs::write(root.join("large.jsonl"), content).unwrap();
+        collect_generation_bounded(&Arc::downgrade(&daemon), &config, 2);
+        let first = query(&daemon).await;
+        assert!(first.rows[0].samples > 0 && first.rows[0].samples < 5000);
+        assert_eq!(first.coverage.collection.pending_files, Some(1));
+        assert!(
+            lock(&daemon.state)
+                .store
+                .usage_next_job()
+                .unwrap()
+                .is_some()
+        );
+        drop(daemon);
+        let daemon =
+            Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.coverage.collection.discovery_generation, Some(1));
+        assert_eq!(report.coverage.collection.pending_files, Some(0));
+        assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+        assert_eq!(report.rows[0].samples, 5000);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(5000));
+        assert_eq!(report.coverage.source_gaps, 0);
+        assert!(
+            lock(&daemon.state)
+                .store
+                .usage_next_job()
+                .unwrap()
+                .is_none()
         );
     }
 

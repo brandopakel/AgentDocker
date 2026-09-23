@@ -213,7 +213,8 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 steps = [step("click", id=f"project-{project}"),
                          step("wait_control", id="project-terminal", present=True),
                          step("wait_control", id=f"chat-terminal-{agent['id']}", present=True),
-                         step("wait_control", id="project-tab-Board", present=False),
+                         # Board is a tab beside Chat and Agents, not behind More.
+                         step("wait_control", id="project-tab-Board", present=True),
                          step("wait_text", text="#everyone"), step("capture", name="project-chat-default"),
                          step("click", id="project-tab-Agents"), step("wait_text", text="terminal-fixture"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("wait_control", id=f"session-{previous['id']}", present=False), step("capture", name="projects-live"),
@@ -461,7 +462,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                  # action below) and the card shows its holder; the person
                                  # opens it, reads what done means, moves it on and archives it.
                                  step("resize", width=1180, height=760), step("click", id="projects"),
-                                 step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="project-more"), step("click", id="project-tab-Board"),
+                                 step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"), step("click", id="project-tab-Board"),
                                  step("wait_control", id="task-title", present=True),
                                  step("wait_control", id=f"task-{card['id']}", present=True),
                                  step("fill", id="task-title", text="Write the fixture notes"),
@@ -610,7 +611,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("click", id=f"session-{narrow['id']}"), step("click", id="session-message"),
                         step("fill", id="session-message-text", text="Keep this session across reopen\nSecond line 日本語"),
                         step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
-                        step("click", id="project-more"), step("click", id="project-tab-Board"),
+                        step("click", id="project-tab-Board"),
                         step("fill", id="task-title", text="Unfiled card café 日本語"),
                         step("fill", id="task-acceptance", text="Check reopen without filing"),
                     ]
@@ -660,7 +661,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                     step("wait_text", text="Keep this channel across reopen\nSecond line 日本語"),
                     step("capture", name="restored-channel"),
                     step("click", id="projects"), step("click", id=f"project-{project}"), step("click", id="project-tab-Agents"),
-                    step("click", id="project-more"), step("click", id="project-tab-Board"),
+                    step("click", id="project-tab-Board"),
                     step("wait_text", text="Unfiled card café 日本語"),
                     step("wait_text", text="Check reopen without filing"),
                     step("capture", name="restored-board-draft"),
@@ -704,7 +705,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 return datetime.now(timezone.utc).isoformat()
             def readiness_window(name, expected):
                 conversation = "dm:" + ":".join(sorted([human["id"], receiver["id"]]))
-                input_status = "Idle delivery not verified" if name == "readiness-contact" else expected
+                input_status = "Messages may wait for its next prompt" if name == "readiness-contact" else expected
                 send_probe = []
                 if name == "readiness-activity":
                     send_probe = [
@@ -713,7 +714,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                         step("wait_text", text="Queued · 1 session needs attention"),
                         step("wait_text_absent", text="claude --resume readiness-fixture-session"),
                         step("click", id=f"delivery-details-conversation-{conversation}"),
-                        step("wait_text", text="readiness-fixture · No verified input receiver"),
+                        step("wait_text", text="readiness-fixture · Messages may wait for its next prompt"),
                         step("wait_text", text="claude --resume readiness-fixture-session"),
                         step("capture", name="send-readiness-details"),
                         step("click", id=f"delivery-details-conversation-{conversation}"),
@@ -744,7 +745,7 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                      step("wait_text", text=input_status), step("capture", name=name+"-composer")])
             rpc(endpoint, {"op": "report_activity", "agent": receiver["id"],
                            "observation": {"activity": "working", "observed_at": now()}})
-            report["activity_only_window"] = readiness_window("readiness-activity", "Idle delivery not verified")
+            report["activity_only_window"] = readiness_window("readiness-activity", "Messages may wait for its next prompt")
             probes = [m for m in rpc(endpoint, {"op": "inbox", "agent": receiver["id"], "drain": False})["messages"]
                       if m.get("payload", {}).get("text") == "Send readiness acceptance probe"]
             assert len(probes) == 1, probes
@@ -758,13 +759,13 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                                "observed_at": now(), "report": value})
             input_report({"state": "ready"})
             # The send probe remains queued: a live receiver is not a receipt.
-            report["ready_window"] = readiness_window("readiness-ready", "Queued · awaiting provider receipt")
+            report["ready_window"] = readiness_window("readiness-ready", "Sent · waiting for the agent to take it")
             message = rpc(endpoint, {"op": "send", "from": human["id"], "to": receiver["id"],
                                      "kind": "chat", "payload": {"text": "readiness fixture"}})["message"]
             input_report({"state": "received", "input": {"messages": [probes[0]["id"], message], "receipt": {"provider": "claude_channel"}}})
-            report["received_window"] = readiness_window("readiness-received", "Delivery verified")
+            report["received_window"] = readiness_window("readiness-received", "Receiving messages")
             input_report({"state": "paused", "reason": "Fixture transport is disconnected"})
-            report["paused_window"] = readiness_window("readiness-paused", "Delivery paused")
+            report["paused_window"] = readiness_window("readiness-paused", "Not receiving messages")
             checks.append("rendered_session_readiness_separates_activity_contact_receiver_receipt_and_pause")
             input_report({"state": "ready"})
             rpc(endpoint, {"op": "report_provider", "agent": receiver["id"],

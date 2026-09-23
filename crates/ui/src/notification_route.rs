@@ -663,7 +663,7 @@ mod tests {
             (Answer::Sent, Ok(())),
             (
                 Answer::Refused,
-                Err(Failure::certain("Forbidden: recipient is paused")),
+                Err(Failure::certain("recipient is paused")),
             ),
             (
                 Answer::Silence,
@@ -674,7 +674,7 @@ mod tests {
             (
                 Answer::Missing,
                 Err(Failure::certain(
-                    "the message could not be read: NotFound: no such message",
+                    "the message could not be read: no such message",
                 )),
             ),
         ] {

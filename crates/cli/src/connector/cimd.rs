@@ -1,5 +1,4 @@
-//! Fetching a Client ID Metadata Document: the one outbound request this
-//! connector ever makes, to a vendor's host, for the document a
+//! Fetching a Client ID Metadata Document: a request to a vendor's host for the document a
 //! URL-formatted `client_id` names. Bounded in time and size, HTTPS
 //! only, no redirects — the URL is the identity, so a document served
 //! from anywhere else is not the one asked for. What the document may

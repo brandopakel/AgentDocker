@@ -88,16 +88,22 @@ impl App {
             .collect();
         let mut body = column![heading(format!("Agents ({})", agents.len()), 16)]
             .spacing(if compact { 6 } else { 12 });
-        let needs_input = self
+        let asking: Vec<_> = self
             .questions
             .iter()
             .filter(|q| !q.expired(Utc::now()) && agents.iter().any(|a| a.id.as_str() == q.from))
-            .count();
-        if needs_input > 0 {
+            .collect();
+        // Opens the oldest question itself; the next one follows once it
+        // is answered, as in Needs you.
+        if let Some(first) = asking.first() {
             body = body.push(action(
                 "chat-needs-input",
-                format!("{needs_input} need your input"),
-                Some(Message::Navigate(Screen::Questions)),
+                if asking.len() == 1 {
+                    "Answer 1 question".to_owned()
+                } else {
+                    format!("Answer {} questions", asking.len())
+                },
+                Some(Message::OpenQuestion(first.id.clone())),
                 false,
             ));
         }

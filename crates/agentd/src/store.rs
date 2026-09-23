@@ -182,6 +182,12 @@ CREATE TABLE IF NOT EXISTS usage_files (
     key TEXT PRIMARY KEY,
     json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS usage_discovery_jobs (
+    id INTEGER PRIMARY KEY,
+    priority INTEGER NOT NULL,
+    json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS usage_discovery_priority ON usage_discovery_jobs (priority DESC,id);
 CREATE TABLE IF NOT EXISTS usage_gaps (
     key TEXT PRIMARY KEY,
     since TEXT,
