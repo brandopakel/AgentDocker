@@ -8,7 +8,13 @@
 // staleness, messages reach the model at the next turn, and the turn's end
 // gives back what was taken for it. If AgentDocker cannot be reached, OpenCode
 // carries on as if this plugin were not here.
-import { spawnSync } from "node:child_process"
+//
+// A message leaves AgentDocker's queue only after the turn that carried it
+// completed: the hook lists what its answer contains, and this plugin reports
+// those back (`Delivered`) at the next `session.idle`. A turn that fails, or
+// a wake-up OpenCode refuses, reports nothing, so its messages are offered
+// again.
+import { spawn, spawnSync } from "node:child_process"
 
 const AGENTDOCKER = "__AGENTDOCKER__"
 
@@ -38,19 +44,110 @@ function context(answer) {
   return answer?.hookSpecificOutput?.additionalContext ?? null
 }
 
+// The messages an answer carries: `{agent, messages: [ids]}` entries.
+function carried(answer) {
+  const delivered = answer?.agentdocker?.delivered
+  return Array.isArray(delivered) ? delivered : []
+}
+
+function ids(entries) {
+  return entries.flatMap((entry) => entry.messages ?? [])
+}
+
 export const AgentDocker = async ({ directory, client }) => {
   // What each session is told on every call (who it is, who else is here,
-  // the journal), and messages waiting to be told once.
+  // the journal); context waiting for the next request; what requests
+  // carried whose turn has not completed; the session's agent; and the
+  // watch that wakes an idle session.
   const orientation = new Map()
   const pending = new Map()
-  const queue = (session, text) => {
-    if (!text) return
-    pending.set(session, [...(pending.get(session) ?? []), text])
-  }
+  const inflight = new Map()
+  const agents = new Map()
+  const watches = new Map()
   const base = (session, name) => ({ hook_event_name: name, session_id: session, cwd: directory })
+
+  // Keep an answer's context until a request carries it. A message can be
+  // offered again before it is acknowledged; it is told once.
+  const queue = (session, answer) => {
+    const text = context(answer)
+    const entries = carried(answer)
+    if (!text && !entries.length) return
+    const waiting = pending.get(session) ?? []
+    const known = new Set([
+      ...ids(waiting.flatMap((w) => w.entries)),
+      ...ids(inflight.get(session) ?? []),
+    ])
+    if (entries.length && ids(entries).every((id) => known.has(id))) return
+    pending.set(session, [...waiting, { text, entries }])
+  }
+
+  const learn = (session, answer) => {
+    const agent = answer?.agentdocker?.agent
+    if (agent) agents.set(session, agent)
+  }
+
+  const deliver = (session) => {
+    const done = inflight.get(session)
+    inflight.delete(session)
+    if (done?.length) hook({ ...base(session, "Delivered"), delivered: done })
+  }
+
+  const stopWatch = (session) => {
+    watches.get(session)?.kill()
+    watches.delete(session)
+  }
+
+  // Resume an idle session with what is waiting for it. Its messages are
+  // acknowledged after the turn this starts completes; if OpenCode refuses
+  // the prompt they stay queued.
+  const wake = async (session) => {
+    const answer = hook({ ...base(session, "Stop"), stop_hook_active: false })
+    learn(session, answer)
+    if (answer?.decision !== "block" || !answer.reason) return false
+    try {
+      await client.session.promptAsync({
+        path: { id: session },
+        body: { parts: [{ type: "text", text: answer.reason }] },
+      })
+      inflight.set(session, [...(inflight.get(session) ?? []), ...carried(answer)])
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  // While idle, a message addressed to this session's agent wakes it: the
+  // watch prints a line for each message that arrives, and one is enough.
+  const watch = (session) => {
+    const agent = agents.get(session)
+    if (!agent || watches.has(session)) return
+    const child = spawn(AGENTDOCKER, ["watch", "--as", agent], {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+    watches.set(session, child)
+    child.on("error", () => watches.delete(session))
+    child.on("exit", () => {
+      if (watches.get(session) === child) watches.delete(session)
+    })
+    child.stdout.on("data", () => {
+      if (watches.get(session) !== child) return
+      stopWatch(session)
+      wake(session).then((woken) => {
+        if (!woken) watch(session)
+      })
+    })
+    // A message that arrived while the watch was starting is already queued.
+    setTimeout(() => {
+      if (watches.get(session) !== child) return
+      wake(session).then((woken) => {
+        if (woken) stopWatch(session)
+      })
+    }, 1000)
+  }
 
   return {
     "tool.execute.before": async (input, output) => {
+      stopWatch(input.sessionID)
       const map = TOOLS[input.tool]
       if (!map) return
       const [tool_name, tool_input] = map(output.args ?? {})
@@ -65,22 +162,46 @@ export const AgentDocker = async ({ directory, client }) => {
     "tool.execute.after": async (input) => {
       const map = TOOLS[input.tool]
       const [tool_name, tool_input] = map ? map(input.args ?? {}) : [input.tool, {}]
-      queue(input.sessionID, context(hook({ ...base(input.sessionID, "PostToolUse"), tool_name, tool_input })))
+      queue(input.sessionID, hook({ ...base(input.sessionID, "PostToolUse"), tool_name, tool_input }))
+    },
+
+    // Every message the person sends starts a turn: messages that arrived
+    // since the last one go with it.
+    "chat.message": async (input) => {
+      const session = input.sessionID
+      if (!session) return
+      stopWatch(session)
+      queue(session, hook(base(session, "UserPromptSubmit")))
     },
 
     "experimental.chat.system.transform": async (input, output) => {
       const session = input.sessionID
       if (!session) return
       if (!orientation.has(session)) {
-        orientation.set(session, context(hook(base(session, "SessionStart"))) ?? "")
-        queue(session, context(hook(base(session, "UserPromptSubmit"))))
+        const answer = hook(base(session, "SessionStart"))
+        learn(session, answer)
+        // Orientation is repeated on every request; the messages waiting at
+        // the start are told once, like any other delivery.
+        const start = context(answer) ?? ""
+        const cut = start.indexOf("\nMessages waiting (")
+        orientation.set(session, cut < 0 ? start : start.slice(0, cut))
+        queue(session, {
+          hookSpecificOutput: { additionalContext: cut < 0 ? null : start.slice(cut + 1) },
+          agentdocker: answer?.agentdocker,
+        })
       }
       const told = orientation.get(session)
       if (told) output.system.push(told)
       const waiting = pending.get(session)
       if (waiting?.length) {
-        output.system.push(waiting.join("\n\n"))
+        const text = waiting
+          .map((w) => w.text)
+          .filter(Boolean)
+          .join("\n\n")
+        if (text) output.system.push(text)
         pending.delete(session)
+        // In a request now; acknowledged once its turn completes.
+        inflight.set(session, [...(inflight.get(session) ?? []), ...waiting.flatMap((w) => w.entries)])
       }
     },
 
@@ -88,23 +209,19 @@ export const AgentDocker = async ({ directory, client }) => {
       const session = event?.properties?.sessionID ?? event?.properties?.info?.id
       if (!session) return
       if (event.type === "session.idle") {
-        // The turn's end: automatic leases go back. If messages are waiting
-        // the hook says so, and the session is woken with them.
-        const answer = hook({ ...base(session, "Stop"), stop_hook_active: false })
-        if (answer?.decision === "block" && answer.reason) {
-          try {
-            await client.session.promptAsync({
-              path: { id: session },
-              body: { parts: [{ type: "text", text: answer.reason }] },
-            })
-          } catch {
-            // The messages stay queued for the next turn.
-          }
-        }
+        // The turn completed, so what it carried was delivered. Then the
+        // turn's end gives automatic leases back, and waiting messages wake
+        // the session at once or, when none are waiting, when one arrives.
+        deliver(session)
+        if (!(await wake(session))) watch(session)
+      } else if (event.type === "session.error") {
+        // The turn did not complete: nothing it carried is acknowledged,
+        // so AgentDocker offers those messages again.
+        inflight.delete(session)
       } else if (event.type === "session.deleted") {
+        stopWatch(session)
         hook(base(session, "SessionEnd"))
-        orientation.delete(session)
-        pending.delete(session)
+        for (const map of [orientation, pending, inflight, agents]) map.delete(session)
       }
     },
   }

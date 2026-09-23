@@ -28,12 +28,12 @@ use std::path::{Path, PathBuf};
 
 use agentdocker_core::journal::transcript_summary;
 use agentdocker_core::{
-    AgentRecord, AgentSpec, DigestRequest, Envelope, ErrorCode, LeaseMode, Request, Response,
-    SummarySource,
+    AgentRecord, AgentSpec, DigestRequest, Envelope, ErrorCode, LeaseMode, MessageId, Request,
+    Response, SummarySource,
 };
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand, ValueEnum};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::client::{Backend, Client};
@@ -139,6 +139,18 @@ pub struct HookInput {
     /// it: Claude Code unless the OpenCode plugin sent it.
     #[serde(skip)]
     pub runtime: Option<&'static str>,
+    /// OpenCode's `Delivered` event: the messages whose context reached a
+    /// turn the model completed, handed back as the hook listed them.
+    #[serde(default)]
+    pub delivered: Vec<Delivered>,
+}
+
+/// Messages an OpenCode hook answer carried, acknowledged only when the
+/// plugin reports them delivered.
+#[derive(Deserialize, Serialize, Debug, Default, Clone, PartialEq)]
+pub struct Delivered {
+    pub agent: String,
+    pub messages: Vec<MessageId>,
 }
 
 impl HookInput {
@@ -181,19 +193,56 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             };
             input.runtime = Some("opencode");
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+            if input.hook_event_name == "Delivered" {
+                // Only what reached a completed turn leaves the queue; a lost
+                // acknowledgement repeats a message, never loses one.
+                for delivered in &input.delivered {
+                    let _ = tokio::time::timeout_at(
+                        deadline,
+                        client.call_raw(&Request::AckInbox {
+                            agent: delivered.agent.clone(),
+                            messages: delivered.messages.clone(),
+                        }),
+                    )
+                    .await;
+                }
+                return Ok(());
+            }
             let delivery = HookDelivery {
                 backend: &client,
                 pending: RefCell::new(Vec::new()),
                 channel_input: false,
                 channel_home: None,
             };
-            match bounded_claude_code_at(&delivery, &input, &opts, deadline).await {
-                Ok(Some(output)) => println!("{output}"),
-                Ok(None) => {}
-                Err(err) => eprintln!(
-                    "agentdocker hook opencode ({}): {err:#}",
-                    input.hook_event_name
-                ),
+            let output = match bounded_claude_code_at(&delivery, &input, &opts, deadline).await {
+                Ok(output) => output,
+                Err(err) => {
+                    eprintln!(
+                        "agentdocker hook opencode ({}): {err:#}",
+                        input.hook_event_name
+                    );
+                    None
+                }
+            };
+            // Unlike Claude Code, printing is not delivery: the plugin still
+            // has to place the context in a turn. It reports back with a
+            // `Delivered` event once that turn completes.
+            let delivered = opencode_delivered(delivery.pending.take());
+            // The session's agent, for the plugin's idle watch.
+            let agent = if matches!(input.hook_event_name.as_str(), "SessionStart" | "Stop") {
+                tokio::time::timeout_at(deadline, session_agent(&client, &input))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .flatten()
+                    .map(|agent| agent.id.to_string())
+            } else {
+                None
+            };
+            if output.is_some() || !delivered.is_empty() || agent.is_some() {
+                let mut output = output.unwrap_or_else(|| json!({}));
+                output["agentdocker"] = json!({ "agent": agent, "delivered": delivered });
+                println!("{output}");
             }
             Ok(())
         }
@@ -316,6 +365,20 @@ async fn report_hook_status<B: Backend>(
             .await?;
     }
     Ok(())
+}
+
+/// The acknowledgements an answer held back, as the OpenCode plugin hands
+/// them to `Delivered` once they have reached a completed turn.
+fn opencode_delivered(pending: Vec<Request>) -> Vec<Delivered> {
+    pending
+        .into_iter()
+        .filter_map(|request| match request {
+            Request::AckInbox { agent, messages } if !messages.is_empty() => {
+                Some(Delivered { agent, messages })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Read inboxes without consuming them; acknowledge only after output is flushed.
@@ -1787,6 +1850,38 @@ mod tests {
             );
             assert_eq!(received["reply_destination"], reply);
         }
+    }
+
+    /// OpenCode answers hand their acknowledgements to the plugin instead of
+    /// taking them, and a `Delivered` event carries them back unchanged.
+    #[test]
+    fn opencode_answers_carry_acknowledgements_back_to_the_plugin() {
+        let ack = Request::AckInbox {
+            agent: "me".into(),
+            messages: vec![
+                MessageId::from("m1".to_owned()),
+                MessageId::from("m2".to_owned()),
+            ],
+        };
+        let empty = Request::AckInbox {
+            agent: "me".into(),
+            messages: Vec::new(),
+        };
+        let delivered = opencode_delivered(vec![ack, empty]);
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].messages.len(), 2);
+        let answer = json!({ "agentdocker": { "agent": "me", "delivered": delivered } });
+        let event: HookInput = serde_json::from_value(json!({
+            "hook_event_name": "Delivered",
+            "session_id": "s",
+            "delivered": answer["agentdocker"]["delivered"],
+        }))
+        .unwrap();
+        assert_eq!(event.delivered, delivered);
+        // Every other event leaves it empty.
+        let other: HookInput =
+            serde_json::from_value(json!({ "hook_event_name": "Stop" })).unwrap();
+        assert!(other.delivered.is_empty());
     }
 
     fn input(event: &str) -> HookInput {
