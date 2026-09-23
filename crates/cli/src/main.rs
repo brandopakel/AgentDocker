@@ -2779,7 +2779,10 @@ async fn run() -> Result<()> {
             };
             match client.call(&request).await? {
                 Response::Usage { report } if args.json => print_json(&report)?,
-                Response::Usage { report } => format::usage_report(&report),
+                Response::Usage { report } => {
+                    let names = usage_names(&client, &report).await;
+                    format::usage_report(&report, &names)
+                }
                 other => bail!("unexpected reply to usage: {other:?}"),
             }
         }
@@ -3555,6 +3558,52 @@ async fn print_contest(client: &Client, contest: &Contest, standing: &Standing) 
 /// What each agent is doing, blocked ones first, with the reason spelled
 /// out: a blocked agent is blocked on a named resource held by a named
 /// agent, which is the whole point of deriving this rather than guessing.
+/// Names for the IDs a usage report is keyed by, from every agent the
+/// daemon still knows (ended ones included); none when it cannot say.
+async fn usage_names(
+    client: &Client,
+    report: &agentdocker_core::usage::report::Report,
+) -> std::collections::HashMap<String, String> {
+    use agentdocker_core::usage::report::Group;
+    if !matches!(report.by, Group::Agent | Group::Project) {
+        return Default::default();
+    }
+    let Ok(Response::Agents { agents, aliases }) = client
+        .call(&Request::List {
+            all: true,
+            project: None,
+            labels: Default::default(),
+        })
+        .await
+    else {
+        return Default::default();
+    };
+    let mut names: std::collections::HashMap<String, String> = agents
+        .iter()
+        .filter_map(|agent| match report.by {
+            Group::Agent => Some((agent.id.to_string(), agent.spec.name.clone())),
+            _ => agent.project.as_ref().map(|project| {
+                let name = project
+                    .root
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| project.root.display().to_string());
+                (project.id().to_string(), name)
+            }),
+        })
+        .collect();
+    // Usage attributed under an ID that was since folded into another
+    // record is named after the record it became.
+    if matches!(report.by, Group::Agent) {
+        for (former, current) in &aliases {
+            if let Some(name) = names.get(&current.to_string()).cloned() {
+                names.entry(former.to_string()).or_insert(name);
+            }
+        }
+    }
+    names
+}
+
 async fn print_activity(client: &Client, activity: &[AgentActivity]) {
     if activity.is_empty() {
         println!("no agents");
