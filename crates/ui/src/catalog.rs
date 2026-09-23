@@ -337,7 +337,9 @@ fn is_temporary_under(root: &Path, temp: &Path) -> bool {
 /// The filesystem root or the home folder: where a session runs when nobody
 /// chose a folder for it.
 pub fn is_broad(root: &Path) -> bool {
-    root.parent().is_none() || std::env::var_os("HOME").is_some_and(|home| Path::new(&home) == root)
+    // `std::env::home_dir` reads HOME and, on Windows, falls back to
+    // USERPROFILE: an interactive Windows session often has no HOME.
+    root.parent().is_none() || std::env::home_dir().is_some_and(|home| home == root)
 }
 
 /// Whether a folder is scratch: under the per-user temporary directory
@@ -612,7 +614,7 @@ mod tests {
 
     #[test]
     fn the_root_and_home_are_not_projects_unless_pinned() {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+        let home = std::env::home_dir().unwrap();
         let mut catalog = Catalog::default();
         assert!(!catalog.remember(ProjectRef::directory("/"), false));
         assert!(!catalog.remember(ProjectRef::directory(&home), false));
