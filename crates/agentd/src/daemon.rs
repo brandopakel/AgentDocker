@@ -7543,6 +7543,65 @@ mod tests {
 
     /// Learning a session is written down before it is believed.
     #[tokio::test]
+    async fn managed_registration_binds_the_session_and_preserves_the_owner() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let mut command = spec("managed-claude-binding");
+        command.runtime = "claude-code".into();
+        command.workdir = Some(dir.path().to_owned());
+        command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
+        let Response::Agent { agent: original } =
+            daemon.handle(Request::Run { spec: command }).await
+        else {
+            panic!("managed launch failed");
+        };
+        assert!(original.managed && original.owner.is_some());
+        let mut spec = original.spec.clone();
+        spec.labels
+            .insert("session_id".into(), "managed-session".into());
+        for _ in 0..2 {
+            let Response::Agent { agent } = daemon
+                .handle(Request::Register {
+                    spec: spec.clone(),
+                    pid: original.pid,
+                    session: None,
+                })
+                .await
+            else {
+                panic!("managed re-registration failed");
+            };
+            assert_eq!(agent.id, original.id);
+            assert_eq!(agent.spec, spec);
+            assert_eq!(agent.pid, original.pid);
+            assert_eq!(agent.process_started_at, original.process_started_at);
+            assert_eq!(agent.owner, original.owner);
+            assert!(agent.managed && agent.status.is_live());
+        }
+        assert_eq!(lock(&daemon.state).registry.live().count(), 1);
+        let events = lock(&daemon.state).store.recent_events(50).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(&event.kind,
+            EventKind::AgentSessionBound { agent, session }
+            if *agent == original.id && session == "managed-session"))
+                .count(),
+            1
+        );
+        daemon.stop_all().await;
+        drop(daemon);
+        let reopened = open(&dir);
+        let state = lock(&reopened.state);
+        let saved = state.registry.get(&original.id).unwrap();
+        assert_eq!(
+            saved.spec.labels.get("session_id").map(String::as_str),
+            Some("managed-session")
+        );
+        assert!(saved.managed);
+    }
+
+    /// Learning a session is written down before it is believed.
+    #[tokio::test]
     async fn a_bound_session_is_stored_and_announced_before_it_is_answered() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
