@@ -1252,7 +1252,9 @@ new bounded suffix and generation before committing; a restart discards the
 proof and rehashes the saved prefix. An appended generation of the same file may
 retain parser state only after all accepted prefix bytes match. Rewrites,
 replacement, truncation or a changing snapshot keep coverage incomplete and
-require an explicit gap/replay. No transcript bytes enter durable cursors; only
+require an explicit gap/replay. A version-3 parser cursor first verifies its old
+prefix, then replays from zero using version 4 without inventing a source-change
+gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
 The standalone reader API retains its earlier 16 MiB whole-prefix limit.
 The 22+ MiB reader regression and the updated daemon partial-tail/restart trial
@@ -1302,6 +1304,16 @@ above covers these format, replay and cursor changes. Final source review,
 installed/provider-billing acceptance and sustained resource trials remain open.
 Only accounting metadata was retained; temporary raw transcript copies and the
 private trial databases were removed.
+
+Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278 and
+2.1.280 transcripts and Codex 0.155.1 rollouts extend that explicit version
+coverage. Top-level Claude counters remain authoritative: nested iteration/cache
+details are not added again, zero counters stay zero and absent reasoning remains
+unknown. Codex still reports cumulative snapshots. Unobserved patch versions are
+not assumed compatible. Parser cursor v4 replays prior scans with the same stable
+source identities, allowing newly supported records to be collected without
+recounting earlier accepted samples. Existing historical gaps remain visible;
+this change does not claim their reconciliation or provider-billing accuracy.
 
 Collection configuration is separate from scan progress: enabling collection or
 changing roots can leave a scan waiting to start, without meaning collection is
