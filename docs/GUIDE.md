@@ -97,9 +97,14 @@ ChatGPT and a pairing code for the consent page, and each consent becomes a
 browser agent in the project chosen on that page (any folder on this machine)
 with the messaging tools and nothing that touches a checkout. `connector
 install` runs the same as a login service; `connector status` and the
-desktop's Tools screen show its address and pairing code; `--allow-from
-anthropic` and `--allow-from @<openai feed>` admit only the vendors' own
-addresses. [The remote connector](REMOTE-CONNECTOR.md) has the whole contract.
+desktop's Tools screen show its address and pairing code. On macOS and Linux,
+open a browser tool's **Details** and choose **Enable with Tailscale** or
+**Enable with Cloudflare** to install and start the connection at login. The
+first needs Funnel enabled; the second gives a new address after each restart.
+Setup preserves different existing service settings. Each browser account must
+still consent to its project connection. Desktop setup admits the vendors' own
+addresses through `--allow-from anthropic` and the automatically refreshed
+`--allow-from openai` feed. [The remote connector](REMOTE-CONNECTOR.md) has the whole contract.
 
 Everything respects `AGENTDOCKER_HOME`, so a throwaway daemon for
 experiments costs nothing:
@@ -419,7 +424,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
-| `connector serve` / `status` / `install` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
+| `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
 
 ---
 

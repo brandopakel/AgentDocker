@@ -343,6 +343,94 @@ pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// Desktop setup must not replace a service configured outside this action.
+/// Creation is exclusive; a concurrent creator is compared, never overwritten.
+fn ensure_definition(path: &std::path::Path, contents: &str) -> Result<()> {
+    use std::io::{Read, Write};
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::ensure!(
+                std::fs::symlink_metadata(path)?.file_type().is_file(),
+                "connector service definition is not a regular file; nothing was changed"
+            );
+            let mut actual = String::new();
+            agentdocker_host::files::open_regular(path)?
+                .take(contents.len() as u64 + 1)
+                .read_to_string(&mut actual)?;
+            anyhow::ensure!(
+                actual == contents,
+                "a differently configured connector service already exists; use `agentdocker connector install` to review and replace it explicitly; nothing was changed"
+            );
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+/// Start an identical installed service, or install it without overwriting any
+/// existing definition. This is the conservative entry point for desktop setup.
+pub fn enable(args: &ServeArgs, dry_run: bool) -> Result<()> {
+    let macos = cfg!(target_os = "macos");
+    anyhow::ensure!(
+        macos || cfg!(target_os = "linux"),
+        "browser connector services require macOS or Linux"
+    );
+    anyhow::ensure!(
+        args.tunnel.is_some() || args.public_url.is_some(),
+        "choose a tunnel or provide its public URL"
+    );
+    let layout = layout(args)?;
+    let mut plan = install_plan(&layout, macos);
+    if macos {
+        // Bootstrap is idempotent only when this exact definition is already
+        // loaded. Kickstart (without -k) leaves a running service undisturbed.
+        plan.commands = vec![
+            Cmd {
+                argv: vec![
+                    "launchctl".into(),
+                    "bootstrap".into(),
+                    layout.domain(),
+                    layout.plist_path().to_string_lossy().into_owned(),
+                ],
+                tolerated: true,
+            },
+            Cmd {
+                argv: vec!["launchctl".into(), "kickstart".into(), layout.target()],
+                tolerated: false,
+            },
+        ];
+    }
+    if dry_run {
+        return execute(&plan, true);
+    }
+    for (path, contents) in &plan.files {
+        ensure_definition(path, contents)?;
+    }
+    agentdocker_host::dirs::secure_state_dir(&layout.home.join("connector"))?;
+    plan.files.clear();
+    execute(&plan, false)?;
+    eprintln!(
+        "Browser connector service enabled. It starts at login; its address and pairing code appear when the tunnel is ready."
+    );
+    if macos {
+        eprintln!("Startup log: {}", layout.log().display());
+    } else {
+        eprintln!("Startup log: journalctl --user -u {UNIT}");
+    }
+    Ok(())
+}
+
 pub fn uninstall(dry_run: bool) -> Result<()> {
     let macos = cfg!(target_os = "macos");
     if !macos && !cfg!(target_os = "linux") {
@@ -371,6 +459,23 @@ mod tests {
                 "anthropic".into(),
             ],
             path_dirs: vec!["/opt/homebrew/bin".into()],
+        }
+    }
+
+    #[test]
+    fn desktop_enable_never_overwrites_an_existing_definition() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("user/connector.service");
+        ensure_definition(&path, "first definition").unwrap();
+        ensure_definition(&path, "first definition").unwrap();
+        assert!(ensure_definition(&path, "different definition").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first definition");
+        #[cfg(unix)]
+        {
+            let link = temp.path().join("linked.service");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(ensure_definition(&link, "first definition").is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "first definition");
         }
     }
 

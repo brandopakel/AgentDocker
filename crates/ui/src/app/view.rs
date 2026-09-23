@@ -4054,11 +4054,47 @@ impl App {
                             ));
                         }
                         None => {
-                            facts = facts.push(kv(
-                                "Connector",
-                                "not running · `agentdocker connector install --tunnel tailscale` (or `--tunnel cloudflared`) serves one for every project on this machine",
-                                c,
-                            ));
+                            facts = facts.push(kv("Connector", "Not running", c));
+                            if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
+                                facts = facts.push(note(
+                                    "Enable a connection for Claude and ChatGPT. It starts at login and uses a public HTTPS tunnel; each browser account still needs your consent. Existing service settings are preserved.", c));
+                                facts = facts.push(note(
+                                    "Tailscale keeps the same address and needs Funnel enabled. Cloudflare gives a new address after each restart, so saved browser connections must be added again.", c));
+                                facts = facts.push(
+                                    row![
+                                        action(
+                                            format!("connector-tailscale-{}", runtime.name),
+                                            if self.connector_busy {
+                                                "Starting…"
+                                            } else {
+                                                "Enable with Tailscale"
+                                            },
+                                            (!self.connector_busy).then_some(
+                                                Message::ConnectorEnable(
+                                                    super::ConnectorTunnel::Tailscale
+                                                )
+                                            ),
+                                            false
+                                        ),
+                                        action(
+                                            format!("connector-cloudflare-{}", runtime.name),
+                                            "Enable with Cloudflare",
+                                            (!self.connector_busy).then_some(
+                                                Message::ConnectorEnable(
+                                                    super::ConnectorTunnel::Cloudflared
+                                                )
+                                            ),
+                                            false
+                                        ),
+                                    ]
+                                    .spacing(8),
+                                );
+                            } else {
+                                facts = facts.push(note("Browser connector login services are currently available on macOS and Linux.", c));
+                            }
+                            if let Some(error) = &self.connector_error {
+                                facts = facts.push(note(error.clone(), c));
+                            }
                         }
                     }
                 }

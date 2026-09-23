@@ -723,6 +723,7 @@ pub enum Message {
     ChannelTarget(String),
     ChannelDraft(String),
     SendChannel,
+    ConnectorEnable(super::ConnectorTunnel),
     Setup(Vec<String>),
     SetupClose,
     DesktopSource(String),
@@ -2242,6 +2243,16 @@ impl App {
                     self.daemon_restarting = true;
                     self.shell.confirm_daemon_restart = false;
                     self.send(Cmd::RestartDaemon);
+                }
+            }
+            Message::ConnectorEnable(tunnel) => {
+                if !self.connector_busy
+                    && self.connector.is_none()
+                    && (cfg!(target_os = "macos") || cfg!(target_os = "linux"))
+                {
+                    self.connector_busy = true;
+                    self.connector_error = None;
+                    self.send(Cmd::ConnectorEnable(tunnel));
                 }
             }
             Message::Setup(args) => {
