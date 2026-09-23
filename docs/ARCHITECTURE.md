@@ -1543,7 +1543,12 @@ budget. Source `89ceabe` passed eight focused reader tests and the full 1,034-Ru
 Session resumption treats an unreadable observation record as a daemon storage failure. Identity lists are SQL parameters, and accepted empty observation documents for retired identities are removed in the same resume transaction; canonical and retired observations now join by stored path, retaining the latest capture. Conflicting versions or heads at the same capture time refuse the fold, even for older captures. The combined input is bounded to 4 MiB and the joined working set to 1,000 paths. One transaction commits the canonical agent, removal of retired records and their journal cursors, the deduplicated queue, observations, aliases, eligible typed documents and the `SessionResumed` event. Those documents include channel memberships, `opened_by` and review `by`/`of` references; task assignees and creators; and eligible question, checkpoint, validation, handoff and contest references. A rewrite that would create self-review or otherwise violate a typed document guard refuses the fold. Card text, column, timestamps and archive state stay unchanged, and this transaction creates no task lease. A fenced or failed write preserves all records.
 
 The experimental existing-Codex receiver also offers bounded input at verified
-PreToolUse/PostToolUse boundaries through its private hook socket. The same
+PreToolUse/PostToolUse boundaries through a private local hook endpoint: a Unix
+socket or a Windows named pipe. Both authenticate the kernel peer PID and current
+user before reading protocol input; the generation, birth and ancestry checks
+still apply. Windows carries deadlines with GetTickCount64 and retains transcript
+volume/file identity from an open handle. Ledger and bootstrap marker publication
+use private staged files and the shared durable publication helper. The same
 controller reserves the offer in private ledger version 3 before removing its
 own native-queue entry. It uses an exact persisted provider hook context as the
 Codex thread/turn/item receipt (bounded tagged transcript records on CLI 0.154,

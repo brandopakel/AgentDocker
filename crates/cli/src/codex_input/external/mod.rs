@@ -5,6 +5,7 @@ mod bootstrap;
 mod hook_receipts;
 pub mod hooks;
 mod ledger;
+mod local;
 mod receipts;
 pub mod resolve;
 mod resume;
@@ -415,8 +416,8 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
     }
     let agent = identity(&client, &binding).await?;
     let mut ledger = Ledger::open(&home, binding.clone(), agent.input_binding.as_ref())?;
-    let hooks = hooks::Listener::bind(&home, &binding.agent)?;
-    let resolve = resolve::Listener::bind(&home, &binding.agent)?;
+    let hooks = hooks::Listener::bind(&home, &binding.agent, "hook")?;
+    let resolve = resolve::Listener::bind(&home, &binding.agent, "resolve")?;
     // Prove the read-only native queue/history APIs before suppressing legacy
     // delivery. A missing API on an unbound session leaves hooks working. An
     // already bound session retains its queue and reports the incompatibility.

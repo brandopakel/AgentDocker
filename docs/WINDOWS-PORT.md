@@ -140,13 +140,17 @@ the daemon make it. On a refusal the smoke records the owner and the
 access-control entries of the home and its ancestors, since the runner is
 the only place to observe them.
 
+The native Codex queue now shares the receiver, hook and explicit recovery code
+with Unix. Its Windows endpoints are private named pipes, authenticated by the
+kernel peer PID and same-user token before protocol input. Process birth, provider
+generation, hook ancestry and exact transcript receipts remain required. Windows
+uses a host-wide monotonic deadline, file-handle identity and write-through private
+ledger publication. Native CI and actual Windows Codex delivery acceptance remain
+open; source support alone does not establish idle, busy or draft preservation.
+
 What the slice refuses on Windows, in words rather than with a hang or a
 crash, and what that means for a person:
 
-- The native Codex queue (`codex-queue`): its hook endpoint is a Unix socket
-  checked by peer credentials. The Codex hook adapter sees no receiver and
-  takes its ordinary path, so a Codex session on Windows reads its messages
-  at its next prompt, never live.
 - Live daemon reload and the descriptor handover (`daemon reload`): the
   daemon holds no descriptors a successor could inherit; stop and start it.
 - Container workspace transport and grants: the endpoint is a Unix socket.

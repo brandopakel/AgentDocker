@@ -2,21 +2,16 @@
 //! Reading history never silently authorizes this. A caller reviews the retained
 //! input, then confirms its generation-bound digest; the sole receiver journals
 //! that manual disposition and acknowledges only that message, without a receipt.
-use super::{Client, Ledger, Provider, call, identity, ledger, receipts, verify_provider};
+pub(super) use super::local::Listener;
+use super::{Client, Ledger, Provider, call, identity, local, receipts, verify_provider};
 use agentdocker_core::{ProcessIdentity, ProviderGeneration, Request, Response};
-use agentdocker_host::{dirs, procinfo};
+use agentdocker_host::{dirs, ipc, procinfo};
 use anyhow::{Context, Result, bail, ensure};
+use ipc::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{
-    os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
-    path::PathBuf,
-    time::Duration,
-};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    net::{UnixListener, UnixStream},
-};
+use std::{path::PathBuf, time::Duration};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -52,42 +47,7 @@ enum Command {
     },
 }
 
-pub(super) struct Listener {
-    socket: UnixListener,
-    path: PathBuf,
-}
-
-impl Listener {
-    pub fn bind(home: &std::path::Path, agent: &str) -> Result<Self> {
-        let path = ledger::directory(home, agent)?.join("resolve.sock");
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) => {
-                ensure!(
-                    meta.file_type().is_socket() && meta.uid() == unsafe { libc::geteuid() },
-                    "unsafe input recovery endpoint"
-                );
-                std::fs::remove_file(&path)?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => return Err(error.into()),
-        }
-        let socket = UnixListener::bind(&path)?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(Self { socket, path })
-    }
-
-    pub async fn accept(&self) -> std::io::Result<UnixStream> {
-        self.socket.accept().await.map(|r| r.0)
-    }
-}
-
-impl Drop for Listener {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-async fn frame(stream: &mut UnixStream, max: usize) -> Result<Vec<u8>> {
+async fn frame(stream: &mut Stream, max: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     BufReader::new(stream.take((max + 1) as u64))
         .read_until(b'\n', &mut bytes)
@@ -99,7 +59,7 @@ async fn frame(stream: &mut UnixStream, max: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-async fn write(stream: &mut UnixStream, response: &Value) -> Result<()> {
+async fn write(stream: &mut Stream, response: &Value) -> Result<()> {
     let mut bytes = serde_json::to_vec(response)?;
     bytes.push(b'\n');
     stream.write_all(&bytes).await?;
@@ -279,23 +239,14 @@ async fn handle(
 }
 
 pub(super) async fn serve(
-    mut stream: UnixStream,
+    mut stream: Stream,
     client: &Client,
     provider: &mut Provider,
     ledger: &mut Ledger,
 ) -> Result<()> {
     let result = tokio::time::timeout(Duration::from_secs(75), async {
-        let peer = stream.peer_cred()?;
-        // This is an explicit local administration command. Same-user callers
-        // may act from their shell or the app; they need not be provider children.
-        ensure!(
-            peer.uid() == unsafe { libc::geteuid() },
-            "input recovery belongs to another user"
-        );
-        let pid = peer
-            .pid()
-            .and_then(|p| u32::try_from(p).ok())
-            .context("input recovery peer identity unavailable")?;
+        // Explicit local administration remains bound to the same-user kernel peer.
+        let pid = ipc::peer_pid(&stream)?;
         let operator = ProcessIdentity {
             pid,
             started_at: procinfo::start_time(pid).context("input recovery peer exited")?,
@@ -355,18 +306,17 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         agent.spec.runtime == "codex" && !agent.managed && agent.input_binding.is_some(),
         "manual recovery requires an existing Codex native receiver"
     );
-    let path = ledger::directory(&dirs::home(), agent.id.as_str())?.join("resolve.sock");
-    let mut stream = UnixStream::connect(path).await.context(
+    let path = local::endpoint(&dirs::home(), agent.id.as_str(), "resolve")?;
+    let mut stream = Stream::connect(path).await.context(
         "receiver has no recovery endpoint; upgrade the receiver before resolving retained input",
     )?;
     let accepted = agent
         .input_binding
         .as_ref()
         .context("receiver binding disappeared")?;
-    let peer = stream.peer_cred()?;
+    let peer = ipc::peer_pid(&stream)?;
     ensure!(
-        peer.uid() == unsafe { libc::geteuid() }
-            && peer.pid().and_then(|p| u32::try_from(p).ok()) == Some(accepted.controller.pid)
+        peer == accepted.controller.pid
             && procinfo::start_time(accepted.controller.pid)
                 == Some(accepted.controller.started_at),
         "recovery endpoint is not owned by the bound receiver"
@@ -413,6 +363,7 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::ledger;
     use super::*;
     use agentdocker_core::{Destination, Envelope};
 
@@ -463,7 +414,7 @@ mod tests {
         let resolution = ledger.pending_manual_read().unwrap().id.clone();
         let token = ledger.record().token.clone();
         let id = message.id.clone();
-        let listener = UnixListener::bind(&socket).unwrap();
+        let listener = ipc::Listener::bind(&socket).unwrap();
         let server = tokio::spawn(async move {
             let mut notes = Vec::new();
             for step in 0..4 {

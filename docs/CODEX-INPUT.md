@@ -221,10 +221,9 @@ that bound refuses further resolution without discarding the audit. Resolved hoo
 nonces cannot advance a later head. The receiver serves recovery while paused.
 A same-user local process can make this explicit administrative request; this
 permission does not prove a human or provider child made it.
-On Windows the command reports the same explicit unavailable status as the
-native queue; it does not inspect or alter a Unix receiver ledger. The first
-Windows CI run caught the missing command surface; the matching refusal keeps
-the existing native Windows CLI build intact.
+Windows uses the same generation-bound recovery protocol over a private named
+pipe. Kernel peer identity binds the caller and receiver before retained input
+is read or acknowledged. Actual Windows provider/recovery acceptance remains open.
 
 The first version-3 replacement trial exposed a fixture race: the preceding
 idle message was visible before its receiver acknowledgement was persisted.

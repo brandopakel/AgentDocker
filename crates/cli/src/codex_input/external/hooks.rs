@@ -3,20 +3,18 @@
 //! its offer, removes only its own queued submission, then returns context.
 //! Output is not a receipt: only the exact persisted hookPrompt permits ACK.
 use super::super::mcp_answers::Origin;
-use super::{Binding, Client, Ledger, Provider, answers, identity, ledger, queue, receipts};
+pub(super) use super::local::Listener;
+use super::local::monotonic_millis;
+use super::{Binding, Client, Ledger, Provider, answers, identity, ledger, local, queue, receipts};
 use agentdocker_core::{AgentRecord, Envelope, MessageId, ProcessIdentity};
-use agentdocker_host::{dirs, procinfo};
+use agentdocker_host::{dirs, ipc, procinfo};
 use anyhow::{Context, Result, ensure};
+use ipc::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{
-    os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt},
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    net::{UnixListener, UnixStream},
     time::timeout,
 };
 
@@ -24,24 +22,6 @@ const LIMIT: usize = 6000;
 const BUDGET: Duration = Duration::from_secs(3);
 const PROTOCOL: u32 = 2;
 const OUTPUT_RESERVE: Duration = Duration::from_millis(200);
-
-// These endpoints run on one host. CLOCK_MONOTONIC carries the client's real
-// deadline across processes without a wall-clock jump or a fresh server budget.
-fn monotonic_millis() -> Result<u64> {
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    ensure!(
-        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) } == 0,
-        "native hook monotonic clock unavailable"
-    );
-    let seconds = u64::try_from(now.tv_sec)?;
-    seconds
-        .checked_mul(1000)
-        .and_then(|s| s.checked_add((now.tv_nsec / 1_000_000) as u64))
-        .context("native hook deadline overflow")
-}
 
 #[derive(Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -75,40 +55,7 @@ impl Request {
     }
 }
 
-pub(super) struct Listener {
-    socket: UnixListener,
-    path: PathBuf,
-}
-impl Listener {
-    // The caller holds the ledger's lifetime owner lock before binding.
-    pub fn bind(home: &Path, agent: &str) -> Result<Self> {
-        let path = ledger::directory(home, agent)?.join("hook.sock");
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) => {
-                ensure!(
-                    meta.file_type().is_socket() && meta.uid() == unsafe { libc::geteuid() },
-                    "unsafe native hook endpoint"
-                );
-                std::fs::remove_file(&path)?;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-            Err(e) => return Err(e.into()),
-        }
-        let socket = UnixListener::bind(&path)?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(Self { socket, path })
-    }
-    pub async fn accept(&self) -> std::io::Result<UnixStream> {
-        self.socket.accept().await.map(|v| v.0)
-    }
-}
-impl Drop for Listener {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-async fn frame(stream: &mut UnixStream, limit: usize) -> Result<Vec<u8>> {
+async fn frame(stream: &mut Stream, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     BufReader::new(stream.take((limit + 1) as u64))
         .read_until(b'\n', &mut bytes)
@@ -141,8 +88,8 @@ pub async fn context(
         let expires_ms = monotonic_millis()?
             .checked_add(budget.as_millis() as u64)
             .context("native hook deadline overflow")?;
-        let path = ledger::directory(&dirs::home(), agent.id.as_str())?.join("hook.sock");
-        let mut stream = match UnixStream::connect(path).await {
+        let path = local::endpoint(&dirs::home(), agent.id.as_str(), "hook")?;
+        let mut stream = match Stream::connect(path).await {
             Ok(stream) => stream,
             Err(e)
                 if matches!(
@@ -234,12 +181,10 @@ pub(super) fn compact_context(input: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-async fn authenticated_request(stream: &mut UnixStream) -> Result<Request> {
+async fn authenticated_request(stream: &mut Stream) -> Result<Request> {
     // Socket permissions admit this user, but its other processes must not be
     // able to claim the PID of a real hook. Bind the request to kernel identity.
-    let peer = stream
-        .peer_cred()
-        .context("native hook peer credentials unavailable")?;
+    let peer = ipc::peer_pid(stream).context("native hook peer credentials unavailable")?;
     let request: Request = serde_json::from_slice(&frame(stream, 2048).await?)?;
     ensure!(
         request.protocol == PROTOCOL && request.scope == Scope::Root,
@@ -247,15 +192,14 @@ async fn authenticated_request(stream: &mut UnixStream) -> Result<Request> {
     );
     request.remaining()?;
     ensure!(
-        peer.uid() == unsafe { libc::geteuid() }
-            && peer.pid().and_then(|pid| u32::try_from(pid).ok()) == Some(request.process.pid),
+        peer == request.process.pid,
         "native hook process does not match its socket peer"
     );
     Ok(request)
 }
 
 pub(super) async fn serve(
-    mut stream: UnixStream,
+    mut stream: Stream,
     client: &Client,
     provider: &mut Provider,
     ledger: &mut Ledger,
@@ -477,7 +421,7 @@ mod tests {
     async fn hook_request_cannot_claim_another_process_on_its_socket() {
         let pid = std::process::id();
         for claimed in [pid, pid + 1] {
-            let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+            let (mut sender, mut receiver) = ipc::pair().await.unwrap();
             let request = Request {
                 protocol: PROTOCOL,
                 scope: Scope::Root,
@@ -527,7 +471,7 @@ mod tests {
                 "delayed_accept" => request["expires_ms"] = json!(monotonic_millis().unwrap() + 20),
                 _ => (),
             }
-            let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+            let (mut sender, mut receiver) = ipc::pair().await.unwrap();
             let mut data = serde_json::to_vec(&request).unwrap();
             data.push(b'\n');
             sender.write_all(&data).await.unwrap();
@@ -547,12 +491,12 @@ mod tests {
     #[tokio::test]
     async fn hook_frames_are_bounded_and_need_a_complete_line() {
         for data in [b"abcd\n".as_slice(), b"abc".as_slice()] {
-            let (mut a, mut b) = UnixStream::pair().unwrap();
+            let (mut a, mut b) = ipc::pair().await.unwrap();
             a.write_all(data).await.unwrap();
             a.shutdown().await.unwrap();
             assert!(frame(&mut b, 4).await.is_err());
         }
-        let (mut a, mut b) = UnixStream::pair().unwrap();
+        let (mut a, mut b) = ipc::pair().await.unwrap();
         a.write_all(b"abc\n").await.unwrap();
         assert_eq!(frame(&mut b, 4).await.unwrap(), b"abc\n");
     }
