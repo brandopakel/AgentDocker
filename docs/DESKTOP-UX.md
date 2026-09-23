@@ -249,7 +249,8 @@ Project tabs provide:
   checkouts change the same files sit folded behind **▸ Overlaps (n)**, each
   titled **Contested paths (n)** with the first few paths under it. Members
   read as a count and at most four names, and AgentDocker's own notices are
-  signed AgentDocker.
+  signed AgentDocker. **Reviews** on an overlap conversation, or a
+  notification about an overlap room, opens the fold so the room is in view.
   Its label counts messages waiting for you. Each room retains its own draft
   across navigation and failed delivery; viewing does not drain your inbox.
 - **More → Files in use:** current leases and their holders.

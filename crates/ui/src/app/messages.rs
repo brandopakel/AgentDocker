@@ -1443,10 +1443,16 @@ impl App {
             summary.kind,
             ConversationKind::Channel | ConversationKind::Collision
         ) {
+            // An overlap room is folded on Channels: going to it on purpose
+            // opens the fold, or Reviews would land where it is hidden.
             title_row = title_row.push(action(
                 "open-channel-tools",
                 "Reviews",
-                Some(Message::Navigate(Screen::Channels)),
+                Some(if summary.kind == ConversationKind::Collision {
+                    Message::ReviewOverlaps
+                } else {
+                    Message::Navigate(Screen::Channels)
+                }),
                 false,
             ));
         }

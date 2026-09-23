@@ -579,6 +579,8 @@ pub enum Message {
     ReviewSession(String),
     /// Show or fold the overlap rooms AgentDocker opened.
     ToggleOverlaps,
+    /// Go to Channels with the overlap rooms shown (Reviews on one of them).
+    ReviewOverlaps,
     /// Start, edit, submit or cancel renaming a session.
     StartRename(String),
     RenameDraft(String),
@@ -2049,6 +2051,10 @@ impl App {
             }
             Message::CancelRename => self.shell.renaming = None,
             Message::ToggleOverlaps => self.shell.overlaps_open = !self.shell.overlaps_open,
+            Message::ReviewOverlaps => {
+                self.shell.overlaps_open = true;
+                return self.update(Message::Navigate(Screen::Channels));
+            }
             Message::OpenLaunch => {
                 if !self.shell.launch {
                     return self.update(Message::ShowLaunch);
@@ -2682,6 +2688,15 @@ impl App {
         self.shell.selected = Some(self.canonical_agent(target.agent.as_str()).to_owned());
         self.shell.more = false;
         self.confirm_stop = None;
+        // A notification about an overlap room shows it, fold or not.
+        if let Some(channel) = &channel
+            && self.channels.iter().any(|c| {
+                &c.id == channel
+                    && matches!(c.subject, agentdocker_core::ChannelSubject::Contested { .. })
+            })
+        {
+            self.shell.overlaps_open = true;
+        }
         self.screen = if channel.is_some() {
             Screen::Channels
         } else {
@@ -4751,6 +4766,16 @@ mod tests {
 
         let _ = app.update(Message::CopyGuidance("resume".into()));
         assert!(app.status.contains("Copied"), "{}", app.status);
+    }
+
+    /// Reviews on an overlap room opens the fold that hides it.
+    #[test]
+    fn reviews_on_an_overlap_room_opens_the_fold() {
+        let (mut app, _commands, _) = app();
+        assert!(!app.shell.overlaps_open);
+        let _ = app.update(Message::ReviewOverlaps);
+        assert!(app.shell.overlaps_open);
+        assert_eq!(app.screen, Screen::Channels);
     }
 
     /// The Earlier groups (ended sessions, earlier conversations) open on a
