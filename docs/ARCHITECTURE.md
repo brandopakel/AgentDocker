@@ -168,7 +168,7 @@ Where the MCP server offers tools the model *may* call, hooks make coordination 
 | `Stop` | release the adapter's automatic edit leases (`release_all {only_automatic}`), never what the agent claimed itself; unless `stop_hook_active` or `--no-wake`, peek inbox, flush output, then acknowledge delivered IDs | `decision: block` with the messages when any are waiting, so the model handles them before finishing |
 | `SessionEnd` | release all; deregister | nothing |
 
-**OpenCode.** `agentdocker hook opencode` takes the same events in the same shape and answers with the same rules, registering the session as `opencode-<8>` of runtime `opencode`. OpenCode has no hook configuration file; the plugin `agentdocker setup opencode` installs in `~/.config/opencode/plugins/` translates its events: `tool.execute.before` on `edit`/`write`/`apply_patch` is `PreToolUse` (a deny is thrown, which refuses the tool) and on `read` records the read; `tool.execute.after` is `PostToolUse`; the first `experimental.chat.system.transform` of a session is `SessionStart` + `UserPromptSubmit`, whose orientation stays in that session's system prompt and whose messages are added once; `session.idle` is `Stop`, and a `block` answer (messages waiting) is sent to the session with `client.session.promptAsync`, which wakes it; `session.deleted` is `SessionEnd`. Its MCP entry is OpenCode's own (`McpWiring::OpencodeJson`: `mcp.agentdocker = {type: "local", command: [exe, "mcp", "--runtime", "opencode"], enabled: true}`).
+**OpenCode.** `agentdocker hook opencode` takes the same events in the same shape and answers with the same rules, registering the session as `opencode-<8>` of runtime `opencode`. OpenCode has no hook configuration file; the plugin `agentdocker setup opencode` installs in `~/.config/opencode/plugins/` translates its events: `tool.execute.before` on `edit`/`write`/`apply_patch` is `PreToolUse` (a deny is thrown, which refuses the tool) and on `read` records the read; `tool.execute.after` is `PostToolUse`; `chat.message` (each message the person sends) is `UserPromptSubmit`; the first `experimental.chat.system.transform` of a session is `SessionStart`, whose orientation stays in that session's system prompt while the messages waiting at the start are told once; `session.idle` is `Stop`, and a `block` answer (messages waiting) is sent to the session with `client.session.promptAsync`, which wakes it; `session.deleted` is `SessionEnd`. When nothing is waiting at `session.idle`, the plugin runs `agentdocker watch --as <agent>` (the agent id comes back in the hook's answer) and a message that arrives later wakes the session the same way; the watch ends when a turn starts, and one that ends while the session is still idle (the daemon restarted, say) is started again after 1 s, doubling to at most 30 s. One wake-up is submitted at a time per session, so the watch and its one-second catch-up cannot both prompt for the same message; what a wake-up carries is in flight from its submission and taken back if OpenCode refuses the prompt. Printing an answer is not delivery here: in OpenCode mode the hook does not acknowledge what it listed but returns it, and only when its answer carries text (a hook that failed or timed out after reading the inbox returns nothing to acknowledge) (`agentdocker.delivered`, message ids per agent), and the plugin reports it back as a `Delivered` event, which acknowledges exactly those ids, only at the `session.idle` that ends the turn that carried them. A turn that errors (`session.error`, including an abort) or a wake-up OpenCode refuses reports nothing, so AgentDocker offers those messages again; a message already waiting or in a turn is not told twice. Its MCP entry is OpenCode's own (`McpWiring::OpencodeJson`: `mcp.agentdocker = {type: "local", command: [exe, "mcp", "--runtime", "opencode"], enabled: true}`).
 
 Design points:
 
@@ -1252,7 +1252,9 @@ new bounded suffix and generation before committing; a restart discards the
 proof and rehashes the saved prefix. An appended generation of the same file may
 retain parser state only after all accepted prefix bytes match. Rewrites,
 replacement, truncation or a changing snapshot keep coverage incomplete and
-require an explicit gap/replay. No transcript bytes enter durable cursors; only
+require an explicit gap/replay. A version-3 parser cursor first verifies its old
+prefix, then replays from zero using version 4 without inventing a source-change
+gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
 The standalone reader API retains its earlier 16 MiB whole-prefix limit.
 The 22+ MiB reader regression and the updated daemon partial-tail/restart trial
@@ -1302,6 +1304,16 @@ above covers these format, replay and cursor changes. Final source review,
 installed/provider-billing acceptance and sustained resource trials remain open.
 Only accounting metadata was retained; temporary raw transcript copies and the
 private trial databases were removed.
+
+Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278 and
+2.1.280 transcripts and Codex 0.155.1 rollouts extend that explicit version
+coverage. Top-level Claude counters remain authoritative: nested iteration/cache
+details are not added again, zero counters stay zero and absent reasoning remains
+unknown. Codex still reports cumulative snapshots. Unobserved patch versions are
+not assumed compatible. Parser cursor v4 replays prior scans with the same stable
+source identities, allowing newly supported records to be collected without
+recounting earlier accepted samples. Existing historical gaps remain visible;
+this change does not claim their reconciliation or provider-billing accuracy.
 
 Collection configuration is separate from scan progress: enabling collection or
 changing roots can leave a scan waiting to start, without meaning collection is

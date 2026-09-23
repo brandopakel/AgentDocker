@@ -185,7 +185,10 @@ The #194 candidate adds **Projects → Usage** and `agentdocker usage`. Check th
 Choose the last day, week or month and group reported tokens by agent, model,
 provider, project or hour. `~` marks a partial count; `—` means the source did
 not report that counter. These are token totals, not a bill. The report shows
-the available time range, gaps and whether collection has caught up.
+the available time range, gaps and whether collection has caught up. The CLI
+names each agent or project row (`codex-96813`, `AgentDocker`) while AgentDocker
+still knows it, and shows its ID once it is gone; `(unattributed)` is usage no
+session could be matched to.
 The MCP `usage` tool reads the same stored report and advertises that it is
 read-only; querying usage does not enable collection or change its settings.
 
