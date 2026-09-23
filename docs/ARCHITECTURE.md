@@ -469,7 +469,7 @@ request, event or presentation variant; existing question/receipt ordering appli
 
 ## Process supervision
 
-`run` defaults to closed stdin and captured stdout/stderr; `--tty` instead supplies a controlling terminal with attach input/output. Pipe log lines carry timestamps and stream tags; terminal log lines carry an `out` tag and retain line boundaries. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM.
+`run` defaults to closed stdin and captured stdout/stderr; `--tty` instead supplies a controlling terminal with attach input/output. Pipe log lines carry timestamps and stream tags; terminal log lines carry an `out` tag and retain line boundaries. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM. Exit persistence may finish before its session owner receives acknowledgement and releases its lock. Shutdown therefore waits for held owner locks within the same eight-second shutdown budget and repeats the non-recursive cleanup sweep. A held lock or unacknowledged exit report remains protected when the budget expires.
 
 Supervision retains terminal/pipe readers, the input writer and log writer. After
 the child and its group finish, it closes terminal input and waits for output
