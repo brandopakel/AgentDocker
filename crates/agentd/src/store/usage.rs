@@ -782,7 +782,7 @@ mod tests {
         assert_eq!(result.rows[0].key, None);
         assert_eq!(result.rows[0].counters.input_tokens.sum, Some(10));
         let last_event = store.max_event_seq().unwrap();
-        for tick in 21..121 {
+        for tick in 1..=100 {
             assert!(
                 store
                     .usage_reconcile(
@@ -791,7 +791,7 @@ mod tests {
                         Some(&attribution),
                         (None, None),
                         at(0),
-                        at(tick),
+                        at(20) + chrono::Duration::seconds(tick),
                         last_event + 1,
                     )
                     .unwrap()
@@ -800,7 +800,7 @@ mod tests {
         }
         assert_eq!(store.max_event_seq().unwrap(), last_event);
         assert_eq!(tracking_bytes(&store), bytes);
-        assert_eq!(report(&store, 0, 121).coverage.source_gaps, 1);
+        assert_eq!(report(&store, 0, 21).coverage.source_gaps, 1);
         set_tracking_capacity(&store, 1_000_000);
         let recovered = store
             .usage_reconcile(
@@ -809,7 +809,7 @@ mod tests {
                 Some(&attribution),
                 (None, None),
                 at(0),
-                at(121),
+                at(21),
                 store.max_event_seq().unwrap() + 1,
             )
             .unwrap()
