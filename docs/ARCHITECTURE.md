@@ -221,6 +221,21 @@ Where the ledger records every file change, the journal records *what happened a
 
 ## Wire protocol
 
+Windows `daemon install` uses a per-user Task Scheduler login task with an
+Interactive/Limited principal and an explicit CLI supervisor. The canonical
+daemon home determines the task name. A private, bounded, atomically published
+ownership record stores a nonce and the exact action; mutations also verify
+the task principal against the current SID. An interrupted update retains
+both the prior and proposed action until registration succeeds. A mutation
+lock serializes service commands, and a separate supervisor lock prevents
+competing supervisors. Graceful shutdown exits the supervisor; failed daemons
+retry after two seconds, at most three times before stopping, with the budget
+reset after ten minutes of continuous operation. The daemon remains detached
+so its independently owned sessions can survive coordinator replacement.
+The task pins executable paths until `daemon install` is run again. Native
+Task Scheduler lifecycle and provider-survival acceptance are tracked
+separately from definition/ownership tests in [remaining work](REMAINING-WORK.md).
+
 Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOCKET` (default `~/.agentdocker/agentd.sock`, mode `0600`). A socket name is limited by the kernel (104 bytes on macOS and the BSDs, 108 on Linux), so a home whose path leaves no room for `container.sock` keeps both sockets in a private directory (`0700`, ours alone, ownership checked before binding) under `/tmp` — never an environment-dependent directory, which a service, a cron job and a shell can each see differently — named `agentdocker-<hash of the home's bytes>` (removed again when the daemon stops and it is empty, as the session directory `s` under it is once the owners nobody holds are swept — each lock taken and held while its files go, and an owner that finds its lock on a file that was unlinked between its open and its lock (`Lock::is_at`) takes the lock again, so two owners never hold one id — so a daemon that is gone leaves nothing in `/tmp`; an unacknowledged exit report keeps its directory); the home is canonicalized once (`agentdocker_host::dirs::home`) so a symlinked path spells the same directory everywhere; the daemon and every client compute the same place without a pointer file, an installed service is pinned to the resolved path with `--socket` and its commands use that socket, and `agentdocker daemon status` prints both paths. A path that still does not fit is refused up front by both daemon and client, naming the limit. The restricted container endpoint is optional: it announces `restricted_endpoint_listening` when it serves; if it cannot be served the daemon announces `restricted_endpoint_unavailable`, `ping` stops reporting it, `grant-access` answers `unavailable`, and the host socket carries on. A client that starts the daemon on demand watches the child it spawned, so a daemon that dies on startup fails the command at once with the log's last lines rather than after the start timeout. One request object per line, tagged by `"op"`; responses tagged by `"type"`.
 
 ```json

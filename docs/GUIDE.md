@@ -52,9 +52,22 @@ You do not start the daemon. The first client that needs it starts it, on
 `~/.agentdocker/agentd.sock`. To have it survive a reboot:
 
 ```sh
-agentdocker daemon install    # a launchd or systemd user service
+agentdocker daemon install    # launchd, systemd user unit, or Windows login task
 agentdocker daemon status     # what is running, and where
 ```
+
+On Windows, installation creates a Task Scheduler task for the current user
+and starts it immediately. It runs with limited privileges at login without
+storing a password; an interactive sign-in is required. `daemon start`, `stop`,
+`restart` and `uninstall` operate on that task. A supervisor retries a failed
+daemon up to three times with two seconds between attempts; a clean shutdown
+stays stopped. Ten minutes of continuous operation resets that retry budget.
+The task records the current CLI and daemon paths. After moving the portable
+folder or selecting another build, run `daemon install` from the new build.
+Keep the old folder until that succeeds. An ownership record in the daemon
+home prevents replacing or removing a task whose action or user was changed
+outside AgentDocker. `daemon install --dry-run` previews the task without
+registering it.
 
 Then bring in the agents already on the machine:
 

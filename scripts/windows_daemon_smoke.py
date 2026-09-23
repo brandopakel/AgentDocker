@@ -699,8 +699,8 @@ def main():
         attach = run("attach", "smoke-one", check=False, timeout=20)
         step("attach without a terminal is refused in words, not with a hang", attach.returncode != 0 and "needs a terminal" in attach.stderr, attach.stderr.strip())
         if os.name == "nt":
-            install = run("daemon", "install", check=False, timeout=20)
-            step("daemon install is refused on Windows in words", install.returncode != 0 and "not available on Windows" in install.stderr, install.stderr.strip())
+            install = run("daemon", "install", "--dry-run", check=False, timeout=20)
+            step("daemon install previews a Windows user task without installing it", install.returncode == 0 and "Task Scheduler login task" in install.stdout, install.stdout.strip())
             reload = run("daemon", "reload", check=False, timeout=20)
             step("daemon reload is refused on Windows in words", reload.returncode != 0 and "Windows" in (reload.stderr + reload.stdout), (reload.stderr + reload.stdout).strip())
         # A managed Claude identity exists before its first hook knows the
