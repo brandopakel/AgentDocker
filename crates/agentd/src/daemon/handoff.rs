@@ -602,7 +602,10 @@ mod tests {
         else {
             panic!("registered")
         };
-        assert!(legacy.name_is_generated(), "the adapter's own spelling reads generated");
+        assert!(
+            legacy.name_is_generated(),
+            "the adapter's own spelling reads generated"
+        );
         let Response::Agent { agent: chosen } = daemon
             .handle(Request::Rename {
                 agent: legacy.id.to_string(),
