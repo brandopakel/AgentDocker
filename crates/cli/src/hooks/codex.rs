@@ -1,5 +1,8 @@
 //! Codex lifecycle activity and bounded, at-least-once inbox delivery.
-//! No transcript, tool input, file claims or provider permission decisions.
+//! No transcript and no provider permission decisions, except one: at
+//! PreToolUse the file paths an `apply_patch` names are read from the tool
+//! input and leased, and a patch on a file another agent holds is refused.
+//! Only those paths leave this process; the tool input itself never does.
 
 use std::path::PathBuf;
 
@@ -21,6 +24,12 @@ pub(super) struct Input {
     pub cwd: PathBuf,
     #[serde(default)]
     pub stop_hook_active: bool,
+    /// Read only at PreToolUse, and only for the file paths a patch names;
+    /// the input itself is never sent anywhere.
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub tool_input: Option<Value>,
     // Codex deliberately gives child hooks the parent's session_id. A child
     // must not report activity, bootstrap a receiver or consume that queue.
     pub agent_id: Option<String>,
@@ -255,6 +264,16 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
     let delivery = tokio::time::timeout_at(deadline, async {
         let agent = report(client, &input, pid, started_at, observed_at).await?;
+        if input.hook_event_name == "PreToolUse"
+            && let Some(agent) = &agent
+            && let Some(denied) = claim_edits(client, &input, agent).await?
+        {
+            return Ok(Delivery {
+                output: denied,
+                acknowledgement: None,
+                continuation: None,
+            });
+        }
         match agent {
             Some(agent) => match crate::codex_input::external::ensure_started(client, &agent).await
             {
@@ -276,6 +295,52 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     .await
     .context("coordination exceeded the four-second hook budget")??;
     deliver(client, delivery, 1, deadline).await
+}
+
+/// Lease the files a Codex patch is about to change, as the Claude Code hook
+/// does for its edit tools: each path named by the patch is claimed for this
+/// session (automatically, so the turn's end gives it back), and the first
+/// one another agent holds refuses the tool call with the holder and its
+/// note. Only the paths reach the daemon; the tool input stays here.
+pub(super) async fn claim_edits<B: Backend>(
+    backend: &B,
+    input: &Input,
+    agent: &AgentRecord,
+) -> Result<Option<Value>> {
+    // apply_patch, or the Edit/Write names Codex also matches it by. A
+    // shell command or a script that writes a file some other way is not
+    // seen here.
+    let Some(tool_input) = input.tool_input.as_ref().filter(|_| {
+        matches!(
+            input.tool_name.as_deref(),
+            Some("apply_patch" | "Edit" | "Write")
+        )
+    }) else {
+        return Ok(None);
+    };
+    for path in super::patch_paths(tool_input, Some(&input.cwd)) {
+        let response = backend
+            .call(Request::Claim {
+                agent: agent.id.to_string(),
+                resource: format!("path:{}", path.display()),
+                mode: agentdocker_core::LeaseMode::Exclusive,
+                amount: None,
+                ttl_secs: 600,
+                note: Some(format!("editing in Codex session {}", agent.spec.name)),
+                wait_secs: 0,
+                automatic: true,
+            })
+            .await?;
+        if let Response::Error {
+            code: agentdocker_core::ErrorCode::Conflict,
+            message,
+            details,
+        } = response
+        {
+            return Ok(Some(super::deny_output(&path, &message, details.as_ref())));
+        }
+    }
+    Ok(None)
 }
 
 // Keep injected context below the provider's default context spill threshold.
@@ -416,6 +481,9 @@ mod tests {
             session_id: "fixture".into(),
             cwd: PathBuf::from("/fixture"),
             stop_hook_active: false,
+
+            tool_name: None,
+            tool_input: None,
             agent_id: None,
             agent_type: None,
         }
@@ -726,6 +794,9 @@ mod tests {
                     session_id: "test-session".into(),
                     cwd: checkout.path().to_owned(),
                     stop_hook_active: false,
+
+                    tool_name: None,
+                    tool_input: None,
                     agent_id: None,
                     agent_type: None,
                 },
@@ -780,6 +851,9 @@ mod tests {
             session_id: "fixture".into(),
             cwd: checkout.path().to_owned(),
             stop_hook_active: false,
+
+            tool_name: None,
+            tool_input: None,
             agent_id: None,
             agent_type: None,
         };
@@ -839,6 +913,9 @@ mod tests {
             session_id: "fixture".into(),
             cwd: alias,
             stop_hook_active: false,
+
+            tool_name: None,
+            tool_input: None,
             agent_id: None,
             agent_type: None,
         };
