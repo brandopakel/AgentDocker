@@ -732,7 +732,10 @@ fn run_with_home(
         // targets and bad signatures inside the payload; here the payload
         // must also be the very release the feed described, and never a
         // downgrade.
-        let (source, candidate) = inspect(&payload, options.local_preview)?;
+        // Use the same already-established preview consent for staging and
+        // activation. Otherwise an installed ad-hoc preview is offered its
+        // successor, then staging incorrectly asks Gatekeeper to assess it.
+        let (source, candidate) = inspect(&payload, accept_ad_hoc)?;
         ensure!(
             candidate.version == release.version
                 && candidate.source_commit == release.source_commit
