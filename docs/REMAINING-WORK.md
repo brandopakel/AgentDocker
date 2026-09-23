@@ -78,8 +78,9 @@ the operational sequence is in [local trial](LOCAL-TRIAL.md).
 
 Windows setup follow-up: physical AWBP passed 57 native checks and 30 fresh-home
 starts on #237 package `9064c5f3`. Actual Claude 2.1.280 configuration add passed,
-but health rejected the Windows executable suffix. The native-name correction
-and package health regression await final CI and rebuilt provider acceptance.
+but health rejected the Windows executable suffix. The native-name correction passed native Windows CI and all six actual Claude
+configuration checks on rebuilt `d736d483`; the later MCP fix still awaits
+rebuilt provider delivery and receipt acceptance.
 The separate intermittent CI first-start failure remains unexplained.
 
 Actual Windows Claude authentication and channel consent succeeded, but its MCP

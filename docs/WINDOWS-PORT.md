@@ -411,3 +411,10 @@ frontmatter parser assumed LF while the Windows checkout embedded CRLF. The
 parser now accepts both line endings, and the extracted-package driver checks
 manual and channel MCP initialization, instructions and messaging tools. Rebuilt
 provider delivery and receipt acceptance remain required.
+
+Rebuilt setup acceptance passed all six actual Claude 2.1.280 configuration
+checks on physical AWBP using #237 source `d736d483` (synthetic merge of
+`8c45acf0`). Preview, selected-profile registration, health, exact undo,
+changed-entry refusal and malformed-state refusal passed with unchanged user
+configuration and removed scratch. This configuration trial invokes no model;
+the subsequent MCP CRLF fix still needs rebuilt provider-delivery acceptance.
