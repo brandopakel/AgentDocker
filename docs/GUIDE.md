@@ -38,6 +38,16 @@ cargo install --path crates/cli --locked   # agentdocker + agentd
 cargo install --path crates/ui  --locked   # the desktop app
 ```
 
+The Linux desktop archive needs a graphical session and its native display
+libraries; the archive does not install distribution packages. On the tested
+minimal Ubuntu 24.04.4 VM, the app initially failed because
+`libX11-xcb.so.1` was absent. The isolated acceptance run supplied extracted
+X11/XCB, keyboard, rendering and font libraries plus Xvfb. That test does not
+establish the prerequisites on a standard Ubuntu Desktop install. Before
+launching an extracted archive, run `ldd` on its `agentdocker-ui` executable
+and resolve any `not found` dependencies for your distribution. The CLI-only
+installer does not install the desktop or those libraries.
+
 You do not start the daemon. The first client that needs it starts it, on
 `~/.agentdocker/agentd.sock`. To have it survive a reboot:
 
