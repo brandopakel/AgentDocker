@@ -13,6 +13,7 @@ pub struct Session {
     prefix: [u8; 32],
     line: Vec<u8>,
     ready: bool,
+    replay_parser: bool,
 }
 
 impl Session {
@@ -26,8 +27,12 @@ impl Session {
     /// Use the collector's already captured high-water mark for this generation.
     pub fn at_snapshot(captured: Cursor, previous: Option<&Cursor>) -> Result<Self, Error> {
         let runtime = captured.runtime;
+        // Version 3 has the same prefix proof, but its parser skipped patch
+        // versions now supported by version 4. Verify that proof before replay;
+        // an upgrade must not hide a changed or truncated source.
+        let replay_parser = previous.is_some_and(|previous| previous.version == 3);
         let cursor = if let Some(previous) = previous {
-            if previous.version != CURSOR_VERSION
+            if (previous.version != CURSOR_VERSION && !replay_parser)
                 || previous.runtime != runtime
                 || previous.offset > previous.generation.length
             {
@@ -53,6 +58,7 @@ impl Session {
             prefix: [0; 32],
             line: Vec::new(),
             ready: false,
+            replay_parser,
         })
     }
 
@@ -107,10 +113,25 @@ impl Session {
             self.ready = false;
             return Err(Error::Changed);
         }
+        if self.ready && self.replay_parser {
+            self.cursor.version = CURSOR_VERSION;
+            self.cursor.offset = 0;
+            self.cursor.prefix_digest = [0; 32];
+            self.cursor.codex = Codex::default();
+            self.cursor.quarantined_at_budget = None;
+            self.checked = 0;
+            self.prefix = [0; 32];
+            self.replay_parser = false;
+        }
         Ok(Preparation {
             ready: self.ready,
             bytes_read,
         })
+    }
+
+    /// Next source offset after preparation, including a verified parser replay.
+    pub fn offset(&self) -> u64 {
+        self.cursor.offset()
     }
 
     /// Parse/recheck only the new bounded suffix after a fully verified prefix.
@@ -163,6 +184,46 @@ mod tests {
                 return Ok(passes);
             }
         }
+    }
+
+    #[test]
+    fn parser_upgrade_replays_only_after_the_old_prefix_is_verified() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("upgrade.jsonl");
+        std::fs::write(&path, format!("{}{}", row(0), row(1))).unwrap();
+        let original = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
+        let mut old = original.cursor.clone();
+        old.version = 3;
+        let mut session = Session::open(&path, Runtime::Claude, Some(&old)).unwrap();
+        assert_eq!(session.offset(), old.offset());
+        prepare(&mut session, &path).unwrap();
+        assert_eq!(session.offset(), 0);
+        let replay = session.scan(&path, Budget::default()).unwrap();
+        assert_eq!(replay.samples, original.samples);
+        assert_eq!(replay.cursor, original.cursor);
+        let mut future = old.clone();
+        future.version = CURSOR_VERSION + 1;
+        assert!(matches!(
+            Session::open(&path, Runtime::Claude, Some(&future)),
+            Err(Error::Cursor)
+        ));
+
+        // Matching length and file identity do not establish the old prefix.
+        std::fs::write(&path, format!("{}{}", row(2), row(1))).unwrap();
+        let mut changed = Session::open(&path, Runtime::Claude, Some(&old)).unwrap();
+        assert!(matches!(
+            prepare(&mut changed, &path),
+            Err(Error::ValidationIncomplete)
+        ));
+        assert!(matches!(
+            changed.scan(&path, Budget::default()),
+            Err(Error::ValidationIncomplete)
+        ));
+        std::fs::write(&path, row(0)).unwrap();
+        assert!(matches!(
+            Session::open(&path, Runtime::Claude, Some(&old)),
+            Err(Error::Changed)
+        ));
     }
 
     #[test]

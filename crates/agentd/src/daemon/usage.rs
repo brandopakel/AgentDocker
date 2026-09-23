@@ -552,7 +552,10 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                 }
             };
         let (mut session, mut previous_offset) = match prepare(previous) {
-            Ok(session) => (session, previous.map_or(0, reader::Cursor::offset)),
+            Ok(session) => {
+                let offset = session.offset();
+                (session, offset)
+            }
             Err(_) => {
                 let gap_key = format!("generation:{generation}:{key}");
                 if !snapshot(
@@ -928,6 +931,7 @@ mod tests {
             assert_eq!(report.rows[0].samples, 2);
             assert_eq!(report.rows[0].counters.input_tokens.sum, Some(18));
             assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+            assert_eq!(report.coverage.source_gaps, 0);
             assert!(
                 report
                     .coverage
