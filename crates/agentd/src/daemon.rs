@@ -7546,11 +7546,14 @@ mod tests {
     async fn managed_registration_binds_the_session_and_preserves_the_owner() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
+        let checkout = dir.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let alias = dir.path().join("checkout-alias");
+        std::os::unix::fs::symlink(&checkout, &alias).unwrap();
         let mut command = spec("managed-claude-binding");
         command.runtime = "claude-code".into();
-        // Match the CLI's physical checkout: macOS temp paths may use /var
-        // while Register resolves the same directory under /private/var.
-        command.workdir = Some(dir.path().canonicalize().unwrap());
+        // A direct protocol caller need not have normalized its spelling.
+        command.workdir = Some(alias.clone());
         command.command = vec!["sh".into(), "-c".into(), "sleep 30".into()];
         let Response::Agent { agent: original } =
             daemon.handle(Request::Run { spec: command }).await
@@ -7558,13 +7561,19 @@ mod tests {
             panic!("managed launch failed");
         };
         assert!(original.managed && original.owner.is_some());
+        if original.spec.workdir.as_ref() != Some(&checkout.canonicalize().unwrap()) {
+            daemon.stop_all().await;
+            panic!("managed launch did not record its physical checkout");
+        }
         let mut spec = original.spec.clone();
         spec.labels
             .insert("session_id".into(), "managed-session".into());
-        for _ in 0..2 {
+        for workdir in [Some(alias), original.spec.workdir.clone()] {
+            let mut registration = spec.clone();
+            registration.workdir = workdir;
             let response = daemon
                 .handle(Request::Register {
-                    spec: spec.clone(),
+                    spec: registration,
                     pid: original.pid,
                     session: None,
                 })
@@ -7601,6 +7610,51 @@ mod tests {
             Some("managed-session")
         );
         assert!(saved.managed);
+    }
+
+    #[tokio::test]
+    async fn launch_refuses_unresolved_workdirs_before_creating_agents_or_processes() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let file = dir.path().join("file");
+        std::fs::write(&file, "fixture").unwrap();
+        let cycle = dir.path().join("cycle");
+        std::os::unix::fs::symlink(&cycle, &cycle).unwrap();
+        let marker = dir.path().join("unexpected-child");
+        let before = daemon.recent_events(100);
+        for workdir in [dir.path().join("missing"), file, cycle] {
+            let response = daemon
+                .handle(Request::Run {
+                    spec: AgentSpec {
+                        workdir: Some(workdir),
+                        command: vec![
+                            "sh".into(),
+                            "-c".into(),
+                            "touch \"$1\"".into(),
+                            "fixture".into(),
+                            marker.to_string_lossy().into_owned(),
+                        ],
+                        ..spec("refused-launch")
+                    },
+                })
+                .await;
+            assert!(
+                matches!(
+                    response,
+                    Response::Error {
+                        code: ErrorCode::Invalid,
+                        ..
+                    }
+                ),
+                "{response:?}"
+            );
+            let state = lock(&daemon.state);
+            assert_eq!(state.registry.live().count(), 0);
+            assert!(state.store.load_agents().unwrap().is_empty());
+            drop(state);
+            assert_eq!(daemon.recent_events(100), before);
+            assert!(!marker.exists());
+        }
     }
 
     /// Learning a session is written down before it is believed.
