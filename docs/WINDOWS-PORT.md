@@ -392,7 +392,7 @@ but opening the containing directory for Unix-style syncing returned Access
 Denied. Setup now publishes flushed receipts and configuration files through
 the host's native helper (write-through moves on Windows; rename and directory
 sync on Unix). Undo uses native Windows deletion without attempting a directory
-file-open. The native package smoke covers preview, exact apply, repeat apply,
+file-open. Elevated CI also exposed Administrators-owned receipt staging from ordinary temporary-file creation; receipts now use exclusive current-user-owned private-state creation so later apply/undo can read them. The native package smoke covers preview, exact apply, repeat apply,
 undo and refusal after a user edit with an isolated Codex configuration fixture.
 This does not establish native Codex input or real-provider receipt. The separate
 Claude configuration trial can now run on Windows with the installed provider

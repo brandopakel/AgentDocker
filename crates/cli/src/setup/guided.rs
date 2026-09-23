@@ -646,7 +646,7 @@ fn save(directory: &Path, plan: &Plan) -> Result<()> {
     if path.symlink_metadata().is_ok() {
         dirs::private_file(&path, false, false)?;
     }
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    let mut temporary = tempfile::Builder::new().make_in(directory, dirs::create_private_file)?;
     let contents = serde_json::to_vec_pretty(plan)?;
     ensure!(
         contents.len() <= 64 * 1024 * 1024,

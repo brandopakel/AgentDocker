@@ -1564,6 +1564,7 @@ review and CI, and installed source `8d42db5` passed same-provider replacement
 and fresh active-turn CLI/peer input. Exact receipts and limits are recorded in
 [Codex input](CODEX-INPUT.md#receiver-upgrade-candidate).
 
+Setup receipt staging uses exclusive private-state creation: the current user owns the file even in an elevated Windows process, and an existing path is never reused.
 Setup receipts and configuration replacements flush their staged file before
 publication through `host::files::publish_staged`: Unix renames and syncs the
 parent directory, while Windows requests a same-directory write-through move.
