@@ -194,9 +194,9 @@ fn mcp(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
     let mut checks = Vec::new();
     if let Some(servers) = servers {
         for (name, server) in servers {
-            if !super::server_launch(spec, server).is_some_and(|(command, args)| {
-                mcp_command_matches(command, &args, marker, spec.name)
-            }) {
+            let launch = super::server_launch(spec, server)
+                .filter(|(command, args)| mcp_command_matches(*command, args, marker, spec.name));
+            let Some((Some(command), _)) = launch else {
                 if name == marker {
                     checks.push(Check::new(
                         "mcp",
@@ -206,7 +206,7 @@ fn mcp(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
                     ));
                 }
                 continue;
-            }
+            };
             if server["enabled"] == false || server["disabled"] == true {
                 checks.push(Check::new(
                     "mcp",
@@ -218,7 +218,7 @@ fn mcp(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
                 checks.push(executable(
                     "mcp",
                     &path,
-                    command.unwrap(),
+                    command,
                     server["cwd"].as_str(),
                     roots,
                 ));

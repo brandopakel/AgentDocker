@@ -190,7 +190,10 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             match bounded_claude_code_at(&delivery, &input, &opts, deadline).await {
                 Ok(Some(output)) => println!("{output}"),
                 Ok(None) => {}
-                Err(err) => eprintln!("agentdocker hook opencode ({}): {err:#}", input.hook_event_name),
+                Err(err) => eprintln!(
+                    "agentdocker hook opencode ({}): {err:#}",
+                    input.hook_event_name
+                ),
             }
             Ok(())
         }
@@ -953,10 +956,16 @@ async fn found_by_pid<B: Backend>(
     // second session multiplexed into this process are each a different
     // agent, and ending one of those instead would be worse than ending
     // nothing.
-    let ours =
-        |agent: &AgentRecord| {
-            same_hook_session(input.runtime(), agent, &input.session_id, pid, started, &here)
-        };
+    let ours = |agent: &AgentRecord| {
+        same_hook_session(
+            input.runtime(),
+            agent,
+            &input.session_id,
+            pid,
+            started,
+            &here,
+        )
+    };
     // The name is a hint, not proof. A session id prefix is eight
     // characters and a name outlives the session that chose it, so a
     // live record answering to it may be a different process entirely —

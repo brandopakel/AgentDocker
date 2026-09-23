@@ -38,11 +38,15 @@ mod tests {
     #[test]
     fn the_plugin_runs_this_executable_and_knows_its_own_copy() {
         let installed = document(Path::new("/Applications/Agent Docker/agentdocker"));
-        assert!(installed.contains(r#"const AGENTDOCKER = "/Applications/Agent Docker/agentdocker""#));
+        assert!(
+            installed.contains(r#"const AGENTDOCKER = "/Applications/Agent Docker/agentdocker""#)
+        );
         assert!(!installed.contains("__AGENTDOCKER__"));
         assert!(unmodified_install(&installed));
         let edited = installed.replace("timeout: 5000", "timeout: 9000");
         assert!(!unmodified_install(&edited), "a person's edit is theirs");
-        assert!(!unmodified_install("export const Mine = async () => ({})\n"));
+        assert!(!unmodified_install(
+            "export const Mine = async () => ({})\n"
+        ));
     }
 }
