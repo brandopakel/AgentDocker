@@ -87,3 +87,10 @@ Actual Windows Claude authentication and channel consent succeeded, but its MCP
 process then panicked while slicing CRLF bundled skill frontmatter. #237 adds
 line-ending-independent parsing and native manual/channel MCP startup checks;
 real model message receipt remains open until rebuilt acceptance passes.
+
+The CRLF-fixed #237 Windows archive passed 60 native checks on physical AWBP;
+actual Claude sent READY and a correlated idle reply. The next trial retained
+the message without an automatic receipt for 120 seconds: managed startup had
+never bound `session_id`. Root-only verified startup binding and native hook
+ancestry are now under follow-up validation. Idle/busy/draft receipt acceptance
+remains open until that rebuilt trial passes.

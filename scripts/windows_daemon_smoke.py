@@ -703,6 +703,31 @@ def main():
             step("daemon install is refused on Windows in words", install.returncode != 0 and "not available on Windows" in install.stderr, install.stderr.strip())
             reload = run("daemon", "reload", check=False, timeout=20)
             step("daemon reload is refused on Windows in words", reload.returncode != 0 and "Windows" in (reload.stderr + reload.stdout), (reload.stderr + reload.stdout).strip())
+        # A managed Claude identity exists before its first hook knows the
+        # provider session ID. Exercise the real hook binary/process ancestry;
+        # a synthetic provider here does not claim an actual model receipt.
+        hook_fixture = project / "managed-hook.py"
+        hook_fixture.write_text(
+            "import json, os, subprocess, sys, time\n"
+            "event={'hook_event_name':'SessionStart','session_id':'native-hook-fixture','cwd':os.getcwd()}\n"
+            "for _ in range(2):\n"
+            " p=subprocess.run([sys.argv[1],'hook','claude-code'],input=json.dumps(event),text=True,capture_output=True,timeout=5)\n"
+            " print(p.stdout, p.stderr, flush=True)\n"
+            " assert p.returncode == 0\n"
+            "time.sleep(30)\n", encoding="utf-8")
+        run("run", "--name", "smoke-managed-hook", "--runtime", "claude-code", "--", sys.executable, str(hook_fixture), str(cli))
+        hook_agent = inspect_agent("smoke-managed-hook")
+        hook_id, hook_pid = hook_agent["id"], hook_agent["pid"]
+        hook_deadline = time.monotonic() + 10
+        while hook_agent["spec"]["labels"].get("session_id") != "native-hook-fixture" and time.monotonic() < hook_deadline:
+            time.sleep(.1)
+            hook_agent = inspect_agent("smoke-managed-hook")
+        step("the native SessionStart hook binds a managed session without replacing its identity or owner",
+             hook_agent["spec"]["labels"].get("session_id") == "native-hook-fixture"
+             and hook_agent["id"] == hook_id and hook_agent["pid"] == hook_pid
+             and hook_agent["managed"] and hook_agent.get("owner") is not None, hook_agent)
+        run("stop", "smoke-managed-hook")
+        wait_status("smoke-managed-hook", "exited")
         # Managed sessions: the daemon starts a session owner, which holds
         # the child, its pipes or its terminal and its log. A piped command's
         # output reaches its log; a terminal command is typed into through

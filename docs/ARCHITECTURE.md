@@ -1579,3 +1579,10 @@ exact executable-name matching; wrappers and extra suffixes remain unverified.
 MCP onboarding extracts bundled skill frontmatter and section boundaries from
 either LF or Windows checkout CRLF. The original bundled bytes and skill
 installation stamps are unchanged; only instruction slicing accepts both forms.
+
+Managed Claude receipt binding: a root `SessionStart` hook joins its provider
+session ID to the existing managed record through `Register` after PID, process
+birth, runtime and physical checkout verification. The existing
+`AgentSessionBound` transaction preserves its ID, owner and queue. A child hook
+or conflicting session cannot bind or recover the root channel receipt. Native
+Windows ancestry uses the host process table rather than Unix `ps`.

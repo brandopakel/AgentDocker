@@ -110,6 +110,10 @@ pub enum Host {
 /// The fields of a Claude Code hook event this adapter looks at.
 #[derive(Deserialize, Debug, Default, Clone)]
 pub struct HookInput {
+    /// Present for subagent hooks, which must not bind the root session or
+    /// recover its channel receipts even when they inherit its environment.
+    #[serde(default)]
+    pub agent_id: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
     #[serde(default)]
@@ -865,7 +869,7 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
             .ok()
             .is_some_and(|id| !id.is_empty());
         if explicit {
-            return Ok(me);
+            return bind_start_session(backend, input, me, host_pid()).await;
         }
         let verified = host_pid()
             .and_then(|pid| {
@@ -881,7 +885,7 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
             })
             .unwrap_or(false);
         if verified {
-            return Ok(me);
+            return bind_start_session(backend, input, me, host_pid()).await;
         }
     }
     let mut labels = std::collections::BTreeMap::from([
@@ -920,21 +924,95 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
     }
 }
 
+/// Managed launches already have a registry row before Claude chooses a session
+/// ID. Bind that ID through the daemon's atomic registration path, with the
+/// same physical-process checks as an external hook. An inherited ID alone is
+/// not sufficient evidence, and an existing different session is never replaced.
+async fn bind_start_session<B: Backend>(
+    backend: &B,
+    input: &HookInput,
+    me: AgentRecord,
+    pid: Option<u32>,
+) -> Result<AgentRecord> {
+    if input.hook_event_name != "SessionStart"
+        || input.agent_id.is_some()
+        || !agentdocker_core::identity::plain_session_id(&input.session_id)
+        || me
+            .spec
+            .labels
+            .get("session_id")
+            .is_some_and(|s| !s.is_empty())
+    {
+        return Ok(me);
+    }
+    let Some((pid, started, here)) = pid.and_then(|pid| {
+        Some((
+            pid,
+            agentdocker_host::procinfo::start_time(pid)?,
+            input.cwd.as_ref()?.canonicalize().ok()?,
+        ))
+    }) else {
+        return Ok(me);
+    };
+    if !same_hook_session(&me, &input.session_id, pid, started, &here) {
+        return Ok(me);
+    }
+    let mut spec = me.spec.clone();
+    spec.labels
+        .insert("session_id".into(), input.session_id.clone());
+    match backend
+        .call(Request::Register {
+            spec,
+            pid: Some(pid),
+            session: agentdocker_host::multiplexer::own(),
+        })
+        .await?
+    {
+        Response::Agent { agent }
+            if agent.id == me.id
+                && same_hook_session(&agent, &input.session_id, pid, started, &here)
+                && agent.spec.labels.get("session_id") == Some(&input.session_id) =>
+        {
+            Ok(agent)
+        }
+        Response::Error { message, .. } => bail!("session binding refused: {message}"),
+        _ => bail!("session binding did not preserve the verified Claude identity"),
+    }
+}
+
 /// The pid of the Claude Code process, for the daemon's liveness check.
 /// Hooks run under a shell, so walk up past any shells to the first real
 /// ancestor. `None` if that can't be worked out; the agent then relies on
 /// `SessionEnd` to leave.
 fn host_pid() -> Option<u32> {
-    let mut pid = parent_id();
+    host_pid_from(parent_id(), parent_of)
+}
+
+fn host_pid_from(
+    mut pid: u32,
+    mut parent: impl FnMut(u32) -> Option<(u32, String)>,
+) -> Option<u32> {
     for _ in 0..6 {
-        let (ppid, comm) = parent_of(pid)?;
+        let (ppid, comm) = parent(pid)?;
         let name = Path::new(&comm)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(&comm)
             .trim_start_matches('-')
             .to_owned();
-        if !SHELLS.contains(&name.as_str()) {
+        let shell = SHELLS.contains(&name.as_str());
+        #[cfg(windows)]
+        let shell = shell
+            || [
+                "sh.exe",
+                "bash.exe",
+                "cmd.exe",
+                "powershell.exe",
+                "pwsh.exe",
+            ]
+            .iter()
+            .any(|s| name.eq_ignore_ascii_case(s));
+        if !shell {
             return Some(pid);
         }
         pid = ppid;
@@ -942,6 +1020,7 @@ fn host_pid() -> Option<u32> {
     None
 }
 
+#[cfg(unix)]
 fn parent_of(pid: u32) -> Option<(u32, String)> {
     let output = std::process::Command::new("ps")
         .args(["-o", "ppid=,comm=", "-p", &pid.to_string()])
@@ -952,6 +1031,12 @@ fn parent_of(pid: u32) -> Option<(u32, String)> {
     let ppid = parts.next()?.parse().ok()?;
     let comm = parts.collect::<Vec<_>>().join(" ");
     Some((ppid, comm))
+}
+
+#[cfg(windows)]
+fn parent_of(pid: u32) -> Option<(u32, String)> {
+    let process = agentdocker_host::procinfo::inspect(pid)?;
+    Some((process.ppid, process.argv.first()?.clone()))
 }
 
 /// Tell the daemon which branch and commit the session's directory is on.
@@ -1548,6 +1633,105 @@ mod tests {
             prompt_digest_entries: 5,
             prompt_digest_chars: 500,
         }
+    }
+
+    #[tokio::test]
+    async fn managed_session_start_binds_once_without_changing_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let pid = std::process::id();
+        let mut event = input("SessionStart");
+        event.cwd = Some(root.path().to_owned());
+        let mut original = agent("chosen-name", true);
+        original.pid = Some(pid);
+        original.process_started_at = agentdocker_host::procinfo::start_time(pid);
+        original.spec.workdir = event.cwd.clone();
+        original.spec.labels.remove("session_id");
+        original.managed = true;
+        let mut bound = original.clone();
+        bound
+            .spec
+            .labels
+            .insert("session_id".into(), event.session_id.clone());
+        let backend = Mock::with(vec![Response::Agent {
+            agent: bound.clone(),
+        }]);
+        let result = bind_start_session(&backend, &event, original.clone(), Some(pid))
+            .await
+            .unwrap();
+        assert_eq!(result, bound);
+        assert!(
+            matches!(&backend.requests()[0], Request::Register { spec, pid: Some(p), .. }
+            if *p == pid && spec.name == original.spec.name
+                && spec.labels.get("session_id") == Some(&event.session_id))
+        );
+        let again = bind_start_session(&backend, &event, result, Some(pid))
+            .await
+            .unwrap();
+        assert_eq!(again, bound);
+        assert_eq!(backend.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn session_binding_requires_root_start_and_exact_process_checkout() {
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let pid = std::process::id();
+        for case in 0..9 {
+            let mut event = input("SessionStart");
+            event.cwd = Some(root.path().to_owned());
+            let mut me = agent("managed", true);
+            me.pid = Some(pid);
+            me.process_started_at = agentdocker_host::procinfo::start_time(pid);
+            me.spec.workdir = event.cwd.clone();
+            me.spec.labels.remove("session_id");
+            let mut observed = Some(pid);
+            match case {
+                0 => event.agent_id = Some("child".into()),
+                1 => event.hook_event_name = "PostToolUse".into(),
+                2 => event.session_id.clear(),
+                3 => me.process_started_at = None,
+                4 => me.pid = Some(u32::MAX),
+                5 => me.spec.runtime = "codex".into(),
+                6 => event.cwd = Some(other.path().to_owned()),
+                7 => {
+                    me.spec
+                        .labels
+                        .insert("session_id".into(), "another-session".into());
+                }
+                _ => observed = None,
+            }
+            let backend = Mock::with(vec![]);
+            assert_eq!(
+                bind_start_session(&backend, &event, me.clone(), observed)
+                    .await
+                    .unwrap(),
+                me
+            );
+            assert!(backend.requests().is_empty(), "case {case}");
+        }
+    }
+
+    #[test]
+    fn hook_ancestry_skips_shells_but_is_bounded() {
+        assert_eq!(
+            host_pid_from(10, |pid| match pid {
+                10 => Some((20, "bash".into())),
+                20 => Some((30, "claude".into())),
+                _ => None,
+            }),
+            Some(20)
+        );
+        assert_eq!(host_pid_from(10, |_| None), None);
+        assert_eq!(host_pid_from(10, |pid| Some((pid + 1, "sh".into()))), None);
+        #[cfg(windows)]
+        assert_eq!(
+            host_pid_from(10, |pid| match pid {
+                10 => Some((20, "C:\\Program Files\\Git\\bin\\BASH.EXE".into())),
+                20 => Some((30, "C:\\Users\\fixture\\claude.exe".into())),
+                _ => None,
+            }),
+            Some(20)
+        );
     }
 
     fn digest_reply(text: &str) -> Response {

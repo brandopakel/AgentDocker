@@ -26,7 +26,8 @@ pub(super) async fn recover<B: Backend>(
     let Some(started) = agent.process_started_at else {
         return Ok(false);
     };
-    if input.session_id.is_empty()
+    if input.agent_id.is_some()
+        || input.session_id.is_empty()
         || agent.spec.runtime != "claude-code"
         || agent.spec.labels.get("session_id") != Some(&input.session_id)
         || !agent.status.is_live()
@@ -507,6 +508,21 @@ mod tests {
         };
         let mut next = message.clone();
         next.id = agentdocker_core::MessageId::generate();
+        let child_backend = BackendFixture {
+            queue: RefCell::new(vec![message.clone()]),
+            calls: RefCell::new(vec![]),
+            refuse_report: false,
+            refuse_ack: false,
+        };
+        let mut child = event.clone();
+        child.agent_id = Some("child".into());
+        assert!(
+            !recover(&child_backend, &child, &agent, directory.path())
+                .await
+                .unwrap()
+        );
+        assert!(child_backend.calls.borrow().is_empty());
+        assert_eq!(child_backend.queue.borrow().len(), 1);
         for (refuse_report, refuse_ack, expected_calls) in [
             (true, false, vec!["receipt"]),
             (false, true, vec!["receipt", "ack"]),
