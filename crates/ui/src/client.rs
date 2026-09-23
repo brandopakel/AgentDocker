@@ -343,17 +343,14 @@ fn absent(err: &std::io::Error) -> bool {
     )
 }
 
-/// The `agentd` beside this binary, else on `PATH`, detached with its
-/// output on the daemon log.
+/// The `agentd` [`daemon_to_start`](agentdocker_host::installation::daemon_to_start)
+/// names, detached with its output on the daemon log.
 fn spawn_agentd(socket: &Path, home: &Path) -> Result<Child> {
-    let exe = agentdocker_host::procinfo::executable_path()
-        .ok()
-        .and_then(|me| {
-            me.parent()
-                .map(|dir| dir.join(format!("agentd{}", std::env::consts::EXE_SUFFIX)))
-        })
-        .filter(|sibling| sibling.is_file())
-        .unwrap_or_else(|| PathBuf::from(format!("agentd{}", std::env::consts::EXE_SUFFIX)));
+    let exe = agentdocker_host::installation::daemon_to_start(
+        agentdocker_host::procinfo::executable_path()
+            .ok()
+            .as_deref(),
+    );
     agentdocker_host::dirs::secure_state_dir(home)?;
     let log = agentdocker_host::dirs::private_file(&paths::daemon_log(home), true, true)?;
     let mut command = Command::new(&exe);

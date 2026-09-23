@@ -560,12 +560,14 @@ somebody checks that claim later. Evidence is kept whole.
 
 ### Planned daemon replacement
 
-`agentdocker daemon reload` currently returns `unavailable` and leaves the
-current daemon and agents running. The previous descriptor-only implementation
-killed real batch and PTY fixtures during runtime shutdown. Safe process and I/O
-transfer, successor readiness and upgrade-binary selection remain delivery
-blockers. Do not use ordinary daemon stop/start as a seamless upgrade: stopping
-terminates managed agents.
+`agentdocker daemon reload` requires `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the
+running daemon; without that gate it returns `unavailable` and leaves the daemon
+and agents running. The gated implementation transfers coordinator ownership to
+a checked successor while session owners retain managed processes and I/O.
+Broader actual-provider, attached-draft and uncertain-delivery acceptance remains
+open, so the gate stays experimental. See the
+[remaining acceptance work](REMAINING-WORK.md). Ordinary daemon stop/start is a
+separate operation: stopping terminates managed agents.
 
 ---
 

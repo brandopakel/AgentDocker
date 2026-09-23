@@ -10,6 +10,7 @@ mod format;
 mod hooks;
 mod input_status;
 mod mcp;
+mod opencode_plugin;
 mod provider_status;
 mod rtk;
 mod sender;

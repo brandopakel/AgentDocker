@@ -1597,16 +1597,17 @@ mod tests {
         let binding = binding_of(&daemon, &receiver.id);
         assert_eq!(binding.restart.launched, Some(launched.clone()));
         assert_eq!(binding.restart.attempts, 1);
+        // Wait for the line, not the file: `>>` creates the mark before
+        // `echo` writes to it, so an existing mark can still be empty.
+        let mut mark = String::new();
         for _ in 0..50 {
-            if dir.path().join("mark").exists() {
+            mark = std::fs::read_to_string(dir.path().join("mark")).unwrap_or_default();
+            if mark.ends_with('\n') {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("mark")).unwrap(),
-            "launched\n"
-        );
+        assert_eq!(mark, "launched\n");
         // Starting: it holds its place, nothing more is launched.
         daemon.tend_controllers();
         assert_eq!(events_since(&daemon, seq).await.len(), 2);
