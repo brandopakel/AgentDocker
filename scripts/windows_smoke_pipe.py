@@ -139,8 +139,11 @@ class WindowsSmokePipe:
         self._cancel_error = None
         deadline = _deadline(timeout)
         while True:
-            # GENERIC_READ | GENERIC_WRITE; OPEN_EXISTING; FILE_FLAG_OVERLAPPED.
-            handle = _create(path, 0xC0000000, 0, None, 3, 0x40000000, None)
+            # Match the product client: FILE_FLAG_OVERLAPPED plus
+            # SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION. The server
+            # verifies identity before reading; Windows' default dynamic
+            # context cannot be identified until the first client write.
+            handle = _create(path, 0xC0000000, 0, None, 3, 0x40110000, None)
             if handle != ctypes.c_void_p(-1).value:
                 self._handle = handle
                 break

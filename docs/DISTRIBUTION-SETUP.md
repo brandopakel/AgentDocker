@@ -87,6 +87,14 @@ feed verifies. Existing channel bodies/assets that do not match the publisher's
 format are preserved and require investigation. Hosted feed and client
 acceptance remain necessary after the first real promotion.
 
+GitHub's release-by-tag endpoint only returns published releases. On a channel
+404, the publisher also checks the authenticated release inventory for the
+draft, across at most ten pages of 100 releases. Ambiguous matches, malformed
+responses (including entries without a string tag name), lookup failures or a
+larger inventory fail without changing any
+release. This lets initial publication and interrupted-publication repair
+verify uploaded draft assets before exposing the feed.
+
 ## The Homebrew tap
 
 The tap and publishing configuration are present. The release generator builds
@@ -330,3 +338,10 @@ it does not complete the installer/service/update or native Codex input work.
    exercise hosted update/rollback through the installed app.
 4. Open: finish physical notification and independent-machine acceptance; retain
    results in the existing audit/verification records.
+
+The beta.2 hosted updater has a macOS staging defect: an installed ad-hoc preview
+can discover the next preview without new consent, but staging still requests a
+Gatekeeper assessment unless `--local-preview` is supplied explicitly. Source now
+passes the computed preview consent through both staging and activation; a signed
+preview still receives Gatekeeper assessment. Publish the correction in a new
+immutable candidate; do not replace beta.2 assets.

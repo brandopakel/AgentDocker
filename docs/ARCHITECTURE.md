@@ -36,7 +36,7 @@ Coordination types and state machines are pure; time-dependent operations accept
 
 ### `agentdocker-host` (`crates/host`)
 
-Shared host I/O: project/path discovery, Git/content inspection, process identity, installed-runtime/config inventory, bounded subprocesses, terminal operations, notifications, multiplexer queries and optional container transports. It owns no daemon registry or durable coordination state.
+Shared host I/O: project/path discovery, Git/content inspection, process identity, installed-runtime/config inventory, bounded subprocesses, terminal operations, notifications, multiplexer queries and optional container transports. It owns no daemon registry or durable coordination state. Windows IPC keeps protected user/SYSTEM pipe ACLs and same-user checks on both ends. The server identifies the connected client through its pipe token, without opening a client process across logon sessions; it restores the thread before returning or interpreting application input. Clients explicitly request `SECURITY_IDENTIFICATION` with `SECURITY_SQOS_PRESENT` so their identity is available before the first write, and retain server-process and pipe-ACL validation. [Windows connection boundary](WINDOWS-PORT.md#local-connection-boundary).
 
 ### `agentd` (`crates/agentd`)
 
@@ -131,7 +131,7 @@ A thin client. Each invocation opens one connection, sends one request, and prin
 
 ### Starting the daemon
 
-Nobody has to start `agentd` by hand. A client that cannot connect — no socket file, or nothing listening — starts the daemon itself, the way `ssh-agent` and `buildkitd` are started by their clients, then waits for the socket (3 s for the CLI and the MCP server, 1 s for the entire hook operation, which fails open past that). `AGENTDOCKER_NO_AUTOSTART=1` turns this off. The daemon it starts is the `agentd` beside the client's own binary when there is one, so a build in `target/` starts the matching daemon, else `agentd` on `PATH`; it runs in its own process group with stdout and stderr appended to `<home>/agentd.log`, plain text when that is not a terminal. The daemon trims its own log on the minute tick: past 4 MiB the file is copied to `agentd.log.1` and truncated in place (the writers hold it in append mode, so the next line lands at the start; a line written between the copy and the truncation is lost, which a diagnostic log can afford), and the two together never exceed 8 MiB.
+Nobody has to start `agentd` by hand. A client that cannot connect — no socket file, or nothing listening — starts the daemon itself, the way `ssh-agent` and `buildkitd` are started by their clients, then waits for the socket (3 s for the CLI and the MCP server, 1 s for the entire hook operation, which fails open past that). `AGENTDOCKER_NO_AUTOSTART=1` turns this off. The daemon it starts is the activated release's `agentd` when the client runs from a managed release that is no longer the activated one (an app left open across `desktop install` would otherwise bring its own older daemon back the moment the old one stopped), else the `agentd` beside the client's own binary when there is one, so a build in `target/` starts the matching daemon, else `agentd` on `PATH`; it runs in its own process group with stdout and stderr appended to `<home>/agentd.log`, plain text when that is not a terminal. The daemon trims its own log on the minute tick: past 4 MiB the file is copied to `agentd.log.1` and truncated in place (the writers hold it in append mode, so the next line lands at the start; a line written between the copy and the truncation is lost, which a diagnostic log can afford), and the two together never exceed 8 MiB.
 
 Exactly one daemon serves a socket, guaranteed by an advisory lock beside it (`agentd.sock` → `agentd.lock`). The daemon takes the lock for its lifetime before touching the socket, and exits at once, successfully, if it cannot. A client decides whether to spawn by taking the same lock for an instant: getting it means no daemon exists; not getting it means one is up or starting, so the client only waits. Two clients racing may both spawn a daemon, and the loser exits on the lock. The daemon's stale-socket check (remove the file if nothing answers on it) stays as a second line of defence.
 
@@ -167,6 +167,8 @@ Where the MCP server offers tools the model *may* call, hooks make coordination 
 | `PreToolUse` (Edit/Write/MultiEdit/NotebookEdit; for Codex, its `apply_patch` — also matched as Edit/Write — including one nested in a code-mode script, whose calls reach the hooks one by one: every file the patch names on a line that begins `*** Update/Add/Delete File:` or `*** Move to:` (the whole rest of the line, including trailing spaces, is the path; CRLF is a line ending and a header quoted inside an added line is content), read from the patch text only (`command`, the bare string, or `input`), source and destination of a move, a new file by its would-be path. Only the paths are read, locally; shell or script writes are outside this guard) | claim `path:<absolute file>` exclusive, 600 s, `automatic`, note "editing in <Claude Code\|Codex> session …" | on conflict `permissionDecision: deny` with the holder and their note; otherwise nothing, so the user's own permission rules still apply |
 | `Stop` | release the adapter's automatic edit leases (`release_all {only_automatic}`), never what the agent claimed itself; unless `stop_hook_active` or `--no-wake`, peek inbox, flush output, then acknowledge delivered IDs | `decision: block` with the messages when any are waiting, so the model handles them before finishing |
 | `SessionEnd` | release all; deregister | nothing |
+
+**OpenCode.** `agentdocker hook opencode` takes the same events in the same shape and answers with the same rules, registering the session as `opencode-<8>` of runtime `opencode`. OpenCode has no hook configuration file; the plugin `agentdocker setup opencode` installs in `~/.config/opencode/plugins/` translates its events: `tool.execute.before` on `edit`/`write`/`apply_patch` is `PreToolUse` (a deny is thrown, which refuses the tool) and on `read` records the read; `tool.execute.after` is `PostToolUse`; `chat.message` (each message the person sends) is `UserPromptSubmit`; the first `experimental.chat.system.transform` of a session is `SessionStart`, whose orientation stays in that session's system prompt while the messages waiting at the start are told once; `session.idle` is `Stop`, and a `block` answer (messages waiting) is sent to the session with `client.session.promptAsync`, which wakes it; `session.deleted` is `SessionEnd`. When nothing is waiting at `session.idle`, the plugin runs `agentdocker watch --as <agent>` (the agent id comes back in the hook's answer) and a message that arrives later wakes the session the same way; the watch ends when a turn starts, and one that ends while the session is still idle (the daemon restarted, say) is started again after 1 s, doubling to at most 30 s. One wake-up is submitted at a time per session, so the watch and its one-second catch-up cannot both prompt for the same message; what a wake-up carries is in flight from its submission and taken back if OpenCode refuses the prompt. Printing an answer is not delivery here: in OpenCode mode the hook does not acknowledge what it listed but returns it, and only when its answer carries text (a hook that failed or timed out after reading the inbox returns nothing to acknowledge) (`agentdocker.delivered`, message ids per agent), and the plugin reports it back as a `Delivered` event, which acknowledges exactly those ids, only at the `session.idle` that ends the turn that carried them. A turn that errors (`session.error`, including an abort) or a wake-up OpenCode refuses reports nothing, so AgentDocker offers those messages again; a message already waiting or in a turn is not told twice. Its MCP entry is OpenCode's own (`McpWiring::OpencodeJson`: `mcp.agentdocker = {type: "local", command: [exe, "mcp", "--runtime", "opencode"], enabled: true}`).
 
 Design points:
 
@@ -1030,7 +1032,10 @@ live session IDs, captures each file generation, and reads outside the daemon
 state lock. File cursors, dedupe fingerprints, cumulative baselines, hourly
 buckets, gaps and `usage_recorded {generation, samples, gaps}` commit together
 under the coordinator fence. `usage_reconciled {agent, samples}` moves retained
-unattributed contributions only after unique runtime/session resolution;
+unattributed contributions only after runtime/session resolution: a session
+resumed under a new agent has several registrations, and each takes the
+samples made while it was current (from its first registration until the
+next; the first also takes earlier ones; simultaneous registrations take none);
 previously attributed history does not follow a moved agent. Replay fingerprints
 and baselines survive aggregate retention. New tables are additive and preserve
 the existing schema-23 meanings. No transcript text is retained.
@@ -1118,7 +1123,9 @@ are unknown, never zero. The design:
 - **Historical attribution.** Match by runtime plus provider session, following
   registered identity aliases. Store the resulting `agent_id?` and `project_id?`
   on the usage bucket at ingestion; deleting, moving or retiring a current agent
-  cannot move its historical usage into another project. Unmatched or ambiguous
+  cannot move its historical usage into another project. A session with several
+  registrations (resumed after its agent ended) attributes each sample to the
+  registration current at the sample's time. Unmatched or ambiguous
   sessions remain unattributed, with unknown project, until an explicit
   idempotent reconciliation has enough evidence. Reconciliation uses the
   retained sample identities and their bucket contributions, not a second
@@ -1245,7 +1252,9 @@ new bounded suffix and generation before committing; a restart discards the
 proof and rehashes the saved prefix. An appended generation of the same file may
 retain parser state only after all accepted prefix bytes match. Rewrites,
 replacement, truncation or a changing snapshot keep coverage incomplete and
-require an explicit gap/replay. No transcript bytes enter durable cursors; only
+require an explicit gap/replay. A version-3 parser cursor first verifies its old
+prefix, then replays from zero using version 4 without inventing a source-change
+gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
 The standalone reader API retains its earlier 16 MiB whole-prefix limit.
 The 22+ MiB reader regression and the updated daemon partial-tail/restart trial
@@ -1295,6 +1304,16 @@ above covers these format, replay and cursor changes. Final source review,
 installed/provider-billing acceptance and sustained resource trials remain open.
 Only accounting metadata was retained; temporary raw transcript copies and the
 private trial databases were removed.
+
+Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278 and
+2.1.280 transcripts and Codex 0.155.1 rollouts extend that explicit version
+coverage. Top-level Claude counters remain authoritative: nested iteration/cache
+details are not added again, zero counters stay zero and absent reasoning remains
+unknown. Codex still reports cumulative snapshots. Unobserved patch versions are
+not assumed compatible. Parser cursor v4 replays prior scans with the same stable
+source identities, allowing newly supported records to be collected without
+recounting earlier accepted samples. Existing historical gaps remain visible;
+this change does not claim their reconciliation or provider-billing accuracy.
 
 Collection configuration is separate from scan progress: enabling collection or
 changing roots can leave a scan waiting to start, without meaning collection is
