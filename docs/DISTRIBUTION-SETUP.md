@@ -338,3 +338,10 @@ it does not complete the installer/service/update or native Codex input work.
    exercise hosted update/rollback through the installed app.
 4. Open: finish physical notification and independent-machine acceptance; retain
    results in the existing audit/verification records.
+
+The beta.2 hosted updater has a macOS staging defect: an installed ad-hoc preview
+can discover the next preview without new consent, but staging still requests a
+Gatekeeper assessment unless `--local-preview` is supplied explicitly. Source now
+passes the computed preview consent through both staging and activation; a signed
+preview still receives Gatekeeper assessment. Publish the correction in a new
+immutable candidate; do not replace beta.2 assets.
