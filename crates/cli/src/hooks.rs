@@ -66,6 +66,9 @@ pub enum HookCommand {
     ClaudeReceipt(channel_receipt::deferred::DeferredArgs),
     /// Report Codex activity and deliver queued messages at lifecycle boundaries.
     Codex,
+    /// Handle one event from the OpenCode plugin, read as JSON from stdin in
+    /// Claude Code's hook shape: leases on edits, messages, the journal.
+    Opencode(ClaudeCodeArgs),
     /// Write the hook configuration into a host's settings file.
     Install(InstallArgs),
 }
@@ -132,6 +135,25 @@ pub struct HookInput {
     /// The session's JSONL transcript; its tail is the `Stop` summary.
     #[serde(default)]
     pub transcript_path: Option<PathBuf>,
+    /// The runtime the event comes from, set by the subcommand that read
+    /// it: Claude Code unless the OpenCode plugin sent it.
+    #[serde(skip)]
+    pub runtime: Option<&'static str>,
+}
+
+impl HookInput {
+    pub fn runtime(&self) -> &'static str {
+        self.runtime.unwrap_or(RUNTIME)
+    }
+}
+
+/// The name a hook session registers under: `claude-<8>` or `opencode-<8>`.
+pub fn session_name_for(input: &HookInput) -> String {
+    let name = session_name(&input.session_id);
+    match input.runtime() {
+        "opencode" => name.replacen("claude-", "opencode-", 1),
+        _ => name,
+    }
 }
 
 pub async fn run(client: Client, args: HookArgs) -> Result<()> {
@@ -147,6 +169,34 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             Ok(())
         }
         HookCommand::Install(install) => install_hooks(&install),
+        HookCommand::Opencode(opts) => {
+            // The plugin runs this for each event and acts on its answer;
+            // failing open, as the Claude Code hook does, never blocks it.
+            let mut input = match read_event() {
+                Ok(input) => input,
+                Err(err) => {
+                    eprintln!("agentdocker hook opencode: {err:#}");
+                    return Ok(());
+                }
+            };
+            input.runtime = Some("opencode");
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+            let delivery = HookDelivery {
+                backend: &client,
+                pending: RefCell::new(Vec::new()),
+                channel_input: false,
+                channel_home: None,
+            };
+            match bounded_claude_code_at(&delivery, &input, &opts, deadline).await {
+                Ok(Some(output)) => println!("{output}"),
+                Ok(None) => {}
+                Err(err) => eprintln!(
+                    "agentdocker hook opencode ({}): {err:#}",
+                    input.hook_event_name
+                ),
+            }
+            Ok(())
+        }
         HookCommand::ClaudeCode(opts) => {
             // Fail open all the way down: an unreadable or malformed event is
             // reported on stderr and Claude Code carries on.
@@ -831,7 +881,7 @@ async fn current_agent<B: Backend>(backend: &B, input: &HookInput) -> Result<Opt
     let reference = std::env::var("AGENTDOCKER_AGENT_ID")
         .ok()
         .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| session_name(&input.session_id));
+        .unwrap_or_else(|| session_name_for(input));
     match backend.call(Request::Inspect { agent: reference }).await? {
         Response::Agent { agent } if agent.status.is_live() => Ok(Some(agent)),
         _ => Ok(None),
@@ -906,8 +956,16 @@ async fn found_by_pid<B: Backend>(
     // second session multiplexed into this process are each a different
     // agent, and ending one of those instead would be worse than ending
     // nothing.
-    let ours =
-        |agent: &AgentRecord| same_hook_session(agent, &input.session_id, pid, started, &here);
+    let ours = |agent: &AgentRecord| {
+        same_hook_session(
+            input.runtime(),
+            agent,
+            &input.session_id,
+            pid,
+            started,
+            &here,
+        )
+    };
     // The name is a hint, not proof. A session id prefix is eight
     // characters and a name outlives the session that chose it, so a
     // live record answering to it may be a different process entirely —
@@ -941,6 +999,7 @@ async fn found_by_pid<B: Backend>(
 }
 
 fn same_hook_session(
+    runtime: &str,
     agent: &AgentRecord,
     session: &str,
     pid: u32,
@@ -950,7 +1009,7 @@ fn same_hook_session(
     agent.status.is_live()
         && agent.pid == Some(pid)
         && agent.process_started_at == Some(started)
-        && agent.spec.runtime == RUNTIME
+        && agent.spec.runtime == runtime
         && agent
             .spec
             .labels
@@ -981,6 +1040,7 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
                 let started = agentdocker_host::procinfo::start_time(pid)?;
                 let here = input.cwd.as_ref()?.canonicalize().ok()?;
                 Some(same_hook_session(
+                    input.runtime(),
                     &me,
                     &input.session_id,
                     pid,
@@ -1005,8 +1065,8 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
         labels.insert("source".to_owned(), source.clone());
     }
     let spec = AgentSpec {
-        name: session_name(&input.session_id),
-        runtime: RUNTIME.to_owned(),
+        name: session_name_for(input),
+        runtime: input.runtime().to_owned(),
         workdir: input.cwd.clone(),
         labels,
         ..AgentSpec::default()
@@ -1059,7 +1119,7 @@ async fn bind_start_session<B: Backend>(
     }) else {
         return Ok(me);
     };
-    if !same_hook_session(&me, &input.session_id, pid, started, &here) {
+    if !same_hook_session(input.runtime(), &me, &input.session_id, pid, started, &here) {
         return Ok(me);
     }
     let mut spec = me.spec.clone();
@@ -1075,7 +1135,14 @@ async fn bind_start_session<B: Backend>(
     {
         Response::Agent { agent }
             if agent.id == me.id
-                && same_hook_session(&agent, &input.session_id, pid, started, &here)
+                && same_hook_session(
+                    input.runtime(),
+                    &agent,
+                    &input.session_id,
+                    pid,
+                    started,
+                    &here,
+                )
                 && agent.spec.labels.get("session_id") == Some(&input.session_id) =>
         {
             Ok(agent)
@@ -2523,6 +2590,9 @@ mod tests {
             "{paths:?}"
         );
         assert!(!paths.iter().any(|p| p.ends_with("unrelated.py")));
+        ev.tool_input = Some(json!({ "command": "*** Update File: /tmp/project/space \n+x" }));
+        let paths = edited_paths(&ev);
+        assert!(paths[0].to_string_lossy().ends_with("space "), "{paths:?}");
 
         // Trailing spaces belong to a Unix file name, not the CRLF ending.
         ev.tool_input = Some(json!({
