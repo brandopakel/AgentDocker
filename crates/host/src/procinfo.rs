@@ -851,10 +851,16 @@ mod tests {
             session_runtime_of(&argv("node /x/@anthropic-ai/claude-code/cli.js bg-spare")),
             Some("claude-code")
         );
-        assert_eq!(session_runtime_of(&argv("claude bg-pty-host --bg-pty-host /tmp/x")), None);
+        assert_eq!(
+            session_runtime_of(&argv("claude bg-pty-host --bg-pty-host /tmp/x")),
+            None
+        );
         assert_eq!(session_runtime_of(&argv("claude attach")), None);
         assert_eq!(session_runtime_of(&argv("claude daemon run")), None);
-        assert_eq!(session_runtime_of(&argv("codex --full-auto")), Some("codex"));
+        assert_eq!(
+            session_runtime_of(&argv("codex --full-auto")),
+            Some("codex")
+        );
         assert_eq!(runtime_of(&argv("claude daemon run --origin x")), None);
         assert_eq!(runtime_of(&argv("claude --resume")), Some("claude-code"));
         assert_eq!(runtime_of(&argv("codex --full-auto")), Some("codex"));
