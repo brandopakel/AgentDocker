@@ -152,10 +152,13 @@ impl State {
         self.tell_channel(
             &channel,
             format!(
-                "You are both changing {}. Talk here with `agentdocker send --to channel:{} \"…\"`, \
-                 ask for review with `agentdocker review-request --as <you> {}`, and review with \
-                 `agentdocker review --as <you> {} --approve`. Close it when the work is final.",
+                "You are both changing {}. Talk here with `send_message` to `channel:{}`, ask for \
+                 review with `request_review` and review with `review` on this channel \
+                 (from a shell: `agentdocker send --to channel:{} \"…\"`, \
+                 `agentdocker review-request --as <you> {}` and \
+                 `agentdocker review --as <you> {} --approve`). Close it when the work is final.",
                 path.display(),
+                channel.id,
                 channel.id,
                 channel.id,
                 channel.id
