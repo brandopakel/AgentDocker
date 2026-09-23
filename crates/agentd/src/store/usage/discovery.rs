@@ -30,18 +30,21 @@ pub(crate) enum Change<'a> {
 
 impl Store {
     pub(crate) fn usage_discovery(&self) -> Result<Option<Progress>> {
-        let progress: Option<Progress> = self.document("usage", "discovery")?;
-        if let Some(progress) = &progress {
-            anyhow::ensure!(
-                progress.generation > 0
-                    && progress
-                        .jobs
-                        .checked_add(progress.failures)
-                        .is_some_and(|n| n <= MAX_FILES),
-                "invalid saved discovery counts"
-            );
-        }
-        Ok(progress)
+        // This is restartable enumeration metadata, not accepted accounting.
+        // A malformed document starts a new generation; actual SQLite failures
+        // must still fence storage. Change::Start clears its stale manifest.
+        let progress: Option<Progress> = match self.document("usage", "discovery") {
+            Ok(progress) => progress,
+            Err(error) if error.is::<serde_json::Error>() => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        Ok(progress.filter(|progress| {
+            progress.generation > 0
+                && progress
+                    .jobs
+                    .checked_add(progress.failures)
+                    .is_some_and(|n| n <= MAX_FILES)
+        }))
     }
 
     pub(crate) fn usage_next_job(&self) -> Result<Option<Job>> {
@@ -142,7 +145,7 @@ mod tests {
     use agentdocker_host::usage::{discovery::Walk, reader::Runtime};
 
     #[test]
-    fn corrupt_saved_counts_and_job_identity_are_refused() {
+    fn corrupt_discovery_metadata_is_restartable_but_job_identity_is_refused() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("source.jsonl");
         std::fs::write(&path, "").unwrap();
@@ -159,7 +162,7 @@ mod tests {
             failures: 1,
         };
         store.put_document("usage", "discovery", &progress).unwrap();
-        assert!(store.usage_discovery().is_err());
+        assert!(store.usage_discovery().unwrap().is_none());
         let job = Job {
             id: 1,
             source: Source {
@@ -177,6 +180,15 @@ mod tests {
             )
             .unwrap();
         assert!(store.usage_next_job().is_err());
+        store
+            .put_document("usage", "discovery", &"malformed")
+            .unwrap();
+        assert!(store.usage_discovery().unwrap().is_none());
+        store.conn.execute("DROP TABLE documents", []).unwrap();
+        assert!(
+            store.usage_discovery().is_err(),
+            "SQL errors must not be hidden"
+        );
     }
 
     #[test]
