@@ -154,6 +154,9 @@ def main():
     env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_")}
     env["AGENTDOCKER_HOME"] = str(home)
     env["AGENTDOCKER_NO_AUTOSTART"] = "1"
+    # Preserve pre-logger startup stages for intermittent fresh-home failures.
+    # This emits fixed labels/PIDs/timings, not args, environment or state.
+    env["AGENTDOCKER_STARTUP_TRACE"] = "1"
     # A launcher directory on the daemon's PATH, as npm's is on a person's:
     # an npm-installed provider is a `.cmd` shim there, and a session
     # started by that bare name must find and run it.
@@ -1067,6 +1070,21 @@ def main():
         if os.name == "nt":
             report["root_acl"] = acl_report(root).strip()
             report["home_acl"] = acl_report(home).strip()
+        # Every private home is relevant: the last startup used to fail with
+        # an empty error tail while the retained log came from the first home.
+        # Capture a bounded tail before cleanup removes the actual evidence.
+        report["home_startup_logs"] = []
+        for made in homes:
+            item = {"home": str(made)}
+            try:
+                with (made / "agentd.log").open("rb") as source:
+                    source.seek(0, os.SEEK_END)
+                    size = source.tell()
+                    source.seek(max(0, size - 16384))
+                    item.update(log_size=size, tail=source.read(16384).decode(errors="replace"))
+            except OSError as error:
+                item["unavailable"] = str(error)
+            report["home_startup_logs"].append(item)
         if not report.get("cleanup"):
             for made in homes:
                 shutil.rmtree(made, ignore_errors=True)

@@ -429,3 +429,14 @@ message both received correlated replies and automatic receipts. Claude required
 local-development channel consent again. The scheduled task was removed and no
 owned processes remained. This is bounded restart/reopen evidence, not reboot
 or multi-day acceptance.
+
+
+For intermittent first-start investigation, `AGENTDOCKER_STARTUP_TRACE=1` adds
+fixed startup-stage labels, the process ID and elapsed milliseconds to stderr,
+including stages before the normal logger starts. It emits no command arguments,
+environment values or state contents, and does not extend startup deadlines.
+The native acceptance driver enables it and retains a bounded 16 KiB log tail
+from every owned home before cleanup. Failed CI packages are retained separately
+as `windows-failed-package-diagnostics`, never as an accepted preview. The
+OWNER RIGHTS fresh-home timeout in run35821898700 remains an unresolved failure;
+added diagnostics and any later pass alone do not establish its cause or a fix.
