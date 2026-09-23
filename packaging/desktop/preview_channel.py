@@ -73,10 +73,31 @@ class GitHub:
             if not body.startswith(b"HTTP/"):
                 break
         if status[1] == b"404":
+            # The tag endpoint only returns published releases. An initial
+            # channel is deliberately a draft until its uploaded bytes verify.
+            if tag == CHANNEL:
+                return self.draft_channel()
             return None
         if result.returncode or status[1] != b"200":
             raise RuntimeError(f"GitHub release lookup failed (HTTP {status[1].decode()})")
         return json.loads(body)
+
+    def draft_channel(self):
+        matches = []
+        for page in range(1, 11):
+            entries = json.loads(self.command(
+                "api", f"repos/{self.repo}/releases?per_page=100&page={page}"))
+            if (not isinstance(entries, list) or len(entries) > 100
+                    or any(not isinstance(entry, dict) for entry in entries)):
+                raise ValueError("invalid release inventory while looking for the draft channel")
+            matches.extend(entry for entry in entries if entry.get("tag_name") == CHANNEL)
+            if len(matches) > 1:
+                raise ValueError("ambiguous preview channel releases; preserved")
+            if len(entries) < 100:
+                # Promotion still validates ownership, draft/prerelease state,
+                # the high-water record and exact assets before any mutation.
+                return matches[0] if matches else None
+        raise ValueError("release inventory exceeds draft lookup limit; preserved")
 
     def source(self, tag):
         ref = json.loads(self.command("api", f"repos/{self.repo}/git/ref/tags/{tag}"))["object"]

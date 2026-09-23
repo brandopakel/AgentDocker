@@ -265,6 +265,41 @@ class GitHubTransport(unittest.TestCase):
     def setUp(self):
         self.github = CHANNEL.GitHub(FakeGitHub.repo)
 
+    def test_channel_404_finds_the_unpublished_draft_and_verifies_its_bytes(self):
+        fake = FakeGitHub()
+        tag = "v0.2.0-beta.2"
+        fake.candidate(tag)
+        fake.fail_publish = True
+        with self.assertRaises(RuntimeError):
+            CHANNEL.promotion(fake, tag)
+        draft = copy.deepcopy(fake.releases[CHANNEL.CHANNEL])
+        missing = subprocess.CompletedProcess([], 1, b"HTTP/2.0 404 Not Found\r\n\r\n{}")
+        with patch.object(CHANNEL.subprocess, "run", return_value=missing), \
+                patch.object(self.github, "command", return_value=json.dumps([draft]).encode()) as command:
+            self.assertEqual(self.github.release(CHANNEL.CHANNEL), draft)
+            self.assertIn("per_page=100&page=1", command.call_args.args[1])
+        fake.fail_publish = False
+        self.assertEqual(CHANNEL.promotion(fake, tag)["action"], "promoted")
+
+    def test_draft_lookup_is_bounded_and_preserves_ambiguous_releases(self):
+        draft = {"tag_name": CHANNEL.CHANNEL, "draft": True}
+        full_page = [{"tag_name": f"v0.1.{i}"} for i in range(100)]
+        with patch.object(self.github, "command", side_effect=[json.dumps(full_page).encode(), json.dumps([draft]).encode()]):
+            self.assertEqual(self.github.draft_channel(), draft)
+        for pages in [[draft, draft], {}, [None]]:
+            with self.subTest(entries=pages), patch.object(self.github, "command", return_value=json.dumps(pages).encode()):
+                with self.assertRaises(ValueError):
+                    self.github.draft_channel()
+        with patch.object(self.github, "command", return_value=json.dumps(full_page).encode()) as command:
+            with self.assertRaisesRegex(ValueError, "lookup limit"):
+                self.github.draft_channel()
+            self.assertEqual(command.call_count, 10)
+        with patch.object(self.github, "command", side_effect=RuntimeError("permission denied")):
+            with self.assertRaises(RuntimeError):
+                self.github.draft_channel()
+        with patch.object(self.github, "command", return_value=b"[]"):
+            self.assertIsNone(self.github.draft_channel())
+
     def test_only_404_means_missing_release(self):
         for status, code in [(200, 0), (404, 1), (403, 1), (500, 1)]:
             result = subprocess.CompletedProcess([], code, f'HTTP/2.0 {status} Test\r\nX: y\r\n\r\n{{"tag_name":"v0.1.0"}}'.encode())
