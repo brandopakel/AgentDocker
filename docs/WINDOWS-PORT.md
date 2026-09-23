@@ -159,7 +159,7 @@ crash, and what that means for a person:
   when no task is installed. Real product lifecycle/provider-survival
   acceptance remains separate from source tests and the isolated supervisor
   prototype. See the [user commands](GUIDE.md) and
-  [service semantics](ARCHITECTURE.md#wire-protocol).
+  [service semantics](ARCHITECTURE.md#starting-the-daemon).
 - A validation command is ended on a timeout, but only the command itself:
   there is no process group and no Job Object around it yet, so whether its
   descendants survived is not reported.

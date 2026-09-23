@@ -135,7 +135,25 @@ Nobody has to start `agentd` by hand. A client that cannot connect — no socket
 
 Exactly one daemon serves a socket, guaranteed by an advisory lock beside it (`agentd.sock` → `agentd.lock`). The daemon takes the lock for its lifetime before touching the socket, and exits at once, successfully, if it cannot. A client decides whether to spawn by taking the same lock for an instant: getting it means no daemon exists; not getting it means one is up or starting, so the client only waits. Two clients racing may both spawn a daemon, and the loser exits on the lock. The daemon's stale-socket check (remove the file if nothing answers on it) stays as a second line of defence.
 
-**As a service.** On-demand start is enough for a laptop; `agentdocker daemon install` additionally runs `agentd` as a login service so it survives reboots and crashes and belongs to no terminal — a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`) on macOS, a systemd user unit (`~/.config/systemd/user/agentd.service`) on Linux. Both restart the daemon after a *failure* only, because a clean exit is what a service daemon does when an on-demand one already holds the lock; `install` therefore first asks any running daemon to exit (the `shutdown` request, which SIGTERMs managed agents exactly as Ctrl-C does) and then hands the socket to the service. `daemon uninstall`, `start`, `stop`, `restart`, and `status` do what they say, with `start` and `stop` falling back to the on-demand daemon when no service is installed; `--dry-run` on `install` and `uninstall` prints the files and commands instead. The service definition bakes in `--home` (and `--socket` when overridden) so it serves the same paths the CLI that installed it used. Files and command sequences are pure and unit-tested; only the final execution touches the system.
+**As a service.** On-demand start is enough for a laptop; `agentdocker daemon install` additionally runs `agentd` as a login service so it survives reboots and crashes and belongs to no terminal — a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`) on macOS, a systemd user unit (`~/.config/systemd/user/agentd.service`) on Linux, or a limited per-user Task Scheduler login task on Windows. The Unix managers restart the daemon after a *failure* only, because a clean exit is what a service daemon does when an on-demand one already holds the lock; `install` therefore first asks any running daemon to exit (the `shutdown` request, which SIGTERMs managed agents exactly as Ctrl-C does) and then hands the socket to the service. `daemon uninstall`, `start`, `stop`, `restart`, and `status` do what they say, with `start` and `stop` falling back to the on-demand daemon when no service is installed; `--dry-run` on `install` and `uninstall` prints the files and commands instead. The service definition bakes in `--home` (and `--socket` when overridden) so it serves the same paths the CLI that installed it used. Files and command sequences are pure and unit-tested; only the final execution touches the system.
+
+Windows `daemon install` uses a per-user Task Scheduler login task with an
+Interactive/Limited principal and an explicit CLI supervisor. The canonical
+daemon home determines the task name. A private, bounded, atomically published
+ownership record stores a nonce and the exact action; mutations also verify
+the task principal against the current SID. An interrupted update retains
+both the prior and proposed action until registration succeeds. A mutation
+lock serializes service commands, and a separate supervisor lock prevents
+competing supervisors. Graceful shutdown exits the supervisor; failed daemons
+retry after two seconds, at most three times before stopping, with the budget
+reset after ten minutes of continuous operation. The daemon remains detached
+so its independently owned sessions can survive coordinator replacement.
+The task pins executable paths until `daemon install` is run again. PowerShell
+arguments preserve literal ASCII and typographic single quotes. After starting
+the service, Windows waits up to ten seconds for daemon readiness; Unix waits
+five seconds. Native
+Task Scheduler lifecycle and provider-survival acceptance are tracked
+separately from definition/ownership tests in [remaining work](REMAINING-WORK.md).
 
 **Installing.** Installing the CLI package from a pinned Git tag/commit or checkout builds both binaries; `install.sh` at the repository root downloads the release archive for the host (`agentdocker-<target>.tar.gz`, four targets: macOS and Linux musl on x86_64 and aarch64, named without the version so `releases/latest/download/…` works) and drops them into `~/.local/bin`; `packaging/homebrew/agentdocker.rb.in` is the template for a tap formula, with a `brew services` block that runs the daemon. The release workflow builds and uploads archives with SHA-256 checksums on every protected `v*` tag, then generates `agentdocker.rb` from all four verified checksum inputs. The installer requires a valid matching checksum before extracting or replacing anything. Workspace dependencies include versions so `cargo package --workspace` packages all five crates; actual crates.io publication and tap publication remain release operations.
 
@@ -222,21 +240,6 @@ Where the ledger records every file change, the journal records *what happened a
 **Adapters.** The Claude Code hooks hand the digest over as `additionalContext`: `SessionStart` with up to 20 entries or 2,000 characters (`--digest-entries`, `--digest-chars`), `UserPromptSubmit` only what is new and at most 5 entries or 500 characters (`--prompt-digest-entries`, `--prompt-digest-chars`), and nothing when nothing is new; `PostToolUse` never carries journal text. `Stop` reads the last 64 KB of the session transcript, takes the last assistant message with text — fenced code and headings dropped, markdown stripped, first paragraph, trimmed to 280 characters at a word boundary — and sends it as the `release_all` summary with `summary_source: transcript`; a transcript summary only ever describes leases actually released, whereas an explicit `--summary` is journaled even when nothing was held. The MCP `read_journal {since?, all_branches?}` tool returns the digest and advances the cursor.
 
 ## Wire protocol
-
-Windows `daemon install` uses a per-user Task Scheduler login task with an
-Interactive/Limited principal and an explicit CLI supervisor. The canonical
-daemon home determines the task name. A private, bounded, atomically published
-ownership record stores a nonce and the exact action; mutations also verify
-the task principal against the current SID. An interrupted update retains
-both the prior and proposed action until registration succeeds. A mutation
-lock serializes service commands, and a separate supervisor lock prevents
-competing supervisors. Graceful shutdown exits the supervisor; failed daemons
-retry after two seconds, at most three times before stopping, with the budget
-reset after ten minutes of continuous operation. The daemon remains detached
-so its independently owned sessions can survive coordinator replacement.
-The task pins executable paths until `daemon install` is run again. Native
-Task Scheduler lifecycle and provider-survival acceptance are tracked
-separately from definition/ownership tests in [remaining work](REMAINING-WORK.md).
 
 Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOCKET` (default `~/.agentdocker/agentd.sock`, mode `0600`). A socket name is limited by the kernel (104 bytes on macOS and the BSDs, 108 on Linux), so a home whose path leaves no room for `container.sock` keeps both sockets in a private directory (`0700`, ours alone, ownership checked before binding) under `/tmp` — never an environment-dependent directory, which a service, a cron job and a shell can each see differently — named `agentdocker-<hash of the home's bytes>` (removed again when the daemon stops and it is empty, as the session directory `s` under it is once the owners nobody holds are swept — each lock taken and held while its files go, and an owner that finds its lock on a file that was unlinked between its open and its lock (`Lock::is_at`) takes the lock again, so two owners never hold one id — so a daemon that is gone leaves nothing in `/tmp`; an unacknowledged exit report keeps its directory); the home is canonicalized once (`agentdocker_host::dirs::home`) so a symlinked path spells the same directory everywhere; the daemon and every client compute the same place without a pointer file, an installed service is pinned to the resolved path with `--socket` and its commands use that socket, and `agentdocker daemon status` prints both paths. A path that still does not fit is refused up front by both daemon and client, naming the limit. The restricted container endpoint is optional: it announces `restricted_endpoint_listening` when it serves; if it cannot be served the daemon announces `restricted_endpoint_unavailable`, `ping` stops reporting it, `grant-access` answers `unavailable`, and the host socket carries on. A client that starts the daemon on demand watches the child it spawned, so a daemon that dies on startup fails the command at once with the log's last lines rather than after the start timeout. One request object per line, tagged by `"op"`; responses tagged by `"type"`.
 

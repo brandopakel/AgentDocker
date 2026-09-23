@@ -29,7 +29,21 @@ struct Receipt {
 }
 
 fn quoted(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
+    // PowerShell treats typographic single quotes as delimiters too.
+    // Double the original scalar so paths retain their exact spelling.
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for character in value.chars() {
+        out.push(character);
+        if matches!(
+            character,
+            '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}'
+        ) {
+            out.push(character);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 fn encoded(script: &str) -> String {
@@ -499,8 +513,11 @@ mod tests {
 
     #[test]
     fn task_scripts_quote_paths_and_retain_literal_unicode_and_metacharacters() {
-        let value = "C:\\space ü\\it's $(not code); & path";
-        assert_eq!(quoted(value), "'C:\\space ü\\it''s $(not code); & path'");
+        let value = "C:\\space ü\\it's ‘single’ ‚quotes‛ $(not code); & path";
+        assert_eq!(
+            quoted(value),
+            "'C:\\space ü\\it''s ‘‘single’’ ‚‚quotes‛‛ $(not code); & path'"
+        );
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(encoded(value))
             .unwrap();

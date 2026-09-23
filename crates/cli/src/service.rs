@@ -27,6 +27,9 @@ const LABEL: &str = "dev.agentdocker.agentd";
 /// before giving the refusal to the user.
 const RELOAD_WAIT: Duration = Duration::from_secs(30);
 const UNIT: &str = "agentd.service";
+// Task Scheduler and a cold Windows process start need the same allowance as
+// an on-demand Windows launch. Service commands disable client autostart.
+const SERVICE_READY_WAIT: Duration = Duration::from_secs(if cfg!(windows) { 10 } else { 5 });
 
 #[derive(Args)]
 pub struct DaemonArgs {
@@ -484,7 +487,7 @@ async fn retire(client: &Client) -> Result<()> {
 }
 
 async fn wait_for_daemon(client: &Client) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SERVICE_READY_WAIT;
     loop {
         if let Ok(Response::Pong {
             version,
@@ -496,7 +499,10 @@ async fn wait_for_daemon(client: &Client) -> Result<()> {
             return Ok(());
         }
         if Instant::now() > deadline {
-            bail!("agentd did not answer within 5 s; see the log");
+            bail!(
+                "agentd did not answer within {} s; see the log",
+                SERVICE_READY_WAIT.as_secs()
+            );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
