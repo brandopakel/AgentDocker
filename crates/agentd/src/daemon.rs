@@ -2424,6 +2424,11 @@ impl Daemon {
         let mut labels = ended.spec.labels.clone();
         labels.extend(spec.labels.clone());
         labels.insert("session_id".to_owned(), session.clone());
+        // The record keeps its own name, so it keeps what that name is: a
+        // launch's generated-name label must not relabel a chosen one.
+        if let Some(kind) = ended.spec.labels.get(agentdocker_core::agent::NAME_LABEL) {
+            labels.insert(agentdocker_core::agent::NAME_LABEL.to_owned(), kind.clone());
+        }
         record.spec = AgentSpec {
             name: ended.spec.name.clone(),
             labels,
@@ -5112,10 +5117,12 @@ impl State {
             );
         }
         record.spec.name = name.clone();
-        record
-            .spec
-            .labels
-            .remove(agentdocker_core::agent::NAME_LABEL);
+        // Marked chosen, not merely unlabelled: a name spelled like the
+        // adapter's own (`codex-<pid>`) must not be inferred generated again.
+        record.spec.labels.insert(
+            agentdocker_core::agent::NAME_LABEL.to_owned(),
+            agentdocker_core::agent::CHOSEN_NAME.to_owned(),
+        );
         let mut event = agentdocker_core::Event::new(
             EventKind::AgentRenamed {
                 agent: id.clone(),

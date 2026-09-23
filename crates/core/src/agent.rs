@@ -431,6 +431,10 @@ pub fn check_name(name: &str) -> Result<(), &'static str> {
 pub const NAME_LABEL: &str = "name";
 /// The value of [`NAME_LABEL`] for a made-up name.
 pub const GENERATED_NAME: &str = "generated";
+/// The value of [`NAME_LABEL`] for a name a person chose with `rename`. It
+/// overrides every inference from the name's shape: `codex-96813` chosen for
+/// the process 96813 is a chosen name, not the adapter's.
+pub const CHOSEN_NAME: &str = "chosen";
 
 impl AgentRecord {
     /// The role this agent holds, when it has one.
@@ -443,8 +447,10 @@ impl AgentRecord {
     /// recognised only by the exact form an adapter produces from this
     /// record's own pid or session id, never by how the name looks.
     pub fn name_is_generated(&self) -> bool {
-        if self.spec.labels.get(NAME_LABEL).map(String::as_str) == Some(GENERATED_NAME) {
-            return true;
+        match self.spec.labels.get(NAME_LABEL).map(String::as_str) {
+            Some(GENERATED_NAME) => return true,
+            Some(CHOSEN_NAME) => return false,
+            _ => {}
         }
         let name = self.spec.name.as_str();
         if let Some(pid) = self.pid

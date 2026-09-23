@@ -584,6 +584,45 @@ mod tests {
             rename("Release helper", "Release helper").await,
             Response::Agent { .. }
         ));
+        // A chosen name spelled like the adapter's own form stays chosen,
+        // and choosing it again is nothing.
+        let pid = std::process::id();
+        let legacy_name = format!("codex-{pid}");
+        let Response::Agent { agent: legacy } = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: legacy_name.clone(),
+                    runtime: "codex".into(),
+                    ..AgentSpec::default()
+                },
+                pid: Some(pid),
+                session: None,
+            })
+            .await
+        else {
+            panic!("registered")
+        };
+        assert!(legacy.name_is_generated(), "the adapter's own spelling reads generated");
+        let Response::Agent { agent: chosen } = daemon
+            .handle(Request::Rename {
+                agent: legacy.id.to_string(),
+                name: legacy_name.clone(),
+            })
+            .await
+        else {
+            panic!("renamed")
+        };
+        assert!(!chosen.name_is_generated(), "chosen overrides the shape");
+        let Response::Agent { agent: again } = daemon
+            .handle(Request::Rename {
+                agent: legacy.id.to_string(),
+                name: legacy_name.clone(),
+            })
+            .await
+        else {
+            panic!("renamed again")
+        };
+        assert_eq!(again, chosen, "choosing it again changes nothing");
         drop(daemon);
         let reopened =
             Arc::new(Daemon::open(tmp.path().join("state"), tmp.path().join("sock")).unwrap());
