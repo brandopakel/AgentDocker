@@ -738,65 +738,58 @@ const PATCH_TOOLS: &[&str] = &["apply_patch"];
 /// The files a patch in any string of `tool_input` names, absolute
 /// (relative ones against `cwd`), each once, in order.
 pub fn patch_paths(tool_input: &Value, cwd: Option<&Path>) -> Vec<PathBuf> {
-    let mut texts = Vec::new();
-    strings_in(tool_input, &mut texts);
+    // The patch itself: `command` (Codex's canonical apply_patch input, and
+    // what the OpenCode plugin sends), or the input when it is the bare
+    // patch string, or `input` (the freeform tool's field). Nothing else.
+    let texts: Vec<&str> = [
+        tool_input.get("command").and_then(Value::as_str),
+        tool_input.as_str(),
+        tool_input.get("input").and_then(Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let mut paths: Vec<PathBuf> = Vec::new();
     for text in texts {
-        for header in [
-            "*** Update File: ",
-            "*** Add File: ",
-            "*** Delete File: ",
-            "*** Move to: ",
-        ] {
-            let mut rest = text;
-            while let Some(at) = rest.find(header) {
-                rest = &rest[at + header.len()..];
-                // A patch passed as data ends its header line with a real
-                // newline; one written inside script source, with `\n`.
-                let end = [
-                    rest.find('\n'),
-                    rest.find("\\n"),
-                    rest.find('"'),
-                    rest.find('\''),
-                ]
-                .into_iter()
-                .flatten()
-                .min()
-                .unwrap_or(rest.len());
-                let raw = rest[..end].trim();
-                if raw.is_empty() {
-                    continue;
+        // Only structural header lines count: a line that begins with the
+        // header, the whole rest of it the path (quotes, apostrophes and
+        // backslashes included). A header quoted inside an added line is
+        // content, not a file this patch touches.
+        for line in text.lines() {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let Some(raw) = [
+                "*** Update File: ",
+                "*** Add File: ",
+                "*** Delete File: ",
+                "*** Move to: ",
+            ]
+            .iter()
+            .find_map(|header| line.strip_prefix(header)) else {
+                continue;
+            };
+            let raw = raw.trim_end();
+            if raw.is_empty() {
+                continue;
+            }
+            let path = PathBuf::from(raw);
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                match cwd {
+                    Some(cwd) => cwd.join(path),
+                    None => match std::env::current_dir() {
+                        Ok(dir) => dir.join(path),
+                        Err(_) => continue,
+                    },
                 }
-                let path = PathBuf::from(raw);
-                let absolute = if path.is_absolute() {
-                    path
-                } else {
-                    match cwd {
-                        Some(cwd) => cwd.join(path),
-                        None => match std::env::current_dir() {
-                            Ok(dir) => dir.join(path),
-                            Err(_) => continue,
-                        },
-                    }
-                };
-                let path = normalize(&absolute);
-                if !paths.contains(&path) {
-                    paths.push(path);
-                }
+            };
+            let path = normalize(&absolute);
+            if !paths.contains(&path) {
+                paths.push(path);
             }
         }
     }
     paths
-}
-
-/// Every string in a JSON value, in order.
-fn strings_in<'a>(value: &'a Value, out: &mut Vec<&'a str>) {
-    match value {
-        Value::String(text) => out.push(text),
-        Value::Array(items) => items.iter().for_each(|item| strings_in(item, out)),
-        Value::Object(map) => map.values().for_each(|item| strings_in(item, out)),
-        _ => {}
-    }
 }
 
 pub fn edited_path(input: &HookInput) -> Option<PathBuf> {
@@ -2325,6 +2318,24 @@ mod tests {
         let paths = edited_paths(&ev);
         assert_eq!(paths.len(), 2, "{paths:?}");
         assert!(paths[0].ends_with("old.py") && paths[1].ends_with("place.py"));
+
+        // A header is a whole line: apostrophes, quotes and backslashes stay
+        // in the name, CRLF endings are line ends, and a header quoted
+        // inside an added line is content, not a file.
+        ev.tool_input = Some(json!({
+            "command": "*** Begin Patch\r\n*** Update File: /tmp/project/it's \"q\".py\r\n@@\r\n+print(\"*** Update File: unrelated.py\")\r\n*** Add File: /tmp/project/dir\\new.py\r\n+x\r\n*** End Patch"
+        }));
+        let paths = edited_paths(&ev);
+        assert_eq!(paths.len(), 2, "{paths:?}");
+        assert!(
+            paths[0].to_string_lossy().ends_with("it's \"q\".py"),
+            "{paths:?}"
+        );
+        assert!(
+            paths[1].to_string_lossy().ends_with("dir\\new.py"),
+            "{paths:?}"
+        );
+        assert!(!paths.iter().any(|p| p.ends_with("unrelated.py")));
 
         // The outer code-mode script is not read: its nested apply_patch
         // arrives as its own hook with its own input.
