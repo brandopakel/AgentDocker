@@ -106,6 +106,15 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
                 };
                 report(&runtime.name, "MCP server", &path, outcome);
             }
+            (McpWiring::OpencodeJson { .. }, _) => {
+                let path =
+                    agentdocker_host::runtimes::mcp_config_path(spec, &roots).expect("JSON path");
+                if let Some(mutation) = &mutation {
+                    mutation.covers(&path)?;
+                }
+                let outcome = register_opencode(&path, &exe, dry_run)?;
+                report(&runtime.name, "MCP server", &path, outcome);
+            }
             (McpWiring::TomlServers { .. }, _) => {
                 let path =
                     agentdocker_host::runtimes::mcp_config_path(spec, &roots).expect("TOML path");
@@ -359,6 +368,81 @@ pub(super) fn json_edit(
     )))
 }
 
+/// OpenCode's shape: an `mcp` object whose `agentdocker` entry is
+/// `{"type": "local", "command": [executable, "mcp", "--runtime", "opencode"],
+/// "enabled": true}`. A file with comments (OpenCode reads JSONC) is not
+/// rewritten: its comments would be lost, so the person adds the entry.
+pub fn register_opencode(path: &Path, exe: &Path, dry_run: bool) -> Result<Outcome> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).with_context(|| format!("cannot read {}", path.display())),
+    };
+    let Some(contents) = opencode_edit(path, existing.as_deref(), exe)? else {
+        return Ok(Outcome::Present);
+    };
+    if dry_run {
+        return Ok(Outcome::Planned);
+    }
+    write_config(path, existing.as_deref(), &contents)?;
+    Ok(Outcome::Added)
+}
+
+pub(super) fn opencode_edit(
+    path: &Path,
+    existing: Option<&str>,
+    exe: &Path,
+) -> Result<Option<String>> {
+    let spec = agentdocker_core::runtime::spec("opencode").expect("opencode is in the catalog");
+    let mut document: Value = match existing.filter(|s| !s.trim().is_empty()) {
+        Some(raw) => serde_json::from_str(raw).with_context(|| {
+            format!(
+                "{} is not plain JSON (comments?); add the agentdocker entry by hand",
+                path.display()
+            )
+        })?,
+        None => json!({ "$schema": "https://opencode.ai/config.json" }),
+    };
+    let Some(root) = document.as_object_mut() else {
+        bail!("{} is not a JSON object", path.display());
+    };
+    let servers = root.entry("mcp").or_insert_with(|| json!({}));
+    let Some(servers) = servers.as_object_mut() else {
+        bail!("{}: mcp is not an object", path.display());
+    };
+    let ours = |server: &Value| {
+        agentdocker_host::runtimes::server_launch(spec, server).is_some_and(|(command, args)| {
+            agentdocker_host::runtimes::mcp_command_matches(
+                command,
+                &args,
+                "agentdocker",
+                "opencode",
+            )
+        }) && server.get("enabled").and_then(Value::as_bool) != Some(false)
+    };
+    if let Some(existing) = servers.get("agentdocker")
+        && !ours(existing)
+    {
+        bail!(
+            "{}: reserved agentdocker entry is disabled or unverified; left unchanged",
+            path.display()
+        );
+    }
+    if servers.values().any(ours) {
+        return Ok(None);
+    }
+    let mut command = vec![exe.to_string_lossy().into_owned()];
+    command.extend(mcp_args("opencode").into_iter().map(str::to_owned));
+    servers.insert(
+        "agentdocker".to_owned(),
+        json!({ "type": "local", "command": command, "enabled": true }),
+    );
+    Ok(Some(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&document)?
+    )))
+}
+
 /// `[mcp_servers.agentdocker]` appended to a TOML configuration file, so
 /// the rest of the file stays byte for byte as it was.
 pub fn register_toml(path: &Path, exe: &Path, runtime: &str, dry_run: bool) -> Result<Outcome> {
@@ -600,6 +684,65 @@ mod tests {
             Outcome::Present
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), legacy);
+    }
+
+    /// OpenCode's own shape: an `mcp` object, one command array, enabled;
+    /// other settings kept, a second run changes nothing, a file with
+    /// comments is refused, and detection agrees with what was written.
+    #[test]
+    fn opencode_registration_uses_its_own_shape_and_is_detected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".config/opencode/opencode.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"model":"anthropic/claude-sonnet-5","mcp":{"other":{"type":"remote","url":"https://x"}}}"#).unwrap();
+        let exe = Path::new("/usr/local/bin/agentdocker");
+        assert_eq!(
+            register_opencode(&path, exe, false).unwrap(),
+            Outcome::Added
+        );
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written["model"], "anthropic/claude-sonnet-5",
+            "other settings stay"
+        );
+        assert_eq!(written["mcp"]["other"]["url"], "https://x");
+        assert_eq!(
+            written["mcp"]["agentdocker"],
+            json!({"type": "local", "command": ["/usr/local/bin/agentdocker", "mcp", "--runtime", "opencode"], "enabled": true})
+        );
+        assert_eq!(
+            register_opencode(&path, exe, false).unwrap(),
+            Outcome::Present
+        );
+
+        let spec = agentdocker_core::runtime::spec("opencode").unwrap();
+        let roots = agentdocker_host::runtimes::Roots {
+            home: dir.path().to_path_buf(),
+            codex_home: None,
+            claude_config_dir: None,
+            path: vec![],
+            install_dirs: vec![],
+            desktop_dirs: vec![],
+            app_dirs: vec![],
+            browser_dirs: vec![],
+            shell: None,
+            versions: false,
+        };
+        assert_eq!(
+            agentdocker_host::runtimes::mcp_wiring(spec, &roots, "agentdocker"),
+            agentdocker_core::runtime::Wiring::Wired
+        );
+
+        std::fs::write(&path, "// mine\n{\"mcp\": {}}\n").unwrap();
+        assert!(
+            register_opencode(&path, exe, false).is_err(),
+            "comments are not ours to drop"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "// mine\n{\"mcp\": {}}\n"
+        );
     }
 
     #[test]

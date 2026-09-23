@@ -242,7 +242,9 @@ fn app_version(bundle: &Path) -> Option<String> {
 pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
     match spec.mcp {
         McpWiring::None => None,
-        McpWiring::JsonServers { file } | McpWiring::TomlServers { file } => {
+        McpWiring::JsonServers { file }
+        | McpWiring::TomlServers { file }
+        | McpWiring::OpencodeJson { file } => {
             if spec.name == "codex" {
                 if let Some(home) = &roots.codex_home {
                     return Some(home.join("config.toml"));
@@ -311,19 +313,15 @@ pub fn mcp_wiring(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Wiring {
     let Some(config) = value.as_object() else {
         return Wiring::Unverified;
     };
-    let Some(servers) = config.get(if is_toml { "mcp_servers" } else { "mcpServers" }) else {
+    let Some(servers) = config.get(servers_key(spec)) else {
         return Wiring::Missing;
     };
     let Some(servers) = servers.as_object() else {
         return Wiring::Unverified;
     };
     let recognized = |server: &serde_json::Value| {
-        let args: Option<Vec<_>> = server["args"]
-            .as_array()
-            .and_then(|args| args.iter().map(serde_json::Value::as_str).collect());
-        args.is_some_and(|args| {
-            mcp_command_matches(server["command"].as_str(), &args, marker, spec.name)
-        })
+        server_launch(spec, server)
+            .is_some_and(|(command, args)| mcp_command_matches(command, &args, marker, spec.name))
     };
     let enabled =
         |server: &serde_json::Value| server["enabled"] != false && server["disabled"] != true;
@@ -345,6 +343,40 @@ pub fn mcp_wiring(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Wiring {
     } else {
         Wiring::Missing
     }
+}
+
+/// The object a runtime's configuration keeps its MCP servers in.
+pub fn servers_key(spec: &RuntimeSpec) -> &'static str {
+    match spec.mcp {
+        McpWiring::TomlServers { .. } => "mcp_servers",
+        McpWiring::OpencodeJson { .. } => "mcp",
+        McpWiring::JsonServers { .. } | McpWiring::None => "mcpServers",
+    }
+}
+
+/// What one configured server launches: the executable and its arguments.
+/// Most runtimes write `command` and `args`; OpenCode writes one `command`
+/// array whose first element is the executable. `None` when the entry is
+/// not in the runtime's shape.
+pub fn server_launch<'a>(
+    spec: &RuntimeSpec,
+    server: &'a serde_json::Value,
+) -> Option<(Option<&'a str>, Vec<&'a str>)> {
+    if matches!(spec.mcp, McpWiring::OpencodeJson { .. }) {
+        let words: Vec<&str> = server["command"]
+            .as_array()?
+            .iter()
+            .map(serde_json::Value::as_str)
+            .collect::<Option<_>>()?;
+        let (command, args) = words.split_first()?;
+        return Some((Some(command), args.to_vec()));
+    }
+    let args: Vec<&str> = server["args"]
+        .as_array()?
+        .iter()
+        .map(serde_json::Value::as_str)
+        .collect::<Option<_>>()?;
+    Some((server["command"].as_str(), args))
 }
 
 /// Recognize the direct adapter invocation, including a quoted executable path.

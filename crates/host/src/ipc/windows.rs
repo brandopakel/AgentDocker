@@ -12,7 +12,7 @@ use std::sync::{
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use crate::dirs::windows::{Access, Protection, same_user_process};
+use crate::dirs::windows::{Access, Protection, same_user_pipe_client, same_user_process};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::windows::named_pipe::{
     ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
@@ -21,7 +21,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use windows_sys::Win32::{
     Foundation::{ERROR_PIPE_BUSY, HANDLE},
     Storage::FileSystem::SECURITY_IDENTIFICATION,
-    System::Pipes::{GetNamedPipeClientProcessId, GetNamedPipeServerProcessId},
+    System::Pipes::GetNamedPipeServerProcessId,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -52,15 +52,12 @@ fn server(path: &Path, first: bool) -> io::Result<NamedPipeServer> {
 }
 
 fn peer(handle: HANDLE, server_end: bool) -> io::Result<()> {
+    if server_end {
+        return same_user_pipe_client(handle);
+    }
     let mut pid = 0;
     // SAFETY: handle belongs to the live connected pipe and pid is an output.
-    let ok = unsafe {
-        if server_end {
-            GetNamedPipeClientProcessId(handle, &mut pid)
-        } else {
-            GetNamedPipeServerProcessId(handle, &mut pid)
-        }
-    };
+    let ok = unsafe { GetNamedPipeServerProcessId(handle, &mut pid) };
     if ok == 0 {
         return Err(io::Error::last_os_error());
     }
@@ -397,6 +394,75 @@ mod tests {
             r"\\.\pipe\agentdocker-test-{}",
             uuid::Uuid::new_v4().simple()
         ))
+    }
+
+    fn assert_no_thread_token() {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, ERROR_NO_TOKEN},
+            Security::TOKEN_QUERY,
+            System::Threading::{GetCurrentThread, OpenThreadToken},
+        };
+        let mut token = std::ptr::null_mut();
+        let found = unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) };
+        let error = io::Error::last_os_error();
+        if found != 0 {
+            unsafe { CloseHandle(token) };
+        }
+        assert_eq!(
+            found, 0,
+            "pipe verification left a client token on the thread"
+        );
+        assert_eq!(error.raw_os_error(), Some(ERROR_NO_TOKEN as i32));
+    }
+
+    #[tokio::test]
+    async fn client_identity_is_checked_before_input_and_reverted_on_success_or_refusal() {
+        use windows_sys::Win32::Storage::FileSystem::SECURITY_ANONYMOUS;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            for (qos, accepted) in [(SECURITY_IDENTIFICATION, true), (SECURITY_ANONYMOUS, false)] {
+                let path = name();
+                let pipe = server(&path, true).unwrap();
+                let _client = ClientOptions::new()
+                    .security_qos_flags(qos)
+                    .open(&path)
+                    .unwrap();
+                pipe.connect().await.unwrap();
+                assert_eq!(
+                    same_user_pipe_client(pipe.as_raw_handle()).is_ok(),
+                    accepted
+                );
+                assert_no_thread_token();
+            }
+            assert!(same_user_pipe_client(std::ptr::null_mut()).is_err());
+            assert_no_thread_token();
+        })
+        .await
+        .expect("identity checking never waits for application input");
+    }
+
+    #[test]
+    fn nested_identity_checks_preserve_the_callers_thread_token() {
+        // A dedicated thread also bounds the test's impersonation on panic.
+        std::thread::spawn(|| {
+            use windows_sys::Win32::{
+                Foundation::CloseHandle,
+                Security::{ImpersonateSelf, RevertToSelf, SecurityIdentification, TOKEN_QUERY},
+                System::Threading::{GetCurrentThread, OpenThreadToken},
+            };
+            assert_ne!(unsafe { ImpersonateSelf(SecurityIdentification) }, 0);
+            let error = same_user_pipe_client(std::ptr::null_mut()).unwrap_err();
+            assert!(error.to_string().contains("unimpersonated thread"));
+            let mut token = std::ptr::null_mut();
+            assert_ne!(
+                unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) },
+                0
+            );
+            unsafe { CloseHandle(token) };
+            assert_ne!(unsafe { RevertToSelf() }, 0);
+            assert_no_thread_token();
+        })
+        .join()
+        .unwrap();
     }
 
     #[tokio::test]

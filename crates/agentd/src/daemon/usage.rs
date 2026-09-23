@@ -72,13 +72,10 @@ fn retained(now: DateTime<Utc>, config: &UsageConfig) -> DateTime<Utc> {
 impl Daemon {
     fn reconcile_usage(&self, config: &UsageConfig) {
         let mut state = lock(&self.state);
-        let mut sessions: BTreeMap<(String, String), HashSet<AgentId>> = BTreeMap::new();
+        let mut sessions: BTreeMap<(String, String), ()> = BTreeMap::new();
         for record in state.registry.all() {
             if let Some(session) = record.spec.labels.get("session_id") {
-                sessions
-                    .entry((record.spec.runtime.clone(), session.clone()))
-                    .or_default()
-                    .insert(state.registry.canonical_id(&record.id).clone());
+                sessions.insert((record.spec.runtime.clone(), session.clone()), ());
             }
         }
         // One bounded reconciliation page, selected by a persisted rotating
@@ -88,41 +85,44 @@ impl Daemon {
         }) else {
             return;
         };
-        let mut entries: Vec<_> = sessions.into_iter().collect();
+        let mut entries: Vec<_> = sessions.into_keys().collect();
         if let Some(after) = after {
-            let split = entries.partition_point(|(key, _)| key <= &after);
+            let split = entries.partition_point(|key| key <= &after);
             entries.rotate_left(split);
         }
-        for ((runtime, session), ids) in entries.into_iter().take(8) {
-            let mut event = None;
-            let seq = state.next_seq;
-            let attribution = if ids.len() == 1 {
-                let id = ids.into_iter().next().unwrap();
-                state.registry.get(&id).map(|a| UsageAttribution {
-                    agent: Some(id.to_string()),
-                    project: a.project.as_ref().map(|p| p.id().to_string()),
-                })
+        for (runtime, session) in entries.into_iter().take(8) {
+            // A session resumed under a new agent has several registrations;
+            // each takes the samples made while it was the current one.
+            let windows = usage::registration_windows(&registrations(&state, &runtime, &session));
+            // With nobody to attribute to, the cursor still advances.
+            let windows = if windows.is_empty() {
+                vec![(UsageAttribution::default(), None, None)]
             } else {
-                None
+                windows
             };
-            let now = Utc::now();
-            let result = state.persist("usage attribution", |store| {
-                event = store.usage_reconcile(
-                    &runtime,
-                    &session,
-                    attribution.as_ref(),
-                    retained(now, config),
-                    now,
-                    seq,
-                )?;
-                Ok(())
-            });
-            if result != Persisted::Committed {
-                return;
-            }
-            if let Some(event) = event {
-                state.next_seq += 1;
-                let _ = state.events.send(event);
+            for (attribution, from, until) in windows {
+                let mut event = None;
+                let seq = state.next_seq;
+                let now = Utc::now();
+                let result = state.persist("usage attribution", |store| {
+                    event = store.usage_reconcile(
+                        &runtime,
+                        &session,
+                        Some(&attribution),
+                        (from, until),
+                        retained(now, config),
+                        now,
+                        seq,
+                    )?;
+                    Ok(())
+                });
+                if result != Persisted::Committed {
+                    return;
+                }
+                if let Some(event) = event {
+                    state.next_seq += 1;
+                    let _ = state.events.send(event);
+                }
             }
         }
     }
@@ -254,28 +254,11 @@ impl Daemon {
             .samples
             .iter()
             .map(|sample| {
-                let matches: HashSet<_> = state
-                    .registry
-                    .all()
-                    .filter(|a| {
-                        a.spec.runtime == sample.runtime
-                            && a.spec.labels.get("session_id") == Some(&sample.session_id)
-                    })
-                    .map(|a| state.registry.canonical_id(&a.id).clone())
-                    .collect();
-                let attribution = if matches.len() == 1 {
-                    let id = matches.into_iter().next().unwrap();
-                    state
-                        .registry
-                        .get(&id)
-                        .map(|a| UsageAttribution {
-                            agent: Some(id.to_string()),
-                            project: a.project.as_ref().map(|p| p.id().to_string()),
-                        })
-                        .unwrap_or_default()
-                } else {
-                    UsageAttribution::default()
-                };
+                let attribution = usage::registration_at(
+                    &registrations(&state, &sample.runtime, &sample.session_id),
+                    sample.at,
+                )
+                .unwrap_or_default();
                 (sample.clone(), attribution)
             })
             .collect();
@@ -684,6 +667,38 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
         collection.completed_at = Some(Utc::now());
     }
     let _ = checkpoint(weak, &collection, &[], Change::Complete);
+}
+
+/// Every registration of one provider session: the agents (by canonical
+/// ID) whose `session_id` label names it, each with when it was first
+/// registered, as the attribution its samples would take.
+fn registrations(
+    state: &State,
+    runtime: &str,
+    session: &str,
+) -> Vec<(UsageAttribution, DateTime<Utc>)> {
+    let mut first: BTreeMap<AgentId, DateTime<Utc>> = BTreeMap::new();
+    for record in state.registry.all().filter(|a| {
+        a.spec.runtime == runtime
+            && a.spec.labels.get("session_id").map(String::as_str) == Some(session)
+    }) {
+        let id = state.registry.canonical_id(&record.id).clone();
+        let created = first.entry(id).or_insert(record.created_at);
+        *created = (*created).min(record.created_at);
+    }
+    first
+        .into_iter()
+        .filter_map(|(id, created)| {
+            let agent = state.registry.get(&id)?;
+            Some((
+                UsageAttribution {
+                    agent: Some(id.to_string()),
+                    project: agent.project.as_ref().map(|p| p.id().to_string()),
+                },
+                created,
+            ))
+        })
+        .collect()
 }
 
 #[cfg(test)]

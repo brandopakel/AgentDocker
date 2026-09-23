@@ -254,7 +254,12 @@ args = ["mcp", "--runtime", "codex"]
 
 # Cursor (.cursor/mcp.json) / Gemini CLI (~/.gemini/settings.json) / anything else
 { "mcpServers": { "agentdocker": { "command": "agentdocker", "args": ["mcp", "--runtime", "cursor"] } } }
+
+# OpenCode (~/.config/opencode/opencode.json): its own shape
+{ "mcp": { "agentdocker": { "type": "local", "command": ["agentdocker", "mcp", "--runtime", "opencode"], "enabled": true } } }
 ```
+
+`agentdocker setup opencode` writes that entry (a file with comments is left for you to edit) and installs the AgentDocker plugin at `~/.config/opencode/plugins/agentdocker.js`, OpenCode's counterpart of the Claude Code hooks below: an edit, write or patch to a file another agent holds is refused with the holder and its note, reads are recorded, messages and the journal reach the model, the turn's end gives back automatic leases, and a message that arrives while the session is idle wakes it (through OpenCode's own `session.promptAsync`, no consent flag needed). An edited plugin is never overwritten.
 
 MCP exposes voluntary coordination tools. Automatic denial requires the Claude Code hooks below and applies to their covered edit tools; shell/script writes are not guarded by that matcher. Hooks fail open if coordination is unavailable.
 
