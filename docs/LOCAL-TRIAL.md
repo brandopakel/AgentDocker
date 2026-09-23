@@ -84,4 +84,11 @@ version; a pass on one platform does not complete another platform's row.
 
 Transfer the same verified candidate to the second Mac and repeat startup/inventory, one Claude hooks or Codex MCP trial and shutdown. Record architecture and OS version. It has its own registry; do not expect automatic federation. Execute on Intel hardware before claiming Intel runtime validation.
 
+For Linux, record the image's installed graphical prerequisites before adding
+anything: run `ldd` on the extracted desktop executable and retain missing-library
+failures. The minimal Oracle Ubuntu trial required private extracted libraries,
+Xvfb and its keyboard helper; it is VM acceptance, not evidence of a stock desktop
+install or physical Linux input. Repeat on a normal target desktop and physical
+Linux hardware, and record any packages required there.
+
 Repeat the graphical and user-service scenarios on target Linux distributions and ARM64/x86-64. Build Windows support before offering a Windows install; then run the same semantic scenarios against Windows IPC/process/terminal/service adapters. WSL running Linux code is not evidence of native Windows desktop support.
