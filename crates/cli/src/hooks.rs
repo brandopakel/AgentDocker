@@ -2521,6 +2521,9 @@ mod tests {
             "{paths:?}"
         );
         assert!(!paths.iter().any(|p| p.ends_with("unrelated.py")));
+        ev.tool_input = Some(json!({ "command": "*** Update File: /tmp/project/space \n+x" }));
+        let paths = edited_paths(&ev);
+        assert!(paths[0].to_string_lossy().ends_with("space "), "{paths:?}");
 
         // Trailing spaces belong to a Unix file name, not the CRLF ending.
         ev.tool_input = Some(json!({
