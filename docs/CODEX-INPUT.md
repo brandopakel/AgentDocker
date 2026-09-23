@@ -305,7 +305,10 @@ captured and no receiver bound within 40 seconds. The original queue stayed
 retained; no receipt or retry was invented. The missing resume hook's cause
 remains unresolved. A separate explicit bootstrap-prompt resume passed with the
 same logical identity and retained queue drained; it does not close zero-prompt
-reopening.
+reopening. Independent Ubuntu repeated the zero-prompt failure with hosted beta.2
+and Codex 0.155.1: MCP restarted, but no second SessionStart hook or binding arrived
+within 40 seconds. Separate native rate-limit and uncertain-delivery recovery
+trials passed with a loopback model; these do not establish real account reset.
 
 Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human
