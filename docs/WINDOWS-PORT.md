@@ -407,6 +407,13 @@ trial preserved an unsent terminal draft, queued a message during a real
 `sleep 8` tool call, and received its reply after the tool. Owned processes ended
 and user configuration hashes were unchanged. It reused existing account
 authentication in a private profile; it does not establish fresh-account
-onboarding, physical keyboard input, restart/reopen, sustained use, or final
-hosted-package acceptance. Source and archive pins are in the
+onboarding, physical keyboard input, sustained use, or final hosted-package acceptance. Source and archive pins are in the
 [verification index](verification/INDEX.md) and [#241 evidence](https://github.com/brandopakel/AgentDocker/pull/241#issuecomment-5787871075).
+
+An additional actual-provider trial on those bytes queued a message, restarted
+the private daemon and used the ordinary CLI reconnect command. Agent identity,
+conversation and queued ID survived; the queued message and subsequent idle
+message both received correlated replies and automatic receipts. Claude required
+local-development channel consent again. The scheduled task was removed and no
+owned processes remained. This is bounded restart/reopen evidence, not reboot
+or multi-day acceptance.
