@@ -286,16 +286,11 @@ Root hooks omit the child fields; real child hooks supply `agent_id` and
 assertion (Codex appends child notifications); a second passed behavior but was
 invalidated by a source merge during the run. Both failures remain recorded.
 
-The initial `ff4efc61` installation from `613c28c4` supplied the root-scope fix.
-PR #211 then merged as `ae751745`, including the final authentication-deadline
-and resolution-output fixes. The current `30ce582a` app/CLI and receiver PID 67597
-(retained from `d21ba9e3`, identical CLI hash) run those fixes.
-The coordinator (92608), Codex (51242) and both Claude processes (7794/23973) stayed
-running. The original `9ca24aa8e53a4912` was read in the complete explicit preview
-and manually resolved under audit `d2e1cc66fe504a0f9022c88be71d246e`, never treated
-as a root native receipt. The next original message `261c481ed3764883` and later
-handoffs now have native root receipts. Broader live idle/busy throughput,
-sleep/reboot and additional versions remain open.
+The root-scope and resolution fixes are merged. The historical stranded message
+was resolved by explicit audited readback, never counted as a native root
+receipt; later original messages received native root receipts. Exact installed
+revisions and trial identities remain in the [verification history](verification/INDEX.md).
+Broader live idle/busy throughput, sleep/reboot and additional versions remain open.
 
 Additional trials of those immutable binaries retained both outcomes: a 65-second
 busy user turn kept peer/human inputs in order, unacknowledged until actual
@@ -307,8 +302,19 @@ remains unresolved. A separate explicit bootstrap-prompt resume passed with the
 same logical identity and retained queue drained; it does not close zero-prompt
 reopening. Independent Ubuntu repeated the zero-prompt failure with hosted beta.2
 and Codex 0.155.1: MCP restarted, but no second SessionStart hook or binding arrived
-within 40 seconds. Separate native rate-limit and uncertain-delivery recovery
-trials passed with a loopback model; these do not establish real account reset.
+within 40 seconds, including a repeat after every old receiver had retired.
+A provider-only isolation trial removed AgentDocker, MCP and its receiver:
+Codex 0.155.1 emitted the initial startup hook but no resume hook within 25 seconds
+of reopening the same conversation. This narrows the observed failure to the
+provider lifecycle in that fixture; zero-prompt reopening remains open.
+Separate native rate-limit and uncertain-delivery recovery trials passed with a
+loopback model; these do not establish real account reset. An active-hook lost-output
+trial also passed explicit readback recovery, stale-confirmation refusal and a
+retry after receiver restart, without counting manual readback as a native receipt.
+A pending-question trial preserved provider identity, binding, draft, FIFO and an
+exactly-once answer through four experimental daemon handovers. All of these
+independent Linux trials used hosted beta.2 and native Codex 0.155.1 with a loopback
+model; they do not close sustained real-provider replacement acceptance.
 
 Run `scripts/native_codex_queue_smoke.py --scenario active-hook` with the actual
 Codex executable and immutable candidate binaries. The trial adds peer, human
