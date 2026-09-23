@@ -1276,6 +1276,11 @@ retain parser state only after all accepted prefix bytes match. Rewrites,
 replacement, truncation or a changing snapshot keep coverage incomplete and
 require an explicit gap/replay. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
+Collector parsing batches stop after 128 complete source records, including
+ignored records and gaps. Their samples and cursor still commit atomically under
+the coordination mutex, with a 100 ms off-lock wait between batches. This limits
+accounting work per transaction; it is not a hard wall-clock I/O guarantee. The
+standalone reader defaults to 4,096 records and accepts smaller validated budgets.
 The standalone reader API retains its earlier 16 MiB whole-prefix limit.
 The 22+ MiB reader regression and the updated daemon partial-tail/restart trial
 passed in the 29-test host/daemon usage campaign. The later real-binary

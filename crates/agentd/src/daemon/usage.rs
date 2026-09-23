@@ -576,7 +576,14 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                 (session, 0)
             }
         };
-        let mut budget = reader::Budget::default();
+        // Parsing is off-lock, but samples, gaps and the cursor commit together
+        // under the coordination mutex. A full 4,096-record reader batch can
+        // exceed the entire hook deadline on small hosts; keep these writes
+        // short and yield between them without dropping or skipping records.
+        let mut budget = reader::Budget {
+            records: 128,
+            ..reader::Budget::default()
+        };
         loop {
             let batch = match session.scan(&source.path, budget) {
                 Ok(batch) if session.validate(&source.path, &batch.cursor).is_ok() => batch,
@@ -1125,6 +1132,36 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn short_accounting_transactions_resume_exactly_after_reopen() {
+        let (temp, daemon, config, root) = fixture();
+        let source: String = (0..300)
+            .map(|n| record(&format!("message-{n}"), 2))
+            .collect();
+        std::fs::write(root.join("source.jsonl"), source).unwrap();
+        // One discovery page followed by one short accounting transaction.
+        collect_generation_bounded(&Arc::downgrade(&daemon), &config, 2);
+        let first = query(&daemon).await;
+        assert_eq!(first.coverage.collection.state, CollectionState::Scanning);
+        assert_eq!(first.coverage.collection.pending_files, Some(1));
+        assert_eq!(first.rows[0].samples, 128);
+        assert_eq!(first.rows[0].counters.input_tokens.sum, Some(256));
+        drop(daemon);
+        let daemon =
+            Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let resumed = query(&daemon).await;
+        assert_eq!(resumed.coverage.collection.discovery_generation, Some(1));
+        assert_eq!(resumed.coverage.collection.state, CollectionState::CaughtUp);
+        assert_eq!(resumed.rows[0].samples, 300);
+        assert_eq!(resumed.rows[0].counters.input_tokens.sum, Some(600));
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let replay = query(&daemon).await;
+        assert_eq!(replay.coverage.collection.discovery_generation, Some(2));
+        assert_eq!(replay.rows[0].samples, 300);
+        assert_eq!(replay.rows[0].counters.input_tokens.sum, Some(600));
     }
 
     #[tokio::test]
