@@ -363,8 +363,11 @@ cannot necessarily open its own user's SSH process across Windows logon sessions
 The synchronous identity query admits only the current user's SID, refuses an
 existing thread token and restores the thread before returning on success or
 failure. A failure to restore terminates the process. No application request or
-async suspension runs under a client token; clients request identification-only
-security quality of service, and no debug privilege is enabled. This is a same-user,
+async suspension runs under a client token; clients explicitly set
+`SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`, making identification available
+before their first write without granting impersonation privileges. The smoke
+client uses the same flags; Windows' default context is unavailable before input.
+No debug privilege is enabled. This is a same-user,
 per-host boundary across that user's local logon sessions. Other machine
 administrators remain privileged.
 
