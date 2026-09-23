@@ -379,3 +379,22 @@ and length alone missed an equal-size replacement in native Windows CI. Reads
 open regular files without following a final reparse point and compare the
 handle's stamp before and after the bounded read. The replacement regression
 sets identical last-write times explicitly; a timing delay is not its fix.
+
+## Provider setup publication
+
+The physical Windows 11 Home build26200 trial on AWBP passed53 extracted-package
+daemon/CLI/ConPTY/window checks on source35996b28, after moving private test state
+out of a Temp directory writable by other sandbox identities. The original
+refusal remains evidence; no existing Temp permissions were changed.
+
+That trial then reproduced a provider-setup failure: preview wrote its receipt
+but opening the containing directory for Unix-style syncing returned Access
+Denied. Setup now publishes flushed receipts and configuration files through
+the host's native helper (write-through moves on Windows; rename and directory
+sync on Unix). Undo uses native Windows deletion without attempting a directory
+file-open. The native package smoke covers preview, exact apply, repeat apply,
+undo and refusal after a user edit with an isolated Codex configuration fixture.
+This does not establish native Codex input or real-provider receipt. The separate
+Claude configuration trial can now run on Windows with the installed provider
+CLI and isolated profiles. Final Windows CI and actual-provider apply/undo
+acceptance remain required before treating setup as complete.

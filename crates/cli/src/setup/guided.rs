@@ -655,8 +655,9 @@ fn save(directory: &Path, plan: &Plan) -> Result<()> {
     temporary.write_all(&contents)?;
     temporary.write_all(b"\n")?;
     temporary.as_file().sync_all()?;
-    temporary.persist(&path).map_err(|error| error.error)?;
-    std::fs::File::open(directory)?.sync_all()?;
+    // Close the staged handle before the platform-specific publication. Windows
+    // uses a write-through move; opening a directory as a File fails there.
+    agentdocker_host::files::publish_staged(&temporary.into_temp_path(), &path)?;
     Ok(())
 }
 
@@ -771,6 +772,7 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
             check(change)?;
             std::fs::remove_file(&change.target)?;
         }
+        #[cfg(unix)]
         if let Some(parent) = change.target.parent() {
             std::fs::File::open(parent)?.sync_all()?;
         }

@@ -1563,3 +1563,10 @@ replacement with a pending offer passes at `5b3d688`; PR #171 is merged after
 review and CI, and installed source `8d42db5` passed same-provider replacement
 and fresh active-turn CLI/peer input. Exact receipts and limits are recorded in
 [Codex input](CODEX-INPUT.md#receiver-upgrade-candidate).
+
+Setup receipts and configuration replacements flush their staged file before
+publication through `host::files::publish_staged`: Unix renames and syncs the
+parent directory, while Windows requests a same-directory write-through move.
+Windows setup does not open a directory as a regular file after publication or
+undo deletion. A failed publication still returns an error and leaves the
+saved recovery phase available; no receipt failure is reported as applied.

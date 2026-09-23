@@ -296,7 +296,7 @@ pub(crate) fn write_config(path: &Path, expected: Option<&str>, contents: &str) 
     if agentdocker_host::project::try_canonical(path)? != target {
         bail!("configuration symlink changed during setup");
     }
-    temporary.persist(&target).map_err(|e| e.error)?;
+    agentdocker_host::files::publish_staged(&temporary.into_temp_path(), &target)?;
     Ok(())
 }
 

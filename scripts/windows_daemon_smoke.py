@@ -470,6 +470,41 @@ def main():
             line = agent_status(name)
         return line
 
+    def setup_trial():
+        profile = root / "codex profile"
+        profile.mkdir()
+        original = 'model = "unrelated-fixture"\n'
+        config = profile / "config.toml"
+        config.write_text(original)
+        setup_home = base / f"agentdocker-smoke-{token}-setup"
+        homes.append(setup_home)
+        setup_env = {"AGENTDOCKER_HOME": str(setup_home), "CODEX_HOME": str(profile)}
+        prepared = json.loads(run("setup", "codex", "--preview", "--json", extra_env=setup_env).stdout)
+        receipt = setup_home / "setup" / (prepared["id"] + ".json")
+        saved = json.loads(receipt.read_text())
+        assert saved["changes"] and not saved["delegated"]
+        assert all(Path(change["path"]).resolve().is_relative_to(profile.resolve())
+                   for change in saved["changes"]), "setup escaped the private provider profile"
+        step("native setup preview publishes its receipt without changing provider configuration",
+             config.read_text() == original and saved["phase"] == "prepared")
+        run("setup", "--apply", prepared["id"], "--json", extra_env=setup_env)
+        step("native setup applies exact planned MCP, hook and skill files",
+             all(Path(change["path"]).read_text() == change["after"] for change in saved["changes"])
+             and json.loads(receipt.read_text())["phase"] == "applied")
+        run("setup", "--apply", prepared["id"], "--json", extra_env=setup_env)
+        run("setup", "--undo", prepared["id"], "--json", extra_env=setup_env)
+        step("native setup undo restores existing configuration and removes only its new files",
+             all((Path(change["path"]).read_text() == change["before"])
+                 if change["before"] is not None else not Path(change["path"]).exists()
+                 for change in saved["changes"])
+             and json.loads(receipt.read_text())["phase"] == "undone")
+        next_plan = json.loads(run("setup", "codex", "--preview", "--json", extra_env=setup_env).stdout)
+        changed = original + '# user edit after preview\n'
+        config.write_text(changed)
+        refused = run("setup", "--apply", next_plan["id"], "--json", check=False, extra_env=setup_env)
+        step("native setup refuses a changed provider configuration without overwriting it",
+             refused.returncode != 0 and config.read_text() == changed)
+
     def desktop_trial():
         nonlocal window
         desktop_home = base / f"agentdocker-smoke-{token}-desktop"
@@ -571,6 +606,7 @@ def main():
         step("the daemon answers ping over the local transport", answered, detail)
         status = run("daemon", "status")
         step("daemon status names the serving executable", str(daemon_binary.name) in status.stdout, status.stdout.strip())
+        setup_trial()
         if args.desktop:
             desktop_trial()
         first = run("register", "--name", "smoke-one", "--runtime", "custom", "--pid", str(os.getpid()))
