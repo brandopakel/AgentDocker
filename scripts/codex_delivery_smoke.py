@@ -39,13 +39,6 @@ def checked_provider_home(path):
         candidate = root / name
         if candidate.exists() or candidate.is_symlink():
             raise ValueError("use an isolated authenticated profile without " + name)
-    # Codex creates empty cache/staging directories on its first run. A cached
-    # plugin file or symlink requires source review outside this small fixture.
-    plugins = root / "plugins"
-    if plugins.is_symlink() or (plugins.exists() and not plugins.is_dir()):
-        raise ValueError("isolated provider plugins must be empty directories")
-    if plugins.exists() and any(p.is_symlink() or not p.is_dir() for p in plugins.rglob("*")):
-        raise ValueError("use an isolated authenticated profile without installed plugins")
     return root
 
 
@@ -129,12 +122,15 @@ def trial(args):
     report = {"result": "failed", "scope": "actual Codex lifecycle context, no inbox tools",
               "driver_sha256": digest(Path(__file__)),
               "binary_sha256": {p.name: digest(p) for p in [cli, daemon_binary]}, "checks": []}
-    provider_root = checked_provider_home(args.provider_home)
-    monitored = [provider_root / name for name in ["config.toml", "hooks.json", "auth.json"]]
-    before = {p: digest(p) for p in monitored}
+    before = {}
+    report["profile_preflight_passed"] = False
     processes = []
     started = time.monotonic()
     try:
+        provider_root = checked_provider_home(args.provider_home)
+        monitored = [provider_root / name for name in ["config.toml", "hooks.json", "auth.json"]]
+        before = {p: digest(p) for p in monitored}
+        report["profile_preflight_passed"] = True
         with fixture(output, processes) as scratch:
             root = Path(scratch).resolve()
             project = root / "project"
@@ -169,7 +165,11 @@ def trial(args):
                 # --ignore-user-config also suppresses inline hook overrides in
                 # the observed 0.155.1 CLI. Keep its config layer active only
                 # after the explicit isolated-profile preflight above.
-                command = [args.codex, "exec", "--ignore-rules", "--ephemeral",
+                # Account-synced plugin caches may exist even in a fresh profile.
+                # Disable both plugin loaders for this invocation; never move or
+                # edit the account's installed files to make a fixture pass.
+                command = [args.codex, "exec", "--disable", "plugins", "--disable", "remote_plugin",
+                    "--ignore-rules", "--ephemeral",
                     "--skip-git-repo-check", "--sandbox", "read-only", "--dangerously-bypass-hook-trust", "--json",
                     "-c", "features.hooks=true", "-c", "approval_policy=\"never\"",
                     "-c", "mcp_servers.agentdocker={command=" + json.dumps(str(cli)) +
@@ -231,8 +231,10 @@ def trial(args):
         for process in reversed(processes):
             stop(process)
         report["duration_seconds"] = time.monotonic() - started
-        report["provider_configuration_unchanged"] = all(digest(p) == value for p, value in before.items())
-        if not report["provider_configuration_unchanged"]:
+        report["provider_configuration_unchanged"] = (
+            all(digest(p) == value for p, value in before.items())
+            if report["profile_preflight_passed"] else None)
+        if report["provider_configuration_unchanged"] is False:
             report["result"] = "failed"
             report["error"] = "a monitored provider file changed; no file was restored"
         report["owned_children_remaining"] = sum(p.returncode is None for p in processes)
@@ -248,7 +250,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path)
     parser.add_argument("--codex", default="codex")
     parser.add_argument("--provider-home", type=Path,
-                        help="dedicated private authenticated Codex profile, without config/hooks/plugins")
+                        help="dedicated private authenticated Codex profile, without user config/hooks; plugin loaders are disabled for the invocation")
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args()
     if args.helper:

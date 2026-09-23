@@ -29,10 +29,12 @@ The scheduled workflow runs bounded protocol, resource-key, engine-metadata and 
 For an actual Codex lifecycle delivery trial, run
 `python3 scripts/codex_delivery_smoke.py --binary-dir <package>/bin --codex <complete-provider-bundle>/bin/codex --provider-home <private-authenticated-profile> --output <new-private-directory>`.
 Authenticate the dedicated mode-0700 profile through normal Codex login first;
-the driver never copies credentials. It refuses existing user config, hook sources
-and installed plugins before invoking the provider, so one-invocation hook trust
-applies only to the fixture's reviewed inline hooks. Empty generated plugin cache
-directories are allowed. Codex 0.155.1 with `--ignore-user-config` suppressed these
+the driver never copies credentials. It refuses existing user config and hook
+sources before invoking the provider. Account-synced plugin caches can exist in a
+fresh profile, so both plugin loaders are disabled for this invocation with
+`--disable plugins --disable remote_plugin`; cached files and saved preferences
+are left unchanged. One-invocation hook trust is for the fixture's reviewed inline
+hooks. A rejected profile records a failure before any child launches. Codex 0.155.1 with `--ignore-user-config` suppressed these
 inline hooks in the recorded Oracle trial; the corrected fixture keeps that layer
 active only in the checked profile. This follows the [official hook-source and
 trust contract](https://learn.chatgpt.com/docs/hooks). Managed policy remains in
