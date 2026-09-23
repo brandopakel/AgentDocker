@@ -1119,7 +1119,7 @@ async fn bind_start_session<B: Backend>(
     }) else {
         return Ok(me);
     };
-    if !same_hook_session(&me, &input.session_id, pid, started, &here) {
+    if !same_hook_session(input.runtime(), &me, &input.session_id, pid, started, &here) {
         return Ok(me);
     }
     let mut spec = me.spec.clone();
@@ -1135,7 +1135,14 @@ async fn bind_start_session<B: Backend>(
     {
         Response::Agent { agent }
             if agent.id == me.id
-                && same_hook_session(&agent, &input.session_id, pid, started, &here)
+                && same_hook_session(
+                    input.runtime(),
+                    &agent,
+                    &input.session_id,
+                    pid,
+                    started,
+                    &here,
+                )
                 && agent.spec.labels.get("session_id") == Some(&input.session_id) =>
         {
             Ok(agent)
