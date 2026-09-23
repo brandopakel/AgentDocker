@@ -143,11 +143,32 @@ pub struct Args {
 /// Reserving this costs nothing until it is touched.
 const MAIN_STACK: usize = 32 << 20;
 
+/// Opt-in startup evidence before the ordinary logger exists. Only fixed stage
+/// labels, PID and elapsed time are emitted; no arguments, environment or state.
+fn startup_checkpoint(stage: &str) {
+    use std::io::Write;
+    if std::env::var_os("AGENTDOCKER_STARTUP_TRACE").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let elapsed = START.get_or_init(std::time::Instant::now).elapsed();
+    let _ = writeln!(
+        std::io::stderr(),
+        "agentd startup pid={} elapsed_ms={} stage={stage}",
+        std::process::id(),
+        elapsed.as_millis()
+    );
+}
+
 /// Parse the command line and run the daemon until SIGTERM or Ctrl-C.
 pub fn main() -> anyhow::Result<()> {
+    startup_checkpoint("entered");
     agentdocker_host::installation::redirect_managed_launcher()?;
+    startup_checkpoint("launcher_resolved");
     let args = Args::parse();
+    startup_checkpoint("arguments_parsed");
     initialize_storage_platform()?;
+    startup_checkpoint("storage_platform_ready");
     let worker = std::thread::Builder::new()
         .name("agentd".into())
         .stack_size(MAIN_STACK)
@@ -163,6 +184,7 @@ pub fn main() -> anyhow::Result<()> {
 /// when another daemon already holds the socket's lock: clients start a
 /// daemon when they cannot connect, and two may race to do so.
 pub fn run(args: Args) -> anyhow::Result<()> {
+    startup_checkpoint("worker_running");
     if args.session_owner {
         let launch: owner::Launch = serde_json::from_reader(std::io::stdin().lock())
             .map_err(|error| anyhow::anyhow!("session owner expects a launch on stdin: {error}"))?;
@@ -174,6 +196,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn serve(args: Args) -> anyhow::Result<()> {
+    startup_checkpoint("runtime_running");
     if args.build_info {
         println!(
             "{}",
@@ -190,6 +213,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         return Ok(());
     }
     let _installation_pin = agentdocker_host::installation::pin_current_executable()?;
+    startup_checkpoint("installation_pinned");
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -197,11 +221,13 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         // Colour is for a terminal; in `agentd.log` it is a third more bytes.
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
+    startup_checkpoint("logging_ready");
 
     // One spelling of the home, whatever it was given as, so the socket
     // directory it derives is the one clients derive.
     let home = agentdocker_host::dirs::canonical_home(args.home);
     agentdocker_host::dirs::secure_state_dir(&home)?;
+    startup_checkpoint("state_directory_ready");
     let socket = args
         .socket
         .unwrap_or_else(|| agentdocker_host::dirs::socket_path(&home));
@@ -246,6 +272,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             Some(lock)
         }
     };
+    startup_checkpoint("coordinator_lock_ready");
     // A successor opens pending: the schema comes forward, its recorded
     // version only with the acceptance below, so an aborted takeover
     // leaves a database the predecessor still opens.
@@ -253,6 +280,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         Some(_) => Daemon::open_pending(home, socket)?,
         None => Daemon::open(home, socket)?,
     });
+    startup_checkpoint("store_opened");
     daemon.reload_policies();
     // A successor is fenced here and takes no pins; it takes them right
     // after accepting, before the predecessor hears it serves.
@@ -324,6 +352,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         }
         (listener, None, None, false)
     };
+    startup_checkpoint("listener_bound");
     daemon.expect_watcher();
     watcher::spawn(daemon.clone());
     daemon.notify_desktop();
