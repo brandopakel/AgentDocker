@@ -184,6 +184,18 @@ A release before the desktop archives existed (v0.1.0) has no desktop zip;
 the script says so and installs the commands instead, unless a version was
 pinned, in which case it fails rather than guess.
 
+After an install, update or rollback changes the active desktop release, the
+installer automatically prunes unused owned builds under its installation lock.
+It keeps the active and rollback builds, every running build with a lifetime pin,
+legacy builds without the pin contract, unrecognized directories and the build
+providing the visible Mac launcher. An installed user service preserves all
+builds because it may reference their binaries. Cleanup checks content hashes
+and holds removal pins through deletion. Preview and unchanged installs do not
+prune. A cleanup failure appears in the install report's `retention` field and
+does not undo or fail a successful activation; `desktop prune --preview` can
+inspect what remains. `desktop prune --keep N` retains additional builds for
+that manual operation; a later activation again keeps only protected builds.
+
 ## Apple Developer ID and notification acceptance
 
 The local app has its icon and native notification-routing implementation.

@@ -244,6 +244,33 @@ fn service_installed(layout: &Layout) -> Result<bool> {
     Ok(false)
 }
 
+/// The caller still holds the activation's installation lock. Cleanup is
+/// best-effort after that successful switch: a damaged old payload or an I/O
+/// failure must not make the caller retry an already-committed activation.
+pub(super) fn after_activation(layout: &Layout, _install_lock: &lock::Lock) -> serde_json::Value {
+    let result = service_installed(layout).and_then(|service| prune_activated(layout, service));
+    match result {
+        Ok((removed, retained)) => json!({
+            "completed": true,
+            "removed_versions": removed,
+            "retained_versions": retained,
+        }),
+        Err(error) => json!({
+            "completed": false,
+            "error": format!("{error:#}"),
+            "summary": "activation succeeded; unused-build cleanup did not finish",
+        }),
+    }
+}
+
+fn prune_activated(layout: &Layout, service: bool) -> Result<(usize, usize)> {
+    let (plan, _pins) = plan(layout, Some(0), true, service)?;
+    if !plan.remove.is_empty() {
+        apply(layout, &plan)?;
+    }
+    Ok((plan.remove.len(), plan.retained.len()))
+}
+
 pub(super) fn run(
     layout: &Layout,
     keep: Option<usize>,
@@ -371,6 +398,69 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn repeated_activation_prunes_only_unused_owned_builds() {
+        let (_temp, layout) = fixture();
+        let legacy = retained(&layout, "legacy", 0);
+        let busy = retained(&layout, "running", 1);
+        dirs::secure_state_dir(&layout.root.join("pins")).unwrap();
+        let _pin = lock::try_shared(&installation::pin_path(&layout.root, &busy.id).unwrap())
+            .unwrap()
+            .unwrap();
+        let unknown = layout.root.join("versions/user-files");
+        std::fs::create_dir(&unknown).unwrap();
+        std::fs::write(unknown.join("keep"), "private content").unwrap();
+        let _install = lock::try_exclusive(&layout.root.join("install.lock"))
+            .unwrap()
+            .unwrap();
+        let mut previous = None;
+        for n in 0..12 {
+            let current = retained(&layout, &format!("release-{n}"), 1);
+            layout.activate(current.clone(), previous.clone()).unwrap();
+            let (removed, kept) = prune_activated(&layout, false).unwrap();
+            assert_eq!(removed, usize::from(n >= 2));
+            assert_eq!(kept, if n == 0 { 4 } else { 5 });
+            assert!(layout.payload(&current).exists());
+            if let Some(rollback) = &previous {
+                assert!(layout.payload(rollback).exists());
+            }
+            assert!(layout.payload(&legacy).exists());
+            assert!(layout.payload(&busy).exists());
+            assert_eq!(
+                std::fs::read_to_string(unknown.join("keep")).unwrap(),
+                "private content"
+            );
+            previous = Some(current);
+        }
+        assert_eq!(
+            std::fs::read_dir(layout.root.join("versions"))
+                .unwrap()
+                .count(),
+            5
+        );
+    }
+
+    #[test]
+    fn automatic_cleanup_preserves_service_references_and_changed_builds() {
+        let (_temp, layout) = fixture();
+        let old = retained(&layout, "old", 1);
+        let current = retained(&layout, "active", 1);
+        layout.activate(current.clone(), None).unwrap();
+        let before = layout.active().unwrap();
+        let _install = lock::try_exclusive(&layout.root.join("install.lock"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(prune_activated(&layout, true).unwrap(), (0, 2));
+        assert!(layout.payload(&old).exists());
+
+        let changed = layout.payload(&old).join("user-file");
+        std::fs::write(&changed, "preserve").unwrap();
+        assert!(prune_activated(&layout, false).is_err());
+        assert_eq!(layout.active().unwrap(), before);
+        assert!(layout.payload(&current).exists());
+        assert_eq!(std::fs::read_to_string(changed).unwrap(), "preserve");
     }
 
     #[cfg(target_os = "macos")]
