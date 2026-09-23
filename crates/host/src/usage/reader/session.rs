@@ -211,10 +211,11 @@ mod tests {
         // Matching length and file identity do not establish the old prefix.
         std::fs::write(&path, format!("{}{}", row(2), row(1))).unwrap();
         let mut changed = Session::open(&path, Runtime::Claude, Some(&old)).unwrap();
-        assert!(matches!(
-            prepare(&mut changed, &path),
-            Err(Error::ValidationIncomplete)
-        ));
+        let verification = prepare(&mut changed, &path);
+        assert!(
+            matches!(verification, Err(Error::Changed)),
+            "rewritten prefix result: {verification:?}"
+        );
         assert!(matches!(
             changed.scan(&path, Budget::default()),
             Err(Error::ValidationIncomplete)
