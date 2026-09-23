@@ -161,6 +161,12 @@ impl RecipientReadiness {
                     None => "Resume Claude from its project folder with AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1 and --dangerously-load-development-channels server:agentdocker, then complete its channel consent. See Tools for AgentDocker setup.".into(),
                 }
             }
+            // OpenCode's plugin watches an idle session and wakes it; a
+            // session started without the plugin only reads its queue itself.
+            SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "opencode" => format!(
+                "An OpenCode session with AgentDocker's plugin takes this at its next turn, and is woken for it when idle. Without the plugin (agentdocker setup opencode, then restart OpenCode) it waits until the agent reads its inbox (agentdocker inbox --as {}).",
+                self.agent.short()
+            ),
             SendIssue::NoReceiver | SendIssue::ReceiverSilent if self.runtime == "codex" => "Open this session's details in Tools and reconnect its message delivery. Until then, check its terminal: a waiting message cannot wake it on its own.".into(),
             // No adapter exists for this runtime: nothing here can wake
             // it, and saying "reconnect a receiver" would send the person
@@ -303,6 +309,16 @@ mod tests {
             );
             assert!(!guidance.contains("reconnect"), "{runtime}: {guidance}");
         }
+        // OpenCode is woken by its plugin, and told how to get it.
+        let opencode = agent("opencode");
+        let guidance = RecipientReadiness::for_agent(&opencode, opencode.created_at, None)
+            .unwrap()
+            .guidance();
+        assert!(guidance.contains("woken for it when idle"), "{guidance}");
+        assert!(
+            guidance.contains("agentdocker setup opencode"),
+            "{guidance}"
+        );
         let codex = agent("codex");
         assert!(
             RecipientReadiness::for_agent(&codex, codex.created_at, None)

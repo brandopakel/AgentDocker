@@ -73,6 +73,18 @@ jobs:
           name: windows-native-foundations-tests
           path: target/nextest/ci/junit.xml
           if-no-files-found: warn
+      - name: Preserve failed package for diagnosis
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          # Never present a package which failed acceptance as a tested preview.
+          name: windows-failed-package-diagnostics
+          path: |
+            artifacts/native-build.json
+            artifacts/windows-desktop-package/*.zip
+            artifacts/windows-desktop-package/*.sha256
+            artifacts/windows-desktop-package/manifest.json
+          if-no-files-found: warn
       - name: Preserve daemon and desktop smoke evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
