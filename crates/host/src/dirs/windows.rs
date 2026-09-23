@@ -662,6 +662,66 @@ pub(crate) fn same_user_process(pid: u32) -> io::Result<()> {
     Ok(())
 }
 
+/// Identify a connected client through its pipe token. Opening its process is
+/// not sufficient: a desktop daemon cannot query even its own user's SSH
+/// process across the Windows logon-session protection boundary.
+///
+/// This is synchronous, with no callback or application I/O while the thread
+/// carries a client token. Clients request SecurityIdentification, so their
+/// token permits identity inspection rather than acting with their privileges.
+pub(crate) fn same_user_pipe_client(pipe: HANDLE) -> io::Result<()> {
+    let expected = current_sid()?;
+    if pipe_client_sid(pipe)? != expected {
+        return Err(denied("named-pipe peer belongs to another Windows user"));
+    }
+    Ok(())
+}
+
+fn pipe_client_sid(pipe: HANDLE) -> io::Result<String> {
+    use windows_sys::Win32::{
+        Foundation::ERROR_NO_TOKEN,
+        Security::RevertToSelf,
+        System::{
+            Pipes::ImpersonateNamedPipeClient,
+            Threading::{GetCurrentThread, OpenThreadToken},
+        },
+    };
+    let mut token = null_mut();
+    // Refuse a nested impersonation context instead of overwriting a caller's
+    // thread token. No context is changed on this refusal or a query failure.
+    if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) } != 0 {
+        let _token = unsafe { OwnedHandle::from_raw_handle(token) };
+        return Err(denied(
+            "named-pipe identity query requires an unimpersonated thread",
+        ));
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() != Some(ERROR_NO_TOKEN as i32) {
+        return Err(error);
+    }
+    // SAFETY: the caller owns a connected server-end pipe for this call.
+    if unsafe { ImpersonateNamedPipeClient(pipe) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    struct Revert;
+    impl Drop for Revert {
+        fn drop(&mut self) {
+            // Continuing on a Tokio worker with a client's token is unsafe.
+            // Windows documents process termination if reverting fails.
+            if unsafe { RevertToSelf() } == 0 {
+                std::process::abort();
+            }
+        }
+    }
+    let _revert = Revert;
+    // OpenAsSelf is required to query a SecurityIdentification thread token.
+    if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    token_sid(token.as_raw_handle())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

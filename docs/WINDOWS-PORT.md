@@ -356,9 +356,15 @@ installer remain outside this slice.
 
 The shared IPC layer uses Unix sockets on macOS/Linux and named pipes on
 Windows. Windows pipe creation supplies a protected user/SYSTEM DACL, reserves
-the first instance, and rejects remote clients. Both ends check the peer's user
-without impersonation or privilege changes; clients also reject any untrusted
-read grant on the pipe before sending application data. This is a same-user,
+the first instance, and rejects remote clients. Clients check the server process's
+user and reject untrusted read grants on the pipe before sending application data.
+Servers identify clients through the connected pipe's token: a desktop process
+cannot necessarily open its own user's SSH process across Windows logon sessions.
+The synchronous identity query admits only the current user's SID, refuses an
+existing thread token and restores the thread before returning on success or
+failure. A failure to restore terminates the process. No application request or
+async suspension runs under a client token; clients request identification-only
+security quality of service, and no debug privilege is enabled. This is a same-user,
 per-host boundary across that user's local logon sessions. Other machine
 administrators remain privileged.
 
