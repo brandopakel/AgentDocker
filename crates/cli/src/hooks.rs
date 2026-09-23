@@ -713,14 +713,9 @@ fn runtime_word(runtime: &str) -> &str {
 }
 
 /// Every file a tool call is about to change. Claude Code's edit tools
-/// name one file each. Codex edits through `apply_patch`, whose patch names
-/// each file on a header line (`*** Update File: <path>`, `*** Add File:`,
-/// `*** Delete File:`, `*** Move to:`); the call can arrive as `apply_patch`
-/// itself or inside another tool's input (its code-mode `exec` script calls
-/// `tools.apply_patch("*** Begin Patch\n*** Update File: …")`), so the
-/// headers are read from anywhere in the input, including a quoted string
-/// whose newlines are the two characters `\n`. A shell command that writes
-/// a file some other way is not seen here.
+/// name one file each. A Codex `apply_patch` call names each file on a
+/// structural header line. Nested calls arrive independently; the outer
+/// code-mode script and arbitrary shell writes are not parsed here.
 pub fn edited_paths(input: &HookInput) -> Vec<PathBuf> {
     if let Some(path) = edited_path(input) {
         return vec![path];
@@ -739,7 +734,7 @@ pub fn edited_paths(input: &HookInput) -> Vec<PathBuf> {
 /// where an example or a computed string would mislead.
 const PATCH_TOOLS: &[&str] = &["apply_patch"];
 
-/// The files a patch in any string of `tool_input` names, absolute
+/// The files named by the canonical patch input, absolute
 /// (relative ones against `cwd`), each once, in order.
 pub fn patch_paths(tool_input: &Value, cwd: Option<&Path>) -> Vec<PathBuf> {
     // The patch itself: `command` (Codex's canonical apply_patch input, and
@@ -771,7 +766,6 @@ pub fn patch_paths(tool_input: &Value, cwd: Option<&Path>) -> Vec<PathBuf> {
             .find_map(|header| line.strip_prefix(header)) else {
                 continue;
             };
-            let raw = raw.trim_end();
             if raw.is_empty() {
                 continue;
             }
@@ -2482,9 +2476,8 @@ mod tests {
         ));
     }
 
-    /// Codex edits through `apply_patch`, as its own tool or inside its
-    /// code-mode `exec` script; every file a patch names is found, with the
-    /// script's `\n` escapes and a relative path resolved against the cwd.
+    /// Patch headers preserve whole file names and resolve relative paths
+    /// against the cwd; outer code-mode scripts are not patch input.
     #[test]
     fn codex_patches_name_every_file_they_touch() {
         let mut ev = input("PreToolUse");
@@ -2524,6 +2517,14 @@ mod tests {
             "{paths:?}"
         );
         assert!(!paths.iter().any(|p| p.ends_with("unrelated.py")));
+
+        // Trailing spaces belong to a Unix file name, not the CRLF ending.
+        ev.tool_input = Some(json!({
+            "command": "*** Begin Patch\r\n*** Update File: /tmp/project/trailing.py \r\n@@\r\n-a\r\n+b\r\n*** End Patch"
+        }));
+        let paths = edited_paths(&ev);
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].file_name().unwrap(), "trailing.py ");
 
         // The outer code-mode script is not read: its nested apply_patch
         // arrives as its own hook with its own input.
