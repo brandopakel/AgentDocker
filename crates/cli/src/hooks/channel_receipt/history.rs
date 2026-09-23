@@ -288,14 +288,22 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let key = format!("{:x}", Sha256::digest(agent.id.as_str().as_bytes()));
-        let _guard = lock::try_exclusive_existing(
-            &root
-                .path()
-                .join("channel-receipts")
-                .join(format!("{key}.lock")),
-        )
-        .unwrap()
-        .unwrap();
+        let lock_path = root
+            .path()
+            .join("channel-receipts")
+            .join(format!("{key}.lock"));
+        // The same inherited-lock race: wait, bounded, until this test holds it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let _guard = loop {
+            if let Some(guard) = lock::try_exclusive_existing(&lock_path).unwrap() {
+                break guard;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the lock was never free"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
         assert!(
             !find(root.path(), &path, &agent, &message, |_| panic!(
                 "concurrent scan"
