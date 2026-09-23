@@ -214,20 +214,17 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                 channel_input: false,
                 channel_home: None,
             };
-            let output = match bounded_claude_code_at(&delivery, &input, &opts, deadline).await {
-                Ok(output) => output,
-                Err(err) => {
-                    eprintln!(
-                        "agentdocker hook opencode ({}): {err:#}",
-                        input.hook_event_name
-                    );
-                    None
-                }
-            };
+            let result = bounded_claude_code_at(&delivery, &input, &opts, deadline).await;
+            if let Err(err) = &result {
+                eprintln!(
+                    "agentdocker hook opencode ({}): {err:#}",
+                    input.hook_event_name
+                );
+            }
             // Unlike Claude Code, printing is not delivery: the plugin still
             // has to place the context in a turn. It reports back with a
             // `Delivered` event once that turn completes.
-            let delivered = opencode_delivered(delivery.pending.take());
+            let (output, delivered) = opencode_answer(result, delivery.pending.take());
             // The session's agent, for the plugin's idle watch.
             let agent = if matches!(input.hook_event_name.as_str(), "SessionStart" | "Stop") {
                 tokio::time::timeout_at(deadline, session_agent(&client, &input))
@@ -365,6 +362,34 @@ async fn report_hook_status<B: Backend>(
             .await?;
     }
     Ok(())
+}
+
+/// An OpenCode answer and the messages it carries. The inbox is read before
+/// the rest of an answer is built, so a hook that failed or timed out after
+/// that read can hold acknowledgements for text it never produced: those are
+/// dropped, and so is any list without text to carry it. Dropped messages
+/// stay queued and are offered again.
+fn opencode_answer(
+    result: Result<Option<Value>>,
+    pending: Vec<Request>,
+) -> (Option<Value>, Vec<Delivered>) {
+    let Ok(output) = result else {
+        return (None, Vec::new());
+    };
+    let carries_text = output.as_ref().is_some_and(|answer| {
+        [
+            &answer["hookSpecificOutput"]["additionalContext"],
+            &answer["reason"],
+        ]
+        .iter()
+        .any(|text| text.as_str().is_some_and(|text| !text.trim().is_empty()))
+    });
+    let delivered = if carries_text {
+        opencode_delivered(pending)
+    } else {
+        Vec::new()
+    };
+    (output, delivered)
 }
 
 /// The acknowledgements an answer held back, as the OpenCode plugin hands
@@ -1878,6 +1903,24 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(event.delivered, delivered);
+        // A hook that failed after reading the inbox, or answered without
+        // text, carries nothing to acknowledge.
+        let held = || {
+            vec![Request::AckInbox {
+                agent: "me".into(),
+                messages: vec![MessageId::from("m1".to_owned())],
+            }]
+        };
+        let (output, delivered) = opencode_answer(Err(anyhow::anyhow!("timed out")), held());
+        assert!(output.is_none() && delivered.is_empty());
+        let (_, delivered) = opencode_answer(Ok(None), held());
+        assert!(delivered.is_empty());
+        let blank = json!({ "hookSpecificOutput": { "additionalContext": "  " } });
+        assert!(opencode_answer(Ok(Some(blank)), held()).1.is_empty());
+        let told = json!({ "hookSpecificOutput": { "additionalContext": "m1 says hi" } });
+        assert_eq!(opencode_answer(Ok(Some(told)), held()).1.len(), 1);
+        let woken = json!({ "decision": "block", "reason": "m1 says hi" });
+        assert_eq!(opencode_answer(Ok(Some(woken)), held()).1.len(), 1);
         // Every other event leaves it empty.
         let other: HookInput =
             serde_json::from_value(json!({ "hook_event_name": "Stop" })).unwrap();
