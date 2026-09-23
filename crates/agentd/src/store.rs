@@ -723,6 +723,7 @@ impl Store {
 
     fn open_with(path: &Path, bump_version: bool) -> Result<Self> {
         crate::initialize_storage_platform()?;
+        crate::startup_checkpoint("store_files_started");
         // Secure the database before SQLite can create a journal/WAL. Existing
         // companion files are checked without following links as well.
         agentdocker_host::dirs::private_file(path, true, false)?;
@@ -738,8 +739,10 @@ impl Store {
                 Err(error) => return Err(error.into()),
             }
         }
+        crate::startup_checkpoint("store_files_ready");
         let conn = Connection::open(path)
             .with_context(|| format!("cannot open state database {}", path.display()))?;
+        crate::startup_checkpoint("sqlite_connection_ready");
         Self::init(conn, bump_version)
     }
 
@@ -816,9 +819,13 @@ impl Store {
             );
         }
 
+        crate::startup_checkpoint("store_compatibility_ready");
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
+        crate::startup_checkpoint("store_wal_ready");
         conn.pragma_update(None, "synchronous", "FULL")?;
+        crate::startup_checkpoint("store_schema_started");
         conn.execute_batch(SCHEMA)?;
+        crate::startup_checkpoint("store_schema_ready");
         // A journal written before `summary` had its own column gets one,
         // filled from the blob, so the LIKE fallback searches the same text
         // as FTS. Idempotent: the column is checked for, not the version.
@@ -873,6 +880,7 @@ impl Store {
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('event_log_id', lower(hex(randomblob(16))))",
             [],
         )?;
+        crate::startup_checkpoint("store_migrations_ready");
         let had_fts: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='journal_fts')",
             [],
@@ -910,6 +918,7 @@ impl Store {
                 tx.commit()?;
             }
         }
+        crate::startup_checkpoint("store_journal_index_ready");
         if fts {
             let had_messages_fts: bool = conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='messages_fts')",
@@ -953,6 +962,7 @@ impl Store {
                 tx.commit()?;
             }
         }
+        crate::startup_checkpoint("store_message_index_ready");
         Ok(Self {
             messages_fts: std::cell::Cell::new(fts),
             conn,
