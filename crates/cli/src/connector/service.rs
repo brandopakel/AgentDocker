@@ -344,21 +344,19 @@ pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
 }
 
 /// Desktop setup must not replace a service configured outside this action.
-/// Creation is exclusive; a concurrent creator is compared, never overwritten.
+/// A complete, synced definition is published exclusively. A concurrent creator
+/// is compared, never overwritten or observed while its content is incomplete.
 fn ensure_definition(path: &std::path::Path, contents: &str) -> Result<()> {
     use std::io::{Read, Write};
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-    {
-        Ok(mut file) => {
-            file.write_all(contents.as_bytes())?;
-            file.sync_all()?;
-        }
+    let parent = path.parent().context("service definition has no parent")?;
+    std::fs::create_dir_all(parent)?;
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    staged.write_all(contents.as_bytes())?;
+    staged.as_file().sync_all()?;
+    // A same-directory link publishes all bytes together without replacing a
+    // path another creator won. Failure before this point leaves no definition.
+    match std::fs::hard_link(staged.path(), path) {
+        Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             anyhow::ensure!(
                 std::fs::symlink_metadata(path)?.file_type().is_file(),
@@ -477,6 +475,36 @@ mod tests {
             assert!(ensure_definition(&link, "first definition").is_err());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "first definition");
         }
+    }
+
+    #[test]
+    fn concurrent_enable_publishes_one_complete_definition() {
+        use std::sync::{Arc, Barrier};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("connector.service");
+        let start = Arc::new(Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|index| {
+                let path = path.clone();
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    let contents = if index % 2 == 0 { "a" } else { "b" }.repeat(1024 * 1024);
+                    start.wait();
+                    let result = ensure_definition(&path, &contents);
+                    (contents, result)
+                })
+            })
+            .collect();
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        let published = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(published.len(), 1024 * 1024);
+        for (contents, result) in results {
+            assert_eq!(result.is_ok(), contents == published, "{result:?}");
+        }
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 
     #[test]

@@ -4064,12 +4064,14 @@ impl App {
                                     row![
                                         action(
                                             format!("connector-tailscale-{}", runtime.name),
-                                            if self.connector_busy {
+                                            if self.connector_busy
+                                                == Some(super::ConnectorTunnel::Tailscale)
+                                            {
                                                 "Starting…"
                                             } else {
                                                 "Enable with Tailscale"
                                             },
-                                            (!self.connector_busy).then_some(
+                                            self.connector_busy.is_none().then_some(
                                                 Message::ConnectorEnable(
                                                     super::ConnectorTunnel::Tailscale
                                                 )
@@ -4078,8 +4080,14 @@ impl App {
                                         ),
                                         action(
                                             format!("connector-cloudflare-{}", runtime.name),
-                                            "Enable with Cloudflare",
-                                            (!self.connector_busy).then_some(
+                                            if self.connector_busy
+                                                == Some(super::ConnectorTunnel::Cloudflared)
+                                            {
+                                                "Starting…"
+                                            } else {
+                                                "Enable with Cloudflare"
+                                            },
+                                            self.connector_busy.is_none().then_some(
                                                 Message::ConnectorEnable(
                                                     super::ConnectorTunnel::Cloudflared
                                                 )

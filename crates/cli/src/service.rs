@@ -18,11 +18,11 @@ use clap::{Args, Subcommand};
 use crate::client::Client;
 use crate::format;
 
-const LABEL: &str = "dev.agentdocker.agentd";
+pub(crate) const LABEL: &str = "dev.agentdocker.agentd";
 /// How long `daemon reload` waits for a mutation that is still executing
 /// before giving the refusal to the user.
 const RELOAD_WAIT: Duration = Duration::from_secs(30);
-const UNIT: &str = "agentd.service";
+pub(crate) const UNIT: &str = "agentd.service";
 
 #[derive(Args)]
 pub struct DaemonArgs {

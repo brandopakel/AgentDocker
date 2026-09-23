@@ -233,19 +233,21 @@ fn service_installed(layout: &Layout) -> Result<bool> {
 }
 
 fn service_installed_in(homes: &[PathBuf]) -> Result<bool> {
+    use crate::connector::service::{LABEL as CONNECTOR_LABEL, UNIT as CONNECTOR_UNIT};
+    use crate::service::{LABEL as DAEMON_LABEL, UNIT as DAEMON_UNIT};
     let names = if cfg!(target_os = "macos") {
         [
-            "Library/LaunchAgents/dev.agentdocker.agentd.plist",
-            "Library/LaunchAgents/dev.agentdocker.connector.plist",
+            format!("Library/LaunchAgents/{DAEMON_LABEL}.plist"),
+            format!("Library/LaunchAgents/{CONNECTOR_LABEL}.plist"),
         ]
     } else {
         [
-            ".config/systemd/user/agentd.service",
-            ".config/systemd/user/agentdocker-connector.service",
+            format!(".config/systemd/user/{DAEMON_UNIT}"),
+            format!(".config/systemd/user/{CONNECTOR_UNIT}"),
         ]
     };
     for home in homes {
-        for name in names {
+        for name in &names {
             // A stopped service has no lifetime pin, but still needs its
             // executable at its next start. Even a redirected or unreadable
             // definition protects retained versions; do not guess its target.

@@ -439,7 +439,7 @@ pub struct App {
     runtimes: Vec<RuntimeInfo>,
     /// The remote connector serving on this machine, when one is.
     connector: Option<agentdocker_host::connector::Serving>,
-    connector_busy: bool,
+    connector_busy: Option<ConnectorTunnel>,
     connector_error: Option<String>,
     discovered: Vec<DiscoveredProcess>,
     journal: Vec<JournalEntry>,
@@ -621,7 +621,7 @@ impl App {
             leases: Vec::new(),
             runtimes: Vec::new(),
             connector: None,
-            connector_busy: false,
+            connector_busy: None,
             connector_error: None,
             discovered: Vec::new(),
             journal: Vec::new(),
@@ -701,7 +701,7 @@ impl App {
             leases: Vec::new(),
             runtimes: Vec::new(),
             connector: None,
-            connector_busy: false,
+            connector_busy: None,
             connector_error: None,
             discovered: Vec::new(),
             journal: Vec::new(),
@@ -809,7 +809,7 @@ impl App {
                     self.complete_pause(request, Err(reason.into()));
                 }
                 Cmd::ConnectorEnable(_) => {
-                    self.connector_busy = false;
+                    self.connector_busy = None;
                     self.connector_error = Some(reason.into());
                 }
                 Cmd::Setup(_) => self.setup_busy = false,
@@ -1010,7 +1010,7 @@ impl App {
                 Msg::Runtimes(runtimes) => self.runtimes = runtimes,
                 Msg::Connector(serving) => self.connector = serving,
                 Msg::ConnectorEnabled(result) => {
-                    self.connector_busy = false;
+                    self.connector_busy = None;
                     self.connector_error = result.err();
                     self.send(Cmd::Connector);
                 }
@@ -4420,7 +4420,7 @@ pub(crate) mod tests {
         let action = shell::Message::ConnectorEnable(ConnectorTunnel::Tailscale);
         let _ = app.update(action.clone());
         let _ = app.update(action);
-        assert!(app.connector_busy);
+        assert_eq!(app.connector_busy, Some(ConnectorTunnel::Tailscale));
         assert_eq!(
             requests
                 .try_iter()
@@ -4434,7 +4434,7 @@ pub(crate) mod tests {
             )))
             .unwrap();
         app.drain();
-        assert!(!app.connector_busy);
+        assert_eq!(app.connector_busy, None);
         assert_eq!(
             app.connector_error.as_deref(),
             Some("existing settings preserved")
@@ -4444,11 +4444,15 @@ pub(crate) mod tests {
                 .try_iter()
                 .any(|command| matches!(command, Cmd::Connector))
         );
+        let _ = app.update(shell::Message::ConnectorEnable(
+            ConnectorTunnel::Cloudflared,
+        ));
+        assert_eq!(app.connector_busy, Some(ConnectorTunnel::Cloudflared));
         app.rejected(
             Cmd::ConnectorEnable(ConnectorTunnel::Cloudflared),
             "queue full",
         );
-        assert!(!app.connector_busy);
+        assert_eq!(app.connector_busy, None);
         assert_eq!(app.connector_error.as_deref(), Some("queue full"));
     }
 

@@ -2246,11 +2246,11 @@ impl App {
                 }
             }
             Message::ConnectorEnable(tunnel) => {
-                if !self.connector_busy
+                if self.connector_busy.is_none()
                     && self.connector.is_none()
                     && (cfg!(target_os = "macos") || cfg!(target_os = "linux"))
                 {
-                    self.connector_busy = true;
+                    self.connector_busy = Some(tunnel);
                     self.connector_error = None;
                     self.send(Cmd::ConnectorEnable(tunnel));
                 }
