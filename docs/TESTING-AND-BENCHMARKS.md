@@ -38,7 +38,10 @@ hooks. A rejected profile records a failure before any child launches. Codex 0.1
 inline hooks in the recorded Oracle trial; the corrected fixture keeps that layer
 active only in the checked profile. This follows the [official hook-source and
 trust contract](https://learn.chatgpt.com/docs/hooks). Managed policy remains in
-force; existing provider configuration/authentication files are checked unchanged.
+force; the preflight checks the dedicated profile and fresh trial project, not
+system configuration or provider-managed settings. Those host layers can affect
+a trial and remain in force; a private profile is not proof that they are absent.
+Existing provider configuration/authentication files are checked unchanged.
 The test requires correlated replies and automatic receipts at all three lifecycle
 boundaries; it does not infer idle wake from hooks or MCP contact.
 
