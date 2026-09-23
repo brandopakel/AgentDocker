@@ -670,8 +670,9 @@ pub(crate) fn same_user_process(pid: u32) -> io::Result<()> {
 /// carries a client token. Clients request SecurityIdentification, so their
 /// token permits identity inspection rather than acting with their privileges.
 pub(crate) fn same_user_pipe_client(pipe: HANDLE) -> io::Result<()> {
-    let expected = current_sid()?;
-    if pipe_client_sid(pipe)? != expected {
+    let client = pipe_client_sid(pipe)?;
+    // Read the process identity only after the helper has restored the thread.
+    if client != current_sid()? {
         return Err(denied("named-pipe peer belongs to another Windows user"));
     }
     Ok(())
