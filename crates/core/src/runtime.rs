@@ -45,6 +45,10 @@ pub enum McpWiring {
     /// `[mcp_servers.<name>]` tables in a TOML file, relative to the home
     /// directory.
     TomlServers { file: &'static str },
+    /// OpenCode's `mcp` object in a JSON file, relative to the home
+    /// directory: each server is `{"type": "local", "command": [executable,
+    /// args…], "enabled": true}`, the command one array with its arguments.
+    OpencodeJson { file: &'static str },
     /// Not known to take one.
     None,
 }
@@ -302,7 +306,9 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         linux_apps: &[],
         extensions: &[],
         config_dir: Some(".config/opencode"),
-        mcp: McpWiring::None,
+        mcp: McpWiring::OpencodeJson {
+            file: ".config/opencode/opencode.json",
+        },
         hooks: false,
     },
 ];

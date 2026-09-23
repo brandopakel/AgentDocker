@@ -15,6 +15,7 @@ mod rtk;
 mod sender;
 mod service;
 mod setup;
+mod opencode_plugin;
 mod skill;
 mod teams;
 mod top;

@@ -501,6 +501,9 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
                 McpWiring::TomlServers { .. } => {
                     super::toml_edit(&path, before.as_deref(), executable, spec.name)?
                 }
+                McpWiring::OpencodeJson { .. } => {
+                    super::opencode_edit(&path, before.as_deref(), executable)?
+                }
                 McpWiring::None => unreachable!(),
             }
         };
@@ -555,6 +558,41 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
         plan.changes.push(Change {
             runtime: runtime.name.clone(),
             channel: "coordination skill".into(),
+            target: project::try_canonical(&path)?,
+            path,
+            before,
+            after,
+        });
+    }
+    // OpenCode's hooks are a plugin module in its global plugin directory,
+    // written and undone like a skill: never over a copy someone edited.
+    for runtime in &inventory {
+        if runtime.name != "opencode"
+            || (names.is_empty() && !runtime.installed())
+            || (!names.is_empty() && !names.contains(&runtime.name))
+        {
+            continue;
+        }
+        let path = crate::opencode_plugin::path(roots);
+        let before = read_config(&path)?;
+        let after = crate::opencode_plugin::document(executable);
+        if before.as_deref() == Some(after.as_str()) {
+            continue;
+        }
+        if before
+            .as_deref()
+            .is_some_and(|text| !crate::opencode_plugin::unmodified_install(text))
+        {
+            plan.notes.push(format!(
+                "{}: an edited AgentDocker plugin is preserved at {}",
+                runtime.label,
+                path.display()
+            ));
+            continue;
+        }
+        plan.changes.push(Change {
+            runtime: runtime.name.clone(),
+            channel: "plugin".into(),
             target: project::try_canonical(&path)?,
             path,
             before,

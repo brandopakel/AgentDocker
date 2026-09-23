@@ -177,7 +177,7 @@ fn mcp(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
         Ok(value) => value,
         Err(check) => return vec![check],
     };
-    let key = if is_toml { "mcp_servers" } else { "mcpServers" };
+    let key = super::servers_key(spec);
     if !value.is_object() || value.get(key).is_some_and(|servers| !servers.is_object()) {
         return vec![Check::new(
             "mcp",
@@ -194,14 +194,9 @@ fn mcp(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
     let mut checks = Vec::new();
     if let Some(servers) = servers {
         for (name, server) in servers {
-            let command = server["command"].as_str();
-            let arguments: Option<Vec<_>> = server["args"]
-                .as_array()
-                .and_then(|args| args.iter().map(Value::as_str).collect());
-            if !arguments
-                .as_ref()
-                .is_some_and(|args| mcp_command_matches(command, args, marker, spec.name))
-            {
+            if !super::server_launch(spec, server).is_some_and(|(command, args)| {
+                mcp_command_matches(command, &args, marker, spec.name)
+            }) {
                 if name == marker {
                     checks.push(Check::new(
                         "mcp",
