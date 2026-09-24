@@ -355,6 +355,15 @@ Opening an external project terminal or focusing an external agent terminal is
 not implemented on Windows. Provider inventory, services and the desktop
 installer remain outside this slice.
 
+The opt-in `AGENTDOCKER_STARTUP_TRACE=1` diagnostics distinguish home security,
+database-file protection, SQLite connection, compatibility checks, WAL setup,
+schema creation, migrations, search indexes and state restoration. They emit
+only fixed stage labels, PID and elapsed time, and are silent by default. The
+extracted-package failure in run 35932937310 stopped after coordinator-lock
+readiness; finer stages are diagnostic evidence for a future occurrence, not a
+fix or a longer readiness timeout. Failed packages and original reports remain
+retained.
+
 ## Local connection boundary
 
 The shared IPC layer uses Unix sockets on macOS/Linux and named pipes on
