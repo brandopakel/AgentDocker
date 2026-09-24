@@ -135,7 +135,25 @@ Nobody has to start `agentd` by hand. A client that cannot connect — no socket
 
 Exactly one daemon serves a socket, guaranteed by an advisory lock beside it (`agentd.sock` → `agentd.lock`). The daemon takes the lock for its lifetime before touching the socket, and exits at once, successfully, if it cannot. A client decides whether to spawn by taking the same lock for an instant: getting it means no daemon exists; not getting it means one is up or starting, so the client only waits. Two clients racing may both spawn a daemon, and the loser exits on the lock. The daemon's stale-socket check (remove the file if nothing answers on it) stays as a second line of defence.
 
-**As a service.** On-demand start is enough for a laptop; `agentdocker daemon install` additionally runs `agentd` as a login service so it survives reboots and crashes and belongs to no terminal — a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`) on macOS, a systemd user unit (`~/.config/systemd/user/agentd.service`) on Linux. Both restart the daemon after a *failure* only, because a clean exit is what a service daemon does when an on-demand one already holds the lock; `install` therefore first asks any running daemon to exit (the `shutdown` request, which SIGTERMs managed agents exactly as Ctrl-C does) and then hands the socket to the service. `daemon uninstall`, `start`, `stop`, `restart`, and `status` do what they say, with `start` and `stop` falling back to the on-demand daemon when no service is installed; `--dry-run` on `install` and `uninstall` prints the files and commands instead. The service definition bakes in `--home` (and `--socket` when overridden) so it serves the same paths the CLI that installed it used. Files and command sequences are pure and unit-tested; only the final execution touches the system.
+**As a service.** On-demand start is enough for a laptop; `agentdocker daemon install` additionally runs `agentd` as a login service so it survives reboots and crashes and belongs to no terminal — a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`) on macOS, a systemd user unit (`~/.config/systemd/user/agentd.service`) on Linux, or a limited per-user Task Scheduler login task on Windows. The Unix managers restart the daemon after a *failure* only, because a clean exit is what a service daemon does when an on-demand one already holds the lock; `install` therefore first asks any running daemon to exit (the `shutdown` request, which SIGTERMs managed agents exactly as Ctrl-C does) and then hands the socket to the service. `daemon uninstall`, `start`, `stop`, `restart`, and `status` do what they say, with `start` and `stop` falling back to the on-demand daemon when no service is installed; `--dry-run` on `install` and `uninstall` prints the files and commands instead. The service definition bakes in `--home` (and `--socket` when overridden) so it serves the same paths the CLI that installed it used. Files and command sequences are pure and unit-tested; only the final execution touches the system.
+
+Windows `daemon install` uses a per-user Task Scheduler login task with an
+Interactive/Limited principal and an explicit CLI supervisor. The canonical
+daemon home determines the task name. A private, bounded, atomically published
+ownership record stores a nonce and the exact action; mutations also verify
+the task principal against the current SID. An interrupted update retains
+both the prior and proposed action until registration succeeds. A mutation
+lock serializes service commands, and a separate supervisor lock prevents
+competing supervisors. Graceful shutdown exits the supervisor; failed daemons
+retry after two seconds, at most three times before stopping, with the budget
+reset after ten minutes of continuous operation. The daemon remains detached
+so its independently owned sessions can survive coordinator replacement.
+The task pins executable paths until `daemon install` is run again. PowerShell
+arguments preserve literal ASCII and typographic single quotes. After starting
+the service, Windows waits up to ten seconds for daemon readiness; Unix waits
+five seconds. Native
+Task Scheduler lifecycle and provider-survival acceptance are tracked
+separately from definition/ownership tests in [remaining work](REMAINING-WORK.md).
 
 **Installing.** Installing the CLI package from a pinned Git tag/commit or checkout builds both binaries; `install.sh` at the repository root downloads the release archive for the host (`agentdocker-<target>.tar.gz`, four targets: macOS and Linux musl on x86_64 and aarch64, named without the version so `releases/latest/download/…` works) and drops them into `~/.local/bin`; `packaging/homebrew/agentdocker.rb.in` is the template for a tap formula, with a `brew services` block that runs the daemon. The release workflow builds and uploads archives with SHA-256 checksums on every protected `v*` tag, then generates `agentdocker.rb` from all four verified checksum inputs. The installer requires a valid matching checksum before extracting or replacing anything. Workspace dependencies include versions so `cargo package --workspace` packages all five crates; actual crates.io publication and tap publication remain release operations.
 
