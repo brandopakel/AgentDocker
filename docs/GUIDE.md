@@ -662,7 +662,10 @@ Newest first. Only what changes how the product is used.
   open-world), so a host that asks before risky calls lets the reads through.
 - `claude attach` (later shown as `claude agents`) is the terminal in front of
   a background Claude Code session, whose `bg-spare` process registers itself:
-  neither is discovered or adoptable as a second agent.
+  neither is discovered or adoptable as a second agent. A command run from
+  that session's tools (`agentdocker send`, `ask`, `pause`…) is still that
+  session's: the CLI finds its `bg-spare` ancestor and sends as its agent, not
+  as you.
 - `agentdocker setup --shell` makes every terminal `claude` carry the channel
   flag so AgentDocker can wake it; the Claude Code card in Tools offers it as
   **Wake terminal sessions**, and the MCP server now reads the flag from its

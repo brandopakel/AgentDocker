@@ -378,6 +378,32 @@ fn claude_runtime(arguments: &[String]) -> Option<&'static str> {
     claude_helper(arguments).is_none().then_some("claude-code")
 }
 
+/// Whether an interpreter's script is Claude Code's, on Windows too, where
+/// the path is written with backslashes.
+fn claude_script(script: &str) -> bool {
+    #[cfg(windows)]
+    let script = script.replace('\\', "/");
+    script.contains("@anthropic-ai/claude-code")
+}
+
+/// The runtime whose session a process *is*, for telling who is calling:
+/// [`runtime_of`], and also Claude Code's `bg-spare`, the process that
+/// holds a background session's model and runs its tools. Discovery leaves
+/// it alone because it registers itself; a command run from one of its
+/// tools belongs to that registered session all the same.
+pub fn session_runtime_of(argv: &[String]) -> Option<&'static str> {
+    runtime_of(argv).or_else(|| {
+        let spare = match executable(argv)?.as_ref() {
+            "claude" => argv.get(1),
+            exe if interpreter(exe) && argv.get(1).is_some_and(|script| claude_script(script)) => {
+                argv.get(2)
+            }
+            _ => None,
+        }?;
+        (spare == "bg-spare").then_some("claude-code")
+    })
+}
+
 /// What a Claude Code command line asks for by way of an earlier session:
 /// `--resume <id>` / `-r <id>` / `--resume=<id>` name one, `--resume` alone
 /// opens a picker and `--continue` / `-c` takes the latest, so those name
@@ -818,6 +844,37 @@ mod tests {
             Some("claude-code")
         );
         assert_eq!(runtime_of(&argv("claude bg-spare --bg-spare /tmp/x")), None);
+        // A background session's own process is that session to a caller,
+        // though discovery leaves it to register itself; its terminal and
+        // host are not.
+        assert_eq!(
+            session_runtime_of(&argv("claude bg-spare --bg-spare /tmp/x")),
+            Some("claude-code")
+        );
+        assert_eq!(
+            session_runtime_of(&argv("node /x/@anthropic-ai/claude-code/cli.js bg-spare")),
+            Some("claude-code")
+        );
+        assert_eq!(
+            session_runtime_of(&argv("claude bg-pty-host --bg-pty-host /tmp/x")),
+            None
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            session_runtime_of(&[
+                "node.exe".to_owned(),
+                r"C:\Users\a\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\cli.js"
+                    .to_owned(),
+                "bg-spare".to_owned(),
+            ]),
+            Some("claude-code")
+        );
+        assert_eq!(session_runtime_of(&argv("claude attach")), None);
+        assert_eq!(session_runtime_of(&argv("claude daemon run")), None);
+        assert_eq!(
+            session_runtime_of(&argv("codex --full-auto")),
+            Some("codex")
+        );
         assert_eq!(runtime_of(&argv("claude daemon run --origin x")), None);
         assert_eq!(runtime_of(&argv("claude --resume")), Some("claude-code"));
         assert_eq!(runtime_of(&argv("codex --full-auto")), Some("codex"));
