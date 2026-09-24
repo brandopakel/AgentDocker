@@ -66,7 +66,13 @@ def trial(args):
             (second / META).write_text(json.dumps(metadata, indent=2) + "\n")
             if MAC:
                 subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(second)], check=True)
-        environment = {**os.environ, "AGENTDOCKER_HOME": str(root / "state"),
+        # Retention checks the account home as well as --prefix for service
+        # definitions. Use a private account home so a real installed service
+        # cannot change the fixture's expected pruning or uninstall behavior.
+        account_home = root / "account-home"
+        account_home.mkdir()
+        environment = {**os.environ, "HOME": str(account_home),
+                       "AGENTDOCKER_HOME": str(root / "state"),
                        "AGENTDOCKER_SOCKET": str(root / "daemon.sock"), "AGENTDOCKER_NO_AUTOSTART": "1"}
         for key in ["AGENTDOCKER_AGENT_ID", "AGENTDOCKER_TOKEN_FILE"]:
             environment.pop(key, None)
