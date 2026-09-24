@@ -256,7 +256,7 @@ on an independent Mac before publication. These acceptance steps remain
 necessary after the credentials are configured.
 
 The source-built app and CLI can continue local testing while release setup is
-unfinished. The current published CLI/formula remains v0.1.0; the newer installed
+unfinished. The current stable CLI/formula remains v0.1.0; the newer installed
 local app is identified by its source commit, not that shared version string.
 
 ## Windows portable preview
@@ -306,19 +306,27 @@ unsigned portable preview and its missing Windows installer, service and updater
 The public upload selects only release assets, excluding diagnostic artifacts.
 
 Windows promotion refusal and exact-byte retention have fixture coverage. The
-protected-tag Windows job, hosted ZIP download and independent-machine/provider
-acceptance remain unverified until the candidate is released and tried.
+beta.2 protected-tag Windows job passed, and its hosted ZIP passed 61 native
+checks on AWBP. An actual Claude trial exposed a transcript ownership problem;
+the corrected CI package passed delivery and automatic receipt checks. Repeat
+the hosted-package lifecycle on the next candidate. Native Codex input and the
+Windows installer, service lifecycle and updater remain separate open gates.
 
 ## First coworker preview candidate
 
 The failed immutable `v0.2.0-beta.1` tag remains at `d46db1f2`; it published no
-release. The replacement source candidate is **0.2.0-beta.2**, with matching workspace packages,
+release. **0.2.0-beta.2** was published from `f37998dd` after every native build
+passed. The repaired preview channel now advertises that release.
+
+The next source candidate is **0.2.0-beta.3**, with matching workspace packages,
 internal dependency requirements and entries in both Cargo lockfiles (including
-the excluded fuzz workspace). The legacy macOS bundle
-helper reads this version from the workspace when no override is supplied.
-The intended tag is `v0.2.0-beta.2`; changing the source version does not create a
-tag, publish assets or install them. Publication remains open until the final
-integrated source passes its gates and the protected-tag workflow finishes.
+the excluded fuzz workspace). It combines the preview staging correction,
+Windows service and provider ownership changes, bounded accounting, desktop
+browser service controls and startup diagnostics. The legacy macOS bundle helper
+reads the workspace version when no override is supplied. The intended tag is
+`v0.2.0-beta.3`; changing the source version does not publish or install it. Finish
+substantive review and final integrated local/CI checks before creating that tag,
+then complete the protected-tag workflow and hosted lifecycle acceptance.
 
 Before announcing the preview, download its actual hosted archives and sidecar
 checksums, verify package provenance, and exercise the explicit-version install
@@ -334,8 +342,9 @@ it does not complete the installer/service/update or native Codex input work.
    present at the September 9 check. Secret values/token validity were not audited.
 2. Open: configure Developer ID/notarization privately, reconcile the cask
    signing/installation contract, and validate final artifacts.
-3. Open: run the protected-tag release, confirm formula/cask publication and
-   exercise hosted update/rollback through the installed app.
+3. Open: publish the next immutable preview through the protected-tag workflow
+   and exercise hosted update/rollback. Keep preview publication separate from
+   the stable feed and Homebrew; formula/cask publication belongs to stable release.
 4. Open: finish physical notification and independent-machine acceptance; retain
    results in the existing audit/verification records.
 
