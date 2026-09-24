@@ -22,11 +22,11 @@ use crate::format;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod windows;
 
-const LABEL: &str = "dev.agentdocker.agentd";
+pub(crate) const LABEL: &str = "dev.agentdocker.agentd";
 /// How long `daemon reload` waits for a mutation that is still executing
 /// before giving the refusal to the user.
 const RELOAD_WAIT: Duration = Duration::from_secs(30);
-const UNIT: &str = "agentd.service";
+pub(crate) const UNIT: &str = "agentd.service";
 // Task Scheduler and a cold Windows process start need the same allowance as
 // an on-demand Windows launch. Service commands disable client autostart.
 const SERVICE_READY_WAIT: Duration = Duration::from_secs(if cfg!(windows) { 10 } else { 5 });

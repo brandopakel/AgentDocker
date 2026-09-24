@@ -126,6 +126,7 @@ what it reads on web pages.
 | `connector serve [--public-url <https://…>] [--tunnel tailscale [--tunnel-port 443\|8443\|10000] [--tailscale <path>] \| --tunnel cloudflared [--tunnel-name <name>] [--cloudflared <path>]] [--bind 127.0.0.1:0] [--project <path>] [--allow-callback <url>]… [--allow-from <cidr>\|anthropic\|openai\|@<file>]… [--client-ip-header <name>]` | Serve every project on this machine; `--project` is the one proposed first at consent. Prints the MCP URL, the pairing code, the admitted addresses and the vendors' setup steps, and writes `$AGENTDOCKER_HOME/connector/serve.json` (mode 0600; `agentdocker_host::connector::Serving`, which the desktop reads too) with the same for `status`. Plain `http://` is accepted only for a loopback host, for a trial without a tunnel. |
 | `connector status` | Whether a connector is serving here: its address, listening socket, pairing code, proposed project, tunnel, admitted prefixes, and how many browser agents the daemon holds live. |
 | `connector install <serve arguments> [--dry-run]` | Run the connector as a login service — a launchd agent (`dev.agentdocker.connector`) or a systemd user unit — with those arguments, `AGENTDOCKER_HOME` and a PATH that includes where cloudflared was found; its log is `$AGENTDOCKER_HOME/connector/serve.log`. A quick tunnel gets a new hostname at every start and says so. |
+| `connector enable <serve arguments> [--dry-run]` | Install/start a new login service or start its byte-identical definition. A synced temporary file is published atomically without replacement; exact comparison refuses symlinks or different existing settings. Failed staging leaves no partial definition to block retry. The desktop uses this conservative entry point; `install` remains the explicit replacement command. |
 | `connector uninstall [--dry-run]` | Remove the service. |
 | `connector grants` | Every consent: agent, runtime, vendor, project, when connected and last used, whether active, and whether the daemon still holds the agent live. |
 | `connector revoke <agent>` | Ends the grant (tokens stop) and marks the agent finished. A serving connector notices on that agent's next request. |
@@ -184,9 +185,17 @@ trigger network refreshes or change their existing configuration.
   `validate`, which runs a command.
 - The desktop's Tools screen reads `serve.json` (with its process alive) and
   says on each in-browser runtime's card whether the connector is serving, its
-  MCP URL, the pairing code and where to add it; it does not start or install
-  the service yet. The installed CLI now includes `connector`; desktop service
-start/install is still an implementation gap, not an old-binary limitation.
+  MCP URL, the pairing code and where to add it. On macOS and Linux, the browser
+  runtime Details card also offers **Enable with Tailscale** or **Enable with
+  Cloudflare**. These explicit actions install/start a login service through
+  the sibling CLI with both vendor address allowlists, preserving a differently
+  configured existing service. Tailscale needs Funnel enabled; Cloudflare quick
+  tunnels change address after restart, which the screen explains before setup.
+  Setup marks only the selected tunnel as starting and disables both setup
+  actions until it finishes. It has its own bounded worker; failure remains on the card, while ordinary
+  message delivery and refresh continue. Service installation is not successful
+  browser consent or a provider receipt. Final-package graphical/service
+  acceptance remains a separate gate; Windows service setup is unavailable.
 - Not yet exercised against a real account: the vendors' Client ID Metadata
   Document path (both vendors used DCR when they connected; the next connection
   a vendor makes after this metadata is served is the trial).

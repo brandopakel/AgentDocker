@@ -94,6 +94,21 @@ pub enum Screen {
     Desktop,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectorTunnel {
+    Tailscale,
+    Cloudflared,
+}
+
+impl ConnectorTunnel {
+    fn argument(self) -> &'static str {
+        match self {
+            Self::Tailscale => "tailscale",
+            Self::Cloudflared => "cloudflared",
+        }
+    }
+}
+
 /// What the worker is asked to do.
 #[derive(Debug)]
 enum Cmd {
@@ -102,6 +117,7 @@ enum Cmd {
     Runtimes,
     /// Whether the remote connector is serving here (its status file).
     Connector,
+    ConnectorEnable(ConnectorTunnel),
     Discovered,
     Journal(String, String),
     Channels(String, String),
@@ -295,6 +311,7 @@ enum Msg {
     Leases(Vec<Lease>),
     Runtimes(Vec<RuntimeInfo>),
     Connector(Option<agentdocker_host::connector::Serving>),
+    ConnectorEnabled(Result<(), String>),
     Discovered(Vec<DiscoveredProcess>),
     Journal(String, Option<u64>, Vec<JournalEntry>),
     Channels(String, Vec<agentdocker_core::Channel>),
@@ -422,6 +439,8 @@ pub struct App {
     runtimes: Vec<RuntimeInfo>,
     /// The remote connector serving on this machine, when one is.
     connector: Option<agentdocker_host::connector::Serving>,
+    connector_busy: Option<ConnectorTunnel>,
+    connector_error: Option<String>,
     discovered: Vec<DiscoveredProcess>,
     journal: Vec<JournalEntry>,
     journal_project: Option<String>,
@@ -602,6 +621,8 @@ impl App {
             leases: Vec::new(),
             runtimes: Vec::new(),
             connector: None,
+            connector_busy: None,
+            connector_error: None,
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
@@ -680,6 +701,8 @@ impl App {
             leases: Vec::new(),
             runtimes: Vec::new(),
             connector: None,
+            connector_busy: None,
+            connector_error: None,
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
@@ -784,6 +807,10 @@ impl App {
                 }
                 Cmd::Pause { request, .. } | Cmd::ResumeProject(request) => {
                     self.complete_pause(request, Err(reason.into()));
+                }
+                Cmd::ConnectorEnable(_) => {
+                    self.connector_busy = None;
+                    self.connector_error = Some(reason.into());
                 }
                 Cmd::Setup(_) => self.setup_busy = false,
                 Cmd::RestartDaemon => self.daemon_restarting = false,
@@ -982,6 +1009,11 @@ impl App {
                 Msg::Leases(leases) => self.leases = leases,
                 Msg::Runtimes(runtimes) => self.runtimes = runtimes,
                 Msg::Connector(serving) => self.connector = serving,
+                Msg::ConnectorEnabled(result) => {
+                    self.connector_busy = None;
+                    self.connector_error = result.err();
+                    self.send(Cmd::Connector);
+                }
                 Msg::Channels(project, channels) => {
                     // A late reply for a project no longer on screen must not
                     // restore it. Other projects keep their current snapshots.
@@ -2475,6 +2507,12 @@ fn spawn_worker(
             cancelled.clone(),
             |args: Vec<String>| Msg::Desktop(desktop(&args)),
         );
+        let (connectors, connector_worker) = lane(
+            tx.clone(),
+            ctx.clone(),
+            cancelled.clone(),
+            |tunnel: ConnectorTunnel| Msg::ConnectorEnabled(enable_connector(tunnel)),
+        );
         let (updates, update_worker) =
             lane(tx.clone(), ctx.clone(), cancelled.clone(), |(): ()| {
                 Msg::UpdateChecked(check_update())
@@ -2491,6 +2529,9 @@ fn spawn_worker(
             // returns the usual completion shape to clear the UI's busy state.
             let rejected = match cmd {
                 Cmd::Console(line, cwd) => submit(&consoles, (line, cwd), Msg::Console),
+                Cmd::ConnectorEnable(tunnel) => submit(&connectors, tunnel, |error| {
+                    Msg::ConnectorEnabled(Err(error))
+                }),
                 Cmd::Setup(args) => submit(&setups, args, |error| Msg::Setup(Err(error))),
                 Cmd::Desktop(args) => submit(&desktops, args, |error| Msg::Desktop(Err(error))),
                 Cmd::UpdateCheck => submit(&updates, (), |error| Msg::UpdateChecked(Err(error))),
@@ -2608,13 +2649,14 @@ fn spawn_worker(
         // Every lane's sender, dropped before its worker is joined: a lane
         // missing here keeps its worker waiting and the join below never
         // returns. Add a lane to both lists.
-        drop((consoles, setups, desktops, updates, restarts));
+        drop((consoles, setups, desktops, updates, restarts, connectors));
         for worker in [
             console_worker,
             setup_worker,
             desktop_worker,
             update_worker,
             restart_worker,
+            connector_worker,
         ] {
             let _ = worker.join();
         }
@@ -3195,6 +3237,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::ChannelSent(channel, result))
         }
+        Cmd::ConnectorEnable(tunnel) => Some(Msg::ConnectorEnabled(enable_connector(tunnel))),
         Cmd::Setup(args) => Some(Msg::Setup(setup(&args))),
         Cmd::Desktop(args) => Some(Msg::Desktop(desktop(&args))),
         Cmd::UpdateCheck => Some(Msg::UpdateChecked(check_update())),
@@ -3427,6 +3470,40 @@ fn setup(args: &[String]) -> Result<serde_json::Value, String> {
         return Err(format!("Setup failed: {}", output.text.trim()));
     }
     serde_json::from_str(&output.stdout).map_err(|error| format!("Invalid setup reply: {error}"))
+}
+
+/// Service startup has a separate bounded worker; it never blocks messages or
+/// periodic daemon reads. The CLI refuses to overwrite different service setup.
+fn enable_connector(tunnel: ConnectorTunnel) -> Result<(), String> {
+    let cli = beside("agentdocker");
+    let argv = vec![
+        cli.to_str().ok_or("CLI path is not UTF-8")?.to_owned(),
+        "connector".into(),
+        "enable".into(),
+        "--tunnel".into(),
+        tunnel.argument().into(),
+        "--allow-from".into(),
+        "anthropic".into(),
+        "--allow-from".into(),
+        "openai".into(),
+    ];
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let output = agentdocker_host::command::run(&cwd, &argv, Duration::from_secs(45))
+        .map_err(|error| format!("Browser connection setup failed: {error}"))?;
+    if !output.success {
+        return Err(format!(
+            "Browser connection setup failed: {}",
+            output.text.trim()
+        ));
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        if agentdocker_host::connector::serving(&agentdocker_host::dirs::home()).is_some() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Err("The login service was installed, but the browser connection is not ready. Check that the tunnel is installed and signed in, then try again. Tailscale also needs Funnel enabled for this machine.".into())
 }
 
 /// Copying and OS signature verification run separately from socket refreshes.
@@ -4332,6 +4409,51 @@ pub(crate) mod tests {
         assert_eq!(app.inbox, vec![envelope]);
         assert_eq!(app.shell.answers[&id], "unfinished");
         assert!(app.dismissing.is_empty());
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn connector_setup_serializes_clicks_and_keeps_failure_visible() {
+        let (commands, requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let action = shell::Message::ConnectorEnable(ConnectorTunnel::Tailscale);
+        let _ = app.update(action.clone());
+        let _ = app.update(action);
+        assert_eq!(app.connector_busy, Some(ConnectorTunnel::Tailscale));
+        assert_eq!(
+            requests
+                .try_iter()
+                .filter(|command| matches!(command, Cmd::ConnectorEnable(_)))
+                .count(),
+            1
+        );
+        messages
+            .send(Msg::ConnectorEnabled(Err(
+                "existing settings preserved".into()
+            )))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.connector_busy, None);
+        assert_eq!(
+            app.connector_error.as_deref(),
+            Some("existing settings preserved")
+        );
+        assert!(
+            requests
+                .try_iter()
+                .any(|command| matches!(command, Cmd::Connector))
+        );
+        let _ = app.update(shell::Message::ConnectorEnable(
+            ConnectorTunnel::Cloudflared,
+        ));
+        assert_eq!(app.connector_busy, Some(ConnectorTunnel::Cloudflared));
+        app.rejected(
+            Cmd::ConnectorEnable(ConnectorTunnel::Cloudflared),
+            "queue full",
+        );
+        assert_eq!(app.connector_busy, None);
+        assert_eq!(app.connector_error.as_deref(), Some("queue full"));
     }
 
     #[test]
