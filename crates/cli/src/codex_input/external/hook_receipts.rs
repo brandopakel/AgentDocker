@@ -5,7 +5,7 @@ use super::{
     super::ledger::Receipt,
     ledger::{Binding, HookOffer},
 };
-use agentdocker_host::dirs;
+use agentdocker_host::{dirs, files};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,7 +13,6 @@ use std::{
     collections::HashSet,
     fs::File,
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
-    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
 };
 
@@ -66,6 +65,7 @@ impl Snapshot {
         let path = path.canonicalize()?;
         let mut file = open(&path, binding)?;
         let meta = file.metadata()?;
+        let identity = files::identity(&file)?;
         let end = meta.len();
         let start = end.saturating_sub(MAX_SUFFIX);
         file.seek(SeekFrom::Start(start))?;
@@ -80,8 +80,8 @@ impl Snapshot {
             .context("hook transcript has no bounded complete record boundary")?;
         Ok(Self {
             path,
-            device: meta.dev(),
-            inode: meta.ino(),
+            device: identity.device,
+            inode: identity.inode,
             offset,
         })
     }
@@ -89,8 +89,11 @@ impl Snapshot {
     pub fn find(&self, binding: &Binding, context: &str) -> Result<Option<Receipt>> {
         let mut file = open(&self.path, binding)?;
         let meta = file.metadata()?;
+        let identity = files::identity(&file)?;
         ensure!(
-            meta.dev() == self.device && meta.ino() == self.inode && meta.len() >= self.offset,
+            identity.device == self.device
+                && identity.inode == self.inode
+                && meta.len() >= self.offset,
             "hook transcript was replaced or truncated"
         );
         let length = meta.len() - self.offset;
@@ -124,11 +127,13 @@ impl Snapshot {
                 found = Some(receipt);
             }
         }
-        let current = std::fs::symlink_metadata(&self.path)?;
+        let again = open(&self.path, binding)?;
+        let current = again.metadata()?;
+        let identity = files::identity(&again)?;
         ensure!(
             current.is_file()
-                && current.dev() == self.device
-                && current.ino() == self.inode
+                && identity.device == self.device
+                && identity.inode == self.inode
                 && current.len() >= meta.len(),
             "hook transcript changed while reading"
         );

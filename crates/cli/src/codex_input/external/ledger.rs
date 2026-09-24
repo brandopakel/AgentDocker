@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
-    fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
 };
@@ -471,11 +470,10 @@ impl Ledger {
             .path
             .parent()
             .context("native queue ledger has no directory")?;
-        let mut file = tempfile::NamedTempFile::new_in(directory)?;
+        let mut file = tempfile::Builder::new().make_in(directory, dirs::create_private_file)?;
         file.write_all(&data)?;
         file.as_file().sync_all()?;
-        file.persist(&self.path)?;
-        File::open(directory)?.sync_all()?;
+        agentdocker_host::files::publish_staged(&file.into_temp_path(), &self.path)?;
         self.record = next;
         Ok(())
     }

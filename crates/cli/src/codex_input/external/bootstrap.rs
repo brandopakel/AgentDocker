@@ -95,7 +95,7 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
     );
     let profile = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".codex")))
+        .or_else(|| std::env::home_dir().map(|p| p.join(".codex")))
         .context("Codex provider profile is unavailable")?
         .canonicalize()?;
     let binding = Binding {
@@ -201,6 +201,8 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
             });
         }
     }
+    #[cfg(windows)]
+    agentdocker_host::command::detach(&mut command);
     let child = command
         .spawn()
         .context("could not start native Codex queue receiver")?;
@@ -209,10 +211,10 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
         started_at: procinfo::start_time(child.id())
             .context("native receiver process birth is unavailable")?,
     };
-    let mut file = tempfile::NamedTempFile::new_in(&directory)?;
+    let mut file = tempfile::Builder::new().make_in(&directory, dirs::create_private_file)?;
     file.write_all(&serde_json::to_vec(&(binding, process))?)?;
     file.as_file().sync_all()?;
-    file.persist(&marker)?;
+    agentdocker_host::files::publish_staged(&file.into_temp_path(), &marker)?;
     Ok(false)
 }
 
