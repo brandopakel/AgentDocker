@@ -23,7 +23,9 @@ env:
 jobs:
   native-foundations:
     runs-on: windows-latest
-    timeout-minutes: 60
+    # Extra diagnostic samples include bounded CLI capture and cleanup for
+    # every home. Leave the ordinary CI/build budget unchanged.
+    timeout-minutes: ${{ inputs.startup_samples && inputs.startup_samples != '0' && 180 || 60 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -61,7 +63,10 @@ jobs:
           python scripts/build_native.py --target x86_64-pc-windows-msvc > artifacts/native-build.json
       - name: Extracted Windows desktop package acceptance
         # Every command in it is bounded; a hang is a finding, not a wait.
-        timeout-minutes: 10
+        # Forty samples can exceed ten minutes within their command bounds;
+        # reserve time to finish cleanup and retain the diagnostic report.
+        # This changes no daemon/client readiness deadline.
+        timeout-minutes: ${{ inputs.startup_samples && inputs.startup_samples != '0' && 100 || 10 }}
         env:
           STARTUP_SAMPLES: ${{ inputs.startup_samples || '0' }}
         run: python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES"

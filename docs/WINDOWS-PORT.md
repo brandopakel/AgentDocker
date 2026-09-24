@@ -370,15 +370,22 @@ same extracted package. It stops at the first failed assertion, preserves each
 home's bounded startup log and keeps the existing startup deadline. A passing
 series does not erase earlier failures. Ordinary CI and release runs keep zero
 additional samples unless explicitly selected.
+Additional-sample dispatches have a 100-minute fixture-step budget and a
+180-minute job budget to cover all bounded commands, output capture and cleanup;
+ordinary runs retain their 10-minute step and 60-minute job budgets. The daemon's
+ten-second readiness deadline is unchanged.
 
 The 40-sample native run on `0184e1d8` passed all 142 checks, with a slowest fresh
 start of 4.203 seconds and a schema phase of 2.991 seconds. An earlier traced
 fresh start spent 4.137 seconds in that phase. Initial schema creation now uses
 one transaction with the same `FULL` durability, avoiding a separate commit for
 each new table/index. A late-schema-error regression verifies rollback, retained
-existing data and successful initialization after repairing the fixture. Native
-timing comparison remains required; this is not an established fix for the
-historical ten-second failures.
+existing data and successful initialization after repairing the fixture. A separate native
+run on `89400171` passed another 40 samples and all 142 checks: median startup
+188 ms, maximum 219 ms; median schema phase 39 ms, maximum 62 ms. The earlier
+run had median startup 375 ms and median schema phase 216.5 ms. These runs used
+different CI hosts and do not establish a fix for the historical ten-second
+failures.
 
 ## Local connection boundary
 
