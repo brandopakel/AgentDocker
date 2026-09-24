@@ -3,8 +3,8 @@
 //! Clients start the daemon on demand, so a service is optional; it makes
 //! the daemon come back after a reboot or a crash and keeps it out of any
 //! terminal's process group. launchd on macOS, systemd user units on
-//! Linux. The file contents and command sequences are pure so they are
-//! tested; state preparation and plan execution perform the mutations.
+//! Linux, and a per-user Task Scheduler supervisor on Windows. Definition
+//! generation is pure; state preparation and execution perform the mutations.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -18,11 +18,18 @@ use clap::{Args, Subcommand};
 use crate::client::Client;
 use crate::format;
 
-const LABEL: &str = "dev.agentdocker.agentd";
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
+mod windows;
+
+pub(crate) const LABEL: &str = "dev.agentdocker.agentd";
 /// How long `daemon reload` waits for a mutation that is still executing
 /// before giving the refusal to the user.
 const RELOAD_WAIT: Duration = Duration::from_secs(30);
-const UNIT: &str = "agentd.service";
+pub(crate) const UNIT: &str = "agentd.service";
+// Task Scheduler and a cold Windows process start need the same allowance as
+// an on-demand Windows launch. Service commands disable client autostart.
+const SERVICE_READY_WAIT: Duration = Duration::from_secs(if cfg!(windows) { 10 } else { 5 });
 
 #[derive(Args)]
 pub struct DaemonArgs {
@@ -32,7 +39,7 @@ pub struct DaemonArgs {
 
 #[derive(Subcommand)]
 pub enum DaemonCommand {
-    /// Install agentd as a user service (launchd or systemd) and start it.
+    /// Install agentd as a user service and start it.
     Install {
         /// Print the files and commands without touching anything.
         #[arg(long)]
@@ -61,6 +68,17 @@ pub enum DaemonCommand {
     },
     /// Show whether the service is installed and the daemon answering.
     Status,
+    /// Internal Windows login-task supervisor.
+    #[cfg(windows)]
+    #[command(hide = true)]
+    Supervise {
+        #[arg(long)]
+        home: PathBuf,
+        #[arg(long)]
+        agentd: PathBuf,
+        #[arg(long)]
+        endpoint: PathBuf,
+    },
 }
 
 /// What a subcommand would do: files to write and commands to run, in
@@ -469,7 +487,7 @@ async fn retire(client: &Client) -> Result<()> {
 }
 
 async fn wait_for_daemon(client: &Client) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + SERVICE_READY_WAIT;
     loop {
         if let Ok(Response::Pong {
             version,
@@ -481,29 +499,39 @@ async fn wait_for_daemon(client: &Client) -> Result<()> {
             return Ok(());
         }
         if Instant::now() > deadline {
-            bail!("agentd did not answer within 5 s; see the log");
+            bail!(
+                "agentd did not answer within {} s; see the log",
+                SERVICE_READY_WAIT.as_secs()
+            );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
-/// Whether this platform has a user service manager the daemon can be
-/// filed under: launchd on macOS, systemd on Linux. On Windows there is
-/// none yet, so `install` and `uninstall` say so, and the subcommands
-/// that only speak to a daemon over its transport (`start` on demand,
-/// `stop`, `restart`, `status`, `vacuum`, `reload`) still do.
+/// Unix manager plans live here; Windows lifecycle commands are handled by
+/// the Task Scheduler backend before the shared daemon-only operations.
 const SERVICE_MANAGER: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 
 pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
+    #[cfg(windows)]
+    if let DaemonCommand::Supervise {
+        home,
+        agentd,
+        endpoint,
+    } = &args.command
+    {
+        return windows::supervise(home, agentd, endpoint);
+    }
     let macos = cfg!(target_os = "macos");
     if !SERVICE_MANAGER
+        && !cfg!(windows)
         && matches!(
             &args.command,
             DaemonCommand::Install { .. } | DaemonCommand::Uninstall { .. }
         )
     {
         bail!(
-            "the daemon service is not available on Windows yet: run `agentd` yourself, or `agentdocker daemon start` starts one for this home and `daemon stop` asks it to exit"
+            "the daemon service is not available on this platform: run `agentd` yourself, or `agentdocker daemon start` starts one for this home and `daemon stop` asks it to exit"
         );
     }
     // Service commands always use the canonical layout socket.
@@ -518,7 +546,15 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
         // before service installation or restart can give it any output.
         agentdocker_host::dirs::private_file(&layout.log(), true, true)?;
     }
+    #[cfg(windows)]
+    if windows::handle(&layout, &client, &args.command).await? {
+        return Ok(());
+    }
     match args.command {
+        #[cfg(windows)]
+        DaemonCommand::Supervise { .. } => {
+            unreachable!("supervisor handled before layout discovery")
+        }
         DaemonCommand::Install { dry_run } => {
             if !dry_run {
                 retire(&client).await?;
@@ -627,6 +663,7 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
             };
             let manager = if macos { "launchd" } else { "systemd" };
             if !SERVICE_MANAGER {
+                #[cfg(not(windows))]
                 println!(
                     "service   none on Windows yet (run `agentd` yourself, or `agentdocker daemon start` starts one)"
                 );
@@ -685,8 +722,8 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
     Ok(())
 }
 
-/// The effective user id a launchd or systemd unit is filed under; on
-/// Windows there is neither, and no service is installed (see `install`).
+/// The effective user id a launchd or systemd unit is filed under. Windows
+/// services use the caller's SID instead of a numeric Unix uid.
 pub(crate) fn current_uid_for_service() -> u32 {
     current_uid()
 }

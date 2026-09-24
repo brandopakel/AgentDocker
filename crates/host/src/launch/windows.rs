@@ -31,6 +31,10 @@ use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{
     HANDLE, HANDLE_FLAG_INHERIT, STILL_ACTIVE, SetHandleInformation, WAIT_OBJECT_0,
 };
+use windows_sys::Win32::Security::{
+    GetTokenInformation, IsValidSid, SetTokenInformation, TOKEN_ADJUST_DEFAULT, TOKEN_OWNER,
+    TOKEN_QUERY, TOKEN_USER, TokenOwner, TokenUser,
+};
 use windows_sys::Win32::System::Console::HPCON;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -42,7 +46,7 @@ use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DeleteProcThreadAttributeList,
     EXTENDED_STARTUPINFO_PRESENT, GetExitCodeProcess, InitializeProcThreadAttributeList,
-    LPPROC_THREAD_ATTRIBUTE_LIST, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES,
     STARTUPINFOEXW, STARTUPINFOW, TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
 };
@@ -436,14 +440,91 @@ pub fn prepare_with(command: Command, console: Option<HPCON>) -> io::Result<Pend
         }
         None => (None, None),
     };
-    Ok(Pending {
+    let pending = Pending {
         pid: information.dwProcessId,
         process,
         thread: Some(thread),
         job,
         stdout,
         stderr,
-    })
+    };
+    // Still suspended and owned by Pending: any failure ends the child.
+    // Elevated launchers can default new files to Administrators ownership.
+    // Provider transcripts must instead belong to their actual user so the
+    // private-history reader can verify them without relaxing its checks.
+    set_child_default_owner(&pending.process)?;
+    Ok(pending)
+}
+
+/// Change only the newly created child's default object owner. Its identity,
+/// privileges and default DACL remain intact, as do the launcher's token and
+/// existing files. Descendants inherit the corrected owner for future files.
+fn set_child_default_owner(process: &OwnedHandle) -> io::Result<()> {
+    let mut token = null_mut();
+    // SAFETY: the process is our suspended child; success transfers a handle.
+    if unsafe {
+        OpenProcessToken(
+            process.as_raw_handle() as HANDLE,
+            TOKEN_QUERY | TOKEN_ADJUST_DEFAULT,
+            &mut token,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: OpenProcessToken returned a fresh owned handle above.
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let mut bytes = 0;
+    // SAFETY: this size query writes only the required length.
+    unsafe {
+        GetTokenInformation(
+            token.as_raw_handle() as HANDLE,
+            TokenUser,
+            null_mut(),
+            0,
+            &mut bytes,
+        );
+    }
+    if bytes < std::mem::size_of::<TOKEN_USER>() as u32 || bytes > 64 * 1024 {
+        return Err(io::Error::other("unexpected child token user size"));
+    }
+    // usize alignment covers TOKEN_USER and its trailing SID.
+    let mut buffer = vec![0usize; (bytes as usize).div_ceil(std::mem::size_of::<usize>())];
+    // SAFETY: the aligned buffer has the queried capacity and remains live.
+    if unsafe {
+        GetTokenInformation(
+            token.as_raw_handle() as HANDLE,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            bytes,
+            &mut bytes,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful TokenUser query initializes TOKEN_USER and its SID.
+    let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+    if user.User.Sid.is_null() || unsafe { IsValidSid(user.User.Sid) } == 0 {
+        return Err(io::Error::other("invalid child token user SID"));
+    }
+    let owner = TOKEN_OWNER {
+        Owner: user.User.Sid,
+    };
+    // SAFETY: both the owner structure and its SID buffer outlive this call.
+    // TokenOwner changes only this child's default owner, never its user SID.
+    if unsafe {
+        SetTokenInformation(
+            token.as_raw_handle() as HANDLE,
+            TokenOwner,
+            (&owner as *const TOKEN_OWNER).cast(),
+            std::mem::size_of::<TOKEN_OWNER>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// A child's job, held apart from the child.
@@ -1360,6 +1441,113 @@ mod tests {
         assert_eq!(quoted(OsStr::new("say \"hi\"")), "\"say \\\"hi\\\"\"");
         assert_eq!(quoted(OsStr::new("C:\\path\\")), "C:\\path\\");
         assert_eq!(quoted(OsStr::new("C:\\a b\\")), "\"C:\\a b\\\\\"");
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture for child_and_descendant_files_belong_to_the_user"]
+    fn default_owner_file_fixture() {
+        let root = PathBuf::from(std::env::var_os("AGENTDOCKER_TEST_OWNER_ROOT").unwrap());
+        let descendant = std::env::var_os("AGENTDOCKER_TEST_OWNER_DESCENDANT").is_some();
+        std::fs::write(
+            root.join(if descendant { "descendant" } else { "child" }),
+            b"private history",
+        )
+        .unwrap();
+        if !descendant {
+            let mut command = conpty_fixture_command("default_owner_file_fixture");
+            command.env("AGENTDOCKER_TEST_OWNER_DESCENDANT", "1");
+            assert!(command.status().unwrap().success());
+        }
+    }
+
+    #[test]
+    fn child_and_descendant_files_belong_to_the_user() {
+        use windows_sys::Win32::Security::{CopySid, GetLengthSid};
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+        fn caller_default_owner() -> Vec<u8> {
+            let mut token = null_mut();
+            // SAFETY: current-process pseudohandle and writable output handle.
+            assert_ne!(
+                unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) },
+                0
+            );
+            // SAFETY: fresh successful token handle, held through all queries.
+            let token = unsafe { OwnedHandle::from_raw_handle(token) };
+            let mut bytes = 0;
+            unsafe {
+                GetTokenInformation(
+                    token.as_raw_handle() as HANDLE,
+                    TokenOwner,
+                    null_mut(),
+                    0,
+                    &mut bytes,
+                );
+            }
+            assert!(bytes >= std::mem::size_of::<TOKEN_OWNER>() as u32 && bytes <= 64 * 1024);
+            let mut buffer = vec![0usize; (bytes as usize).div_ceil(std::mem::size_of::<usize>())];
+            // SAFETY: aligned bounded buffer holds the queried owner and SID.
+            assert_ne!(
+                unsafe {
+                    GetTokenInformation(
+                        token.as_raw_handle() as HANDLE,
+                        TokenOwner,
+                        buffer.as_mut_ptr().cast(),
+                        bytes,
+                        &mut bytes,
+                    )
+                },
+                0
+            );
+            let owner = unsafe { &*buffer.as_ptr().cast::<TOKEN_OWNER>() };
+            // SAFETY: the successful query returned a SID inside the live buffer.
+            let length = unsafe { GetLengthSid(owner.Owner) };
+            assert!((8..=68).contains(&length));
+            let mut sid = vec![0u8; length as usize];
+            assert_ne!(
+                unsafe { CopySid(length, sid.as_mut_ptr().cast(), owner.Owner) },
+                0
+            );
+            sid
+        }
+
+        let before = caller_default_owner();
+        let root = tempfile::tempdir().unwrap();
+        let mut command = conpty_fixture_command("default_owner_file_fixture");
+        command.env("AGENTDOCKER_TEST_OWNER_ROOT", root.path());
+        command.env_remove("AGENTDOCKER_TEST_OWNER_DESCENDANT");
+        let pending = prepare(command).unwrap();
+        assert_eq!(
+            caller_default_owner(),
+            before,
+            "prepare changed the launcher token"
+        );
+        assert!(
+            !root.path().join("child").exists(),
+            "child ran before activation"
+        );
+        let mut child = pending.activate().unwrap();
+        // SAFETY: the child handle remains owned throughout this bounded wait.
+        assert_eq!(
+            unsafe { WaitForSingleObject(child.process.as_raw_handle() as HANDLE, 15_000) },
+            WAIT_OBJECT_0
+        );
+        assert!(child.try_wait().unwrap().unwrap().success());
+        for name in ["child", "descendant"] {
+            let mut text = String::new();
+            // This checks actual user ownership, DACL and link safety, just as
+            // provider receipt recovery does. An elevated default of BA fails.
+            crate::dirs::read_private_file(&root.path().join(name))
+                .unwrap()
+                .read_to_string(&mut text)
+                .unwrap();
+            assert_eq!(text, "private history");
+        }
+        assert_eq!(
+            caller_default_owner(),
+            before,
+            "launch changed the launcher token"
+        );
     }
 
     #[test]

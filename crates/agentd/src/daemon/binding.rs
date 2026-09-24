@@ -3054,13 +3054,20 @@ mod tests {
         lock(&daemon.state)
             .store
             .reject_event_for_test("input_controller_upgraded");
-        assert!(matches!(
-            daemon.handle(request.clone()).await,
-            Response::Error {
-                code: ErrorCode::StorageUnavailable,
-                ..
-            }
-        ));
+        let refused = daemon.handle(request.clone()).await;
+        assert!(
+            matches!(
+                &refused,
+                Response::Error {
+                    code: ErrorCode::StorageUnavailable,
+                    ..
+                }
+            ),
+            "injected upgrade persistence failure returned {refused:?}; provider: {:?}; controller: {:?}; executable: {:?}",
+            agentdocker_host::procinfo::start_time(provider.process.pid),
+            agentdocker_host::procinfo::start_time(old_process.pid),
+            agentdocker_host::procinfo::executable_path_of(old_process.pid),
+        );
         assert!(
             is_running(&old_process),
             "a failed write must not signal the controller"

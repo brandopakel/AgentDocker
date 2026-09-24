@@ -969,6 +969,9 @@ try:
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=log,
+                    # select() must observe every byte; buffered read-ahead can
+                    # hide a queued response from the next fd readiness check.
+                    bufsize=0,
                     start_new_session=True,
                 )
                 try:

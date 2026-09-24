@@ -52,9 +52,22 @@ You do not start the daemon. The first client that needs it starts it, on
 `~/.agentdocker/agentd.sock`. To have it survive a reboot:
 
 ```sh
-agentdocker daemon install    # a launchd or systemd user service
+agentdocker daemon install    # launchd, systemd user unit, or Windows login task
 agentdocker daemon status     # what is running, and where
 ```
+
+On Windows, installation creates a Task Scheduler task for the current user
+and starts it immediately. It runs with limited privileges at login without
+storing a password; an interactive sign-in is required. `daemon start`, `stop`,
+`restart` and `uninstall` operate on that task. A supervisor retries a failed
+daemon up to three times with two seconds between attempts; a clean shutdown
+stays stopped. Ten minutes of continuous operation resets that retry budget.
+The task records the current CLI and daemon paths. After moving the portable
+folder or selecting another build, run `daemon install` from the new build.
+Keep the old folder until that succeeds. An ownership record in the daemon
+home prevents replacing or removing a task whose action or user was changed
+outside AgentDocker. `daemon install --dry-run` previews the task without
+registering it.
 
 Then bring in the agents already on the machine:
 
@@ -97,9 +110,14 @@ ChatGPT and a pairing code for the consent page, and each consent becomes a
 browser agent in the project chosen on that page (any folder on this machine)
 with the messaging tools and nothing that touches a checkout. `connector
 install` runs the same as a login service; `connector status` and the
-desktop's Tools screen show its address and pairing code; `--allow-from
-anthropic` and `--allow-from @<openai feed>` admit only the vendors' own
-addresses. [The remote connector](REMOTE-CONNECTOR.md) has the whole contract.
+desktop's Tools screen show its address and pairing code. On macOS and Linux,
+open a browser tool's **Details** and choose **Enable with Tailscale** or
+**Enable with Cloudflare** to install and start the connection at login. The
+first needs Funnel enabled; the second gives a new address after each restart.
+Setup preserves different existing service settings. Each browser account must
+still consent to its project connection. Desktop setup admits the vendors' own
+addresses through `--allow-from anthropic` and the automatically refreshed
+`--allow-from openai` feed. [The remote connector](REMOTE-CONNECTOR.md) has the whole contract.
 
 Everything respects `AGENTDOCKER_HOME`, so a throwaway daemon for
 experiments costs nothing:
@@ -209,6 +227,12 @@ without parent (`..`) path components; use a direct path rather than one that
 walks up to a parent. Invalid roots produce an explanatory query error. Empty
 arrays use the provider defaults. Turning collection off retains available
 totals. Increasing retention does not restore previously discarded history.
+Tracking metadata has a 256 MiB budget (database indexes and other state take
+additional space). When a new record cannot fit, the report says that the storage
+limit was reached and keeps totals partial. Earlier dedupe records are preserved
+so copied or replayed logs cannot count twice. Retention may free space, but the
+fixed tracking budget cannot currently be increased through configuration. Do not
+delete accounting tables to make space: doing so can invalidate deduplication.
 AgentDocker's own injected overhead remains **not measured** until that separate
 instrumentation is implemented.
 
@@ -422,7 +446,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
-| `connector serve` / `status` / `install` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
+| `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
 
 ---
 

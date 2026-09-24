@@ -28,8 +28,9 @@ native window trial. On `cadf3d58`, 284 native tests and all 50 smoke steps
 passed on Windows Server 2025, including terminal lifecycle, database crash
 recovery and fresh-home desktop startup/capture. The full daemon/CLI test suites,
 physical input and broader GUI/provider acceptance, installer/update path and
-service remain open. Release workflows have no Windows target. A successful
-cross-compile alone is not runtime acceptance. Unix CI remains required.
+service acceptance remain open. Release workflows include a Windows portable
+prerelease target. A successful cross-compile alone is not runtime acceptance.
+Unix CI remains required.
 
 File observations on Windows track native read-only attributes and change
 metadata; Windows has no Unix executable permission bits. Captured Windows
@@ -150,13 +151,15 @@ crash, and what that means for a person:
 - Live daemon reload and the descriptor handover (`daemon reload`): the
   daemon holds no descriptors a successor could inherit; stop and start it.
 - Container workspace transport and grants: the endpoint is a Unix socket.
-- The desktop installer (`desktop install`, updates, rollback) and the daemon
-  and connector services: `daemon install` and `uninstall` say there is no
-  service on Windows yet, a later slice. The subcommands that only speak to
-  a daemon still work there: `daemon start` starts one on demand for the
-  home, `stop` asks it to exit, `status` reports it (and that no service
-  exists), `vacuum` compacts its store, and `reload` carries the daemon's
-  own refusal.
+- The desktop installer (`desktop install`, updates, rollback) and connector
+  service remain unavailable. Daemon login startup is now implemented through
+  a limited per-user Task Scheduler task, with a private ownership receipt and
+  a bounded crash supervisor. `daemon install`, `uninstall`, `start`, `stop`,
+  `restart` and `status` handle that task; start/stop still operate on demand
+  when no task is installed. Real product lifecycle/provider-survival
+  acceptance remains separate from source tests and the isolated supervisor
+  prototype. See the [user commands](GUIDE.md) and
+  [service semantics](ARCHITECTURE.md#starting-the-daemon).
 - A validation command is ended on a timeout, but only the command itself:
   there is no process group and no Job Object around it yet, so whether its
   descendants survived is not reported.
@@ -352,6 +355,15 @@ Opening an external project terminal or focusing an external agent terminal is
 not implemented on Windows. Provider inventory, services and the desktop
 installer remain outside this slice.
 
+The opt-in `AGENTDOCKER_STARTUP_TRACE=1` diagnostics distinguish home security,
+database-file protection, SQLite connection, compatibility checks, WAL setup,
+schema creation, migrations, search indexes and state restoration. They emit
+only fixed stage labels, PID and elapsed time, and are silent by default. The
+extracted-package failure in run 35932937310 stopped after coordinator-lock
+readiness; finer stages are diagnostic evidence for a future occurrence, not a
+fix or a longer readiness timeout. Failed packages and original reports remain
+retained.
+
 ## Local connection boundary
 
 The shared IPC layer uses Unix sockets on macOS/Linux and named pipes on
@@ -426,3 +438,14 @@ message both received correlated replies and automatic receipts. Claude required
 local-development channel consent again. The scheduled task was removed and no
 owned processes remained. This is bounded restart/reopen evidence, not reboot
 or multi-day acceptance.
+
+
+For intermittent first-start investigation, `AGENTDOCKER_STARTUP_TRACE=1` adds
+fixed startup-stage labels, the process ID and elapsed milliseconds to stderr,
+including stages before the normal logger starts. It emits no command arguments,
+environment values or state contents, and does not extend startup deadlines.
+The native acceptance driver enables it and retains a bounded 16 KiB log tail
+from every owned home before cleanup. Failed CI packages are retained separately
+as `windows-failed-package-diagnostics`, never as an accepted preview. The
+OWNER RIGHTS fresh-home timeout in run35821898700 remains an unresolved failure;
+added diagnostics and any later pass alone do not establish its cause or a fix.

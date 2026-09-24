@@ -43,7 +43,7 @@ Shared host I/O: project/path discovery, Git/content inspection, process identit
 One process per host. It is a library crate whose `main` the `agentdocker` package wraps as the `agentd` binary, so a source install of the `agentdocker` package ships both CLI and daemon. It owns:
 
 - **Registry** — in memory, guarded by a mutex.
-- **Supervisor** — spawns managed agents with `tokio::process`, captures stdout/stderr to `<home>/logs/<id>.log` with timestamps and stream tags, and records the exit status. Windows session owners hold a kill-on-close Job Object independently of the daemon. An owner crash ends the managed tree; a daemon crash leaves its owner running. Graceful terminal stop uses the bounded input writer and cannot block the force-stop timer. Windows console children receive explicit null standard handles so their streams come from ConPTY rather than the detached owner's redirected streams; startup pipe copies remain held until child creation. After the tree exits, ConPTY closes on a separate worker while output drains, then the final log and exit report are completed. The report is flushed and renamed with directory sync on Unix or a write-through move on Windows; see [Windows lifetime acceptance](WINDOWS-PORT.md#slice-two-managed-sessions-on-windows).
+- **Supervisor** — spawns managed agents with `tokio::process`, captures stdout/stderr to `<home>/logs/<id>.log` with timestamps and stream tags, and records the exit status. Windows session owners hold a kill-on-close Job Object independently of the daemon. An owner crash ends the managed tree; a daemon crash leaves its owner running. Graceful terminal stop uses the bounded input writer and cannot block the force-stop timer. Before a suspended Windows child is activated, its token's default object owner is set to its own user SID so newly created files and objects default to user ownership across all managed launches and their descendants, even under an elevated launcher. This includes provider transcripts; private-history ownership checks stay strict. The launcher token, privileges, default DACL and existing files are unchanged; a failed adjustment aborts the still-suspended child. Windows console children receive explicit null standard handles so their streams come from ConPTY rather than the detached owner's redirected streams; startup pipe copies remain held until child creation. After the tree exits, ConPTY closes on a separate worker while output drains, then the final log and exit report are completed. The report is flushed and renamed with directory sync on Unix or a write-through move on Windows; see [Windows lifetime acceptance](WINDOWS-PORT.md#slice-two-managed-sessions-on-windows).
 - **Bus** — a `tokio::sync::broadcast` channel. Every message is published to it; each live subscription filters what it wants.
 - **Inboxes** — durable queues of unacknowledged addressed messages, including those sent to live subscribers. Admission is bounded at 1,000 messages and 4 MiB of serialized envelopes per recipient; pressure rejects the entire send without evicting accepted work.
 - **Lease table** — the core `LeaseTable`, plus a 1-second reaper that expires leases and emits events.
@@ -135,7 +135,25 @@ Nobody has to start `agentd` by hand. A client that cannot connect — no socket
 
 Exactly one daemon serves a socket, guaranteed by an advisory lock beside it (`agentd.sock` → `agentd.lock`). The daemon takes the lock for its lifetime before touching the socket, and exits at once, successfully, if it cannot. A client decides whether to spawn by taking the same lock for an instant: getting it means no daemon exists; not getting it means one is up or starting, so the client only waits. Two clients racing may both spawn a daemon, and the loser exits on the lock. The daemon's stale-socket check (remove the file if nothing answers on it) stays as a second line of defence.
 
-**As a service.** On-demand start is enough for a laptop; `agentdocker daemon install` additionally runs `agentd` as a login service so it survives reboots and crashes and belongs to no terminal — a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`) on macOS, a systemd user unit (`~/.config/systemd/user/agentd.service`) on Linux. Both restart the daemon after a *failure* only, because a clean exit is what a service daemon does when an on-demand one already holds the lock; `install` therefore first asks any running daemon to exit (the `shutdown` request, which SIGTERMs managed agents exactly as Ctrl-C does) and then hands the socket to the service. `daemon uninstall`, `start`, `stop`, `restart`, and `status` do what they say, with `start` and `stop` falling back to the on-demand daemon when no service is installed; `--dry-run` on `install` and `uninstall` prints the files and commands instead. The service definition bakes in `--home` (and `--socket` when overridden) so it serves the same paths the CLI that installed it used. Files and command sequences are pure and unit-tested; only the final execution touches the system.
+**As a service.** On-demand start is enough for a laptop; `agentdocker daemon install` additionally runs `agentd` as a login service so it survives reboots and crashes and belongs to no terminal — a launchd agent (`~/Library/LaunchAgents/dev.agentdocker.agentd.plist`) on macOS, a systemd user unit (`~/.config/systemd/user/agentd.service`) on Linux, or a limited per-user Task Scheduler login task on Windows. The Unix managers restart the daemon after a *failure* only, because a clean exit is what a service daemon does when an on-demand one already holds the lock; `install` therefore first asks any running daemon to exit (the `shutdown` request, which SIGTERMs managed agents exactly as Ctrl-C does) and then hands the socket to the service. `daemon uninstall`, `start`, `stop`, `restart`, and `status` do what they say, with `start` and `stop` falling back to the on-demand daemon when no service is installed; `--dry-run` on `install` and `uninstall` prints the files and commands instead. The service definition bakes in `--home` (and `--socket` when overridden) so it serves the same paths the CLI that installed it used. Files and command sequences are pure and unit-tested; only the final execution touches the system.
+
+Windows `daemon install` uses a per-user Task Scheduler login task with an
+Interactive/Limited principal and an explicit CLI supervisor. The canonical
+daemon home determines the task name. A private, bounded, atomically published
+ownership record stores a nonce and the exact action; mutations also verify
+the task principal against the current SID. An interrupted update retains
+both the prior and proposed action until registration succeeds. A mutation
+lock serializes service commands, and a separate supervisor lock prevents
+competing supervisors. Graceful shutdown exits the supervisor; failed daemons
+retry after two seconds, at most three times before stopping, with the budget
+reset after ten minutes of continuous operation. The daemon remains detached
+so its independently owned sessions can survive coordinator replacement.
+The task pins executable paths until `daemon install` is run again. PowerShell
+arguments preserve literal ASCII and typographic single quotes. After starting
+the service, Windows waits up to ten seconds for daemon readiness; Unix waits
+five seconds. Native
+Task Scheduler lifecycle and provider-survival acceptance are tracked
+separately from definition/ownership tests in [remaining work](REMAINING-WORK.md).
 
 **Installing.** Installing the CLI package from a pinned Git tag/commit or checkout builds both binaries; `install.sh` at the repository root downloads the release archive for the host (`agentdocker-<target>.tar.gz`, four targets: macOS and Linux musl on x86_64 and aarch64, named without the version so `releases/latest/download/…` works) and drops them into `~/.local/bin`; `packaging/homebrew/agentdocker.rb.in` is the template for a tap formula, with a `brew services` block that runs the daemon. The release workflow builds and uploads archives with SHA-256 checksums on every protected `v*` tag, then generates `agentdocker.rb` from all four verified checksum inputs. The installer requires a valid matching checksum before extracting or replacing anything. Workspace dependencies include versions so `cargo package --workspace` packages all five crates; actual crates.io publication and tap publication remain release operations.
 
@@ -323,7 +341,7 @@ Transport: newline-delimited JSON over a Unix domain socket at `$AGENTDOCKER_SOC
 | `task_update {agent, task, title?, acceptance?, assignee?, links?}` | `task {task}`, `error(forbidden\|invalid\|storage_unavailable)` | an agent edits only a card it holds with a live lease (`forbidden`, `details.hold: lapsed` otherwise). A hand by the person is a confirmed reassignment: the old holder's lease ends and, for a running agent, the new holder's `task:<id>` lease is taken in the same commit (`lease_released`/`lease_claimed` follow `task_updated`); handed to an agent that is not running, or taken away (`assignee: ""`), the card has no hold until somebody pulls it by name. Otherwise: the person edits any card's words and hands it to an agent (`assignee` an id, name or prefix; `""` takes it away); an agent edits only the words of a card it holds. Emits `task_updated`. |
 | `task_archive {agent, task}` | `ok`, `error(forbidden\|storage_unavailable)` | releases the card's leases in the same commit; an agent archives only a card it holds with a live lease. off the board, kept for the record: the person's to do, or the assignee's for a card in `done`. Archiving twice is `ok`. Emits `task_archived`. |
 | `tasks {project?, column?, archived?, offset?, limit?}` | `tasks {tasks: Task[], more}`, `error(storage_unavailable)` | one page of the board, Backlog to Done and oldest first within a column, from `offset`, at most `limit` cards (1–500; 100 by default) and within a page's byte budget (768 KiB of serialised cards; a page holds at least one card whatever its size), with `more` when the board goes on past them — the next page starts at `offset + tasks.len()`, so every card is reachable without a mutation. Read as a page from the store, so a board of long cards never fills a frame or holds the lock; archived cards only when asked; every project's when none is named. A read: served during a coordinator transfer. |
-| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage, overhead}` | Initial collector branch: read hourly local usage grouped by agent/model/provider/project/hour with explicit collection and counter coverage. Defaults to the last 24 hours; strict duration/RFC3339 bounds, retention rounding and unknown counters follow the contract below. More than 10,000 buckets or an overflowing grouped total refuses the query without disabling coordination. Served through the transfer fence. |
+| `usage {project?, agent?, since?, until?, by?}` | `usage {rows, by, as_of, effective_since, effective_until, coverage, overhead}` | Initial collector branch: read hourly local usage grouped by agent/model/provider/project/hour with explicit collection and counter coverage. Defaults to the last 24 hours; strict duration/RFC3339 bounds, retention rounding and unknown counters follow the contract below. More than 10,000 buckets or an overflowing grouped total refuses the query without disabling coordination. Optional `coverage.tracking` reports logical tracking bytes, capacity and a capacity gap for the requested range; admission is bounded without discarding dedupe evidence. Served through the transfer fence. |
 | `pause {from, project?, reason}` | `pause {pause: {project, by, reason, at}}`, `error(invalid\|forbidden\|not_found\|ambiguous\|backpressure\|storage_unavailable)` | the person tells a project's agents to hold: one `pause` message from `from` reaches every live agent in the project (archived under `#everyone`, payload `{text: "Pause: <reason>", reason}`) and the pause is written as a document in the same transaction — neither exists without the other, and a refused send (backpressure, storage) pauses nothing. Until it is lifted, `claim` from an agent in that project answers `paused` with the reason, a waiter queued before the pause included (what an agent holds, it keeps; the person's own claims are not held). A declared human sender may pause (`forbidden` for a nonhuman identity); the host socket trusts its owning OS user and `--from user` is not proof of human presence. The authenticated restricted/container endpoint cannot pause or resume a project; the reason is 1–400 characters; `project` is an id, root or unique prefix, the caller's own when absent; a second pause replaces the reason. The document is schema 23's: a daemon older than that refuses to open the database rather than open it and quietly not hold anyone, so rollback requires restoring a compatible pre-upgrade state backup while stopped, or retaining the newer daemon. Lifting a pause does not downgrade schema23 and does not make that state readable by schema22 — tried on real binaries in [the rollback refusal record](verification/INDEX.md): the installed schema-22 daemon exited with both numbers in its reason, the file unchanged, and the schema-23 daemon still listed the hold. Emits `project_paused`. |
 | `resume_project {from, project?}` | `ok`, `error(forbidden\|not_found\|ambiguous\|backpressure\|storage_unavailable)` | the person lifts the pause: a `resume` message reaches the project's live agents in the same transaction as the document's removal, and their leases are theirs again. `ok` for a project that is not paused. Emits `project_resumed`. |
 | `pauses` | `pauses {pauses: Pause[]}` | the projects that are paused, and why, oldest first |
@@ -736,7 +754,8 @@ plan hash rechecked at apply. Host installation helpers give each managed
 binary a shared lifetime pin; cleanup holds the exclusive pin through deletion
 and rechecks content identity. Pins outlive deleted versions to prevent inode
 replacement races. Active, rollback, legacy unpinned and running versions remain;
-an installed user service protects retained binaries and blocks uninstall.
+an installed daemon or connector user service protects retained binaries and
+blocks uninstall, including stopped services that hold no running-process pin.
 The macOS Applications entry is an intact signed copy whose three entry points redirect to the selected immutable release before dispatch. External launcher ownership and exact retained payload hashes permit replacement without modifying signed metadata. An atomic app exchange follows activation; a failed exchange restores the previous activation. App publication and pointer selection are separate filesystem operations, and a surviving older copy follows the selected release. Package metadata records `launcher_redirect: 1`. Selecting an older payload retains a compatible launcher copy and protects its backing release from cleanup; a fresh legacy-only install is refused before activation. The visible copy may therefore have newer metadata than the selected release after rollback; installation status reports the selected version. These are local host operations, not daemon protocol mutations. They preserve
 state/provider configuration and do not replace a running daemon. See
 [LOCAL-BUILD.md](LOCAL-BUILD.md) for the commands and [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md) for the limitations.
@@ -1049,9 +1068,29 @@ These are supported-format fixtures, not actual provider billing acceptance.
 See the [existing integrated record](verification/INDEX.md)
 for exact source, failures, hashes and short coordination observations.
 Discovery restarts after a daemon restart; file scan progress is durable.
-Persistent discovery resumption, bounded long-term fingerprint/baseline storage,
-sustained resource acceptance, standalone scans and overhead instrumentation
-remain open. The collector's ephemeral prefix session handles large/growing
+Persistent discovery resumption is implemented. Persistent accounting tracking
+now has a 256 MiB admission budget: UTF-8 bytes in fingerprints/contributions,
+baselines, file cursors, buckets and gaps, plus a 128-byte allowance per row.
+SQLite indexes, page/WAL overhead and unrelated coordination state are additional;
+this is not a 256 MiB limit on the entire database file. One additive counter row
+and transactional insert/update/delete triggers maintain the total, with a one-time
+backfill for old stores. The separate discovery manifest retains its existing
+10,000-file/4 MiB-frontier bounds.
+
+A sample's baseline, bucket and fingerprint either all fit or are rolled back to
+a savepoint. A refused file cursor can be rediscovered; preserved dedupe evidence
+prevents recounting. Reconciliation that cannot fit leaves the old attribution
+and total intact. Its first capacity gap emits an event; unchanged refusals
+on later reconciliation ticks do not append empty accounting events. A single reserved, constant-size capacity gap keeps affected
+reports partial and appears in the CLI and desktop. Ordinary SQLite errors still
+propagate as storage failures. Retention can free contribution/bucket/gap space;
+accepted fingerprints and baselines are never discarded merely to admit new
+work. Existing stores already above budget remain intact and may shrink, but
+cannot grow through accounting admission. Increasing usable storage beyond the
+fixed budget or safely compacting long-lived dedupe evidence is not implemented.
+Older daemons retain their own admission policy; the new metadata does not change
+schema-23 accounting meanings. Sustained resource acceptance, standalone scans
+and overhead instrumentation remain open. The collector's ephemeral prefix session handles large/growing
 files in bounded passes; the standalone reader retains its 16 MiB validation
 limit. Overhead is returned as unknown until instrumented.
 
@@ -1173,6 +1212,9 @@ are unknown, never zero. The design:
   `retained_since` (UTC hour), `history_truncated`, `future_until_clamped` and
   `includes_current_hour` (booleans), plus `source_gaps` (a nonnegative integer
   count of known unreadable/unsupported/reset intervals in the requested scope).
+  Optional `coverage.tracking` contains `logical_bytes`, `capacity_bytes` and
+  `capacity_gap` (whether this range overlaps capacity-refused accounting).
+  Absence on an older daemon does not establish bounded tracking.
   `coverage.collection` contains `enabled` (boolean or null for an older report,
   read from current configuration), `state` (`unknown`, `scanning`, `caught_up`),
   `discovery_generation` (u64 or null), `snapshot_at` and `completed_at` (UTC
@@ -1256,6 +1298,11 @@ require an explicit gap/replay. A version-3 parser cursor first verifies its old
 prefix, then replays from zero using version 4 without inventing a source-change
 gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
+Collector parsing batches stop after 128 complete source records, including
+ignored records and gaps. Their samples and cursor still commit atomically under
+the coordination mutex, with a 100 ms off-lock wait between batches. This limits
+accounting work per transaction; it is not a hard wall-clock I/O guarantee. The
+standalone reader defaults to 4,096 records and accepts smaller validated budgets.
 The standalone reader API retains its earlier 16 MiB whole-prefix limit.
 The 22+ MiB reader regression and the updated daemon partial-tail/restart trial
 passed in the 29-test host/daemon usage campaign. The later real-binary
