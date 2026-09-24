@@ -7,7 +7,7 @@ Standardized September 5, 2026 at the user's request. Apply throughout the corre
 | Priority | Tool/service | Purpose in AgentDocker |
 |---|---|---|
 | First | cargo-nextest + GitHub Actions | Isolated Rust test execution, timeouts, resource groups and JUnit artifacts. Keep doctests separately. Report flaky outcomes; retries must not hide correctness failures. |
-| First | Criterion + Bencher | Measure lease operations, content fingerprints, SQLite writes and recovery queries; retain benchmark trends and compare PRs against their actual base. Criterion measures; Bencher stores and evaluates results. |
+| First | Criterion + Bencher | Measure lease operations, content fingerprints, retained accounting-prefix verification, SQLite writes and recovery queries; retain benchmark trends and compare PRs against their actual base. Criterion measures; Bencher stores and evaluates results. |
 | First | Proptest | Generate claim/renew/release/expire/finish sequences and aliases; compare with a simple reference model. Persist minimized failing seeds. |
 | First | cargo-llvm-cov | Find untested cancellation, authorization, migration and recovery branches. Publish coverage artifacts; use coverage to guide meaningful tests rather than target a vanity percentage. |
 | First | Native Rust Unix-socket load harness | Exercise the real JSON-line protocol under concurrent clients, disconnects, slow readers, lease contention and daemon restart. Export Bencher Metric Format results. |
@@ -15,6 +15,8 @@ Standardized September 5, 2026 at the user's request. Apply throughout the corre
 | Selective | Loom | Model extracted in-memory synchronization algorithms if finer-grained concurrency is introduced. It does not model SQLite or filesystem/OS behavior and is not a drop-in replacement for daemon integration tests. |
 | Transport-dependent | k6 | Use for supported network endpoints when present. Evaluate a maintained extension before using the native Unix-socket protocol; a bridge benchmark measures the bridge too. Do not add a production HTTP API solely to accommodate k6. |
 | Integration | Real Docker and Podman jobs | Shared engine contract scenarios and separate real-engine results for builds, lifecycle, mount translation and scoped authentication. Linux CI first, explicit macOS VM checks. |
+
+The host `fingerprint` benchmark includes `usage_prefix/verify_16_mib`: it prepares a complete retained cursor outside the timed loop, then verifies its entire 16 MiB prefix through the collector's bounded `Session` API. ARM uses the runtime-detected SHA-256 backend; `--features sha2/force-soft` provides an explicit software control for a local comparison. Keep those feature sets labeled and preserve each run's samples before a subsequent Criterion baseline replaces them. This is a prefix-verification benchmark, not a multi-project daemon or installed idle-CPU trial.
 
 Bencher reporting is configured privately for this project, and verified main benchmark artifacts have been uploaded. The user requires its key and configuration to remain outside the repository and GitHub. Local runs and downloadable CI artifacts work without credentials. k6 remains optional for future network transports; it is not a reason to introduce a production HTTP endpoint.
 
