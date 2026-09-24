@@ -26,6 +26,12 @@ tokio.workspace = true
 uuid.workspace = true
 filetime.workspace = true
 
+# sha2 0.10 otherwise uses its software backend on ARM. The asm feature
+# dispatches to SHA instructions only when the CPU supports them, with the
+# existing software fallback retained. Other targets keep their current backend.
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+sha2 = { workspace = true, features = ["asm"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 sysinfo.workspace = true
