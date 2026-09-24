@@ -1,7 +1,7 @@
 # Native Windows delivery work
 
-Windows is an intended native platform. The Windows implementation is an incomplete port and
-is not a downloadable Windows product. It does not use WSL, a browser server or
+Windows is an intended native platform. The Windows implementation is an incomplete port,
+distributed as an unsigned portable preview. It does not use WSL, a browser server or
 a required container engine to substitute for native execution.
 
 The user confirmed native Windows, alongside macOS and Linux, for the **first
@@ -49,7 +49,8 @@ extracting that ZIP outside the checkout into a path containing spaces and
 Unicode. This archive path passed its native run on `13e87591` (run 35666723079: 284
 native tests, 51/51 steps on the extracted bytes); it does not close Windows
 installer/update/rollback, services, clean-machine or actual-provider
-acceptance. The public tag workflow still has no Windows target. See
+acceptance. Prerelease tags publish the accepted portable Windows target separately
+from the macOS/Linux update feeds. See
 [distribution setup](DISTRIBUTION-SETUP.md#windows-portable-preview).
 
 ## Slice one: the daemon and the CLI answer
@@ -358,11 +359,34 @@ installer remain outside this slice.
 The opt-in `AGENTDOCKER_STARTUP_TRACE=1` diagnostics distinguish home security,
 database-file protection, SQLite connection, compatibility checks, WAL setup,
 schema creation, migrations, search indexes and state restoration. They emit
-only fixed stage labels, PID and elapsed time, and are silent by default. The
-extracted-package failure in run 35932937310 stopped after coordinator-lock
-readiness; finer stages are diagnostic evidence for a future occurrence, not a
-fix or a longer readiness timeout. Failed packages and original reports remain
-retained.
+only fixed stage labels, PID and elapsed time, and are silent by default.
+Extracted-package runs 35932937310 (OWNER RIGHTS home) and 35935871942 (ordinary
+fresh home) stopped after coordinator-lock readiness. The cause remains unknown;
+finer stages and later passes do not establish a fix or justify a longer timeout.
+Failed packages and original reports remain retained.
+
+A manual `windows.yml` dispatch can select `startup_samples` (0, 5, 10 or 20) to
+sample each ordinary and OWNER RIGHTS ancestry using distinct fresh homes on the
+same extracted package. It stops at the first failed assertion, preserves each
+home's bounded startup log and keeps the existing startup deadline. A passing
+series does not erase earlier failures. Ordinary CI and release runs keep zero
+additional samples unless explicitly selected.
+Additional-sample dispatches have a 100-minute fixture-step budget and a
+180-minute job budget to cover all bounded commands, output capture and cleanup;
+ordinary runs retain their 10-minute step and 60-minute job budgets. The daemon's
+ten-second readiness deadline is unchanged.
+
+The 40-sample native run on `0184e1d8` passed all 142 checks, with a slowest fresh
+start of 4.203 seconds and a schema phase of 2.991 seconds. An earlier traced
+fresh start spent 4.137 seconds in that phase. Initial schema creation now uses
+one transaction with the same `FULL` durability, avoiding a separate commit for
+each new table/index. A late-schema-error regression verifies rollback, retained
+existing data and successful initialization after repairing the fixture. A separate native
+run on `89400171` passed another 40 samples and all 142 checks: median startup
+188 ms, maximum 219 ms; median schema phase 39 ms, maximum 62 ms. The earlier
+run had median startup 375 ms and median schema phase 216.5 ms. These runs used
+different CI hosts and do not establish a fix for the historical ten-second
+failures.
 
 ## Local connection boundary
 

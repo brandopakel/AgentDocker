@@ -265,8 +265,11 @@ def preview_notes(tag, notes):
         return notes
     return (marker + "\nWindows x64 is an **unsigned portable preview**. Extract the whole ZIP "
             "and open `AgentDocker/agentdocker-ui.exe`; keep its sibling executables together. "
-            "It has no Windows installer, service or automatic updater. Finish managed work, "
-            "quit the app and run `.\\agentdocker.exe daemon stop` before replacing its folder. "
+            "It has no Windows installer or automatic updater. Optional per-user Task Scheduler "
+            "startup is implemented; login/reboot and managed-provider survival acceptance remain incomplete. "
+            "Before replacing its folder, finish managed work and quit the app. If you enabled "
+            "startup with `daemon install`, run `.\\agentdocker.exe daemon uninstall`; "
+            "then run `.\\agentdocker.exe daemon stop`. "
             "Native runner checks passed; clean-machine and actual-provider trials remain open. "
             "See `WINDOWS-PREVIEW.txt` and the attached acceptance report.\n\n" + notes)
 
