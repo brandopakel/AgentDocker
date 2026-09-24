@@ -371,6 +371,15 @@ home's bounded startup log and keeps the existing startup deadline. A passing
 series does not erase earlier failures. Ordinary CI and release runs keep zero
 additional samples unless explicitly selected.
 
+The 40-sample native run on `0184e1d8` passed all 142 checks, with a slowest fresh
+start of 4.203 seconds and a schema phase of 2.991 seconds. An earlier traced
+fresh start spent 4.137 seconds in that phase. Initial schema creation now uses
+one transaction with the same `FULL` durability, avoiding a separate commit for
+each new table/index. A late-schema-error regression verifies rollback, retained
+existing data and successful initialization after repairing the fixture. Native
+timing comparison remains required; this is not an established fix for the
+historical ten-second failures.
+
 ## Local connection boundary
 
 The shared IPC layer uses Unix sockets on macOS/Linux and named pipes on

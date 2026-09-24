@@ -56,6 +56,14 @@ Locking discipline: one synchronous state mutex owns the registry, leases, inbox
 
 ## Persistence
 
+Initial table and index creation commits as one SQLite transaction with `FULL`
+synchronous durability. A failed schema statement rolls back the batch without
+leaving partial new tables or altering pre-existing rows. Compatibility checks
+still precede schema writes, and accounting tracking initialization and later
+migrations retain their own transaction boundaries. This avoids a separate
+durable commit for each newly created schema object; it does not change the
+recorded schema version or the daemon startup deadline.
+
 The intended write contract is to latch `storage_unavailable` on SQLite failure: the triggering request receives an error, subsequent coordination requests are refused, and events/messages are not published from the failed projection. `shutdown` remains available. Restart after repairing storage reloads the last durable state. This deliberately keeps the failed in-memory projection unavailable instead of trying to undo already-performed host effects. A multi-write operation can have committed a prefix before failing; clients must inspect/reconcile after restart rather than assume the whole request rolled back. A claim is never acknowledged after a detected write failure, and failed releases cannot admit a conflicting writer. Recovery IDs provide stronger idempotency where supported. Restore now commits its starting identity, required leases and `agent_restoring` events together before launch; failed preparation cannot start a writer. Native commands are now held before exec until their PID, exact process start identity, protection and lifecycle event commit. A failed completion closes the execution gate, so the command never starts. Native exit commits its status, lease deletion, journal entries and channel closure together; a failed write keeps their memory and durable projections unchanged. These fixes address the September 6 audit (AUDIT-2026-09-06.md in git history); acceptance and release evidence is in [verification/INDEX.md](verification/INDEX.md).
 
 On Windows, storage initialization installs SQLite's permanent win32 VFS

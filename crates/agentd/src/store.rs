@@ -824,7 +824,13 @@ impl Store {
         crate::startup_checkpoint("store_wal_ready");
         conn.pragma_update(None, "synchronous", "FULL")?;
         crate::startup_checkpoint("store_schema_started");
+        // One durable schema commit, rather than a WAL sync for every new
+        // table/index on a fresh home. On error the transaction rolls back
+        // all preceding DDL; existing data and the compatibility checks stay
+        // unchanged. Tracking initialization below owns its own transaction.
+        let schema = conn.unchecked_transaction()?;
         conn.execute_batch(SCHEMA)?;
+        schema.commit()?;
         usage::tracking_init(&conn)?;
         crate::startup_checkpoint("store_schema_ready");
         // A journal written before `summary` had its own column gets one,
@@ -2764,6 +2770,51 @@ mod tests {
 
         assert_eq!(store.prune_events(4).unwrap(), 6);
         assert_eq!(store.recent_events(100).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn a_failed_schema_batch_preserves_existing_data_without_partial_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let conn = crate::sqlite_fixture::open(&path).unwrap();
+        // The missing `at` column fails a late index creation, after the
+        // batch has already tried to create the coordination tables.
+        conn.execute_batch(
+            "CREATE TABLE usage_samples (source_id TEXT PRIMARY KEY);
+             INSERT INTO usage_samples VALUES ('retained');",
+        )
+        .unwrap();
+        drop(conn);
+        assert!(Store::open(&path).is_err());
+        let conn = crate::sqlite_fixture::open(&path).unwrap();
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(tables, ["usage_samples"]);
+        let retained: String = conn
+            .query_row("SELECT source_id FROM usage_samples", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(retained, "retained");
+        // Repair only the fixture's malformed table, then prove that the
+        // failed first open left a database the normal path can initialize.
+        conn.execute_batch(
+            "ALTER TABLE usage_samples ADD COLUMN fingerprint TEXT NOT NULL DEFAULT 'kept';
+             ALTER TABLE usage_samples ADD COLUMN at TEXT NOT NULL DEFAULT '2026-09-24T00:00:00Z';
+             ALTER TABLE usage_samples ADD COLUMN contribution TEXT;",
+        )
+        .unwrap();
+        drop(conn);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.recorded_schema_version().unwrap(), SCHEMA_VERSION);
+        let retained: String = store
+            .conn
+            .query_row("SELECT source_id FROM usage_samples", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(retained, "retained");
     }
 
     #[test]
