@@ -26,6 +26,25 @@ The scheduled workflow runs bounded protocol, resource-key, engine-metadata and 
 
 ## Measurements and thresholds
 
+For an actual Codex lifecycle delivery trial, run
+`python3 scripts/codex_delivery_smoke.py --binary-dir <package>/bin --codex <complete-provider-bundle>/bin/codex --provider-home <private-authenticated-profile> --output <new-private-directory>`.
+Authenticate the dedicated mode-0700 profile through normal Codex login first;
+the driver never copies credentials. It refuses existing user config and hook
+sources before invoking the provider. Account-synced plugin caches can exist in a
+fresh profile, so both plugin loaders are disabled for this invocation with
+`--disable plugins --disable remote_plugin`; cached files and saved preferences
+are left unchanged. One-invocation hook trust is for the fixture's reviewed inline
+hooks. A rejected profile records a failure before any child launches. Codex 0.155.1 with `--ignore-user-config` suppressed these
+inline hooks in the recorded Oracle trial; the corrected fixture keeps that layer
+active only in the checked profile. This follows the [official hook-source and
+trust contract](https://learn.chatgpt.com/docs/hooks). Managed policy remains in
+force; the preflight checks the dedicated profile and fresh trial project, not
+system configuration or provider-managed settings. Those host layers can affect
+a trial and remain in force; a private profile is not proof that they are absent.
+Existing provider configuration/authentication files are checked unchanged.
+The test requires correlated replies and automatic receipts at all three lifecycle
+boundaries; it does not infer idle wake from hooks or MCP contact.
+
 Record p50/p95/p99 request and hook latency, throughput, stale-warning delay, missed stale detections and false alerts, restart/handoff recovery time, watcher queue gaps, fingerprint throughput, SQLite write latency and process memory. Use workloads with 1/10/100 concurrent agents and small/medium/large fixture checkouts, with cold and warm runs separated.
 
 Every result includes commit SHA, dirty-content identity if applicable, Rust/tool versions, OS/architecture, CPU, workload parameters and container engine/image identity when used. Different machines and engines are different Bencher testbeds. Establish repeated baselines before selecting regression thresholds; shared-runner timing is initially advisory. Correctness invariants are immediate hard failures. Promote performance checks to blocking only once measured variance supports the threshold; the hook's coordination/output phase retains its one-second deadline. Input and activity have separate budgets; do not label the complete invocation a one-second operation.
@@ -91,6 +110,13 @@ CI stores JUnit, coverage, benchmark provenance/results, and fuzz reproducers. S
 `python3 scripts/restart_smoke.py --binary /path/to/new/agentd --previous-binary /path/to/old/agentd --output /new/private/report` snapshots both builds, creates a pre-upgrade state backup, and checks queued messages, original lease expiries, identity and durable question routing across actual daemon crashes. It verifies incompatible downgrade refusal without state changes. The children are externally owned fixtures; this does not prove transfer of supervised child/PTY ownership during live reload. Reports and fixture databases remain private by default.
 
 The performance workflow contains an optional trusted-main reporting job, but this project intentionally leaves GitHub Bencher credentials unset. Its report job may be skipped while benchmark generation and artifact checks pass. Download artifacts, verify before/after manifests and exact source identity, then upload with the privately configured helper. Never copy the key into a tracked file, release artifact or GitHub secret. Set thresholds after baseline calibration. See [LOCAL-TRIAL.md](LOCAL-TRIAL.md) for desktop, failure and real-agent acceptance work still needed.
+
+The native Codex queue fixture uses unbuffered app-server pipes for its timed
+read-only receipt queries: Python read-ahead must not hide a complete queued
+response from the next file-descriptor readiness check. Independent Ubuntu with
+Codex 0.155.1 passed idle/draft/busy delivery and receiver recovery after this
+fixture correction; the preceding timed-out trial remains retained. Its model
+endpoint is a loopback fixture, so this does not establish real-account acceptance.
 
 ## Retaining failed acceptance evidence
 
