@@ -41,6 +41,9 @@ pub enum Runtime {
 pub struct Budget {
     pub bytes: u64,
     pub record_bytes: usize,
+    /// Complete source records, including ignored records and parsing gaps.
+    /// Callers that persist a batch under a shared lock can use a smaller cap.
+    pub records: usize,
     pub elapsed: Duration,
 }
 
@@ -49,6 +52,7 @@ impl Default for Budget {
         Self {
             bytes: 4 * 1024 * 1024,
             record_bytes: MAX_RECORD,
+            records: MAX_RECORDS,
             elapsed: Duration::from_millis(100),
         }
     }
@@ -317,6 +321,8 @@ fn scan_checked(
         || budget.record_bytes > MAX_RECORD
         || budget.bytes <= budget.record_bytes as u64 + 1
         || budget.bytes > MAX_BATCH
+        || budget.records == 0
+        || budget.records > MAX_RECORDS
         || budget.elapsed.is_zero()
     {
         return Err(Error::Budget);
@@ -383,7 +389,7 @@ fn scan_checked(
         if cursor.offset == generation.length {
             break Stop::Complete;
         }
-        if records == MAX_RECORDS || started.elapsed() >= budget.elapsed {
+        if records == budget.records || started.elapsed() >= budget.elapsed {
             break Stop::Budget;
         }
         line.clear();
@@ -536,6 +542,7 @@ mod tests {
         Budget {
             bytes: 750,
             record_bytes: 500,
+            records: MAX_RECORDS,
             elapsed: Duration::from_secs(1),
         }
     }
@@ -587,6 +594,40 @@ mod tests {
                 .to_string(),
             Error::Cursor.to_string()
         );
+    }
+
+    #[test]
+    fn smaller_record_batches_preserve_samples_gaps_and_cursor_on_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        let text = format!("{}{{\"type\":\"user\"}}\ninvalid\n{}", row(0), row(1));
+        std::fs::write(&path, &text).unwrap();
+        let whole = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
+        let limits = Budget {
+            records: 2,
+            ..Budget::default()
+        };
+        let first = scan(&path, Runtime::Claude, None, limits).unwrap();
+        assert_eq!(first.stop, Stop::Budget);
+        assert_eq!(first.samples.len(), 1);
+        assert!(first.gaps.is_empty());
+        let restored =
+            serde_json::from_str(&serde_json::to_string(&first.cursor).unwrap()).unwrap();
+        let replay = scan(&path, Runtime::Claude, None, limits).unwrap();
+        assert_eq!(first.cursor, replay.cursor);
+        assert_eq!(first.samples, replay.samples);
+        let second = scan(&path, Runtime::Claude, Some(&restored), limits).unwrap();
+        assert_eq!(second.stop, Stop::Complete);
+        assert_eq!(second.samples.len(), 1);
+        assert_eq!(second.gaps, whole.gaps);
+        assert_eq!(second.cursor, whole.cursor);
+        assert_eq!([first.samples, second.samples].concat(), whole.samples);
+        for records in [0, MAX_RECORDS + 1] {
+            assert!(matches!(
+                scan(&path, Runtime::Claude, None, Budget { records, ..limits }),
+                Err(Error::Budget)
+            ));
+        }
     }
 
     #[test]
@@ -823,6 +864,7 @@ mod tests {
             Budget {
                 bytes: first.len() as u64 + 2,
                 record_bytes: first.len(),
+                records: MAX_RECORDS,
                 elapsed: Duration::from_secs(1),
             },
         )
@@ -836,6 +878,7 @@ mod tests {
                 Budget {
                     bytes: 501,
                     record_bytes: 500,
+                    records: MAX_RECORDS,
                     elapsed: Duration::from_secs(1),
                 }
             ),
@@ -848,6 +891,7 @@ mod tests {
             Budget {
                 bytes: 502,
                 record_bytes: 500,
+                records: MAX_RECORDS,
                 elapsed: Duration::from_secs(1),
             },
         )
@@ -1002,6 +1046,7 @@ mod tests {
         let limits = Budget {
             bytes: 300,
             record_bytes: 250,
+            records: MAX_RECORDS,
             elapsed: Duration::from_secs(1),
         };
         let first = scan(&path, Runtime::Codex, None, limits).unwrap();

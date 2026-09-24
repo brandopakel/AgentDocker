@@ -819,6 +819,7 @@ impl Store {
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.execute_batch(SCHEMA)?;
+        usage::tracking_init(&conn)?;
         // A journal written before `summary` had its own column gets one,
         // filled from the blob, so the LIKE fallback searches the same text
         // as FTS. Idempotent: the column is checked for, not the version.
