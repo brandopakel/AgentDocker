@@ -269,7 +269,7 @@ publishing the directory. The manifest and sidecar checksum identify the exact
 archive; this preview is unsigned, without Authenticode or installer/update
 support. Prerelease tags attach this separately tested Windows portable ZIP;
 stable tags and the four-target update feeds remain macOS/Linux. Windows ARM64
-is not claimed. The protected-tag publication path still needs its first live run.
+is not claimed. The beta.2 protected-tag publication passed its native Windows gate.
 
 On a native Windows build host, from the repository root in PowerShell:
 
@@ -287,7 +287,7 @@ executable against the manifest, removes the original staging payload, and runs
 the daemon/CLI/terminal and fresh-home GUI trial on those extracted files.
 The smoke's executable hashes must match the archive's hashes. A checksum,
 runner trial and CI artifact do not establish publisher authentication or
-clean-machine/provider acceptance. Those tests and the user installer, service,
+clean-machine/provider acceptance. Those tests and the user installer, service lifecycle,
 update and rollback path remain in [Remaining work](REMAINING-WORK.md).
 The Windows workflow ran this trial on `13e87591` (run 35666723079): 284 native tests and 51/51 steps on the extracted bytes; the line is in the [verification index](verification/INDEX.md).
 
@@ -302,7 +302,12 @@ blocks the prerelease; stable tags skip this preview-only job.
 Windows assets have separate `windows-preview-manifest.json` and
 `windows-preview-acceptance.json` files and `WINDOWS-PREVIEW.txt` instructions.
 They are not inputs to the four-target update feed. Release notes identify the
-unsigned portable preview and its missing Windows installer, service and updater.
+unsigned portable preview and its missing Windows installer and updater. Optional
+per-user Task Scheduler startup is implemented, with login/reboot and managed-provider
+survival acceptance still open. The package instructions require finishing managed
+work, quitting the app, uninstalling an enabled task with `daemon uninstall`, and
+stopping the daemon before moving or replacing its folder. Extraction alone does
+not install a startup task.
 The public upload selects only release assets, excluding diagnostic artifacts.
 
 Windows promotion refusal and exact-byte retention have fixture coverage. The

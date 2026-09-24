@@ -1,7 +1,7 @@
 # Native Windows delivery work
 
-Windows is an intended native platform. The Windows implementation is an incomplete port and
-is not a downloadable Windows product. It does not use WSL, a browser server or
+Windows is an intended native platform. The Windows implementation is an incomplete port,
+distributed as an unsigned portable preview. It does not use WSL, a browser server or
 a required container engine to substitute for native execution.
 
 The user confirmed native Windows, alongside macOS and Linux, for the **first
@@ -49,7 +49,8 @@ extracting that ZIP outside the checkout into a path containing spaces and
 Unicode. This archive path passed its native run on `13e87591` (run 35666723079: 284
 native tests, 51/51 steps on the extracted bytes); it does not close Windows
 installer/update/rollback, services, clean-machine or actual-provider
-acceptance. The public tag workflow still has no Windows target. See
+acceptance. Prerelease tags publish the accepted portable Windows target separately
+from the macOS/Linux update feeds. See
 [distribution setup](DISTRIBUTION-SETUP.md#windows-portable-preview).
 
 ## Slice one: the daemon and the CLI answer
