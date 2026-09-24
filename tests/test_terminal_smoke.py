@@ -6,6 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("terminal_smoke", ROOT / "scripts/terminal_smoke.py")
@@ -37,6 +38,36 @@ class ManagedSessionCleanup(unittest.TestCase):
         self.assertEqual(result, stopping)
         self.assertFalse(WINDOWS_SMOKE.terminal_record(result))
         self.assertEqual(inspect.call_count, 2)
+
+
+class StartupSampling(unittest.TestCase):
+    def step(self, label, ok, detail):
+        if not ok:
+            raise AssertionError(label + ": " + detail)
+
+    def test_failure_is_retained_and_home_registered_without_retry(self):
+        homes, samples = [], []
+        cli = Mock(return_value=SimpleNamespace(returncode=1, stdout="", stderr="startup deadline"))
+        home = Path("private-failed-sample")
+        with self.assertRaisesRegex(AssertionError, "startup deadline"):
+            WINDOWS_SMOKE.startup_sample(cli, self.step, homes, samples, home, "ordinary", 1)
+        self.assertEqual(homes, [home])
+        self.assertEqual(cli.call_count, 1)
+        self.assertEqual(samples[0]["result"], "failed")
+        self.assertIn("startup deadline", samples[0]["error"])
+        self.assertGreaterEqual(samples[0]["elapsed_seconds"], 0)
+
+    def test_stop_without_observed_exit_keeps_failed_result_and_cleanup_home(self):
+        homes, samples = [], []
+        cli = Mock(side_effect=[SimpleNamespace(returncode=0, stdout="pong", stderr=""),
+                               SimpleNamespace(returncode=0, stdout="stopped", stderr=""),
+                               SimpleNamespace(returncode=0, stdout="still running", stderr="")])
+        home = Path("private-live-sample")
+        with self.assertRaisesRegex(AssertionError, "exits"):
+            WINDOWS_SMOKE.startup_sample(cli, self.step, homes, samples, home, "owner-rights", 1)
+        self.assertEqual(homes, [home])
+        self.assertEqual(samples[0]["result"], "failed")
+        self.assertEqual(cli.call_args.kwargs["extra_env"]["AGENTDOCKER_NO_AUTOSTART"], "1")
 
 
 class FixtureSetupCleanup(unittest.TestCase):

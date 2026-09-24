@@ -106,12 +106,43 @@ def wait_terminal(inspect, name, seconds=10):
         time.sleep(0.1)
 
 
+def startup_sample(cli, step, homes, samples, home, kind, ordinal):
+    """Register cleanup before starting; a failed sample is never retried."""
+    homes.append(home)
+    record = {"home": str(home), "kind": kind, "ordinal": ordinal, "result": "failed"}
+    samples.append(record)
+    sample_env = {"AGENTDOCKER_HOME": str(home), "AGENTDOCKER_NO_AUTOSTART": ""}
+    started = time.monotonic()
+    try:
+        pinged = cli("ping", check=False, extra_env=sample_env, timeout=30)
+        record["start_seconds"] = time.monotonic() - started
+        step(f"startup sample {ordinal} ({kind}) reaches readiness", pinged.returncode == 0,
+             (pinged.stderr + pinged.stdout).strip())
+        stopped = cli("daemon", "stop", extra_env=sample_env, timeout=15)
+        gone = cli("ping", check=False,
+                   extra_env=dict(sample_env, AGENTDOCKER_NO_AUTOSTART="1"), timeout=10)
+        step(f"startup sample {ordinal} ({kind}) exits", "stopped" in stopped.stdout and gone.returncode != 0,
+             (stopped.stderr + stopped.stdout).strip())
+        record["result"] = "passed"
+    except Exception as error:
+        record["error"] = f"{type(error).__name__}: {error}"
+        raise
+    finally:
+        record["elapsed_seconds"] = time.monotonic() - started
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--desktop", action="store_true", help="also exercise native Windows UI startup and capture in a fresh private home")
+    parser.add_argument("--startup-samples", type=int, default=0,
+                        help="additional fresh-home samples per Windows ancestry type (0..20), stopping at the first failure")
     args = parser.parse_args()
+    if not 0 <= args.startup_samples <= 20:
+        parser.error("--startup-samples must be between 0 and 20")
+    if args.startup_samples and os.name != "nt":
+        parser.error("--startup-samples requires native Windows")
     if args.desktop and os.name != "nt":
         parser.error("--desktop requires a native Windows session; use desktop_smoke.py on macOS/Linux")
     binary_dir = args.binary_dir.resolve(strict=True)
@@ -972,6 +1003,17 @@ def main():
                 stop = run("daemon", "stop", extra_env=nested_env)
                 gone = run("ping", check=False, extra_env=dict(nested_env, AGENTDOCKER_NO_AUTOSTART="1"), timeout=10)
                 step("the OWNER RIGHTS trial daemon is ended too", "stopped" in stop.stdout and gone.returncode != 0, stop.stdout.strip())
+                # Distinct homes on the same extracted bytes isolate the
+                # intermittent startup failure. These are diagnostic samples,
+                # never retries of a failed assertion or a longer startup wait.
+                samples = report["startup_samples"] = []
+                for ordinal in range(1, args.startup_samples + 1):
+                    for kind, parent in (("ordinary", base), ("owner-rights", root)):
+                        sampled = parent / f"agentdocker-smoke-{token}-{kind}-{ordinal}"
+                        startup_sample(run, step, homes, samples, sampled, kind, ordinal)
+                if samples:
+                    step("startup samples preserve the private parent's owner and ACL",
+                         windows_sddl(root) == before_acl, windows_sddl(root))
         else:
             daemon.terminate()
             step("the private daemon is ended directly, since this user has a service installed", wait_exit(daemon), str(user_service))

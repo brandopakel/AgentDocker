@@ -358,11 +358,18 @@ installer remain outside this slice.
 The opt-in `AGENTDOCKER_STARTUP_TRACE=1` diagnostics distinguish home security,
 database-file protection, SQLite connection, compatibility checks, WAL setup,
 schema creation, migrations, search indexes and state restoration. They emit
-only fixed stage labels, PID and elapsed time, and are silent by default. The
-extracted-package failure in run 35932937310 stopped after coordinator-lock
-readiness; finer stages are diagnostic evidence for a future occurrence, not a
-fix or a longer readiness timeout. Failed packages and original reports remain
-retained.
+only fixed stage labels, PID and elapsed time, and are silent by default.
+Extracted-package runs 35932937310 (OWNER RIGHTS home) and 35935871942 (ordinary
+fresh home) stopped after coordinator-lock readiness. The cause remains unknown;
+finer stages and later passes do not establish a fix or justify a longer timeout.
+Failed packages and original reports remain retained.
+
+A manual `windows.yml` dispatch can select `startup_samples` (0, 5, 10 or 20) to
+sample each ordinary and OWNER RIGHTS ancestry using distinct fresh homes on the
+same extracted package. It stops at the first failed assertion, preserves each
+home's bounded startup log and keeps the existing startup deadline. A passing
+series does not erase earlier failures. Ordinary CI and release runs keep zero
+additional samples unless explicitly selected.
 
 ## Local connection boundary
 
