@@ -58,7 +58,7 @@ fn provider_ancestor(mut pid: u32, table: &[Process]) -> Result<Option<(&Process
             .iter()
             .find(|p| p.pid == pid)
             .context("incomplete CLI process ancestry; specify the sender explicitly")?;
-        if let Some(runtime) = procinfo::runtime_of(&process.argv) {
+        if let Some(runtime) = procinfo::session_runtime_of(&process.argv) {
             return Ok(Some((process, runtime)));
         }
         pid = process.ppid;
