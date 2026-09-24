@@ -54,7 +54,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native-manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--startup-samples", type=int, default=0,
+                        help="additional fresh-home samples per Windows ancestry type (0..20)")
     args = parser.parse_args()
+    if not 0 <= args.startup_samples <= 20:
+        parser.error("--startup-samples must be between 0 and 20")
     if os.name != "nt":
         parser.error("the archive acceptance trial requires native Windows")
     build = json.loads(args.native_manifest.read_text(encoding="utf-8"))
@@ -77,7 +81,8 @@ def main():
             # The original staging payload cannot accidentally satisfy sibling lookup.
             shutil.rmtree(output / "AgentDocker")
             subprocess.run([sys.executable, str(ROOT / "scripts/windows_daemon_smoke.py"),
-                            "--binary-dir", str(app), "--output", str(output / "smoke"), "--desktop"],
+                            "--binary-dir", str(app), "--output", str(output / "smoke"), "--desktop",
+                            "--startup-samples", str(args.startup_samples)],
                            cwd=scratch, check=True)
             observed = json.loads((output / "smoke/windows-daemon-smoke.json").read_text(encoding="utf-8"))
             if observed.get("result") != "passed" or observed.get("binary_sha256") != info["binary_sha256"]:

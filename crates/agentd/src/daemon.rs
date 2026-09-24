@@ -1174,7 +1174,9 @@ impl Daemon {
 
     /// Open (or create) the state database under `home` and restore state.
     pub fn open(home: PathBuf, socket: PathBuf) -> anyhow::Result<Self> {
+        crate::startup_checkpoint("home_security_started");
         Self::secure_home(&home)?;
+        crate::startup_checkpoint("home_security_ready");
         let store = Store::open(&home.join("state.db"))?;
         Self::with_store(home, socket, store)
     }
@@ -1183,7 +1185,9 @@ impl Daemon {
     /// schema is brought forward but its recorded version is not, so an
     /// aborted takeover leaves a database the predecessor still opens.
     pub fn open_pending(home: PathBuf, socket: PathBuf) -> anyhow::Result<Self> {
+        crate::startup_checkpoint("home_security_started");
         Self::secure_home(&home)?;
+        crate::startup_checkpoint("home_security_ready");
         let store = Store::open_pending(&home.join("state.db"))?;
         Self::with_store(home, socket, store)
     }
@@ -1206,6 +1210,7 @@ impl Daemon {
     }
 
     pub fn with_store(home: PathBuf, socket: PathBuf, store: Store) -> anyhow::Result<Self> {
+        crate::startup_checkpoint("state_restore_started");
         let now = Utc::now();
         // Before any recovery write: is coordination already offered to
         // someone? Then this process may not write until it has accepted

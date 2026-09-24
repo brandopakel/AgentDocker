@@ -87,6 +87,14 @@ feed verifies. Existing channel bodies/assets that do not match the publisher's
 format are preserved and require investigation. Hosted feed and client
 acceptance remain necessary after the first real promotion.
 
+GitHub's release-by-tag endpoint only returns published releases. On a channel
+404, the publisher also checks the authenticated release inventory for the
+draft, across at most ten pages of 100 releases. Ambiguous matches, malformed
+responses (including entries without a string tag name), lookup failures or a
+larger inventory fail without changing any
+release. This lets initial publication and interrupted-publication repair
+verify uploaded draft assets before exposing the feed.
+
 ## The Homebrew tap
 
 The tap and publishing configuration are present. The release generator builds
@@ -248,7 +256,7 @@ on an independent Mac before publication. These acceptance steps remain
 necessary after the credentials are configured.
 
 The source-built app and CLI can continue local testing while release setup is
-unfinished. The current published CLI/formula remains v0.1.0; the newer installed
+unfinished. The current stable CLI/formula remains v0.1.0; the newer installed
 local app is identified by its source commit, not that shared version string.
 
 ## Windows portable preview
@@ -261,7 +269,7 @@ publishing the directory. The manifest and sidecar checksum identify the exact
 archive; this preview is unsigned, without Authenticode or installer/update
 support. Prerelease tags attach this separately tested Windows portable ZIP;
 stable tags and the four-target update feeds remain macOS/Linux. Windows ARM64
-is not claimed. The protected-tag publication path still needs its first live run.
+is not claimed. The beta.2 protected-tag publication passed its native Windows gate.
 
 On a native Windows build host, from the repository root in PowerShell:
 
@@ -279,7 +287,7 @@ executable against the manifest, removes the original staging payload, and runs
 the daemon/CLI/terminal and fresh-home GUI trial on those extracted files.
 The smoke's executable hashes must match the archive's hashes. A checksum,
 runner trial and CI artifact do not establish publisher authentication or
-clean-machine/provider acceptance. Those tests and the user installer, service,
+clean-machine/provider acceptance. Those tests and the user installer, service lifecycle,
 update and rollback path remain in [Remaining work](REMAINING-WORK.md).
 The Windows workflow ran this trial on `13e87591` (run 35666723079): 284 native tests and 51/51 steps on the extracted bytes; the line is in the [verification index](verification/INDEX.md).
 
@@ -294,23 +302,36 @@ blocks the prerelease; stable tags skip this preview-only job.
 Windows assets have separate `windows-preview-manifest.json` and
 `windows-preview-acceptance.json` files and `WINDOWS-PREVIEW.txt` instructions.
 They are not inputs to the four-target update feed. Release notes identify the
-unsigned portable preview and its missing Windows installer, service and updater.
+unsigned portable preview and its missing Windows installer and updater. Optional
+per-user Task Scheduler startup is implemented, with login/reboot and managed-provider
+survival acceptance still open. The package instructions require finishing managed
+work, quitting the app, uninstalling an enabled task with `daemon uninstall`, and
+stopping the daemon before moving or replacing its folder. Extraction alone does
+not install a startup task.
 The public upload selects only release assets, excluding diagnostic artifacts.
 
 Windows promotion refusal and exact-byte retention have fixture coverage. The
-protected-tag Windows job, hosted ZIP download and independent-machine/provider
-acceptance remain unverified until the candidate is released and tried.
+beta.2 protected-tag Windows job passed, and its hosted ZIP passed 61 native
+checks on AWBP. An actual Claude trial exposed a transcript ownership problem;
+the corrected CI package passed delivery and automatic receipt checks. Repeat
+the hosted-package lifecycle on the next candidate. Native Codex input and the
+Windows installer, service lifecycle and updater remain separate open gates.
 
 ## First coworker preview candidate
 
 The failed immutable `v0.2.0-beta.1` tag remains at `d46db1f2`; it published no
-release. The replacement source candidate is **0.2.0-beta.2**, with matching workspace packages,
+release. **0.2.0-beta.2** was published from `f37998dd` after every native build
+passed. The repaired preview channel now advertises that release.
+
+The next source candidate is **0.2.0-beta.3**, with matching workspace packages,
 internal dependency requirements and entries in both Cargo lockfiles (including
-the excluded fuzz workspace). The legacy macOS bundle
-helper reads this version from the workspace when no override is supplied.
-The intended tag is `v0.2.0-beta.2`; changing the source version does not create a
-tag, publish assets or install them. Publication remains open until the final
-integrated source passes its gates and the protected-tag workflow finishes.
+the excluded fuzz workspace). It combines the preview staging correction,
+Windows service and provider ownership changes, bounded accounting, desktop
+browser service controls and startup diagnostics. The legacy macOS bundle helper
+reads the workspace version when no override is supplied. The intended tag is
+`v0.2.0-beta.3`; changing the source version does not publish or install it. Finish
+substantive review and final integrated local/CI checks before creating that tag,
+then complete the protected-tag workflow and hosted lifecycle acceptance.
 
 Before announcing the preview, download its actual hosted archives and sidecar
 checksums, verify package provenance, and exercise the explicit-version install
@@ -326,7 +347,15 @@ it does not complete the installer/service/update or native Codex input work.
    present at the September 9 check. Secret values/token validity were not audited.
 2. Open: configure Developer ID/notarization privately, reconcile the cask
    signing/installation contract, and validate final artifacts.
-3. Open: run the protected-tag release, confirm formula/cask publication and
-   exercise hosted update/rollback through the installed app.
+3. Open: publish the next immutable preview through the protected-tag workflow
+   and exercise hosted update/rollback. Keep preview publication separate from
+   the stable feed and Homebrew; formula/cask publication belongs to stable release.
 4. Open: finish physical notification and independent-machine acceptance; retain
    results in the existing audit/verification records.
+
+The beta.2 hosted updater has a macOS staging defect: an installed ad-hoc preview
+can discover the next preview without new consent, but staging still requests a
+Gatekeeper assessment unless `--local-preview` is supplied explicitly. Source now
+passes the computed preview consent through both staging and activation; a signed
+preview still receives Gatekeeper assessment. Publish the correction in a new
+immutable candidate; do not replace beta.2 assets.

@@ -1141,6 +1141,8 @@ pub enum ErrorCode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
+    /// Includes optional coverage.tracking byte capacity and refusal coverage;
+    /// older reports omit it, which does not establish bounded tracking.
     Usage {
         #[serde(flatten)]
         report: crate::usage::report::Report,

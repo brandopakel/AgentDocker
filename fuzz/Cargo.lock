@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agentd"
-version = "0.2.0-beta.2"
+version = "0.2.0-beta.3"
 dependencies = [
  "agentdocker-core",
  "agentdocker-host",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "agentdocker-core"
-version = "0.2.0-beta.2"
+version = "0.2.0-beta.3"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -56,7 +56,7 @@ dependencies = [
 
 [[package]]
 name = "agentdocker-host"
-version = "0.2.0-beta.2"
+version = "0.2.0-beta.3"
 dependencies = [
  "agentdocker-core",
  "chrono",

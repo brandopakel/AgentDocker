@@ -58,6 +58,9 @@ pub enum ConnectorCommand {
     Status,
     /// Run the connector as a login service (launchd or systemd) with these serve arguments.
     Install(InstallArgs),
+    /// Install and start a new login service, or start its unchanged definition.
+    /// Refuses to replace a differently configured service.
+    Enable(InstallArgs),
     /// Remove the connector service.
     Uninstall {
         /// Say what would be removed without removing it.
@@ -187,6 +190,7 @@ pub async fn run(client: Client, args: ConnectorArgs) -> Result<()> {
         ConnectorCommand::Serve(args) => serve(client, args).await,
         ConnectorCommand::Status => status(&client).await,
         ConnectorCommand::Install(args) => service::install(&args.serve, args.dry_run),
+        ConnectorCommand::Enable(args) => service::enable(&args.serve, args.dry_run),
         ConnectorCommand::Uninstall { dry_run } => service::uninstall(dry_run),
         ConnectorCommand::Grants => grants(&client).await,
         ConnectorCommand::Revoke { agent } => revoke(&client, &agent).await,

@@ -28,12 +28,12 @@ use std::path::{Path, PathBuf};
 
 use agentdocker_core::journal::transcript_summary;
 use agentdocker_core::{
-    AgentRecord, AgentSpec, DigestRequest, Envelope, ErrorCode, LeaseMode, Request, Response,
-    SummarySource,
+    AgentRecord, AgentSpec, DigestRequest, Envelope, ErrorCode, LeaseMode, MessageId, Request,
+    Response, SummarySource,
 };
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand, ValueEnum};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::client::{Backend, Client};
@@ -66,6 +66,9 @@ pub enum HookCommand {
     ClaudeReceipt(channel_receipt::deferred::DeferredArgs),
     /// Report Codex activity and deliver queued messages at lifecycle boundaries.
     Codex,
+    /// Handle one event from the OpenCode plugin, read as JSON from stdin in
+    /// Claude Code's hook shape: leases on edits, messages, the journal.
+    Opencode(ClaudeCodeArgs),
     /// Write the hook configuration into a host's settings file.
     Install(InstallArgs),
 }
@@ -132,6 +135,37 @@ pub struct HookInput {
     /// The session's JSONL transcript; its tail is the `Stop` summary.
     #[serde(default)]
     pub transcript_path: Option<PathBuf>,
+    /// The runtime the event comes from, set by the subcommand that read
+    /// it: Claude Code unless the OpenCode plugin sent it.
+    #[serde(skip)]
+    pub runtime: Option<&'static str>,
+    /// OpenCode's `Delivered` event: the messages whose context reached a
+    /// turn the model completed, handed back as the hook listed them.
+    #[serde(default)]
+    pub delivered: Vec<Delivered>,
+}
+
+/// Messages an OpenCode hook answer carried, acknowledged only when the
+/// plugin reports them delivered.
+#[derive(Deserialize, Serialize, Debug, Default, Clone, PartialEq)]
+pub struct Delivered {
+    pub agent: String,
+    pub messages: Vec<MessageId>,
+}
+
+impl HookInput {
+    pub fn runtime(&self) -> &'static str {
+        self.runtime.unwrap_or(RUNTIME)
+    }
+}
+
+/// The name a hook session registers under: `claude-<8>` or `opencode-<8>`.
+pub fn session_name_for(input: &HookInput) -> String {
+    let name = session_name(&input.session_id);
+    match input.runtime() {
+        "opencode" => name.replacen("claude-", "opencode-", 1),
+        _ => name,
+    }
 }
 
 pub async fn run(client: Client, args: HookArgs) -> Result<()> {
@@ -147,6 +181,68 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             Ok(())
         }
         HookCommand::Install(install) => install_hooks(&install),
+        HookCommand::Opencode(opts) => {
+            // The plugin runs this for each event and acts on its answer;
+            // failing open, as the Claude Code hook does, never blocks it.
+            let mut input = match read_event() {
+                Ok(input) => input,
+                Err(err) => {
+                    eprintln!("agentdocker hook opencode: {err:#}");
+                    return Ok(());
+                }
+            };
+            input.runtime = Some("opencode");
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+            if input.hook_event_name == "Delivered" {
+                // Only what reached a completed turn leaves the queue; a lost
+                // acknowledgement repeats a message, never loses one.
+                for delivered in &input.delivered {
+                    let _ = tokio::time::timeout_at(
+                        deadline,
+                        client.call_raw(&Request::AckInbox {
+                            agent: delivered.agent.clone(),
+                            messages: delivered.messages.clone(),
+                        }),
+                    )
+                    .await;
+                }
+                return Ok(());
+            }
+            let delivery = HookDelivery {
+                backend: &client,
+                pending: RefCell::new(Vec::new()),
+                channel_input: false,
+                channel_home: None,
+            };
+            let result = bounded_claude_code_at(&delivery, &input, &opts, deadline).await;
+            if let Err(err) = &result {
+                eprintln!(
+                    "agentdocker hook opencode ({}): {err:#}",
+                    input.hook_event_name
+                );
+            }
+            // Unlike Claude Code, printing is not delivery: the plugin still
+            // has to place the context in a turn. It reports back with a
+            // `Delivered` event once that turn completes.
+            let (output, delivered) = opencode_answer(result, delivery.pending.take());
+            // The session's agent, for the plugin's idle watch.
+            let agent = if matches!(input.hook_event_name.as_str(), "SessionStart" | "Stop") {
+                tokio::time::timeout_at(deadline, session_agent(&client, &input))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .flatten()
+                    .map(|agent| agent.id.to_string())
+            } else {
+                None
+            };
+            if output.is_some() || !delivered.is_empty() || agent.is_some() {
+                let mut output = output.unwrap_or_else(|| json!({}));
+                output["agentdocker"] = json!({ "agent": agent, "delivered": delivered });
+                println!("{output}");
+            }
+            Ok(())
+        }
         HookCommand::ClaudeCode(opts) => {
             // Fail open all the way down: an unreadable or malformed event is
             // reported on stderr and Claude Code carries on.
@@ -266,6 +362,48 @@ async fn report_hook_status<B: Backend>(
             .await?;
     }
     Ok(())
+}
+
+/// An OpenCode answer and the messages it carries. The inbox is read before
+/// the rest of an answer is built, so a hook that failed or timed out after
+/// that read can hold acknowledgements for text it never produced: those are
+/// dropped, and so is any list without text to carry it. Dropped messages
+/// stay queued and are offered again.
+fn opencode_answer(
+    result: Result<Option<Value>>,
+    pending: Vec<Request>,
+) -> (Option<Value>, Vec<Delivered>) {
+    let Ok(output) = result else {
+        return (None, Vec::new());
+    };
+    let carries_text = output.as_ref().is_some_and(|answer| {
+        [
+            &answer["hookSpecificOutput"]["additionalContext"],
+            &answer["reason"],
+        ]
+        .iter()
+        .any(|text| text.as_str().is_some_and(|text| !text.trim().is_empty()))
+    });
+    let delivered = if carries_text {
+        opencode_delivered(pending)
+    } else {
+        Vec::new()
+    };
+    (output, delivered)
+}
+
+/// The acknowledgements an answer held back, as the OpenCode plugin hands
+/// them to `Delivered` once they have reached a completed turn.
+fn opencode_delivered(pending: Vec<Request>) -> Vec<Delivered> {
+    pending
+        .into_iter()
+        .filter_map(|request| match request {
+            Request::AckInbox { agent, messages } if !messages.is_empty() => {
+                Some(Delivered { agent, messages })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Read inboxes without consuming them; acknowledge only after output is flushed.
@@ -831,7 +969,7 @@ async fn current_agent<B: Backend>(backend: &B, input: &HookInput) -> Result<Opt
     let reference = std::env::var("AGENTDOCKER_AGENT_ID")
         .ok()
         .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| session_name(&input.session_id));
+        .unwrap_or_else(|| session_name_for(input));
     match backend.call(Request::Inspect { agent: reference }).await? {
         Response::Agent { agent } if agent.status.is_live() => Ok(Some(agent)),
         _ => Ok(None),
@@ -906,8 +1044,16 @@ async fn found_by_pid<B: Backend>(
     // second session multiplexed into this process are each a different
     // agent, and ending one of those instead would be worse than ending
     // nothing.
-    let ours =
-        |agent: &AgentRecord| same_hook_session(agent, &input.session_id, pid, started, &here);
+    let ours = |agent: &AgentRecord| {
+        same_hook_session(
+            input.runtime(),
+            agent,
+            &input.session_id,
+            pid,
+            started,
+            &here,
+        )
+    };
     // The name is a hint, not proof. A session id prefix is eight
     // characters and a name outlives the session that chose it, so a
     // live record answering to it may be a different process entirely —
@@ -941,6 +1087,7 @@ async fn found_by_pid<B: Backend>(
 }
 
 fn same_hook_session(
+    runtime: &str,
     agent: &AgentRecord,
     session: &str,
     pid: u32,
@@ -950,7 +1097,7 @@ fn same_hook_session(
     agent.status.is_live()
         && agent.pid == Some(pid)
         && agent.process_started_at == Some(started)
-        && agent.spec.runtime == RUNTIME
+        && agent.spec.runtime == runtime
         && agent
             .spec
             .labels
@@ -981,6 +1128,7 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
                 let started = agentdocker_host::procinfo::start_time(pid)?;
                 let here = input.cwd.as_ref()?.canonicalize().ok()?;
                 Some(same_hook_session(
+                    input.runtime(),
                     &me,
                     &input.session_id,
                     pid,
@@ -1005,8 +1153,8 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
         labels.insert("source".to_owned(), source.clone());
     }
     let spec = AgentSpec {
-        name: session_name(&input.session_id),
-        runtime: RUNTIME.to_owned(),
+        name: session_name_for(input),
+        runtime: input.runtime().to_owned(),
         workdir: input.cwd.clone(),
         labels,
         ..AgentSpec::default()
@@ -1059,7 +1207,7 @@ async fn bind_start_session<B: Backend>(
     }) else {
         return Ok(me);
     };
-    if !same_hook_session(&me, &input.session_id, pid, started, &here) {
+    if !same_hook_session(input.runtime(), &me, &input.session_id, pid, started, &here) {
         return Ok(me);
     }
     let mut spec = me.spec.clone();
@@ -1075,7 +1223,14 @@ async fn bind_start_session<B: Backend>(
     {
         Response::Agent { agent }
             if agent.id == me.id
-                && same_hook_session(&agent, &input.session_id, pid, started, &here)
+                && same_hook_session(
+                    input.runtime(),
+                    &agent,
+                    &input.session_id,
+                    pid,
+                    started,
+                    &here,
+                )
                 && agent.spec.labels.get("session_id") == Some(&input.session_id) =>
         {
             Ok(agent)
@@ -1313,9 +1468,9 @@ fn deny_output(path: &Path, message: &str, details: Option<&Value>) -> Value {
         }
     }
     reason.push_str(
-        " Do not edit this file now. Message the holder with \
-         `agentdocker send --to <agent> \"...\"`, wait for the lease to expire, \
-         or work on something else.",
+        " Do not edit this file now. Message the holder with AgentDocker's \
+         `send_message` tool (`agentdocker send --to <agent> \"...\"` where that tool \
+         is not connected), wait for the lease to expire, or work on something else.",
     );
     json!({
         "hookSpecificOutput": {
@@ -1397,8 +1552,10 @@ fn orientation(me: &AgentRecord, agents: &[AgentRecord], inbox: &[Envelope]) -> 
     text.push_str(
         "Edits are leased automatically: if another agent holds a file, the edit is refused \
          with their name and note — coordinate instead of retrying. Talk to an agent with \
-         `agentdocker send --to <name> \"<text>\"`, or to everyone in this project with \
-         `--to project`; their replies are handed to you here as they arrive. \
+         AgentDocker's `send_message` tool, or to everyone in this project with the \
+         destination `project` (where that tool is not connected, \
+         `agentdocker send --to <name> \"<text>\"` or `--to project`); their replies are \
+         handed to you here as they arrive. \
          `agentdocker ps` and `agentdocker leases` show the current state.",
     );
     if !inbox.is_empty() {
@@ -1718,6 +1875,56 @@ mod tests {
             );
             assert_eq!(received["reply_destination"], reply);
         }
+    }
+
+    /// OpenCode answers hand their acknowledgements to the plugin instead of
+    /// taking them, and a `Delivered` event carries them back unchanged.
+    #[test]
+    fn opencode_answers_carry_acknowledgements_back_to_the_plugin() {
+        let ack = Request::AckInbox {
+            agent: "me".into(),
+            messages: vec![
+                MessageId::from("m1".to_owned()),
+                MessageId::from("m2".to_owned()),
+            ],
+        };
+        let empty = Request::AckInbox {
+            agent: "me".into(),
+            messages: Vec::new(),
+        };
+        let delivered = opencode_delivered(vec![ack, empty]);
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].messages.len(), 2);
+        let answer = json!({ "agentdocker": { "agent": "me", "delivered": delivered } });
+        let event: HookInput = serde_json::from_value(json!({
+            "hook_event_name": "Delivered",
+            "session_id": "s",
+            "delivered": answer["agentdocker"]["delivered"],
+        }))
+        .unwrap();
+        assert_eq!(event.delivered, delivered);
+        // A hook that failed after reading the inbox, or answered without
+        // text, carries nothing to acknowledge.
+        let held = || {
+            vec![Request::AckInbox {
+                agent: "me".into(),
+                messages: vec![MessageId::from("m1".to_owned())],
+            }]
+        };
+        let (output, delivered) = opencode_answer(Err(anyhow::anyhow!("timed out")), held());
+        assert!(output.is_none() && delivered.is_empty());
+        let (_, delivered) = opencode_answer(Ok(None), held());
+        assert!(delivered.is_empty());
+        let blank = json!({ "hookSpecificOutput": { "additionalContext": "  " } });
+        assert!(opencode_answer(Ok(Some(blank)), held()).1.is_empty());
+        let told = json!({ "hookSpecificOutput": { "additionalContext": "m1 says hi" } });
+        assert_eq!(opencode_answer(Ok(Some(told)), held()).1.len(), 1);
+        let woken = json!({ "decision": "block", "reason": "m1 says hi" });
+        assert_eq!(opencode_answer(Ok(Some(woken)), held()).1.len(), 1);
+        // Every other event leaves it empty.
+        let other: HookInput =
+            serde_json::from_value(json!({ "hook_event_name": "Stop" })).unwrap();
+        assert!(other.delivered.is_empty());
     }
 
     fn input(event: &str) -> HookInput {
@@ -2521,6 +2728,9 @@ mod tests {
             "{paths:?}"
         );
         assert!(!paths.iter().any(|p| p.ends_with("unrelated.py")));
+        ev.tool_input = Some(json!({ "command": "*** Update File: /tmp/project/space \n+x" }));
+        let paths = edited_paths(&ev);
+        assert!(paths[0].to_string_lossy().ends_with("space "), "{paths:?}");
 
         // Trailing spaces belong to a Unix file name, not the CRLF ending.
         ev.tool_input = Some(json!({
@@ -2656,6 +2866,11 @@ mod tests {
         assert!(text.contains("nowhere ("), "{text}");
         assert!(text.find("mate (").unwrap() < text.find("stranger (").unwrap());
         assert!(text.contains("`--to project`"), "{text}");
+        // The session's own MCP tool comes before the shell fallback.
+        assert!(
+            text.find("`send_message`").unwrap() < text.find("agentdocker send").unwrap(),
+            "{text}"
+        );
     }
 
     #[tokio::test]

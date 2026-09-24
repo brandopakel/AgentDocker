@@ -1,7 +1,7 @@
 # Native Windows delivery work
 
-Windows is an intended native platform. The Windows implementation is an incomplete port and
-is not a downloadable Windows product. It does not use WSL, a browser server or
+Windows is an intended native platform. The Windows implementation is an incomplete port,
+distributed as an unsigned portable preview. It does not use WSL, a browser server or
 a required container engine to substitute for native execution.
 
 The user confirmed native Windows, alongside macOS and Linux, for the **first
@@ -28,8 +28,9 @@ native window trial. On `cadf3d58`, 284 native tests and all 50 smoke steps
 passed on Windows Server 2025, including terminal lifecycle, database crash
 recovery and fresh-home desktop startup/capture. The full daemon/CLI test suites,
 physical input and broader GUI/provider acceptance, installer/update path and
-service remain open. Release workflows have no Windows target. A successful
-cross-compile alone is not runtime acceptance. Unix CI remains required.
+service acceptance remain open. Release workflows include a Windows portable
+prerelease target. A successful cross-compile alone is not runtime acceptance.
+Unix CI remains required.
 
 File observations on Windows track native read-only attributes and change
 metadata; Windows has no Unix executable permission bits. Captured Windows
@@ -48,7 +49,8 @@ extracting that ZIP outside the checkout into a path containing spaces and
 Unicode. This archive path passed its native run on `13e87591` (run 35666723079: 284
 native tests, 51/51 steps on the extracted bytes); it does not close Windows
 installer/update/rollback, services, clean-machine or actual-provider
-acceptance. The public tag workflow still has no Windows target. See
+acceptance. Prerelease tags publish the accepted portable Windows target separately
+from the macOS/Linux update feeds. See
 [distribution setup](DISTRIBUTION-SETUP.md#windows-portable-preview).
 
 ## Slice one: the daemon and the CLI answer
@@ -154,13 +156,15 @@ crash, and what that means for a person:
 - Live daemon reload and the descriptor handover (`daemon reload`): the
   daemon holds no descriptors a successor could inherit; stop and start it.
 - Container workspace transport and grants: the endpoint is a Unix socket.
-- The desktop installer (`desktop install`, updates, rollback) and the daemon
-  and connector services: `daemon install` and `uninstall` say there is no
-  service on Windows yet, a later slice. The subcommands that only speak to
-  a daemon still work there: `daemon start` starts one on demand for the
-  home, `stop` asks it to exit, `status` reports it (and that no service
-  exists), `vacuum` compacts its store, and `reload` carries the daemon's
-  own refusal.
+- The desktop installer (`desktop install`, updates, rollback) and connector
+  service remain unavailable. Daemon login startup is now implemented through
+  a limited per-user Task Scheduler task, with a private ownership receipt and
+  a bounded crash supervisor. `daemon install`, `uninstall`, `start`, `stop`,
+  `restart` and `status` handle that task; start/stop still operate on demand
+  when no task is installed. Real product lifecycle/provider-survival
+  acceptance remains separate from source tests and the isolated supervisor
+  prototype. See the [user commands](GUIDE.md) and
+  [service semantics](ARCHITECTURE.md#starting-the-daemon).
 - A validation command is ended on a timeout, but only the command itself:
   there is no process group and no Job Object around it yet, so whether its
   descendants survived is not reported.
@@ -356,6 +360,38 @@ Opening an external project terminal or focusing an external agent terminal is
 not implemented on Windows. Provider inventory, services and the desktop
 installer remain outside this slice.
 
+The opt-in `AGENTDOCKER_STARTUP_TRACE=1` diagnostics distinguish home security,
+database-file protection, SQLite connection, compatibility checks, WAL setup,
+schema creation, migrations, search indexes and state restoration. They emit
+only fixed stage labels, PID and elapsed time, and are silent by default.
+Extracted-package runs 35932937310 (OWNER RIGHTS home) and 35935871942 (ordinary
+fresh home) stopped after coordinator-lock readiness. The cause remains unknown;
+finer stages and later passes do not establish a fix or justify a longer timeout.
+Failed packages and original reports remain retained.
+
+A manual `windows.yml` dispatch can select `startup_samples` (0, 5, 10 or 20) to
+sample each ordinary and OWNER RIGHTS ancestry using distinct fresh homes on the
+same extracted package. It stops at the first failed assertion, preserves each
+home's bounded startup log and keeps the existing startup deadline. A passing
+series does not erase earlier failures. Ordinary CI and release runs keep zero
+additional samples unless explicitly selected.
+Additional-sample dispatches have a 100-minute fixture-step budget and a
+180-minute job budget to cover all bounded commands, output capture and cleanup;
+ordinary runs retain their 10-minute step and 60-minute job budgets. The daemon's
+ten-second readiness deadline is unchanged.
+
+The 40-sample native run on `0184e1d8` passed all 142 checks, with a slowest fresh
+start of 4.203 seconds and a schema phase of 2.991 seconds. An earlier traced
+fresh start spent 4.137 seconds in that phase. Initial schema creation now uses
+one transaction with the same `FULL` durability, avoiding a separate commit for
+each new table/index. A late-schema-error regression verifies rollback, retained
+existing data and successful initialization after repairing the fixture. A separate native
+run on `89400171` passed another 40 samples and all 142 checks: median startup
+188 ms, maximum 219 ms; median schema phase 39 ms, maximum 62 ms. The earlier
+run had median startup 375 ms and median schema phase 216.5 ms. These runs used
+different CI hosts and do not establish a fix for the historical ten-second
+failures.
+
 ## Local connection boundary
 
 The shared IPC layer uses Unix sockets on macOS/Linux and named pipes on
@@ -430,3 +466,14 @@ message both received correlated replies and automatic receipts. Claude required
 local-development channel consent again. The scheduled task was removed and no
 owned processes remained. This is bounded restart/reopen evidence, not reboot
 or multi-day acceptance.
+
+
+For intermittent first-start investigation, `AGENTDOCKER_STARTUP_TRACE=1` adds
+fixed startup-stage labels, the process ID and elapsed milliseconds to stderr,
+including stages before the normal logger starts. It emits no command arguments,
+environment values or state contents, and does not extend startup deadlines.
+The native acceptance driver enables it and retains a bounded 16 KiB log tail
+from every owned home before cleanup. Failed CI packages are retained separately
+as `windows-failed-package-diagnostics`, never as an accepted preview. The
+OWNER RIGHTS fresh-home timeout in run35821898700 remains an unresolved failure;
+added diagnostics and any later pass alone do not establish its cause or a fix.

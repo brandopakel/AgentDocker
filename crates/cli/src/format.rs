@@ -902,11 +902,24 @@ pub fn thousands(value: u64) -> String {
     out
 }
 
+/// A usage row's first column: the agent or project by name when it is
+/// still known, else its ID (history outlives the registry), and
+/// `(unattributed)` for usage no session could be matched to.
+fn usage_key(key: Option<&str>, names: &std::collections::HashMap<String, String>) -> String {
+    match key {
+        None => "(unattributed)".to_owned(),
+        Some(id) => names.get(id).cloned().unwrap_or_else(|| id.to_owned()),
+    }
+}
+
 /// The table of a usage report and, under it, what the totals cover:
 /// the range actually answered, retention, gaps, whether collection is
 /// on and where it stands, and the overhead — never zero when it is
 /// simply not measured.
-pub fn usage_report(report: &agentdocker_core::usage::report::Report) {
+pub fn usage_report(
+    report: &agentdocker_core::usage::report::Report,
+    names: &std::collections::HashMap<String, String>,
+) {
     use agentdocker_core::usage::report::{CollectionState, Group};
     let key = match report.by {
         Group::Agent => "AGENT",
@@ -931,9 +944,7 @@ pub fn usage_report(report: &agentdocker_core::usage::report::Report) {
             .iter()
             .map(|row| {
                 vec![
-                    row.key
-                        .clone()
-                        .unwrap_or_else(|| "(unattributed)".to_owned()),
+                    usage_key(row.key.as_deref(), names),
                     thousands(row.samples),
                     counter(&row.counters.input_tokens),
                     counter(&row.counters.cache_read_input_tokens),
@@ -990,6 +1001,17 @@ pub fn usage_report(report: &agentdocker_core::usage::report::Report) {
             "{} gap(s) in the sources: totals are lower bounds",
             report.coverage.source_gaps
         );
+    }
+    if let Some(tracking) = &report.coverage.tracking {
+        println!(
+            "Tracking: {} of {} bytes; SQLite files also contain indexes and other state",
+            tracking.logical_bytes, tracking.capacity_bytes
+        );
+        if tracking.capacity_gap {
+            println!(
+                "Tracking reached its storage limit: some records were not counted. Prior dedupe evidence was preserved; totals remain lower bounds."
+            );
+        }
     }
     let state = match collection.state {
         CollectionState::Unknown if off => "off".to_owned(),
@@ -1120,6 +1142,16 @@ mod tests {
         assert_eq!(super::thousands(999), "999");
         assert_eq!(super::thousands(1_000), "1,000");
         assert_eq!(super::thousands(10_000_000), "10,000,000");
+    }
+
+    /// Rows name the agent or project when it is known and keep the ID
+    /// when it is not.
+    #[test]
+    fn usage_rows_name_what_they_can() {
+        let names = [("abc123".to_owned(), "codex-96813".to_owned())].into();
+        assert_eq!(super::usage_key(Some("abc123"), &names), "codex-96813");
+        assert_eq!(super::usage_key(Some("gone"), &names), "gone");
+        assert_eq!(super::usage_key(None, &names), "(unattributed)");
     }
 
     #[test]

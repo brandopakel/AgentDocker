@@ -156,6 +156,25 @@ pub fn activated_daemon(executable: &Path) -> Option<PathBuf> {
     (resolved.starts_with(&versions) && !resolved.starts_with(&running)).then_some(resolved)
 }
 
+/// The `agentd` a client starts when no daemon answers. A client from a
+/// managed release that is no longer the activated one starts the activated
+/// release's daemon: an app left open across `desktop install` must not
+/// bring its own older daemon back once the old one stops. Otherwise the
+/// `agentd` beside the client, so a build in `target/` starts the matching
+/// daemon, else `agentd` on `PATH`.
+pub fn daemon_to_start(client: Option<&Path>) -> PathBuf {
+    let name = format!("agentd{}", std::env::consts::EXE_SUFFIX);
+    client
+        .and_then(|me| {
+            activated_daemon(me).or_else(|| {
+                me.parent()
+                    .map(|dir| dir.join(&name))
+                    .filter(|sibling| sibling.is_file())
+            })
+        })
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
 pub fn pin_path(root: &Path, id: &str) -> io::Result<PathBuf> {
     if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(io::Error::other("invalid desktop release identity"));
@@ -372,6 +391,10 @@ mod tests {
             None,
             "already the active release"
         );
+        // A client of the active release starts the daemon beside it.
+        let client = executable.with_file_name("agentdocker-ui");
+        std::fs::write(&client, "release a").unwrap();
+        assert_eq!(daemon_to_start(Some(&client)), running);
         // B activated: that is the reload target, resolved to its real path.
         let gen_b = generations.join("2");
         std::fs::create_dir_all(&gen_b).unwrap();
@@ -385,12 +408,25 @@ mod tests {
         };
         assert_eq!(
             activated_daemon(&running),
-            Some(std::fs::canonicalize(expected).unwrap())
+            Some(std::fs::canonicalize(&expected).unwrap())
+        );
+        // A client still open from release A starts B's daemon, not its own.
+        assert_eq!(
+            daemon_to_start(Some(&client)),
+            std::fs::canonicalize(&expected).unwrap()
         );
         // An unmanaged daemon has no activated release to speak of.
         let elsewhere = temp.path().join("agentd");
         std::fs::write(&elsewhere, "checkout build").unwrap();
         assert_eq!(activated_daemon(&elsewhere), None);
+        // An unmanaged client starts its sibling, and with none, `agentd`
+        // on PATH.
+        let checkout_client = temp.path().join("agentdocker");
+        assert_eq!(daemon_to_start(Some(&checkout_client)), elsewhere);
+        let lone = temp.path().join("lone").join("agentdocker");
+        let bare = PathBuf::from(format!("agentd{}", std::env::consts::EXE_SUFFIX));
+        assert_eq!(daemon_to_start(Some(&lone)), bare);
+        assert_eq!(daemon_to_start(None), bare);
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]

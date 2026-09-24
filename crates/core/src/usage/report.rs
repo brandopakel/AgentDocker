@@ -107,6 +107,17 @@ pub struct ReportCoverage {
     pub includes_current_hour: bool,
     pub source_gaps: u64,
     pub collection: Collection,
+    /// Absent on older daemons. Logical accounting bytes, not SQLite file size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracking: Option<Tracking>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tracking {
+    pub logical_bytes: u64,
+    pub capacity_bytes: u64,
+    /// This query's range overlaps records refused by tracking capacity.
+    pub capacity_gap: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

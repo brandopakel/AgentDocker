@@ -52,9 +52,22 @@ You do not start the daemon. The first client that needs it starts it, on
 `~/.agentdocker/agentd.sock`. To have it survive a reboot:
 
 ```sh
-agentdocker daemon install    # a launchd or systemd user service
+agentdocker daemon install    # launchd, systemd user unit, or Windows login task
 agentdocker daemon status     # what is running, and where
 ```
+
+On Windows, installation creates a Task Scheduler task for the current user
+and starts it immediately. It runs with limited privileges at login without
+storing a password; an interactive sign-in is required. `daemon start`, `stop`,
+`restart` and `uninstall` operate on that task. A supervisor retries a failed
+daemon up to three times with two seconds between attempts; a clean shutdown
+stays stopped. Ten minutes of continuous operation resets that retry budget.
+The task records the current CLI and daemon paths. After moving the portable
+folder or selecting another build, run `daemon install` from the new build.
+Keep the old folder until that succeeds. An ownership record in the daemon
+home prevents replacing or removing a task whose action or user was changed
+outside AgentDocker. `daemon install --dry-run` previews the task without
+registering it.
 
 Then bring in the agents already on the machine:
 
@@ -97,9 +110,14 @@ ChatGPT and a pairing code for the consent page, and each consent becomes a
 browser agent in the project chosen on that page (any folder on this machine)
 with the messaging tools and nothing that touches a checkout. `connector
 install` runs the same as a login service; `connector status` and the
-desktop's Tools screen show its address and pairing code; `--allow-from
-anthropic` and `--allow-from @<openai feed>` admit only the vendors' own
-addresses. [The remote connector](REMOTE-CONNECTOR.md) has the whole contract.
+desktop's Tools screen show its address and pairing code. On macOS and Linux,
+open a browser tool's **Details** and choose **Enable with Tailscale** or
+**Enable with Cloudflare** to install and start the connection at login. The
+first needs Funnel enabled; the second gives a new address after each restart.
+Setup preserves different existing service settings. Each browser account must
+still consent to its project connection. Desktop setup admits the vendors' own
+addresses through `--allow-from anthropic` and the automatically refreshed
+`--allow-from openai` feed. [The remote connector](REMOTE-CONNECTOR.md) has the whole contract.
 
 Everything respects `AGENTDOCKER_HOME`, so a throwaway daemon for
 experiments costs nothing:
@@ -185,7 +203,10 @@ The #194 candidate adds **Projects → Usage** and `agentdocker usage`. Check th
 Choose the last day, week or month and group reported tokens by agent, model,
 provider, project or hour. `~` marks a partial count; `—` means the source did
 not report that counter. These are token totals, not a bill. The report shows
-the available time range, gaps and whether collection has caught up.
+the available time range, gaps and whether collection has caught up. The CLI
+names each agent or project row (`codex-96813`, `AgentDocker`) while AgentDocker
+still knows it, and shows its ID once it is gone; `(unattributed)` is usage no
+session could be matched to.
 The MCP `usage` tool reads the same stored report and advertises that it is
 read-only; querying usage does not enable collection or change its settings.
 
@@ -206,6 +227,12 @@ without parent (`..`) path components; use a direct path rather than one that
 walks up to a parent. Invalid roots produce an explanatory query error. Empty
 arrays use the provider defaults. Turning collection off retains available
 totals. Increasing retention does not restore previously discarded history.
+Tracking metadata has a 256 MiB budget (database indexes and other state take
+additional space). When a new record cannot fit, the report says that the storage
+limit was reached and keeps totals partial. Earlier dedupe records are preserved
+so copied or replayed logs cannot count twice. Retention may free space, but the
+fixed tracking budget cannot currently be increased through configuration. Do not
+delete accounting tables to make space: doing so can invalidate deduplication.
 AgentDocker's own injected overhead remains **not measured** until that separate
 instrumentation is implemented.
 
@@ -419,7 +446,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
-| `connector serve` / `status` / `install` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
+| `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let an agent that works inside a browser join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
 
 ---
 
@@ -560,12 +587,14 @@ somebody checks that claim later. Evidence is kept whole.
 
 ### Planned daemon replacement
 
-`agentdocker daemon reload` currently returns `unavailable` and leaves the
-current daemon and agents running. The previous descriptor-only implementation
-killed real batch and PTY fixtures during runtime shutdown. Safe process and I/O
-transfer, successor readiness and upgrade-binary selection remain delivery
-blockers. Do not use ordinary daemon stop/start as a seamless upgrade: stopping
-terminates managed agents.
+`agentdocker daemon reload` requires `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` on the
+running daemon; without that gate it returns `unavailable` and leaves the daemon
+and agents running. The gated implementation transfers coordinator ownership to
+a checked successor while session owners retain managed processes and I/O.
+Broader actual-provider, attached-draft and uncertain-delivery acceptance remains
+open, so the gate stays experimental. See the
+[remaining acceptance work](REMAINING-WORK.md). Ordinary daemon stop/start is a
+separate operation: stopping terminates managed agents.
 
 ---
 
@@ -633,7 +662,10 @@ Newest first. Only what changes how the product is used.
   open-world), so a host that asks before risky calls lets the reads through.
 - `claude attach` (later shown as `claude agents`) is the terminal in front of
   a background Claude Code session, whose `bg-spare` process registers itself:
-  neither is discovered or adoptable as a second agent.
+  neither is discovered or adoptable as a second agent. A command run from
+  that session's tools (`agentdocker send`, `ask`, `pause`…) is still that
+  session's: the CLI finds its `bg-spare` ancestor and sends as its agent, not
+  as you.
 - `agentdocker setup --shell` makes every terminal `claude` carry the channel
   flag so AgentDocker can wake it; the Claude Code card in Tools offers it as
   **Wake terminal sessions**, and the MCP server now reads the flag from its

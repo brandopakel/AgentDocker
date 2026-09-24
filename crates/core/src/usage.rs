@@ -379,9 +379,117 @@ impl Range {
     }
 }
 
+/// Which registration of one provider session a sample produced at `at`
+/// belongs to. A session resumed after its agent ended registers again
+/// under a new agent with the same session ID, so one session can have
+/// several registrations, each given as `(key, created_at)`. The sample is
+/// the one current at `at`: the latest registered at or before it, or the
+/// first when the sample predates them all (a transcript begins before
+/// its session registers). Two registrations created at the same moment
+/// cannot be told apart, and neither is chosen.
+pub fn registration_at<K: Clone>(
+    registrations: &[(K, DateTime<Utc>)],
+    at: DateTime<Utc>,
+) -> Option<K> {
+    let current = registrations
+        .iter()
+        .filter(|(_, created)| *created <= at)
+        .map(|(_, created)| *created)
+        .max()
+        .or_else(|| registrations.iter().map(|(_, created)| *created).min())?;
+    let mut chosen = registrations
+        .iter()
+        .filter(|(_, created)| *created == current);
+    let (key, _) = chosen.next()?;
+    chosen.next().is_none().then(|| key.clone())
+}
+
+/// The same choice as [`registration_at`], as the span of sample times
+/// each registration owns: `[from, until)`, open-ended where `None`. The
+/// first registration also owns everything before it; registrations
+/// created at the same moment own nothing.
+pub type Window<K> = (K, Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+
+pub fn registration_windows<K: Clone>(registrations: &[(K, DateTime<Utc>)]) -> Vec<Window<K>> {
+    let mut times: Vec<_> = registrations.iter().map(|(_, created)| *created).collect();
+    times.sort();
+    times.dedup();
+    times
+        .iter()
+        .enumerate()
+        .filter_map(|(i, time)| {
+            let mut owners = registrations.iter().filter(|(_, created)| created == time);
+            let (key, _) = owners.next()?;
+            owners.next().is_none().then(|| {
+                let from = (i > 0).then_some(*time);
+                (key.clone(), from, times.get(i + 1).copied())
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sample_belongs_to_the_registration_current_when_it_was_made() {
+        let first = at("2026-09-21T10:00:00Z");
+        let resumed = at("2026-09-22T09:00:00Z");
+        let both = [("ended", first), ("resumed", resumed)];
+        assert_eq!(registration_at(&[("only", first)], resumed), Some("only"));
+        assert_eq!(
+            registration_at(&both, at("2026-09-21T12:00:00Z")),
+            Some("ended")
+        );
+        assert_eq!(registration_at(&both, resumed), Some("resumed"));
+        assert_eq!(
+            registration_at(&both, at("2026-09-23T01:00:00Z")),
+            Some("resumed")
+        );
+        // Before any registration: the session's first one.
+        assert_eq!(
+            registration_at(&both, at("2026-09-20T00:00:00Z")),
+            Some("ended")
+        );
+        // Order does not matter.
+        let reversed = [("resumed", resumed), ("ended", first)];
+        assert_eq!(
+            registration_at(&reversed, at("2026-09-21T12:00:00Z")),
+            Some("ended")
+        );
+        // Indistinguishable registrations, and none at all, choose nobody.
+        let twins = [("a", first), ("b", first)];
+        assert_eq!(registration_at(&twins, at("2026-09-21T12:00:00Z")), None);
+        assert_eq!(registration_at::<&str>(&[], resumed), None);
+    }
+
+    /// Windows agree with the per-sample choice at every boundary.
+    #[test]
+    fn registration_windows_partition_time_as_registration_at_does() {
+        let t = |h: u32| at(&format!("2026-09-22T{h:02}:00:00Z"));
+        let registrations = [("c", t(9)), ("a", t(1)), ("x", t(5)), ("y", t(5))];
+        let windows = registration_windows(&registrations);
+        assert_eq!(
+            windows,
+            vec![("a", None, Some(t(5))), ("c", Some(t(9)), None)]
+        );
+        for hour in 0..12 {
+            let owner = windows
+                .iter()
+                .find(|(_, from, until)| {
+                    from.is_none_or(|f| f <= t(hour)) && until.is_none_or(|u| t(hour) < u)
+                })
+                .map(|(key, ..)| *key);
+            assert_eq!(
+                owner,
+                registration_at(&registrations, t(hour)),
+                "hour {hour}"
+            );
+        }
+        assert!(registration_windows::<&str>(&[]).is_empty());
+    }
+
     fn at(s: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
     }

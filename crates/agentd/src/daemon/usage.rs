@@ -72,13 +72,10 @@ fn retained(now: DateTime<Utc>, config: &UsageConfig) -> DateTime<Utc> {
 impl Daemon {
     fn reconcile_usage(&self, config: &UsageConfig) {
         let mut state = lock(&self.state);
-        let mut sessions: BTreeMap<(String, String), HashSet<AgentId>> = BTreeMap::new();
+        let mut sessions: BTreeMap<(String, String), ()> = BTreeMap::new();
         for record in state.registry.all() {
             if let Some(session) = record.spec.labels.get("session_id") {
-                sessions
-                    .entry((record.spec.runtime.clone(), session.clone()))
-                    .or_default()
-                    .insert(state.registry.canonical_id(&record.id).clone());
+                sessions.insert((record.spec.runtime.clone(), session.clone()), ());
             }
         }
         // One bounded reconciliation page, selected by a persisted rotating
@@ -88,41 +85,44 @@ impl Daemon {
         }) else {
             return;
         };
-        let mut entries: Vec<_> = sessions.into_iter().collect();
+        let mut entries: Vec<_> = sessions.into_keys().collect();
         if let Some(after) = after {
-            let split = entries.partition_point(|(key, _)| key <= &after);
+            let split = entries.partition_point(|key| key <= &after);
             entries.rotate_left(split);
         }
-        for ((runtime, session), ids) in entries.into_iter().take(8) {
-            let mut event = None;
-            let seq = state.next_seq;
-            let attribution = if ids.len() == 1 {
-                let id = ids.into_iter().next().unwrap();
-                state.registry.get(&id).map(|a| UsageAttribution {
-                    agent: Some(id.to_string()),
-                    project: a.project.as_ref().map(|p| p.id().to_string()),
-                })
+        for (runtime, session) in entries.into_iter().take(8) {
+            // A session resumed under a new agent has several registrations;
+            // each takes the samples made while it was the current one.
+            let windows = usage::registration_windows(&registrations(&state, &runtime, &session));
+            // With nobody to attribute to, the cursor still advances.
+            let windows = if windows.is_empty() {
+                vec![(UsageAttribution::default(), None, None)]
             } else {
-                None
+                windows
             };
-            let now = Utc::now();
-            let result = state.persist("usage attribution", |store| {
-                event = store.usage_reconcile(
-                    &runtime,
-                    &session,
-                    attribution.as_ref(),
-                    retained(now, config),
-                    now,
-                    seq,
-                )?;
-                Ok(())
-            });
-            if result != Persisted::Committed {
-                return;
-            }
-            if let Some(event) = event {
-                state.next_seq += 1;
-                let _ = state.events.send(event);
+            for (attribution, from, until) in windows {
+                let mut event = None;
+                let seq = state.next_seq;
+                let now = Utc::now();
+                let result = state.persist("usage attribution", |store| {
+                    event = store.usage_reconcile(
+                        &runtime,
+                        &session,
+                        Some(&attribution),
+                        (from, until),
+                        retained(now, config),
+                        now,
+                        seq,
+                    )?;
+                    Ok(())
+                });
+                if result != Persisted::Committed {
+                    return;
+                }
+                if let Some(event) = event {
+                    state.next_seq += 1;
+                    let _ = state.events.send(event);
+                }
             }
         }
     }
@@ -254,28 +254,11 @@ impl Daemon {
             .samples
             .iter()
             .map(|sample| {
-                let matches: HashSet<_> = state
-                    .registry
-                    .all()
-                    .filter(|a| {
-                        a.spec.runtime == sample.runtime
-                            && a.spec.labels.get("session_id") == Some(&sample.session_id)
-                    })
-                    .map(|a| state.registry.canonical_id(&a.id).clone())
-                    .collect();
-                let attribution = if matches.len() == 1 {
-                    let id = matches.into_iter().next().unwrap();
-                    state
-                        .registry
-                        .get(&id)
-                        .map(|a| UsageAttribution {
-                            agent: Some(id.to_string()),
-                            project: a.project.as_ref().map(|p| p.id().to_string()),
-                        })
-                        .unwrap_or_default()
-                } else {
-                    UsageAttribution::default()
-                };
+                let attribution = usage::registration_at(
+                    &registrations(&state, &sample.runtime, &sample.session_id),
+                    sample.at,
+                )
+                .unwrap_or_default();
                 (sample.clone(), attribution)
             })
             .collect();
@@ -438,8 +421,10 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                     .collect(),
                 formats: vec![
                     "codex-rollout-0.153.4-0.154.0-v1".into(),
+                    "codex-rollout-0.155.1-v1".into(),
                     "claude-transcript-2.1.268-270-v1".into(),
                     "claude-transcript-2.1.271-276-v1".into(),
+                    "claude-transcript-2.1.277-278-280-v1".into(),
                 ],
             },
             ..Collection::default()
@@ -567,7 +552,10 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                 }
             };
         let (mut session, mut previous_offset) = match prepare(previous) {
-            Ok(session) => (session, previous.map_or(0, reader::Cursor::offset)),
+            Ok(session) => {
+                let offset = session.offset();
+                (session, offset)
+            }
             Err(_) => {
                 let gap_key = format!("generation:{generation}:{key}");
                 if !snapshot(
@@ -591,7 +579,14 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                 (session, 0)
             }
         };
-        let mut budget = reader::Budget::default();
+        // Parsing is off-lock, but samples, gaps and the cursor commit together
+        // under the coordination mutex. A full 4,096-record reader batch can
+        // exceed the entire hook deadline on small hosts; keep these writes
+        // short and yield between them without dropping or skipping records.
+        let mut budget = reader::Budget {
+            records: 128,
+            ..reader::Budget::default()
+        };
         loop {
             let batch = match session.scan(&source.path, budget) {
                 Ok(batch) if session.validate(&source.path, &batch.cursor).is_ok() => batch,
@@ -682,6 +677,38 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
         collection.completed_at = Some(Utc::now());
     }
     let _ = checkpoint(weak, &collection, &[], Change::Complete);
+}
+
+/// Every registration of one provider session: the agents (by canonical
+/// ID) whose `session_id` label names it, each with when it was first
+/// registered, as the attribution its samples would take.
+fn registrations(
+    state: &State,
+    runtime: &str,
+    session: &str,
+) -> Vec<(UsageAttribution, DateTime<Utc>)> {
+    let mut first: BTreeMap<AgentId, DateTime<Utc>> = BTreeMap::new();
+    for record in state.registry.all().filter(|a| {
+        a.spec.runtime == runtime
+            && a.spec.labels.get("session_id").map(String::as_str) == Some(session)
+    }) {
+        let id = state.registry.canonical_id(&record.id).clone();
+        let created = first.entry(id).or_insert(record.created_at);
+        *created = (*created).min(record.created_at);
+    }
+    first
+        .into_iter()
+        .filter_map(|(id, created)| {
+            let agent = state.registry.get(&id)?;
+            Some((
+                UsageAttribution {
+                    agent: Some(id.to_string()),
+                    project: agent.project.as_ref().map(|p| p.id().to_string()),
+                },
+                created,
+            ))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -862,6 +889,58 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_parser_upgrade_replays_skipped_patch_records_without_recounting() {
+        let (temp, daemon, config, root) = fixture();
+        let path = root.join("session.jsonl");
+        let first = record("first", 11);
+        std::fs::write(&path, &first).unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(query(&daemon).await.rows[0].samples, 1);
+        let newer = record("newer", 7).replace("2.1.270", "2.1.280");
+        std::fs::write(&path, format!("{first}{newer}")).unwrap();
+        // A v3 collector reached EOF but skipped the then-unsupported patch.
+        // Preserve the accepted first response while restoring that old cursor.
+        let scanned = reader::scan(
+            &path,
+            reader::Runtime::Claude,
+            None,
+            reader::Budget::default(),
+        )
+        .unwrap();
+        let mut old_cursor = serde_json::to_value(scanned.cursor).unwrap();
+        old_cursor["version"] = serde_json::json!(3);
+        drop(daemon);
+        let conn = crate::sqlite_fixture::open(temp.path().join("state.db")).unwrap();
+        let saved: String = conn
+            .query_row("SELECT json FROM usage_files", [], |row| row.get(0))
+            .unwrap();
+        let mut progress: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        progress["cursor"] = old_cursor;
+        conn.execute("UPDATE usage_files SET json=?1", [progress.to_string()])
+            .unwrap();
+        drop(conn);
+        let daemon =
+            Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+        for _ in 0..2 {
+            collect_generation(&Arc::downgrade(&daemon), &config);
+            let report = query(&daemon).await;
+            assert_eq!(report.rows[0].samples, 2);
+            assert_eq!(report.rows[0].counters.input_tokens.sum, Some(18));
+            assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+            assert_eq!(report.coverage.source_gaps, 0);
+            assert!(
+                report
+                    .coverage
+                    .collection
+                    .scope
+                    .formats
+                    .iter()
+                    .any(|format| { format == "claude-transcript-2.1.277-278-280-v1" })
+            );
         }
     }
 
@@ -1057,6 +1136,36 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn short_accounting_transactions_resume_exactly_after_reopen() {
+        let (temp, daemon, config, root) = fixture();
+        let source: String = (0..300)
+            .map(|n| record(&format!("message-{n}"), 2))
+            .collect();
+        std::fs::write(root.join("source.jsonl"), source).unwrap();
+        // One discovery page followed by one short accounting transaction.
+        collect_generation_bounded(&Arc::downgrade(&daemon), &config, 2);
+        let first = query(&daemon).await;
+        assert_eq!(first.coverage.collection.state, CollectionState::Scanning);
+        assert_eq!(first.coverage.collection.pending_files, Some(1));
+        assert_eq!(first.rows[0].samples, 128);
+        assert_eq!(first.rows[0].counters.input_tokens.sum, Some(256));
+        drop(daemon);
+        let daemon =
+            Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let resumed = query(&daemon).await;
+        assert_eq!(resumed.coverage.collection.discovery_generation, Some(1));
+        assert_eq!(resumed.coverage.collection.state, CollectionState::CaughtUp);
+        assert_eq!(resumed.rows[0].samples, 300);
+        assert_eq!(resumed.rows[0].counters.input_tokens.sum, Some(600));
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let replay = query(&daemon).await;
+        assert_eq!(replay.coverage.collection.discovery_generation, Some(2));
+        assert_eq!(replay.rows[0].samples, 300);
+        assert_eq!(replay.rows[0].counters.input_tokens.sum, Some(600));
     }
 
     #[tokio::test]
