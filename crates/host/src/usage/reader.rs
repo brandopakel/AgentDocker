@@ -21,7 +21,7 @@ pub use session::{Preparation, Session};
 const MAX_BATCH: u64 = 16 * 1024 * 1024;
 // Revisit prior unsupported Claude patch versions and old quarantine decisions.
 // The collector replays an older cursor with source-ID deduplication.
-const CURSOR_VERSION: u32 = 4;
+const CURSOR_VERSION: u32 = 5;
 const MAX_RECORD: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 4096;
 const PREFIX_DEADLINE: Duration = Duration::from_secs(1);

@@ -206,7 +206,16 @@ pub fn claude(record: &Value) -> Result<Option<Sample>, String> {
     if !matches!(
         record["version"].as_str(),
         Some(
-            "2.1.268"
+            "2.1.246"
+                | "2.1.247"
+                | "2.1.248"
+                | "2.1.251"
+                | "2.1.259"
+                | "2.1.260"
+                | "2.1.261"
+                | "2.1.263"
+                | "2.1.267"
+                | "2.1.268"
                 | "2.1.270"
                 | "2.1.271"
                 | "2.1.272"
@@ -267,6 +276,38 @@ pub fn claude(record: &Value) -> Result<Option<Sample>, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn observed_historical_claude_patches_preserve_accounting_identity_and_totals() {
+        // Only numeric accounting fields from observed records are retained;
+        // session/message/model/timestamp values are synthetic. Nested cache
+        // details remain descriptive, not an additional contribution.
+        let records = include_str!("usage/fixtures/claude-historical-patches.jsonl");
+        let expected = [
+            [41258, 0, 41256, 399, 133],
+            [40828, 0, 40826, 470, 140],
+            [34446, 0, 34444, 146, 0],
+            [34446, 0, 34444, 146, 0],
+            [39286, 26354, 12930, 572, 169],
+            [40240, 26445, 13793, 354, 120],
+            [41795, 26445, 15348, 509, 346],
+            [692513, 26443, 666068, 2299, 1607],
+            [17415, 0, 17413, 4, 0],
+        ];
+        assert_eq!(records.lines().count(), expected.len());
+        for (line, counters) in records.lines().zip(expected) {
+            let mut record: Value = serde_json::from_str(line).unwrap();
+            let parsed = claude(&record).unwrap().unwrap();
+            assert_eq!(parsed.counters.values(), counters.map(Some));
+            record["version"] = json!("2.1.268");
+            assert_eq!(claude(&record).unwrap().unwrap(), parsed);
+            record["version"] = json!("2.1.249");
+            assert!(
+                claude(&record).is_err(),
+                "unobserved versions remain unknown"
+            );
+        }
+    }
 
     #[test]
     fn observed_claude_patch_records_keep_top_level_accounting_authoritative() {

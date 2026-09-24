@@ -425,6 +425,7 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                     "claude-transcript-2.1.268-270-v1".into(),
                     "claude-transcript-2.1.271-276-v1".into(),
                     "claude-transcript-2.1.277-278-280-v1".into(),
+                    "claude-transcript-2.1.246-247-248-251-259-260-261-263-267-v1".into(),
                 ],
             },
             ..Collection::default()
@@ -894,53 +895,66 @@ mod tests {
 
     #[tokio::test]
     async fn usage_parser_upgrade_replays_skipped_patch_records_without_recounting() {
-        let (temp, daemon, config, root) = fixture();
-        let path = root.join("session.jsonl");
-        let first = record("first", 11);
-        std::fs::write(&path, &first).unwrap();
-        collect_generation(&Arc::downgrade(&daemon), &config);
-        assert_eq!(query(&daemon).await.rows[0].samples, 1);
-        let newer = record("newer", 7).replace("2.1.270", "2.1.280");
-        std::fs::write(&path, format!("{first}{newer}")).unwrap();
-        // A v3 collector reached EOF but skipped the then-unsupported patch.
-        // Preserve the accepted first response while restoring that old cursor.
-        let scanned = reader::scan(
-            &path,
-            reader::Runtime::Claude,
-            None,
-            reader::Budget::default(),
-        )
-        .unwrap();
-        let mut old_cursor = serde_json::to_value(scanned.cursor).unwrap();
-        old_cursor["version"] = serde_json::json!(3);
-        drop(daemon);
-        let conn = crate::sqlite_fixture::open(temp.path().join("state.db")).unwrap();
-        let saved: String = conn
-            .query_row("SELECT json FROM usage_files", [], |row| row.get(0))
-            .unwrap();
-        let mut progress: serde_json::Value = serde_json::from_str(&saved).unwrap();
-        progress["cursor"] = old_cursor;
-        conn.execute("UPDATE usage_files SET json=?1", [progress.to_string()])
-            .unwrap();
-        drop(conn);
-        let daemon =
-            Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
-        for _ in 0..2 {
+        for (version, patch) in [(3, "2.1.280"), (4, "2.1.263")] {
+            let (temp, daemon, config, root) = fixture();
+            let path = root.join("session.jsonl");
+            let first = record("first", 11);
+            std::fs::write(&path, &first).unwrap();
             collect_generation(&Arc::downgrade(&daemon), &config);
-            let report = query(&daemon).await;
-            assert_eq!(report.rows[0].samples, 2);
-            assert_eq!(report.rows[0].counters.input_tokens.sum, Some(18));
-            assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
-            assert_eq!(report.coverage.source_gaps, 0);
-            assert!(
-                report
-                    .coverage
-                    .collection
-                    .scope
-                    .formats
-                    .iter()
-                    .any(|format| { format == "claude-transcript-2.1.277-278-280-v1" })
-            );
+            assert_eq!(query(&daemon).await.rows[0].samples, 1);
+            let newer = record("newer", 7).replace("2.1.270", patch);
+            std::fs::write(&path, format!("{first}{newer}")).unwrap();
+            // An older collector reached EOF but skipped a then-unsupported patch.
+            // Preserve the accepted first response while restoring that old cursor.
+            let scanned = reader::scan(
+                &path,
+                reader::Runtime::Claude,
+                None,
+                reader::Budget::default(),
+            )
+            .unwrap();
+            let mut old_cursor = serde_json::to_value(scanned.cursor).unwrap();
+            old_cursor["version"] = serde_json::json!(version);
+            drop(daemon);
+            let conn = crate::sqlite_fixture::open(temp.path().join("state.db")).unwrap();
+            let saved: String = conn
+                .query_row("SELECT json FROM usage_files", [], |row| row.get(0))
+                .unwrap();
+            let mut progress: serde_json::Value = serde_json::from_str(&saved).unwrap();
+            progress["cursor"] = old_cursor;
+            conn.execute("UPDATE usage_files SET json=?1", [progress.to_string()])
+                .unwrap();
+            drop(conn);
+            let daemon =
+                Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+            for _ in 0..2 {
+                collect_generation(&Arc::downgrade(&daemon), &config);
+                let report = query(&daemon).await;
+                assert_eq!(report.rows[0].samples, 2);
+                assert_eq!(report.rows[0].counters.input_tokens.sum, Some(18));
+                assert_eq!(report.coverage.collection.state, CollectionState::CaughtUp);
+                assert_eq!(report.coverage.source_gaps, 0);
+                assert!(
+                    report
+                        .coverage
+                        .collection
+                        .scope
+                        .formats
+                        .iter()
+                        .any(|format| { format == "claude-transcript-2.1.277-278-280-v1" })
+                );
+                assert!(
+                    report
+                        .coverage
+                        .collection
+                        .scope
+                        .formats
+                        .iter()
+                        .any(|format| {
+                            format == "claude-transcript-2.1.246-247-248-251-259-260-261-263-267-v1"
+                        })
+                );
+            }
         }
     }
 
