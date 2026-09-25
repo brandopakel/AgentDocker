@@ -950,6 +950,15 @@ nothing about the recipient. CLI send prints only the message ID on stdout;
 the acceptance notice goes to stderr. Topics and empty broadcasts may have no
 queued recipient.
 
+Managed Codex MCP identity checks locate the nearest Codex binary, including
+the app-server role hidden from ordinary runtime inventory. The existing exact
+managed role, controller ancestry, kernel birth and physical working-directory
+checks still authorize that identity; a nested Codex is never skipped to reuse
+an outer session. The launch-specific configuration marks each enabled local
+AgentDocker MCP entry as required, while preserving disabled entries and tool
+approval policy. A failed local connection must not be treated as a verified
+reply route through a different account connector.
+
 Successful sends also return optional `recipient_readiness`: the number of exact
 durable recipients, the number needing attention, and at most 32 named details.
 The snapshot is computed after the same message transaction commits, excluding

@@ -435,13 +435,30 @@ Codex and an owned raw PTY, followed by terminal, human and peer queue receipts.
 The provider profile, authentication, hooks, trust and approval policy are
 inherited. No profile is rewritten. The session's AgentDocker MCP entry is bound
 explicitly to the matching CLI, managed identity and daemon socket through leaf
-configuration overrides. Other MCP settings, approval modes and disabled entries
-remain unchanged. This is required because Codex filters the MCP environment;
+configuration overrides. Each enabled local AgentDocker MCP entry is required
+for this launch, so a startup failure cannot silently leave queued peer replies
+without their bound tool. Other MCP settings, approval modes and explicitly
+disabled entries remain unchanged. Managed identity lookup includes the nearest
+Codex app-server process even though inventory hides that helper; the exact
+managed role, controller ancestry, kernel birth and physical working-directory
+checks still decide whether the MCP server belongs to the session. This is required because Codex filters the MCP environment;
 plain inheritance sent early trial tools to the wrong daemon. `-c`/`--config`, `--enable`,
 `--disable` and `--strict-config` are preserved; `-m`/`--model` has an exact config
 equivalent. Other arguments, including initial prompts, are refused rather than
 dropped. Send the first prompt through AgentDocker. Provider restart remains the
 launch's existing explicit restart policy (`--restart on-failure:2`, for example).
+
+Clean `b334cc70` passed actual Codex 0.155.1 local MCP startup on macOS ARM64
+and independent Ubuntu x86_64 with empty private profiles and no model prompts.
+A private Mac MCP timeout caused `thread/start` to refuse and delivery to pause.
+The same runtime then passed a 49-second Oracle actual-model project pause/resume
+trial: two recipients (one in a real sleep command, one idle), exact lifecycle
+receipts, replies in the original project conversation and preserved threads.
+Local MCP contact was verified before model prompts; cloud apps were disabled
+only for that test launch, with saved configuration and approvals unchanged.
+The earlier hosted beta.3 MCP rejection and misplaced test replies remain in the
+[verification index](verification/INDEX.md); this does not complete the broader
+provider, account-limit, physical or sustained acceptance matrix.
 
 ## Delivery and recovery
 
