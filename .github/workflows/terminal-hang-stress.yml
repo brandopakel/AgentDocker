@@ -1,0 +1,40 @@
+# Temporary: never merged. Repeats the macOS terminal writer-failure fixture
+# until its hang watchdog prints thread stacks or the duration ends.
+name: terminal-hang-stress
+on:
+  push:
+    branches: [claude/terminal-hang-stress]
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+jobs:
+  stress:
+    name: stress (${{ matrix.lane }}, load=${{ matrix.load }})
+    runs-on: macos-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [a, b]
+        load: [none, cpu]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master; stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo install --locked cargo-nextest --version 0.9.143
+      - run: cargo nextest run --locked -p agentdocker-ui --no-run
+      - name: Stress
+        run: |
+          sw_vers; uname -a; sysctl -n hw.ncpu
+          if [ "${{ matrix.load }}" = cpu ]; then
+            for i in $(seq "$(sysctl -n hw.ncpu)"); do (yes > /dev/null &) ; done
+          fi
+          cargo nextest run --locked -p agentdocker-ui \
+            -E 'test(/^terminal::tests::(writer_failure|terminal_closure_without|terminal_end_joins)/)' \
+            --stress-duration 45m 2>&1 | grep -v -E '^\s*PASS' | tail -n 4000
