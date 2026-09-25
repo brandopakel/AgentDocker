@@ -496,6 +496,19 @@ selects this route even when command metadata is present. Private ledger version
 network review kind; versions through 8 cannot supply it. Command records cannot carry choice presentations, and optional network command/directory metadata cannot inject display controls into the review. This adds no daemon
 request, event or presentation variant; existing question/receipt ordering applies.
 
+Local `writeStdin` command-approval callbacks use a separate private review kind
+and existing `choices` controls. The complete shell-quoted `write_stdin` argument
+vector is decoded without execution and displayed as terminal session, command
+item, launch directory and escaped exact input, with the reason and concrete
+retained permissions. Callback/item identity, local environment, bounded complete
+input and the provider's one-time/negative decisions are checked before publishing
+the question. Network context cannot be mixed into this route. Only exact human
+`Allow` sends `accept`; other answers send the retained negative decision. Private
+ledger version 11 gates this meaning in both open and closed history. Existing
+question events, exact answer correlation and no-replay uncertainty rules apply;
+there is no daemon schema or presentation-variant change.
+
+
 ## Process supervision
 
 `run` defaults to closed stdin and captured stdout/stderr; `--tty` instead supplies a controlling terminal with attach input/output. Pipe log lines carry timestamps and stream tags; terminal log lines carry an `out` tag and retain line boundaries. The child inherits the daemon's environment plus `spec.env`. It is deliberately *not* given the CLI caller's environment, so secrets don't silently travel through the registry; pass what the agent needs with `-e`. On daemon shutdown every managed agent receives SIGTERM. Exit persistence may finish before its session owner receives acknowledgement and releases its lock. Shutdown therefore waits for held owner locks within the same eight-second shutdown budget and repeats the non-recursive cleanup sweep. A held lock or unacknowledged exit report remains protected when the budget expires.
@@ -1311,8 +1324,8 @@ new bounded suffix and generation before committing; a restart discards the
 proof and rehashes the saved prefix. An appended generation of the same file may
 retain parser state only after all accepted prefix bytes match. Rewrites,
 replacement, truncation or a changing snapshot keep coverage incomplete and
-require an explicit gap/replay. A version-3 parser cursor first verifies its old
-prefix, then replays from zero using version 4 without inventing a source-change
+require an explicit gap/replay. A version-3 or version-4 parser cursor first verifies its old
+prefix, then replays from zero using version 5 without inventing a source-change
 gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
 Collector parsing batches stop after 128 complete source records, including
@@ -1374,7 +1387,12 @@ Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278 and
 coverage. Top-level Claude counters remain authoritative: nested iteration/cache
 details are not added again, zero counters stay zero and absent reasoning remains
 unknown. Codex still reports cumulative snapshots. Unobserved patch versions are
-not assumed compatible. Parser cursor v4 replays prior scans with the same stable
+not assumed compatible. Accounting-only observations also cover historical Claude
+2.1.246, 2.1.247, 2.1.248, 2.1.251, 2.1.259, 2.1.260, 2.1.261, 2.1.263 and
+2.1.267. These are explicit supported patches, not an accepted version range.
+Their response semantics and sample format identity match the existing family;
+nested cache details do not contribute a second time. Parser cursor v5 verifies
+and replays v3/v4 scans with the same stable
 source identities, allowing newly supported records to be collected without
 recounting earlier accepted samples. Existing historical gaps remain visible;
 this change does not claim their reconciliation or provider-billing accuracy.
@@ -1605,7 +1623,7 @@ and peer input. After the starting input is received, another queued message may
 enter its owned turn through `turn/steer(expectedTurnId)`. A separate durable
 steering attempt holds the exact input and receipt; the starting attempt remains
 the turn and MCP-answer ownership anchor. Acknowledged steering receipts rotate
-through the existing bounded completed history. The bridge ledger is version 10;
+through the existing bounded completed history. Active-turn steering was introduced in bridge ledger version 10;
 this does not change the daemon wire protocol or SQLite schema. Uncertain
 submissions require exact history reconciliation, not retry. A definite provider
 active-turn precondition refusal alone permits a later ordinary submission.
