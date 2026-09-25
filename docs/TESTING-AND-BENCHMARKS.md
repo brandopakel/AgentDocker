@@ -24,6 +24,13 @@ Bencher reporting is configured privately for this project, and verified main be
 
 Every PR runs formatting, strict Clippy, unit/integration tests and installer/package checks. New tests target: no overlapping exclusive physical leases; no post-cancellation/exit acquisition; stopping writers retain protection; durable effects have correct event ordering; checksum failure preserves installation; observed stale input requires reread; accepted recovery survives restart; source or image changes invalidate matching validation evidence. Exercise crash points before/after SQLite commits, full/slow output pipes, lost watchers, expired/revoked credentials and engine unavailability using test-owned processes and fixtures.
 
+The terminal writer-failure regression prints test-only phase markers around
+socket setup, injected write failure, reader completion and cleanup/join. Retain
+its failed nextest output and JUnit if the intermittent macOS timeout recurs;
+the original final #236 run stopped after 90 seconds without those markers.
+These diagnostics do not change terminal behavior, weaken the three-second
+completion assertion, or establish a fix from subsequent passing runs.
+
 The scheduled workflow runs bounded protocol, resource-key, engine-metadata and token-filter fuzz campaigns. Docker/Podman protocol jobs run on PRs and main pushes. Repeated concurrency soaks, large-checkout latency workloads and the full desktop/OS lifecycle matrix are still required trial work, not existing scheduled coverage. Failed seeds, logs, JUnit, coverage and benchmark outputs are retained with the exact commit and platform. CodeRabbit reviews implementation and test changes; green automated checks and disposition of valid review findings are required before integration.
 
 ## Measurements and thresholds
