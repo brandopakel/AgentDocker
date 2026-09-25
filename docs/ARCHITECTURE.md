@@ -1311,8 +1311,8 @@ new bounded suffix and generation before committing; a restart discards the
 proof and rehashes the saved prefix. An appended generation of the same file may
 retain parser state only after all accepted prefix bytes match. Rewrites,
 replacement, truncation or a changing snapshot keep coverage incomplete and
-require an explicit gap/replay. A version-3 parser cursor first verifies its old
-prefix, then replays from zero using version 4 without inventing a source-change
+require an explicit gap/replay. A version-3 or version-4 parser cursor first verifies its old
+prefix, then replays from zero using version 5 without inventing a source-change
 gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
 Collector parsing batches stop after 128 complete source records, including
@@ -1374,7 +1374,12 @@ Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278 and
 coverage. Top-level Claude counters remain authoritative: nested iteration/cache
 details are not added again, zero counters stay zero and absent reasoning remains
 unknown. Codex still reports cumulative snapshots. Unobserved patch versions are
-not assumed compatible. Parser cursor v4 replays prior scans with the same stable
+not assumed compatible. Accounting-only observations also cover historical Claude
+2.1.246, 2.1.247, 2.1.248, 2.1.251, 2.1.259, 2.1.260, 2.1.261, 2.1.263 and
+2.1.267. These are explicit supported patches, not an accepted version range.
+Their response semantics and sample format identity match the existing family;
+nested cache details do not contribute a second time. Parser cursor v5 verifies
+and replays v3/v4 scans with the same stable
 source identities, allowing newly supported records to be collected without
 recounting earlier accepted samples. Existing historical gaps remain visible;
 this change does not claim their reconciliation or provider-billing accuracy.
