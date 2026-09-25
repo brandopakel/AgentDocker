@@ -254,6 +254,15 @@ pub(super) async fn handle(
     }
     let receipt = read_receipt(layout)?;
     if matches!(command, DaemonCommand::Status) {
+        // A portable/on-demand home has no owned login task. Querying the
+        // scheduler here adds a cold PowerShell/CIM dependency to daemon
+        // health, and can time out before the responsive daemon is queried.
+        // Absence of our receipt says nothing about unrelated tasks; mutation
+        // paths below still inspect and preserve them before doing anything.
+        if receipt.is_none() {
+            println!("service   no owned Task Scheduler service (no ownership record)");
+            return Ok(false);
+        }
         let state = evaluate(
             layout,
             &format!(
@@ -481,6 +490,20 @@ mod tests {
             previous: None,
         };
         (temp, layout, receipt)
+    }
+
+    #[tokio::test]
+    async fn uninstalled_status_needs_no_scheduler_and_keeps_daemon_status_available() {
+        let (_temp, layout, _receipt) = fixture();
+        // No PowerShell is available on Unix test hosts. The same public
+        // handler must still reach the common daemon-only status path.
+        assert!(
+            !handle(&layout, &layout.client(), &DaemonCommand::Status)
+                .await
+                .unwrap()
+        );
+        assert!(!receipt_path(&layout).exists());
+        assert!(std::fs::read_dir(&layout.home).unwrap().next().is_none());
     }
 
     #[test]

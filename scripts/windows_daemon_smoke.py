@@ -705,8 +705,14 @@ def main():
             if first.exited:
                 detail = f"the daemon exited with {daemon.returncode} before answering; " + detail + acl_report(home)
         step("the daemon answers ping over the local transport", answered, detail)
-        status = run("daemon", "status")
+        status_started = time.monotonic()
+        status = run("daemon", "status", timeout=5)
+        report["uninstalled_status_seconds"] = time.monotonic() - status_started
         step("daemon status names the serving executable", str(daemon_binary.name) in status.stdout, status.stdout.strip())
+        if os.name == "nt":
+            step("uninstalled status reports no owned service without creating a receipt",
+                 "no owned Task Scheduler service" in status.stdout and not (home / "windows-service.json").exists(),
+                 f"{report['uninstalled_status_seconds']:.3f} s; {status.stdout.strip()}")
         setup_trial()
         mcp_trial()
         if args.desktop:

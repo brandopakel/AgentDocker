@@ -68,6 +68,9 @@ Keep the old folder until that succeeds. An ownership record in the daemon
 home prevents replacing or removing a task whose action or user was changed
 outside AgentDocker. `daemon install --dry-run` previews the task without
 registering it.
+For an on-demand or portable home without an ownership record, `daemon status`
+reports no owned service and checks the daemon directly. It does not start
+PowerShell to enumerate unrelated scheduled tasks.
 
 Then bring in the agents already on the machine:
 
