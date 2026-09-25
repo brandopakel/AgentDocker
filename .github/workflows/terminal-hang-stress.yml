@@ -1,0 +1,58 @@
+# Temporary: never merged. Repeats the terminal socket fixtures on the fix
+# commit, and runs the C replica of the Darwin shutdown/receive race.
+name: terminal-hang-stress-fix
+on:
+  push:
+    branches: [claude/terminal-hang-stress-fix]
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+jobs:
+  replica:
+    name: C replica (mode ${{ matrix.mode }})
+    runs-on: macos-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [0, 1, 2, 4]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - shell: bash
+        run: |
+          sw_vers
+          clang -O1 -o race ci-probe/race.c
+          ./race ${{ matrix.mode }} 600
+  stress:
+    name: stress (${{ matrix.lane }}, load=${{ matrix.load }})
+    runs-on: macos-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [a, b]
+        load: [none, cpu]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master; stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - run: cargo install --locked cargo-nextest --version 0.9.143
+      - run: cargo nextest run --locked -p agentdocker-ui --no-run
+      - name: Stress
+        shell: bash
+        run: |
+          sw_vers
+          if [ "${{ matrix.load }}" = cpu ]; then
+            for i in $(seq "$(sysctl -n hw.ncpu)"); do (yes > /dev/null &) ; done
+          fi
+          cargo nextest run --locked -p agentdocker-ui \
+            -E 'test(/^terminal::tests::(closing_as|writer_failure|terminal_closure_without|terminal_end_joins)/)' \
+            --stress-duration 45m 2>&1 | grep -v -E '^\s*PASS' | tail -n 4000
