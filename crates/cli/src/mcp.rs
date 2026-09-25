@@ -325,6 +325,23 @@ async fn write_line(
     Ok(())
 }
 
+/// Find the nearest Codex process before validating the managed binding. The
+/// inventory filter intentionally hides app-server helpers, but this MCP server
+/// is expected to be their child. Never skip a nested Codex to find an outer one.
+fn codex_mcp_ancestor(mut pid: u32, table: &[agentdocker_host::procinfo::Process]) -> Option<u32> {
+    for _ in 0..16 {
+        let process = table.iter().find(|process| process.pid == pid)?;
+        if agentdocker_host::procinfo::is_codex_binary(&process.argv) {
+            return Some(pid);
+        }
+        if process.ppid == pid {
+            break;
+        }
+        pid = process.ppid;
+    }
+    None
+}
+
 /// Reuse the identity of the agent that spawned us, or register a new one
 /// on behalf of the MCP host.
 async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity> {
@@ -343,21 +360,7 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
                     == Ok("1")
                 {
                     let table = agentdocker_host::procinfo::processes()?;
-                    let mut pid = parent_id();
-                    let mut provider = None;
-                    for _ in 0..16 {
-                        let Some(process) = table.iter().find(|p| p.pid == pid) else {
-                            break;
-                        };
-                        if agentdocker_host::procinfo::runtime_of(&process.argv) == Some("codex") {
-                            provider = Some(pid);
-                            break;
-                        }
-                        if process.ppid == pid {
-                            break;
-                        }
-                        pid = process.ppid;
-                    }
+                    let provider = codex_mcp_ancestor(parent_id(), &table);
                     anyhow::ensure!(
                         provider.is_some_and(|pid| {
                             agentdocker_host::provider_input::owns_codex_process(
@@ -2109,6 +2112,39 @@ mod tests {
     use super::*;
 
     use crate::client::mock::Mock;
+
+    #[test]
+    fn managed_mcp_finds_the_hidden_app_server_without_skipping_nested_codex() {
+        use agentdocker_host::procinfo::{Process, runtime_of};
+        let mut table = vec![
+            Process {
+                pid: 40,
+                ppid: 30,
+                argv: vec!["helper".into()],
+            },
+            Process {
+                pid: 30,
+                ppid: 20,
+                argv: vec!["codex".into(), "app-server".into(), "--stdio".into()],
+            },
+            Process {
+                pid: 20,
+                ppid: 10,
+                argv: vec!["agentdocker".into(), "codex-input".into()],
+            },
+        ];
+        assert_eq!(runtime_of(&table[1].argv), None, "inventory hides sidecars");
+        assert_eq!(codex_mcp_ancestor(40, &table), Some(30));
+        // An inherited environment cannot let a nested session claim its
+        // outer session's MCP identity: the nearest Codex must pass ownership.
+        table[0].argv = vec!["codex".into()];
+        assert_eq!(codex_mcp_ancestor(40, &table), Some(40));
+        table[0].argv = vec!["helper".into()];
+        table[1].argv = vec!["helper".into()];
+        table[1].ppid = 40;
+        assert_eq!(codex_mcp_ancestor(40, &table), None, "cycles are bounded");
+        assert_eq!(codex_mcp_ancestor(99, &table), None);
+    }
 
     fn server(responses: Vec<Response>) -> McpServer<Mock> {
         McpServer::new(
