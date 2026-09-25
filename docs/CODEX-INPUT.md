@@ -545,9 +545,17 @@ permissions and mixed network/terminal-input requests. Private delivery ledger
 version 11 retains the distinct review kind and rejects it in older records
 without rewriting them. Human answer correlation, pending peer/human ordering,
 and retained uncertain responses use the existing review path; a saved response
-is never automatically replayed. Actual provider/native acceptance and the final
-full gate remain pending. Broader permission forms, elicitation and secret input
-still require completion.
+is never automatically replayed. Actual Codex 0.155.1 trials on independent
+Ubuntu verified both decisions: the private terminal received the exact input
+only after Allow, Deny produced no fixture write, queued peer/human input waited
+through review and resumed in the original thread, and the answer was not
+replayed as ordinary input. Native Mac controls rendered those actual question
+payloads and routed each decision once while retaining an unrelated draft across
+navigation and reopening. These bounded trials use the upstream experimental
+`write_stdin_approval` feature for that launch only; they do not change saved
+provider policy or establish physical input/accessibility acceptance. The clean
+candidate passed 1,430 Rust tests and 155 Python checks with zero retries.
+Broader permission forms, elicitation and secret input still require completion.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
