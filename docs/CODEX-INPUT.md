@@ -444,9 +444,13 @@ including edits, so its tail cannot become a separate prompt. Clean `d8db262f` n
 private empty profile rejected the oversized paste visibly, accepted the next
 Unicode-edited line intact, and accepted exactly 16,000 UTF-8 bytes. Both kept
 the same thread and cleaned up gracefully without changing production processes.
-These establish the terminal/bridge boundary, not successful authenticated model
-turns or physical keyboard/IME acceptance. Linux acceptance and broader terminal
-coverage remain; the original normal-PTY failures are retained.
+The source-identical `6394a081` CI archive also passed on independent Oracle
+Ubuntu x86_64: a normal managed PTY visibly rejected the 20,028-byte paste, then
+queued the exact Unicode-edited 16,000-byte line in the same thread, with graceful
+cleanup and the unrelated runner/endurance trial unchanged. These empty-profile
+trials establish the terminal/bridge boundary. Authenticated model turns, physical
+Mac/Linux keyboard/IME input and broader terminal/platform coverage remain open;
+the original normal-PTY failures are retained.
 
 The provider profile, authentication, hooks, trust and approval policy are
 inherited. No profile is rewritten. The session's AgentDocker MCP entry is bound
