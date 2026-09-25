@@ -790,6 +790,7 @@ mod tests {
         struct FailedWriter;
         impl Write for FailedWriter {
             fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+                eprintln!("terminal failure fixture: injecting write failure");
                 Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "injected write failure",
@@ -799,25 +800,39 @@ mod tests {
                 Ok(())
             }
         }
+        // Retain phase evidence if the historical macOS hang recurs. These
+        // traces are test-only and successful nextest output is not archived.
+        // A later passing run does not explain the original timeout.
+        eprintln!("terminal failure fixture: creating socket pair");
         let mut terminal = unserved_terminal();
         let shared = terminal.shared.clone();
         let (stream, peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
         assert!(lock(&shared.connection).install(stream.try_clone().unwrap()));
+        eprintln!("terminal failure fixture: connection installed");
         let (finished, done) = mpsc::channel();
         let reader = std::thread::spawn(move || {
+            eprintln!("terminal failure fixture: reader starting");
             let ctx = Wake::default();
             let reason = read_output(stream, &shared, &ctx);
+            eprintln!("terminal failure fixture: reader returned: {reason}");
             shared.ended(reason, &ctx);
+            eprintln!("terminal failure fixture: reader ended cleanup returned");
             finished.send(()).unwrap();
         });
         // Inject an error while a real socket reader waits with an open peer.
         // SHUT_RD alone does not force an immediate EPIPE on Darwin.
         terminal.send(b"owned fixture".to_vec());
+        eprintln!("terminal failure fixture: input queued, writer starting");
         run_writer(FailedWriter, &terminal.shared, &Wake::default());
+        eprintln!("terminal failure fixture: writer returned");
         let observed = done.recv_timeout(Duration::from_secs(3));
+        eprintln!("terminal failure fixture: reader completion: {observed:?}");
         terminal.shared.close();
+        eprintln!("terminal failure fixture: terminal close returned");
         close_peer(&peer);
+        eprintln!("terminal failure fixture: peer close returned, joining reader");
         reader.join().unwrap();
+        eprintln!("terminal failure fixture: reader joined");
         observed.unwrap();
         assert!(
             matches!(terminal.status(), Status::Ended(reason) if reason.starts_with("terminal input failed:"))
