@@ -338,6 +338,9 @@ impl std::io::Read for PolledStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         use std::io::{Error, ErrorKind};
         use std::os::fd::AsRawFd;
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let fd = self.0.as_raw_fd();
         let mut ready = libc::pollfd {
             fd,
@@ -655,7 +658,11 @@ mod tests {
                     let _ = sampler.wait();
                     break format!("sample did not finish within {SAMPLE_LIMIT:?}; ended it");
                 }
-                Err(error) => break format!("cannot wait for sample: {error}"),
+                Err(error) => {
+                    let _ = sampler.kill();
+                    let _ = sampler.wait();
+                    break format!("cannot wait for sample ({error}); ended it");
+                }
             }
         };
         let read = |path: &std::path::Path| {
@@ -1006,6 +1013,16 @@ mod tests {
         assert!(
             matches!(terminal.status(), Status::Ended(reason) if reason.starts_with("terminal input failed:"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_read_returns_at_once_without_waiting_for_data() {
+        use std::io::Read;
+        let (stream, _peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(PolledStream(stream).read(&mut []).unwrap(), 0);
+        assert!(started.elapsed() < READ_POLL / 2);
     }
 
     /// Darwin can strand a receive that starts while another descriptor of
