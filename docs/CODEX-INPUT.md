@@ -440,8 +440,13 @@ the draft and Ctrl-W erases its last word. Terminal navigation escape sequences
 are ignored; this is a line prompt, not the native Codex TUI editor. Signals and
 output processing retain their terminal settings, restored with input mode on
 exit. After an oversized line, all bytes through its newline are discarded,
-including edits, so its tail cannot become a separate prompt. Native acceptance
-of this correction remains pending; the original normal-PTY failures are retained.
+including edits, so its tail cannot become a separate prompt. Clean `d8db262f` normal managed Mac PTY trials with actual Codex 0.155.1 and a
+private empty profile rejected the oversized paste visibly, accepted the next
+Unicode-edited line intact, and accepted exactly 16,000 UTF-8 bytes. Both kept
+the same thread and cleaned up gracefully without changing production processes.
+These establish the terminal/bridge boundary, not successful authenticated model
+turns or physical keyboard/IME acceptance. Linux acceptance and broader terminal
+coverage remain; the original normal-PTY failures are retained.
 
 The provider profile, authentication, hooks, trust and approval policy are
 inherited. No profile is rewritten. The session's AgentDocker MCP entry is bound
