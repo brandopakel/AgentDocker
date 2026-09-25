@@ -432,6 +432,17 @@ events interrupt a partial read. The [review trial](verification/INDEX.md)
 reproduced the old controller exit and verified the correction with actual
 Codex and an owned raw PTY, followed by terminal, human and peer queue receipts.
 
+Normal managed macOS terminals exposed a separate lower limit: the kernel's
+canonical input buffer could fill before the bridge saw a long paste, stranding
+even the next line. Managed Unix bridges now read characters with a bounded
+append/erase editor instead. Backspace erases a Unicode grapheme, Ctrl-U clears
+the draft and Ctrl-W erases its last word. Terminal navigation escape sequences
+are ignored; this is a line prompt, not the native Codex TUI editor. Signals and
+output processing retain their terminal settings, restored with input mode on
+exit. After an oversized line, all bytes through its newline are discarded,
+including edits, so its tail cannot become a separate prompt. Native acceptance
+of this correction remains pending; the original normal-PTY failures are retained.
+
 The provider profile, authentication, hooks, trust and approval policy are
 inherited. No profile is rewritten. The session's AgentDocker MCP entry is bound
 explicitly to the matching CLI, managed identity and daemon socket through leaf
