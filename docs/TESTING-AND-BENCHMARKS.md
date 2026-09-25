@@ -30,6 +30,10 @@ its failed nextest output and JUnit if the intermittent macOS timeout recurs;
 the original final #236 run stopped after 90 seconds without those markers.
 These diagnostics do not change terminal behavior, weaken the three-second
 completion assertion, or establish a fix from subsequent passing runs.
+The writer-failure test and its two socket-reader siblings also arm a
+test-only watchdog: after 20 seconds it prints every thread's stack (macOS
+`sample`, Linux `/proc/self/task`) and aborts, so a recurrence names the
+blocked call instead of ending at nextest's 90-second kill.
 
 The scheduled workflow runs bounded protocol, resource-key, engine-metadata and token-filter fuzz campaigns. Docker/Podman protocol jobs run on PRs and main pushes. Repeated concurrency soaks, large-checkout latency workloads and the full desktop/OS lifecycle matrix are still required trial work, not existing scheduled coverage. Failed seeds, logs, JUnit, coverage and benchmark outputs are retained with the exact commit and platform. CodeRabbit reviews implementation and test changes; green automated checks and disposition of valid review findings are required before integration.
 

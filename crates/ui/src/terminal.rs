@@ -526,6 +526,84 @@ mod tests {
         }
     }
 
+    /// Abort with every thread's stack if a socket fixture outlives `limit`.
+    /// Nextest's own timeout kills the process without saying where each
+    /// thread waited; the historical macOS hang left nothing else to go on.
+    #[cfg(unix)]
+    struct HangWatch {
+        disarm: Option<std::sync::mpsc::Sender<()>>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    #[cfg(unix)]
+    impl HangWatch {
+        fn arm(fixture: &'static str, limit: std::time::Duration) -> Self {
+            let (disarm, armed) = std::sync::mpsc::channel::<()>();
+            let thread = std::thread::spawn(move || {
+                if armed.recv_timeout(limit) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                    return;
+                }
+                eprintln!("{fixture}: still running after {limit:?}; thread stacks follow");
+                eprintln!("{}", thread_stacks());
+                std::process::abort();
+            });
+            Self {
+                disarm: Some(disarm),
+                thread: Some(thread),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for HangWatch {
+        fn drop(&mut self) {
+            drop(self.disarm.take());
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn thread_stacks() -> String {
+        let pid = std::process::id();
+        let file = std::env::temp_dir().join(format!("terminal-hang-{pid}.sample"));
+        let sampled = std::process::Command::new("/usr/bin/sample")
+            .arg(pid.to_string())
+            .args(["2", "-mayDie", "-file"])
+            .arg(&file)
+            .output();
+        let report = std::fs::read_to_string(&file);
+        let _ = std::fs::remove_file(&file);
+        match (sampled, report) {
+            (_, Ok(report)) => report,
+            (Ok(output), Err(error)) => format!(
+                "sample wrote no report ({error}): {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+            (Err(error), _) => format!("cannot run sample: {error}"),
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn thread_stacks() -> String {
+        let mut report = String::new();
+        let tasks = std::fs::read_dir("/proc/self/task").into_iter().flatten();
+        for task in tasks.flatten() {
+            let read =
+                |name: &str| std::fs::read_to_string(task.path().join(name)).unwrap_or_default();
+            report.push_str(&format!(
+                "{:?} {} wchan={} {}\n",
+                task.file_name(),
+                read("comm").trim(),
+                read("wchan").trim(),
+                read("stat").trim()
+            ));
+        }
+        report
+    }
+
     fn unserved_terminal() -> Terminal {
         Terminal {
             agent: "owned-fixture".into(),
@@ -730,6 +808,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn terminal_closure_without_socket_wakeup_is_bounded_and_keeps_the_first_error() {
+        let _watch = HangWatch::arm(
+            "terminal_closure_without_socket_wakeup_is_bounded_and_keeps_the_first_error",
+            std::time::Duration::from_secs(20),
+        );
         use std::sync::mpsc;
         use std::time::Duration;
         let terminal = unserved_terminal();
@@ -762,6 +844,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn terminal_end_joins_an_idle_writer_without_dropping_the_window_handle() {
+        let _watch = HangWatch::arm(
+            "terminal_end_joins_an_idle_writer_without_dropping_the_window_handle",
+            std::time::Duration::from_secs(20),
+        );
         use std::io::Write;
         use std::sync::mpsc;
         use std::time::Duration;
@@ -784,6 +870,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn writer_failure_closes_the_reader_and_preserves_its_reason() {
+        let _watch = HangWatch::arm(
+            "writer_failure_closes_the_reader_and_preserves_its_reason",
+            std::time::Duration::from_secs(20),
+        );
         use std::io::{self, Write};
         use std::sync::mpsc;
         use std::time::Duration;
