@@ -317,21 +317,24 @@ the corrected CI package passed delivery and automatic receipt checks. Repeat
 the hosted-package lifecycle on the next candidate. Native Codex input and the
 Windows installer, service lifecycle and updater remain separate open gates.
 
-## First coworker preview candidate
+## Coworker preview releases
 
 The failed immutable `v0.2.0-beta.1` tag remains at `d46db1f2`; it published no
-release. **0.2.0-beta.2** was published from `f37998dd` after every native build
-passed. The repaired preview channel now advertises that release.
+release. **0.2.0-beta.2** was published from `f37998dd`. The current published
+preview is **0.2.0-beta.3**, immutable source `5b146e20`; protected-tag run
+35945751437 passed, all 28 hosted assets were verified, and explicit-version
+installation, upgrade and rollback passed on Mac ARM64 and independent Oracle
+Ubuntu x86_64. The fixed preview channel advertises beta.3. Stable v0.1.0 and the
+Homebrew tap are unchanged. Detailed scopes remain in the verification index.
 
-The next source candidate is **0.2.0-beta.3**, with matching workspace packages,
-internal dependency requirements and entries in both Cargo lockfiles (including
-the excluded fuzz workspace). It combines the preview staging correction,
-Windows service and provider ownership changes, bounded accounting, desktop
-browser service controls and startup diagnostics. The legacy macOS bundle helper
-reads the workspace version when no override is supplied. The intended tag is
-`v0.2.0-beta.3`; changing the source version does not publish or install it. Finish
-substantive review and final integrated local/CI checks before creating that tag,
-then complete the protected-tag workflow and hosted lifecycle acceptance.
+The next source candidate is **0.2.0-beta.4**, with matching workspace packages,
+internal dependency requirements and both Cargo lockfiles, including the excluded
+fuzz workspace. It adds the reviewed local Codex MCP startup correction, historical
+Claude format recovery and ARM hashing improvement, plus terminal-input review.
+The intended tag is `v0.2.0-beta.4`; changing the source version does not publish
+or install it. Finish substantive review and final integrated local/CI checks
+before creating that tag, then complete the protected-tag workflow and hosted
+lifecycle acceptance. Beta.3 assets must remain immutable.
 
 Before announcing the preview, download its actual hosted archives and sidecar
 checksums, verify package provenance, and exercise the explicit-version install

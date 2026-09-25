@@ -3,6 +3,10 @@
 use anyhow::{Result, ensure};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
+mod editor;
+mod mode;
+pub(super) use mode::Mode;
+
 const MAX_TEXT: usize = 16_000;
 const MAX_LINE: usize = MAX_TEXT + 2; // Optional CRLF.
 
@@ -10,15 +14,26 @@ const MAX_LINE: usize = MAX_TEXT + 2; // Optional CRLF.
 pub(super) struct Input {
     bytes: Vec<u8>,
     oversized: bool,
+    editor: Option<editor::Editor>,
 }
 
 impl Input {
+    pub fn new(editing: bool) -> Self {
+        Self {
+            editor: editing.then(editor::Editor::default),
+            ..Self::default()
+        }
+    }
+
     // State lives outside the future: a provider event can cancel this read
     // after any chunk, including while an oversized line is being discarded.
     pub async fn read<R: AsyncBufRead + Unpin>(
         &mut self,
         reader: &mut R,
     ) -> Result<Option<String>> {
+        if let Some(editor) = &mut self.editor {
+            return editor.read(reader).await;
+        }
         loop {
             let available = reader.fill_buf().await?;
             ensure!(

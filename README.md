@@ -70,24 +70,26 @@ Idle message delivery needs a provider input adapter as well. Managed Claude cha
 ## Install
 
 **Trying the desktop preview with coworkers:** download
-[v0.2.0-beta.2](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.2)
+[v0.2.0-beta.3](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.3)
 explicitly. The default installer and Homebrew commands below still select the
 stable v0.1.0 release. For a source trial, follow
 [the local build instructions](docs/LOCAL-BUILD.md) at an agreed commit. The
 release checklist is in [Remaining work](docs/REMAINING-WORK.md).
 
-The next coworker preview is being prepared as **0.2.0-beta.3** and is not yet
-published. It integrates preview updater, browser service, accounting and Windows
-reliability changes. The candidate targets macOS and Linux on ARM64/x86-64, plus
-an unsigned Windows x64 portable ZIP. Windows installer, service acceptance,
-updater and native Codex idle-input support remain unfinished; use
+The next preview candidate is **0.2.0-beta.4** and is not yet published. It adds
+required local Codex connectivity, review before sending input to an existing
+Codex terminal, historical Claude token formats, and lower ARM accounting CPU
+cost. The published beta.3 includes the preview updater, browser service controls,
+bounded accounting and Windows reliability changes. Packages target macOS and
+Linux on ARM64/x86-64, plus an unsigned Windows x64 portable ZIP. Windows installer,
+service acceptance, updater and native Codex input support remain unfinished;
 [the trial requirements](docs/LOCAL-TRIAL.md#stage-5--other-machines-and-systems)
-to distinguish an early preview from completed platform acceptance.
+distinguish an early preview from completed platform acceptance.
 
-End users download native executables; Rust build caches are only development
-files. The next release separates CLI/daemon tarballs from self-contained desktop
-archives, with no duplicate app copy in the CLI download. Packaging enforces a
-100 MiB desktop payload and 40 MiB download ceiling per architecture; see
+End users download native executables; Rust build caches are development files.
+CLI/daemon tarballs are separate from self-contained desktop archives, with no
+duplicate app copy in the CLI download. Packaging enforces a 100 MiB desktop
+payload and 40 MiB download ceiling per architecture; see
 [size and build-storage checks](docs/TESTING-AND-BENCHMARKS.md#download-size-gates).
 
 ```sh

@@ -145,8 +145,17 @@ async fn run_owned(
     requests::recover(client, &mut ledger).await?;
     mcp_answers::acknowledge(client, &mut ledger).await?;
     let arguments = provider_input::codex_arguments(&args.command[1..])?;
+    let terminal_mode = terminal::Mode::enter(agent.spec.tty || agent.spec.in_pane)
+        .context("cannot prepare managed Codex terminal input")?;
     let mut provider = Provider::start(std::path::Path::new(&args.command[0]), &arguments, &cwd)?;
-    let result = session(client, agent, &mut provider, &mut ledger).await;
+    let result = session(
+        client,
+        agent,
+        &mut provider,
+        &mut ledger,
+        terminal_mode.editing(),
+    )
+    .await;
     if let Err(error) = &result {
         eprintln!(
             "Codex input paused: {error:#}. Retained input will not be automatically submitted again."
@@ -274,6 +283,7 @@ async fn session(
     agent: &AgentRecord,
     provider: &mut Provider,
     ledger: &mut Ledger,
+    terminal_editing: bool,
 ) -> Result<()> {
     // Checking this before starting a thread keeps old daemons from launching
     // an input mode whose consumer reservation they do not understand.
@@ -350,7 +360,7 @@ async fn session(
     let mut heartbeat = interval(Duration::from_secs(30));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut stdin = BufReader::new(tokio::io::stdin());
-    let mut input = terminal::Input::default();
+    let mut input = terminal::Input::new(terminal_editing);
     let mut input_open = agent.spec.tty || agent.spec.in_pane;
     let mut turn: Option<String> = None;
     let mut refused_steering: Option<String> = None;

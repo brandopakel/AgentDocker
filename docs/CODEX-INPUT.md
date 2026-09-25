@@ -432,6 +432,26 @@ events interrupt a partial read. The [review trial](verification/INDEX.md)
 reproduced the old controller exit and verified the correction with actual
 Codex and an owned raw PTY, followed by terminal, human and peer queue receipts.
 
+Normal managed macOS terminals exposed a separate lower limit: the kernel's
+canonical input buffer could fill before the bridge saw a long paste, stranding
+even the next line. Managed Unix bridges now read characters with a bounded
+append/erase editor instead. Backspace erases a Unicode grapheme, Ctrl-U clears
+the draft and Ctrl-W erases its last word. Terminal navigation escape sequences
+are ignored; this is a line prompt, not the native Codex TUI editor. Signals and
+output processing retain their terminal settings, restored with input mode on
+exit. After an oversized line, all bytes through its newline are discarded,
+including edits, so its tail cannot become a separate prompt. Clean `d8db262f` normal managed Mac PTY trials with actual Codex 0.155.1 and a
+private empty profile rejected the oversized paste visibly, accepted the next
+Unicode-edited line intact, and accepted exactly 16,000 UTF-8 bytes. Both kept
+the same thread and cleaned up gracefully without changing production processes.
+The source-identical `6394a081` CI archive also passed on independent Oracle
+Ubuntu x86_64: a normal managed PTY visibly rejected the 20,028-byte paste, then
+queued the exact Unicode-edited 16,000-byte line in the same thread, with graceful
+cleanup and the unrelated runner/endurance trial unchanged. These empty-profile
+trials establish the terminal/bridge boundary. Authenticated model turns, physical
+Mac/Linux keyboard/IME input and broader terminal/platform coverage remain open;
+the original normal-PTY failures are retained.
+
 The provider profile, authentication, hooks, trust and approval policy are
 inherited. No profile is rewritten. The session's AgentDocker MCP entry is bound
 explicitly to the matching CLI, managed identity and daemon socket through leaf
@@ -526,8 +546,36 @@ older-version record without rewriting bytes. Restored command records cannot ca
 The implementation passed 61 focused input tests and the full 974-Rust/70-Python
 release gate. A private-profile actual Codex trial denied the connection before
 emitting an approval callback; actual managed-network provider, native UI and
-final integration acceptance remain open. See the [retained trial](verification/INDEX.md). `writeStdin`,
-broader permission forms and elicitation still need their own handling.
+final integration acceptance remain open. See the [retained trial](verification/INDEX.md).
+
+Terminal-input approvals (`kind: writeStdin`) now have a separate one-time review
+using the installed Codex 0.155.1 contract. The card shows the existing terminal
+session and command item, launch directory, complete escaped input, reason and
+concrete retained access. Newlines, terminal controls and bidirectional marks in
+the input are visibly escaped; the approval does not change the original input.
+The directory is explicitly identified as the launch directory because the
+terminal's current directory and state may have changed. **Allow** approves only
+that input; **Deny** uses the provider's offered negative decision, with cancellation
+explained on the card. Session and policy grants are never selected.
+
+The parser requires one complete `write_stdin --session-id <id> <input>` argument
+vector, valid item/callback identities, local execution, and fully reviewable
+permissions. It refuses malformed or oversized input, NUL bytes, unsupported
+permissions and mixed network/terminal-input requests. Private delivery ledger
+version 11 retains the distinct review kind and rejects it in older records
+without rewriting them. Human answer correlation, pending peer/human ordering,
+and retained uncertain responses use the existing review path; a saved response
+is never automatically replayed. Actual Codex 0.155.1 trials on independent
+Ubuntu verified both decisions: the private terminal received the exact input
+only after Allow, Deny produced no fixture write, queued peer/human input waited
+through review and resumed in the original thread, and the answer was not
+replayed as ordinary input. Native Mac controls rendered those actual question
+payloads and routed each decision once while retaining an unrelated draft across
+navigation and reopening. These bounded trials use the upstream experimental
+`write_stdin_approval` feature for that launch only; they do not change saved
+provider policy or establish physical input/accessibility acceptance. The clean
+candidate passed 1,430 Rust tests and 155 Python checks with zero retries.
+Broader permission forms, elicitation and secret input still require completion.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
@@ -758,7 +806,7 @@ the message that started the turn. Its complete input is persisted before the
 provider call; only an exact item receipt permits queue acknowledgement. Lost
 replies retain the attempt for history reconciliation. A definite active-turn
 precondition refusal leaves the message eligible for a later ordinary turn.
-Other errors do not permit resubmission. The local bridge ledger is version 10;
+Other errors do not permit resubmission. Active-turn steering was introduced in bridge ledger version 10;
 existing version 1–9 records retain their inputs when upgraded.
 
 The installed Codex 0.154.0 API passed an isolated local-model trial: the second
