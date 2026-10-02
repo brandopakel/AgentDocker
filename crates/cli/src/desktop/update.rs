@@ -28,16 +28,27 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::{Activation, Layout, inspect, perform};
+#[cfg(windows)]
+use super::windows::{Layout, perform};
+use super::{Activation, inspect};
+#[cfg(not(windows))]
+use super::{Layout, perform};
 
 /// Where releases advertise themselves. GitHub redirects this to the asset of
 /// the newest release, so the URL never changes.
+#[cfg(not(windows))]
 pub const DEFAULT_FEED: &str =
     "https://github.com/brandopakel/AgentDocker/releases/latest/download/updates.json";
+#[cfg(windows)]
+pub const DEFAULT_FEED: &str =
+    "https://github.com/brandopakel/AgentDocker/releases/latest/download/updates-windows.json";
 /// Where the newest prerelease's feed is kept. GitHub's `latest` never
 /// names a prerelease, so each prerelease also publishes its feed to this one
 /// fixed release, which only moves forward.
+#[cfg(not(windows))]
 pub const PREVIEW_FEED: &str = "https://github.com/brandopakel/AgentDocker/releases/download/channel-preview/updates-preview.json";
+#[cfg(windows)]
+pub const PREVIEW_FEED: &str = "https://github.com/brandopakel/AgentDocker/releases/download/channel-preview-windows/updates-preview-windows.json";
 /// Environment override for the feed, so a fixture can point the app at a
 /// local feed without a flag reaching through the desktop screen.
 pub const FEED_ENV: &str = "AGENTDOCKER_UPDATE_FEED";
@@ -90,6 +101,9 @@ struct Archive {
 
 /// The Rust target triple the installer accepts on this machine.
 fn host_target() -> &'static str {
+    if cfg!(windows) {
+        return "x86_64-pc-windows-msvc";
+    }
     match (cfg!(target_os = "macos"), cfg!(target_arch = "aarch64")) {
         (true, true) => "aarch64-apple-darwin",
         (true, false) => "x86_64-apple-darwin",
@@ -112,6 +126,15 @@ fn parse_version(value: &str) -> Result<Version> {
 fn curl_binary() -> String {
     if cfg!(target_os = "macos") {
         "/usr/bin/curl".into()
+    } else if cfg!(windows) {
+        std::env::var_os("SystemRoot")
+            .map(|root| {
+                PathBuf::from(root)
+                    .join("System32/curl.exe")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_else(|| "curl.exe".into())
     } else {
         "curl".into()
     }
@@ -200,7 +223,12 @@ fn fetch_inner(url: &str, destination: &Path, max_bytes: u64, local_preview: boo
 /// build (`local-preview`, which Gatekeeper would refuse) skips the
 /// assessment: a Developer-ID-signed preview is still assessed.
 fn accepts_ad_hoc(local_preview: bool, preview_consent: bool, release: &FeedRelease) -> bool {
-    local_preview || (preview_consent && release.signing == "local-preview")
+    local_preview
+        || (preview_consent
+            && matches!(
+                release.signing.as_str(),
+                "local-preview" | "unsigned-preview"
+            ))
 }
 
 /// The feeds a check reads. A prerelease was installed from the preview
@@ -276,6 +304,7 @@ fn select(
                     | "universal-apple-darwin"
                     | "aarch64-unknown-linux-gnu"
                     | "x86_64-unknown-linux-gnu"
+                    | "x86_64-pc-windows-msvc"
             ),
             "unsupported feed target"
         );
@@ -298,9 +327,16 @@ fn select(
         );
         ensure!(entry.state_schema > 0, "feed state schema must be positive");
         let mac = entry.target.ends_with("apple-darwin");
+        let windows = entry.target.ends_with("pc-windows-msvc");
+        ensure!(
+            !windows || feed.channel == "preview",
+            "Windows packages are currently preview-only"
+        );
         ensure!(
             if mac {
                 matches!(entry.signing.as_str(), "developer-id" | "local-preview")
+            } else if windows {
+                entry.signing == "unsigned-preview"
             } else {
                 entry.signing == "checksum"
             },
@@ -346,7 +382,7 @@ fn select(
     let expected_name = format!(
         "agentdocker-desktop-{}.{}",
         release.target,
-        if release.target.ends_with("apple-darwin") {
+        if release.target.ends_with("apple-darwin") || release.target.ends_with("pc-windows-msvc") {
             "zip"
         } else {
             "tar.gz"
@@ -513,6 +549,12 @@ fn audit_archive(archive: &Path, payload: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn extract(archive: &Path, destination: &Path) -> Result<PathBuf> {
+    super::windows_archive::extract(archive, destination)
+}
+
+#[cfg(not(windows))]
 fn extract(archive: &Path, destination: &Path) -> Result<PathBuf> {
     let payload_name = if cfg!(target_os = "macos") {
         "AgentDocker.app"
@@ -597,6 +639,15 @@ fn run_with_home(
         // gate does not refuse it: a check has to be able to say a preview
         // exists. The consent to download one is checked below
         // (`preview_consent_required`), before anything is staged.
+        // Older public feeds omit the still-preview Windows target. An
+        // absent default channel is not an error that hides another channel.
+        if cfg!(windows)
+            && options.feed.is_none()
+            && !feed.releases.iter().any(|entry| entry.target == target)
+        {
+            unpublished.push(url.clone());
+            continue;
+        }
         let release = select(&feed, target, options.local_preview, true)?;
         let newer = match &found {
             None => true,
@@ -641,14 +692,18 @@ fn run_with_home(
     );
     let schema_change = release.state_schema > minimum_schema;
     let live = live_agents(options.socket.clone());
-    let guidance = match live {
-        Some(0) => {
-            "no agents are live; applying asks the daemon to reload, and `agentdocker daemon restart` switches it otherwise"
+    let guidance = if cfg!(windows) {
+        "activation affects the next launch; running sessions and daemon continue unchanged"
+    } else {
+        match live {
+            Some(0) => {
+                "no agents are live; applying asks the daemon to reload, and `agentdocker daemon restart` switches it otherwise"
+            }
+            Some(_) => {
+                "agents are live; applying asks the daemon to reload underneath them, and a refusal leaves it serving until `agentdocker daemon restart`"
+            }
+            None => "no daemon answered; the next launch starts the installed version",
         }
-        Some(_) => {
-            "agents are live; applying asks the daemon to reload underneath them, and a refusal leaves it serving until `agentdocker daemon restart`"
-        }
-        None => "no daemon answered; the next launch starts the installed version",
     };
     let mut update = json!({
         "feed": feed_url,
@@ -723,7 +778,11 @@ fn run_with_home(
         std::fs::rename(&partial, &archive)?;
     }
     update["downloaded"] = json!(archive);
-    let extracted = version_dir.join("payload");
+    let extracted = if cfg!(windows) {
+        version_dir.join(format!("payload-{}", uuid::Uuid::new_v4()))
+    } else {
+        version_dir.join("payload")
+    };
     // A payload that fails any check is not kept around: the next attempt
     // downloads and extracts afresh rather than trusting a rejected tree.
     let checked = (|| -> Result<(PathBuf, super::Release)> {
@@ -777,6 +836,28 @@ fn run_with_home(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_updates_require_preview_policy_and_the_exact_zip_name() {
+        let target = "x86_64-pc-windows-msvc";
+        let mut offered = feed("preview", target, "https://example.test/preview.zip");
+        offered.releases[0].signing = "unsigned-preview".into();
+        offered.releases[0].archive.name = format!("agentdocker-desktop-{target}.zip");
+        assert_eq!(
+            select(&offered, target, false, true).unwrap().target,
+            target
+        );
+        assert!(accepts_ad_hoc(false, true, &offered.releases[0]));
+        assert!(!accepts_ad_hoc(false, false, &offered.releases[0]));
+        offered.channel = "stable".into();
+        assert!(select(&offered, target, true, true).is_err());
+        offered.channel = "preview".into();
+        offered.releases[0].signing = "checksum".into();
+        assert!(select(&offered, target, true, true).is_err());
+        offered.releases[0].signing = "unsigned-preview".into();
+        offered.releases[0].archive.name = format!("agentdocker-desktop-{target}.tar.gz");
+        assert!(select(&offered, target, true, true).is_err());
+    }
 
     fn feed(channel: &str, target: &str, url: &str) -> Feed {
         serde_json::from_value(json!({

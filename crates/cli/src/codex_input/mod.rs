@@ -1,4 +1,5 @@
 //! One supervised Codex conversation, fed by the daemon's ordinary Send queue.
+mod availability;
 mod config;
 mod daemon_io;
 pub mod external;
@@ -357,6 +358,7 @@ async fn session(
     let mut input = terminal::Input::new(terminal_editing);
     let mut input_open = agent.spec.tty || agent.spec.in_pane;
     let mut turn: Option<String> = None;
+    let mut turn_failures = availability::TurnFailures::default();
     let mut refused_steering: Option<String> = None;
     let mut request_ids = std::collections::HashSet::new();
     let mut file_reviews = file_changes::Reviews::default();
@@ -419,7 +421,8 @@ async fn session(
                         let completed_at = chrono::Utc::now();
                         if status == "failed" {
                             crate::provider_status::report(client, agent, agentdocker_core::ProviderReport::Blocked {
-                                issue: crate::provider_status::codex(&params["turn"]["error"]),
+                                issue: turn_failures.observe(id, Some(id), &params["turn"]["error"])
+                                    .expect("completed turn identity was checked"),
                             }).await?;
                         }
                         if ledger.record().attempt.iter().chain(ledger.record().steering.iter()).any(|a| a.receipt.is_none()) {
@@ -430,6 +433,7 @@ async fn session(
                         requests::turn_ended(client, ledger).await?;
                         mcp_answers::reconcile(provider, client, ledger).await?;
                         ledger.finish(id)?; turn = None;
+                        turn_failures.clear();
                         refused_steering = None;
                         file_reviews = file_changes::Reviews::default();
                         if status == "completed" {
@@ -442,10 +446,12 @@ async fn session(
                         println!("\nCodex turn {status}.");
                         activity(client, agent.id.as_str(), ReportedActivity::Idle).await?;
                     }
-                    Some("error") if params["turnId"].as_str() == turn.as_deref() => {
-                        let issue = crate::provider_status::codex(&params["error"]);
-                        eprintln!("{}; queued delivery is waiting for recovery.", issue.kind.label());
-                        crate::provider_status::report(client, agent, agentdocker_core::ProviderReport::Blocked { issue }).await?;
+                    Some("error") => {
+                        if let Some(issue) = turn.as_deref().and_then(|active|
+                            turn_failures.observe(active, params["turnId"].as_str(), &params["error"])) {
+                            eprintln!("{}; queued delivery is waiting for recovery.", issue.kind.label());
+                            crate::provider_status::report(client, agent, agentdocker_core::ProviderReport::Blocked { issue }).await?;
+                        }
                     }
                     _ => (),
                 }

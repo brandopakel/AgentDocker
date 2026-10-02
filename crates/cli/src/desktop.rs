@@ -1,7 +1,6 @@
 //! Per-user native desktop installation. Immutable version and activation
 //! directories make the current release and rollback target one atomic switch.
-// The installer, updates and retained versions run on macOS and Linux;
-// on Windows only the refusal in `run` is live, and the rest waits its slice.
+// Unix installations use symlink activations; Windows uses private atomic records.
 #![cfg_attr(windows, allow(dead_code))]
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -22,6 +21,10 @@ use agentdocker_host::{command, dirs, project};
 
 mod maintenance;
 mod update;
+#[cfg(windows)]
+mod windows;
+#[cfg(any(windows, test))]
+mod windows_archive;
 
 /// Where Homebrew keeps the cask's record when it installed the app. The
 /// app in `/Applications` is then Homebrew's copy: this installer must
@@ -61,7 +64,10 @@ fn refuse_homebrew_copy(active: Option<&Activation>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
 const BINARIES: &[&str] = &["agentdocker", "agentd", "agentdocker-ui"];
+#[cfg(windows)]
+const BINARIES: &[&str] = agentdocker_host::installation::windows::BINARIES;
 
 /// How many times to re-follow the `current` pointer when a read of it
 /// loses the race with the `rename` that moves it. See [`Layout::follow`].
@@ -74,6 +80,12 @@ pub fn setup_executable() -> Result<PathBuf> {
     stable_executable(&agentdocker_host::procinfo::executable_path()?)
 }
 
+#[cfg(windows)]
+fn stable_executable(executable: &Path) -> Result<PathBuf> {
+    agentdocker_host::installation::windows::stable_executable(executable).map_err(Into::into)
+}
+
+#[cfg(not(windows))]
 fn stable_executable(executable: &Path) -> Result<PathBuf> {
     for ancestor in executable.ancestors() {
         if !ancestor.ends_with(".local/share/agentdocker/desktop/versions") {
@@ -108,7 +120,7 @@ fn stable_executable(executable: &Path) -> Result<PathBuf> {
 
 #[derive(Args)]
 pub struct DesktopArgs {
-    /// Base for per-user installation (default: your home). A trial prefix keeps all launchers and versions beneath it.
+    /// Base for per-user installation (default: your home, or LOCALAPPDATA on Windows). A trial prefix keeps all launchers and versions beneath it.
     #[arg(long, global = true)]
     prefix: Option<PathBuf>,
     #[command(subcommand)]
@@ -119,7 +131,7 @@ pub struct DesktopArgs {
 enum DesktopCommand {
     /// Inspect an app/package and install it for the next launch.
     Install {
-        /// Extracted desktop package, Mac application bundle, or Linux desktop payload.
+        /// Extracted desktop package or Mac application bundle.
         #[arg(long)]
         from: PathBuf,
         /// Print the installation paths and changes without writing anything.
@@ -923,7 +935,7 @@ fn replace_application(staged: &Path, destination: &Path, existed: bool) -> Resu
 
 fn validate_release(release: &Release) -> Result<()> {
     ensure!(
-        release.launcher_redirect <= 1,
+        release.launcher_redirect <= if cfg!(windows) { 2 } else { 1 },
         "unknown launcher redirect contract"
     );
     ensure!(
@@ -936,6 +948,8 @@ fn validate_release(release: &Release) -> Result<()> {
         release.payload
             == if cfg!(target_os = "macos") {
                 "AgentDocker.app"
+            } else if cfg!(windows) {
+                "AgentDocker"
             } else {
                 "agentdocker-desktop"
             },
@@ -954,7 +968,7 @@ fn validate_release(release: &Release) -> Result<()> {
 }
 
 fn file_hash(path: &Path) -> Result<String> {
-    let mut file = std::fs::File::open(path)?;
+    let mut file = agentdocker_host::files::open_regular(path)?;
     let mut digest = Sha256::new();
     let mut buffer = [0u8; 65536];
     loop {
@@ -976,7 +990,7 @@ fn tree_hash(root: &Path) -> Result<String> {
     ) -> Result<()> {
         for entry in std::fs::read_dir(directory)? {
             let path = entry?.path();
-            let metadata = path.symlink_metadata()?;
+            let metadata = payload_metadata(&path)?;
             ensure!(
                 !metadata.file_type().is_symlink(),
                 "native payload contains an unexpected symlink: {}",
@@ -1019,7 +1033,7 @@ fn tree_hash(root: &Path) -> Result<String> {
 fn sync_tree(root: &Path) -> Result<()> {
     for entry in std::fs::read_dir(root)? {
         let path = entry?.path();
-        let metadata = path.symlink_metadata()?;
+        let metadata = payload_metadata(&path)?;
         ensure!(
             !metadata.file_type().is_symlink(),
             "staged payload changed to contain a symlink"
@@ -1051,6 +1065,8 @@ fn inspect(source: &Path, local_preview: bool) -> Result<(PathBuf, Release)> {
         .context("desktop source does not exist")?;
     let payload_name = if cfg!(target_os = "macos") {
         "AgentDocker.app"
+    } else if cfg!(windows) {
+        "AgentDocker"
     } else {
         "agentdocker-desktop"
     };
@@ -1091,6 +1107,8 @@ fn inspect(source: &Path, local_preview: bool) -> Result<(PathBuf, Release)> {
                 } else {
                     "x86_64-apple-darwin"
                 }
+    } else if cfg!(windows) {
+        cfg!(target_arch = "x86_64") && target == "x86_64-pc-windows-msvc"
     } else {
         target
             == if cfg!(target_arch = "aarch64") {
@@ -1105,20 +1123,22 @@ fn inspect(source: &Path, local_preview: bool) -> Result<(PathBuf, Release)> {
     );
     let binaries = payload.join(if cfg!(target_os = "macos") {
         "Contents/MacOS"
+    } else if cfg!(windows) {
+        ""
     } else {
         "bin"
     });
     for name in BINARIES {
         let path = binaries.join(name);
-        let metadata = path.symlink_metadata()?;
+        let metadata = payload_metadata(&path)?;
         ensure!(
             metadata.is_file() && executable_bits(&metadata) != 0,
             "{name} is not a regular executable"
         );
         if !cfg!(target_os = "macos") {
-            let expected = value["binary_sha256"][name].as_str().context(
-                "Linux payload lacks binary checksums; rebuild with current packaging tools",
-            )?;
+            let expected = value["binary_sha256"][name]
+                .as_str()
+                .context("payload lacks binary checksums; rebuild with current packaging tools")?;
             ensure!(
                 file_hash(&path)? == expected,
                 "{name} does not match its package checksum"
@@ -1173,13 +1193,26 @@ fn inspect(source: &Path, local_preview: bool) -> Result<(PathBuf, Release)> {
             serde_json::Value::Null => 0,
             value => value
                 .as_u64()
-                .filter(|n| *n <= 1)
+                .filter(|n| *n <= if cfg!(windows) { 2 } else { 1 })
                 .context("unknown launcher redirect contract")? as u32,
         },
         payload: payload_name.to_owned(),
     };
     validate_release(&release)?;
     Ok((payload, release))
+}
+
+fn payload_metadata(path: &Path) -> Result<std::fs::Metadata> {
+    let metadata = path.symlink_metadata()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        ensure!(
+            metadata.file_attributes() & 0x400 == 0,
+            "native payload contains a reparse point"
+        );
+    }
+    Ok(metadata)
 }
 
 fn copy_payload(source: &Path, destination: &Path) -> Result<()> {
@@ -1200,7 +1233,7 @@ fn copy_payload(source: &Path, destination: &Path) -> Result<()> {
                 let path = entry?.path();
                 let target =
                     destination.join(path.file_name().context("payload entry has no name")?);
-                let metadata = path.symlink_metadata()?;
+                let metadata = payload_metadata(&path)?;
                 ensure!(
                     !metadata.file_type().is_symlink(),
                     "payload changed to contain a symlink"
@@ -1235,17 +1268,14 @@ fn executable_bits(metadata: &std::fs::Metadata) -> u32 {
 }
 
 pub fn run(args: DesktopArgs, socket: Option<PathBuf>) -> Result<()> {
-    // Per-user installation, retained versions, launchers and rollback
-    // are written for macOS and Linux; Windows gets them in a later slice.
     #[cfg(windows)]
     {
-        let _ = (&args, &socket);
-        bail!(
-            "the desktop installer is not available on Windows yet; run the daemon and CLI from the archive"
-        );
+        windows::run(args, socket)
     }
     #[cfg(unix)]
-    run_unix(args, socket)
+    {
+        run_unix(args, socket)
+    }
 }
 
 #[cfg(unix)]

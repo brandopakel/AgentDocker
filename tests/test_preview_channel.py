@@ -16,7 +16,11 @@ SPEC.loader.exec_module(CHANNEL)
 class FakeGitHub:
     repo = "brandopakel/AgentDocker"
 
-    def __init__(self):
+    def __init__(self, windows=False):
+        self.windows = windows
+        self.channel = CHANNEL.WINDOWS_CHANNEL if windows else CHANNEL.CHANNEL
+        self.feed = CHANNEL.WINDOWS_FEED if windows else CHANNEL.FEED
+        self.targets = CHANNEL.WINDOWS_TARGETS if windows else CHANNEL.TARGETS
         self.releases = {"v0.1.0": {"tag_name": "v0.1.0", "draft": False, "prerelease": False}}
         self.sources = {}
         self.blobs = {}
@@ -40,23 +44,23 @@ class FakeGitHub:
                             "daemon_replacement": "deferred_until_sessions_finish"}, "releases": []}
         release = {"tag_name": tag, "draft": False, "prerelease": True,
                    "published_at": "2026-09-22T00:00:00Z", "assets": []}
-        for target in sorted(CHANNEL.TARGETS):
-            name = "agentdocker-desktop-" + target + (".zip" if target.endswith("darwin") else ".tar.gz")
+        for target in sorted(self.targets):
+            name = "agentdocker-desktop-" + target + (".zip" if target.endswith("darwin") or self.windows else ".tar.gz")
             archive = self.asset(name, (tag + target).encode())
             release["assets"].append(archive)
             value["releases"].append({"target": target, "version": tag[1:], "source_commit": source,
-                                      "state_schema": 8, "signing": "local-preview", "notarized": False,
+                                      "state_schema": 8, "signing": "unsigned-preview" if self.windows else "local-preview", "notarized": False,
                                       "archive": {"name": name, "bytes": archive["size"],
                                                   "sha256": archive["digest"][7:],
                                                   "url": f"https://github.com/{self.repo}/releases/download/{tag}/{name}"}})
-        release["assets"].append(self.asset(CHANNEL.FEED, json.dumps(value).encode()))
+        release["assets"].append(self.asset(self.feed, json.dumps(value).encode()))
         self.releases[tag] = release
         return value
 
     def set_feed(self, tag, value):
         release = self.releases[tag]
-        release["assets"] = [a for a in release["assets"] if a["name"] != CHANNEL.FEED]
-        release["assets"].append(self.asset(CHANNEL.FEED, json.dumps(value).encode()))
+        release["assets"] = [a for a in release["assets"] if a["name"] != self.feed]
+        release["assets"].append(self.asset(self.feed, json.dumps(value).encode()))
 
     def release(self, tag):
         return copy.deepcopy(self.releases.get(tag))
@@ -69,31 +73,31 @@ class FakeGitHub:
 
     def create(self, notes, source):
         self.writes.append("create")
-        self.releases[CHANNEL.CHANNEL] = {"tag_name": CHANNEL.CHANNEL, "draft": True,
+        self.releases[self.channel] = {"tag_name": self.channel, "draft": True,
                                          "prerelease": True, "body": notes.read_text(), "assets": []}
 
     def record(self, notes):
         self.writes.append("record")
-        self.releases[CHANNEL.CHANNEL]["body"] = notes.read_text()
+        self.releases[self.channel]["body"] = notes.read_text()
 
     def upload(self, feed):
         self.writes.append("upload")
-        channel = self.releases[CHANNEL.CHANNEL]
+        channel = self.releases[self.channel]
         channel["assets"] = []  # gh --clobber may remove the previous asset first.
         if self.fail_upload:
             if self.leave_starter:
-                starter = self.asset(CHANNEL.FEED, b"")
+                starter = self.asset(self.feed, b"")
                 starter["state"] = "starter"
                 channel["assets"] = [starter]
             raise RuntimeError("upload failed after delete")
         data = feed.read_bytes() + (b" " if self.corrupt_upload else b"")
-        channel["assets"] = [self.asset(CHANNEL.FEED, data)]
+        channel["assets"] = [self.asset(self.feed, data)]
 
     def publish(self):
         self.writes.append("publish")
         if self.fail_publish:
             raise RuntimeError("publish failed")
-        self.releases[CHANNEL.CHANNEL].update(draft=False, published_at="2026-09-22T01:00:00Z")
+        self.releases[self.channel].update(draft=False, published_at="2026-09-22T01:00:00Z")
 
 
 class PreviewChannel(unittest.TestCase):
@@ -259,6 +263,77 @@ class PreviewChannel(unittest.TestCase):
         for tag in ["v0.2.0", "v0.2.0-beta.01", "v01.2.0-beta", "v0.2.0-beta+build", "../bad", None]:
             with self.subTest(tag=tag), self.assertRaises(ValueError):
                 CHANNEL.version_key(tag)
+
+
+class WindowsPreviewChannel(unittest.TestCase):
+    def setUp(self):
+        self.github = FakeGitHub(windows=True)
+        self.old, self.new = "v0.2.0-beta.5", "v0.2.0-beta.6"
+        self.github.candidate(self.old)
+        self.github.candidate(self.new)
+        # Existing Mac/Linux channel is unrelated and must remain byte-identical.
+        self.desktop = {"tag_name": CHANNEL.CHANNEL, "body": "existing desktop record",
+                        "draft": False, "prerelease": True, "assets": []}
+        self.github.releases[CHANNEL.CHANNEL] = copy.deepcopy(self.desktop)
+
+    def test_separate_channel_preserves_desktop_and_versioned_releases(self):
+        before = copy.deepcopy(self.github.releases)
+        self.assertEqual(CHANNEL.promotion(self.github, self.old)["action"], "promoted")
+        channel = self.github.releases[CHANNEL.WINDOWS_CHANNEL]
+        self.assertEqual(set(CHANNEL.assets(channel)), {CHANNEL.WINDOWS_FEED})
+        self.assertTrue(channel["body"].startswith(CHANNEL.WINDOWS_MARKER))
+        self.assertEqual({k: v for k, v in self.github.releases.items()
+                          if k != CHANNEL.WINDOWS_CHANNEL}, before)
+        self.assertEqual(CHANNEL.promotion(self.github, self.old)["action"], "unchanged")
+
+    def test_failed_upload_retains_high_water_and_same_version_repairs_starter(self):
+        CHANNEL.promotion(self.github, self.old)
+        self.github.fail_upload = self.github.leave_starter = True
+        with self.assertRaises(RuntimeError):
+            CHANNEL.promotion(self.github, self.new)
+        self.github.fail_upload = False
+        self.github.writes.clear()
+        self.assertEqual(CHANNEL.promotion(self.github, self.old)["action"], "preserved_newer")
+        self.assertEqual(self.github.writes, [])
+        self.assertEqual(CHANNEL.promotion(self.github, self.new)["action"], "promoted")
+        self.assertEqual(self.github.releases[CHANNEL.CHANNEL], self.desktop)
+
+    def test_legacy_release_without_installer_feed_preserves_newer_channel(self):
+        CHANNEL.promotion(self.github, self.new)
+        self.github.releases[self.old]["assets"] = []
+        before = copy.deepcopy(self.github.releases)
+        self.github.writes.clear()
+        self.assertEqual(CHANNEL.promotion(self.github, self.old)["action"], "unavailable")
+        self.assertEqual(self.github.writes, [])
+        self.assertEqual(self.github.releases, before)
+
+    def test_wrong_platform_policy_or_archive_never_mutates_channel(self):
+        for mutate in [lambda v: v["releases"][0].update(target="x86_64-unknown-linux-gnu"),
+                       lambda v: v["releases"][0].update(signing="checksum"),
+                       lambda v: v["releases"][0].update(notarized=True),
+                       lambda v: v["releases"][0]["archive"].update(sha256="0" * 64),
+                       lambda v: v["policy"].update(activation="automatic")]:
+            self.setUp()
+            value = self.github.candidate(self.old)
+            mutate(value)
+            self.github.set_feed(self.old, value)
+            with self.assertRaises(ValueError):
+                CHANNEL.promotion(self.github, self.old)
+            self.assertEqual(self.github.writes, [])
+
+    def test_transport_mutations_address_only_windows_channel(self):
+        from tempfile import TemporaryDirectory
+        transport = CHANNEL.GitHub(self.github.repo, windows=True)
+        with TemporaryDirectory() as directory, patch.object(transport, "command") as command:
+            notes = Path(directory) / "notes.md"
+            feed = Path(directory) / CHANNEL.WINDOWS_FEED
+            transport.create(notes, "a" * 40)
+            transport.record(notes)
+            transport.upload(feed)
+            transport.publish()
+            for call in command.call_args_list:
+                self.assertEqual(call.args[2], CHANNEL.WINDOWS_CHANNEL)
+                self.assertNotIn(CHANNEL.CHANNEL, call.args)
 
 
 class GitHubTransport(unittest.TestCase):

@@ -106,9 +106,11 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
           python scripts/build_native.py --target x86_64-pc-windows-msvc > artifacts/native-build.json
-      - name: Accept the extracted portable archive
-        timeout-minutes: 10
-        run: python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-package
+      - name: Install native service acceptance dependency
+        run: python -m pip install --disable-pip-version-check psutil==7.0.0
+      - name: Accept the extracted archive and installed service lifecycle
+        timeout-minutes: 20
+        run: python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-package --service
       - name: Verify acceptance and prepare prerelease assets
         env:
           RELEASE_TAG: ${{ github.ref_name }}
@@ -130,6 +132,8 @@ jobs:
             artifacts/native-build.json
             artifacts/windows-package/package-acceptance.json
             artifacts/windows-package/smoke/
+            artifacts/windows-package/installation/
+            artifacts/windows-package/service/
           if-no-files-found: warn
   feed:
     name: Verify complete desktop update feed

@@ -11,6 +11,10 @@ on:
         type: choice
         default: '0'
         options: ['0', '5', '10', '20']
+      service_acceptance:
+        description: Test the extracted package's isolated Task Scheduler lifecycle
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -75,10 +79,18 @@ jobs:
         # Forty samples can exceed ten minutes within their command bounds;
         # reserve time to finish cleanup and retain the diagnostic report.
         # This changes no daemon/client readiness deadline.
-        timeout-minutes: ${{ inputs.startup_samples && inputs.startup_samples != '0' && 100 || 10 }}
+        timeout-minutes: ${{ inputs.startup_samples && inputs.startup_samples != '0' && 100 || inputs.service_acceptance && 20 || 10 }}
         env:
           STARTUP_SAMPLES: ${{ inputs.startup_samples || '0' }}
-        run: python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES" --codex artifacts/codex.exe
+          SERVICE_ACCEPTANCE: ${{ inputs.service_acceptance && '1' || '0' }}
+        run: |
+          $extra = @()
+          if ($env:SERVICE_ACCEPTANCE -eq '1') {
+            python -m pip install --disable-pip-version-check psutil==7.0.0
+            if ($LASTEXITCODE -ne 0) { throw "service acceptance dependency failed" }
+            $extra += '--service'
+          }
+          python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES" --codex artifacts/codex.exe @extra
       - name: Diagnose established-session native Codex after startup failure
         # A narrower pass never changes the failed strict startup outcome.
         if: ${{ !cancelled() && steps.package.outcome == 'failure' }}
@@ -125,4 +137,6 @@ jobs:
             artifacts/windows-established-package/package-acceptance.json
             artifacts/windows-established-package/smoke/
             artifacts/windows-established-package/native-codex/
+            artifacts/windows-desktop-package/service/
+            artifacts/windows-desktop-package/installation/
           if-no-files-found: warn

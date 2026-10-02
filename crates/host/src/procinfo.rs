@@ -163,11 +163,12 @@ pub fn end(pid: u32, started_at: DateTime<Utc>, force: bool) -> std::io::Result<
     }
 }
 
-/// This process's parent pid, from the process table: what
-/// `std::os::unix::process::parent_id` answers on Unix.
+/// This invocation's parent from the process table, unwrapping only a verified
+/// installed bootstrap. Ordinary processes retain their actual Windows parent.
 #[cfg(windows)]
 pub fn parent_id() -> u32 {
-    inspect(std::process::id()).map(|p| p.ppid).unwrap_or(0)
+    let actual = inspect(std::process::id()).map(|p| p.ppid).unwrap_or(0);
+    crate::installation::windows::original_parent(actual).unwrap_or(actual)
 }
 
 /// The current working directory of another process of ours.

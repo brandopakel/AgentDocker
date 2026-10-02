@@ -48,6 +48,32 @@ launching an extracted archive, run `ldd` on its `agentdocker-ui` executable
 and resolve any `not found` dependencies for your distribution. The CLI-only
 installer does not install the desktop or those libraries.
 
+On Windows x64, the preview ZIP can run portably or install for your account.
+From PowerShell in its extracted `AgentDocker` folder:
+
+```powershell
+.\agentdocker.exe desktop install --from . --local-preview
+```
+
+The installed app and CLI are under
+`$env:LOCALAPPDATA\AgentDocker\desktop\bin`; open `agentdocker-ui.exe` there.
+In that directory, use `.\agentdocker.exe desktop update --check` to check for a
+preview, `desktop update --local-preview` to verify and preview it, and add
+`--apply` to activate. `desktop rollback --local-preview` restores the retained
+previous version. Updates apply on the next launch; running sessions keep their
+current binaries. Windows uses its own preview channel, separate from the stable
+and Mac/Linux feeds. It remains unsigned and requires explicit preview consent.
+
+`desktop prune --preview` reports removable old builds; omit `--preview` to remove
+them. `desktop uninstall --preview` reports launcher removal; omit `--preview` to
+apply. Both preserve settings, running versions and unrecognized files. Loaded
+launchers move into a private retirement directory until they close; a later
+activation, prune or uninstall removes their verified files. Retirement is capped
+at eight directories and 256 MiB. Uninstall
+refuses while a service references the installation, even if stopped: run
+`daemon uninstall` for that service first. Use `desktop --prefix <directory>` for
+an isolated installation. Start menu shortcuts and PATH changes are not installed.
+
 You do not start the daemon. The first client that needs it starts it, on
 `~/.agentdocker/agentd.sock`. To have it survive a reboot:
 
@@ -62,9 +88,10 @@ storing a password; an interactive sign-in is required. `daemon start`, `stop`,
 `restart` and `uninstall` operate on that task. A supervisor retries a failed
 daemon up to three times with two seconds between attempts; a clean shutdown
 stays stopped. Ten minutes of continuous operation resets that retry budget.
-The task records the current CLI and daemon paths. After moving the portable
-folder or selecting another build, run `daemon install` from the new build.
-Keep the old folder until that succeeds. An ownership record in the daemon
+Installed builds register stable CLI and daemon launchers, so activation and rollback
+preserve service paths. Portable builds register their extracted paths; after moving
+that folder, run `daemon install` from the new build and keep the old folder until
+that succeeds. An ownership record in the daemon
 home prevents replacing or removing a task whose action or user was changed
 outside AgentDocker. `daemon install --dry-run` previews the task without
 registering it.

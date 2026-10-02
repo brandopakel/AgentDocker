@@ -165,6 +165,31 @@ crash, and what that means for a person:
   acceptance remains separate from source tests and the isolated supervisor
   prototype. See the [user commands](GUIDE.md) and
   [service semantics](ARCHITECTURE.md#starting-the-daemon).
+
+  Manual Windows workflow runs can enable `service_acceptance` to exercise
+  install, stop, start, restart, daemon-crash recovery and uninstall using the
+  exact extracted portable binaries. The trial creates one random private home
+  and its owned Task Scheduler task, disables client autostart, verifies the
+  serving process image and home before inducing a crash, and requires cleanup.
+  The report is retained beside package evidence. An interactive-logon pass
+  does not establish login/reboot behavior or managed-provider survival. Its
+  first native run on `bbfb4dcb`
+  passed the 62 portable checks, then failed service install/uninstall before
+  creating a task: the missing-task query returned a silent PowerShell failure.
+  Lookup now selects the exact task from successful enumeration and propagates
+  query errors instead of treating every error as absence. Corrected native
+  run 36958504870 on `bf48452d` passed all 62 portable checks and eight service
+  checks, including crash recovery without client autostart and repeat
+  uninstall. The private task, processes and scratch were removed with no
+  cleanup errors. The original failure remains retained. Lookup now compares
+  names without regard to case before checking ownership. The native driver
+  additionally creates a harmless, unstarted foreign task under a case-variant
+  name and requires install/uninstall refusal with its XML unchanged. That
+  regression passed on `c0dd784e` in native run 36963606339: all 62 portable
+  checks and 11 service checks passed, the foreign task XML stayed identical,
+  and all owned tasks, processes and scratch were removed cleanly.
+  Failed cleanup retires verified process generations, supervisor first, while
+  retaining the failed result and any cleanup errors.
 - A validation command is ended on a timeout, but only the command itself:
   there is no process group and no Job Object around it yet, so whether its
   descendants survived is not reported.
@@ -515,3 +540,72 @@ from every owned home before cleanup. Failed CI packages are retained separately
 as `windows-failed-package-diagnostics`, never as an accepted preview. The
 OWNER RIGHTS fresh-home timeout in run35821898700 remains an unresolved failure;
 added diagnostics and any later pass alone do not establish its cause or a fix.
+
+The native desktop installer candidate has passed isolated native lifecycle
+acceptance; hosted and physical acceptance remain open. Its private atomic
+activation record and receipt-checked launcher resolver reject malformed
+records, modified launchers, missing activation and escaped payloads. Bootstrap
+entrypoints select and pin the immutable executable, inherit arguments/stdio and
+wait for its exit; Windows advertises launcher contract 2 to distinguish this
+from the earlier Mac-only contract. The process-parent lookup unwraps only a live bootstrap whose kernel image,
+receipt, private store and process births agree; caller-supplied environment
+variables do not select an identity. The kernel image query is the existing
+`3c95ab3e` prerequisite also used by the native Codex candidate. Native original-parent acceptance passed in run 36970015868 on `9b79675b`
+(317 core/host tests, eight skipped, zero retries). The native CLI now wires
+`desktop install`, `status` and `rollback` to `%LOCALAPPDATA%/AgentDocker/desktop`
+(or a private `--prefix`) with explicit `--local-preview`, payload/schema and
+preview guards. Stable bootstrap bytes and their receipt survive activation;
+provider and service registrations use those stable paths. Native run 36971473270 on `f0426f72` passed 14 private-prefix installation/
+rollback checks plus 62 portable checks on the extracted binaries. The second
+payload changed only a fixture README: this proves activation/rollback mechanics,
+not a second hosted release. Modified bootstrap/retained bytes were refused and
+scratch was removed. The updater now accepts unsigned Windows preview feeds
+only, verifies archive bytes and the payload source/schema, and extracts only
+the seven exact portable files with bounded expansion and no links. Native preview-feed run 36976883757 on `8ae2a50c` also passed its
+local-fixture update/rollback, wrong-checksum and stable-policy refusal checks.
+This is not a hosted Windows upgrade. Maintenance now plans and guards removal
+of verified inactive versions, retaining active/rollback/held versions and stopped
+service references. Uninstall reserves bounded private retirement storage,
+publishes an inactive record, then renames only receipt-verified launchers out of
+the public directory. A hash receipt precedes each retirement; loaded images
+finish without deletion and later activation/prune/uninstall collects closed
+images. Unexpected or changed content is preserved; eight directories and 256 MiB
+limit new retirement. Settings and running immutable releases are retained. An interrupted cleanup is resumable
+from the portable CLI. Native maintenance/service interlocks and the isolated
+installed lifecycle passed on `e190d919`; Start menu/PATH, hosted upgrades and
+physical login/reboot acceptance remain open.
+
+An initial Mac concurrency regression found that strict private-file reads
+rejected an opened handle unlinked by record replacement. A separate read-only
+snapshot API retains owner/ACL/type and hard-link checks while accepting that
+zero-link handle. Seven boundary tests and six existing state-directory tests
+pass locally. Native Windows run 36968029285 on `43e3b384` passed 314 tests but
+failed concurrent publication: `MoveFileEx` returned access denied while readers
+held the target. The failure is retained. A dedicated snapshot publisher now
+uses documented POSIX rename semantics for open readers; native acceptance of
+that change and the bootstrap passed within run 36968759795 on `75013c48`. The
+run still failed two lifetime-pin fixtures that constructed the old Unix layout
+on Windows; those fixtures now exercise the native store. Native run 36970015868 on `9b79675b` passed all 317 core/host tests and
+the extracted portable checks. The later `f0426f72` installer trial passed its separate 14 checks; updater
+acceptance remains separate from that source.
+
+Installed service acceptance on `3fbbd8c2` exposed a DOS-versus-verbatim path mismatch: the active CLI was falsely classified as obsolete during registration. Registration now compares canonical filesystem paths, still checks the active release and verified bootstrap receipt, and includes native path-spelling and actual copied-process regressions. The original failed trial is retained. Native `2bc7b2e6` passed all 13 installed Task Scheduler checks; loaded-bootstrap uninstall subsequently failed.
+
+The Windows CLI installation candidate also stages a separate preview update
+channel and refuses publication unless both installation and installed service
+acceptance pass on the exact archive. `91dd78bd` passed native host registration
+regressions but run 36980029481 failed at portable `daemon install`: the bounded
+PowerShell command timed out after 20 seconds before installed tests began.
+This does not establish installed-service or uninstall acceptance. The original
+failed service report and full native log remain retained; the timeout cause is
+still open.
+
+Native loaded-image regression `a978d269` isolated access denied to
+`FileDispositionInfoEx` after the DELETE-capable open succeeded. The candidate
+now uses private rename retirement and ordinary collection after image closure.
+Exact-head run 37069489729 on `e190d919` passed 319 core/host tests, 62 portable
+checks, 33 installer checks, 11 portable Task Scheduler checks and 13 installed
+Task Scheduler checks. Loaded-bootstrap uninstall, collection after reinstall
+and bounded retirement refusal passed; hashes match the clean native build,
+and both service fixtures removed owned tasks/scratch without cleanup errors.
+No hosted Windows update, physical console or login/reboot result is implied.
