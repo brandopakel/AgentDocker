@@ -126,7 +126,7 @@ fn hash(path: &Path) -> io::Result<String> {
 /// A stable bootstrap belongs to this store only while its receipt and bytes
 /// agree. Missing/damaged records in the reserved launcher directory fail
 /// closed; an ordinary extracted portable executable is unaffected.
-fn launcher_root(executable: &Path) -> io::Result<Option<PathBuf>> {
+pub fn launcher_root(executable: &Path) -> io::Result<Option<PathBuf>> {
     let Some(binary) = executable.file_name().and_then(|name| name.to_str()) else {
         return Ok(None);
     };
@@ -169,6 +169,28 @@ pub fn launcher_target(executable: &Path) -> io::Result<Option<PathBuf>> {
     target(&root, binary)?
         .map(Some)
         .ok_or_else(|| invalid("Windows installation is inactive"))
+}
+
+/// Stable registration path for a managed executable. Obsolete running copies
+/// must reopen before changing provider or service registrations.
+pub fn stable_executable(executable: &Path) -> io::Result<PathBuf> {
+    let Some((root, _, _)) = managed(executable) else {
+        return Ok(executable.to_owned());
+    };
+    let binary = executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| invalid("invalid managed executable name"))?;
+    if target(&root, binary)?.as_deref() != Some(executable) {
+        return Err(invalid(
+            "this copy is no longer active; reopen before configuring integrations",
+        ));
+    }
+    let launcher = root.join("bin").join(binary);
+    if launcher_root(&launcher)?.as_deref() != Some(root.as_path()) {
+        return Err(invalid("managed Windows launcher is missing"));
+    }
+    Ok(launcher)
 }
 
 /// A copied bootstrap adds one process around an installed command. Unwrap

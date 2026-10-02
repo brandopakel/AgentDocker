@@ -507,9 +507,14 @@ wait for its exit; Windows advertises launcher contract 2 to distinguish this
 from the earlier Mac-only contract. The process-parent lookup unwraps only a live bootstrap whose kernel image,
 receipt, private store and process births agree; caller-supplied environment
 variables do not select an identity. The kernel image query is the existing
-`3c95ab3e` prerequisite also used by the native Codex candidate. Native original-
-parent acceptance, installer command wiring and full lifecycle acceptance remain
-open.
+`3c95ab3e` prerequisite also used by the native Codex candidate. Native original-parent acceptance passed in run 36970015868 on `9b79675b`
+(317 core/host tests, eight skipped, zero retries). The native CLI now wires
+`desktop install`, `status` and `rollback` to `%LOCALAPPDATA%/AgentDocker/desktop`
+(or a private `--prefix`) with explicit `--local-preview`, payload/schema and
+preview guards. Stable bootstrap bytes and their receipt survive activation;
+provider and service registrations use those stable paths. Native installer
+command acceptance, update/maintenance, Start menu and full lifecycle acceptance
+remain open.
 
 An initial Mac concurrency regression found that strict private-file reads
 rejected an opened handle unlinked by record replacement. A separate read-only
@@ -521,6 +526,6 @@ held the target. The failure is retained. A dedicated snapshot publisher now
 uses documented POSIX rename semantics for open readers; native acceptance of
 that change and the bootstrap passed within run 36968759795 on `75013c48`. The
 run still failed two lifetime-pin fixtures that constructed the old Unix layout
-on Windows; those fixtures now exercise the native store. A fully green native
-run remains required. The portable preview still has no installer/update/rollback
-acceptance.
+on Windows; those fixtures now exercise the native store. Native run 36970015868 on `9b79675b` passed all 317 core/host tests and
+the extracted portable checks. The new installer command trial remains separate
+and unaccepted until its exact native run passes.
