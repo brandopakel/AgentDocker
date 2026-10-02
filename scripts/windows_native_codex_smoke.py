@@ -438,7 +438,10 @@ def main():
         report["provider_identity_contexts"] = []
         if report.get("provider_pid"):
             try:
-                root_provider = psutil.Process(report["provider_pid"])
+                root_provider = next((process for process in owned
+                                      if process.pid == report["provider_pid"] and process.is_running()), None)
+                if root_provider is None:
+                    raise psutil.NoSuchProcess(report["provider_pid"])
                 for process in [root_provider, *root_provider.children(recursive=True)][:128]:
                     values = process.environ()
                     report["provider_identity_contexts"].append({
@@ -448,7 +451,7 @@ def main():
                             "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_HOME",
                             "AGENTDOCKER_AGENT_ID") if key in values},
                     })
-            except (psutil.NoSuchProcess, psutil.AccessDenied) as error:
+            except Exception as error:
                 report["provider_identity_context_error"] = str(error)
         closing.set()
         release.set()
