@@ -83,7 +83,7 @@ impl Composer {
         let mut editor = iced::widget::text_editor(content)
             .id(widget::Id::from(self.id.clone()))
             .placeholder(&self.label)
-            .padding([11, 13])
+            .padding([10, 12])
             .size(14)
             .height(Length::Shrink)
             // Shrink layout in Iced adds vertical padding after this bound.
@@ -91,20 +91,20 @@ impl Composer {
             .key_binding(move |key| binding(key, suppress_enter))
             .style(move |theme, status| {
                 let status = drawn_status.unwrap_or(status);
-                use crate::app::style::{Colors, alpha};
+                use crate::app::style::{Colors, RADIUS_MD, alpha, mix};
                 let c = Colors::of(theme);
-                let (border, background) = match status {
-                    Status::Focused { .. } => (c.accent, c.card),
-                    Status::Hovered => (alpha(c.accent, 0.6), c.card),
-                    Status::Active => (c.line, c.card),
-                    Status::Disabled => (c.line, c.raised),
+                let (border, width, background) = match status {
+                    Status::Focused { .. } => (alpha(c.accent, 0.8), 2.0, c.card),
+                    Status::Hovered => (mix(c.line_strong, c.muted, 0.45), 1.0, c.card),
+                    Status::Active => (c.line_strong, 1.0, c.card),
+                    Status::Disabled => (c.line, 1.0, c.raised),
                 };
                 text_editor::Style {
                     background: background.into(),
                     border: Border {
                         color: border,
-                        width: 1.0,
-                        radius: 9.0.into(),
+                        width,
+                        radius: RADIUS_MD.into(),
                     },
                     placeholder: c.faint,
                     value: if matches!(status, Status::Disabled) {

@@ -1,6 +1,6 @@
-//! The rail's glyphs, drawn rather than shipped.
+//! The app's glyphs, drawn rather than shipped.
 //!
-//! Five strokes on a sixteen-point grid, scaled to whatever size they are
+//! Strokes on a sixteen-point grid, scaled to whatever size they are
 //! given and inked in whatever colour the row is using. Drawing them keeps
 //! them crisp at any density and in both appearances without an icon font
 //! or a bitmap per theme.
@@ -54,6 +54,36 @@ pub enum Icon {
     More,
     /// Three columns: the board.
     Board,
+    /// A prompt in a window: a terminal.
+    Terminal,
+    /// Chevrons, pointing where they open.
+    ChevronDown,
+    ChevronRight,
+    ChevronLeft,
+    /// Two bars: pause.
+    Pause,
+    /// A lens: search.
+    Search,
+    /// A tick: done.
+    Check,
+    /// A cross: close or remove.
+    Close,
+    /// An arrow up: send.
+    ArrowUp,
+    /// A pulse line: activity.
+    Pulse,
+    /// A page with a folded corner: a file.
+    File,
+    /// A clock face: time.
+    Clock,
+    /// A question mark in a circle: a question.
+    Question,
+    /// Two overlapping pages: copy.
+    Copy,
+    /// An arrow into a tray: an update.
+    Download,
+    /// A hash: a channel.
+    Hash,
 }
 
 /// An icon inked in one colour.
@@ -183,8 +213,174 @@ impl Glyph {
                     frame.fill(&Path::circle(p(x, 8.0), 1.6), self.color);
                 }
             }
+            Icon::Terminal => {
+                let window =
+                    Path::rounded_rectangle(p(1.75, 2.75), iced::Size::new(12.5, 10.5), 2.0.into());
+                let prompt = Path::new(|b| {
+                    b.move_to(p(4.5, 6.0));
+                    b.line_to(p(6.5, 8.0));
+                    b.line_to(p(4.5, 10.0));
+                    b.move_to(p(8.0, 10.0));
+                    b.line_to(p(11.0, 10.0));
+                });
+                frame.stroke(&window, stroke.clone());
+                frame.stroke(&prompt, stroke);
+            }
+            Icon::ChevronDown => {
+                frame.stroke(
+                    &polyline(&[p(4.0, 6.0), p(8.0, 10.0), p(12.0, 6.0)]),
+                    stroke,
+                );
+            }
+            Icon::ChevronRight => {
+                frame.stroke(
+                    &polyline(&[p(6.0, 4.0), p(10.0, 8.0), p(6.0, 12.0)]),
+                    stroke,
+                );
+            }
+            Icon::ChevronLeft => {
+                frame.stroke(
+                    &polyline(&[p(10.0, 4.0), p(6.0, 8.0), p(10.0, 12.0)]),
+                    stroke,
+                );
+            }
+            Icon::Pause => {
+                for x in [5.5, 10.5] {
+                    frame.stroke(&Path::line(p(x, 3.5), p(x, 12.5)), self.stroke(2.0));
+                }
+            }
+            Icon::Search => {
+                frame.stroke(&Path::circle(p(7.0, 7.0), 4.25), stroke.clone());
+                frame.stroke(&Path::line(p(10.2, 10.2), p(13.5, 13.5)), stroke);
+            }
+            Icon::Check => {
+                frame.stroke(
+                    &polyline(&[p(3.0, 8.5), p(6.5, 12.0), p(13.0, 4.5)]),
+                    self.stroke(1.75),
+                );
+            }
+            Icon::Close => {
+                let cross = Path::new(|b| {
+                    b.move_to(p(4.0, 4.0));
+                    b.line_to(p(12.0, 12.0));
+                    b.move_to(p(12.0, 4.0));
+                    b.line_to(p(4.0, 12.0));
+                });
+                frame.stroke(&cross, stroke);
+            }
+            Icon::ArrowUp => {
+                let arrow = Path::new(|b| {
+                    b.move_to(p(8.0, 13.0));
+                    b.line_to(p(8.0, 3.5));
+                    b.move_to(p(4.0, 7.5));
+                    b.line_to(p(8.0, 3.5));
+                    b.line_to(p(12.0, 7.5));
+                });
+                frame.stroke(&arrow, self.stroke(1.75));
+            }
+            Icon::Pulse => {
+                frame.stroke(
+                    &polyline(&[
+                        p(1.5, 8.5),
+                        p(4.5, 8.5),
+                        p(6.0, 4.0),
+                        p(9.0, 12.5),
+                        p(10.5, 8.5),
+                        p(14.5, 8.5),
+                    ]),
+                    stroke,
+                );
+            }
+            Icon::File => {
+                let page = Path::new(|b| {
+                    b.move_to(p(4.0, 2.0));
+                    b.line_to(p(9.5, 2.0));
+                    b.line_to(p(12.5, 5.0));
+                    b.line_to(p(12.5, 14.0));
+                    b.line_to(p(4.0, 14.0));
+                    b.close();
+                    b.move_to(p(9.5, 2.0));
+                    b.line_to(p(9.5, 5.0));
+                    b.line_to(p(12.5, 5.0));
+                });
+                frame.stroke(&page, stroke);
+            }
+            Icon::Clock => {
+                frame.stroke(&Path::circle(p(8.0, 8.0), 5.75), stroke.clone());
+                frame.stroke(
+                    &polyline(&[p(8.0, 4.75), p(8.0, 8.0), p(10.25, 9.5)]),
+                    stroke,
+                );
+            }
+            Icon::Question => {
+                frame.stroke(&Path::circle(p(8.0, 8.0), 6.0), stroke.clone());
+                let hook = Path::new(|b| {
+                    b.move_to(p(6.2, 6.4));
+                    b.quadratic_curve_to(p(6.4, 4.6), p(8.1, 4.6));
+                    b.quadratic_curve_to(p(9.9, 4.7), p(9.9, 6.3));
+                    b.quadratic_curve_to(p(9.8, 7.5), p(8.0, 8.4));
+                    b.line_to(p(8.0, 9.3));
+                });
+                frame.stroke(&hook, stroke);
+                frame.fill(&Path::circle(p(8.0, 11.6), 0.95), self.color);
+            }
+            Icon::Copy => {
+                frame.stroke(
+                    &Path::rounded_rectangle(p(5.5, 5.5), iced::Size::new(8.0, 8.0), 1.5.into()),
+                    stroke.clone(),
+                );
+                frame.stroke(
+                    &polyline(&[
+                        p(3.0, 10.5),
+                        p(2.5, 10.5),
+                        p(2.5, 2.5),
+                        p(10.5, 2.5),
+                        p(10.5, 3.0),
+                    ]),
+                    stroke,
+                );
+            }
+            Icon::Download => {
+                let arrow = Path::new(|b| {
+                    b.move_to(p(8.0, 2.5));
+                    b.line_to(p(8.0, 10.0));
+                    b.move_to(p(4.75, 7.0));
+                    b.line_to(p(8.0, 10.25));
+                    b.line_to(p(11.25, 7.0));
+                    b.move_to(p(2.5, 11.0));
+                    b.line_to(p(2.5, 13.5));
+                    b.line_to(p(13.5, 13.5));
+                    b.line_to(p(13.5, 11.0));
+                });
+                frame.stroke(&arrow, stroke);
+            }
+            Icon::Hash => {
+                let hash = Path::new(|b| {
+                    b.move_to(p(6.5, 2.5));
+                    b.line_to(p(5.0, 13.5));
+                    b.move_to(p(11.0, 2.5));
+                    b.line_to(p(9.5, 13.5));
+                    b.move_to(p(3.0, 6.0));
+                    b.line_to(p(13.5, 6.0));
+                    b.move_to(p(2.5, 10.0));
+                    b.line_to(p(13.0, 10.0));
+                });
+                frame.stroke(&hash, stroke);
+            }
         }
     }
+}
+
+/// An open path through `points`.
+fn polyline(points: &[Point]) -> Path {
+    Path::new(|b| {
+        if let Some((first, rest)) = points.split_first() {
+            b.move_to(*first);
+            for point in rest {
+                b.line_to(*point);
+            }
+        }
+    })
 }
 
 /// An icon of `size` points, inked in `color`.

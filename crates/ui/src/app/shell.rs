@@ -33,6 +33,8 @@ pub(super) struct State {
     pub add_path: String,
     pub adding: bool,
     pub launch: bool,
+    /// The Launch agent split button's menu of tools is open.
+    pub launch_menu: bool,
     pub launch_runtime: Option<String>,
     pub launch_name: String,
     pub launch_arguments: String,
@@ -81,6 +83,9 @@ pub(super) struct State {
     pub peers_open: bool,
     /// The project row whose menu is open.
     pub project_menu: Option<PathBuf>,
+    /// The project row under the pointer: its menu button shows only
+    /// there, on the selected row and while its menu is open.
+    pub rail_hover: Option<PathBuf>,
     /// The project being renamed, and the name so far.
     pub project_rename: Option<(PathBuf, String)>,
     /// The conversation open in Inbox: one agent, or every agent at once.
@@ -667,6 +672,13 @@ pub enum Message {
     NewDirect(String),
     /// Open or close the menu under a project row.
     ProjectMenu(PathBuf),
+    /// Open or close the Launch agent menu of tools.
+    LaunchMenu,
+    /// Open the launch form with this tool chosen.
+    LaunchWith(String),
+    /// The pointer entered or left a project row of the rail.
+    RailHover(PathBuf),
+    RailLeave(PathBuf),
     ProjectRenameStart(PathBuf),
     ProjectRenameDraft(String),
     ProjectRenameSubmit,
@@ -1598,6 +1610,12 @@ impl App {
                     }
                 }
             }
+            Message::RailHover(path) => self.shell.rail_hover = Some(path),
+            Message::RailLeave(path) => {
+                if self.shell.rail_hover.as_ref() == Some(&path) {
+                    self.shell.rail_hover = None;
+                }
+            }
             Message::ProjectMenu(path) => {
                 let open = self.shell.project_menu.as_ref() == Some(&path);
                 self.shell.project_menu = (!open).then_some(path);
@@ -2056,7 +2074,19 @@ impl App {
                 self.shell.overlaps_open = true;
                 return self.update(Message::Navigate(Screen::Channels));
             }
+            Message::LaunchMenu => self.shell.launch_menu = !self.shell.launch_menu,
+            Message::LaunchWith(runtime) => {
+                self.shell.launch_menu = false;
+                let task = if self.shell.launch {
+                    Task::none()
+                } else {
+                    self.update(Message::ShowLaunch)
+                };
+                let _ = self.update(Message::LaunchRuntime(runtime));
+                return task;
+            }
             Message::OpenLaunch => {
+                self.shell.launch_menu = false;
                 if !self.shell.launch {
                     return self.update(Message::ShowLaunch);
                 }

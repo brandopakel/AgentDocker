@@ -8,7 +8,7 @@ use super::icons::{Icon, icon};
 use super::style::{Colors, alpha, weight};
 use super::*;
 use crate::controls::{
-    Kind, block_button, button as action, composer, custom, danger, input, input_submitting,
+    Kind, button as action, composer, custom, custom_sized, danger, ghost, input, input_submitting,
     primary, segment, tab,
 };
 use iced::{
@@ -72,7 +72,7 @@ fn mono<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
 }
 fn card<'a>(content: impl Into<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
     container(content)
-        .padding(18)
+        .padding(16)
         .width(Fill)
         .style(move |_| c.card_style())
         .into()
@@ -83,18 +83,19 @@ pub(super) fn panel<'a>(
     c: Colors,
 ) -> Element<'a, Message> {
     container(content)
-        .padding(6)
+        .padding(4)
         .width(Fill)
         .style(move |_| c.card_style())
         .into()
 }
+/// A notice in a tone: a faint wash and a hairline of the tone.
 fn attention<'a>(
     content: impl Into<Element<'a, Message>>,
     tint: iced::Color,
     c: Colors,
 ) -> Element<'a, Message> {
     container(content)
-        .padding(18)
+        .padding([10, 14])
         .width(Fill)
         .style(move |_| c.attention_style(tint))
         .into()
@@ -107,10 +108,11 @@ pub(super) fn pill<'a>(
 ) -> Element<'a, Message> {
     container(
         text(label.into())
-            .size(12)
-            .font(weight(iced::font::Weight::Semibold)),
+            .size(11)
+            .line_height(iced::Pixels(14.0))
+            .font(weight(iced::font::Weight::Medium)),
     )
-    .padding([3, 9])
+    .padding([2, 6])
     .style(move |_| c.pill(background, ink))
     .into()
 }
@@ -140,7 +142,7 @@ pub(super) fn monogram<'a>(name: &str, seed: &str, size: f32, c: Colors) -> Elem
     .style(move |_| container::Style {
         background: Some(tint.into()),
         border: iced::Border {
-            radius: (size * 0.28).into(),
+            radius: (size * 0.25).round().into(),
             ..Default::default()
         },
         ..Default::default()
@@ -160,14 +162,13 @@ fn hint<'a>(
     iced::widget::tooltip(
         container(content).padding(5),
         container(text(label.into()).size(12).color(c.text))
-            .padding([5, 9])
+            .padding([4, 8])
             .style(move |_| container::Style {
-                shadow: iced::Shadow {
-                    color: iced::Color::from_rgba8(16, 24, 40, 0.18),
-                    offset: iced::Vector::new(0.0, 2.0),
-                    blur_radius: 6.0,
+                border: iced::Border {
+                    radius: super::style::RADIUS_SM.into(),
+                    ..c.overlay_style().border
                 },
-                ..c.surface(c.card, true)
+                ..c.overlay_style()
             }),
         iced::widget::tooltip::Position::Right,
     )
@@ -181,12 +182,13 @@ pub(super) fn segmented<'a>(choices: Vec<Element<'a, Message>>, c: Colors) -> El
         track = track.push(choice);
     }
     container(track)
-        .padding(3)
+        .padding(2)
         .style(move |_| container::Style {
-            background: Some(c.raised.into()),
+            background: Some(if c.dark { c.ground } else { c.raised }.into()),
             border: iced::Border {
-                radius: 10.0.into(),
-                ..Default::default()
+                color: c.line,
+                width: 1.0,
+                radius: super::style::RADIUS_MD.into(),
             },
             ..Default::default()
         })
@@ -208,7 +210,7 @@ fn meter<'a>(fraction: f32, fill: iced::Color, c: Colors) -> Element<'a, Message
     }
     container(bar)
         .width(Fill)
-        .style(move |_| c.dot(c.line))
+        .style(move |_| c.dot(alpha(c.text, 0.08)))
         .into()
 }
 /// The strip along the top of a pane: what it holds, and one quiet fact.
@@ -297,47 +299,276 @@ fn mark() -> iced::widget::image::Handle {
     })
     .clone()
 }
-/// The mark and the two-tone wordmark. Two plain texts rather than one
-/// rich text: the rich text widget resolves heavier faces differently and
-/// lands on a monospace fallback for the system sans.
-fn brand<'a>(c: Colors) -> Element<'a, Message> {
+/// The mark and the two-tone wordmark, on the rail. Two plain texts
+/// rather than one rich text: the rich text widget resolves heavier faces
+/// differently and lands on a monospace fallback for the system sans.
+fn brand<'a>(r: Colors) -> Element<'a, Message> {
     row![
-        iced::widget::image(mark()).width(30).height(30),
+        iced::widget::image(mark()).width(26).height(26),
         row![
-            heading("Agent", 19).color(c.text),
-            heading("Docker", 19).color(c.accent)
+            heading("Agent", 16).color(r.text),
+            heading("Docker", 16).color(super::style::mix(r.accent, iced::Color::WHITE, 0.3))
         ]
     ]
-    .spacing(10)
+    .spacing(9)
     .align_y(Center)
     .into()
 }
-/// Nothing here yet, said kindly, with the mark keeping it company.
+/// Nothing here yet, said kindly: the mark in a quiet tile, a title, one
+/// sentence and at most one action. No frame: an empty place should not
+/// look like a thing to read.
 pub(super) fn empty<'a>(
     title_text: &'a str,
     hint: &'a str,
     extra: Option<Element<'a, Message>>,
     c: Colors,
 ) -> Element<'a, Message> {
-    let mut body = column![
+    let tile = container(
         iced::widget::image(mark())
-            .width(44)
-            .height(44)
-            .opacity(if c.dark { 0.5_f32 } else { 0.7_f32 }),
-        heading(title_text, 18),
+            .width(26)
+            .height(26)
+            .opacity(if c.dark { 0.75_f32 } else { 0.9_f32 }),
+    )
+    .center(48)
+    .style(move |_| c.tile(super::style::RADIUS_LG));
+    let mut body = column![
+        tile,
+        Space::new().height(4),
+        heading(title_text, 16),
         note(hint, c).align_x(Center),
     ]
-    .spacing(10)
+    .spacing(6)
     .align_x(Center);
     if let Some(extra) = extra {
-        body = body.push(Space::new().height(4)).push(extra);
+        body = body.push(Space::new().height(8)).push(extra);
     }
     container(body)
-        .padding([32, 18])
+        .padding([36, 20])
         .width(Fill)
         .center_x(Fill)
+        .into()
+}
+
+/// A key as a keycap: monospace on a raised tile with a hairline.
+pub(super) fn kbd<'a>(key: impl Into<String>, c: Colors) -> Element<'a, Message> {
+    container(
+        text(key.into())
+            .size(11)
+            .line_height(iced::Pixels(14.0))
+            .font(Font::MONOSPACE)
+            .color(c.muted),
+    )
+    .padding([1, 5])
+    .style(move |_| c.tile(super::style::RADIUS_XS))
+    .into()
+}
+
+/// Status, said the one way: a dot and a word in the same tone.
+pub(super) fn status_word<'a>(
+    word: impl Into<String>,
+    tone: iced::Color,
+    c: Colors,
+) -> Element<'a, Message> {
+    row![
+        dot(tone, 7.0, c),
+        text(word.into())
+            .size(12)
+            .font(weight(iced::font::Weight::Medium))
+            .color(tone)
+    ]
+    .spacing(6)
+    .align_y(Center)
+    .into()
+}
+
+/// A glyph or a monogram on a small raised tile.
+pub(super) fn icon_tile<'a>(
+    content: impl Into<Element<'a, Message>>,
+    size: f32,
+    c: Colors,
+) -> Element<'a, Message> {
+    container(content)
+        .center(size)
+        .style(move |_| {
+            c.tile(if size >= 32.0 {
+                super::style::RADIUS_MD
+            } else {
+                super::style::RADIUS_SM
+            })
+        })
+        .into()
+}
+
+/// A count beside a label: quiet unless it is something waiting on the
+/// person, which is amber.
+pub(super) fn count_chip<'a>(count: usize, waiting: bool, c: Colors) -> Element<'a, Message> {
+    if waiting {
+        pill(count.to_string(), alpha(c.amber, 0.16), c.amber, c)
+    } else {
+        pill(count.to_string(), alpha(c.text, 0.07), c.muted, c)
+    }
+}
+
+/// One row of a list: a tile, a title over one quiet line, and the row's
+/// actions at its right edge. Rows sit in one card separated by rules.
+pub(super) fn item_row<'a>(
+    media: Option<Element<'a, Message>>,
+    title_text: impl Into<String>,
+    detail: Option<Element<'a, Message>>,
+    trailing: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let mut words = column![
+        text(title_text.into())
+            .size(14)
+            .font(weight(iced::font::Weight::Medium))
+    ]
+    .spacing(2)
+    .width(Fill);
+    if let Some(detail) = detail {
+        words = words.push(detail);
+    }
+    let mut line = row![].spacing(12).align_y(Center);
+    if let Some(media) = media {
+        line = line.push(media);
+    }
+    line = line.push(words);
+    if let Some(trailing) = trailing {
+        line = line.push(trailing);
+    }
+    container(line).padding([10, 14]).width(Fill).into()
+}
+
+/// Rows in one card, each separated from the next by a rule.
+pub(super) fn rows_card<'a>(rows: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
+    let mut list = column![].width(Fill);
+    for (index, item) in rows.into_iter().enumerate() {
+        if index > 0 {
+            list = list.push(rule(c));
+        }
+        list = list.push(item);
+    }
+    container(list)
+        .width(Fill)
         .style(move |_| c.card_style())
         .into()
+}
+
+/// A card with a header strip: what it holds and why on the left, an
+/// optional action on the right, a rule, then the body.
+pub(super) fn section<'a>(
+    title_text: impl Into<String>,
+    description: Option<String>,
+    action_element: Option<Element<'a, Message>>,
+    body: impl Into<Element<'a, Message>>,
+    c: Colors,
+) -> Element<'a, Message> {
+    let mut words = column![heading(title_text, 15)].spacing(2).width(Fill);
+    if let Some(description) = description {
+        words = words.push(note(description, c));
+    }
+    let mut header = row![words].spacing(12).align_y(Center);
+    if let Some(action_element) = action_element {
+        header = header.push(action_element);
+    }
+    container(column![
+        container(header).padding([12, 16]),
+        rule(c),
+        container(body).padding([4, 0]).width(Fill),
+    ])
+    .width(Fill)
+    .style(move |_| c.card_style())
+    .into()
+}
+
+/// Label and value pairs as a definition list in one framed block.
+pub(super) fn kv_list<'a>(
+    rows: Vec<(String, Element<'a, Message>)>,
+    c: Colors,
+) -> Element<'a, Message> {
+    let mut list = column![].width(Fill);
+    for (index, (label, value)) in rows.into_iter().enumerate() {
+        if index > 0 {
+            list = list.push(rule(c));
+        }
+        list = list.push(
+            container(
+                row![small(label, c).width(128), container(value).width(Fill)]
+                    .spacing(12)
+                    .align_y(Center),
+            )
+            .padding([7, 12]),
+        );
+    }
+    container(list)
+        .width(Fill)
+        .style(move |_| container::Style {
+            border: iced::Border {
+                radius: super::style::RADIUS_MD.into(),
+                ..c.card_style().border
+            },
+            ..c.card_style()
+        })
+        .into()
+}
+
+/// A transient state in one line: a dot, the state word in its tone and
+/// the detail after a dash in the quiet ink.
+pub(super) fn notice_line<'a>(
+    word: impl Into<String>,
+    detail: Option<String>,
+    tone: iced::Color,
+    c: Colors,
+) -> Element<'a, Message> {
+    let mut line = row![
+        dot(tone, 7.0, c),
+        text(word.into())
+            .size(13)
+            .font(weight(iced::font::Weight::Medium))
+            .color(tone)
+    ]
+    .spacing(8)
+    .align_y(Center);
+    if let Some(detail) = detail {
+        line = line.push(text(format!("— {detail}")).size(13).color(c.muted));
+    }
+    line.into()
+}
+
+/// A menu's frame: the overlay surface with a little room inside.
+pub(super) fn menu<'a>(items: impl Into<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
+    container(items)
+        .padding(4)
+        .width(Fill)
+        .style(move |_| c.overlay_style())
+        .into()
+}
+
+/// One entry of a menu; a destructive one is said in red.
+pub(super) fn menu_item<'a>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+    message: Option<Message>,
+    destructive: bool,
+) -> Element<'a, Message> {
+    let label = label.into();
+    custom(
+        id,
+        label.clone(),
+        text(label).size(13).width(Fill),
+        message,
+        false,
+        if destructive {
+            Kind::Destructive
+        } else {
+            Kind::Quiet
+        },
+        [5, 8],
+    )
+}
+
+/// The rule between groups of a menu, inset from its edges.
+pub(super) fn menu_separator<'a>(c: Colors) -> Element<'a, Message> {
+    container(rule(c)).padding([4, 6]).into()
 }
 
 impl App {
@@ -434,19 +665,21 @@ impl App {
                 ),
             ]
         };
+        // A strip of the page's own surface, washed amber: it carries
+        // the page's controls, which the navy status bar cannot.
         Some(
-            container(row.spacing(8).align_y(Center))
-                .padding([6, 14])
-                .width(Fill)
-                .style(move |_| container::Style {
-                    border: iced::Border {
-                        color: c.line,
-                        width: 1.0,
-                        radius: 0.0.into(),
-                    },
-                    ..c.surface(c.sidebar, false)
-                })
-                .into(),
+            column![
+                rule(c),
+                container(row.spacing(8).align_y(Center))
+                    .padding([5, 14])
+                    .width(Fill)
+                    .style(move |_| container::Style {
+                        background: Some(super::style::mix(c.card, c.amber, 0.08).into()),
+                        text_color: Some(c.text),
+                        ..Default::default()
+                    })
+            ]
+            .into(),
         )
     }
 
@@ -562,7 +795,32 @@ impl App {
             .height(Fill)
             .into()
         };
-        column![workspace, self.footer(c)].into()
+        let window: Element<'_, Message> = column![workspace, self.footer(c)].into();
+        if self.shell.launch {
+            // The launch form is a dialog over the window: a scrim (a flat
+            // wash, no blur) that closes it when pressed, and the form
+            // centred on it, which takes its own presses.
+            let dialog = iced::widget::opaque(container(self.launch_view(c)).max_width(520).style(
+                move |_| container::Style {
+                    border: iced::Border {
+                        radius: (super::style::RADIUS_LG + 2.0).into(),
+                        ..c.overlay_style().border
+                    },
+                    ..c.overlay_style()
+                },
+            ));
+            let scrim = iced::widget::mouse_area(container(dialog).center(Fill).padding(24).style(
+                move |_| container::Style {
+                    background: Some(
+                        alpha(iced::Color::BLACK, if c.dark { 0.6 } else { 0.45 }).into(),
+                    ),
+                    ..Default::default()
+                },
+            ))
+            .on_press(Message::ShowLaunch);
+            return iced::widget::stack![window, iced::widget::opaque(scrim)].into();
+        }
+        window
     }
 
     /// The page beside the rail: the header, the tabs and the screen.
@@ -591,29 +849,31 @@ impl App {
             }
             .into()
         };
-        let mut heading_row = row![].spacing(10).align_y(Center);
+        // The header is one line: the project's mark, its name over its
+        // path, then its tools — the hold as words, the terminal as an
+        // outline, and the one filled action, Launch agent, at the end.
+        let mut heading_row = row![].spacing(12).align_y(Center);
         if in_project && let Some(entry) = self.shell.catalog.selected() {
             heading_row = heading_row.push(monogram(
                 &entry.name(),
                 &entry.project.id().to_string(),
-                30.0,
+                32.0,
                 c,
             ));
         }
-        heading_row = heading_row.push(title(title_text, 26));
-        if in_project
-            && let Some(entry) = self.shell.catalog.selected()
-            && entry.pinned
-        {
-            heading_row = heading_row.push(pill("Pinned", c.accent_soft, c.accent_ink, c));
-        }
-        let mut header_left = column![heading_row].spacing(6).width(Fill);
+        let mut header_words = column![title(title_text, 20)].spacing(2).width(Fill);
         if in_project && let Some(entry) = self.shell.catalog.selected() {
-            header_left = header_left.push(mono(entry.project.root.display().to_string(), c));
+            header_words = header_words.push(
+                text(shorten_home(&entry.project.root))
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .color(c.faint)
+                    .wrapping(iced::widget::text::Wrapping::None),
+            );
         } else if in_project && self.shell.catalog.unassigned {
-            header_left = header_left.push(note("Sessions without a known project", c));
+            header_words = header_words.push(note("Sessions without a known project", c));
         } else if !in_project {
-            header_left = header_left.push(note(
+            header_words = header_words.push(note(
                 match self.screen {
                     Screen::Questions if self.has_conversations() => {
                         "Channels, direct messages and what your agents were told"
@@ -625,49 +885,42 @@ impl App {
                 c,
             ));
         }
-        let mut header = row![header_left].spacing(16).align_y(Center);
-        // The project's hold and its one primary action stay in the header
-        // on every project screen: they vanished on Board and History.
-        if in_project
-            && !narrow
-            && let Some(pause) = self.pause_controls(c)
-        {
-            header = header.push(pause);
+        heading_row = heading_row.push(header_words);
+        let mut tools = row![].spacing(8).align_y(Center);
+        if in_project && let Some(pause) = self.pause_controls(c) {
+            tools = tools.push(pause);
         }
-        if in_project
-            && !narrow
-            && let Some(launch) = self.launch_button()
-        {
-            header = header.push(launch);
-        }
-        let mut content = column![header].spacing(18).width(Fill);
-        let mut project_actions = row![].spacing(8);
         if in_project && self.shell.catalog.selected().is_some() {
-            project_actions = project_actions.push(action(
+            tools = tools.push(custom(
                 "project-terminal",
                 "Open project terminal",
+                row![
+                    icon(Icon::Terminal, c.muted, 14.0),
+                    text(if narrow { "Terminal" } else { "Open terminal" })
+                        .size(13)
+                        .line_height(iced::Pixels(crate::controls::LABEL_LINE))
+                        .font(weight(iced::font::Weight::Medium))
+                ]
+                .spacing(7)
+                .align_y(Center),
                 (!self.shell.terminal_opening && self.shell.project_available != Some(false))
                     .then_some(Message::OpenProjectTerminal),
                 false,
+                Kind::Secondary,
+                [7, 12],
             ));
         }
-        // Narrow, the hold has its own line under the header rather than
-        // none: a pause is not a thing to lose with the width.
-        if in_project
-            && narrow
-            && let Some(pause) = self.pause_controls(c)
-        {
-            project_actions = project_actions.push(pause);
+        if in_project && let Some(launch) = self.launch_button(c) {
+            tools = tools.push(launch);
         }
-        if in_project
-            && self.screen != Screen::Agents
-            && narrow
-            && let Some(launch) = self.launch_button()
-        {
-            project_actions = project_actions.push(launch);
-        }
-        if in_project && self.shell.catalog.selected().is_some() {
-            content = content.push(project_actions.wrap());
+        let header: Element<'_, Message> = if narrow {
+            column![heading_row, tools.wrap()].spacing(12).into()
+        } else {
+            row![heading_row, tools].spacing(16).align_y(Center).into()
+        };
+        let mut content = column![header].spacing(16).width(Fill);
+        if in_project && let Some(form) = self.pause_form(c) {
+            content = content.push(form);
         }
         if let Err(error) = &self.connected {
             content = content.push(attention(
@@ -731,15 +984,18 @@ impl App {
         if !self.status.is_empty() {
             content = content.push(
                 row![
-                    dot(c.accent, 6.0, c),
-                    text(self.status.clone()).size(13).color(c.accent_ink)
+                    dot(c.accent, 7.0, c),
+                    text(self.status.clone())
+                        .size(13)
+                        .font(weight(iced::font::Weight::Medium))
+                        .color(c.accent_ink)
                 ]
                 .spacing(8)
                 .align_y(Center),
             );
         }
         if in_project && !self.all_projects() {
-            let mut tabs = row![].spacing(14);
+            let mut tabs = row![].spacing(18);
             for (screen, label, glyph) in [
                 (Screen::Chat, "Chat", Icon::Channels),
                 (Screen::Agents, "Agents", Icon::Sessions),
@@ -750,16 +1006,12 @@ impl App {
                 tabs = tabs.push(tab(
                     format!("project-tab-{screen:?}"),
                     label,
-                    Some(icon(
-                        glyph,
-                        if selected { c.accent_ink } else { c.muted },
-                        14.0,
-                    )),
+                    Some(icon(glyph, if selected { c.text } else { c.muted }, 15.0)),
                     Some(Message::Navigate(screen)),
                     selected,
                 ));
             }
-            // Underlined only on one of its own screens: with its drawer open
+            // Underlined only on one of its own screens: with its menu open
             // over Agents, two tabs read as selected at once.
             let more_selected = matches!(
                 self.screen,
@@ -769,17 +1021,31 @@ impl App {
                     | Screen::Console
                     | Screen::Usage
             );
-            tabs = tabs.push(tab(
+            let more_label = match self.screen {
+                Screen::Journal => "History",
+                Screen::Channels => "Channels",
+                Screen::Leases => "Files in use",
+                Screen::Console => "Commands",
+                Screen::Usage => "Usage",
+                _ => "More",
+            };
+            let more_tab = tab(
                 "project-more",
-                "More",
+                more_label,
                 Some(icon(
                     Icon::More,
-                    if more_selected { c.accent_ink } else { c.muted },
-                    14.0,
+                    if more_selected { c.text } else { c.muted },
+                    15.0,
                 )),
                 Some(Message::More),
                 more_selected,
-            ));
+            );
+            let more_menu = self.shell.more.then(|| self.more_menu(c));
+            tabs = tabs.push(
+                crate::controls::popover(more_tab, more_menu)
+                    .width(232.0)
+                    .on_dismiss(Message::More),
+            );
             let tabs: Element<'_, Message> = if narrow {
                 scrollable(tabs)
                     .id("project-tabs")
@@ -791,70 +1057,6 @@ impl App {
                 tabs.into()
             };
             content = content.push(column![tabs, rule(c)].spacing(0));
-        }
-        if in_project && self.shell.more {
-            let queued = self.queued_channel_messages();
-            let mut more = row![
-                action(
-                    "project-tab-Journal",
-                    "History",
-                    Some(Message::Navigate(Screen::Journal)),
-                    self.screen == Screen::Journal
-                ),
-                action(
-                    "project-tab-Channels",
-                    if queued > 0 {
-                        format!("Channels ({queued} waiting)")
-                    } else {
-                        "Channels".to_owned()
-                    },
-                    Some(Message::Navigate(Screen::Channels)),
-                    self.screen == Screen::Channels
-                ),
-                action(
-                    "project-tab-Leases",
-                    "Files in use",
-                    Some(Message::Navigate(Screen::Leases)),
-                    self.screen == Screen::Leases
-                ),
-                action(
-                    "project-tab-Console",
-                    "AgentDocker commands",
-                    Some(Message::Navigate(Screen::Console)),
-                    self.screen == Screen::Console
-                ),
-                action(
-                    "project-tab-Usage",
-                    "Usage",
-                    Some(Message::Navigate(Screen::Usage)),
-                    self.screen == Screen::Usage
-                ),
-            ]
-            .spacing(6);
-            if let Some(entry) = self.shell.catalog.selected() {
-                more = more
-                    .push(action(
-                        "pin-selected",
-                        if entry.pinned {
-                            "Unpin project"
-                        } else {
-                            "Pin project"
-                        },
-                        Some(Message::Unpin),
-                        entry.pinned,
-                    ))
-                    .push(action(
-                        "forget-project",
-                        "Forget project",
-                        Some(Message::ForgetProject),
-                        false,
-                    ));
-            }
-            content = content.push(card(more.wrap(), c));
-        }
-        // Under the tabs, where the chat it stands in for would be.
-        if self.screen == Screen::Chat && self.shell.launch {
-            content = content.push(self.launch_view(c));
         }
         if self.shell.adding {
             content = content.push(card(
@@ -887,9 +1089,6 @@ impl App {
             ));
         }
         let body = match self.screen {
-            // The launch form takes the page; squeezed above the chat into
-            // the header's 45% it hid its own Launch and Close.
-            Screen::Chat if self.shell.launch => column![].into(),
             Screen::Chat => self.project_chat_view(c),
             Screen::Agents => self.sessions(c),
             Screen::Board => self.board_view(c),
@@ -907,7 +1106,7 @@ impl App {
         };
         // Chat owns the remaining viewport so its composer never depends on
         // scrolling past the header. Large forms and notices scroll above it.
-        let workspace: Element<'_, Message> = if self.screen == Screen::Chat && !self.shell.launch {
+        let workspace: Element<'_, Message> = if self.screen == Screen::Chat {
             column![
                 container(scrollable(content).height(iced::Shrink))
                     .max_height(self.shell.height / self.scale_factor() * 0.45),
@@ -935,87 +1134,96 @@ impl App {
         .into()
     }
 
-    /// One quiet line across the bottom: the daemon connection and the
-    /// version. Said here once, so the rail and the pages need not repeat it.
+    /// One quiet line across the bottom, part of the navy frame with the
+    /// rail: the daemon connection as a dot and a word, and the version.
+    /// Said here once, so the rail and the pages need not repeat it.
     fn footer(&self, c: Colors) -> Element<'_, Message> {
         let connected = self.connected.is_ok();
         if let Some(notice) = self.daemon_notice(c) {
             return notice;
         }
+        let r = c.rail();
+        let (tone, word, detail) = if connected {
+            (r.green, "Connected", "— background service")
+        } else {
+            (r.amber, "Reconnecting", "— background service…")
+        };
         container(
             row![
-                dot(if connected { c.green } else { c.amber }, 7.0, c),
-                small(
-                    if connected {
-                        "Connected to the background service"
-                    } else {
-                        "Reconnecting to the background service…"
-                    },
-                    c
-                )
-                .width(Fill),
+                dot(tone, 7.0, r),
+                text(word)
+                    .size(12)
+                    .font(weight(iced::font::Weight::Medium))
+                    .color(tone),
+                text(detail).size(12).color(r.muted).width(Fill),
                 match self.desktop.update_available() {
-                    Some(version) => action(
+                    Some(version) => crate::controls::custom_sized(
                         "open-available-update",
                         format!("Update {version} available"),
+                        row![
+                            dot(r.accent_ink, 6.0, r),
+                            text(format!("Update {version} available"))
+                                .size(12)
+                                .color(r.accent_ink)
+                        ]
+                        .spacing(6)
+                        .align_y(Center),
                         Some(Message::Navigate(Screen::Desktop)),
                         false,
+                        Kind::Nav,
+                        [2, 8],
+                        iced::Length::Shrink,
                     ),
-                    None => small(format!("agentdocker {}", env!("CARGO_PKG_VERSION")), c).into(),
+                    None => text(format!("agentdocker {}", env!("CARGO_PKG_VERSION")))
+                        .size(11)
+                        .font(Font::MONOSPACE)
+                        .color(r.faint)
+                        .into(),
                 }
             ]
-            .spacing(8)
+            .spacing(6)
             .align_y(Center),
         )
-        .padding([6, 14])
+        .padding([5, 14])
         .width(Fill)
         .style(move |_| container::Style {
             border: iced::Border {
-                color: c.line,
+                color: r.line,
                 width: 1.0,
                 radius: 0.0.into(),
             },
-            ..c.surface(c.sidebar, false)
+            ..r.surface(r.ground, false)
         })
         .into()
     }
 
+    /// A destination on the rail: glyph, label and an optional count,
+    /// amber when it is something waiting on the person.
     fn nav_item<'a>(
         &self,
         id: &'a str,
         label: &'a str,
         glyph: Icon,
-        badge: Option<String>,
+        badge: Option<(usize, bool)>,
         message: Message,
         selected: bool,
     ) -> Element<'a, Message> {
-        let c = Colors::new(self.shell.catalog.dark);
+        let r = Colors::new(self.shell.catalog.dark).rail();
         let mut content = row![
-            container(Space::new().width(3).height(16)).style(move |_| {
-                c.dot(if selected {
-                    c.accent
-                } else {
-                    iced::Color::TRANSPARENT
-                })
-            }),
-            icon(glyph, if selected { c.accent } else { c.muted }, 16.0),
+            icon(glyph, if selected { r.text } else { r.muted }, 16.0),
             text(label)
-                .size(14)
-                .font(weight(if selected {
-                    iced::font::Weight::Semibold
-                } else {
-                    iced::font::Weight::Medium
-                }))
+                .size(13.5)
+                .font(weight(iced::font::Weight::Medium))
                 .width(Fill)
         ]
         .spacing(10)
         .align_y(Center);
         let spoken = match &badge {
-            Some(badge) => format!("{label} {badge}"),
+            Some((count, _)) => format!("{label} {count}"),
             None => label.to_owned(),
         };
-        if let Some(badge) = badge {
-            content = content.push(pill(badge, alpha(c.amber, 0.2), c.amber, c));
+        if let Some((count, waiting)) = badge {
+            content = content.push(count_chip(count, waiting, r));
         }
         custom(
             id,
@@ -1023,12 +1231,13 @@ impl App {
             content,
             Some(message),
             selected,
-            Kind::Quiet,
-            [8, 10],
+            Kind::Nav,
+            [7, 10],
         )
     }
 
-    /// One project's row in the sidebar, with its menu under it when open.
+    /// One project's row in the sidebar, with its menu floating from it
+    /// when open.
     fn project_row<'a>(
         &'a self,
         entry: &'a crate::catalog::Entry,
@@ -1036,10 +1245,12 @@ impl App {
         project_page: bool,
         c: Colors,
     ) -> Element<'a, Message> {
+        let r = c.rail();
         let path = entry.project.root.clone();
         let selected = project_page && self.selected_root() == Some(path.as_path());
         let name = entry.name();
         let menu_open = self.shell.project_menu.as_deref() == Some(path.as_path());
+        let hovered = self.shell.rail_hover.as_deref() == Some(path.as_path());
         let live = self.live_in(&path);
         let done = self.shell.unviewed_in(&self.agents, &path);
         let mut hint_text = if live > 0 {
@@ -1058,7 +1269,7 @@ impl App {
         // by where they are, in one short line.
         let mut label = column![
             text(name.clone())
-                .size(14)
+                .size(13.5)
                 .wrapping(iced::widget::text::Wrapping::None)
         ]
         .spacing(1)
@@ -1066,60 +1277,79 @@ impl App {
         if shared.contains(&name) {
             label = label.push(
                 text(parent_folder(&path))
-                    .size(12)
-                    .color(c.muted)
+                    .size(11.5)
+                    .color(r.muted)
                     .wrapping(iced::widget::text::Wrapping::None),
             );
         }
         let label = container(label).width(Fill).clip(true);
-        let mut content = row![hint(monogram(&name, &seed, 20.0, c), hint_text, c), label]
+        let mut content = row![hint(monogram(&name, &seed, 20.0, r), hint_text, c), label]
             .spacing(6)
             .width(Fill)
             .align_y(Center);
         if done > 0 {
-            content = content.push(pill(done.to_string(), c.accent_soft, c.accent_ink, c));
+            content = content.push(pill(
+                done.to_string(),
+                alpha(r.accent, 0.35),
+                r.accent_ink,
+                r,
+            ));
         }
         if live > 0 {
             content = content.push(
-                row![dot(c.green, 6.0, c), small(live.to_string(), c)]
-                    .spacing(5)
-                    .align_y(Center),
+                row![
+                    dot(r.green, 6.0, r),
+                    text(live.to_string()).size(12).color(r.muted)
+                ]
+                .spacing(5)
+                .align_y(Center),
             );
         }
-        // The row's own menu, at the row's right edge: a quiet button
-        // would otherwise take half the row's width as if it were a
-        // row itself.
-        content = content.push(
-            container(custom(
-                format!("project-menu-{}", path.display()),
-                format!("Options for {name}"),
-                icon(
-                    Icon::More,
-                    if menu_open { c.accent_ink } else { c.muted },
-                    12.0,
-                ),
-                Some(Message::ProjectMenu(path.clone())),
-                menu_open,
-                Kind::Quiet,
-                [4, 4],
-            ))
-            .width(26.0)
-            .align_x(iced::alignment::Horizontal::Right),
+        // The row's own menu button, at the row's right edge, shown only
+        // where it is wanted: under the pointer, on the selected row and
+        // while its menu is open. Elsewhere it is still there, invisible,
+        // for the keyboard and assistive technology.
+        let shown = hovered || selected || menu_open;
+        let trigger = custom_sized(
+            format!("project-menu-{}", path.display()),
+            format!("Options for {name}"),
+            icon(
+                Icon::More,
+                if menu_open {
+                    r.text
+                } else if shown {
+                    r.muted
+                } else {
+                    iced::Color::TRANSPARENT
+                },
+                12.0,
+            ),
+            Some(Message::ProjectMenu(path.clone())),
+            menu_open,
+            Kind::Nav,
+            [5, 5],
+            iced::Length::Shrink,
         );
-        let mut rows = column![].spacing(2).width(Fill);
-        rows = rows.push(custom(
+        let menu = menu_open.then(|| self.project_menu(entry, c));
+        content = content.push(
+            crate::controls::popover(trigger, menu)
+                .width(220.0)
+                .align_end()
+                .on_dismiss(Message::ProjectMenu(path.clone())),
+        );
+        let row_button = custom(
             format!("project-{}", path.display()),
             format!("{}{}", if entry.pinned { "• " } else { "" }, name),
             content,
             Some(Message::SelectProject(path.clone())),
             selected,
-            Kind::Quiet,
-            [8, 12],
-        ));
-        if menu_open {
-            rows = rows.push(self.project_menu(entry, c));
-        }
-        rows.into()
+            Kind::Nav,
+            [5, 8],
+        );
+        iced::widget::mouse_area(row_button)
+            .on_enter(Message::RailHover(path.clone()))
+            .on_exit(Message::RailLeave(path))
+            .into()
     }
 
     /// Whether the Temporary fold is open: the person's choice once made,
@@ -1154,14 +1384,16 @@ impl App {
     }
 
     fn sidebar(&self, c: Colors) -> Element<'_, Message> {
+        let r = c.rail();
         let project_page = self.in_project();
-        let mut nav = column![brand(c), Space::new().height(22)].spacing(4);
+        let mut nav =
+            column![container(brand(r)).padding([0, 8]), Space::new().height(18)].spacing(2);
         let unviewed = self.shell.unviewed_done.len();
         nav = nav.push(self.nav_item(
             "projects",
             "Projects",
             Icon::Projects,
-            (unviewed > 0).then(|| unviewed.to_string()),
+            (unviewed > 0).then_some((unviewed, false)),
             Message::AllProjects,
             project_page,
         ));
@@ -1183,7 +1415,7 @@ impl App {
                     self.questions.iter().filter(|q| !q.expired(now)).count()
                         + self.direct_messages().len()
                 };
-                (waiting > 0).then(|| waiting.to_string())
+                (waiting > 0).then_some((waiting, true))
             },
             Message::Navigate(Screen::Questions),
             self.screen == Screen::Questions,
@@ -1198,9 +1430,9 @@ impl App {
         ));
         nav = nav
             .push(Space::new().height(18))
-            .push(container(eyebrow("Projects", c)).padding([0, 12]))
-            .push(Space::new().height(2));
-        let mut projects = column![].spacing(2).width(Fill);
+            .push(container(eyebrow("Projects", r)).padding([0, 10]))
+            .push(Space::new().height(4));
+        let mut projects = column![].spacing(1).width(Fill);
         let shared = self.shell.catalog.shared_names();
         // Folders discovered under a scratch directory and never pinned
         // are fixtures and trials, not the person's projects: one group
@@ -1227,26 +1459,29 @@ impl App {
             let open = self.temporary_fold_open();
             let label = format!("Temporary ({})", temporary.len());
             let mut fold = row![
-                text(if open { "▾" } else { "▸" }).size(11).color(c.muted),
-                eyebrow(label.clone(), c).width(Fill),
+                text(if open { "▾" } else { "▸" }).size(11).color(r.muted),
+                eyebrow(label.clone(), r).width(Fill),
             ]
             .spacing(8)
             .align_y(Center);
             if live > 0 {
                 fold = fold.push(
-                    row![dot(c.green, 6.0, c), small(live.to_string(), c)]
-                        .spacing(5)
-                        .align_y(Center),
+                    row![
+                        dot(r.green, 6.0, r),
+                        text(live.to_string()).size(12).color(r.muted)
+                    ]
+                    .spacing(5)
+                    .align_y(Center),
                 );
             }
-            projects = projects.push(custom(
+            projects = projects.push(Space::new().height(6)).push(custom(
                 "projects-temporary",
                 label,
                 fold,
                 Some(Message::ToggleTemporary),
                 false,
-                Kind::Quiet,
-                [6, 12],
+                Kind::Nav,
+                [6, 10],
             ));
             if open {
                 for entry in temporary {
@@ -1264,11 +1499,19 @@ impl App {
                 .as_ref()
                 .is_none_or(|p| self.shell.catalog.broad_unpinned(&p.root))
         }) {
-            projects = projects.push(block_button(
+            projects = projects.push(custom(
                 "unassigned",
                 "Other sessions",
+                row![
+                    icon(Icon::Sessions, r.muted, 14.0),
+                    text("Other sessions").size(13.5).width(Fill)
+                ]
+                .spacing(10)
+                .align_y(Center),
                 Some(Message::Unassigned),
                 self.shell.catalog.unassigned && project_page,
+                Kind::Nav,
+                [7, 10],
             ));
         }
         nav = nav
@@ -1285,6 +1528,8 @@ impl App {
                     ))
                     .height(Fill),
             )
+            .push(Space::new().height(6))
+            .push(container(Space::new().width(Fill).height(1)).style(move |_| r.rule()))
             .push(Space::new().height(6))
             .push(self.nav_item(
                 "add-project",
@@ -1304,7 +1549,7 @@ impl App {
             ))
             .push(Space::new().height(4));
         container(nav.height(Fill))
-            .padding([22, 12])
+            .padding([18, 10])
             // Wide, the rail is a pane whose divider the person drags;
             // narrow, it keeps a fixed width beside the workspace.
             .width(if self.narrow() {
@@ -1313,17 +1558,20 @@ impl App {
                 Fill
             })
             .height(Fill)
-            .style(move |_| c.surface(c.sidebar, false))
+            .style(move |_| container::Style {
+                border: iced::Border::default(),
+                ..r.surface(r.ground, false)
+            })
             .into()
     }
 
-    /// The menu under a project row: rename, pin, remove. Removing keeps
-    /// the folder off the list until it is added again; nothing on disk
-    /// changes and no session stops.
+    /// The menu that floats from a project row: rename, pin, remove.
+    /// Removing keeps the folder off the list until it is added again;
+    /// nothing on disk changes and no session stops.
     fn project_menu(&self, entry: &crate::catalog::Entry, c: Colors) -> Element<'_, Message> {
         let path = entry.project.root.clone();
         let key = path.display().to_string();
-        let mut items = column![].spacing(4).width(Fill);
+        let mut items = column![].spacing(1).width(Fill);
         if let Some((_, draft)) = self
             .shell
             .project_rename
@@ -1331,55 +1579,62 @@ impl App {
             .filter(|(root, _)| root == &path)
         {
             items = items.push(
-                row![
-                    input(
-                        format!("project-rename-{key}"),
-                        "Name",
-                        draft,
-                        Message::ProjectRenameDraft,
-                    ),
-                    primary(
-                        format!("project-rename-save-{key}"),
-                        "Save",
-                        Some(Message::ProjectRenameSubmit),
-                    ),
-                ]
-                .spacing(6)
-                .align_y(Center),
+                container(
+                    column![
+                        input(
+                            format!("project-rename-{key}"),
+                            "Name",
+                            draft,
+                            Message::ProjectRenameDraft,
+                        ),
+                        row![
+                            small("Empty goes back to the folder's name.", c).width(Fill),
+                            primary(
+                                format!("project-rename-save-{key}"),
+                                "Save",
+                                Some(Message::ProjectRenameSubmit),
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(Center),
+                    ]
+                    .spacing(8),
+                )
+                .padding(6),
             );
-            items = items.push(small("Empty goes back to the folder's name.", c));
         } else {
-            items = items.push(
-                row![
-                    action(
-                        format!("project-rename-start-{key}"),
-                        "Rename…",
-                        Some(Message::ProjectRenameStart(path.clone())),
-                        false,
-                    ),
-                    action(
-                        format!("project-pin-{key}"),
-                        if entry.pinned { "Unpin" } else { "Pin" },
-                        Some(Message::ProjectPin(path.clone())),
-                        entry.pinned,
-                    ),
-                    action(
-                        format!("project-remove-{key}"),
-                        "Remove from list",
-                        Some(Message::ProjectRemove(path.clone())),
-                        false,
-                    ),
-                ]
-                .spacing(6)
-                .wrap(),
-            );
+            items = items
+                .push(menu_item(
+                    format!("project-rename-start-{key}"),
+                    "Rename…",
+                    Some(Message::ProjectRenameStart(path.clone())),
+                    false,
+                ))
+                .push(menu_item(
+                    format!("project-pin-{key}"),
+                    if entry.pinned { "Unpin" } else { "Pin" },
+                    Some(Message::ProjectPin(path.clone())),
+                    false,
+                ))
+                .push(menu_separator(c))
+                .push(menu_item(
+                    format!("project-remove-{key}"),
+                    "Remove from list",
+                    Some(Message::ProjectRemove(path.clone())),
+                    true,
+                ));
         }
-        items = items.push(small(shorten_home(&path), c));
-        container(items)
-            .padding([8, 10])
-            .width(Fill)
-            .style(move |_| c.surface(c.raised, true))
-            .into()
+        items = items.push(menu_separator(c)).push(
+            container(
+                text(shorten_home(&path))
+                    .size(11.5)
+                    .font(Font::MONOSPACE)
+                    .color(c.faint)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            )
+            .padding([4, 8]),
+        );
+        menu(items, c)
     }
 
     /// Channel messages still queued for this person, in the projects on view.
@@ -1607,21 +1862,101 @@ impl App {
         self.pauses.iter().find(|p| p.project == id)
     }
 
-    /// Hold or release the project's agents: a quiet Pause… that opens a
-    /// reason, and while paused the reason on the header with Resume.
-    /// The form belongs to the project it was opened for; on another
-    /// project the header shows that project's own state.
+    /// The project's other places and its management, in the menu that
+    /// floats from the More tab: the screen on view is marked.
+    fn more_menu(&self, c: Colors) -> Element<'_, Message> {
+        let queued = self.queued_channel_messages();
+        let place = |id: &'static str, label: String, screen: Screen| {
+            let selected = self.screen == screen;
+            custom(
+                id,
+                label.clone(),
+                row![
+                    text(label).size(13).width(Fill),
+                    if selected {
+                        icon(Icon::Check, c.accent_ink, 12.0)
+                    } else {
+                        Space::new().width(12).height(12).into()
+                    }
+                ]
+                .align_y(Center),
+                Some(Message::Navigate(screen)),
+                selected,
+                Kind::Quiet,
+                [5, 8],
+            )
+        };
+        let mut items = column![
+            place("project-tab-Journal", "History".to_owned(), Screen::Journal),
+            place(
+                "project-tab-Channels",
+                if queued > 0 {
+                    format!("Channels ({queued} waiting)")
+                } else {
+                    "Channels".to_owned()
+                },
+                Screen::Channels
+            ),
+            place(
+                "project-tab-Leases",
+                "Files in use".to_owned(),
+                Screen::Leases
+            ),
+            place("project-tab-Usage", "Usage".to_owned(), Screen::Usage),
+            place(
+                "project-tab-Console",
+                "AgentDocker commands".to_owned(),
+                Screen::Console
+            ),
+        ]
+        .spacing(1)
+        .width(Fill);
+        if let Some(entry) = self.shell.catalog.selected() {
+            items = items
+                .push(menu_separator(c))
+                .push(menu_item(
+                    "pin-selected",
+                    if entry.pinned {
+                        "Unpin project"
+                    } else {
+                        "Pin project"
+                    },
+                    Some(Message::Unpin),
+                    false,
+                ))
+                .push(menu_item(
+                    "forget-project",
+                    "Forget project",
+                    Some(Message::ForgetProject),
+                    true,
+                ));
+        }
+        menu(items, c)
+    }
+
+    /// Hold or release the project's agents, in the header: a quiet
+    /// Pause… while nothing is held, and while paused the reason as an
+    /// amber word with Resume. Typing the reason is [`Self::pause_form`],
+    /// a row of its own under the header. The form belongs to the project
+    /// it was opened for; on another project the header shows that
+    /// project's own state.
     pub(super) fn pause_controls(&self, c: Colors) -> Option<Element<'_, Message>> {
         let root = self.selected_project_root()?;
         let connected = self.connected.is_ok();
         let control = self.pause_states.get(&root);
         let sending = control.is_some_and(|control| control.pending.is_some());
-        let mut controls = if let Some(pause) = self.selected_pause() {
-            column![
+        if let Some(pause) = self.selected_pause() {
+            return Some(
                 row![
-                    text(format!("Paused · {}", first_line(&pause.reason, 48)))
-                        .color(c.amber)
-                        .width(Fill),
+                    row![
+                        dot(c.amber, 7.0, c),
+                        text(format!("Paused · {}", first_line(&pause.reason, 48)))
+                            .size(13)
+                            .font(weight(iced::font::Weight::Medium))
+                            .color(c.amber),
+                    ]
+                    .spacing(6)
+                    .align_y(Center),
                     action(
                         "resume-project",
                         if sending { "Resuming…" } else { "Resume" },
@@ -1629,65 +1964,160 @@ impl App {
                         false
                     ),
                 ]
-                .spacing(8)
+                .spacing(10)
                 .align_y(Center)
-            ]
-        } else if let Some(reason) = control.and_then(|control| control.draft.as_ref()) {
-            let ready = connected && !sending && !reason.trim().is_empty();
-            let draft_project = root.clone();
-            column![
-                input_submitting(
-                    "pause-reason",
-                    "Why: what the agents will read",
-                    reason,
-                    move |reason| Message::PauseDraft(draft_project.clone(), reason),
-                    connected && !sending,
-                    ready.then_some(Message::PauseSubmit(root.clone())),
-                ),
-                row![
-                    primary(
-                        "pause-submit",
-                        if sending {
-                            "Pausing…"
-                        } else {
-                            "Pause agents"
-                        },
-                        ready.then_some(Message::PauseSubmit(root.clone()))
-                    ),
-                    action(
-                        "pause-cancel",
-                        "Cancel",
-                        (!sending).then_some(Message::PauseCancel(root.clone())),
-                        false
-                    ),
-                ]
-                .spacing(8)
-                .align_y(Center),
-            ]
-        } else {
-            column![action(
-                "pause-project",
-                "Pause…",
-                (connected && !sending).then_some(Message::PauseStart(root)),
-                false
-            )]
+                .into(),
+            );
         }
-        .spacing(4);
-        if let Some(error) = control.and_then(|control| control.error.as_ref()) {
-            controls = controls.push(text(error.clone()).size(13).color(c.amber));
+        if control.and_then(|control| control.draft.as_ref()).is_some() {
+            return None;
         }
-        Some(controls.into())
+        Some(custom(
+            "pause-project",
+            "Pause…",
+            row![
+                icon(Icon::Pause, c.muted, 12.0),
+                text("Pause…")
+                    .size(13)
+                    .line_height(iced::Pixels(crate::controls::LABEL_LINE))
+                    .font(weight(iced::font::Weight::Medium))
+            ]
+            .spacing(6)
+            .align_y(Center),
+            (connected && !sending).then_some(Message::PauseStart(root)),
+            false,
+            Kind::Ghost,
+            [7, 10],
+        ))
     }
 
-    /// The project's one primary action, when there is a project to act in.
-    fn launch_button(&self) -> Option<Element<'_, Message>> {
+    /// The reason for a pause being typed, under the header: what the
+    /// agents will read, Pause agents and Cancel, and the last refusal.
+    pub(super) fn pause_form(&self, c: Colors) -> Option<Element<'_, Message>> {
+        let root = self.selected_project_root()?;
+        let connected = self.connected.is_ok();
+        let control = self.pause_states.get(&root);
+        let sending = control.is_some_and(|control| control.pending.is_some());
+        let error = control.and_then(|control| control.error.as_ref());
+        let mut form = column![].spacing(8);
+        if self.selected_pause().is_none()
+            && let Some(reason) = control.and_then(|control| control.draft.as_ref())
+        {
+            let ready = connected && !sending && !reason.trim().is_empty();
+            let draft_project = root.clone();
+            let field = input_submitting(
+                "pause-reason",
+                "Why: what the agents will read",
+                reason,
+                move |reason| Message::PauseDraft(draft_project.clone(), reason),
+                connected && !sending,
+                ready.then_some(Message::PauseSubmit(root.clone())),
+            );
+            let buttons = row![
+                ghost(
+                    "pause-cancel",
+                    "Cancel",
+                    (!sending).then_some(Message::PauseCancel(root.clone())),
+                ),
+                primary(
+                    "pause-submit",
+                    if sending {
+                        "Pausing…"
+                    } else {
+                        "Pause agents"
+                    },
+                    ready.then_some(Message::PauseSubmit(root.clone()))
+                ),
+            ]
+            .spacing(8)
+            .align_y(Center);
+            form = form
+                .push(heading("Pause this project's agents", 14))
+                .push(if self.narrow() {
+                    Element::from(column![field, buttons].spacing(8))
+                } else {
+                    row![container(field).width(Fill), buttons]
+                        .spacing(10)
+                        .align_y(Center)
+                        .into()
+                });
+            form = form.push(small(
+                "They finish what they are doing and claim nothing new until you resume.",
+                c,
+            ));
+        } else if error.is_none() {
+            return None;
+        }
+        if let Some(error) = error {
+            form = form.push(text(error.clone()).size(13).color(c.amber));
+        }
+        Some(attention(form, c.amber, c))
+    }
+
+    /// The project's one primary action, when there is a project to act
+    /// in: Launch agent, with the tools to launch in a menu off its
+    /// chevron.
+    fn launch_button(&self, c: Colors) -> Option<Element<'_, Message>> {
         self.shell.catalog.selected()?;
-        Some(primary(
+        let ready = self.connected.is_ok() && self.shell.project_available != Some(false);
+        let main = crate::controls::split_primary(
             "launch-agent",
             "Launch agent…",
-            (self.connected.is_ok() && self.shell.project_available != Some(false))
-                .then_some(Message::OpenLaunch),
-        ))
+            ready.then_some(Message::OpenLaunch),
+            crate::controls::Split::Start,
+        );
+        let chevron = crate::controls::split_primary_glyph(
+            "launch-menu",
+            "Choose a tool to launch",
+            icon(Icon::ChevronDown, iced::Color::WHITE, 12.0),
+            ready.then_some(Message::LaunchMenu),
+        );
+        let menu = self.shell.launch_menu.then(|| {
+            let mut items = column![].spacing(1).width(Fill);
+            for runtime in self.runtimes.iter().filter(|r| r.cli.is_some()) {
+                let binary = runtime
+                    .cli
+                    .as_ref()
+                    .map(|p| shorten_home(p))
+                    .unwrap_or_default();
+                items = items.push(custom(
+                    format!("launch-with-{}", runtime.name),
+                    format!("Launch {}", runtime.label),
+                    column![
+                        text(runtime.label.clone())
+                            .size(13)
+                            .font(weight(iced::font::Weight::Medium)),
+                        text(binary)
+                            .size(11)
+                            .font(Font::MONOSPACE)
+                            .color(c.faint)
+                            .wrapping(iced::widget::text::Wrapping::None),
+                    ]
+                    .spacing(2)
+                    .width(Fill),
+                    Some(Message::LaunchWith(runtime.name.clone())),
+                    false,
+                    Kind::Quiet,
+                    [6, 8],
+                ));
+            }
+            if self.runtimes.iter().all(|r| r.cli.is_none()) {
+                items = items
+                    .push(container(small("No tool to launch is installed.", c)).padding([6, 8]));
+            }
+            menu(items, c)
+        });
+        Some(
+            row![
+                main,
+                crate::controls::popover(chevron, menu)
+                    .width(260.0)
+                    .align_end()
+                    .on_dismiss(Message::LaunchMenu)
+            ]
+            .spacing(1)
+            .into(),
+        )
     }
 
     fn sessions(&self, c: Colors) -> Element<'_, Message> {
@@ -1729,11 +2159,7 @@ impl App {
             Message::Search,
         );
         if self.narrow() {
-            let mut top = row![search].spacing(10).align_y(Center);
-            if let Some(launch) = self.launch_button() {
-                top = top.push(launch);
-            }
-            panel_col = panel_col.push(column![top, filters].spacing(10));
+            panel_col = panel_col.push(column![search, filters].spacing(10));
         } else if selected.is_some() {
             // The inspector takes 340 px from this column. Keep the filter
             // labels and counts together instead of squeezing them beside search.
@@ -1764,9 +2190,6 @@ impl App {
                 c.amber,
                 c,
             ));
-        }
-        if self.shell.launch {
-            panel_col = panel_col.push(self.launch_view(c));
         }
         let records = match filter {
             Filter::Current => current,
@@ -2464,59 +2887,153 @@ impl App {
         card(body, c)
     }
 
+    /// The launch dialog: which tool, a name and its arguments, then
+    /// Cancel and Launch at the foot. Each tool is a row with its binary,
+    /// the chosen one marked like a selected radio.
     fn launch_view(&self, c: Colors) -> Element<'_, Message> {
-        let mut tools = column![
-            heading("Launch in this project", 18),
-            note("Choose a tool to start in this folder.", c)
+        let header = column![
+            heading("Launch an agent", 16),
+            note(
+                "Start a tool in this project's folder. Nothing else is changed.",
+                c
+            )
         ]
-        .spacing(10);
-        let mut choices = row![].spacing(6);
+        .spacing(4);
+        let mut choices = column![].spacing(6);
         for runtime in self.runtimes.iter().filter(|r| r.cli.is_some()) {
-            choices = choices.push(action(
-                format!("launch-tool-{}", runtime.name),
-                runtime.label.clone(),
-                (!self.shell.launching).then_some(Message::LaunchRuntime(runtime.name.clone())),
-                self.shell.launch_runtime.as_deref() == Some(runtime.name.as_str()),
-            ));
+            let chosen = self.shell.launch_runtime.as_deref() == Some(runtime.name.as_str());
+            let binary = runtime
+                .cli
+                .as_ref()
+                .map(|p| shorten_home(p))
+                .unwrap_or_default();
+            let initial: String = runtime
+                .label
+                .chars()
+                .next()
+                .map(|ch| ch.to_uppercase().collect())
+                .unwrap_or_default();
+            let radio = container(if chosen {
+                Element::from(dot(iced::Color::WHITE, 6.0, c))
+            } else {
+                Space::new().width(6).height(6).into()
+            })
+            .center(16)
+            .style(move |_| container::Style {
+                background: chosen.then(|| c.accent.into()),
+                border: iced::Border {
+                    color: if chosen { c.accent } else { c.line_strong },
+                    width: 1.5,
+                    radius: 8.0.into(),
+                },
+                ..Default::default()
+            });
+            let content = row![
+                icon_tile(
+                    text(initial)
+                        .size(13)
+                        .font(weight(iced::font::Weight::Semibold))
+                        .color(c.muted),
+                    32.0,
+                    c
+                ),
+                column![
+                    text(runtime.label.clone())
+                        .size(14)
+                        .font(weight(iced::font::Weight::Medium))
+                        .color(c.text),
+                    text(binary)
+                        .size(11.5)
+                        .font(Font::MONOSPACE)
+                        .color(c.faint)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                ]
+                .spacing(2)
+                .width(Fill),
+                radio,
+            ]
+            .spacing(12)
+            .align_y(Center);
+            choices = choices.push(
+                container(custom(
+                    format!("launch-tool-{}", runtime.name),
+                    runtime.label.clone(),
+                    content,
+                    (!self.shell.launching).then_some(Message::LaunchRuntime(runtime.name.clone())),
+                    false,
+                    Kind::Quiet,
+                    [10, 12],
+                ))
+                .style(move |_| container::Style {
+                    background: chosen.then(|| alpha(c.accent, 0.06).into()),
+                    border: iced::Border {
+                        color: if chosen { c.accent } else { c.line },
+                        width: 1.0,
+                        radius: super::style::RADIUS_MD.into(),
+                    },
+                    ..Default::default()
+                }),
+            );
         }
-        tools = tools
-            .push(choices.wrap())
-            .push(input(
+        let mut body = column![
+            eyebrow("Tool", c),
+            choices,
+            Space::new().height(4),
+            eyebrow("Name", c),
+            input(
                 "launch-name",
-                "Name (optional; one is made up otherwise)",
+                "Optional; one is made up otherwise",
                 &self.shell.launch_name,
                 Message::LaunchName,
-            ))
-            .push(input(
+            ),
+            eyebrow("Arguments", c),
+            input(
                 "launch-arguments",
                 "Command arguments (optional)",
                 &self.shell.launch_arguments,
                 Message::LaunchArguments,
-            ));
+            ),
+        ]
+        .spacing(8);
         if matches!(
             self.shell.launch_runtime.as_deref(),
             Some("claude-code" | "codex")
         ) {
             // The normal launch has a receiver. Turning it off is explicit;
             // provider consent remains a separate provider-owned step.
-            tools = tools.push(
-                column![
+            body = body.push(Space::new().height(4)).push(
+                row![
+                    column![
+                        text("Messages while idle")
+                            .size(14)
+                            .font(weight(iced::font::Weight::Medium)),
+                        small(
+                            if !self.shell.launch_channel {
+                                "Messages may wait until you interact with this session."
+                            } else if self.shell.launch_runtime.as_deref() == Some("codex") {
+                                "Opens a Codex conversation here. Messages wait until the current turn finishes."
+                            } else {
+                                "Connects Claude's experimental channel. Complete Claude's consent in the terminal."
+                            },
+                            c
+                        )
+                    ]
+                    .spacing(2)
+                    .width(Fill),
                     action(
                         "launch-idle-input",
-                        if self.shell.launch_channel { "Idle messages: On" } else { "Idle messages: Off" },
-                        (!self.shell.launching).then_some(Message::LaunchChannel(!self.shell.launch_channel)),
+                        if self.shell.launch_channel {
+                            "Idle messages: On"
+                        } else {
+                            "Idle messages: Off"
+                        },
+                        (!self.shell.launching)
+                            .then_some(Message::LaunchChannel(!self.shell.launch_channel)),
                         self.shell.launch_channel,
                     ),
-                    small(
-                        if !self.shell.launch_channel {
-                            "Messages may wait until you interact with this session."
-                        } else if self.shell.launch_runtime.as_deref() == Some("codex") {
-                            "Opens a Codex conversation here. Messages wait until the current turn finishes."
-                        } else { "Connects Claude's experimental channel. Complete Claude's consent in the terminal." },
-                        c
-                    )
                 ]
-                .spacing(4),
+                .spacing(12)
+                .align_y(Center),
             );
         }
         if self.shell.launch_runtime.is_some()
@@ -2525,7 +3042,7 @@ impl App {
                 Some("claude-code" | "codex")
             )
         {
-            tools = tools.push(small(
+            body = body.push(small(
                 "Automatic idle delivery is not available for this tool.",
                 c,
             ));
@@ -2535,43 +3052,69 @@ impl App {
             .iter()
             .find(|r| Some(&r.name) == self.shell.launch_runtime.as_ref())
         {
-            tools = tools.push(mono(
-                format!(
-                    "{} {}",
-                    runtime
-                        .cli
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default(),
-                    self.shell.launch_arguments
-                ),
-                c,
-            ));
-        }
-        tools = tools.push(
-            row![
-                primary(
-                    "confirm-launch",
-                    if self.shell.launching {
-                        "Launching…"
-                    } else {
-                        "Launch agent"
-                    },
-                    (!self.shell.launching
-                        && self.shell.launch_runtime.is_some()
-                        && self.connected.is_ok())
-                    .then_some(Message::Launch),
-                ),
-                action(
-                    "cancel-launch",
-                    "Close",
-                    (!self.shell.launching).then_some(Message::ShowLaunch),
-                    false
+            body = body.push(
+                container(
+                    row![
+                        text("$").size(12).font(Font::MONOSPACE).color(c.amber),
+                        text(format!(
+                            "{} {}",
+                            runtime
+                                .cli
+                                .as_ref()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_default(),
+                            self.shell.launch_arguments
+                        ))
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .color(c.muted)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    ]
+                    .spacing(8),
                 )
-            ]
-            .spacing(6),
-        );
-        card(tools, c)
+                .padding([8, 10])
+                .width(Fill)
+                .style(move |_| container::Style {
+                    background: Some(if c.dark { c.ground } else { c.hover }.into()),
+                    border: iced::Border {
+                        color: c.line,
+                        width: 1.0,
+                        radius: super::style::RADIUS_SM.into(),
+                    },
+                    ..Default::default()
+                }),
+            );
+        }
+        let footer = row![
+            Space::new().width(Fill),
+            ghost(
+                "cancel-launch",
+                "Cancel",
+                (!self.shell.launching).then_some(Message::ShowLaunch),
+            ),
+            primary(
+                "confirm-launch",
+                if self.shell.launching {
+                    "Launching…"
+                } else {
+                    "Launch agent"
+                },
+                (!self.shell.launching
+                    && self.shell.launch_runtime.is_some()
+                    && self.connected.is_ok())
+                .then_some(Message::Launch),
+            ),
+        ]
+        .spacing(8)
+        .align_y(Center);
+        column![
+            container(header).padding([18, 20]),
+            rule(c),
+            scrollable(container(body).padding([16, 20])).height(iced::Shrink),
+            rule(c),
+            container(footer).padding([12, 20]),
+        ]
+        .into()
     }
 
     /// Messages sent to the person directly, oldest first, minus the ones
