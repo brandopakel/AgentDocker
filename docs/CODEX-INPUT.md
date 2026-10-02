@@ -1,5 +1,11 @@
 # Codex input delivery (experimental)
 
+The managed bridge retains a turn's most recent structured failure when later
+retry or completion events provide only an unknown error. A recognized newer
+failure replaces it; other-turn and unbound events cannot supply the reason.
+The turn-local detail is discarded at completion. This preserves an actionable
+sign-in or limit message without replaying input or declaring recovery.
+
 ## Existing Codex terminals: native queue
 
 The current implementation connects an existing Codex CLI conversation to
