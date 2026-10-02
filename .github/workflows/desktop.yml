@@ -111,6 +111,7 @@ jobs:
             artifacts/desktop/*.tar.gz
             artifacts/desktop/*.sha256
             artifacts/desktop/manifest.json
+            artifacts/desktop-dmg-create.json
             artifacts/desktop/updates-preview-*.json
             artifacts/desktop-smoke
             artifacts/iced-workflows

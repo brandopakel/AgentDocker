@@ -259,6 +259,20 @@ The source-built app and CLI can continue local testing while release setup is
 unfinished. The current stable CLI/formula remains v0.1.0; the newer installed
 local app is identified by its source commit, not that shared version string.
 
+Disk-image creation allows at most three attempts when `hdiutil` exits 1 with
+the exact `create failed - Resource busy` diagnostic, waiting two then four
+seconds. Each creation attempt and final image verification has a 180-second
+timeout. Other failures stop packaging. A completed image must pass
+`hdiutil verify` before publication. This mitigates transient contention; it
+does not establish the cause of a runner failure.
+
+The packager retains attempt status, duration and the last 64 KiB of each output
+stream in `OUTPUT-dmg-create.json`, outside the temporary package directory.
+Use a fresh output prefix; existing diagnostics are never overwritten. The
+optional `--dmg-diagnostics` selects another fresh path. Desktop and release CI
+retain this report even on failure; the manifest records the attempt count and
+whether recovery was needed. Signing and notarization checks still apply.
+
 ## Windows portable preview
 
 The Windows packaging path targets `x86_64-pc-windows-msvc`. It builds a ZIP
