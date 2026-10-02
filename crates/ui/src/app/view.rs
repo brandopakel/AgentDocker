@@ -4385,11 +4385,14 @@ impl App {
             }
             let mut line = row![
                 column![
-                    text(resource_label(&lease.resource.to_string()))
-                        .size(12)
-                        .font(Font::MONOSPACE)
-                        .color(c.text)
-                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    text(resource_label(
+                        &lease.resource.to_string(),
+                        self.selected_root()
+                    ))
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .color(c.text)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                     small(about.join(" · "), c).wrapping(iced::widget::text::Wrapping::Word),
                 ]
                 .spacing(4)
@@ -5630,11 +5633,18 @@ fn channel_heading(channel: &agentdocker_core::Channel) -> (String, Option<Strin
     }
 }
 
-/// A held resource as a person reads it: a path as a path (home as `~`),
-/// anything else as `kind: value`.
-fn resource_label(key: &str) -> String {
+/// A held resource as a person reads it: a path as a path — inside the
+/// project on view, from its root, which the header already says;
+/// elsewhere with home as `~` — anything else as `kind: value`.
+fn resource_label(key: &str, root: Option<&std::path::Path>) -> String {
     match key.split_once(':') {
-        Some(("path", path)) => shorten_home(std::path::Path::new(path)),
+        Some(("path", path)) => {
+            let path = std::path::Path::new(path);
+            match root.and_then(|root| path.strip_prefix(root).ok()) {
+                Some(inside) if !inside.as_os_str().is_empty() => inside.display().to_string(),
+                _ => shorten_home(path),
+            }
+        }
         Some((kind, value)) => format!("{kind}: {value}"),
         None => key.to_owned(),
     }
@@ -5743,6 +5753,29 @@ pub(super) fn split_style(c: Colors) -> iced::widget::pane_grid::Style {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_held_path_reads_from_the_project_root_on_view() {
+        let root = std::path::Path::new("/work/project");
+        assert_eq!(
+            super::resource_label("path:/work/project/crates/ui/src/app/board.rs", Some(root)),
+            "crates/ui/src/app/board.rs"
+        );
+        assert_eq!(
+            super::resource_label("path:/elsewhere/notes.md", Some(root)),
+            "/elsewhere/notes.md"
+        );
+        assert_eq!(
+            super::resource_label("path:/work/project", Some(root)),
+            "/work/project",
+            "the root itself is said whole"
+        );
+        assert_eq!(
+            super::resource_label("task:abc123", Some(root)),
+            "task: abc123"
+        );
+        assert_eq!(super::resource_label("plain", None), "plain");
+    }
+
     #[test]
     fn a_shared_folder_name_is_told_apart_by_its_parent_first() {
         assert_eq!(

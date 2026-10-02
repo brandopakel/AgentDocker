@@ -222,11 +222,14 @@ fn ranked(report: &Report) -> Vec<&Row> {
 }
 
 /// A share in whole percent; a share too small to round to one is said
-/// as less than one rather than as nothing.
+/// as less than one rather than as nothing, and one short of the whole
+/// as more than ninety-nine rather than as all of it.
 fn percent(fraction: f32) -> String {
     let whole = (fraction * 100.0).round();
     if whole < 1.0 && fraction > 0.0 {
         "<1%".to_owned()
+    } else if whole >= 100.0 && fraction < 1.0 {
+        ">99%".to_owned()
     } else {
         format!("{whole:.0}%")
     }
@@ -931,6 +934,8 @@ mod tests {
         assert_eq!(percent(0.0), "0%");
         assert_eq!(percent(0.004), "<1%");
         assert_eq!(percent(0.916), "92%");
+        assert_eq!(percent(0.9999), ">99%");
+        assert_eq!(percent(1.0), "100%");
         let small_first = report(
             vec![
                 row_with(counter(Some(10), Coverage::Complete)),
