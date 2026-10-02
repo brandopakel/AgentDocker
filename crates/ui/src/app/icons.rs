@@ -84,6 +84,8 @@ pub enum Icon {
     Download,
     /// A hash: a channel.
     Hash,
+    /// A shield: access asked for.
+    Shield,
 }
 
 /// An icon inked in one colour.
@@ -366,6 +368,19 @@ impl Glyph {
                     b.line_to(p(13.0, 10.0));
                 });
                 frame.stroke(&hash, stroke);
+            }
+            Icon::Shield => {
+                let shield = Path::new(|b| {
+                    b.move_to(p(8.0, 1.75));
+                    b.line_to(p(13.0, 3.75));
+                    b.line_to(p(13.0, 7.75));
+                    b.quadratic_curve_to(p(12.6, 12.1), p(8.0, 14.25));
+                    b.quadratic_curve_to(p(3.4, 12.1), p(3.0, 7.75));
+                    b.line_to(p(3.0, 3.75));
+                    b.close();
+                });
+                frame.stroke(&shield, stroke);
+                frame.stroke(&polyline(&[p(5.9, 8.0), p(7.4, 9.5), p(10.2, 6.5)]), stroke);
             }
         }
     }

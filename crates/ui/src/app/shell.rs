@@ -133,6 +133,11 @@ pub(super) struct State {
     pub unviewed_done: BTreeSet<String>,
     /// The window has lost focus; what it shows is not being looked at.
     pub unfocused: bool,
+    // approvals
+    /// The option chosen for each question whose answer is on the way, so
+    /// its card can show the choice as the receipt. Only answers still in
+    /// flight are kept. Window-local, display only.
+    pub chosen_answers: BTreeMap<MessageId, String>,
 }
 
 impl State {
@@ -1957,6 +1962,11 @@ impl App {
                     self.shell.answer_errors.remove(&id);
                     self.sending.insert(id.clone());
                     self.shell.pending_answer_reveal = Some(id.clone());
+                    let sending = &self.sending;
+                    self.shell
+                        .chosen_answers
+                        .retain(|id, _| sending.contains(id));
+                    self.shell.chosen_answers.insert(id.clone(), value.clone());
                     self.send(Cmd::Answer(id, value));
                 }
             }
@@ -1986,6 +1996,7 @@ impl App {
                     self.shell.answer_errors.remove(&id);
                     self.sending.insert(id.clone());
                     self.shell.pending_answer_reveal = Some(id.clone());
+                    self.shell.chosen_answers.remove(&id);
                     self.send(Cmd::Answer(id, answer));
                 }
             }
