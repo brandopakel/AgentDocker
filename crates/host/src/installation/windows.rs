@@ -126,7 +126,7 @@ fn hash(path: &Path) -> io::Result<String> {
 /// A stable bootstrap belongs to this store only while its receipt and bytes
 /// agree. Missing/damaged records in the reserved launcher directory fail
 /// closed; an ordinary extracted portable executable is unaffected.
-pub fn launcher_target(executable: &Path) -> io::Result<Option<PathBuf>> {
+fn launcher_root(executable: &Path) -> io::Result<Option<PathBuf>> {
     let Some(binary) = executable.file_name().and_then(|name| name.to_str()) else {
         return Ok(None);
     };
@@ -155,9 +155,52 @@ pub fn launcher_target(executable: &Path) -> io::Result<Option<PathBuf>> {
     if executable.canonicalize()? != root.join("bin").join(binary) {
         return Err(invalid("Windows launcher escaped its installation"));
     }
+    Ok(Some(root))
+}
+
+pub fn launcher_target(executable: &Path) -> io::Result<Option<PathBuf>> {
+    let Some(root) = launcher_root(executable)? else {
+        return Ok(None);
+    };
+    let binary = executable
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| invalid("invalid launcher name"))?;
     target(&root, binary)?
         .map(Some)
         .ok_or_else(|| invalid("Windows installation is inactive"))
+}
+
+/// A copied bootstrap adds one process around an installed command. Unwrap
+/// only that exact, live, receipt-verified image in the same store. PID births
+/// refuse a reused bootstrap or caller PID; argv and environment supply no
+/// identity evidence. Otherwise callers retain the actual OS parent.
+#[cfg(windows)]
+pub(crate) fn original_parent(actual_parent: u32) -> Option<u32> {
+    let executable = crate::procinfo::executable_path().ok()?;
+    let (root, _, _) = managed(&executable)?;
+    let child_birth = crate::procinfo::start_time(std::process::id())?;
+    let parent = crate::procinfo::inspect(actual_parent)?;
+    if parent.ppid <= 1 || parent.ppid == actual_parent || parent.ppid == std::process::id() {
+        return None;
+    }
+    let parent_birth = crate::procinfo::start_time(actual_parent)?;
+    let caller_birth = crate::procinfo::start_time(parent.ppid)?;
+    if parent_birth > child_birth || caller_birth > parent_birth {
+        return None;
+    }
+    let parent_image = crate::procinfo::executable_path_of(actual_parent)
+        .ok()?
+        .canonicalize()
+        .ok()?;
+    if parent_image.file_name() != executable.file_name()
+        || launcher_root(&parent_image).ok()?? != root.canonicalize().ok()?
+        || crate::procinfo::start_time(actual_parent) != Some(parent_birth)
+        || crate::procinfo::start_time(parent.ppid) != Some(caller_birth)
+    {
+        return None;
+    }
+    Some(parent.ppid)
 }
 
 #[cfg(test)]
@@ -234,6 +277,15 @@ mod tests {
                 .is_none()
         );
         println!("WINDOWS_BOOTSTRAP_SELECTED_PINNED_PAYLOAD");
+        let expected: u32 = std::env::var("AGENTDOCKER_BOOTSTRAP_FIXTURE_PARENT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            crate::procinfo::parent_id(),
+            expected,
+            "bootstrap preserves the original MCP host parent"
+        );
     }
 
     #[cfg(windows)]
@@ -250,7 +302,8 @@ mod tests {
             &serde_json::json!({"format":1,
             "binary_sha256":{"agentdocker.exe":hash(&launcher).unwrap()}}),
         );
-        let result = crate::command::run(
+        let expected_parent = std::process::id().to_string();
+        let result = crate::command::run_with_env(
             temp.path(),
             &[
                 launcher.to_str().unwrap().into(),
@@ -260,6 +313,10 @@ mod tests {
                 "--nocapture".into(),
             ],
             std::time::Duration::from_secs(20),
+            &[(
+                "AGENTDOCKER_BOOTSTRAP_FIXTURE_PARENT",
+                Some(std::ffi::OsStr::new(&expected_parent)),
+            )],
         )
         .unwrap();
         assert!(result.success, "{}", result.text);

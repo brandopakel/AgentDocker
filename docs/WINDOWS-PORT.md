@@ -504,8 +504,12 @@ activation record and receipt-checked launcher resolver reject malformed
 records, modified launchers, missing activation and escaped payloads. Bootstrap
 entrypoints select and pin the immutable executable, inherit arguments/stdio and
 wait for its exit; Windows advertises launcher contract 2 to distinguish this
-from the earlier Mac-only contract. Installer command wiring, transparent
-provider identity across the bootstrap and full lifecycle acceptance remain open.
+from the earlier Mac-only contract. The process-parent lookup unwraps only a live bootstrap whose kernel image,
+receipt, private store and process births agree; caller-supplied environment
+variables do not select an identity. The kernel image query is the existing
+`3c95ab3e` prerequisite also used by the native Codex candidate. Native original-
+parent acceptance, installer command wiring and full lifecycle acceptance remain
+open.
 
 An initial Mac concurrency regression found that strict private-file reads
 rejected an opened handle unlinked by record replacement. A separate read-only
