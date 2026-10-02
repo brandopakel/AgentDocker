@@ -431,6 +431,19 @@ sets identical last-write times explicitly; a timing delay is not its fix.
 
 ## Provider setup and message acceptance
 
+The native Codex draft adds `scripts/windows_native_codex_smoke.py` to extracted
+archive acceptance. It launches the actual pinned Codex 0.155.1 TUI in ConPTY
+with a private profile and loopback Responses fixture. Assertions cover real
+SessionStart bootstrap, idle wake, an unsent draft, FIFO input during a held
+provider request, exact receipts, read-only recovery preview and automatic
+receiver replacement without replay. The workflow checks the provider download's
+SHA-256 and retains its version, binary/driver hashes, logs and result. Its
+fixture process selects its own user as the default object owner before creating
+files, matching ordinary desktop ownership on elevated CI; no existing file ACL
+or saved provider configuration is changed. This new path still needs a passing
+native run. It does not establish real-account, physical keyboard or service
+acceptance; the held HTTP response is not a tool or permission wait.
+
 Setup publishes flushed receipts and configuration files through the host's
 native helper (write-through moves on Windows; rename and directory sync on
 Unix). Undo uses native deletion without a directory-file open. Receipt staging

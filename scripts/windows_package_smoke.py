@@ -54,6 +54,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native-manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--codex", type=Path,
+                        help="actual native Codex executable for private ConPTY/loopback receiver acceptance")
     parser.add_argument("--startup-samples", type=int, default=0,
                         help="additional fresh-home samples per Windows ancestry type (0..20)")
     args = parser.parse_args()
@@ -88,6 +90,34 @@ def main():
             if observed.get("result") != "passed" or observed.get("binary_sha256") != info["binary_sha256"]:
                 raise ValueError("native smoke did not pass on the exact archive binaries")
             report.update(result="passed", steps=len(observed["steps"]), desktop=observed.get("desktop"))
+            if args.codex:
+                report["result"] = "failed"
+                import psutil
+                trial = subprocess.Popen([sys.executable, str(ROOT / "scripts/windows_native_codex_smoke.py"),
+                                          "--binary-dir", str(app), "--codex", str(args.codex.resolve(strict=True)),
+                                          "--output", str(output / "native-codex")], cwd=scratch)
+                owner = psutil.Process(trial.pid)
+                try:
+                    if trial.wait(timeout=300) != 0:
+                        raise ValueError("native Codex acceptance failed; see its retained report")
+                except subprocess.TimeoutExpired:
+                    children = owner.children(recursive=True)
+                    for process in reversed(children):
+                        try:
+                            process.kill()
+                        except psutil.NoSuchProcess:
+                            pass
+                    owner.kill()
+                    _, alive = psutil.wait_procs([owner, *children], timeout=5)
+                    report["native_codex_timeout_survivors"] = [p.pid for p in alive]
+                    trial.wait(timeout=5)
+                    raise
+                native = json.loads((output / "native-codex/result.json").read_text(encoding="utf-8"))
+                if native.get("result") != "passed" or any(
+                        native["binary_sha256"][name] != info["binary_sha256"][name]
+                        for name in ("agentdocker.exe", "agentd.exe")):
+                    raise ValueError("native Codex acceptance did not pass on the exact archive binaries")
+                report.update(result="passed", native_codex=native)
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
         raise

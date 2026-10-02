@@ -61,6 +61,14 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
           python scripts/build_native.py --target x86_64-pc-windows-msvc > artifacts/native-build.json
+      - name: Prepare pinned native Codex and ConPTY acceptance dependencies
+        run: |
+          python -m pip install --disable-pip-version-check pywinpty==3.0.5 psutil==7.0.0
+          if ($LASTEXITCODE -ne 0) { throw "acceptance dependencies failed" }
+          curl.exe --fail --location --max-time 180 --output artifacts/codex.exe https://github.com/openai/codex/releases/download/rust-v0.155.1/codex-x86_64-pc-windows-msvc.exe
+          if ($LASTEXITCODE -ne 0) { throw "Codex download failed" }
+          $actual = (Get-FileHash artifacts/codex.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne 'eba0f32c976667cb9298efafd98513e823eeda7b576a03ec658bb8be8d336316') { throw "Codex digest mismatch" }
       - name: Extracted Windows desktop package acceptance
         # Every command in it is bounded; a hang is a finding, not a wait.
         # Forty samples can exceed ten minutes within their command bounds;
@@ -69,7 +77,7 @@ jobs:
         timeout-minutes: ${{ inputs.startup_samples && inputs.startup_samples != '0' && 100 || 10 }}
         env:
           STARTUP_SAMPLES: ${{ inputs.startup_samples || '0' }}
-        run: python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES"
+        run: python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES" --codex artifacts/codex.exe
       - name: Preserve tested unsigned portable preview
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -107,4 +115,5 @@ jobs:
             artifacts/native-build.json
             artifacts/windows-desktop-package/package-acceptance.json
             artifacts/windows-desktop-package/smoke/
+            artifacts/windows-desktop-package/native-codex/
           if-no-files-found: warn
