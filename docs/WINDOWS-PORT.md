@@ -641,3 +641,9 @@ assertion. Strict zero-prompt startup still timed out. Codex 0.160.0 source queu
 SessionStart on session creation and executes it in turn processing, explaining
 why the hook alone cannot provide startup-before-first-turn registration. A
 verified alternative startup route remains required.
+The `5daffdfd` diagnostic identified the profile difference in both strict and
+established controls: Codex normalized TOML line endings and persisted only
+`tui.screen_reader_detection_done` plus its `gpt-6.1-sol` introduction counter.
+The hook file was identical. The fixture now starts with LF and those observed
+0.160.0 TUI defaults, retaining its strict final byte assertion. This does not
+establish physical screen-reader acceptance or fix pre-first-turn registration.

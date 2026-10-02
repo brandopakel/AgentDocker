@@ -251,6 +251,8 @@ def main():
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, daemon=True).start()
+        report["provider_version"] = subprocess.check_output([str(codex), "--version"],
+            env=env, text=True, timeout=10).strip()
         config = ('model = "fixture-model"\nmodel_provider = "fixture"\napproval_policy = "never"\n'
                   'sandbox_mode = "danger-full-access"\ncheck_for_update_on_startup = false\n'
                   '[features]\nhooks = true\napps = false\n'
@@ -264,7 +266,14 @@ def main():
                   '[mcp_servers.agentdocker.env]\nAGENTDOCKER_HOME = ' + json.dumps(str(home))
                   + '\nAGENTDOCKER_SOCKET = ' + json.dumps(sock)
                   + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n')
-        (profile / "config.toml").write_text(config, encoding="utf-8")
+        if report["provider_version"] == "codex-cli 0.160.0":
+            # Observed provider-owned first-launch bookkeeping, also written in
+            # the zero-turn control before any native receiver exists. Seed it
+            # in this nonphysical fixture; preserve strict byte equality during
+            # queue/draft/recovery acceptance. No user configuration is touched.
+            config += ('\n[tui]\nscreen_reader_detection_done = true\n'
+                       '\n[tui.model_availability_nux]\n"gpt-6.1-sol" = 1\n')
+        (profile / "config.toml").write_bytes(config.encode("utf-8"))
         hook = root / "hook.py"
         hook.write_text(
             "import subprocess,sys\nfrom pathlib import Path\n"
@@ -279,8 +288,6 @@ def main():
                            for name in ("config.toml", "hooks.json")}
         profile_hashes = {name: hashlib.sha256(value).hexdigest()
                           for name, value in profile_initial.items()}
-        report["provider_version"] = subprocess.check_output([str(codex), "--version"],
-            env=env, text=True, timeout=10).strip()
         daemon = subprocess.Popen([str(daemon_exe)], cwd=repo, env=env, stdin=subprocess.DEVNULL,
                                   stdout=daemon_log, stderr=daemon_log)
         owned.append(psutil.Process(daemon.pid))
