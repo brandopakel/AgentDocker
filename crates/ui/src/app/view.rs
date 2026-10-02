@@ -1199,7 +1199,10 @@ impl App {
         };
         // Chat owns the remaining viewport so its composer never depends on
         // scrolling past the header. Large forms and notices scroll above it.
-        let workspace: Element<'_, Message> = if self.screen == Screen::Chat {
+        // Messages does the same: its columns end at the window's foot.
+        let owns_viewport = self.screen == Screen::Chat
+            || (self.screen == Screen::Questions && self.has_conversations());
+        let workspace: Element<'_, Message> = if owns_viewport {
             column![
                 container(scrollable(content).height(iced::Shrink))
                     .max_height(self.shell.height / self.scale_factor() * 0.45),
