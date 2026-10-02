@@ -324,6 +324,57 @@ fn write_input(mut writer: impl std::io::Write, input: &Input) -> std::io::Resul
 /// wake a blocked read. Partial frames survive each read deadline.
 const READ_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Reads that wait in `poll`, never in the receive itself.
+///
+/// Darwin can strand a receive that begins while another descriptor of the
+/// same socket is shut down: neither that shutdown nor `SO_RCVTIMEO` wakes
+/// it. `poll` carries its own timeout, and `MSG_DONTWAIT` keeps the receive
+/// from blocking without changing the descriptor the writer shares.
+#[cfg(unix)]
+struct PolledStream(agentdocker_host::ipc::BlockingStream);
+
+#[cfg(unix)]
+impl std::io::Read for PolledStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        use std::io::{Error, ErrorKind};
+        use std::os::fd::AsRawFd;
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let fd = self.0.as_raw_fd();
+        let mut ready = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one initialized pollfd outlives the call.
+        match unsafe { libc::poll(&mut ready, 1, READ_POLL.as_millis() as libc::c_int) } {
+            0 => return Err(ErrorKind::TimedOut.into()),
+            n if n < 0 => {
+                let error = Error::last_os_error();
+                return Err(if error.kind() == ErrorKind::Interrupted {
+                    ErrorKind::TimedOut.into()
+                } else {
+                    error
+                });
+            }
+            _ => {}
+        }
+        // SAFETY: buf is valid for writes of buf.len() bytes.
+        let read =
+            unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), libc::MSG_DONTWAIT) };
+        if read < 0 {
+            let error = Error::last_os_error();
+            return Err(if error.kind() == ErrorKind::Interrupted {
+                ErrorKind::WouldBlock.into()
+            } else {
+                error
+            });
+        }
+        Ok(read as usize)
+    }
+}
+
 fn read_frame(
     reader: &mut impl std::io::BufRead,
     line: &mut Vec<u8>,
@@ -378,6 +429,9 @@ fn read_output(
     shared: &Shared,
     ctx: &Wake,
 ) -> String {
+    #[cfg(unix)]
+    let stream = PolledStream(stream);
+    #[cfg(not(unix))]
     if let Err(error) = stream.set_read_timeout(Some(READ_POLL)) {
         return format!("cannot bound terminal reads: {error}");
     }
@@ -524,6 +578,116 @@ mod tests {
         if let Err(error) = peer.shutdown(std::net::Shutdown::Both) {
             assert_eq!(error.kind(), std::io::ErrorKind::NotConnected);
         }
+    }
+
+    /// Abort with thread diagnostics if a socket fixture outlives `limit`.
+    /// Nextest's own timeout kills the process without saying where each
+    /// thread waited; the historical macOS hang left nothing else to go on.
+    #[cfg(unix)]
+    struct HangWatch {
+        disarm: Option<std::sync::mpsc::Sender<()>>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    #[cfg(unix)]
+    impl HangWatch {
+        fn arm(fixture: &'static str, limit: std::time::Duration) -> Self {
+            let (disarm, armed) = std::sync::mpsc::channel::<()>();
+            let thread = std::thread::spawn(move || {
+                if armed.recv_timeout(limit) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                    return;
+                }
+                eprintln!("{fixture}: still running after {limit:?}; thread diagnostics follow");
+                eprintln!("{}", thread_report());
+                std::process::abort();
+            });
+            Self {
+                disarm: Some(disarm),
+                thread: Some(thread),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for HangWatch {
+        fn drop(&mut self) {
+            drop(self.disarm.take());
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// Every thread's stack from `sample`, run in a private directory and
+    /// bounded so a stalled sampler cannot keep the watchdog from aborting.
+    #[cfg(target_os = "macos")]
+    fn thread_report() -> String {
+        use std::time::{Duration, Instant};
+        const SAMPLE_LIMIT: Duration = Duration::from_secs(30);
+        let dir = match tempfile::tempdir() {
+            Ok(dir) => dir,
+            Err(error) => return format!("cannot create a sample directory: {error}"),
+        };
+        let report = dir.path().join("report.sample");
+        let output = dir.path().join("sample.out");
+        let mut sampler = match std::fs::File::create(&output)
+            .and_then(|out| Ok((out.try_clone()?, out)))
+            .and_then(|(out, err)| {
+                std::process::Command::new("/usr/bin/sample")
+                    .arg(std::process::id().to_string())
+                    .args(["2", "-mayDie", "-file"])
+                    .arg(&report)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(out)
+                    .stderr(err)
+                    .spawn()
+            }) {
+            Ok(sampler) => sampler,
+            Err(error) => return format!("cannot run sample: {error}"),
+        };
+        let started = Instant::now();
+        let finished = loop {
+            match sampler.try_wait() {
+                Ok(Some(status)) => break format!("sample exited: {status}"),
+                Ok(None) if started.elapsed() < SAMPLE_LIMIT => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Ok(None) => {
+                    // Only the sampler this watchdog started is ended.
+                    let _ = sampler.kill();
+                    let _ = sampler.wait();
+                    break format!("sample did not finish within {SAMPLE_LIMIT:?}; ended it");
+                }
+                Err(error) => {
+                    let _ = sampler.kill();
+                    let _ = sampler.wait();
+                    break format!("cannot wait for sample ({error}); ended it");
+                }
+            }
+        };
+        let read = |path: &std::path::Path| {
+            std::fs::read_to_string(path).unwrap_or_else(|error| format!("<unreadable: {error}>"))
+        };
+        format!("{finished}\n{}\n{}", read(&output).trim(), read(&report))
+    }
+
+    /// Linux exposes each task's wait channel and state here, not its stack.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn thread_report() -> String {
+        let mut report = String::from("task wait states (not stacks):\n");
+        let tasks = std::fs::read_dir("/proc/self/task").into_iter().flatten();
+        for task in tasks.flatten() {
+            let read =
+                |name: &str| std::fs::read_to_string(task.path().join(name)).unwrap_or_default();
+            report.push_str(&format!(
+                "{:?} {} wchan={} {}\n",
+                task.file_name(),
+                read("comm").trim(),
+                read("wchan").trim(),
+                read("stat").trim()
+            ));
+        }
+        report
     }
 
     fn unserved_terminal() -> Terminal {
@@ -730,6 +894,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn terminal_closure_without_socket_wakeup_is_bounded_and_keeps_the_first_error() {
+        let _watch = HangWatch::arm(
+            "terminal_closure_without_socket_wakeup_is_bounded_and_keeps_the_first_error",
+            std::time::Duration::from_secs(20),
+        );
         use std::sync::mpsc;
         use std::time::Duration;
         let terminal = unserved_terminal();
@@ -762,6 +930,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn terminal_end_joins_an_idle_writer_without_dropping_the_window_handle() {
+        let _watch = HangWatch::arm(
+            "terminal_end_joins_an_idle_writer_without_dropping_the_window_handle",
+            std::time::Duration::from_secs(20),
+        );
         use std::io::Write;
         use std::sync::mpsc;
         use std::time::Duration;
@@ -784,12 +956,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn writer_failure_closes_the_reader_and_preserves_its_reason() {
+        let _watch = HangWatch::arm(
+            "writer_failure_closes_the_reader_and_preserves_its_reason",
+            std::time::Duration::from_secs(20),
+        );
         use std::io::{self, Write};
         use std::sync::mpsc;
         use std::time::Duration;
         struct FailedWriter;
         impl Write for FailedWriter {
             fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+                eprintln!("terminal failure fixture: injecting write failure");
                 Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "injected write failure",
@@ -799,29 +976,92 @@ mod tests {
                 Ok(())
             }
         }
+        // Retain phase evidence if the historical macOS hang recurs. These
+        // traces are test-only and successful nextest output is not archived.
+        // A later passing run does not explain the original timeout.
+        eprintln!("terminal failure fixture: creating socket pair");
         let mut terminal = unserved_terminal();
         let shared = terminal.shared.clone();
         let (stream, peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
         assert!(lock(&shared.connection).install(stream.try_clone().unwrap()));
+        eprintln!("terminal failure fixture: connection installed");
         let (finished, done) = mpsc::channel();
         let reader = std::thread::spawn(move || {
+            eprintln!("terminal failure fixture: reader starting");
             let ctx = Wake::default();
             let reason = read_output(stream, &shared, &ctx);
+            eprintln!("terminal failure fixture: reader returned: {reason}");
             shared.ended(reason, &ctx);
+            eprintln!("terminal failure fixture: reader ended cleanup returned");
             finished.send(()).unwrap();
         });
         // Inject an error while a real socket reader waits with an open peer.
         // SHUT_RD alone does not force an immediate EPIPE on Darwin.
         terminal.send(b"owned fixture".to_vec());
+        eprintln!("terminal failure fixture: input queued, writer starting");
         run_writer(FailedWriter, &terminal.shared, &Wake::default());
+        eprintln!("terminal failure fixture: writer returned");
         let observed = done.recv_timeout(Duration::from_secs(3));
+        eprintln!("terminal failure fixture: reader completion: {observed:?}");
         terminal.shared.close();
+        eprintln!("terminal failure fixture: terminal close returned");
         close_peer(&peer);
+        eprintln!("terminal failure fixture: peer close returned, joining reader");
         reader.join().unwrap();
+        eprintln!("terminal failure fixture: reader joined");
         observed.unwrap();
         assert!(
             matches!(terminal.status(), Status::Ended(reason) if reason.starts_with("terminal input failed:"))
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_read_returns_at_once_without_waiting_for_data() {
+        use std::io::Read;
+        let (stream, _peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(PolledStream(stream).read(&mut []).unwrap(), 0);
+        assert!(started.elapsed() < READ_POLL / 2);
+    }
+
+    /// Darwin can strand a receive that starts while another descriptor of
+    /// the same socket is being shut down: neither the shutdown nor
+    /// SO_RCVTIMEO wakes it. Race closure against the reader's first receive
+    /// and require every reader to observe it.
+    #[cfg(unix)]
+    #[test]
+    fn closing_as_a_read_starts_cannot_strand_the_reader() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
+        use std::time::Duration;
+        for round in 0..500 {
+            let terminal = unserved_terminal();
+            let shared = terminal.shared.clone();
+            let (stream, peer) = agentdocker_host::ipc::BlockingStream::pair().unwrap();
+            assert!(lock(&shared.connection).install(stream.try_clone().unwrap()));
+            let started = Arc::new(AtomicBool::new(false));
+            let reader_started = started.clone();
+            let (finished, done) = mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                reader_started.store(true, Ordering::Release);
+                // The receiver is gone once a failed round has given up.
+                let _ = finished.send(read_output(stream, &shared, &Wake::default()));
+            });
+            while !started.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+            }
+            // Vary where closure lands relative to the reader's first receive.
+            for _ in 0..round * 37 % 4000 {
+                std::hint::spin_loop();
+            }
+            terminal.shared.close();
+            let observed = done.recv_timeout(READ_POLL + Duration::from_secs(2));
+            close_peer(&peer);
+            // A stranded reader cannot be joined; fail without waiting on it.
+            assert!(observed.is_ok(), "round {round}: the reader missed closure");
+            reader.join().unwrap();
+        }
     }
 
     #[test]

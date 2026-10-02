@@ -58,6 +58,9 @@ objc2-user-notifications = { version = "0.3", features = [
 iced_runtime.workspace = true
 libc.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 accesskit_unix = "0.21.1"
 x11-dl = "2.21"
