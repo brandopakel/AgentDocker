@@ -576,3 +576,9 @@ maintenance skips unrecognized directories while collecting verified siblings;
 uninstall still refuses before deactivation if it cannot account for a preserved
 directory, identifying that path. Corrected native and full-gate acceptance are
 pending; the earlier `e190d919` pass does not establish these changed paths.
+Native `5654a107` passed the new extraction/retention/retirement checks and both
+Task Scheduler lifecycles, then its refusal-message assertion compared the
+fixture's `RUNNER~1` path spelling against the correctly canonicalized
+`runneradmin` path in the diagnostic. The fixture now resolves its expected
+path; no product refusal or ownership rule changed. A complete corrected native
+run remains required.

@@ -227,7 +227,7 @@ def main():
              (foreign_retirement / 'keep.txt').is_file())
         desktop('uninstall', executable=launcher, good=False)
         step('uninstall preserves unaccountable retirement and identifies the directory before deactivation',
-             str(foreign_retirement) in report['commands'][-1]['stderr']
+             str(foreign_retirement.resolve()) in report['commands'][-1]['stderr']
              and desktop('status')['installation']['current']['id'] == first and launcher.is_file())
         (foreign_retirement / 'keep.txt').unlink()
         foreign_retirement.rmdir()
