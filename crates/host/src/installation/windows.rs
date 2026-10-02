@@ -48,7 +48,7 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn record(path: &Path, bound: u64) -> io::Result<Value> {
-    let file = dirs::open_private(path)?;
+    let file = dirs::open_private_snapshot(path)?;
     if file.metadata()?.len() > bound {
         return Err(invalid(
             "Windows installation record exceeds its size bound",
@@ -289,6 +289,35 @@ mod tests {
                 .to_string()
                 .contains("bound")
         );
+    }
+
+    #[test]
+    fn atomic_windows_record_reads_still_refuse_hard_links() {
+        let (_temp, root, _selected, launcher) = fixture();
+        let alias = root.join("foreign-record-alias.json");
+        std::fs::hard_link(root.join("activation.json"), &alias).unwrap();
+        assert!(launcher_target(&launcher).is_err());
+        std::fs::remove_file(alias).unwrap();
+        assert!(launcher_target(&launcher).unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_windows_record_reads_preserve_permissions_and_refuse_final_links() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let (_temp, root, _selected, launcher) = fixture();
+        let record = root.join("activation.json");
+        std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(launcher_target(&launcher).is_err());
+        assert_eq!(
+            std::fs::metadata(&record).unwrap().permissions().mode() & 0o777,
+            0o666
+        );
+        std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let outside = root.join("other-record.json");
+        std::fs::rename(&record, &outside).unwrap();
+        symlink(&outside, &record).unwrap();
+        assert!(launcher_target(&launcher).is_err());
     }
 
     #[cfg(unix)]
