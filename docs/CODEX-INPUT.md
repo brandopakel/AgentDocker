@@ -47,7 +47,9 @@ when Codex filters `CODEX_HOME` from the MCP environment; an explicitly supplied
 profile must agree. It requires the root thread/session to agree and refuses
 missing, ambiguous, stale or child bindings. It creates no app-server agent and
 never derives a thread from history or a display name. The native receiver keeps
-ownership of input receipts. This source change still needs native acceptance
+ownership of input receipts. Once resolved, a native question cannot fall back
+to a blocking legacy call if a binding changes during the request. This source
+change still needs native acceptance
 and independent review; it does not solve zero-prompt startup/reopen.
 
 The receiver probes the read-only queue/history APIs before taking ownership.

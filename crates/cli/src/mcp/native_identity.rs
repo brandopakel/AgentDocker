@@ -322,9 +322,6 @@ mod tests {
                 aliases: Default::default(),
             },
             Response::Ok,
-            Response::Agent {
-                agent: agent.clone(),
-            },
             Response::Sent {
                 message: "question".to_owned().into(),
                 subscribers: 0,
@@ -350,7 +347,10 @@ mod tests {
         server.shutdown().await;
         assert!(!server.backend.requests().iter().any(|r| matches!(
             r,
-            Request::Register { .. } | Request::Deregister { .. } | Request::Ask { .. }
+            Request::Register { .. }
+                | Request::Deregister { .. }
+                | Request::Inspect { .. }
+                | Request::Ask { .. }
         )));
         let mut bound = McpServer::new(
             Mock::default(),

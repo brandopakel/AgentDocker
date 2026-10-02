@@ -1058,10 +1058,11 @@ impl<B: Backend> McpServer<B> {
             }
             "ask_human" => {
                 let args: AskArgs = parse(arguments)?;
-                let native_queue = !self.claude_channel
-                    && !self.codex_input
-                    && matches!(self.backend.call(Request::Inspect { agent: me.clone() }).await,
-                        Ok(Response::Agent { agent }) if agent.input_binding.is_some());
+                let native_queue = self.native_input
+                    || (!self.claude_channel
+                        && !self.codex_input
+                        && matches!(self.backend.call(Request::Inspect { agent: me.clone() }).await,
+                        Ok(Response::Agent { agent }) if agent.input_binding.is_some()));
                 if self.claude_channel || native_queue {
                     let response = self
                         .backend
