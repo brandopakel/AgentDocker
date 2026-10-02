@@ -459,8 +459,12 @@ Windows now reads that image with `QueryFullProcessImageNameW` through an owned
 process handle, checks liveness before and after, preserves UTF-16 paths and
 refuses failed/truncated queries. Existing provider birth and ancestry checks
 remain required. A native regression covers a separate executable in a path
-with spaces and Unicode, plus invalid and exited processes. The correction
-still needs passing native receiver acceptance. Separate Mac trials on the same receiver
+with spaces and Unicode, plus invalid and exited processes. All 314 native
+core/host tests passed. The `c479a014` extracted-package diagnostic then passed
+after an explicit initial prompt: idle delivery, draft preservation, busy FIFO,
+five exact receipts and receiver replacement without replay, with clean cleanup.
+The separate zero-prompt startup trial still failed, leaving the overall workflow
+failed and lifecycle acceptance open. Separate Mac trials on the same receiver
 source passed delivery after an initial prompt but failed fresh startup and
 reopen without a prompt; both complete trial failures remain recorded. It does not establish real-account, physical keyboard or service
 acceptance; the held HTTP response is not a tool or permission wait.
