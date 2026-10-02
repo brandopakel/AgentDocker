@@ -79,8 +79,11 @@ and hosted Windows update/rollback remain open. Native `2bc7b2e6` passed
 loaded-bootstrap uninstall failed with access denied. Native `a978d269` isolated failure to POSIX deletion disposition after the
 DELETE-capable open succeeded. The candidate now renames loaded launchers into
 verified private retirement with eight-directory/256 MiB admission limits and
-collects closed images during later maintenance. Corrected uninstall and
-retirement acceptance remain open. Earlier `91dd78bd` portable service setup exceeded its
+collects closed images during later maintenance. Native `f9b47a6b` passed all 319 core/host checks, including loaded-image
+retirement. Its package fixture then created the reserved retirement root under
+the Administrator owner and was correctly refused; the quantity-limit probe now
+runs only after the app creates that root, and requires the exact limit error.
+Corrected full uninstall/retirement acceptance remains open. Earlier `91dd78bd` portable service setup exceeded its
 20-second PowerShell bound; this distinct failure remains unexplained. Linux CI
 also failed the managed-group and owned-child shutdown tests; these failures
 remain blocking. Start menu/PATH, physical/actual-provider and login/reboot
