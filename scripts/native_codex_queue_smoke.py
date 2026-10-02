@@ -1815,7 +1815,7 @@ try:
                     fields = row.split(None, 6)
                     if len(fields) == 7 and fields[6].startswith(prefix):
                         assert " app-server " in fields[6], "unexpected private provider process"
-                        found.append((int(fields[0]), " ".join(fields[1:6])))
+                        found.append((int(fields[0]), " ".join(fields[1:6]), fields[6]))
                 return found
 
             def end_managed_provider():
@@ -1827,6 +1827,17 @@ try:
                     [codex, "app-server", "daemon", "stop"], env=env, cwd=repo,
                     stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
                 assert stopped.returncode == 0, stopped.stderr
+                # `daemon stop` retires the server but leaves its detached PID
+                # updater alive in 0.160. Retire only the exact private updater
+                # we observed, after rechecking its PID, birth and command.
+                updaters = []
+                for identity in managed_provider_processes():
+                    if identity[2].endswith(" app-server daemon pid-update-loop"):
+                        assert identity in owned, "private updater identity changed"
+                        assert identity in managed_provider_processes()
+                        os.kill(identity[0], signal.SIGTERM)
+                        updaters.append(identity[0])
+                report["managed_provider_updaters_stopped"] = updaters
                 wait(lambda: not managed_provider_processes(), 10)
                 report["managed_provider_survivors"] = []
 
