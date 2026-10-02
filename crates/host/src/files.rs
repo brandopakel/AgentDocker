@@ -141,47 +141,64 @@ pub fn publish_snapshot(staged: &Path, destination: &Path) -> io::Result<()> {
     }
 }
 
-/// Unlink a verified regular file while existing Windows image/reader handles
-/// finish using it. Used for owned desktop bootstraps during uninstall; unlike
-/// delayed reboot deletion, failure is returned synchronously to the caller.
+/// Move a verified regular file to a fresh private retirement name while a
+/// loaded Windows image finishes. The caller validates ownership and destination
+/// privacy. Never replace an existing destination or schedule deletion at reboot.
 #[cfg(windows)]
-pub fn unlink_open_regular(path: &Path) -> io::Result<()> {
-    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+pub fn retire_open_regular(path: &Path, destination: &Path) -> io::Result<()> {
+    use std::os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle};
     use windows_sys::Win32::Foundation::GENERIC_READ;
     use windows_sys::Win32::Storage::FileSystem::{
-        DELETE, FILE_DISPOSITION_INFO_EX, FILE_FLAG_OPEN_REPARSE_POINT, FileDispositionInfoEx,
+        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_RENAME_INFO, FileRenameInfoEx,
         SetFileInformationByHandle,
     };
     let context = |stage: &str, error: io::Error| {
         io::Error::new(error.kind(), format!("{stage} {}: {error}", path.display()))
     };
-    let checked = open_regular(path).map_err(|e| context("inspect unlink target", e))?;
+    let name: Vec<u16> = std::path::absolute(destination)?
+        .as_os_str()
+        .encode_wide()
+        .collect();
+    if name.is_empty() || name.len() > 32767 || name.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid retirement destination",
+        ));
+    }
+    let checked = open_regular(path).map_err(|e| context("inspect retirement target", e))?;
     let file = OpenOptions::new()
         .access_mode(GENERIC_READ | DELETE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
-        .map_err(|e| context("open unlink target with DELETE access", e))?;
+        .map_err(|e| context("open retirement target with DELETE access", e))?;
     if same_file::Handle::from_file(checked)? != same_file::Handle::from_file(file.try_clone()?)? {
-        return Err(io::Error::other("file changed before unlink"));
+        return Err(io::Error::other("file changed before retirement"));
     }
-    // FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS. Deliberately
-    // omit FORCE_IMAGE_SECTION_CHECK: an owned loaded bootstrap may finish
-    // after its name is removed. No readonly-attribute or sharing bypass.
-    // https://learn.microsoft.com/openspecs/windows_protocols/ms-fscc/2e860264-018a-47b3-8555-565a13b35a45
-    let info = FILE_DISPOSITION_INFO_EX { Flags: 0x1 | 0x2 };
-    // SAFETY: the live file and correctly sized information buffer outlive
-    // the call. The link disappears when this delete handle closes.
-    if unsafe {
+    let bytes = std::mem::size_of::<FILE_RENAME_INFO>() + (name.len() + 1) * 2;
+    let mut storage = vec![0_usize; bytes.div_ceil(std::mem::size_of::<usize>())];
+    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // FILE_RENAME_FLAG_POSIX_SEMANTICS, without REPLACE_IF_EXISTS. A loaded
+    // image keeps its original stream; only its private filesystem name moves.
+    // SAFETY: aligned, initialized storage includes the complete UTF-16 name;
+    // the buffer and verified file handle outlive the synchronous call.
+    let renamed = unsafe {
+        (*info).Anonymous.Flags = 0x2;
+        (*info).FileNameLength = (name.len() * 2) as u32;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            std::ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
+            name.len(),
+        );
         SetFileInformationByHandle(
             file.as_raw_handle(),
-            FileDispositionInfoEx,
-            (&info as *const FILE_DISPOSITION_INFO_EX).cast(),
-            std::mem::size_of_val(&info) as u32,
+            FileRenameInfoEx,
+            info.cast(),
+            bytes as u32,
         )
-    } == 0
-    {
+    };
+    if renamed == 0 {
         return Err(context(
-            "set POSIX deletion disposition",
+            "rename loaded file into retirement",
             io::Error::last_os_error(),
         ));
     }

@@ -193,12 +193,23 @@ def main():
         step('foreign launcher neighbor prevents uninstall without deleting anything',
              foreign.is_file() and launcher.is_file())
         foreign.unlink()
+        retirement = store / 'retired-launchers'
+        retirement.mkdir(exist_ok=True)
+        oversized = [retirement / str(uuid.uuid4()) for _ in range(9)]
+        for directory in oversized:
+            directory.mkdir()
+        desktop('uninstall', executable=launcher, good=False)
+        step('retirement inventory bound refuses before deactivation and preserves unknown contents',
+             desktop('status')['installation']['current']['id'] == first
+             and launcher.is_file() and all(directory.is_dir() for directory in oversized))
+        for directory in oversized:
+            directory.rmdir()
         uninstall = desktop('uninstall', '--preview', executable=launcher)
         desktop('uninstall', '--expect-plan', '0' * 64, executable=launcher, good=False)
         step('stale uninstall plan preserves launchers and activation',
              launcher.is_file() and desktop('status')['installation']['current']['id'] == first)
         desktop('uninstall', '--expect-plan', uninstall['plan_id'], executable=launcher)
-        step('installed command uninstalls its loaded bootstrap and deactivates atomically',
+        step('installed command retires its loaded bootstrap and deactivates atomically',
              not (store / 'bin').exists() and not (store / 'launcher.json').exists()
              and desktop('status')['installation'] is None)
         step('uninstall preserves immutable releases and unrecognized retained content',
@@ -206,6 +217,8 @@ def main():
         desktop('install', '--from', app, '--local-preview', '--expect-current', 'none')
         step('reinstall after uninstall restores the stable launcher',
              desktop('status', executable=launcher)['installation']['current']['id'] == first)
+        step('reinstall collects closed retired launcher images',
+             not any(retirement.iterdir()))
         desktop('uninstall')
         step('installation leaves provider state and daemon startup untouched', not home.exists())
         report['result'] = 'passed'

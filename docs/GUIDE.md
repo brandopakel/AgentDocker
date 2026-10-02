@@ -66,7 +66,10 @@ and Mac/Linux feeds. It remains unsigned and requires explicit preview consent.
 
 `desktop prune --preview` reports removable old builds; omit `--preview` to remove
 them. `desktop uninstall --preview` reports launcher removal; omit `--preview` to
-apply. Both preserve settings, running versions and unrecognized files. Uninstall
+apply. Both preserve settings, running versions and unrecognized files. Loaded
+launchers move into a private retirement directory until they close; a later
+activation, prune or uninstall removes their verified files. Retirement is capped
+at eight directories and 256 MiB. Uninstall
 refuses while a service references the installation, even if stopped: run
 `daemon uninstall` for that service first. Use `desktop --prefix <directory>` for
 an isolated installation. Start menu shortcuts and PATH changes are not installed.

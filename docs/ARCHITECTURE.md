@@ -1731,8 +1731,14 @@ processes running. Maintenance holds the install lock and exclusive per-version
 pins before retiring verified unused payloads. Stopped service actions retain
 explicit version references; services using stable launchers do not prevent
 pruning unrelated versions. Uninstall refuses service references, atomically
-deactivates and removes only receipt-verified bootstrap names; Windows POSIX
-deletion lets already-loaded bootstraps finish. Partial cleanup retains an
+deactivates and moves only receipt-verified bootstrap names into private
+`retired-launchers/<uuid>` directories using handle-verified Windows rename.
+Loaded images finish there; ordinary deletion removes them once closed during
+the next changed activation, prune or uninstall. Each retirement retains the
+original hash receipt; unexpected/changed contents are preserved. A new retirement
+refuses before deactivation if it would exceed eight directories or 256 MiB.
+Direct POSIX deletion of the loaded image failed on native Windows and is not
+used. Partial cleanup retains an
 inactive record and can be resumed without removing provider settings or pinned
 releases. Native acceptance and remaining lifecycle work are tracked in
 [the Windows port](WINDOWS-PORT.md).

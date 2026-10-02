@@ -367,7 +367,9 @@ mod tests {
         // The parent bootstrap still waits for this immutable child. Exercise
         // the loaded image, not merely a regular file held open for reading.
         let launcher = root.join("bin/agentdocker.exe");
-        files::unlink_open_regular(&launcher).unwrap();
+        let retired = root.join("retired-test");
+        dirs::secure_state_dir(&retired).unwrap();
+        files::retire_open_regular(&launcher, &retired.join("agentdocker.exe")).unwrap();
         assert!(
             !launcher.exists(),
             "loaded bootstrap leaves the public namespace"
@@ -411,6 +413,8 @@ mod tests {
                 .text
                 .contains("WINDOWS_BOOTSTRAP_SELECTED_PINNED_PAYLOAD")
         );
+        // The bootstrap has now exited; its retired image can be removed normally.
+        std::fs::remove_file(root.join("retired-test/agentdocker.exe")).unwrap();
     }
 
     #[test]

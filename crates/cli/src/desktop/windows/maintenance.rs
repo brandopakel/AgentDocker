@@ -247,6 +247,13 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
         // Deactivation is atomic even if a later filesystem operation fails.
         // A subsequent portable CLI can finish removing any remaining verified
         // launchers; existing immutable processes and state stay untouched.
+        let launchers: Vec<_> = plan
+            .remove
+            .iter()
+            .filter(|path| path.parent() == Some(layout.bin.as_path()))
+            .cloned()
+            .collect();
+        let retired = retirement::prepare(layout, &launchers)?;
         publish(
             &layout.root,
             "activation.json",
@@ -264,13 +271,20 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
                             == Some(layout.root.canonicalize()?.as_path()),
                         "launcher ownership changed; file preserved"
                     );
+                    let destination = retired
+                        .as_ref()
+                        .context("retirement destination is missing")?
+                        .join(path.file_name().context("launcher name is missing")?);
+                    files::retire_open_regular(path, &destination)?;
                 } else {
                     dirs::open_private_snapshot(path)?;
+                    std::fs::remove_file(path)?;
                 }
-                files::unlink_open_regular(path)?;
             }
         }
+        retirement::cleanup(layout)?;
     } else {
+        retirement::cleanup(layout)?;
         for path in &plan.remove {
             checked_version(layout, path)?;
             let retired = layout.root.join("retired");

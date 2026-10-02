@@ -522,9 +522,12 @@ the seven exact portable files with bounded expansion and no links. Native previ
 local-fixture update/rollback, wrong-checksum and stable-policy refusal checks.
 This is not a hosted Windows upgrade. Maintenance now plans and guards removal
 of verified inactive versions, retaining active/rollback/held versions and stopped
-service references. Uninstall first publishes an inactive record, then unlinks
-only receipt-verified launchers using Windows POSIX deletion semantics; settings
-and running immutable releases are retained. An interrupted cleanup is resumable
+service references. Uninstall reserves bounded private retirement storage,
+publishes an inactive record, then renames only receipt-verified launchers out of
+the public directory. A hash receipt precedes each retirement; loaded images
+finish without deletion and later activation/prune/uninstall collects closed
+images. Unexpected or changed content is preserved; eight directories and 256 MiB
+limit new retirement. Settings and running immutable releases are retained. An interrupted cleanup is resumable
 from the portable CLI. Native maintenance/service interlocks, Start menu and
 full installed lifecycle acceptance remain open.
 
@@ -542,7 +545,7 @@ on Windows; those fixtures now exercise the native store. Native run 36970015868
 the extracted portable checks. The later `f0426f72` installer trial passed its separate 14 checks; updater
 acceptance remains separate from that source.
 
-Installed service acceptance on `3fbbd8c2` exposed a DOS-versus-verbatim path mismatch: the active CLI was falsely classified as obsolete during registration. Registration now compares canonical filesystem paths, still checks the active release and verified bootstrap receipt, and includes native path-spelling and actual copied-process regressions. The original failed trial is retained; corrected installed service/uninstall acceptance is still required.
+Installed service acceptance on `3fbbd8c2` exposed a DOS-versus-verbatim path mismatch: the active CLI was falsely classified as obsolete during registration. Registration now compares canonical filesystem paths, still checks the active release and verified bootstrap receipt, and includes native path-spelling and actual copied-process regressions. The original failed trial is retained. Native `2bc7b2e6` passed all 13 installed Task Scheduler checks; loaded-bootstrap uninstall subsequently failed.
 
 The Windows CLI installation candidate also stages a separate preview update
 channel and refuses publication unless both installation and installed service
@@ -552,3 +555,8 @@ PowerShell command timed out after 20 seconds before installed tests began.
 This does not establish installed-service or uninstall acceptance. The original
 failed service report and full native log remain retained; the timeout cause is
 still open.
+
+Native loaded-image regression `a978d269` isolated access denied to
+`FileDispositionInfoEx` after the DELETE-capable open succeeded. The candidate
+now uses private rename retirement and ordinary collection after image closure;
+its loaded-image, bounded-retention and complete package acceptance remain pending.

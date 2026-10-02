@@ -76,9 +76,11 @@ preserves active-copy registration. Release code prepares a separate Windows
 preview feed only with exact installed lifecycle acceptance; public publishing
 and hosted Windows update/rollback remain open. Native `2bc7b2e6` passed
 62 portable, 11 portable-service and 13 installed Task Scheduler checks, then
-loaded-bootstrap uninstall failed with access denied. A native loaded-image
-regression and stage/path diagnostics now isolate that operation; uninstall
-acceptance remains open. Earlier `91dd78bd` portable service setup exceeded its
+loaded-bootstrap uninstall failed with access denied. Native `a978d269` isolated failure to POSIX deletion disposition after the
+DELETE-capable open succeeded. The candidate now renames loaded launchers into
+verified private retirement with eight-directory/256 MiB admission limits and
+collects closed images during later maintenance. Corrected uninstall and
+retirement acceptance remain open. Earlier `91dd78bd` portable service setup exceeded its
 20-second PowerShell bound; this distinct failure remains unexplained. Linux CI
 also failed the managed-group and owned-child shutdown tests; these failures
 remain blocking. Start menu/PATH, physical/actual-provider and login/reboot

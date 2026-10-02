@@ -5,6 +5,7 @@ use agentdocker_host::{files, installation, lock};
 use installation::windows as native;
 
 mod maintenance;
+mod retirement;
 
 pub(super) struct Layout {
     prefix: PathBuf,
