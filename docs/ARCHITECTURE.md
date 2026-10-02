@@ -4,6 +4,14 @@ This document describes implemented behavior and later design intent. The Septem
 
 The delivery priorities are native local orchestration, automatic discovery and setup, an installed desktop GUI, and macOS/Linux/Windows support; the road to v1 is [REMAINING-WORK.md](REMAINING-WORK.md). Container engines are optional execution adapters. The historical phase order below does not make container expansion or a browser dashboard prerequisites for that desktop product.
 
+Detached Codex app-server MCP calls are scoped to an already verified native
+root binding by provider-supplied thread/session metadata. The host process,
+profile (derived from the kernel-verified app-server package cache), checkout
+and live provider generation must agree; an explicit `CODEX_HOME` must match. Missing, child,
+ambiguous or stale identities are refused without helper registration. This
+candidate changes adapter identity selection, not wire request or event formats;
+native acceptance remains required.
+
 ## Goals
 
 1. **Universal.** Any agent — any model, any vendor, any runtime — can participate with nothing more than the ability to write JSON to a socket. No SDK is required, though one may exist for convenience.
