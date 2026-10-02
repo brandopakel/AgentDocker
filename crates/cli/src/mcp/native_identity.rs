@@ -7,7 +7,36 @@ use agentdocker_core::{AgentRecord, ProcessIdentity, Request, Response};
 use agentdocker_host::procinfo;
 use anyhow::{Context as _, Result, ensure};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+fn profile_from_executable(executable: &Path) -> Result<PathBuf> {
+    // The detached host filters CODEX_HOME from MCP environments. Its kernel
+    // image, already canonicalized by the caller, identifies the private
+    // package cache even when the user's default profile is different.
+    ensure!(
+        executable.is_absolute(),
+        "Codex MCP host image is not absolute"
+    );
+    let parts: Vec<_> = executable.ancestors().take(6).collect();
+    ensure!(
+        parts.len() == 6
+            && matches!(
+                executable.file_name().and_then(|v| v.to_str()),
+                Some("codex" | "codex.exe")
+            )
+            && parts[1].file_name().is_some_and(|v| v == "bin")
+            && parts[3].file_name().is_some_and(|v| v == "releases")
+            && parts[4]
+                .file_name()
+                .is_some_and(|v| v == "app-server-daemon")
+            && parts[5].file_name().is_some_and(|v| v == "packages"),
+        "detached Codex MCP host image is outside a provider package cache"
+    );
+    Ok(parts[5]
+        .parent()
+        .context("detached Codex MCP host cache has no provider profile")?
+        .to_owned())
+}
 
 pub(super) struct Context {
     host: ProcessIdentity,
@@ -37,16 +66,14 @@ impl Context {
         {
             return Ok(None);
         }
-        let profile = std::env::var_os("CODEX_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".codex")))
-            .context("detached Codex MCP host has no provider profile")?
-            .canonicalize()?;
         let executable = procinfo::executable_path_of(pid)?.canonicalize()?;
-        ensure!(
-            executable.starts_with(profile.join("packages/app-server-daemon/releases")),
-            "detached Codex MCP host executable is outside its provider profile"
-        );
+        let profile = profile_from_executable(&executable)?.canonicalize()?;
+        if let Some(configured) = std::env::var_os("CODEX_HOME") {
+            ensure!(
+                PathBuf::from(configured).canonicalize()? == profile,
+                "detached Codex MCP host executable disagrees with its provider profile"
+            );
+        }
         Ok(Some(Self {
             host: ProcessIdentity {
                 pid,
@@ -144,6 +171,26 @@ mod tests {
     use agentdocker_core::{AgentSpec, InputBinding, ProviderGeneration};
     use chrono::Utc;
     use serde_json::json;
+
+    #[test]
+    fn native_identity_profile_comes_only_from_the_host_package_cache() {
+        let root = std::env::temp_dir().join("private-codex-profile");
+        for binary in ["codex", "codex.exe"] {
+            let executable = root
+                .join("packages/app-server-daemon/releases/0.160.0-target/bin")
+                .join(binary);
+            assert_eq!(profile_from_executable(&executable).unwrap(), root);
+        }
+        for suffix in [
+            "bin/codex",
+            "packages/other-server/releases/version/bin/codex",
+            "packages/app-server-daemon/releases/version/other/codex",
+            "packages/app-server-daemon/releases/version/bin/other",
+        ] {
+            assert!(profile_from_executable(&root.join(suffix)).is_err());
+        }
+        assert!(profile_from_executable(Path::new("relative/bin/codex")).is_err());
+    }
 
     fn fixture() -> (Context, AgentRecord, Value) {
         let now = Utc::now();

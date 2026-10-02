@@ -6,7 +6,8 @@ The delivery priorities are native local orchestration, automatic discovery and 
 
 Detached Codex app-server MCP calls are scoped to an already verified native
 root binding by provider-supplied thread/session metadata. The host process,
-profile, checkout and live provider generation must agree; missing, child,
+profile (derived from the kernel-verified app-server package cache), checkout
+and live provider generation must agree; an explicit `CODEX_HOME` must match. Missing, child,
 ambiguous or stale identities are refused without helper registration. This
 candidate changes adapter identity selection, not wire request or event formats;
 native acceptance remains required.
