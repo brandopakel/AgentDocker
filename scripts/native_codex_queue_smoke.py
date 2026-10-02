@@ -1121,6 +1121,7 @@ try:
             if args.scenario == "approval-wait":
                 screen_start = len(output)
                 queued("APPROVAL_START_NONCE")
+                approval_message = report["queue_results"][-1]["message_id"]
                 wait(lambda: approval_visible(screen_start, b"APPROVAL_EXECUTED_NONCE"), 30)
                 (out / "pending-approval.bin").write_bytes(output[screen_start:])
                 assert len(report["requests"]) == 8
@@ -1130,18 +1131,24 @@ try:
                     held_ids.append(report["queue_results"][-1]["message_id"])
                 started = time.monotonic()
                 samples = []
+                report["approval_wait_samples"] = samples
                 while time.monotonic() - started < 65:
                     observed = rpc({"op": "inspect", "agent": aid})["agent"]
                     pending = rpc({"op": "peek_input", "agent": aid})["messages"]
                     completed = json.loads((adhome / "codex-queue" / aid / "delivery.json").read_text())["completed"]
-                    assert [m["id"] for m in pending] == held_ids, pending
+                    # The triggering message is already in provider context,
+                    # but its receipt can remain pending until this approved
+                    # turn completes. Later inputs must remain ordered behind
+                    # it; never demand an early acknowledgement of that head.
+                    pending_ids = [m["id"] for m in pending]
+                    assert pending_ids in (held_ids, [approval_message, *held_ids]), pending
                     assert not any(r["message"] in held_ids for r in completed), 'input acknowledged before approval'
                     assert len(report["requests"]) == 8, 'provider continued before approval'
                     assert observed["input_binding"]["provider"]["process"]["pid"] == provider.pid
                     samples.append({"seconds":time.monotonic()-started,
-                        "pending":held_ids, "delivery":observed.get("input_delivery")})
+                        "pending":pending_ids, "delivery":observed.get("input_delivery")})
                     time.sleep(1)
-                report["approval_wait_samples"] = samples
+                held_seconds = time.monotonic() - started
                 os.write(master, b"\r")
                 wait(lambda: len(report["requests"]) == 11, 45)
                 wait(lambda: b"FIXTURE_OK_11" in output, 15)
@@ -1159,7 +1166,7 @@ try:
                 assert [r["message"] for r in completed if r["message"] in held_ids] == held_ids
                 time.sleep(3)
                 assert len(report["requests"]) == 11, 'approval input replayed'
-                report["long_approval_wait"] = {"held_seconds":samples[-1]["seconds"],
+                report["long_approval_wait"] = {"held_seconds":held_seconds,
                     "messages":held_ids, "ordered_receipts":True, "one_time_approval":True}
             elif args.scenario == "rate-limit":
                 queued("LIMIT_NONCE")
