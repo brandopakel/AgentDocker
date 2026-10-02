@@ -499,8 +499,21 @@ as `windows-failed-package-diagnostics`, never as an accepted preview. The
 OWNER RIGHTS fresh-home timeout in run35821898700 remains an unresolved failure;
 added diagnostics and any later pass alone do not establish its cause or a fix.
 
-The native desktop installer is under implementation. A private activation-record
-resolver and receipt-checked stable-launcher target resolver now have source
-regressions for malformed records, modified launchers, missing activation and
-escaping payloads. They are not wired into installation or process startup yet;
-the portable preview still has no installer/update/rollback acceptance.
+The native desktop installer is under implementation. Its private atomic
+activation record and receipt-checked launcher resolver reject malformed
+records, modified launchers, missing activation and escaped payloads. Bootstrap
+entrypoints select and pin the immutable executable, inherit arguments/stdio and
+wait for its exit; Windows advertises launcher contract 2 to distinguish this
+from the earlier Mac-only contract. Installer command wiring, transparent
+provider identity across the bootstrap and full lifecycle acceptance remain open.
+
+An initial Mac concurrency regression found that strict private-file reads
+rejected an opened handle unlinked by record replacement. A separate read-only
+snapshot API retains owner/ACL/type and hard-link checks while accepting that
+zero-link handle. Seven boundary tests and six existing state-directory tests
+pass locally. Native Windows run 36968029285 on `43e3b384` passed 314 tests but
+failed concurrent publication: `MoveFileEx` returned access denied while readers
+held the target. The failure is retained. A dedicated snapshot publisher now
+uses documented POSIX rename semantics for open readers; native acceptance of
+that change and the bootstrap remain pending. The portable preview still has no
+installer/update/rollback acceptance.

@@ -68,7 +68,7 @@ def validate_inputs(args):
         if type(pin) is not int or pin not in (0, 1):
             raise ValueError("invalid desktop lifetime pin contract")
         redirect = manifest.get("launcher_redirect", 0)
-        if type(redirect) is not int or redirect not in (0, 1):
+        if type(redirect) is not int or redirect not in ((0, 1, 2) if "windows" in args.target else (0, 1)):
             raise ValueError("invalid desktop launcher redirect contract")
         if args.identity and args.identity != "-" and manifest.get("source_dirty"):
             raise ValueError("distribution signing requires a clean source build")

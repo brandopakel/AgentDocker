@@ -11,12 +11,32 @@ use std::path::{Path, PathBuf};
 pub mod windows;
 
 pub const LOCK_FORMAT: u32 = 1;
-pub const LAUNCHER_REDIRECT_FORMAT: u32 = 1;
+// Windows uses a receipt-checked bootstrap process rather than Unix exec.
+// Earlier Windows packages advertised the Mac-only format 1 and must not be
+// mistaken for bootstraps that understand the native activation record.
+pub const LAUNCHER_REDIRECT_FORMAT: u32 = if cfg!(windows) { 2 } else { 1 };
 
 /// A visible macOS application is an intact signed copy. Its entrypoints run
 /// the selected immutable release before parsing commands or starting services.
 /// Ownership is outside the signed bundle, in the installer's existing record.
 pub fn redirect_managed_launcher() -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        let executable = crate::procinfo::executable_path()?;
+        if let Some(target) = windows::launcher_target(&executable)? {
+            let pin = pin_executable(&target)?.ok_or_else(|| {
+                io::Error::other("Windows launcher target is not an immutable installed release")
+            })?;
+            // Inherit the terminal, pipes, environment and argument boundaries.
+            // Do not put this in a kill-on-close job: a short-lived CLI can
+            // legitimately start a daemon that must survive the CLI's exit.
+            let status = std::process::Command::new(target)
+                .args(std::env::args_os().skip(1))
+                .status()?;
+            drop(pin);
+            std::process::exit(status.code().unwrap_or(1));
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::process::CommandExt;
@@ -119,6 +139,7 @@ pub fn pin_current_executable() -> io::Result<Option<lock::Lock>> {
 }
 
 /// Locate only our versioned layout. An ordinary checkout/package is unpinned.
+#[cfg(not(windows))]
 fn managed(executable: &Path) -> Option<(PathBuf, PathBuf, &str)> {
     let versions = executable
         .ancestors()
@@ -128,12 +149,18 @@ fn managed(executable: &Path) -> Option<(PathBuf, PathBuf, &str)> {
     Some((versions.parent()?.to_owned(), versions.join(id), id))
 }
 
+#[cfg(windows)]
+fn managed(executable: &Path) -> Option<(PathBuf, PathBuf, &str)> {
+    windows::managed(executable)
+}
+
 /// The `agentd` of the release the managed installation currently
 /// activates, when `executable` belongs to a managed installation and
 /// that release differs from the executable's own. This is what a daemon
 /// reloads to after `desktop install`, `update` or `rollback`: the
 /// daemon runs from a pinned version directory, so its own path always
 /// names the release it started from, never the one activated since.
+#[cfg(not(windows))]
 pub fn activated_daemon(executable: &Path) -> Option<PathBuf> {
     let (root, version, _) = managed(executable)?;
     let payload = root.join("current").join("payload");
@@ -157,6 +184,13 @@ pub fn activated_daemon(executable: &Path) -> Option<PathBuf> {
     let versions = std::fs::canonicalize(root.join("versions")).ok()?;
     let running = std::fs::canonicalize(&version).ok()?;
     (resolved.starts_with(&versions) && !resolved.starts_with(&running)).then_some(resolved)
+}
+
+#[cfg(windows)]
+pub fn activated_daemon(executable: &Path) -> Option<PathBuf> {
+    let (root, version, _) = managed(executable)?;
+    let target = windows::target(&root, "agentd.exe").ok()??;
+    (!target.starts_with(version)).then_some(target)
 }
 
 /// The `agentd` a client starts when no daemon answers. A client from a

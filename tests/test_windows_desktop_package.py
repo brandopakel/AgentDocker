@@ -51,6 +51,15 @@ class WindowsDesktopPackaging(unittest.TestCase):
         self.manifest["binary_sha256"] = {name: PACKAGE.sha256(self.binaries / name) for name in self.names}
         (self.binaries / "native-build.json").write_text(json.dumps(self.manifest), encoding="utf-8")
 
+    def test_native_bootstrap_contract_is_preserved_in_portable_metadata(self):
+        self.manifest['launcher_redirect'] = 2
+        self.save_manifest()
+        info, archive = self.build()
+        self.assertEqual(info['launcher_redirect'], 2)
+        with zipfile.ZipFile(archive) as bundle:
+            metadata = json.loads(bundle.read('AgentDocker/build.json'))
+        self.assertEqual(metadata['launcher_redirect'], 2)
+
     def build(self):
         info = PACKAGE.package(self.args)
         return info, self.output / next(iter(info["artifacts"]))

@@ -218,6 +218,58 @@ mod tests {
         assert!(target(&root, "../agentdocker.exe").is_err());
     }
 
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "owned subprocess invoked by copied_windows_bootstrap_starts_and_pins_its_payload"]
+    fn native_bootstrap_child() {
+        super::super::redirect_managed_launcher().unwrap();
+        let executable = crate::procinfo::executable_path().unwrap();
+        let (root, _, id) = managed(&executable).expect("selected immutable executable");
+        let _pin = super::super::pin_current_executable()
+            .unwrap()
+            .expect("lifetime pin");
+        assert!(
+            crate::lock::try_exclusive(&super::super::pin_path(&root, id).unwrap())
+                .unwrap()
+                .is_none()
+        );
+        println!("WINDOWS_BOOTSTRAP_SELECTED_PINNED_PAYLOAD");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn copied_windows_bootstrap_starts_and_pins_its_payload() {
+        let (temp, root, selected, launcher) = fixture();
+        let executable = crate::procinfo::executable_path().unwrap();
+        for path in [&selected, &launcher] {
+            std::fs::copy(&executable, path).unwrap();
+        }
+        std::fs::remove_file(root.join("launcher.json")).unwrap();
+        write_record(
+            &root.join("launcher.json"),
+            &serde_json::json!({"format":1,
+            "binary_sha256":{"agentdocker.exe":hash(&launcher).unwrap()}}),
+        );
+        let result = crate::command::run(
+            temp.path(),
+            &[
+                launcher.to_str().unwrap().into(),
+                "--exact".into(),
+                "installation::windows::tests::native_bootstrap_child".into(),
+                "--ignored".into(),
+                "--nocapture".into(),
+            ],
+            std::time::Duration::from_secs(20),
+        )
+        .unwrap();
+        assert!(result.success, "{}", result.text);
+        assert!(
+            result
+                .text
+                .contains("WINDOWS_BOOTSTRAP_SELECTED_PINNED_PAYLOAD")
+        );
+    }
+
     #[test]
     fn modified_and_inactive_windows_launchers_refuse_to_run() {
         let (_temp, root, _selected, launcher) = fixture();
@@ -262,7 +314,7 @@ mod tests {
                     &serde_json::json!({"format":1,
                     "current":{"id":id,"payload":"AgentDocker","installation_lock":1}}),
                 );
-                files::publish_staged(&staged, &root.join("activation.json")).unwrap();
+                files::publish_snapshot(&staged, &root.join("activation.json")).unwrap();
             }
         });
         assert_eq!(target(&root, "agentdocker.exe").unwrap(), Some(first));

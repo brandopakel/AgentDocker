@@ -57,6 +57,90 @@ pub fn publish_staged(staged: &Path, destination: &Path) -> io::Result<()> {
     }
 }
 
+/// Publish an atomic record while readers retain the prior file's handle.
+/// Windows' POSIX rename semantics explicitly preserve those handles; the
+/// legacy MoveFileEx replacement used for closed files can deny this case.
+/// The staged record must already be flushed and share its destination's
+/// directory. Unsupported filesystems fail without a delete/copy fallback.
+pub fn publish_snapshot(staged: &Path, destination: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        publish_staged(staged, destination)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle};
+        use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+        use windows_sys::Win32::Storage::FileSystem::{
+            DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_RENAME_INFO, FileRenameInfoEx,
+            SetFileInformationByHandle,
+        };
+        let parent = destination
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty());
+        if parent.is_none() || staged.parent() != parent {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "snapshot must share its destination directory",
+            ));
+        }
+        let name: Vec<u16> = std::path::absolute(destination)?
+            .as_os_str()
+            .encode_wide()
+            .collect();
+        if name.is_empty() || name.len() > 32767 || name.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid snapshot destination",
+            ));
+        }
+        // The record is private and previously flushed by its writer. Keep
+        // final reparse points and special files out of this publication path.
+        let checked = open_regular(staged)?;
+        let file = OpenOptions::new()
+            .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(staged)?;
+        if same_file::Handle::from_file(checked)?
+            != same_file::Handle::from_file(file.try_clone()?)?
+        {
+            return Err(io::Error::other(
+                "staged snapshot changed before publication",
+            ));
+        }
+        file.sync_all()?;
+        // FILE_RENAME_INFO's alignment is at most a pointer's. Extra storage
+        // includes its trailing variable UTF-16 name and a terminating zero.
+        let bytes = std::mem::size_of::<FILE_RENAME_INFO>() + (name.len() + 1) * 2;
+        let mut storage = vec![0_usize; bytes.div_ceil(std::mem::size_of::<usize>())];
+        let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        // SDK FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS.
+        // https://learn.microsoft.com/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
+        const REPLACE_OPEN_RECORD: u32 = 0x1 | 0x2;
+        // SAFETY: storage is aligned, zero-initialized and large enough for the
+        // header/name. The handle and buffer remain live through the call.
+        let renamed = unsafe {
+            (*info).Anonymous.Flags = REPLACE_OPEN_RECORD;
+            (*info).FileNameLength = (name.len() * 2) as u32;
+            std::ptr::copy_nonoverlapping(
+                name.as_ptr(),
+                std::ptr::addr_of_mut!((*info).FileName).cast::<u16>(),
+                name.len(),
+            );
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileRenameInfoEx,
+                info.cast(),
+                bytes as u32,
+            )
+        };
+        if renamed == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        file.sync_all()
+    }
+}
+
 #[cfg(test)]
 mod publication_tests {
     use super::*;
