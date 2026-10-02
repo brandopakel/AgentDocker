@@ -162,14 +162,27 @@ fn evaluate(layout: &Layout, script: &str) -> Result<String> {
         std::time::Duration::from_secs(20),
     )?;
     if !output.success {
-        bail!("Windows service operation failed: {}", output.text.trim());
+        let detail = output.text.trim();
+        bail!(
+            "Windows service operation failed: {}",
+            if detail.is_empty() {
+                "PowerShell exited unsuccessfully without diagnostic output"
+            } else {
+                detail
+            }
+        );
     }
     Ok(output.stdout.trim().to_owned())
 }
 
 fn task_context(layout: &Layout, receipt: Option<&Receipt>) -> String {
+    // A missing -TaskName is a cmdlet error even with SilentlyContinue. If
+    // nothing follows the ownership guard, powershell.exe can exit 1 without
+    // printing that suppressed error. Enumerate successfully, then select the
+    // exact task; query/permission failures remain terminating errors, never
+    // permission to replace a task we could not inspect.
     format!(
-        "$taskPath='\\';$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$task=Get-ScheduledTask -TaskPath $taskPath -TaskName {} -ErrorAction SilentlyContinue;{};",
+        "$taskPath='\\';$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$found=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {{$_.TaskPath -ceq $taskPath -and $_.TaskName -ceq {}}}); if($found.Count -gt 1){{throw 'The Windows service task lookup was ambiguous; no task was changed.'}}; $task=$null; if($found.Count -eq 1){{$task=$found[0]}};{};",
         quoted(&task_name(&layout.home)),
         ownership_guard(receipt),
     )

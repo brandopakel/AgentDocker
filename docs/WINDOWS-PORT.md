@@ -169,7 +169,13 @@ crash, and what that means for a person:
   serving process image and home before inducing a crash, and requires cleanup.
   The report is retained beside package evidence. Native acceptance of this
   driver is pending; an interactive-logon pass would not establish login/reboot
-  behavior or managed-provider survival.
+  behavior or managed-provider survival. Its first native run on `bbfb4dcb`
+  passed the 62 portable checks, then failed service install/uninstall before
+  creating a task: the missing-task query returned a silent PowerShell failure.
+  Lookup now selects the exact task from successful enumeration and propagates
+  query errors instead of treating every error as absence. Native acceptance of
+  that correction remains pending; the original report and cleanup failure are
+  retained.
 - A validation command is ended on a timeout, but only the command itself:
   there is no process group and no Job Object around it yet, so whether its
   descendants survived is not reported.
