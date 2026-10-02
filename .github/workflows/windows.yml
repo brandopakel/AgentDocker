@@ -15,6 +15,11 @@ on:
         description: Test the extracted package's isolated Task Scheduler lifecycle
         type: boolean
         default: false
+      codex_version:
+        description: Pinned provider for native TUI acceptance
+        type: choice
+        default: '0.160.0'
+        options: ['0.160.0', '0.155.1']
 
 permissions:
   contents: read
@@ -66,13 +71,20 @@ jobs:
           New-Item -ItemType Directory -Force artifacts | Out-Null
           python scripts/build_native.py --target x86_64-pc-windows-msvc > artifacts/native-build.json
       - name: Prepare pinned native Codex and ConPTY acceptance dependencies
+        env:
+          CODEX_TEST_VERSION: ${{ inputs.codex_version || '0.160.0' }}
         run: |
           python -m pip install --disable-pip-version-check pywinpty==3.0.5 psutil==7.0.0
           if ($LASTEXITCODE -ne 0) { throw "acceptance dependencies failed" }
-          curl.exe --fail --location --max-time 180 --output artifacts/codex.exe https://github.com/openai/codex/releases/download/rust-v0.155.1/codex-x86_64-pc-windows-msvc.exe
+          $digests = @{
+            '0.155.1' = 'eba0f32c976667cb9298efafd98513e823eeda7b576a03ec658bb8be8d336316'
+            '0.160.0' = 'fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d'
+          }
+          if (-not $digests.ContainsKey($env:CODEX_TEST_VERSION)) { throw "unsupported fixture Codex version" }
+          curl.exe --fail --location --max-time 180 --output artifacts/codex.exe "https://github.com/openai/codex/releases/download/rust-v$env:CODEX_TEST_VERSION/codex-x86_64-pc-windows-msvc.exe"
           if ($LASTEXITCODE -ne 0) { throw "Codex download failed" }
           $actual = (Get-FileHash artifacts/codex.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne 'eba0f32c976667cb9298efafd98513e823eeda7b576a03ec658bb8be8d336316') { throw "Codex digest mismatch" }
+          if ($actual -ne $digests[$env:CODEX_TEST_VERSION]) { throw "Codex digest mismatch" }
       - name: Extracted Windows desktop package acceptance
         id: package
         # Every command in it is bounded; a hang is a finding, not a wait.

@@ -609,3 +609,10 @@ Task Scheduler checks. Loaded-bootstrap uninstall, collection after reinstall
 and bounded retirement refusal passed; hashes match the clean native build,
 and both service fixtures removed owned tasks/scratch without cleanup errors.
 No hosted Windows update, physical console or login/reboot result is implied.
+
+The native Codex candidate now includes these installer/current-main prerequisites
+and tests pinned Codex 0.160.0 by default, with an explicit 0.155.1 workflow option.
+Both downloads require their recorded SHA-256. Its private fixture also collects
+detached 0.160 app-server processes by kernel executable path and process birth,
+and retains bounded provider logs. The earlier zero-prompt startup failure is
+still open; this version refresh alone is not native acceptance.

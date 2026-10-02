@@ -403,6 +403,28 @@ def main():
         closing.set()
         release.set()
         cleanup = []
+        # Codex 0.160 can detach its app-server and PID updater from the TUI.
+        # A kernel image inside this fresh profile's cache proves fixture
+        # ownership even after the original parent exits. Never select by name.
+        private_cache = (profile / "packages/app-server-daemon/releases").resolve()
+        detached = []
+        for pid in psutil.pids():
+            try:
+                process = psutil.Process(pid)
+                image = Path(process.exe()).resolve(strict=True)
+                if not image.is_relative_to(private_cache):
+                    continue
+                if image.name.lower() != "codex.exe" or "app-server" not in process.cmdline():
+                    raise RuntimeError("unrecognized executable in private provider cache")
+                if process.is_running():
+                    detached.append({"pid": pid, "created": process.create_time(),
+                                     "executable": str(image)})
+                    owned.append(process)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, FileNotFoundError):
+                continue
+            except Exception as error:
+                cleanup.append(str(error))
+        report["detached_fixture_processes"] = detached
         # Retire only descendants of captured fixture processes. psutil verifies
         # their birth identities before signalling, protecting against PID reuse.
         for process in reversed(owned):
@@ -441,6 +463,11 @@ def main():
                     shutil.copy2(path, out / path.name)
         for path in profile.glob("sessions/**/*.jsonl"):
             shutil.copy2(path, out / path.name)
+        for path in (profile / "log").glob("*.log"):
+            if path.is_file() and not path.is_symlink():
+                with path.open("rb") as log:
+                    log.seek(max(0, path.stat().st_size - 2 * 1024 * 1024))
+                    (out / ("provider-" + path.name)).write_bytes(log.read(2 * 1024 * 1024))
         if not cleanup:
             try:
                 remove_fixture(root)
