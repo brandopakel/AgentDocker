@@ -1156,7 +1156,7 @@ try:
                            and "APPROVAL_EXECUTED_NONCE" in json.dumps(item.get("output"))
                            for item in report["requests"][8]["body"]["input"])
                 for request, marker in zip(report["requests"][9:11],
-                        ("PEER_DURING_APPROVAL", "HUMAN_DURING_APPROVAL")):
+                        ("PEER_DURING_APPROVAL", "HUMAN_DURING_APPROVAL"), strict=True):
                     latest = [i for i in request["body"]["input"] if i.get("role") == "user"][-1]
                     assert marker in json.dumps(latest)
                 ledger_path = adhome / "codex-queue" / aid / "delivery.json"
