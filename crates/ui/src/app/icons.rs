@@ -225,7 +225,7 @@ impl Glyph {
                     b.move_to(p(8.0, 10.0));
                     b.line_to(p(11.0, 10.0));
                 });
-                frame.stroke(&window, stroke.clone());
+                frame.stroke(&window, stroke);
                 frame.stroke(&prompt, stroke);
             }
             Icon::ChevronDown => {
@@ -252,7 +252,7 @@ impl Glyph {
                 }
             }
             Icon::Search => {
-                frame.stroke(&Path::circle(p(7.0, 7.0), 4.25), stroke.clone());
+                frame.stroke(&Path::circle(p(7.0, 7.0), 4.25), stroke);
                 frame.stroke(&Path::line(p(10.2, 10.2), p(13.5, 13.5)), stroke);
             }
             Icon::Check => {
@@ -308,14 +308,14 @@ impl Glyph {
                 frame.stroke(&page, stroke);
             }
             Icon::Clock => {
-                frame.stroke(&Path::circle(p(8.0, 8.0), 5.75), stroke.clone());
+                frame.stroke(&Path::circle(p(8.0, 8.0), 5.75), stroke);
                 frame.stroke(
                     &polyline(&[p(8.0, 4.75), p(8.0, 8.0), p(10.25, 9.5)]),
                     stroke,
                 );
             }
             Icon::Question => {
-                frame.stroke(&Path::circle(p(8.0, 8.0), 6.0), stroke.clone());
+                frame.stroke(&Path::circle(p(8.0, 8.0), 6.0), stroke);
                 let hook = Path::new(|b| {
                     b.move_to(p(6.2, 6.4));
                     b.quadratic_curve_to(p(6.4, 4.6), p(8.1, 4.6));
@@ -329,7 +329,7 @@ impl Glyph {
             Icon::Copy => {
                 frame.stroke(
                     &Path::rounded_rectangle(p(5.5, 5.5), iced::Size::new(8.0, 8.0), 1.5.into()),
-                    stroke.clone(),
+                    stroke,
                 );
                 frame.stroke(
                     &polyline(&[
