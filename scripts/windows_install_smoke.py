@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+import zipfile
 
 
 def main():
@@ -35,7 +36,7 @@ def main():
     names = ('agentdocker.exe', 'agentd.exe', 'agentdocker-ui.exe')
     report = {'result': 'failed', 'source_commit': json.loads((app / 'build.json').read_text())['source_commit'],
               'binary_sha256': {n: hashlib.sha256((app / n).read_bytes()).hexdigest() for n in names},
-              'scope': 'Native private-prefix install and rollback. Second payload changes a fixture README only; no hosted update, service, actual provider, Start menu or reboot claim.',
+              'scope': 'Native private-prefix install and rollback. Second payload changes a fixture README only; a third metadata-only fixture exercises the local preview feed. No hosted update, service, actual provider, Start menu or reboot claim.',
               'scratch': str(scratch), 'steps': [], 'commands': []}
 
     def save():
@@ -109,6 +110,48 @@ def main():
         run('--version', executable=launcher, raw=True, good=False)
         launcher.write_bytes(good_launcher)
         step('modified bootstrap is refused and restored exact bytes recover', run('--version', executable=launcher, raw=True) == original)
+        update_app = scratch / 'update fixture'
+        shutil.copytree(app, update_app)
+        build = json.loads((update_app / 'build.json').read_text(encoding='utf-8'))
+        build['version'] = '99.0.0-beta.1'
+        (update_app / 'build.json').write_text(json.dumps(build), encoding='utf-8')
+        archive = scratch / 'agentdocker-desktop-x86_64-pc-windows-msvc.zip'
+        with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as bundle:
+            for path in sorted(update_app.rglob('*')):
+                if path.is_file():
+                    bundle.write(path, 'AgentDocker/' + path.relative_to(update_app).as_posix())
+        feed = {'format': 1, 'product': 'agentdocker', 'channel': 'preview', 'releases': [{
+            'target': build['target'], 'version': build['version'], 'source_commit': build['source_commit'],
+            'state_schema': build['state_schema'], 'signing': 'unsigned-preview', 'notarized': False,
+            'archive': {'name': archive.name, 'sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+                        'bytes': archive.stat().st_size, 'url': 'file://' + str(archive)}}]}
+        feed_path = scratch / 'updates-preview.json'
+        feed_path.write_text(json.dumps(feed), encoding='utf-8')
+        update_args = ('update', '--feed', 'file://' + str(feed_path), '--local-preview')
+        checked = desktop(*update_args, '--check')
+        step('Windows preview feed check reports the newer fixture without downloading',
+             checked['update']['update_available'] and not (store / 'downloads').exists())
+        update_preview = desktop(*update_args)
+        third = update_preview['candidate']['id']
+        step('Windows archive preview verifies and stages without activation',
+             update_preview['preview'] and desktop('status')['installation']['current']['id'] == first)
+        desktop(*update_args, '--apply')
+        status = desktop('status', executable=launcher)['installation']
+        step('Windows preview update activates through the existing bootstrap',
+             status['current']['id'] == third and status['previous']['id'] == first
+             and (store / 'launcher.json').read_bytes() == receipt)
+        desktop('rollback', '--local-preview', '--expect-current', third)
+        step('an update can roll back to the original immutable payload',
+             desktop('status')['installation']['current']['id'] == first)
+        feed['releases'][0]['archive']['sha256'] = '0' * 64
+        feed_path.write_text(json.dumps(feed), encoding='utf-8')
+        desktop(*update_args, '--apply', good=False)
+        step('checksum mismatch preserves activation', desktop('status')['installation']['current']['id'] == first)
+        feed['channel'] = 'stable'
+        feed['releases'][0]['version'] = '99.0.0'
+        feed_path.write_text(json.dumps(feed), encoding='utf-8')
+        desktop(*update_args, '--check', good=False)
+        step('unsigned Windows packages cannot enter a stable feed', desktop('status')['installation']['current']['id'] == first)
         step('installation leaves provider state and daemon startup untouched', not home.exists())
         report['result'] = 'passed'
     except Exception as error:

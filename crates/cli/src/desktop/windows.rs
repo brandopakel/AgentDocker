@@ -382,8 +382,24 @@ pub(super) fn run(args: DesktopArgs, socket: Option<PathBuf>) -> Result<()> {
                     expect_current,
                 )
             }
-            DesktopCommand::Update { .. } => {
-                bail!("Windows update-feed installation is not available yet")
+            DesktopCommand::Update {
+                feed,
+                check,
+                apply,
+                local_preview,
+                socket: update_socket,
+            } => {
+                return update::run(
+                    &layout,
+                    active.as_ref(),
+                    update::Options {
+                        feed,
+                        check,
+                        apply,
+                        local_preview,
+                        socket: update_socket.or(socket),
+                    },
+                );
             }
             DesktopCommand::Prune { .. } | DesktopCommand::Uninstall { .. } => {
                 bail!("Windows installation maintenance is not available yet")

@@ -23,6 +23,8 @@ mod maintenance;
 mod update;
 #[cfg(windows)]
 mod windows;
+#[cfg(any(windows, test))]
+mod windows_archive;
 
 /// Where Homebrew keeps the cask's record when it installed the app. The
 /// app in `/Applications` is then Homebrew's copy: this installer must

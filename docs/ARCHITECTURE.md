@@ -1708,3 +1708,16 @@ birth, runtime and physical checkout verification. The existing
 `AgentSessionBound` transaction preserves its ID, owner and queue. A child hook
 or conflicting session cannot bind or recover the root channel receipt. Native
 Windows ancestry uses the host process table rather than Unix `ps`.
+
+On Windows, the per-user desktop store is `%LOCALAPPDATA%/AgentDocker/desktop`
+(or below an explicit trial prefix). Private `activation.json` atomically records
+the current and previous immutable payloads. Receipt-verified executable copies
+in `bin` select and lifetime-pin the current release without symlinks; their
+process wrapper preserves native provider parent identity only after kernel-image,
+receipt and process-birth checks. Provider/service registrations keep those stable
+paths. Install and rollback require native launcher contract 2, lifetime pins,
+explicit preview consent and compatible stored state. Update archives admit only
+the exact seven-file Windows ZIP layout, bounded expansion and verified feed
+hash/source/schema. Windows feeds remain preview-only; activation leaves existing
+processes running. Native acceptance and remaining lifecycle work are tracked in
+[the Windows port](WINDOWS-PORT.md).

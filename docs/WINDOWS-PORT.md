@@ -512,9 +512,15 @@ variables do not select an identity. The kernel image query is the existing
 `desktop install`, `status` and `rollback` to `%LOCALAPPDATA%/AgentDocker/desktop`
 (or a private `--prefix`) with explicit `--local-preview`, payload/schema and
 preview guards. Stable bootstrap bytes and their receipt survive activation;
-provider and service registrations use those stable paths. Native installer
-command acceptance, update/maintenance, Start menu and full lifecycle acceptance
-remain open.
+provider and service registrations use those stable paths. Native run 36971473270 on `f0426f72` passed 14 private-prefix installation/
+rollback checks plus 62 portable checks on the extracted binaries. The second
+payload changed only a fixture README: this proves activation/rollback mechanics,
+not a second hosted release. Modified bootstrap/retained bytes were refused and
+scratch was removed. The updater now accepts unsigned Windows preview feeds
+only, verifies archive bytes and the payload source/schema, and extracts only
+the seven exact portable files with bounded expansion and no links. Local
+preview-feed native acceptance, maintenance, Start menu and full installed
+lifecycle acceptance remain open.
 
 An initial Mac concurrency regression found that strict private-file reads
 rejected an opened handle unlinked by record replacement. A separate read-only
@@ -527,5 +533,5 @@ uses documented POSIX rename semantics for open readers; native acceptance of
 that change and the bootstrap passed within run 36968759795 on `75013c48`. The
 run still failed two lifetime-pin fixtures that constructed the old Unix layout
 on Windows; those fixtures now exercise the native store. Native run 36970015868 on `9b79675b` passed all 317 core/host tests and
-the extracted portable checks. The new installer command trial remains separate
-and unaccepted until its exact native run passes.
+the extracted portable checks. The later `f0426f72` installer trial passed its separate 14 checks; updater
+acceptance remains separate from that source.
