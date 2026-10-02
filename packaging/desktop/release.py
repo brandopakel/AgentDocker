@@ -151,7 +151,6 @@ def prepare(native_manifest, output, tag, environment=None):
         arguments = ["--binary-dir", build["binary_directory"], "--output", str(payload),
                      "--version", requested, "--source", build["source_commit"], "--target", target]
         if target.endswith("apple-darwin"):
-            arguments += ["--dmg-diagnostics", str(output.with_name(output.name + '-dmg-create.json'))]
             with signing(environment, required=not preview(tag)) as flags:
                 info = packager.package(packager.parser().parse_args([*arguments, *flags]))
         else:

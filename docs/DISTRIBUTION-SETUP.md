@@ -269,7 +269,7 @@ does not establish the cause of a runner failure.
 The packager retains attempt status, duration and the last 64 KiB of each output
 stream in `OUTPUT-dmg-create.json`, outside the temporary package directory.
 Use a fresh output prefix; existing diagnostics are never overwritten. The
-optional `--dmg-diagnostics` selects another fresh path. Desktop and release CI
+optional `--dmg-diagnostics` selects another fresh path. Desktop CI
 retain this report even on failure; the manifest records the attempt count and
 whether recovery was needed. Signing and notarization checks still apply.
 
