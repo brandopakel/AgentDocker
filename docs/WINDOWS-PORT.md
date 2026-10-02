@@ -515,5 +515,8 @@ pass locally. Native Windows run 36968029285 on `43e3b384` passed 314 tests but
 failed concurrent publication: `MoveFileEx` returned access denied while readers
 held the target. The failure is retained. A dedicated snapshot publisher now
 uses documented POSIX rename semantics for open readers; native acceptance of
-that change and the bootstrap remain pending. The portable preview still has no
-installer/update/rollback acceptance.
+that change and the bootstrap passed within run 36968759795 on `75013c48`. The
+run still failed two lifetime-pin fixtures that constructed the old Unix layout
+on Windows; those fixtures now exercise the native store. A fully green native
+run remains required. The portable preview still has no installer/update/rollback
+acceptance.

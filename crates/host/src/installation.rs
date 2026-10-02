@@ -497,7 +497,11 @@ mod tests {
 
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join(".local/share/agentdocker/desktop");
+        let root = temp.path().join(if cfg!(windows) {
+            "AgentDocker/desktop"
+        } else {
+            ".local/share/agentdocker/desktop"
+        });
         // Match installation's private-state creation. On an elevated Windows
         // runner, ordinary create_dir_all can assign Administrators ownership,
         // which is intentionally refused for the final application state.
@@ -505,7 +509,11 @@ mod tests {
         let executable = root
             .join("versions")
             .join("a".repeat(64))
-            .join("payload/agentdocker");
+            .join(if cfg!(windows) {
+                "AgentDocker/agentdocker.exe"
+            } else {
+                "payload/agentdocker"
+            });
         std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
         std::fs::write(&executable, "fixture").unwrap();
         (temp, root, executable)
