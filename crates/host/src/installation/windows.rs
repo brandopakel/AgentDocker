@@ -364,6 +364,14 @@ mod tests {
             expected,
             "bootstrap preserves the original MCP host parent"
         );
+        // The parent bootstrap still waits for this immutable child. Exercise
+        // the loaded image, not merely a regular file held open for reading.
+        let launcher = root.join("bin/agentdocker.exe");
+        files::unlink_open_regular(&launcher).unwrap();
+        assert!(
+            !launcher.exists(),
+            "loaded bootstrap leaves the public namespace"
+        );
     }
 
     #[cfg(windows)]

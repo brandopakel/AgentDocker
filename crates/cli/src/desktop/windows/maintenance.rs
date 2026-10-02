@@ -254,7 +254,9 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
         )?;
         for path in &plan.remove {
             if path == &layout.bin {
-                std::fs::remove_dir(path)?;
+                std::fs::remove_dir(path).with_context(|| {
+                    format!("remove empty launcher directory {}", path.display())
+                })?;
             } else {
                 if path.parent() == Some(layout.bin.as_path()) {
                     ensure!(

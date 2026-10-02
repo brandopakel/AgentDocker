@@ -152,11 +152,15 @@ pub fn unlink_open_regular(path: &Path) -> io::Result<()> {
         DELETE, FILE_DISPOSITION_INFO_EX, FILE_FLAG_OPEN_REPARSE_POINT, FileDispositionInfoEx,
         SetFileInformationByHandle,
     };
-    let checked = open_regular(path)?;
+    let context = |stage: &str, error: io::Error| {
+        io::Error::new(error.kind(), format!("{stage} {}: {error}", path.display()))
+    };
+    let checked = open_regular(path).map_err(|e| context("inspect unlink target", e))?;
     let file = OpenOptions::new()
         .access_mode(GENERIC_READ | DELETE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?;
+        .open(path)
+        .map_err(|e| context("open unlink target with DELETE access", e))?;
     if same_file::Handle::from_file(checked)? != same_file::Handle::from_file(file.try_clone()?)? {
         return Err(io::Error::other("file changed before unlink"));
     }
@@ -176,7 +180,10 @@ pub fn unlink_open_regular(path: &Path) -> io::Result<()> {
         )
     } == 0
     {
-        return Err(io::Error::last_os_error());
+        return Err(context(
+            "set POSIX deletion disposition",
+            io::Error::last_os_error(),
+        ));
     }
     Ok(())
 }
