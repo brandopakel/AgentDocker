@@ -191,7 +191,10 @@ fn task_context(layout: &Layout, receipt: Option<&Receipt>) -> String {
 
 fn desired(layout: &Layout, owner: Option<&Receipt>) -> Result<Definition> {
     let controller = crate::desktop::setup_executable()?;
+    #[cfg(windows)]
     let daemon = agentdocker_host::installation::windows::stable_executable(&layout.agentd)?;
+    #[cfg(not(windows))]
+    let daemon = layout.agentd.clone();
     let endpoint = layout
         .socket
         .clone()
