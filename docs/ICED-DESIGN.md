@@ -226,7 +226,11 @@ control does, its id or its accessible label:
 - **Scroll anchors.** Question cards, transcript lines and channel cards carry
   container ids `notification-question-<id>`, `notification-message-<id>` and
   `notification-channel-<id>`; `controls::reveal(id)` scrolls one into view
-  without moving keyboard focus, for notification routing.
+  without moving keyboard focus, for notification routing and **Answer**. The
+  message histories are anchored to their end (their scrollables' ids start
+  `history-`): Iced reports their position from the top but takes a scroll
+  offset from the end, so reveal converts it, rather than landing on the
+  mirror-image place it used to.
   Direct questions retained in Inbox after leaving the pending list use a
   160-character first-line preview and explicit Show/Hide question controls.
   Their full text remains intact. Notification routing expands its target before

@@ -12,13 +12,44 @@ pub use popover::popover;
 #[derive(Default)]
 struct Reveal {
     target: Option<widget::Id>,
-    pending: Option<(widget::Id, Rectangle, iced::Vector)>,
-    parents: Vec<(widget::Id, Rectangle, iced::Vector)>,
+    pending: Option<Parent>,
+    parents: Vec<Parent>,
     adjustments: Vec<(widget::Id, iced::Vector)>,
+}
+/// A scrollable around the control being revealed: its id, its viewport,
+/// its translation from the top, and, when it is anchored to its end, how
+/// far it can scroll.
+#[derive(Clone)]
+struct Parent {
+    id: widget::Id,
+    viewport: Rectangle,
+    offset: iced::Vector,
+    from_end: Option<f32>,
+}
+/// The scrollables anchored to their end: the message histories, whose ids
+/// all start `history-`. Iced reports their translation from the top but
+/// takes `scroll_to` offsets from the end, and its operations do not say
+/// which anchor a scrollable has, so the convention is how this knows.
+fn anchored_to_end(id: &widget::Id) -> bool {
+    format!("{id:?}").contains("\"history-")
+}
+/// The offset `scroll_to` wants for a translation from the top: the same
+/// value, or for an end-anchored scrollable its distance from the end.
+fn scroll_offset(translation: f32, from_end: Option<f32>) -> f32 {
+    match from_end {
+        Some(room) => (room - translation).max(0.0),
+        None => translation,
+    }
 }
 impl Reveal {
     fn reveal(&mut self, bounds: Rectangle) {
-        for (id, viewport, offset) in &self.parents {
+        for Parent {
+            id,
+            viewport,
+            offset,
+            from_end,
+        } in &self.parents
+        {
             let x = (bounds.x - offset.x).max(viewport.x);
             let y = (bounds.y - offset.y).max(viewport.y);
             let want = iced::Vector::new(
@@ -38,7 +69,10 @@ impl Reveal {
                 },
             );
             if want != *offset {
-                self.adjustments.push((id.clone(), want));
+                self.adjustments.push((
+                    id.clone(),
+                    iced::Vector::new(want.x, scroll_offset(want.y, *from_end)),
+                ));
             }
         }
     }
@@ -58,11 +92,16 @@ impl Operation for Reveal {
         &mut self,
         id: Option<&widget::Id>,
         bounds: Rectangle,
-        _: Rectangle,
+        content: Rectangle,
         translation: iced::Vector,
         _: &mut dyn widget::operation::Scrollable,
     ) {
-        self.pending = id.cloned().map(|id| (id, bounds, translation));
+        self.pending = id.cloned().map(|id| Parent {
+            from_end: anchored_to_end(&id).then(|| (content.height - bounds.height).max(0.0)),
+            id,
+            viewport: bounds,
+            offset: translation,
+        });
     }
     fn container(&mut self, id: Option<&widget::Id>, bounds: Rectangle) {
         if self.target.is_some() && id == self.target.as_ref() {
@@ -855,6 +894,22 @@ pub fn input_submitting<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_end_anchored_history_is_scrolled_from_its_end() {
+        assert!(anchored_to_end(&widget::Id::from(
+            "history-conv-1".to_owned()
+        )));
+        assert!(!anchored_to_end(&widget::Id::from("workspace-scroll")));
+        assert!(!anchored_to_end(&widget::Id::from(
+            "notification-question-history-1".to_owned()
+        )));
+        // Revealing something 120 from the top of a history that can
+        // scroll 500 asks for 380 from its end, never the mirror image.
+        assert_eq!(scroll_offset(120.0, Some(500.0)), 380.0);
+        assert_eq!(scroll_offset(120.0, None), 120.0);
+        assert_eq!(scroll_offset(600.0, Some(500.0)), 0.0);
+    }
 
     #[test]
     fn primary_labels_keep_contrast_during_pointer_interaction() {
