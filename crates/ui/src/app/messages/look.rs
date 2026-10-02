@@ -342,15 +342,16 @@ pub(in crate::app) fn key_hint<'a>(key: &str, does: &str, c: Colors) -> Element<
     .into()
 }
 
-/// A slim scrollbar that keeps its own lane beside the list, so rows,
-/// counts and the Reply that shows under the pointer are never drawn
-/// under it. It is drawn only while the list overflows.
-pub(in crate::app) fn slim_scrollbar() -> iced::widget::scrollable::Direction {
+/// A slim scrollbar that keeps its own lane, `gap` points beside the
+/// list, so rows, cards, counts and the Reply that shows under the
+/// pointer are never drawn under it. It is drawn only while the list
+/// overflows.
+pub(in crate::app) fn slim_scrollbar(gap: f32) -> iced::widget::scrollable::Direction {
     iced::widget::scrollable::Direction::Vertical(
         iced::widget::scrollable::Scrollbar::new()
             .width(6)
             .scroller_width(6)
-            .spacing(4),
+            .spacing(gap),
     )
 }
 
