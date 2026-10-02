@@ -279,7 +279,7 @@ mod tests {
                 agent: agent.clone(),
             },
             Response::Sent {
-                message: "question".into(),
+                message: "question".to_owned().into(),
                 subscribers: 0,
                 recipient_readiness: None,
             },
