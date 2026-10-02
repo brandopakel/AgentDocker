@@ -796,6 +796,9 @@ impl App {
             .into()
         };
         let window: Element<'_, Message> = column![workspace, self.footer(c)].into();
+        // The window is always the first layer of one stack, dialogs or
+        // none, so opening one keeps its scroll offsets and field state.
+        let mut layers = vec![window];
         if self.shell.launch {
             // The launch form is a dialog over the window: a scrim (a flat
             // wash, no blur) that closes it when pressed, and the form
@@ -818,9 +821,14 @@ impl App {
                 },
             ))
             .on_press(Message::ShowLaunch);
-            return iced::widget::stack![window, iced::widget::opaque(scrim)].into();
+            layers.push(iced::widget::opaque(scrim));
         }
-        window
+        // command palette: a layer over everything, the launch dialog
+        // included, and its keys ahead of every control (palette.rs).
+        if self.shell.palette.open {
+            layers.push(self.palette_view(c));
+        }
+        self.palette_keys(iced::widget::Stack::with_children(layers).into())
     }
 
     /// The page beside the rail: the header, the tabs and the screen.
@@ -1388,6 +1396,10 @@ impl App {
         let project_page = self.in_project();
         let mut nav =
             column![container(brand(r)).padding([0, 8]), Space::new().height(18)].spacing(2);
+        // command palette: its way in, under the brand (palette.rs).
+        nav = nav
+            .push(self.palette_trigger(r))
+            .push(Space::new().height(14));
         let unviewed = self.shell.unviewed_done.len();
         nav = nav.push(self.nav_item(
             "projects",

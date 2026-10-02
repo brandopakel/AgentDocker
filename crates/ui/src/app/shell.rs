@@ -133,6 +133,9 @@ pub(super) struct State {
     pub unviewed_done: BTreeSet<String>,
     /// The window has lost focus; what it shows is not being looked at.
     pub unfocused: bool,
+    // command palette
+    /// The command palette: open or not, its search and nested pages.
+    pub palette: super::palette::Palette,
 }
 
 impl State {
@@ -758,6 +761,23 @@ pub enum Message {
     Captured(window::Screenshot),
     Focus(String),
     Accessibility(crate::accessibility::Snapshot),
+    // command palette
+    /// Open the command palette, or close it: ⌘K / Control+K, the rail's
+    /// Jump to…, a press on its scrim.
+    CommandPalette,
+    /// The palette's search text.
+    CommandQuery(String),
+    /// Move its highlighted row up or down, round the ends.
+    CommandMove(i32),
+    /// Run its highlighted row (Enter).
+    CommandSubmit,
+    /// Run one of its rows, by id.
+    CommandRun(String),
+    /// Escape: clear the search, else back out of a page, else close.
+    CommandEscape,
+    /// Back out of a nested page: the back arrow, or Backspace with
+    /// nothing typed.
+    CommandBack,
 }
 
 /// A wake becomes one frame, a moment later: the answers to a sweep (seven
@@ -2438,6 +2458,13 @@ impl App {
                         self.shell.adding = false;
                         self.shell.more = false;
                     }
+                    // command palette: here only when no control took the
+                    // key first (a terminal that owns Control+K, say).
+                    Key::Character(key)
+                        if modifiers.command() && key.as_str().eq_ignore_ascii_case("k") =>
+                    {
+                        tasks.push(self.update(Message::CommandPalette));
+                    }
                     Key::Character(key) if modifiers.command() => {
                         let screen = match key.as_str() {
                             "1" => Some(Screen::Agents),
@@ -2477,6 +2504,14 @@ impl App {
                 }
                 return Task::batch(tasks);
             }
+            // command palette
+            message @ (Message::CommandPalette
+            | Message::CommandQuery(_)
+            | Message::CommandMove(_)
+            | Message::CommandSubmit
+            | Message::CommandRun(_)
+            | Message::CommandEscape
+            | Message::CommandBack) => tasks.push(self.command_palette(message)),
         }
         // Catalog removal and missing-folder cleanup can choose another
         // project too. Its header must never accompany the previous queue.

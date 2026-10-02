@@ -11,6 +11,7 @@ mod board;
 mod icons;
 mod messages;
 mod naming;
+mod palette;
 pub(crate) mod panes;
 mod project_chat;
 pub(crate) mod queue;
