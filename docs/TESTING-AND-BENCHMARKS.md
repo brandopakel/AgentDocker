@@ -7,7 +7,7 @@ Standardized September 5, 2026 at the user's request. Apply throughout the corre
 | Priority | Tool/service | Purpose in AgentDocker |
 |---|---|---|
 | First | cargo-nextest + GitHub Actions | Isolated Rust test execution, timeouts, resource groups and JUnit artifacts. Keep doctests separately. Report flaky outcomes; retries must not hide correctness failures. |
-| First | Criterion + Bencher | Measure lease operations, content fingerprints, SQLite writes and recovery queries; retain benchmark trends and compare PRs against their actual base. Criterion measures; Bencher stores and evaluates results. |
+| First | Criterion + Bencher | Measure lease operations, content fingerprints, retained accounting-prefix verification, SQLite writes and recovery queries; retain benchmark trends and compare PRs against their actual base. Criterion measures; Bencher stores and evaluates results. |
 | First | Proptest | Generate claim/renew/release/expire/finish sequences and aliases; compare with a simple reference model. Persist minimized failing seeds. |
 | First | cargo-llvm-cov | Find untested cancellation, authorization, migration and recovery branches. Publish coverage artifacts; use coverage to guide meaningful tests rather than target a vanity percentage. |
 | First | Native Rust Unix-socket load harness | Exercise the real JSON-line protocol under concurrent clients, disconnects, slow readers, lease contention and daemon restart. Export Bencher Metric Format results. |
@@ -16,11 +16,26 @@ Standardized September 5, 2026 at the user's request. Apply throughout the corre
 | Transport-dependent | k6 | Use for supported network endpoints when present. Evaluate a maintained extension before using the native Unix-socket protocol; a bridge benchmark measures the bridge too. Do not add a production HTTP API solely to accommodate k6. |
 | Integration | Real Docker and Podman jobs | Shared engine contract scenarios and separate real-engine results for builds, lifecycle, mount translation and scoped authentication. Linux CI first, explicit macOS VM checks. |
 
+The host `fingerprint` benchmark includes `usage_prefix/verify_16_mib`: it prepares a complete retained cursor outside the timed loop, then verifies its entire 16 MiB prefix through the collector's bounded `Session` API. Both fixture scanning and prefix verification abort after ten consecutive attempts without progress, instead of retrying indefinitely under sustained host load. ARM uses the runtime-detected SHA-256 backend; `--features sha2/force-soft` provides an explicit software control for a local comparison. Keep those feature sets labeled and preserve each run's samples before a subsequent Criterion baseline replaces them. This is a prefix-verification benchmark, not a multi-project daemon or installed idle-CPU trial.
+
 Bencher reporting is configured privately for this project, and verified main benchmark artifacts have been uploaded. The user requires its key and configuration to remain outside the repository and GitHub. Local runs and downloadable CI artifacts work without credentials. k6 remains optional for future network transports; it is not a reason to introduce a production HTTP endpoint.
 
 ## Behavioral gates
 
 Every PR runs formatting, strict Clippy, unit/integration tests and installer/package checks. New tests target: no overlapping exclusive physical leases; no post-cancellation/exit acquisition; stopping writers retain protection; durable effects have correct event ordering; checksum failure preserves installation; observed stale input requires reread; accepted recovery survives restart; source or image changes invalidate matching validation evidence. Exercise crash points before/after SQLite commits, full/slow output pipes, lost watchers, expired/revoked credentials and engine unavailability using test-owned processes and fixtures.
+
+The terminal writer-failure regression prints test-only phase markers around
+socket setup, injected write failure, reader completion and cleanup/join. Retain
+its failed nextest output and JUnit if the intermittent macOS timeout recurs;
+the original final #236 run stopped after 90 seconds without those markers.
+These diagnostics do not change terminal behavior, weaken the three-second
+completion assertion, or establish a fix from subsequent passing runs.
+The writer-failure test and its two socket-reader siblings also arm a
+test-only watchdog: after 20 seconds it prints thread diagnostics and aborts,
+so a recurrence names the blocked call instead of ending at nextest's
+90-second kill. On macOS that is every thread's stack from `sample`, run in a
+private temporary directory and ended after 30 seconds with any partial output
+kept; Linux `/proc/self/task` gives task wait states, not stacks.
 
 The scheduled workflow runs bounded protocol, resource-key, engine-metadata and token-filter fuzz campaigns. Docker/Podman protocol jobs run on PRs and main pushes. Repeated concurrency soaks, large-checkout latency workloads and the full desktop/OS lifecycle matrix are still required trial work, not existing scheduled coverage. Failed seeds, logs, JUnit, coverage and benchmark outputs are retained with the exact commit and platform. CodeRabbit reviews implementation and test changes; green automated checks and disposition of valid review findings are required before integration.
 

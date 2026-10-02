@@ -473,21 +473,52 @@ fn state_timing_start() -> Option<Instant> {
 }
 
 fn state_timing_finish(operation: &str, started: Option<Instant>) {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicUsize;
     static SAMPLES: AtomicUsize = AtomicUsize::new(0);
     let Some(elapsed) = started.map(|start| start.elapsed()) else {
         return;
     };
-    if elapsed >= std::time::Duration::from_millis(250)
-        && SAMPLES
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                (count < 256).then_some(count + 1)
-            })
-            .is_ok()
-    {
+    if elapsed >= std::time::Duration::from_millis(250) && claim_state_timing_sample(&SAMPLES) {
         tracing::debug!(target: "agentd_state_timing", operation,
             elapsed_ms = elapsed.as_secs_f64() * 1000.0, "slow daemon state operation");
     }
+}
+
+fn claim_state_timing_sample(samples: &std::sync::atomic::AtomicUsize) -> bool {
+    use std::sync::atomic::Ordering;
+    let mut count = samples.load(Ordering::Relaxed);
+    while count < 256 {
+        match samples.compare_exchange_weak(count, count + 1, Ordering::Relaxed, Ordering::Relaxed)
+        {
+            Ok(_) => return true,
+            Err(observed) => count = observed,
+        }
+    }
+    false
+}
+
+#[test]
+fn concurrent_state_timing_samples_stop_at_the_limit() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let samples = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    (0..100)
+                        .filter(|_| claim_state_timing_sample(&samples))
+                        .count()
+                })
+            })
+            .collect();
+        let accepted: usize = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .sum();
+        assert_eq!(accepted, 256);
+    });
+    assert_eq!(samples.load(Ordering::Relaxed), 256);
+    assert!(!claim_state_timing_sample(&samples));
 }
 
 /// Whether a name can be the last component of `agent/<name>` as a git

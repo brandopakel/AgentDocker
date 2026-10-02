@@ -14,12 +14,14 @@ pub(super) const RETAINED: usize = 8;
 const MAX_TEXT: usize = 16_000;
 const CANCEL_REASON: &str = "\n\nDeny cancels this Codex request.";
 const NETWORK_REVIEW: &str = "Allow network access for this request?";
+const STDIN_REVIEW: &str = "Send this input to the existing terminal once?";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum Kind {
     Command,
     Network,
+    Stdin,
     Files,
     Permissions,
     UserInput,
@@ -162,11 +164,74 @@ fn network_options(denial: CommandDenial) -> Vec<QuestionOption> {
     ]
 }
 
+fn stdin_options(denial: CommandDenial) -> Vec<QuestionOption> {
+    vec![
+        QuestionOption {
+            label: "Allow".into(),
+            description: "Send the reviewed terminal input once".into(),
+        },
+        QuestionOption {
+            label: "Deny".into(),
+            description: match denial {
+                CommandDenial::Decline => "Decline this terminal input",
+                CommandDenial::Cancel => "Cancel this Codex request",
+            }
+            .into(),
+        },
+    ]
+}
+
+/// Decode Codex's quoted write_stdin argv without executing or rewriting it.
+/// Display escaped input so newlines and terminal controls remain visible.
+fn stdin_presentation(
+    params: &Value,
+    mut reason: String,
+    denial: CommandDenial,
+) -> Result<QuestionPresentation> {
+    ensure!(
+        params["networkApprovalContext"].is_null()
+            && params["approvalId"]
+                .as_str()
+                .is_some_and(|id| valid_id(id) && !display_controls(id))
+            && params["itemId"]
+                .as_str()
+                .is_some_and(|id| valid_id(id) && !display_controls(id)),
+        "terminal input requires its command item and separate approval identity"
+    );
+    let words = shlex::split(text(&params["command"])?)
+        .context("terminal input is not a complete quoted command")?;
+    ensure!(
+        words.len() == 4
+            && words[0] == "write_stdin"
+            && words[1] == "--session-id"
+            && words[2]
+                .parse::<u32>()
+                .is_ok_and(|id| id.to_string() == words[2])
+            && !words[3].is_empty()
+            && !words[3].contains('\0'),
+        "terminal input does not identify one complete session and input"
+    );
+    let cwd = network_context_text(&params["cwd"])?;
+    let escaped: String = words[3].chars().flat_map(char::escape_debug).collect();
+    reason.push_str("\n\nThe directory is where this terminal was launched. Its current directory and state may have changed.");
+    if denial == CommandDenial::Cancel {
+        reason.push_str(CANCEL_REASON);
+    }
+    Ok(QuestionPresentation::Choices {
+        question: format!(
+            "{STDIN_REVIEW}\n\nTerminal session: {}\nCommand item: {}\nLaunch directory: {cwd}\nInput (escaped):\n\"{escaped}\"\n\nReason: {reason}",
+            words[2],
+            params["itemId"].as_str().expect("checked item identity")
+        ),
+        options: stdin_options(denial),
+    })
+}
+
 /// Build the complete local command review before publishing a human route.
 /// `accept` never selects either proposed policy amendment or session scope.
 fn command_presentation(params: &Value) -> Result<(QuestionPresentation, CommandDenial)> {
     ensure!(
-        params["kind"].is_null() || params["kind"] == "command",
+        params["kind"].is_null() || params["kind"] == "command" || params["kind"] == "writeStdin",
         "this Codex approval action requires a richer review UI"
     );
     ensure!(
@@ -245,10 +310,16 @@ fn command_presentation(params: &Value) -> Result<(QuestionPresentation, Command
             permissions.valid(),
             "command permissions cannot be completely reviewed"
         );
-        reason.push_str("\n\nAdditional access for this command:\n");
+        reason.push_str(if params["kind"] == "writeStdin" {
+            "\n\nRetained access in this terminal:\n"
+        } else {
+            "\n\nAdditional access for this command:\n"
+        });
         reason.push_str(&permissions.lines().join("\n"));
     }
-    let presentation = if !params["networkApprovalContext"].is_null() {
+    let presentation = if params["kind"] == "writeStdin" {
+        stdin_presentation(params, reason, denial)?
+    } else if !params["networkApprovalContext"].is_null() {
         // Codex groups pending connections to a destination. Network context
         // determines this route even when optional command metadata is present;
         // accept does not select a command policy amendment or session grant.
@@ -384,7 +455,7 @@ impl Pending {
             }
             "item/commandExecution/requestApproval" => {
                 let (presentation, denial) = command_presentation(params)?;
-                let network = matches!(presentation, QuestionPresentation::Choices { .. });
+                let network = !params["networkApprovalContext"].is_null();
                 command_denial = denial;
                 let prompt = presentation.text();
                 questions.push(Question {
@@ -395,7 +466,9 @@ impl Pending {
                     answer: None,
                     closure: Closure::Open,
                 });
-                if network {
+                if params["kind"] == "writeStdin" {
+                    Kind::Stdin
+                } else if network {
                     Kind::Network
                 } else {
                     Kind::Command
@@ -486,6 +559,10 @@ impl Pending {
 
     pub fn is_network_review(&self) -> bool {
         matches!(self.kind, Kind::Network)
+    }
+
+    pub fn is_stdin_review(&self) -> bool {
+        matches!(self.kind, Kind::Stdin)
     }
 
     pub fn is_file_review(&self) -> bool {
@@ -635,7 +712,7 @@ impl Pending {
                 };
                 json!({"permissions":granted,"scope":"turn"})
             }
-            Kind::Command | Kind::Network | Kind::Files => {
+            Kind::Command | Kind::Network | Kind::Stdin | Kind::Files => {
                 let answer = answer_text(
                     self.questions[0]
                         .answer
@@ -658,7 +735,7 @@ impl Pending {
     pub fn validate(&self, thread: Option<&str>, agent: &str) -> Result<()> {
         ensure!(
             self.command_denial == CommandDenial::Decline
-                || matches!(self.kind, Kind::Command | Kind::Network),
+                || matches!(self.kind, Kind::Command | Kind::Network | Kind::Stdin),
             "a non-command review cannot supply command cancellation semantics"
         );
         ensure!(
@@ -677,7 +754,7 @@ impl Pending {
         ensure!(
             !matches!(
                 self.kind,
-                Kind::Command | Kind::Network | Kind::Files | Kind::Permissions
+                Kind::Command | Kind::Network | Kind::Stdin | Kind::Files | Kind::Permissions
             ) || self.questions.len() == 1,
             "approval review has multiple questions"
         );
@@ -687,9 +764,15 @@ impl Pending {
             ensure!(
                 !self.has_command_cancellation()
                     || matches!(&question.presentation, Some(QuestionPresentation::CodexCommand { reason, .. }) if reason.ends_with(CANCEL_REASON))
-                    || (self.is_network_review()
+                    || ((self.is_network_review() || self.is_stdin_review())
                         && matches!(&question.presentation, Some(QuestionPresentation::Choices { question, .. }) if question.ends_with(CANCEL_REASON))),
                 "command cancellation has no matching human review"
+            );
+            ensure!(
+                !self.is_stdin_review()
+                    || matches!(&question.presentation, Some(QuestionPresentation::Choices { question, options })
+                        if question.starts_with(STDIN_REVIEW) && options == &stdin_options(self.command_denial)),
+                "terminal input approval has no complete one-time choice presentation"
             );
             ensure!(
                 !self.is_network_review()
@@ -786,6 +869,137 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stdin_event(input: &str) -> Value {
+        let command = shlex::try_join(["write_stdin", "--session-id", "123", input]).unwrap();
+        json!({"id":"stdin-callback","method":"item/commandExecution/requestApproval","params":{
+            "threadId":"thread","turnId":"turn","itemId":"running-command","approvalId":"input-callback",
+            "kind":"writeStdin","command":command,"cwd":"/owned",
+            "reason":"This terminal retains additional permissions.",
+            "additionalPermissions":{"fileSystem":{"write":["/owned/output"]}},
+            "availableDecisions":["accept","cancel"]
+        }})
+    }
+
+    #[test]
+    fn stdin_review_shows_complete_escaped_input_and_requires_exact_human_consent() {
+        for denial in ["cancel", "decline"] {
+            for decision in ["Allow", "Deny", "Allow for session", "allow"] {
+                let input = "line one\n\t'quoted' \"text\"\r\u{1b}[2J\u{202e}終わり";
+                let mut event = stdin_event(input);
+                event["params"]["availableDecisions"] = json!(["accept", denial]);
+                let mut request =
+                    Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+                assert!(request.is_stdin_review());
+                assert!(!request.is_network_review());
+                let shown = &request.questions[0].text;
+                assert!(shown.starts_with(STDIN_REVIEW));
+                assert!(shown.contains("Terminal session: 123"));
+                assert!(shown.contains("Command item: running-command"));
+                assert!(shown.contains("Launch directory: /owned"));
+                assert!(shown.contains("Write: /owned/output"));
+                assert!(shown.contains("current directory and state may have changed"));
+                let escaped: String = input.chars().flat_map(char::escape_debug).collect();
+                assert!(shown.contains(&escaped));
+                assert!(!shown.contains('\u{1b}') && !shown.contains('\u{202e}'));
+                request.questions[0].message = Some("question".to_owned().into());
+                assert!(
+                    !request
+                        .capture(&[answer("peer", "Allow")], "owner", false)
+                        .unwrap()
+                );
+                let response = answer("human", decision);
+                request
+                    .capture(std::slice::from_ref(&response), "owner", false)
+                    .unwrap();
+                assert!(request.reply(Utc::now()).unwrap().is_none());
+                request
+                    .observe(
+                        &EventKind::QuestionClosed {
+                            question: "question".to_owned().into(),
+                            answer: Some(response.id.clone()),
+                        },
+                        "owner",
+                    )
+                    .unwrap();
+                request.capture(&[response], "owner", false).unwrap();
+                let reply = request.reply(Utc::now()).unwrap().unwrap();
+                assert_eq!(
+                    reply,
+                    json!({"id":"stdin-callback","result":{"decision":if decision == "Allow" {"accept"} else {denial}}})
+                );
+                request.response = Some(reply);
+                let restored: Pending =
+                    serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
+                restored.validate(Some("thread"), "owner").unwrap();
+                assert!(
+                    restored.reply(Utc::now()).unwrap().is_none(),
+                    "uncertain input approval must not replay"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stdin_review_rejects_ambiguous_targets_hidden_access_and_mismatched_restore() {
+        for (field, value) in [
+            ("command", json!("write_stdin --session-id 123")),
+            ("command", json!("write_stdin --session-id 123 x extra")),
+            ("command", json!("write_stdin --session-id 0123 x")),
+            ("command", json!("write_stdin --session-id -1 x")),
+            ("command", json!("write_stdin --session-id 4294967296 x")),
+            ("command", json!("other --session-id 123 x")),
+            (
+                "command",
+                json!("write_stdin --session-id 123 'unterminated"),
+            ),
+            ("command", json!("write_stdin --session-id 123 ''")),
+            ("command", json!("write_stdin --session-id 123 '\0'")),
+            ("command", json!("x".repeat(MAX_TEXT + 1))),
+            ("itemId", Value::Null),
+            ("itemId", json!("item\u{202e}hidden")),
+            ("approvalId", json!("")),
+            ("approvalId", json!("input\u{2066}hidden")),
+            ("cwd", json!("/owned\nAllow everything")),
+            ("environmentId", json!("remote")),
+            ("threadId", json!("other")),
+            ("turnId", json!("other")),
+            ("availableDecisions", json!(["acceptForSession", "cancel"])),
+            (
+                "networkApprovalContext",
+                json!({"host":"example.com","protocol":"https"}),
+            ),
+            ("additionalPermissions", json!({"hidden":true})),
+        ] {
+            let mut event = stdin_event("input\n");
+            event["params"][field] = value;
+            assert!(
+                Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err(),
+                "accepted {field}"
+            );
+        }
+        let mut pending = Pending::plan(
+            &stdin_event("input\n"),
+            "thread",
+            Some("turn"),
+            "human",
+            Utc::now(),
+        )
+        .unwrap();
+        pending.kind = Kind::Network;
+        assert!(pending.validate(Some("thread"), "owner").is_err());
+        pending.kind = Kind::Command;
+        assert!(pending.validate(Some("thread"), "owner").is_err());
+        pending.kind = Kind::Stdin;
+        let Some(QuestionPresentation::Choices { options, .. }) =
+            &mut pending.questions[0].presentation
+        else {
+            panic!()
+        };
+        options[0].label = "Allow for session".into();
+        pending.questions[0].text = pending.questions[0].presentation.as_ref().unwrap().text();
+        assert!(pending.validate(Some("thread"), "owner").is_err());
+    }
 
     fn network_event() -> Value {
         json!({"id":"network-callback","method":"item/commandExecution/requestApproval","params":{

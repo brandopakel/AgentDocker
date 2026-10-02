@@ -76,6 +76,10 @@ pub(super) fn overrides(
             format!("{prefix}.args"),
             json!(["mcp", "--runtime", "codex"]),
         );
+        // Queued peer replies depend on this exact local integration. If it
+        // cannot initialize, fail startup instead of letting a model choose an
+        // unrelated account connector. Explicitly disabled entries stay off.
+        patched.insert(format!("{prefix}.required"), json!(true));
         for (name, value) in [
             ("AGENTDOCKER_HOME", json!(home)),
             ("AGENTDOCKER_SOCKET", json!(socket)),
@@ -171,7 +175,8 @@ mod tests {
             result["mcp_servers.coordination.env.AGENTDOCKER_NO_AUTOSTART"],
             "1"
         );
-        assert_eq!(result.as_object().unwrap().len(), 7);
+        assert_eq!(result["mcp_servers.coordination.required"], true);
+        assert_eq!(result.as_object().unwrap().len(), 8);
         assert!(
             result
                 .as_object()
