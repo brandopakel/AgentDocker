@@ -275,8 +275,10 @@ def main():
         (profile / "hooks.json").write_text(json.dumps({"hooks": {"SessionStart": [{"hooks": [{
             "type": "command", "command": subprocess.list2cmdline([sys.executable, str(hook)])}]}]}}),
             encoding="utf-8")
-        profile_hashes = {name: hashlib.sha256((profile / name).read_bytes()).hexdigest()
-                          for name in ("config.toml", "hooks.json")}
+        profile_initial = {name: (profile / name).read_bytes()
+                           for name in ("config.toml", "hooks.json")}
+        profile_hashes = {name: hashlib.sha256(value).hexdigest()
+                          for name, value in profile_initial.items()}
         report["provider_version"] = subprocess.check_output([str(codex), "--version"],
             env=env, text=True, timeout=10).strip()
         daemon = subprocess.Popen([str(daemon_exe)], cwd=repo, env=env, stdin=subprocess.DEVNULL,
@@ -413,10 +415,11 @@ def main():
         assert after["completed"][:len(before["completed"])] == before["completed"]
         assert [r["message"] for r in after["completed"]] == [r["id"] for r in report["sent"]]
         assert all(r["receipt"]["thread"] == thread for r in after["completed"])
-        assert profile_hashes == {name: hashlib.sha256((profile / name).read_bytes()).hexdigest() for name in profile_hashes}
-        report.update(result="passed", completed_receipts=after["completed"], thread=thread,
+        report.update(completed_receipts=after["completed"], thread=thread,
                       automatic_bootstrap=True, startup_without_prompt=initial_prompt is None,
                       draft_preserved=True, receiver_restart_no_replay=True)
+        assert profile_hashes == {name: hashlib.sha256((profile / name).read_bytes()).hexdigest() for name in profile_hashes}
+        report["result"] = "passed"
     except Exception:
         report["error"] = traceback.format_exc()
         if provider is not None and provider.isalive():
@@ -483,6 +486,24 @@ def main():
         if cleanup or reader_errors or report.get("fixture_errors"):
             report["result"] = "failed"
         (out / "terminal.txt").write_text("".join(output), encoding="utf-8")
+        # These are the two synthetic, unauthenticated files this fixture wrote,
+        # never a user's profile. Preserve byte-level before/after evidence even
+        # when configuration preservation fails after successful delivery.
+        if "profile_initial" in locals():
+            report["profile_files"] = {}
+            for name, initial in profile_initial.items():
+                try:
+                    with (profile / name).open("rb") as source:
+                        final = source.read(64 * 1024 + 1)
+                    assert len(final) <= 64 * 1024, "fixture configuration exceeds its bound"
+                    report["profile_files"][name] = {
+                        "initial_sha256": hashlib.sha256(initial).hexdigest(),
+                        "final_sha256": hashlib.sha256(final).hexdigest(),
+                        "initial_text": initial.decode("utf-8"),
+                        "final_text": final.decode("utf-8"),
+                    }
+                except Exception as error:
+                    report["profile_files"][name] = {"error": str(error)}
         if home.exists():
             for path in (home / "codex-queue").glob("*/*"):
                 if path.name in ("controller.log", "delivery.json"):

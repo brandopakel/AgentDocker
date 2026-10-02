@@ -631,3 +631,13 @@ accounting fixture: a valid cooperative `Budget` return was mistaken for a
 required single-pass `Complete`. The fixture now resumes its two records within
 three bounded passes and verifies progress, identical counters and prefix proof.
 Product scan deadlines are unchanged; native delivery acceptance is still open.
+Native `68e020ba` then passed all 322 core/host checks and progressed through
+five exact delivery receipts, preserved drafts, receiver replacement without
+replay, and recovery preview in its established-session diagnostic. That trial
+still failed its final byte-for-byte fixture-profile assertion; it is not an
+overall pass. The fixture now retains its two synthetic configuration files'
+before/after bytes and hashes to diagnose the mutation without relaxing that
+assertion. Strict zero-prompt startup still timed out. Codex 0.160.0 source queues
+SessionStart on session creation and executes it in turn processing, explaining
+why the hook alone cannot provide startup-before-first-turn registration. A
+verified alternative startup route remains required.
