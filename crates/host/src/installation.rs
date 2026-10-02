@@ -529,7 +529,25 @@ mod tests {
         drop(first);
         assert!(lock::try_exclusive(&path).unwrap().is_none());
         drop(second);
-        assert!(lock::try_exclusive(&path).unwrap().is_some());
+        let _maintenance = released_lock(&path, lock::try_exclusive);
+    }
+
+    // Libtest runs process-spawning tests in this same process. A concurrent
+    // fork inherits an open lock until exec closes its CLOEXEC descriptor.
+    // Require the real lock to release within a bound before testing the next
+    // state; never accept contention as evidence that a deleted file is safe.
+    fn released_lock(
+        path: &Path,
+        acquire: fn(&Path) -> io::Result<Option<lock::Lock>>,
+    ) -> lock::Lock {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(held) = acquire(path).unwrap() {
+                return held;
+            }
+            assert!(std::time::Instant::now() < deadline, "pin never released");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]
@@ -537,13 +555,14 @@ mod tests {
         let (_temp, root, exe) = fixture();
         drop(pin_executable(&exe).unwrap());
         let path = pin_path(&root, &"a".repeat(64)).unwrap();
-        let held = lock::try_exclusive(&path).unwrap().unwrap();
+        let held = released_lock(&path, lock::try_exclusive);
         assert_eq!(
             pin_executable(&exe).unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
         std::fs::remove_file(&exe).unwrap();
         drop(held);
+        let _shared = released_lock(&path, lock::try_shared);
         assert_eq!(
             pin_executable(&exe).unwrap_err().kind(),
             io::ErrorKind::NotFound
