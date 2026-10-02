@@ -616,3 +616,13 @@ Both downloads require their recorded SHA-256. Its private fixture also collects
 detached 0.160 app-server processes by kernel executable path and process birth,
 and retains bounded provider logs. The earlier zero-prompt startup failure is
 still open; this version refresh alone is not native acceptance.
+Native `2d88d19f` on Codex 0.160.0 still failed zero-prompt startup with no model
+request. The established-session diagnostic bound and delivered four queued
+inputs, then its ordinary Python ledger read returned permission denied during
+delivery; the retained ledger later contained all four exact receipts. This is
+consistent with a publication/read-sharing race, but does not prove data loss.
+Both fixture cleanups succeeded. The candidate now publishes native ledgers
+through the existing atomic snapshot API, permits verified concurrent readback,
+and gives the fixture Windows read/write/delete sharing. A held-reader regression
+checks old/new complete records. Corrected native acceptance remains required;
+no timeout or private-file ownership check was relaxed.

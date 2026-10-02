@@ -35,6 +35,32 @@ def wait(predicate, seconds=30):
     raise TimeoutError("acceptance condition was not reached")
 
 
+def read_snapshot(path):
+    """Open a fixture snapshot without blocking its atomic replacement."""
+    import ctypes as c
+    import msvcrt
+    from ctypes import wintypes as w
+    kernel = c.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, c.c_void_p,
+                                  w.DWORD, w.DWORD, w.HANDLE]
+    kernel.CreateFileW.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    # GENERIC_READ, SHARE_READ|WRITE|DELETE, OPEN_EXISTING. The path is inside
+    # this fixture; product reads independently enforce private-file ownership.
+    handle = kernel.CreateFileW(str(path), 0x80000000, 7, None, 3, 0, None)
+    if handle == c.c_void_p(-1).value:
+        raise c.WinError(c.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except BaseException:
+        kernel.CloseHandle(handle)
+        raise
+    with os.fdopen(descriptor, "rb") as snapshot:
+        raw = snapshot.read(256 * 1024 + 1)
+    assert len(raw) <= 256 * 1024, "fixture ledger exceeds its bound"
+    return json.loads(raw)
+
+
 def current_user_objects():
     """Only this fixture process/children: avoid elevated-runner group ownership.
 
@@ -359,8 +385,8 @@ def main():
         wait(lambda: f"WINDOWS_FIXTURE_OK_{6 + request_offset}" in "".join(output))
         wait(lambda: not rpc({"op": "peek_input", "agent": aid})["messages"])
         ledgerpath = home / "codex-queue" / aid / "delivery.json"
-        wait(lambda: len(json.loads(ledgerpath.read_text(encoding="utf-8"))["completed"]) == len(report["sent"]))
-        before = json.loads(ledgerpath.read_text(encoding="utf-8"))
+        wait(lambda: len(read_snapshot(ledgerpath)["completed"]) == len(report["sent"]))
+        before = read_snapshot(ledgerpath)
         assert [r["message"] for r in before["completed"]] == [r["id"] for r in report["sent"]]
         thread = agent["input_binding"]["provider"]["session"]
         assert all(r["receipt"]["thread"] == thread for r in before["completed"])
@@ -382,8 +408,8 @@ def main():
         assert len(report["requests"]) == 6 + request_offset, "receiver restart replayed provider input"
         send("PEER_NATIVE_RECOVERED")
         received(7, "PEER_NATIVE_RECOVERED")
-        wait(lambda: len(json.loads(ledgerpath.read_text(encoding="utf-8"))["completed"]) == len(report["sent"]))
-        after = json.loads(ledgerpath.read_text(encoding="utf-8"))
+        wait(lambda: len(read_snapshot(ledgerpath)["completed"]) == len(report["sent"]))
+        after = read_snapshot(ledgerpath)
         assert after["completed"][:len(before["completed"])] == before["completed"]
         assert [r["message"] for r in after["completed"]] == [r["id"] for r in report["sent"]]
         assert all(r["receipt"]["thread"] == thread for r in after["completed"])

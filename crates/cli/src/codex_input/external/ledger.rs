@@ -129,7 +129,7 @@ pub(super) fn upgrade_credential(
 ) -> Result<(Binding, String)> {
     let path = directory(home, agent)?.join("delivery.json");
     let mut data = Vec::new();
-    dirs::read_private_file(&path)?
+    dirs::open_private_snapshot(&path)?
         .take((MAX_STATE + 1) as u64)
         .read_to_end(&mut data)?;
     ensure!(
@@ -473,7 +473,7 @@ impl Ledger {
         let mut file = tempfile::Builder::new().make_in(directory, dirs::create_private_file)?;
         file.write_all(&data)?;
         file.as_file().sync_all()?;
-        agentdocker_host::files::publish_staged(&file.into_temp_path(), &self.path)?;
+        agentdocker_host::files::publish_snapshot(&file.into_temp_path(), &self.path)?;
         self.record = next;
         Ok(())
     }
@@ -641,6 +641,35 @@ impl Record {
 mod tests {
     use super::*;
     use agentdocker_core::{Destination, ProcessIdentity};
+
+    #[test]
+    fn publication_preserves_a_held_readback_and_exposes_only_complete_records() {
+        let home = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(home.path(), binding(home.path()), None).unwrap();
+        let mut before = dirs::open_private_snapshot(&ledger.path).unwrap();
+        let envelope = Envelope::new(
+            "peer",
+            Destination::parse("agent"),
+            "chat",
+            serde_json::json!({"text":"queued during readback"}),
+            None,
+            chrono::Utc::now(),
+        );
+        ledger.prepare(&envelope, None).unwrap();
+        let mut old = String::new();
+        before.read_to_string(&mut old).unwrap();
+        let old: Record = serde_json::from_str(&old).unwrap();
+        assert!(old.attempt.is_none());
+        let mut new = String::new();
+        dirs::open_private_snapshot(&ledger.path)
+            .unwrap()
+            .read_to_string(&mut new)
+            .unwrap();
+        let new: Record = serde_json::from_str(&new).unwrap();
+        assert_eq!(old.binding, new.binding);
+        assert_eq!(old.token, new.token);
+        assert_eq!(new.attempt.unwrap().message, envelope.id.as_str());
+    }
     fn binding(home: &Path) -> Binding {
         Binding {
             agent: "agent".into(),
