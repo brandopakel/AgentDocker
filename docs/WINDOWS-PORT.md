@@ -498,3 +498,9 @@ from every owned home before cleanup. Failed CI packages are retained separately
 as `windows-failed-package-diagnostics`, never as an accepted preview. The
 OWNER RIGHTS fresh-home timeout in run35821898700 remains an unresolved failure;
 added diagnostics and any later pass alone do not establish its cause or a fix.
+
+The native desktop installer is under implementation. A private activation-record
+resolver and receipt-checked stable-launcher target resolver now have source
+regressions for malformed records, modified launchers, missing activation and
+escaping payloads. They are not wired into installation or process startup yet;
+the portable preview still has no installer/update/rollback acceptance.

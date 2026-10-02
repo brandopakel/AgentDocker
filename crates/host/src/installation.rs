@@ -7,6 +7,9 @@ use crate::{dirs, lock};
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(any(windows, test))]
+pub mod windows;
+
 pub const LOCK_FORMAT: u32 = 1;
 pub const LAUNCHER_REDIRECT_FORMAT: u32 = 1;
 
