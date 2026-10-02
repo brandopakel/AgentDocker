@@ -111,15 +111,13 @@ mod tests {
                     if self.wrong_reply {
                         let mut wrong = agent.clone();
                         wrong.managed = false;
-                        return Ok(Response::Agent {
-                            agent: Box::new(wrong),
-                        });
+                        return Ok(Response::Agent { agent: wrong });
                     }
                 }
                 _ => panic!("unexpected identity request"),
             }
             Ok(Response::Agent {
-                agent: Box::new(agent.clone()),
+                agent: agent.clone(),
             })
         }
     }
