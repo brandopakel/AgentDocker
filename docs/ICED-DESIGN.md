@@ -213,8 +213,24 @@ control does, its id or its accessible label:
   from 1180 points wide). A channel is a card headed by a `#` tile, its name,
   Open or Closed as a dot and a word, its purpose and members, and a small
   stack of member marks.
+- **Questions and approvals** (`app/view/approvals.rs`). A question card is
+  headed by an amber tile, the question as its title, who asked and when, and
+  the time left as a small ring and words. Structured choices are full-width
+  option rows in one card, the label on the left and its consequence on the
+  right (the consequence is also the option's accessible value), a refusal
+  (Deny, Cancel, Stop) in red; once one is chosen the others go and the
+  chosen row stays filled, with a tick, while the answer is delivered
+  (`shell::State::chosen_answers`, display only). A request to run, change
+  files or reach the network is one framed card: a strip saying who wants
+  to run what and the time left, the command in a darker mono well behind an
+  amber `$` with a copy button, Folder and Reason as detail lines, and a
+  footer that steps down — solid Allow, outline Review changes (file
+  requests), plain-word Deny. **Needs you** is one card headed by an amber
+  dot, the words and a count chip, its rows the agent, the ask on one line,
+  the ring and **Answer** as an outline, with **Show N more** as a ghost.
 - **Meters.** A lease row carries a thin bar of the time left on it; it turns
-  amber under one fifth. A question card carries the time left to answer it,
+  amber under one fifth. A question carries the time left to answer it as a
+  small ring drawn once per change of fraction (cached like the glyphs),
   red under one fifth. Session rows say when they started. Panels that hold a
   series (Activity) start with a pane header: what the pane holds on the left,
   one quiet fact on the right.
