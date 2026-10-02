@@ -73,6 +73,13 @@ with identity/generation checks and no provider input replay. Three identity tes
 bound the same managed identity and preserved authentication recovery, but
 accounting timed out because that log version was unsupported. The candidate
 now includes observed accounting-only 0.160.0 fixtures and cursor v6 replay
-after complete v3/v4/v5 prefix verification. Corrected native acceptance,
-restart/unused-thread behavior and review remain required; failed evidence and
-the original endurance trial are preserved unchanged.
+after complete v3/v4/v5 prefix verification. Corrected `0da06a2e` passed native Mac ARM64/Codex 0.160.0 and independent
+Ubuntu/Codex 0.155.1 loopback trials: one managed agent/project received exactly
+five input/two output tokens; authentication failure held the queue, explicit
+resume delivered once, an unused-thread crash replaced only the empty thread,
+and a used-thread crash preserved identity/receipts without replay. Both cleaned
+all fixture processes without force or errors. Full CI gates passed on the same
+implementation: Mac 1,451 Rust and Ubuntu 1,439 Rust checks, plus 162 Python tests
+each (one skipped), with zero retries. Independent review and sustained
+real-account/installed acceptance remain required; failed evidence and the
+original endurance trial are preserved unchanged.
