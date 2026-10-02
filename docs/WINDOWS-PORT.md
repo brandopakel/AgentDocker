@@ -161,6 +161,31 @@ crash, and what that means for a person:
   acceptance remains separate from source tests and the isolated supervisor
   prototype. See the [user commands](GUIDE.md) and
   [service semantics](ARCHITECTURE.md#starting-the-daemon).
+
+  Manual Windows workflow runs can enable `service_acceptance` to exercise
+  install, stop, start, restart, daemon-crash recovery and uninstall using the
+  exact extracted portable binaries. The trial creates one random private home
+  and its owned Task Scheduler task, disables client autostart, verifies the
+  serving process image and home before inducing a crash, and requires cleanup.
+  The report is retained beside package evidence. An interactive-logon pass
+  does not establish login/reboot behavior or managed-provider survival. Its
+  first native run on `bbfb4dcb`
+  passed the 62 portable checks, then failed service install/uninstall before
+  creating a task: the missing-task query returned a silent PowerShell failure.
+  Lookup now selects the exact task from successful enumeration and propagates
+  query errors instead of treating every error as absence. Corrected native
+  run 36958504870 on `bf48452d` passed all 62 portable checks and eight service
+  checks, including crash recovery without client autostart and repeat
+  uninstall. The private task, processes and scratch were removed with no
+  cleanup errors. The original failure remains retained. Lookup now compares
+  names without regard to case before checking ownership. The native driver
+  additionally creates a harmless, unstarted foreign task under a case-variant
+  name and requires install/uninstall refusal with its XML unchanged. That
+  regression passed on `c0dd784e` in native run 36963606339: all 62 portable
+  checks and 11 service checks passed, the foreign task XML stayed identical,
+  and all owned tasks, processes and scratch were removed cleanly.
+  Failed cleanup retires verified process generations, supervisor first, while
+  retaining the failed result and any cleanup errors.
 - A validation command is ended on a timeout, but only the command itself:
   there is no process group and no Job Object around it yet, so whether its
   descendants survived is not reported.

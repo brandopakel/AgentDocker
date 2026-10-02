@@ -56,6 +56,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--startup-samples", type=int, default=0,
                         help="additional fresh-home samples per Windows ancestry type (0..20)")
+    parser.add_argument("--service", action="store_true",
+                        help="also test the private home's owned Task Scheduler lifecycle")
     args = parser.parse_args()
     if not 0 <= args.startup_samples <= 20:
         parser.error("--startup-samples must be between 0 and 20")
@@ -87,6 +89,17 @@ def main():
             observed = json.loads((output / "smoke/windows-daemon-smoke.json").read_text(encoding="utf-8"))
             if observed.get("result") != "passed" or observed.get("binary_sha256") != info["binary_sha256"]:
                 raise ValueError("native smoke did not pass on the exact archive binaries")
+            if args.service:
+                subprocess.run([sys.executable, str(ROOT / "scripts/windows_service_smoke.py"),
+                                "--binary-dir", str(app), "--output", str(output / "service")],
+                               cwd=scratch, check=True, timeout=600)
+                service = json.loads((output / "service/result.json").read_text(encoding="utf-8"))
+                if service.get("result") != "passed" or any(
+                    service.get("binary_sha256", {}).get(name) != info["binary_sha256"][name]
+                    for name in ("agentdocker.exe", "agentd.exe")
+                ):
+                    raise ValueError("service lifecycle did not pass on the exact archive binaries")
+                report["service"] = {"result": "passed", "steps": len(service["steps"])}
             report.update(result="passed", steps=len(observed["steps"]), desktop=observed.get("desktop"))
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
