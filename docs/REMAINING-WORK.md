@@ -83,6 +83,10 @@ implementation: Mac 1,451 Rust and Ubuntu 1,439 Rust checks, plus 162 Python tes
 each (one skipped), with zero retries. Independent review identified a new
 pre-submission failure window around identity binding. The follow-up moves that
 binding after Codex accepts the first turn, relying on existing late usage
-reconciliation; corrected native trials and final checks are pending. Sustained
+reconciliation. Corrected `004b80f1` repeated both full gates with the same
+test counts and passed both native loopback trials: 35.008 seconds on Mac ARM64
+with Codex 0.160.0, 35.880 seconds on Ubuntu with Codex 0.155.1. Exact attributed
+totals, queue recovery and both crash/restart scenarios passed with clean
+fixture retirement. Final checks and follow-up review remain required. Sustained
 real-account/installed acceptance remains required; failed evidence and the
 original endurance trial are preserved unchanged.
