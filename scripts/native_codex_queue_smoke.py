@@ -1910,23 +1910,43 @@ try:
                 report["managed_provider_processes"] = owned
                 if not owned:
                     return
-                stopped = subprocess.run(
-                    [codex, "app-server", "daemon", "stop"], env=env, cwd=repo,
-                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
-                assert stopped.returncode == 0, stopped.stderr
+                stop_error = None
+                try:
+                    stopped = subprocess.run(
+                        [codex, "app-server", "daemon", "stop"], env=env, cwd=repo,
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+                    assert stopped.returncode == 0, stopped.stderr
+                except (subprocess.TimeoutExpired, AssertionError) as error:
+                    stop_error = error
                 # `daemon stop` retires the server but leaves its detached PID
-                # updater alive in 0.160. Retire only the exact private updater
-                # we observed, after rechecking its PID, birth and command.
+                # updater alive in 0.160. A pending approval can also prevent
+                # stop from returning. Always retire exact owned generations,
+                # retaining the failed stop as a cleanup error after cleanup.
                 updaters = []
+                forced = []
                 for identity in managed_provider_processes():
-                    if identity[2].endswith(" app-server daemon pid-update-loop"):
-                        assert identity in owned, "private updater identity changed"
+                    updater = identity[2].endswith(" app-server daemon pid-update-loop")
+                    if updater or stop_error is not None:
+                        assert identity in owned, "private provider identity changed"
                         assert identity in managed_provider_processes()
                         os.kill(identity[0], signal.SIGTERM)
-                        updaters.append(identity[0])
+                        (updaters if updater else forced).append(identity[0])
                 report["managed_provider_updaters_stopped"] = updaters
-                wait(lambda: not managed_provider_processes(), 10)
-                report["managed_provider_survivors"] = []
+                report["managed_provider_forced_retirement"] = forced
+                try:
+                    wait(lambda: not managed_provider_processes(), 10)
+                except TimeoutError:
+                    for identity in managed_provider_processes():
+                        assert identity in owned, "private provider identity changed before kill"
+                        assert identity in managed_provider_processes()
+                        os.kill(identity[0], signal.SIGKILL)
+                    wait(lambda: not managed_provider_processes(), 5)
+                    if stop_error is None:
+                        stop_error = RuntimeError("private provider required forced kill after stop")
+                finally:
+                    report["managed_provider_survivors"] = managed_provider_processes()
+                if stop_error is not None:
+                    raise stop_error
 
             cleanup_step("managed provider", end_managed_provider)
 
