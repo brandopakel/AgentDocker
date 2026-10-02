@@ -2389,13 +2389,10 @@ impl App {
                         .wrapping(iced::widget::text::Wrapping::None),
                 );
             }
-            if let Some(left) = self.soonest_answer_window(&id) {
-                words = words.push(
-                    container(meter(left, if left < 0.2 { c.red } else { c.amber }, c))
-                        .width(160)
-                        .padding([3, 0]),
-                );
-            }
+            // Time left to answer, as the same small ring Needs you uses.
+            let window = self.soonest_answer_window(&id).map(|left| {
+                approvals::ring(left, if left < 0.2 { c.red } else { c.amber }, 14.0, c)
+            });
             let mut content = row![
                 monogram(&name, &id, 28.0, c),
                 container(words).width(Fill).clip(true)
@@ -2406,6 +2403,9 @@ impl App {
                 // Finished since you last looked. The observed state stays
                 // in the status word; this says only that it is new to you.
                 content = content.push(pill("Done", c.accent_soft, c.accent_ink, c));
+            }
+            if let Some(window) = window {
+                content = content.push(window);
             }
             if !narrow {
                 content = content.push(
