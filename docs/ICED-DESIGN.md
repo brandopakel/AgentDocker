@@ -156,6 +156,22 @@ control does, its id or its accessible label:
   monospace fallback. Headings are SemiBold; Bold is never requested. Section
   eyebrows are 11-point capitals; paths and identifiers use the system
   monospace.
+- **Jump to… (⌘K, Ctrl+K elsewhere).** A search-looking field under the
+  brand (`command-palette`) and the shortcut from anywhere, including a
+  focused text field, open one palette (`app/palette.rs`): a search field
+  (`palette-search`) over grouped rows — Go to (All projects, Messages or
+  Inbox, Tools, Settings, with their ⌘2–⌘4 keycaps), Projects (each with its
+  mark and folder), Actions (Launch agent… with a nested page of installed
+  tools, Open project terminal, Pause…, Add project…, the other appearance)
+  — each row an existing message (`palette-item-<kind>-<key>`). Matching is
+  case-insensitive: label prefix, then every term starting a label word, then
+  a substring, then words of the description. Up/Down or Tab move the
+  highlight, Enter runs it, Escape clears the search, then leaves a nested
+  page, then closes; Backspace on an empty search leaves a nested page. The
+  keys are read by a wrapper at the window root because a focused field
+  otherwise types the *k* and keeps Escape. The window is always the first
+  layer of one stack, with the launch dialog and the palette as optional
+  layers over it, so opening either resets nothing underneath.
 - **Segmented controls** (`controls::segment` in a `segmented` track) pick one
   of a few peers: the session filters and the theme. The track is an inset
   with a hairline; the selected segment is a card-coloured thumb with a
@@ -379,7 +395,8 @@ implementation and acceptance work.
 
 All action buttons participate in Tab/Shift-Tab traversal and activate with
 Enter/Space. Repeated key events do not repeat an activation. Escape closes
-forms/details; Command/Ctrl+1–4 switch primary sections. F6 leaves terminal input;
+forms/details; Command/Ctrl+1–4 switch primary sections and Command/Ctrl+K opens
+Jump to…. F6 leaves terminal input;
 Control+] detaches. Button focus follows stable identity when session rows move.
 The focus ring follows the input modality: a click focuses a control without
 it (the pointer knows where it clicked) and it stays off that control until a

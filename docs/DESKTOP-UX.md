@@ -31,6 +31,10 @@ session's behalf; the CLI recipe stays beside it as the alternative.
 
 ## Projects
 
+**Jump to…** at the top of the sidebar, or ⌘K (Ctrl+K on Linux and Windows) from
+anywhere, finds a place, a project or an action by typing a few letters: Enter
+goes there, Escape steps back. **Launch agent…** in it lists the installed tools.
+
 With no saved selection, the app opens on **All projects**, with sessions grouped
 under their project names. A saved project or Other sessions view is restored.
 **Projects** in the sidebar returns to All projects. Choosing a project opens
