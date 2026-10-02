@@ -36,6 +36,18 @@ an observed gap**. MCP startup supplies no thread/profile identity in its
 environment, so it cannot safely infer that binding. The provider still requires review/trust
 of new hook definitions through `/hooks`. Merely
 installing MCP or receiving a hook event does not prove idle wake.
+Codex 0.160.0 can host MCP in a detached app-server instead of the TUI process.
+A local loopback trial exposed questions attributed to that server's separate
+agent, leaving the native conversation without asynchronous answer delivery.
+The candidate resolves each detached-host tool call using Codex's `threadId`
+and `sessionId` metadata against one existing live native binding in the same
+canonical provider profile and checkout. It verifies the app-server process
+birth and executable, requires the root thread/session to agree, and refuses
+missing, ambiguous, stale or child bindings. It creates no app-server agent and
+never derives a thread from history or a display name. The native receiver keeps
+ownership of input receipts. This source change still needs native acceptance
+and independent review; it does not solve zero-prompt startup/reopen.
+
 The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;
 only an accepted daemon binding suppresses their competing reads. An incompatible
