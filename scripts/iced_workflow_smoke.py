@@ -306,10 +306,12 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("wait_text", text="Idle messages: On"), step("click", id="launch-idle-input"),
                          step("wait_text", text="Idle messages: Off"),
                          # This fake CLI is a terminal fixture, not a provider input server.
-                         step("fill", id="launch-name", text="launched-from-iced"), step("click", id="confirm-launch"),
+                         step("fill", id="launch-name", text="launched-from-iced"), step("capture", name="launch-dialog"),
+                         step("click", id="confirm-launch"),
                          step("wait_text", text="Agent launched"), step("click", id="project-tab-Agents"), step("click", id="attach-session"),
                          step("wait_text", text="ICED TERMINAL READY λ 日本語"), step("capture", name="launched-terminal"), step("click", id="detach-terminal"),
-                         step("click", id="stop-session"), step("wait_text", text="Confirm stop"), step("click", id="stop-session"),
+                         step("click", id="stop-session"), step("wait_text", text="Confirm stop"), step("capture", name="confirm-stop"),
+                         step("click", id="stop-session"),
                          # A click can re-arm an expired confirmation; require the actual exit.
                          step("wait_control", id="stop-session", present=False),
                          step("click", id="project-more"), step("click", id="project-tab-Console"), step("fill", id="console-command", text="ps --all"),

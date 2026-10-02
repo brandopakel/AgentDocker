@@ -2842,8 +2842,12 @@ impl App {
                 Some(Message::OpenQuestion(question.id.clone())),
             ));
         }
+        // While a message is being written, sending it is the one thing
+        // to do; the terminal steps down to an outline.
+        let composing =
+            self.shell.session_message && agent.status.is_live() && agent.spec.runtime != "human";
         let terminal_kind = |label: &'static str, id: &'static str, message: Option<Message>| {
-            if question.is_some() {
+            if question.is_some() || composing {
                 action(id, label, message, false)
             } else {
                 primary(id, label, message)
@@ -2876,16 +2880,6 @@ impl App {
                 self.shell.session_message,
             ));
         }
-        if agent.status.is_live()
-            && agent.spec.runtime != agentdocker_core::HUMAN_RUNTIME
-            && !matches!(&self.shell.renaming, Some((renaming, _)) if renaming == &id)
-        {
-            actions = actions.push(ghost(
-                "rename-session",
-                "Rename…",
-                Some(Message::StartRename(id.clone())),
-            ));
-        }
         body = body.push(actions.wrap());
         if agent.status.is_live() && agent.spec.runtime != "human" {
             if self.shell.session_message {
@@ -2908,15 +2902,28 @@ impl App {
                         true,
                         send.clone(),
                     ))
-                    .push(primary(
-                        "send-session-message",
-                        if sending {
-                            "Queueing…"
-                        } else {
-                            "Send message"
-                        },
-                        send,
-                    ));
+                    .push(if question.is_some() {
+                        action(
+                            "send-session-message",
+                            if sending {
+                                "Queueing…"
+                            } else {
+                                "Send message"
+                            },
+                            send,
+                            false,
+                        )
+                    } else {
+                        primary(
+                            "send-session-message",
+                            if sending {
+                                "Queueing…"
+                            } else {
+                                "Send message"
+                            },
+                            send,
+                        )
+                    });
                 if let Some(notice) = draft.and_then(|draft| {
                     super::send_readiness::notice(
                         draft,
@@ -2989,7 +2996,8 @@ impl App {
             }
         }
         let mut footer = column![].spacing(10);
-        footer = footer.push(custom_sized(
+        let mut footer_line = row![].spacing(4).align_y(Center);
+        footer_line = footer_line.push(custom_sized(
             "session-details",
             if self.shell.session_details {
                 "Hide details"
@@ -3022,6 +3030,17 @@ impl App {
             [5, 8],
             iced::Length::Shrink,
         ));
+        if agent.status.is_live()
+            && agent.spec.runtime != agentdocker_core::HUMAN_RUNTIME
+            && !matches!(&self.shell.renaming, Some((renaming, _)) if renaming == &id)
+        {
+            footer_line = footer_line.push(ghost(
+                "rename-session",
+                "Rename…",
+                Some(Message::StartRename(id.clone())),
+            ));
+        }
+        footer = footer.push(footer_line);
         if self.shell.session_details {
             // The full id is 32 hex digits with nowhere to wrap: shown short,
             // copied whole.
