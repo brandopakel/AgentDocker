@@ -292,6 +292,8 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("click", id="project-more"), step("click", id="project-tab-Journal"), step("capture", name="activity"),
                          step("click", id="project-more"), step("click", id="project-tab-Channels"), step("wait_text", text="Fixture channel message"),
                          step("click", id="project-more"), step("click", id="project-tab-Leases"), step("capture", name="coordination"),
+                         step("click", id="project-more"), step("click", id="project-tab-Usage"), step("wait_control", id="usage-since-24h", present=True),
+                         step("wait_text_absent", text="Reading…"), step("capture", name="usage"),
                          step("click", id="connections"), step("capture", name="connections"),
                          step("click", id="connection-details-codex"), step("wait_text", text="Tools (MCP)"),
                          step("click", id="setup-review-codex"),
