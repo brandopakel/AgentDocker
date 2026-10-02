@@ -138,6 +138,8 @@ def main():
         third = update_preview['candidate']['id']
         step('Windows archive preview verifies and stages without activation',
              update_preview['preview'] and desktop('status')['installation']['current']['id'] == first)
+        step('Windows update preview removes its temporary extracted payload',
+             not list((store / 'downloads').glob('*/payload-*')))
         pin_path = store / 'pins' / (second + '.lock')
         with pin_path.open('r+b') as held:
             msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, 1)
@@ -148,6 +150,12 @@ def main():
             finally:
                 held.seek(0)
                 msvcrt.locking(held.fileno(), msvcrt.LK_UNLCK, 1)
+        step('Windows update apply removes its temporary extracted payload',
+             not list((store / 'downloads').glob('*/payload-*')))
+        desktop('install', '--from', update_app, '--local-preview', '--expect-current', third)
+        step('idempotent active installation preserves retained inactive versions',
+             (store / 'versions' / second).is_dir()
+             and desktop('status')['installation']['previous']['id'] == first)
         status = desktop('status', executable=launcher)['installation']
         step('Windows preview update activates through the existing bootstrap',
              status['current']['id'] == third and status['previous']['id'] == first
@@ -203,12 +211,26 @@ def main():
              and desktop('status')['installation'] is None)
         step('uninstall preserves immutable releases and unrecognized retained content',
              (store / 'versions' / first).is_dir() and (unknown / 'keep.txt').is_file())
+        retirement = store / 'retired-launchers'
+        foreign_retirement = retirement / str(uuid.uuid4())
+        foreign_retirement.mkdir()
+        (foreign_retirement / 'keep.txt').write_text('preserve unrecognized retirement')
         desktop('install', '--from', app, '--local-preview', '--expect-current', 'none')
         step('reinstall after uninstall restores the stable launcher',
              desktop('status', executable=launcher)['installation']['current']['id'] == first)
-        retirement = store / 'retired-launchers'
-        step('reinstall collects closed retired launcher images',
-             not any(retirement.iterdir()))
+        step('reinstall collects closed retired launchers while preserving an unrecognized directory',
+             set(retirement.iterdir()) == {foreign_retirement}
+             and (foreign_retirement / 'keep.txt').read_text() == 'preserve unrecognized retirement')
+        prune = desktop('prune', '--preview')
+        desktop('prune', '--expect-plan', prune['plan_id'])
+        step('unrecognized retirement does not prevent verified maintenance',
+             (foreign_retirement / 'keep.txt').is_file())
+        desktop('uninstall', executable=launcher, good=False)
+        step('uninstall preserves unaccountable retirement and identifies the directory before deactivation',
+             str(foreign_retirement) in report['commands'][-1]['stderr']
+             and desktop('status')['installation']['current']['id'] == first and launcher.is_file())
+        (foreign_retirement / 'keep.txt').unlink()
+        foreign_retirement.rmdir()
         oversized = [retirement / str(uuid.uuid4()) for _ in range(9)]
         for directory in oversized:
             directory.mkdir()

@@ -152,8 +152,9 @@ crash, and what that means for a person:
 - Live daemon reload and the descriptor handover (`daemon reload`): the
   daemon holds no descriptors a successor could inherit; stop and start it.
 - Container workspace transport and grants: the endpoint is a Unix socket.
-- The desktop installer (`desktop install`, updates, rollback) and connector
-  service remain unavailable. Daemon login startup is now implemented through
+- The connector service remains unavailable. Per-user desktop installation and
+  local preview update/rollback passed the native lifecycle described below.
+  Daemon login startup is now implemented through
   a limited per-user Task Scheduler task, with a private ownership receipt and
   a bounded crash supervisor. `daemon install`, `uninstall`, `start`, `stop`,
   `restart` and `status` handle that task; start/stop still operate on demand
@@ -245,8 +246,8 @@ Work still required before platform support can be claimed:
   daemon's `PATH` by its bare name and reads its arguments back from its
   log. Not established: a real provider's shim (Node under the pseudo
   console) — that is the provider trial.
-- Daemon service/session startup, per-user desktop installation, Start menu
-  integration, updates/rollback and signed packages.
+- Start menu/PATH integration, hosted Windows update/rollback, signed packages,
+  and physical actual-provider service/session login and reboot acceptance.
 - The daemon and CLI test suites on the Windows runner (they still carry
   Unix-only fixtures), native graphical acceptance, then a fresh
   real-provider integration and sustained lifecycle trials.
@@ -567,3 +568,11 @@ Task Scheduler checks. Loaded-bootstrap uninstall, collection after reinstall
 and bounded retirement refusal passed; hashes match the clean native build,
 and both service fixtures removed owned tasks/scratch without cleanup errors.
 No hosted Windows update, physical console or login/reboot result is implied.
+
+Installer review corrections remove temporary update extractions after preview/apply,
+preserve inactive releases during idempotent installation, and compare canonical
+Windows paths when deciding whether the daemon activation changed. Retirement
+maintenance skips unrecognized directories while collecting verified siblings;
+uninstall still refuses before deactivation if it cannot account for a preserved
+directory, identifying that path. Corrected native and full-gate acceptance are
+pending; the earlier `e190d919` pass does not establish these changed paths.

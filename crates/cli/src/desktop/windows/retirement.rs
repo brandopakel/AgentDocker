@@ -86,7 +86,11 @@ fn checked(path: &Path) -> Result<Vec<PathBuf>> {
 /// prevents that directory's cleanup; a loaded image is retained for a later call.
 pub(super) fn cleanup(layout: &Layout) -> Result<()> {
     for path in inventory(layout)? {
-        let files = checked(&path)?;
+        let Ok(files) = checked(&path) else {
+            // An unknown directory never authorizes deletion, but must not
+            // prevent collecting unrelated, fully verified closed images.
+            continue;
+        };
         let mut retained = false;
         for file in files {
             match std::fs::remove_file(&file) {
@@ -121,7 +125,10 @@ pub(super) fn prepare(layout: &Layout, launchers: &[PathBuf]) -> Result<Option<P
     );
     let mut bytes = 0_u64;
     for path in previous {
-        for file in checked(&path)? {
+        for file in checked(&path).with_context(|| format!(
+            "cannot account for preserved retirement directory {}; inspect its contents before uninstalling",
+            path.display()
+        ))? {
             bytes = bytes
                 .checked_add(std::fs::metadata(file)?.len())
                 .context("retirement size overflow")?;

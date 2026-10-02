@@ -340,10 +340,10 @@ pub(super) fn perform(
         std::fs::rename(&stage, &version)?;
     }
     layout.prepare_launchers(&candidate)?;
-    if current
+    let changed = current
         .as_ref()
-        .is_none_or(|a| a.current.id != candidate.id)
-    {
+        .is_none_or(|a| a.current.id != candidate.id);
+    if changed {
         publish(
             &layout.root,
             "activation.json",
@@ -357,7 +357,9 @@ pub(super) fn perform(
     let serving = serving_daemon(socket);
     report["daemon"] = json!({"answered":!serving.is_null(),"reloaded":false,"serving":serving,
         "summary":"activated for the next launch; running sessions and daemon continue unchanged"});
-    report["retention"] = maintenance::after_activation(layout, &_held);
+    if changed {
+        report["retention"] = maintenance::after_activation(layout, &_held);
+    }
     Ok(report)
 }
 

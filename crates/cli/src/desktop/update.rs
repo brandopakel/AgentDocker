@@ -817,7 +817,7 @@ fn run_with_home(
         }
     };
     let expect_current = Some(active.map_or("none", |a| a.current.id.as_str()).to_owned());
-    let mut report = perform(
+    let performed = perform(
         layout,
         active.cloned(),
         source,
@@ -827,7 +827,15 @@ fn run_with_home(
         Some(candidate.id.clone()),
         expect_current,
         options.socket.clone(),
-    )?;
+    );
+    // perform copies into the immutable version store. Dispose of this owned
+    // extraction after preview/apply, including errors; retain only the archive.
+    #[cfg(windows)]
+    let cleanup =
+        std::fs::remove_dir_all(&extracted).context("remove temporary Windows update payload");
+    let mut report = performed?;
+    #[cfg(windows)]
+    cleanup?;
     report["update"] = update;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
