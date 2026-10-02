@@ -15,6 +15,9 @@ fault injection into the isolated receiver ledger (never the provider database),
 and explicitly closing/reopening the same TUI conversation with queued input.
 The long-busy scenario holds a direct user turn for 65 seconds, verifies retained
 peer input without a false idle pause, then requires ordered provider receipts.
+The approval-wait scenario adds one prompt rule only in its private profile,
+holds a harmless print command for 65 seconds, and checks queued input before
+approving that command once. No saved user policy or provider account is changed.
 Active-hook scenarios accept --active-peer-kind answer to exercise an ordinary
 peer reply at the queue head followed by human input in the same active turn.
 The subagent-hook scenario uses a real child conversation on the same loopback
@@ -33,6 +36,7 @@ import hashlib
 import json
 import os
 import pty
+import re
 import select
 import shlex
 import signal
@@ -76,6 +80,7 @@ parser.add_argument(
         "subagent-hook",
         "controller-upgrade",
         "long-busy",
+        "approval-wait",
         "startup",
         "lifecycle",
         "question",
@@ -151,6 +156,7 @@ def source_manifest():
 report["source"] = source_manifest()
 bootstrap_called = args.scenario in ("startup", "lifecycle")
 question_called = False
+approval_called = False
 request_lock = threading.Lock()
 request_sequence = 0
 limit_active = args.scenario == "rate-limit"
@@ -210,7 +216,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        global bootstrap_called, question_called, request_sequence
+        global bootstrap_called, question_called, approval_called, request_sequence
         global scope_spawned, scope_child_calls, scope_root_calls
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert self.headers.get("Authorization") == "Bearer fixture-only"
@@ -411,6 +417,13 @@ class Handler(BaseHTTPRequestHandler):
                 {"type": "response.output_item.done", "output_index": 0, "item": item},
                 {"type": "response.completed", "response": response},
             ]
+        if (args.scenario == "approval-wait" and users
+                and "APPROVAL_START_NONCE" in json.dumps(users[-1]) and not approval_called):
+            approval_called = True
+            events = scope_tool_events(response, body, "exec_command", {
+                "cmd": "python3 -c \"print('APPROVAL_EXECUTED_NONCE')\"",
+                "max_output_tokens": 1000,
+            })
         if scope == "root":
             scope_root_calls += 1
             assert scope_root_calls <= 8, "root did not receive its scoped input"
@@ -520,6 +533,13 @@ try:
             + json.dumps(str(repo))
             + ']\ntrust_level = "trusted"\n'
         )
+        if args.scenario == "approval-wait":
+            config = config.replace('approval_policy = "never"', 'approval_policy = "on-request"')
+            (profile / "rules").mkdir()
+            approval_rule = profile / "rules" / "approval-fixture.rules"
+            approval_rule.write_text('prefix_rule(pattern = '
+                + json.dumps(["python3", "-c", "print('APPROVAL_EXECUTED_NONCE')"])
+                + ', decision = "prompt", justification = "Private approval-wait fixture")\n')
         (profile / "config.toml").write_text(config)
         env = {
             k: v
@@ -532,6 +552,12 @@ try:
             TERM="xterm-256color",
         )
         report["provider_version"] = subprocess.check_output([codex, "--version"], text=True).strip()
+        if args.scenario == "approval-wait":
+            decision = subprocess.run([codex, "execpolicy", "check", "--rules", str(approval_rule),
+                "--", "python3", "-c", "print('APPROVAL_EXECUTED_NONCE')"], env=env,
+                cwd=repo, capture_output=True, text=True, timeout=15, check=True)
+            report["fixture_rule"] = json.loads(decision.stdout)
+            assert report["fixture_rule"]["decision"] == "prompt"
         report["cli_sha256"] = hashlib.sha256(cli.read_bytes()).hexdigest()
         report["daemon_sha256"] = hashlib.sha256(cli.with_name("agentd").read_bytes()).hexdigest()
         adhome = root / "ad"
@@ -703,6 +729,12 @@ try:
 
             thread = threading.Thread(target=reader, daemon=True)
             thread.start()
+
+            def approval_visible(since, marker):
+                text = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', bytes(output[since:]))
+                return (b"Would you like to run the following command?" in text
+                        and b"Yes, proceed" in text and marker in text)
+
             if args.scenario == "startup":
                 started = wait(
                     lambda: next(
@@ -1086,7 +1118,57 @@ try:
             time.sleep(3)
             assert len(report["requests"]) == 7
             report["automatic_receiver_restart_no_replay"] = True
-            if args.scenario == "rate-limit":
+            if args.scenario == "approval-wait":
+                screen_start = len(output)
+                queued("APPROVAL_START_NONCE")
+                approval_message = report["queue_results"][-1]["message_id"]
+                wait(lambda: approval_visible(screen_start, b"APPROVAL_EXECUTED_NONCE"), 30)
+                (out / "pending-approval.bin").write_bytes(output[screen_start:])
+                assert len(report["requests"]) == 8
+                held_ids = []
+                for text in ("PEER_DURING_APPROVAL", "HUMAN_DURING_APPROVAL"):
+                    queued(text)
+                    held_ids.append(report["queue_results"][-1]["message_id"])
+                started = time.monotonic()
+                samples = []
+                report["approval_wait_samples"] = samples
+                while time.monotonic() - started < 65:
+                    observed = rpc({"op": "inspect", "agent": aid})["agent"]
+                    pending = rpc({"op": "peek_input", "agent": aid})["messages"]
+                    completed = json.loads((adhome / "codex-queue" / aid / "delivery.json").read_text())["completed"]
+                    # The triggering message is already in provider context,
+                    # but its receipt can remain pending until this approved
+                    # turn completes. Later inputs must remain ordered behind
+                    # it; never demand an early acknowledgement of that head.
+                    pending_ids = [m["id"] for m in pending]
+                    assert pending_ids in (held_ids, [approval_message, *held_ids]), pending
+                    assert not any(r["message"] in held_ids for r in completed), 'input acknowledged before approval'
+                    assert len(report["requests"]) == 8, 'provider continued before approval'
+                    assert observed["input_binding"]["provider"]["process"]["pid"] == provider.pid
+                    samples.append({"seconds":time.monotonic()-started,
+                        "pending":pending_ids, "delivery":observed.get("input_delivery")})
+                    time.sleep(1)
+                held_seconds = time.monotonic() - started
+                os.write(master, b"\r")
+                wait(lambda: len(report["requests"]) == 11, 45)
+                wait(lambda: b"FIXTURE_OK_11" in output, 15)
+                assert any(item.get("type") == "function_call_output"
+                           and "APPROVAL_EXECUTED_NONCE" in json.dumps(item.get("output"))
+                           for item in report["requests"][8]["body"]["input"])
+                for request, marker in zip(report["requests"][9:11],
+                        ("PEER_DURING_APPROVAL", "HUMAN_DURING_APPROVAL")):
+                    latest = [i for i in request["body"]["input"] if i.get("role") == "user"][-1]
+                    assert marker in json.dumps(latest)
+                ledger_path = adhome / "codex-queue" / aid / "delivery.json"
+                wait(lambda: all(mid in {r["message"] for r in json.loads(ledger_path.read_text())["completed"]}
+                                 for mid in held_ids), 15)
+                completed = json.loads(ledger_path.read_text())["completed"]
+                assert [r["message"] for r in completed if r["message"] in held_ids] == held_ids
+                time.sleep(3)
+                assert len(report["requests"]) == 11, 'approval input replayed'
+                report["long_approval_wait"] = {"held_seconds":held_seconds,
+                    "messages":held_ids, "ordered_receipts":True, "one_time_approval":True}
+            elif args.scenario == "rate-limit":
                 queued("LIMIT_NONCE")
                 queued("AFTER_PROVIDER_RESET")
                 availability = wait(

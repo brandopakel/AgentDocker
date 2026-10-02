@@ -900,3 +900,14 @@ requires an active turn on the target thread and a matching `expectedTurnId`.
 The current independent-terminal bridge has a local compatibility limitation:
 its separate connection has not established a route to steer that terminal's
 active turn. This is not an additional ownership requirement in the API contract.
+
+The native queue acceptance driver also has an `approval-wait` scenario. It
+uses a private `on-request` policy and a narrowly matched prompt rule, then
+holds a harmless print command for 65 seconds while peer and human input
+remain queued; the approval-triggering message may also retain its receipt
+until the current turn completes. It requires ordered provider receipts after one-time approval
+and complete private-process cleanup. On Codex 0.160.0 Mac ARM64, driver
+`d3361106` with immutable runtime `3065bd6e` passed a 65.259-second approval
+wait, 65 queue observations and ordered peer/human receipts exactly once after
+one-time approval, with clean private-process retirement. Real-account, other
+versions/platforms and non-command permission surfaces remain open.
