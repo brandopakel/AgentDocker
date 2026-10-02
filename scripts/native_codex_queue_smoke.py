@@ -729,15 +729,6 @@ try:
                 ]
             wait(lambda: len(report["requests"]) == 1, 30)
             wait(lambda: b"FIXTURE_OK_1" in output, 10)
-            files = [
-                p
-                for p in profile.glob("sessions/**/*.jsonl")
-                if json.loads(p.read_text().splitlines()[0])["payload"].get("source") == "cli"
-            ]
-            assert len(files) == 1, files
-            meta = json.loads(files[0].read_text().splitlines()[0])
-            tid = meta["payload"]["id"]
-            report["thread"] = tid
             registered = wait(
                 lambda: next(
                     (
@@ -749,6 +740,22 @@ try:
                 ),
                 20,
             )
+            # Match the verified binding, not a provider UI label. Codex
+            # 0.160's standalone TUI records source="vscode"; the bound process,
+            # session and private profile are the identities this trial owns.
+            generation = registered["input_binding"]["provider"]
+            assert generation["process"]["pid"] == provider.pid
+            assert Path(generation["profile"]).resolve() == profile.resolve()
+            tid = generation["session"]
+            files = []
+            for path in profile.glob("sessions/**/*.jsonl"):
+                with path.open() as stream:
+                    meta = json.loads(stream.readline())
+                if meta.get("type") == "session_meta" and meta["payload"].get("id") == tid:
+                    assert Path(meta["payload"]["cwd"]).resolve() == repo.resolve()
+                    files.append(path)
+            assert len(files) == 1, files
+            report["thread"] = tid
             aid = registered["id"]
             birth = registered["process_started_at"]
             report["agent"] = aid
