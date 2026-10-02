@@ -88,5 +88,12 @@ test counts and passed both native loopback trials: 35.008 seconds on Mac ARM64
 with Codex 0.160.0, 35.880 seconds on Ubuntu with Codex 0.155.1. Exact attributed
 totals, queue recovery and both crash/restart scenarios passed with clean
 fixture retirement. Final checks and follow-up review remain required. Sustained
-real-account/installed acceptance remains required; failed evidence and the
+installed acceptance remains required. A separate 121.878-second independent
+Ubuntu trial of `004b80f1` with the authenticated Codex 0.155.1 model service
+passed three exact nonce echoes across three managed sessions and ten projects.
+Every session's attributed counters matched its current stable provider rollout,
+with no source gaps; configuration/auth files and the unrelated runner were
+unchanged, and all fixture processes/scratch retired gracefully. This is short
+real-account attribution evidence, not sign-in recovery or endurance acceptance;
+its concurrent load is disclosed in the original endurance measurements. Failed evidence and the
 original endurance trial are preserved unchanged.
