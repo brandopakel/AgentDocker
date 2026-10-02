@@ -6,6 +6,7 @@ tests install/start/stop/restart/uninstall and crash recovery in the current
 interactive logon; it does not establish login/reboot or provider survival.
 """
 import argparse
+import base64
 import datetime
 import hashlib
 import json
@@ -47,6 +48,35 @@ def main():
                                 for p in (cli, daemon)}, 'steps': [], 'cleanup_errors': []}
     processes = []
     installed = False
+    foreign_task = None
+    foreign_xml = None
+
+    def quoted(value):
+        return "'" + value.replace("'", "''") + "'"
+
+    def powershell(script):
+        executable = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+        script = ("$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';"
+                  "[Console]::OutputEncoding=[Text.UTF8Encoding]::new();" + script)
+        encoded = base64.b64encode(script.encode('utf-16le')).decode('ascii')
+        result = subprocess.run([str(executable), '-NoProfile', '-NonInteractive',
+                                 '-EncodedCommand', encoded], env=env, cwd=binaries,
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+        observed = {'script': script, 'exit': result.returncode,
+                    'stdout': result.stdout.decode('utf-8', errors='replace'),
+                    'stderr': result.stderr.decode('utf-8', errors='replace')}
+        with (output / 'scheduler-fixture.jsonl').open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(observed) + '\n')
+        assert result.returncode == 0, observed
+        return observed['stdout'].strip()
+
+    def foreign_definition():
+        name = quoted(foreign_task)
+        return powershell(
+            f"$found=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {{"
+            f"$_.TaskPath -ieq '\\' -and $_.TaskName -ieq {name}}});"
+            "if($found.Count -gt 1){throw 'ambiguous fixture task'};"
+            f"if($found.Count -eq 1){{Export-ScheduledTask -TaskPath '\\' -TaskName {name}}}")
 
     def save():
         (output / 'result.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
@@ -170,19 +200,73 @@ def main():
         # product refuses an unrelated task without an ownership receipt.
         repeat = run('daemon', 'uninstall')
         step('repeat uninstall verifies the task is absent', 'not installed' in repeat['stdout'])
+
+        # Scheduler names are case-insensitive. A foreign definition with
+        # different capitalization must still reach the product ownership
+        # guard, rather than being treated as absent and replaced with -Force.
+        foreign_task = report['task'].swapcase()
+        assert foreign_task != report['task']
+        assert not foreign_definition(), 'fixture task already exists'
+        description = 'AgentDocker private collision fixture ' + token
+        inert = base64.b64encode('exit 0'.encode('utf-16le')).decode('ascii')
+        shell = str(Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+        powershell(
+            "$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
+            f"$action=New-ScheduledTaskAction -Execute {quoted(shell)} "
+            f"-Argument {quoted('-NoProfile -NonInteractive -EncodedCommand ' + inert)};"
+            "$principal=New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Limited;"
+            f"Register-ScheduledTask -TaskPath '\\' -TaskName {quoted(foreign_task)} "
+            f"-Action $action -Principal $principal -Description {quoted(description)} | Out-Null")
+        foreign_xml = foreign_definition()
+        assert foreign_xml and description in foreign_xml
+        (output / 'foreign-task-before.xml').write_text(foreign_xml, encoding='utf-8')
+        observed_name = powershell(
+            f"(Get-ScheduledTask -TaskPath '\\' -TaskName {quoted(report['task'])} -ErrorAction Stop).TaskName")
+        step('Scheduler resolves the foreign task through the original capitalization',
+             observed_name.casefold() == report['task'].casefold())
+        for operation in ('install', 'uninstall'):
+            refused = run('daemon', operation, check=False)
+            # Retain process ownership even if a regression allowed install.
+            if operation == 'install' and refused['exit'] == 0:
+                serving()
+            after = foreign_definition()
+            (output / f'foreign-task-after-{operation}.xml').write_text(after, encoding='utf-8')
+            step(f'{operation} refuses and preserves the case-variant foreign task',
+                 refused['exit'] != 0 and after == foreign_xml
+                 and not (home / 'windows-service.json').exists() and absent_for())
         report['result'] = 'passed'
     except Exception as error:
         report['error'] = f'{type(error).__name__}: {error}'
     finally:
-        if installed:
+        if installed or (home / 'windows-service.json').exists():
             try:
                 run('daemon', 'uninstall')
                 installed = False
             except Exception as error:
                 report['cleanup_errors'].append(f'uninstall: {error}')
-        for process in processes:
+        if foreign_task is not None:
+            try:
+                current = foreign_definition()
+                if current:
+                    assert foreign_xml is not None and current == foreign_xml, 'fixture ownership changed'
+                    powershell(f"Unregister-ScheduledTask -TaskPath '\\' -TaskName {quoted(foreign_task)} -Confirm:$false")
+                assert not foreign_definition(), 'fixture task survived cleanup'
+                report['foreign_task_removed'] = True
+            except Exception as error:
+                report['cleanup_errors'].append(f'foreign task: {error}')
+        # Supervisors were recorded after their daemons: retire them first so
+        # a failed uninstall cannot spawn a replacement during fallback cleanup.
+        for process in reversed(processes):
             try:
                 process.wait(timeout=10)
+            except psutil.TimeoutExpired:
+                report['cleanup_errors'].append(f'owned process {process.pid}: still running; forced retirement')
+                try:
+                    # psutil rechecks PID and the recorded birth before kill.
+                    process.kill()
+                    process.wait(timeout=10)
+                except psutil.Error as error:
+                    report['cleanup_errors'].append(f'owned process {process.pid} kill/wait: {error}')
             except psutil.Error as error:
                 report['cleanup_errors'].append(f'owned process {process.pid}: {error}')
         # Keep bounded product diagnostics; no provider profile or auth exists.

@@ -177,7 +177,13 @@ crash, and what that means for a person:
   run 36958504870 on `bf48452d` passed all 62 portable checks and eight service
   checks, including crash recovery without client autostart and repeat
   uninstall. The private task, processes and scratch were removed with no
-  cleanup errors. The original failure remains retained.
+  cleanup errors. The original failure remains retained. Lookup now compares
+  names without regard to case before checking ownership. The native driver
+  additionally creates a harmless, unstarted foreign task under a case-variant
+  name and requires install/uninstall refusal with its XML unchanged. That
+  regression awaits a native run; prior lifecycle passes do not establish it.
+  Failed cleanup retires verified process generations, supervisor first, while
+  retaining the failed result and any cleanup errors.
 - A validation command is ended on a timeout, but only the command itself:
   there is no process group and no Job Object around it yet, so whether its
   descendants survived is not reported.

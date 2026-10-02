@@ -179,10 +179,11 @@ fn task_context(layout: &Layout, receipt: Option<&Receipt>) -> String {
     // A missing -TaskName is a cmdlet error even with SilentlyContinue. If
     // nothing follows the ownership guard, powershell.exe can exit 1 without
     // printing that suppressed error. Enumerate successfully, then select the
-    // exact task; query/permission failures remain terminating errors, never
+    // task using Scheduler's case-insensitive name semantics. Query/permission
+    // failures remain terminating errors, never
     // permission to replace a task we could not inspect.
     format!(
-        "$taskPath='\\';$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$found=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {{$_.TaskPath -ceq $taskPath -and $_.TaskName -ceq {}}}); if($found.Count -gt 1){{throw 'The Windows service task lookup was ambiguous; no task was changed.'}}; $task=$null; if($found.Count -eq 1){{$task=$found[0]}};{};",
+        "$taskPath='\\';$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$found=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {{$_.TaskPath -ieq $taskPath -and $_.TaskName -ieq {}}}); if($found.Count -gt 1){{throw 'The Windows service task lookup was ambiguous; no task was changed.'}}; $task=$null; if($found.Count -eq 1){{$task=$found[0]}};{};",
         quoted(&task_name(&layout.home)),
         ownership_guard(receipt),
     )
