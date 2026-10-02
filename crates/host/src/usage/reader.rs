@@ -69,6 +69,18 @@ struct Generation {
 }
 
 impl Generation {
+    /// Growth invalidates this snapshot, but is not proof that accepted bytes
+    /// changed. The collector must recapture and verify the entire old prefix.
+    fn check(&self, observed: Self) -> Result<(), Error> {
+        if *self == observed {
+            Ok(())
+        } else if self.identity == observed.identity && observed.length > self.length {
+            Err(Error::SnapshotAdvanced)
+        } else {
+            Err(Error::Changed)
+        }
+    }
+
     fn capture(file: &File) -> io::Result<Self> {
         let meta = file.metadata()?;
         #[cfg(unix)]
@@ -129,8 +141,9 @@ impl Cursor {
     pub fn capture(path: &Path, runtime: Runtime) -> Result<Self, Error> {
         let file = crate::files::open_regular(path)?;
         let generation = Generation::capture(&file)?;
-        if generation != Generation::capture(&crate::files::open_regular(path)?)? {
-            return Err(Error::Changed);
+        match generation.check(Generation::capture(&crate::files::open_regular(path)?)?) {
+            Ok(()) | Err(Error::SnapshotAdvanced) => {}
+            Err(error) => return Err(error),
         }
         Ok(Self {
             version: CURSOR_VERSION,
@@ -172,9 +185,8 @@ impl Cursor {
         let mut file = crate::files::open_regular(path)?;
         let bytes = self.validate_file(&mut file, PREFIX_DEADLINE)?;
         // Also check the current path: an old descriptor survives replacement.
-        if self.generation != Generation::capture(&crate::files::open_regular(path)?)? {
-            return Err(Error::Changed);
-        }
+        self.generation
+            .check(Generation::capture(&crate::files::open_regular(path)?)?)?;
         Ok(bytes)
     }
 
@@ -195,9 +207,7 @@ impl Cursor {
         {
             return Err(Error::Cursor);
         }
-        if self.generation != Generation::capture(file)? {
-            return Err(Error::Changed);
-        }
+        self.generation.check(Generation::capture(file)?)?;
         if self.offset - start > MAX_BATCH {
             return Err(Error::ValidationIncomplete);
         }
@@ -232,9 +242,8 @@ impl Cursor {
         if started.elapsed() >= elapsed {
             return Err(Error::ValidationIncomplete);
         }
-        if self.generation != Generation::capture(reader.get_ref().get_ref())? {
-            return Err(Error::Changed);
-        }
+        self.generation
+            .check(Generation::capture(reader.get_ref().get_ref())?)?;
         Ok(covered - start)
     }
 }
@@ -280,6 +289,10 @@ pub enum Error {
     Io(#[from] io::Error),
     #[error("usage file generation changed; retain the previous cursor and record a source gap")]
     Changed,
+    #[error(
+        "usage snapshot advanced; retain pending work and verify the old prefix against a fresh snapshot"
+    )]
+    SnapshotAdvanced,
     #[error("invalid usage scan budget")]
     Budget,
     #[error(
@@ -338,9 +351,7 @@ fn scan_checked(
             {
                 return Err(Error::Cursor);
             }
-            if prior.generation != generation {
-                return Err(Error::Changed);
-            }
+            prior.generation.check(generation.clone())?;
             if !prepared {
                 validation_bytes_read += prior.validate_file(&mut file, PREFIX_DEADLINE)?;
             }
@@ -455,9 +466,7 @@ fn scan_checked(
     let bytes_read = boundary_bytes + allowance - reader.get_ref().limit();
     // Check both the opened object and the path. A renamed/replaced file must
     // not validate the earlier path merely because its old descriptor survives.
-    if generation != Generation::capture(reader.get_ref().get_ref())? {
-        return Err(Error::Changed);
-    }
+    generation.check(Generation::capture(reader.get_ref().get_ref())?)?;
     if prepared {
         let prior = previous.ok_or(Error::Cursor)?;
         let mut check = crate::files::open_regular(path)?;
@@ -467,9 +476,7 @@ fn scan_checked(
             prior.prefix_digest,
             PREFIX_DEADLINE,
         )?;
-        if generation != Generation::capture(&crate::files::open_regular(path)?)? {
-            return Err(Error::Changed);
-        }
+        generation.check(Generation::capture(&crate::files::open_regular(path)?)?)?;
     } else {
         validation_bytes_read += cursor.validate_counted(path)?;
     }
@@ -648,10 +655,13 @@ mod tests {
             .unwrap()
             .write_all(b"\n")
             .unwrap();
-        assert!(matches!(batch.cursor.validate(&path), Err(Error::Changed)));
+        assert!(matches!(
+            batch.cursor.validate(&path),
+            Err(Error::SnapshotAdvanced)
+        ));
         assert!(matches!(
             scan(&path, Runtime::Claude, Some(&batch.cursor), budget()),
-            Err(Error::Changed)
+            Err(Error::SnapshotAdvanced)
         ));
         let again = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
         assert_eq!(again.stop, Stop::Complete);

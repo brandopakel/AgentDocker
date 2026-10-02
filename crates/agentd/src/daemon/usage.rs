@@ -354,6 +354,22 @@ fn finish_failed_job(
     true
 }
 
+fn defer_growing_job(
+    weak: &Weak<Daemon>,
+    collection: &Collection,
+    job: usize,
+    source: &agentdocker_host::usage::discovery::Source,
+) -> bool {
+    // No samples, accepted cursor, pending count or coverage advance here.
+    // A restart re-verifies the old accepted prefix against this new snapshot.
+    // If capture itself fails, leave the old job for the next bounded pass;
+    // that pass handles a persistent disappearance/replacement as a real gap.
+    match reader::Cursor::capture(&source.path, source.runtime) {
+        Ok(captured) => checkpoint(weak, collection, &[], Change::RefreshJob(job, &captured)),
+        Err(_) => true,
+    }
+}
+
 fn collect_generation(weak: &Weak<Daemon>, config: &UsageConfig) {
     collect_generation_bounded(weak, config, usize::MAX);
 }
@@ -503,6 +519,7 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
             return;
         }
     }
+    let mut after = None;
     loop {
         if pages == 0 {
             return;
@@ -510,8 +527,8 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
         let Some(daemon) = weak.upgrade() else {
             return;
         };
-        let job =
-            lock(&daemon.state).store_read("usage pending file", |store| store.usage_next_job());
+        let job = lock(&daemon.state)
+            .store_read("usage pending file", |store| store.usage_job_after(after));
         drop(daemon);
         let Some(job) = job else {
             return;
@@ -520,11 +537,12 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
             id: job_id,
             source,
             captured,
-            ..
+            priority,
         }) = job
         else {
             break;
         };
+        after = Some((priority, job_id));
         let key = serde_json::to_string(&(source.runtime, &source.path))
             .expect("serializable source path");
         let Some(daemon) = weak.upgrade() else {
@@ -558,6 +576,13 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                 let offset = session.offset();
                 (session, offset)
             }
+            Err(reader::Error::SnapshotAdvanced) => {
+                if !defer_growing_job(weak, &collection, job_id, &source) {
+                    return;
+                }
+                pages -= 1;
+                continue;
+            }
             Err(_) => {
                 let gap_key = format!("generation:{generation}:{key}");
                 if !snapshot(
@@ -590,8 +615,19 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
             ..reader::Budget::default()
         };
         loop {
-            let batch = match session.scan(&source.path, budget) {
-                Ok(batch) if session.validate(&source.path, &batch.cursor).is_ok() => batch,
+            let proposal = session.scan(&source.path, budget).and_then(|batch| {
+                session.validate(&source.path, &batch.cursor)?;
+                Ok(batch)
+            });
+            let batch = match proposal {
+                Ok(batch) => batch,
+                Err(reader::Error::SnapshotAdvanced) => {
+                    if !defer_growing_job(weak, &collection, job_id, &source) {
+                        return;
+                    }
+                    pages -= 1;
+                    break;
+                }
                 Err(reader::Error::Oversized { .. }) if budget.bytes < 16 * 1024 * 1024 => {
                     budget.bytes = 16 * 1024 * 1024;
                     continue;
@@ -670,6 +706,11 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
         if !alive_wait(weak, 1) {
             return;
         }
+    }
+    if collection.pending_files.is_some_and(|pending| pending > 0) {
+        // Deferred jobs and their original accepted cursors survive this pass.
+        // A growing source never becomes a gap or "caught up" merely by retrying.
+        return;
     }
     if collection.discovery_complete
         && collection.pending_files == Some(0)
@@ -1151,6 +1192,83 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn growing_usage_job_stays_pending_without_starving_peers_and_survives_reopen() {
+        for rewrite in [false, true] {
+            let (temp, daemon, config, root) = fixture();
+            for name in ["first", "second"] {
+                let content: String = (0..300)
+                    .map(|n| record(&format!("{name}-{n}"), 2))
+                    .collect();
+                std::fs::write(root.join(format!("{name}.jsonl")), content).unwrap();
+            }
+            // Capture both jobs, then commit only the first 128 source records.
+            collect_generation_bounded(&Arc::downgrade(&daemon), &config, 2);
+            let first = query(&daemon).await;
+            assert_eq!(first.rows[0].samples, 128);
+            assert_eq!(first.coverage.collection.pending_files, Some(2));
+            let job = lock(&daemon.state).store.usage_next_job().unwrap().unwrap();
+            if rewrite {
+                let name = job.source.path.file_stem().unwrap().to_str().unwrap();
+                let content: String = (0..300)
+                    .map(|n| {
+                        if n == 0 {
+                            record("rewritten", 2)
+                        } else {
+                            record(&format!("{name}-{n}"), 2)
+                        }
+                    })
+                    .collect();
+                std::fs::write(&job.source.path, content).unwrap();
+            }
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&job.source.path)
+                .unwrap()
+                .write_all(record("appended", 2).as_bytes())
+                .unwrap();
+            collect_generation(&Arc::downgrade(&daemon), &config);
+            let deferred = query(&daemon).await;
+            assert_eq!(
+                deferred.rows[0].samples, 428,
+                "other job must finish this pass"
+            );
+            assert_eq!(deferred.coverage.collection.pending_files, Some(1));
+            assert_eq!(
+                deferred.coverage.collection.state,
+                CollectionState::Scanning
+            );
+            assert_eq!(deferred.coverage.source_gaps, 0);
+            assert_eq!(
+                lock(&daemon.state)
+                    .store
+                    .usage_next_job()
+                    .unwrap()
+                    .unwrap()
+                    .id,
+                job.id
+            );
+            drop(daemon);
+            let daemon =
+                Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+            collect_generation(&Arc::downgrade(&daemon), &config);
+            let done = query(&daemon).await;
+            let samples = if rewrite { 602 } else { 601 };
+            assert_eq!(done.rows[0].samples, samples);
+            assert_eq!(done.rows[0].counters.input_tokens.sum, Some(samples * 2));
+            assert_eq!(done.coverage.source_gaps, u64::from(rewrite));
+            assert_eq!(done.coverage.collection.pending_files, Some(0));
+            assert_eq!(done.coverage.collection.state, CollectionState::CaughtUp);
+            assert!(
+                lock(&daemon.state)
+                    .store
+                    .usage_discovery()
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     #[tokio::test]
