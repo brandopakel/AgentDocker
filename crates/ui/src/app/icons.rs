@@ -84,6 +84,17 @@ pub enum Icon {
     Download,
     /// A hash: a channel.
     Hash,
+    // board, history, files in use, usage
+    /// A node on a line: a commit.
+    Commit,
+    /// A pencil: a note.
+    Note,
+    /// An arrow through a door, inwards: someone joined.
+    Join,
+    /// An arrow through a door, outwards: someone left.
+    Leave,
+    /// Two arrows passing: work handed over.
+    Handoff,
 }
 
 /// An icon inked in one colour.
@@ -366,6 +377,62 @@ impl Glyph {
                     b.line_to(p(13.0, 10.0));
                 });
                 frame.stroke(&hash, stroke);
+            }
+            // board, history, files in use, usage
+            Icon::Commit => {
+                frame.stroke(&Path::circle(p(8.0, 8.0), 2.75), stroke);
+                frame.stroke(&Path::line(p(1.5, 8.0), p(5.25, 8.0)), stroke);
+                frame.stroke(&Path::line(p(10.75, 8.0), p(14.5, 8.0)), stroke);
+            }
+            Icon::Note => {
+                let pencil = Path::new(|b| {
+                    b.move_to(p(10.5, 2.75));
+                    b.line_to(p(13.25, 5.5));
+                    b.line_to(p(5.75, 13.0));
+                    b.line_to(p(2.5, 13.5));
+                    b.line_to(p(3.0, 10.25));
+                    b.close();
+                    b.move_to(p(9.0, 4.25));
+                    b.line_to(p(11.75, 7.0));
+                });
+                frame.stroke(&pencil, stroke);
+            }
+            Icon::Join | Icon::Leave => {
+                let door = polyline(&[p(9.5, 2.5), p(13.5, 2.5), p(13.5, 13.5), p(9.5, 13.5)]);
+                let arrow = if self.icon == Icon::Join {
+                    Path::new(|b| {
+                        b.move_to(p(2.0, 8.0));
+                        b.line_to(p(10.0, 8.0));
+                        b.move_to(p(7.0, 5.0));
+                        b.line_to(p(10.0, 8.0));
+                        b.line_to(p(7.0, 11.0));
+                    })
+                } else {
+                    Path::new(|b| {
+                        b.move_to(p(11.0, 8.0));
+                        b.line_to(p(2.5, 8.0));
+                        b.move_to(p(5.5, 5.0));
+                        b.line_to(p(2.5, 8.0));
+                        b.line_to(p(5.5, 11.0));
+                    })
+                };
+                frame.stroke(&door, stroke);
+                frame.stroke(&arrow, stroke);
+            }
+            Icon::Handoff => {
+                let arrows = Path::new(|b| {
+                    b.move_to(p(2.5, 5.5));
+                    b.line_to(p(13.0, 5.5));
+                    b.move_to(p(10.5, 3.0));
+                    b.line_to(p(13.0, 5.5));
+                    b.line_to(p(10.5, 8.0));
+                    b.move_to(p(13.5, 10.5));
+                    b.line_to(p(3.0, 10.5));
+                    b.move_to(p(5.5, 8.0));
+                    b.line_to(p(3.0, 10.5));
+                    b.line_to(p(5.5, 13.0));
+                });
+                frame.stroke(&arrows, stroke);
             }
         }
     }

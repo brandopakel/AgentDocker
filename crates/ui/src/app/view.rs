@@ -221,11 +221,14 @@ fn pane_header<'a>(
 ) -> Element<'a, Message> {
     column![
         container(
-            row![eyebrow(title_text, c).width(Fill), small(meta, c)]
-                .spacing(10)
-                .align_y(Center),
+            row![
+                eyebrow(title_text, c).width(Fill),
+                small(meta, c).color(c.faint)
+            ]
+            .spacing(12)
+            .align_y(Center),
         )
-        .padding([8, 12]),
+        .padding([10, 16]),
         rule(c)
     ]
     .into()
@@ -3869,11 +3872,6 @@ impl App {
     fn channels_view(&self, c: Colors) -> Element<'_, Message> {
         let selected = self.shell.catalog.selected().map(|e| e.project.id());
         let (messages, _) = by_room(self.inbox.iter().chain(&self.sent_channels));
-        let mut list = column![note(
-            "Messages for you and sends from this window · partial history",
-            c
-        )]
-        .spacing(14);
         // With no project chosen (All projects) every channel is shown;
         // "Reviews" from a conversation lands here from anywhere and must not
         // find "No channels yet" about the one just open. Channels agents
@@ -3906,6 +3904,27 @@ impl App {
             .copied()
             .collect();
         let count = on_view.len();
+        if count == 0 {
+            return empty(
+                "No channels yet",
+                "Agents open channels here when they coordinate on a task.",
+                None,
+                c,
+            );
+        }
+        let mut list = column![
+            row![
+                eyebrow(format!("Channels · {count}"), c).width(Fill),
+                small(
+                    "Messages for you and sends from this window · partial history",
+                    c
+                )
+                .color(c.faint)
+            ]
+            .spacing(12)
+            .align_y(Center)
+        ]
+        .spacing(12);
         // Open, the fold sits where the overlap rooms begin.
         let fold_at = (overlaps > 0 && self.shell.overlaps_open).then_some(named.len());
         let mut shown = named;
@@ -3917,150 +3936,282 @@ impl App {
                 list = list.push(self.overlaps_toggle(overlaps, c));
             }
             let id = channel.id.to_string();
-            let open = channel.is_open();
-            let (title, detail) = channel_heading(channel);
-            let mut body = column![
-                row![
-                    heading(title, 17).width(Fill),
-                    pill(
-                        if open { "Open" } else { "Closed" },
-                        if open { alpha(c.green, 0.16) } else { c.raised },
-                        if open { c.green } else { c.muted },
-                        c
-                    )
-                ]
-                .spacing(10)
-                .align_y(Center),
-                small(self.members_line(&channel.members), c)
-            ]
-            .spacing(6);
-            if let Some(detail) = detail {
-                body = body.push(small(detail, c));
-            }
-            for review in &channel.reviews {
-                body = body.push(
-                    text(format!(
-                        "{} · {} on {}'s work: {}",
-                        match review.verdict {
-                            agentdocker_core::channel::Verdict::Approve => "Approved",
-                            agentdocker_core::channel::Verdict::Changes => "Changes asked for",
-                            agentdocker_core::channel::Verdict::Comment => "Comment",
-                        },
-                        review.by_name,
-                        review.of_name,
-                        review.note
-                    ))
-                    .size(14),
-                );
-            }
-            if let Some(resolution) = &channel.resolution {
-                body = body.push(note(resolution.clone(), c));
-            }
-            match messages.get(&id) {
-                Some(queued) if !queued.is_empty() => {
-                    body =
-                        body.push(self.transcript(self.recent_window(queued, 20).into_iter(), c));
-                }
-                _ => body = body.push(note("No messages to show in this channel yet.", c)),
-            }
-            body = body.push(action(
-                format!("reply-channel-{id}"),
-                "Write to channel",
-                // A closed channel takes no messages: the control would do
-                // nothing, so it is not offered as if it would.
-                (self.connected.is_ok() && open).then_some(Message::ChannelTarget(id.clone())),
-                self.shell.channel_target.as_deref() == Some(id.as_str()),
-            ));
-            if self.shell.channel_target.as_deref() == Some(id.as_str()) {
-                let draft = self
-                    .shell
-                    .channel_drafts
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_default();
-                if let Some(error) = &draft.error {
-                    body = body.push(text(error.clone()).size(13).color(c.amber));
-                }
-                if let Some(notice) = super::send_readiness::notice(
-                    &draft,
-                    super::shell::DeliveryTarget::Channel(id.clone()),
-                    c,
-                ) {
-                    body = body.push(notice);
-                }
-                body = body.push(
-                    row![
-                        composer(
-                            "channel-message",
-                            id.clone(),
-                            "Message",
-                            &draft.text,
-                            Message::ChannelDraft,
-                            draft.sending.is_none(),
-                            (draft.sending.is_none()
-                                && self.connected.is_ok()
-                                && !draft.text.trim().is_empty())
-                            .then_some(Message::SendChannel),
-                        ),
-                        primary(
-                            "send-channel",
-                            if draft.sending.is_some() {
-                                "Sending…"
-                            } else {
-                                "Send message"
-                            },
-                            (draft.sending.is_none()
-                                && self.connected.is_ok()
-                                && !draft.text.trim().is_empty())
-                            .then_some(Message::SendChannel),
-                        )
-                    ]
-                    .spacing(8)
-                    .align_y(Center),
-                );
-            }
-            list = list.push(
-                container(card(body.spacing(10), c)).id(format!("notification-channel-{id}")),
-            );
+            let body = self.channel_body(channel, messages.get(&id), c);
+            let card = container(column![
+                container(self.channel_header(channel, c)).padding([12, 16]),
+                rule(c),
+                container(body).padding([12, 16]).width(Fill),
+            ])
+            .width(Fill)
+            .style(move |_| c.card_style());
+            list = list.push(container(card).id(format!("notification-channel-{id}")));
         }
         // Folded, the overlap rooms are not in the loop: the fold that
         // opens them follows the named channels.
         if overlaps > 0 && !self.shell.overlaps_open {
             list = list.push(self.overlaps_toggle(overlaps, c));
         }
-        if count == 0 {
-            list = list.push(empty(
-                "No channels yet",
-                "Agents open channels here when they coordinate on a task.",
-                None,
-                c,
-            ));
-        }
         list.into()
+    }
+
+    /// A channel's header: what kind of room on a tile, its name with
+    /// whether it is open as a dot and a word, what it is for and who is
+    /// in it on one quiet line, and their faces at the right.
+    fn channel_header(
+        &self,
+        channel: &agentdocker_core::Channel,
+        c: Colors,
+    ) -> Element<'_, Message> {
+        let open = channel.is_open();
+        let (title_text, purpose) = channel_heading(channel);
+        let glyph = if channel.paths().is_empty() {
+            Icon::Hash
+        } else {
+            Icon::File
+        };
+        let mut about = purpose.map_or_else(Vec::new, |p| vec![p]);
+        about.push(self.members_line(&channel.members));
+        row![
+            icon_tile(
+                icon(glyph, if open { c.muted } else { c.faint }, 14.0),
+                28.0,
+                c
+            ),
+            column![
+                row![
+                    text(title_text)
+                        .size(14)
+                        .font(weight(iced::font::Weight::Semibold))
+                        .color(if open { c.text } else { c.muted }),
+                    if open {
+                        status_word("Open", c.green, c)
+                    } else {
+                        status_word("Closed", c.faint, c)
+                    },
+                ]
+                .spacing(10)
+                .align_y(Center),
+                small(about.join(" · "), c).wrapping(iced::widget::text::Wrapping::Word),
+            ]
+            .spacing(3)
+            .width(Fill),
+            self.facepile(&channel.members, c),
+        ]
+        .spacing(12)
+        .align_y(Center)
+        .into()
+    }
+
+    /// The first members' faces, overlapping, each ringed in the card's
+    /// colour, and how many more there are.
+    fn facepile<'a>(
+        &self,
+        members: &[agentdocker_core::AgentId],
+        c: Colors,
+    ) -> Element<'a, Message> {
+        const FACE: f32 = 24.0;
+        const STEP: f32 = 17.0;
+        const SHOWN: usize = 4;
+        let ring = move |fill: iced::Color| container::Style {
+            background: Some(fill.into()),
+            border: iced::Border {
+                color: c.card,
+                width: 2.0,
+                radius: 999.0.into(),
+            },
+            ..Default::default()
+        };
+        let rest = members.len().saturating_sub(SHOWN);
+        let discs = members.len().min(SHOWN) + usize::from(rest > 0);
+        let width = if discs == 0 {
+            0.0
+        } else {
+            FACE + STEP * (discs - 1) as f32
+        };
+        let mut pile = iced::widget::Stack::new().push(Space::new().width(width).height(FACE));
+        for (index, id) in members.iter().take(SHOWN).enumerate() {
+            let name = self.name_of(id.as_str());
+            let (tint, ink) = super::style::identity(id.as_str(), c.dark);
+            let initial: String = name
+                .chars()
+                .find(|ch| ch.is_alphanumeric())
+                .map(|ch| ch.to_uppercase().collect())
+                .unwrap_or_else(|| "·".to_owned());
+            pile = pile.push(
+                container(
+                    container(
+                        text(initial)
+                            .size(11)
+                            .font(weight(iced::font::Weight::Semibold))
+                            .color(ink),
+                    )
+                    .center(FACE)
+                    .style(move |_| ring(tint)),
+                )
+                .padding(iced::Padding {
+                    left: STEP * index as f32,
+                    ..iced::Padding::ZERO
+                }),
+            );
+        }
+        if rest > 0 {
+            pile = pile.push(
+                container(
+                    container(
+                        text(format!("+{rest}"))
+                            .size(10)
+                            .font(weight(iced::font::Weight::Medium))
+                            .color(c.muted),
+                    )
+                    .center(FACE)
+                    .style(move |_| ring(c.raised)),
+                )
+                .padding(iced::Padding {
+                    left: STEP * SHOWN as f32,
+                    ..iced::Padding::ZERO
+                }),
+            );
+        }
+        pile.into()
+    }
+
+    /// Under a channel's header: its reviews and how it closed, what is
+    /// queued in it, and the way to write to it.
+    fn channel_body<'a>(
+        &'a self,
+        channel: &'a agentdocker_core::Channel,
+        queued: Option<&Vec<&'a agentdocker_core::Envelope>>,
+        c: Colors,
+    ) -> Element<'a, Message> {
+        let id = channel.id.to_string();
+        let open = channel.is_open();
+        let mut body = column![].spacing(12).width(Fill);
+        if !channel.reviews.is_empty() {
+            let mut reviews = column![].spacing(6);
+            for review in &channel.reviews {
+                let (word, tone) = match review.verdict {
+                    agentdocker_core::channel::Verdict::Approve => ("Approved", c.green),
+                    agentdocker_core::channel::Verdict::Changes => ("Changes asked for", c.amber),
+                    agentdocker_core::channel::Verdict::Comment => ("Comment", c.muted),
+                };
+                reviews = reviews.push(
+                    row![
+                        status_word(word, tone, c),
+                        text(format!(
+                            "{} on {}'s work: {}",
+                            review.by_name, review.of_name, review.note
+                        ))
+                        .size(13)
+                        .wrapping(iced::widget::text::Wrapping::Word)
+                        .width(Fill),
+                    ]
+                    .spacing(10)
+                    .align_y(Center),
+                );
+            }
+            body = body.push(reviews);
+        }
+        if let Some(resolution) = &channel.resolution {
+            body = body.push(note(resolution.clone(), c));
+        }
+        match queued {
+            Some(queued) if !queued.is_empty() => {
+                body = body.push(self.transcript(self.recent_window(queued, 20).into_iter(), c));
+            }
+            _ => body = body.push(note("No messages to show in this channel yet.", c)),
+        }
+        let writing = self.shell.channel_target.as_deref() == Some(id.as_str());
+        body = body.push(action(
+            format!("reply-channel-{id}"),
+            "Write to channel",
+            // A closed channel takes no messages: the control would do
+            // nothing, so it is not offered as if it would.
+            (self.connected.is_ok() && open).then_some(Message::ChannelTarget(id.clone())),
+            writing,
+        ));
+        if writing {
+            let draft = self
+                .shell
+                .channel_drafts
+                .get(&id)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(error) = &draft.error {
+                body = body.push(text(error.clone()).size(13).color(c.amber));
+            }
+            if let Some(notice) = super::send_readiness::notice(
+                &draft,
+                super::shell::DeliveryTarget::Channel(id.clone()),
+                c,
+            ) {
+                body = body.push(notice);
+            }
+            let ready =
+                draft.sending.is_none() && self.connected.is_ok() && !draft.text.trim().is_empty();
+            body = body.push(
+                row![
+                    composer(
+                        "channel-message",
+                        id.clone(),
+                        "Message",
+                        &draft.text,
+                        Message::ChannelDraft,
+                        draft.sending.is_none(),
+                        ready.then_some(Message::SendChannel),
+                    ),
+                    primary(
+                        "send-channel",
+                        if draft.sending.is_some() {
+                            "Sending…"
+                        } else {
+                            "Send message"
+                        },
+                        ready.then_some(Message::SendChannel),
+                    )
+                ]
+                .spacing(8)
+                .align_y(Center),
+            );
+        }
+        body.into()
     }
 
     /// The fold for AgentDocker's overlap rooms on the Channels screen.
     fn overlaps_toggle(&self, count: usize, c: Colors) -> Element<'_, Message> {
+        let open = self.shell.overlaps_open;
         row![
-            action(
+            custom(
                 "channels-overlaps",
-                format!(
-                    "{} Overlaps ({count})",
-                    if self.shell.overlaps_open {
-                        "▾"
-                    } else {
-                        "▸"
-                    }
-                ),
+                format!("{} Overlaps ({count})", if open { "▾" } else { "▸" }),
+                row![
+                    icon(
+                        if open {
+                            Icon::ChevronDown
+                        } else {
+                            Icon::ChevronRight
+                        },
+                        c.muted,
+                        13.0
+                    ),
+                    text(format!("Overlaps ({count})"))
+                        .size(13)
+                        .line_height(iced::Pixels(crate::controls::LABEL_LINE))
+                        .font(weight(iced::font::Weight::Medium)),
+                ]
+                .spacing(6)
+                .align_y(Center),
                 Some(Message::ToggleOverlaps),
                 false,
+                Kind::Ghost,
+                [7, 8],
             ),
             small(
                 "Rooms AgentDocker opens when two checkouts change the same files",
                 c
-            ),
+            )
+            .color(c.faint),
         ]
-        .spacing(10)
+        .spacing(8)
         .align_y(Center)
         .into()
     }
@@ -4086,123 +4237,225 @@ impl App {
         )
     }
 
+    /// History: one row per journal entry, newest first, in one card —
+    /// what kind of thing happened on a tile, the line itself, what kind
+    /// and where under it, and how long ago at the right.
     fn journal_view(&self, c: Colors) -> Element<'_, Message> {
-        let list = column![].spacing(12);
         if self.journal.is_empty() {
-            return list
-                .push(empty(
-                    "No activity recorded yet",
-                    "Commits, arrivals, finished work and notes from this project appear here.",
-                    None,
-                    c,
-                ))
-                .into();
-        }
-        let mut rows = column![].spacing(0);
-        let total = self.journal.len();
-        for (index, entry) in self.journal.iter().rev().enumerate() {
-            rows = rows.push(
-                container(
-                    row![
-                        column![
-                            Space::new().height(5),
-                            dot(if index == 0 { c.accent } else { c.faint }, 7.0, c)
-                        ],
-                        column![
-                            text(self.journal_line(entry)).size(14),
-                            small(ago(Utc::now(), entry.at), c)
-                        ]
-                        .spacing(3)
-                        .width(Fill)
-                    ]
-                    .spacing(12),
-                )
-                .padding([10, 12]),
+            return empty(
+                "No activity recorded yet",
+                "Commits, arrivals, finished work and notes from this project appear here.",
+                None,
+                c,
             );
-            if index + 1 < total {
-                rows = rows.push(container(rule(c)).padding([0, 12]));
-            }
         }
-        list.push(panel(
-            column![
-                pane_header(
-                    "Activity",
-                    format!(
-                        "{} of the latest {JOURNAL_WINDOW} · earlier entries stay in the journal",
-                        self.journal.len()
-                    ),
-                    c
+        let mut rows = column![].width(Fill);
+        for (index, entry) in self.journal.iter().rev().enumerate() {
+            if index > 0 {
+                rows = rows.push(rule(c));
+            }
+            rows = rows.push(self.history_row(entry, c));
+        }
+        container(column![
+            pane_header(
+                "Activity",
+                format!(
+                    "{} of the latest {JOURNAL_WINDOW} · earlier entries stay in the journal",
+                    self.journal.len()
                 ),
-                rows
-            ],
-            c,
-        ))
+                c
+            ),
+            rows
+        ])
+        .width(Fill)
+        .style(move |_| c.card_style())
         .into()
     }
 
+    /// One journal entry as a row. The kind is said under the line, with
+    /// the branch, the commit and the worktree it happened in where the
+    /// entry has them; the branch leaves the line so it is said once.
+    fn history_row(
+        &self,
+        entry: &agentdocker_core::JournalEntry,
+        c: Colors,
+    ) -> Element<'_, Message> {
+        use agentdocker_core::JournalKind;
+        let (glyph, kind) = match entry.kind {
+            JournalKind::Commit => (Icon::Commit, "Commit"),
+            JournalKind::Release => (Icon::Check, "Finished work"),
+            JournalKind::Note => (Icon::Note, "Note"),
+            JournalKind::Join => (Icon::Join, "Joined"),
+            JournalKind::Leave => (Icon::Leave, "Left"),
+            JournalKind::Handoff => (Icon::Handoff, "Hand-off"),
+            JournalKind::Review => (Icon::Hash, "Channel"),
+        };
+        let mut line = self.journal_line(entry);
+        let mut detail = row![small(kind, c)].spacing(0).align_y(Center);
+        let mut part = |value: String, code: bool| {
+            let shown = if code {
+                text(value).size(11).font(Font::MONOSPACE).color(c.muted)
+            } else {
+                small(value, c)
+            };
+            detail = std::mem::replace(&mut detail, row![])
+                .push(small(" · ", c).color(c.faint))
+                .push(shown);
+        };
+        if let Some(branch) = &entry.branch {
+            line = line.replacen(&format!(" [{branch}]"), "", 1);
+            // An arrival says its branch in its own words already.
+            if !line.contains(branch.as_str()) {
+                part(branch.clone(), true);
+            }
+        }
+        if entry.kind == JournalKind::Commit
+            && let Some(head) = &entry.head_after
+        {
+            part(head.chars().take(7).collect(), true);
+        }
+        if let Some(worktree) = &entry.worktree {
+            part(
+                format!(
+                    "worktree {}",
+                    worktree.file_name().map_or_else(
+                        || shorten_home(worktree),
+                        |n| n.to_string_lossy().into_owned()
+                    )
+                ),
+                false,
+            );
+        }
+        container(
+            row![
+                icon_tile(icon(glyph, c.muted, 14.0), 28.0, c),
+                column![
+                    text(line)
+                        .size(13)
+                        .font(weight(iced::font::Weight::Medium))
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    detail.wrap(),
+                ]
+                .spacing(3)
+                .width(Fill),
+                text(ago(Utc::now(), entry.at)).size(11).color(c.faint),
+            ]
+            .spacing(12)
+            .align_y(Center),
+        )
+        .padding([10, 16])
+        .width(Fill)
+        .into()
+    }
+
+    /// Files in use: every lease in the project as a row in one card —
+    /// what is held, in monospace, over who holds it and why; a short
+    /// meter of the time left that turns amber under one fifth; and the
+    /// time itself.
     fn coordination(&self, c: Colors) -> Element<'_, Message> {
-        let mut list = column![
-            heading("Files in use", 18),
-            note(
-                "What each agent has said it is working on. Others wait, or ask, before touching the same thing.",
-                c
-            )
-        ]
-        .spacing(12);
+        let intro = note(
+            "What each agent has said it is working on. Others wait, or ask, before touching the same thing.",
+            c,
+        );
+        let now = Utc::now();
+        let mut rows = column![].width(Fill);
         let mut count = 0;
         for lease in &self.leases {
             let holder = self.agents.iter().find(|a| a.id == lease.holder);
             if !holder.is_some_and(|a| self.has_project(a.project.as_ref())) {
                 continue;
             }
+            if count > 0 {
+                rows = rows.push(rule(c));
+            }
             count += 1;
-            let now = Utc::now();
             let left_secs = (lease.expires_at - now).num_seconds();
             let left = remaining_fraction(lease.acquired_at, lease.expires_at, now);
-            let mut body = column![
-                row![
-                    heading(resource_label(&lease.resource.to_string()), 15).width(Fill),
-                    pill(
-                        match lease.mode {
-                            agentdocker_core::LeaseMode::Exclusive => "Only this agent",
-                            agentdocker_core::LeaseMode::Shared => "Shared",
-                        },
-                        c.accent_soft,
-                        c.accent_ink,
-                        c
-                    )
+            let low = left < 0.2;
+            let mut about = vec![
+                self.name_of(lease.holder.as_str()),
+                match lease.mode {
+                    agentdocker_core::LeaseMode::Exclusive => "only this agent",
+                    agentdocker_core::LeaseMode::Shared => "shared",
+                }
+                .to_owned(),
+            ];
+            if let Some(why) = &lease.note {
+                about.push(first_line(why, 160));
+            }
+            let mut line = row![
+                column![
+                    text(resource_label(&lease.resource.to_string()))
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .color(c.text)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    small(about.join(" · "), c).wrapping(iced::widget::text::Wrapping::Word),
                 ]
-                .spacing(10)
-                .align_y(Center),
-                row![
-                    small(self.name_of(lease.holder.as_str()), c).width(Fill),
-                    small(
-                        if left_secs > 0 {
-                            format!("expires in {}", super::span(left_secs))
+                .spacing(4)
+                .width(Fill)
+            ]
+            .spacing(12)
+            .align_y(Center);
+            if low {
+                line = line.push(status_word(
+                    if left_secs > 0 { "Expiring" } else { "Expired" },
+                    c.amber,
+                    c,
+                ));
+            }
+            line = line
+                .push(
+                    container(meter(
+                        left,
+                        if low {
+                            c.amber
+                        } else {
+                            super::style::mix(c.faint, c.text, 0.2)
+                        },
+                        c,
+                    ))
+                    .width(64),
+                )
+                .push(
+                    container(
+                        text(if left_secs > 0 {
+                            format!("{} left", super::span(left_secs))
                         } else {
                             "expired".to_owned()
-                        },
-                        c
+                        })
+                        .size(12)
+                        .color(if low { c.amber } else { c.faint }),
                     )
-                ]
-                .spacing(10),
-                meter(left, if left < 0.2 { c.amber } else { c.accent }, c),
-            ]
-            .spacing(8);
-            if let Some(why) = &lease.note {
-                body = body.push(note(why.clone(), c));
-            }
-            list = list.push(card(body, c));
+                    .width(56)
+                    .align_x(iced::alignment::Horizontal::Right),
+                );
+            rows = rows.push(container(line).padding([10, 16]));
         }
         if count == 0 {
-            list = list.push(empty(
-                "Nothing in use",
-                "When an agent claims a file or resource in this project it appears here.",
-                None,
-                c,
-            ));
+            return column![
+                intro,
+                empty(
+                    "Nothing in use",
+                    "When an agent claims a file or resource in this project it appears here.",
+                    None,
+                    c,
+                )
+            ]
+            .spacing(12)
+            .into();
         }
-        list.into()
+        column![
+            intro,
+            container(column![
+                pane_header("Files in use", format!("{count} held"), c),
+                rows
+            ])
+            .width(Fill)
+            .style(move |_| c.card_style())
+        ]
+        .spacing(12)
+        .into()
     }
 
     fn terminal_view(&self, c: Colors) -> Element<'_, Message> {
@@ -5349,9 +5602,10 @@ impl App {
     }
 }
 
-/// A channel's heading and, for an overlap room, the paths it is about in
-/// one bounded line: "Contested paths (338)" over "view.rs, shell.rs and
-/// 336 more", never the list itself as a title.
+/// A channel's heading and what it is about. A named room is its
+/// `#name` over its purpose; an overlap room is "Contested paths (338)"
+/// over "view.rs, shell.rs and 336 more" in one bounded line, never the
+/// list itself as a title.
 fn channel_heading(channel: &agentdocker_core::Channel) -> (String, Option<String>) {
     match &channel.subject {
         agentdocker_core::ChannelSubject::Contested { paths } if !paths.is_empty() => {
@@ -5369,7 +5623,10 @@ fn channel_heading(channel: &agentdocker_core::Channel) -> (String, Option<Strin
             };
             (format!("Contested paths ({})", paths.len()), Some(detail))
         }
-        _ => (channel.title(), None),
+        _ => match &channel.name {
+            Some(name) if !name.is_empty() => (format!("#{name}"), Some(channel.title())),
+            _ => (channel.title(), None),
+        },
     }
 }
 
