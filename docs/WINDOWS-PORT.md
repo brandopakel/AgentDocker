@@ -452,7 +452,15 @@ seconds with no receiver, hook or model request observed and clean cleanup.
 The workflow retains that strict failure and separately runs the explicit
 `established` scenario, which begins one fixture prompt before testing delivery.
 A narrower pass cannot change the failed startup result or make that workflow
-pass. This path still needs a passing native Codex run. Separate Mac trials on the same receiver
+pass. Its first established-session run reached SessionStart and one model
+response, then exposed a missing Windows host primitive: querying another
+process's loaded executable still returned the unsupported-platform error.
+Windows now reads that image with `QueryFullProcessImageNameW` through an owned
+process handle, checks liveness before and after, preserves UTF-16 paths and
+refuses failed/truncated queries. Existing provider birth and ancestry checks
+remain required. A native regression covers a separate executable in a path
+with spaces and Unicode, plus invalid and exited processes. The correction
+still needs passing native receiver acceptance. Separate Mac trials on the same receiver
 source passed delivery after an initial prompt but failed fresh startup and
 reopen without a prompt; both complete trial failures remain recorded. It does not establish real-account, physical keyboard or service
 acceptance; the held HTTP response is not a tool or permission wait.

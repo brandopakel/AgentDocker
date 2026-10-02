@@ -59,7 +59,11 @@ pub fn executable_path_of(pid: u32) -> std::io::Result<PathBuf> {
     {
         std::fs::read_link(format!("/proc/{pid}/exe"))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        imp::executable_path_of(pid)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         if pid == std::process::id() {
             std::env::current_exe()
