@@ -626,3 +626,8 @@ through the existing atomic snapshot API, permits verified concurrent readback,
 and gives the fixture Windows read/write/delete sharing. A held-reader regression
 checks old/new complete records. Corrected native acceptance remains required;
 no timeout or private-file ownership check was relaxed.
+The first corrected native run (`70120fdd`) stopped earlier in an unchanged
+accounting fixture: a valid cooperative `Budget` return was mistaken for a
+required single-pass `Complete`. The fixture now resumes its two records within
+three bounded passes and verifies progress, identical counters and prefix proof.
+Product scan deadlines are unchanged; native delivery acceptance is still open.
