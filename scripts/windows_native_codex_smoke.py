@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -67,6 +68,37 @@ def current_user_objects():
             raise c.WinError(c.get_last_error())
     finally:
         kernel.CloseHandle(token)
+
+
+def fixture_controller(psutil, binding, executable):
+    """Pin the daemon-verified launch, including the hook-spawned first child.
+
+    Only later crash replacements are spawned by agentd; Windows cannot supply
+    a live ancestry chain once the initial hook exits. Never select by name.
+    """
+    process = psutil.Process(binding['controller']['pid'])
+    expected_birth = datetime.datetime.fromisoformat(binding['controller']['started_at']).timestamp()
+    # psutil and datetime expose microsecond/float timestamps, whereas the
+    # product's authenticated binding retains the native 100-nanosecond value.
+    assert abs(process.create_time() - expected_birth) < 0.000002
+    assert os.path.samefile(process.exe(), executable)
+    assert process.cmdline()[1:] == binding['launch']['args']
+    return process
+
+
+def remove_fixture(root):
+    def clear_readonly(function, path, error):
+        candidate = Path(path)
+        metadata = candidate.lstat()
+        # Git creates read-only pack files. Only clear that attribute on a
+        # regular file inside this newly created fixture; ACL failures remain.
+        if (not isinstance(error, PermissionError) or not stat.S_ISREG(metadata.st_mode)
+                or not metadata.st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+                or candidate.is_symlink() or not candidate.resolve().is_relative_to(root)):
+            raise error
+        candidate.chmod(metadata.st_mode | stat.S_IWRITE)
+        function(path)
+    shutil.rmtree(root, onexc=clear_readonly)
 
 
 def response_events(number):
@@ -283,8 +315,7 @@ def main():
         aid = agent["id"]
         report["agent"] = aid
         report["binding"] = agent["input_binding"]
-        controller = psutil.Process(agent["input_binding"]["controller"]["pid"])
-        assert daemon.pid in [p.pid for p in controller.parents()], "receiver is not owned by fixture daemon"
+        controller = fixture_controller(psutil, agent["input_binding"], cli)
         owned.append(controller)
         peer = rpc({"op": "register", "spec": {"name": "native-fixture-peer"}, "pid": None})["agent"]["id"]
 
@@ -343,7 +374,7 @@ def main():
             return agent if pid is not None and pid != controller.pid else None
 
         rebound = wait(replacement, 30)
-        new_controller = psutil.Process(rebound["input_binding"]["controller"]["pid"])
+        new_controller = fixture_controller(psutil, rebound["input_binding"], cli)
         assert daemon.pid in [p.pid for p in new_controller.parents()]
         owned.append(new_controller)
         wait(lambda: rpc({"op": "inspect", "agent": aid})["agent"]["input_delivery"].get("paused") is False)
@@ -412,7 +443,7 @@ def main():
             shutil.copy2(path, out / path.name)
         if not cleanup:
             try:
-                shutil.rmtree(root)
+                remove_fixture(root)
             except Exception as error:
                 cleanup.append(str(error))
                 report["result"] = "failed"
