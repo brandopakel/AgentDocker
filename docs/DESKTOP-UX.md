@@ -35,12 +35,14 @@ With no saved selection, the app opens on **All projects**, with sessions groupe
 under their project names. A saved project or Other sessions view is restored.
 **Projects** in the sidebar returns to All projects. Choosing a project opens
 its shared **Chat**, with the agents working there beside it. **Agents** opens the
-session list and **Board** the project's cards. **More** opens a row of History,
-Channels, Files in use, AgentDocker commands, Usage and the project's Pin and
-Forget; it is underlined only while one of those screens is open. **Pause…** and
-**Launch agent…** stay in the header on every project screen; launching from
-Board or History goes to Agents with the form open, and on Chat the form takes
-the place of the conversation until it is closed. A session's Details shows its
+session list and **Board** the project's cards. **More** opens a menu of History,
+Channels, Files in use, Usage, AgentDocker commands and the project's Pin and
+Forget; the tab takes the name of the screen on view and is underlined only
+while one of those screens is open. **Pause…**, **Open terminal** and
+**Launch agent…** stay in the header on every project screen; the chevron
+beside Launch agent lists the installed tools and opens the form with one
+chosen. The form is a dialog over the window; launching from Board or History
+goes to Agents with it open. A session's Details shows its
 short ID with **Copy session ID**. The Commands screen offers **Previous** and
 **Next** only once a command has run, and shows no output box before then.
 Opening an agent takes you to its project and selects that session.
@@ -105,7 +107,8 @@ in the same repository appear there automatically. Linked worktrees share a
 project and retain their session checkout details.
 
 Quiet projects remain available. An unavailable folder stays selected and offers
-**Check folder again**. Each project row has its own **⋯** menu: **Rename…**
+**Check folder again**. Each project row has its own **⋯** menu, shown when the
+pointer is on the row or the row is selected: **Rename…**
 gives the entry a name of your own in the sidebar and All projects headings (an empty name goes back to the
 folder's), **Pin**/**Unpin**, and **Remove from list**, which keeps the folder
 off the list even when its sessions are discovered again, until you add it
@@ -153,9 +156,10 @@ Search applies to the
 selected project, both filters and the Earlier group. Switching projects
 returns to Current. Nothing is deleted when a row moves to Earlier.
 
-Session rows show the name, branch and observed activity, with the runtime as a
-pill only when the name is one somebody chose (a generated name already reads
-as the tool). Sessions needing
+Session rows show the session's mark, the name over its tool (only when the
+name is one somebody chose; a generated name already reads as the tool) and
+branch, the observed activity as a dot and a word, and how long it has run or
+since it ended. Sessions needing
 input appear first within each project. An ended Claude Code session that can
 come back carries **Reconnect here** on its row itself (the same action as in
 Details, which still says why a session cannot be reconnected yet); while its
@@ -205,8 +209,8 @@ to hold: they read the reason as a `pause` message, the daemon refuses their
 new leases until **Resume**, and the header shows **Paused · reason** while
 it holds (what an agent already holds, it keeps; your own actions are not
 held; only you can pause or resume, an agent asks with a message).
-**Launch agent…** opens the form (pressing it again leaves it open; the form's
-own **Close** closes it) to choose an installed CLI and start it at the project root shown
+**Launch agent…** opens the form (pressing it again leaves it open; **Cancel**
+or a press outside the dialog closes it) to choose an installed CLI and start it at the project root shown
 in the header. Claude and Codex launches default to **Idle messages: On**;
 turning it off visibly warns that messages may wait. Claude still requires its
 channel consent. Other tools disclose that automatic idle delivery is unavailable.
@@ -224,8 +228,8 @@ when its PID and process birth time both match. Separate registrations are never
 merged by display name.
 Installation or configuration alone does not prove that an agent is working.
 
-**Stop session…** changes to **Confirm stop** for five seconds. Confirm sends the
-stop request. A managed live PTY offers **Open terminal**; **Detach** closes the
+**Stop session…** turns solid red as **Confirm stop** for five seconds, with
+**Keep running** (a square ×) beside it. Confirm sends the stop request. A managed live PTY offers **Open terminal**; **Detach** closes the
 view while the process continues. Finished sessions remain available under Earlier.
 
 **Message** opens a small composer for the selected agent. **Send message** uses
