@@ -729,15 +729,6 @@ try:
                 ]
             wait(lambda: len(report["requests"]) == 1, 30)
             wait(lambda: b"FIXTURE_OK_1" in output, 10)
-            files = [
-                p
-                for p in profile.glob("sessions/**/*.jsonl")
-                if json.loads(p.read_text().splitlines()[0])["payload"].get("source") == "cli"
-            ]
-            assert len(files) == 1, files
-            meta = json.loads(files[0].read_text().splitlines()[0])
-            tid = meta["payload"]["id"]
-            report["thread"] = tid
             registered = wait(
                 lambda: next(
                     (
@@ -749,6 +740,22 @@ try:
                 ),
                 20,
             )
+            # Match the verified binding, not a provider UI label. Codex
+            # 0.160's standalone TUI records source="vscode"; the bound process,
+            # session and private profile are the identities this trial owns.
+            generation = registered["input_binding"]["provider"]
+            assert generation["process"]["pid"] == provider.pid
+            assert Path(generation["profile"]).resolve() == profile.resolve()
+            tid = generation["session"]
+            files = []
+            for path in profile.glob("sessions/**/*.jsonl"):
+                with path.open() as stream:
+                    meta = json.loads(stream.readline())
+                if meta.get("type") == "session_meta" and meta["payload"].get("id") == tid:
+                    assert Path(meta["payload"]["cwd"]).resolve() == repo.resolve()
+                    files.append(path)
+            assert len(files) == 1, files
+            report["thread"] = tid
             aid = registered["id"]
             birth = registered["process_started_at"]
             report["agent"] = aid
@@ -1126,6 +1133,15 @@ try:
                     35,
                 )
                 if args.scenario == "question":
+                    asker = rpc({"op": "inspect", "agent": question["from"]})["agent"]
+                    report["question_identity"] = {
+                        "expected_agent": aid, "observed_agent": question["from"],
+                        "expected_provider_pid": provider.pid,
+                        "observed_pid": asker.get("pid"),
+                        "observed_birth": asker.get("process_started_at"),
+                        "has_native_binding": bool(asker.get("input_binding")),
+                    }
+                    assert question["from"] == aid, "MCP question used a different agent identity"
                     wait(lambda: len(report["requests"]) == 9, 20)
                     handover("pending-question")
                     retained = next(q for q in rpc({"op": "questions", "agent": "user"})["questions"]
@@ -1795,6 +1811,46 @@ try:
                     cleanup_errors.append(f"{name}: {type(error).__name__}: {error}")
 
             cleanup_step("provider", lambda: stop_child(provider))
+
+            def managed_provider_processes():
+                # New providers detach an app-server and its PID updater from
+                # the TUI's process group. Match only executables inside this
+                # trial's fresh private profile; never a user's daemon.
+                prefix = str(profile / "packages/app-server-daemon/releases") + "/"
+                rows = subprocess.check_output(
+                    ["ps", "-axo", "pid=,lstart=,command="], text=True, timeout=5)
+                found = []
+                for row in rows.splitlines():
+                    fields = row.split(None, 6)
+                    if len(fields) == 7 and fields[6].startswith(prefix):
+                        assert " app-server " in fields[6], "unexpected private provider process"
+                        found.append((int(fields[0]), " ".join(fields[1:6]), fields[6]))
+                return found
+
+            def end_managed_provider():
+                owned = managed_provider_processes()
+                report["managed_provider_processes"] = owned
+                if not owned:
+                    return
+                stopped = subprocess.run(
+                    [codex, "app-server", "daemon", "stop"], env=env, cwd=repo,
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+                assert stopped.returncode == 0, stopped.stderr
+                # `daemon stop` retires the server but leaves its detached PID
+                # updater alive in 0.160. Retire only the exact private updater
+                # we observed, after rechecking its PID, birth and command.
+                updaters = []
+                for identity in managed_provider_processes():
+                    if identity[2].endswith(" app-server daemon pid-update-loop"):
+                        assert identity in owned, "private updater identity changed"
+                        assert identity in managed_provider_processes()
+                        os.kill(identity[0], signal.SIGTERM)
+                        updaters.append(identity[0])
+                report["managed_provider_updaters_stopped"] = updaters
+                wait(lambda: not managed_provider_processes(), 10)
+                report["managed_provider_survivors"] = []
+
+            cleanup_step("managed provider", end_managed_provider)
 
             def end_controller():
                 try:
