@@ -70,13 +70,6 @@ fn mono<'a>(value: impl Into<String>, c: Colors) -> iced::widget::Text<'a> {
         .font(Font::MONOSPACE)
         .color(c.muted)
 }
-fn card<'a>(content: impl Into<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
-    container(content)
-        .padding(16)
-        .width(Fill)
-        .style(move |_| c.card_style())
-        .into()
-}
 /// A card that holds rows rather than prose: tighter padding.
 pub(super) fn panel<'a>(
     content: impl Into<Element<'a, Message>>,
@@ -237,14 +230,6 @@ pub(super) fn rule<'a>(c: Colors) -> Element<'a, Message> {
     container(Space::new().width(Fill).height(1))
         .style(move |_| c.rule())
         .into()
-}
-fn kv<'a>(label: &'a str, value: impl Into<String>, c: Colors) -> Element<'a, Message> {
-    row![
-        small(label, c).width(110),
-        text(value.into()).size(13).width(Fill)
-    ]
-    .spacing(10)
-    .into()
 }
 /// How much of a window from `start` to `end` is still ahead of `now`, as
 /// a fraction from 0 (over) to 1 (not begun). A window of no length is over.
@@ -2719,78 +2704,75 @@ impl App {
             ));
         }
         body = body.push(actions.wrap());
-        if agent.status.is_live() && agent.spec.runtime != "human" {
-            if self.shell.session_message {
-                let draft_key = self.session_draft_key(&id);
-                let entry = self.shell.session_drafts.get(&draft_key);
-                let draft = entry.map(|entry| &entry.draft);
-                let sending = draft.is_some_and(|draft| draft.sending.is_some());
-                let value = draft.map_or("", |draft| draft.text.as_str());
-                let target_for_notice = draft_key.clone();
-                let target = draft_key.clone();
-                let send = (!sending && !value.trim().is_empty() && self.connected.is_ok())
-                    .then_some(Message::SendSession(draft_key));
-                body = body
-                    .push(composer(
-                        "session-message-text",
-                        target.clone(),
-                        "Message this agent…",
-                        value,
-                        move |text| Message::SessionDraft(target.clone(), text),
-                        true,
-                        send.clone(),
-                    ))
-                    .push(if question.is_some() {
-                        action(
-                            "send-session-message",
-                            if sending {
-                                "Queueing…"
-                            } else {
-                                "Send message"
-                            },
-                            send,
-                            false,
-                        )
-                    } else {
-                        primary(
-                            "send-session-message",
-                            if sending {
-                                "Queueing…"
-                            } else {
-                                "Send message"
-                            },
-                            send,
-                        )
-                    });
-                if let Some(notice) = draft.and_then(|draft| {
-                    super::send_readiness::notice(
-                        draft,
-                        super::shell::DeliveryTarget::Session(target_for_notice.clone()),
-                        c,
-                    )
-                }) {
-                    body = body.push(notice);
-                }
-                if let Some(error) = draft.and_then(|draft| draft.error.as_deref()) {
-                    body = body.push(text(error).size(13).color(c.amber));
-                } else if entry.is_some_and(|entry| entry.queued.is_some()) {
-                    let received =
-                        entry
-                            .and_then(|entry| entry.queued.as_ref())
-                            .is_some_and(|id| {
-                                delivery
-                                    .and_then(|d| d.received.as_ref())
-                                    .is_some_and(|input| input.messages.contains(id))
-                            });
-                    body = body.push(small(
-                        if received {
-                            "Received by agent"
+        if composing {
+            let draft_key = self.session_draft_key(&id);
+            let entry = self.shell.session_drafts.get(&draft_key);
+            let draft = entry.map(|entry| &entry.draft);
+            let sending = draft.is_some_and(|draft| draft.sending.is_some());
+            let value = draft.map_or("", |draft| draft.text.as_str());
+            let target_for_notice = draft_key.clone();
+            let target = draft_key.clone();
+            let send = (!sending && !value.trim().is_empty() && self.connected.is_ok())
+                .then_some(Message::SendSession(draft_key));
+            body = body
+                .push(composer(
+                    "session-message-text",
+                    target.clone(),
+                    "Message this agent…",
+                    value,
+                    move |text| Message::SessionDraft(target.clone(), text),
+                    true,
+                    send.clone(),
+                ))
+                .push(if question.is_some() {
+                    action(
+                        "send-session-message",
+                        if sending {
+                            "Queueing…"
                         } else {
-                            "Message saved to queue"
+                            "Send message"
                         },
-                        c,
-                    ));
-                }
+                        send,
+                        false,
+                    )
+                } else {
+                    primary(
+                        "send-session-message",
+                        if sending {
+                            "Queueing…"
+                        } else {
+                            "Send message"
+                        },
+                        send,
+                    )
+                });
+            if let Some(notice) = draft.and_then(|draft| {
+                super::send_readiness::notice(
+                    draft,
+                    super::shell::DeliveryTarget::Session(target_for_notice.clone()),
+                    c,
+                )
+            }) {
+                body = body.push(notice);
+            }
+            if let Some(error) = draft.and_then(|draft| draft.error.as_deref()) {
+                body = body.push(text(error).size(13).color(c.amber));
+            } else if entry.is_some_and(|entry| entry.queued.is_some()) {
+                let received = entry
+                    .and_then(|entry| entry.queued.as_ref())
+                    .is_some_and(|id| {
+                        delivery
+                            .and_then(|d| d.received.as_ref())
+                            .is_some_and(|input| input.messages.contains(id))
+                    });
+                body = body.push(small(
+                    if received {
+                        "Received by agent"
+                    } else {
+                        "Message saved to queue"
+                    },
+                    c,
+                ));
             }
         }
         // A name of one's choosing, for a live session: the daemon keeps it

@@ -606,27 +606,6 @@ pub fn segment<'a>(
         [5, 12],
     )
 }
-/// A full-width quiet row: sidebar entries and list rows.
-pub fn block_button<'a>(
-    id: impl Into<String>,
-    label_text: impl Into<String>,
-    message: Option<Message>,
-    selected: bool,
-) -> Element<'a, Message> {
-    let label_text = label_text.into();
-    let content = iced::widget::text(label_text.clone())
-        .size(14)
-        .width(Length::Fill);
-    custom(
-        id,
-        label_text,
-        content,
-        message,
-        selected,
-        Kind::Quiet,
-        [7, 10],
-    )
-}
 /// A section switch drawn as an underline: the label, then a 2-point bar
 /// in the accent under the selected one, sitting on the tab row's rule.
 pub fn tab<'a>(
