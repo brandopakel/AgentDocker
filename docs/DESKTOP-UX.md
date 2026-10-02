@@ -173,7 +173,7 @@ wide window, it opens beside the list. **Details** reveals the session ID, proce
 checkout, commit and last-seen time.
 **More → Board** is the project's work: five
 columns — Backlog, Ready, In progress, Review, Done — of cards with a title
-and when it counts as done. **Add a task** at the top takes a title and
+and when it counts as done. **Add a task**, at the foot of the Ready lane, takes a title and
 *Done when…* (the acceptance text an agent reads before it starts) and adds
 it **to Ready** (for the next agent to take) or keeps it **in Backlog** (yours
 to think about). A card shows who holds it with a presence dot (the name on
@@ -261,12 +261,16 @@ Project tabs provide:
   notification about an overlap room, opens the fold so the room is in view.
   Its label counts messages waiting for you. Each room retains its own draft
   across navigation and failed delivery; viewing does not drain your inbox.
-- **More → Files in use:** current leases and their holders.
+- **More → Files in use:** current leases and their holders, each path shown
+  from the project's root, with a thin meter of the time left that turns
+  amber, with the word *Expiring*, under one fifth.
 - **More → AgentDocker commands:** the real bundled `agentdocker` CLI in the selected project folder.
   It keeps command history and output with a bounded execution deadline.
 - **More → Usage:** the tokens the providers reported for this project's
   sessions over the last 24 hours, 7 or 30 days, one row per agent, model,
-  provider or hour: input, cache read, cache write, output and reasoning
+  provider or hour (largest first; hours in time order), under four totals —
+  input, cache read, cache write and output — and, on a wide window, a share
+  bar per row: input, cache read, cache write, output and reasoning
   tokens, each shown only where samples said (`~` where some did not, `—`
   where none did) and never as an invented zero. Under the table: the range
   actually answered, whether the current hour is still filling, retention

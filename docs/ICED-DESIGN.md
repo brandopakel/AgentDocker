@@ -200,6 +200,19 @@ control does, its id or its accessible label:
   wake becomes one frame forty milliseconds later (`WAKE_SETTLE`), so the
   seven answers to a sweep's snapshot requests, which land within a few
   milliseconds of each other, are one frame rather than seven.
+- **Board, History, Files in use, Usage, Channels.** The five lanes are
+  tinted wells with no border, headed by the lane's dot, name and a count
+  chip; cards are hairline cards (no shadow) whose edge firms under the
+  pointer and turns accent when open. Filing lives at the foot of the Ready
+  lane, and its **Add to Ready** is the board's one filled action; a card's
+  forward move is an outline, its back move a ghost. History is one row
+  grammar in one card: an icon tile per journal kind, the line, a muted line
+  of kind, branch and short sha, the time at the right. Usage leads with
+  range and grouping as segmented controls and four totals, then one framed
+  table with capital micro headers and right-aligned numbers (a share bar
+  from 1180 points wide). A channel is a card headed by a `#` tile, its name,
+  Open or Closed as a dot and a word, its purpose and members, and a small
+  stack of member marks.
 - **Meters.** A lease row carries a thin bar of the time left on it; it turns
   amber under one fifth. A question card carries the time left to answer it,
   red under one fifth. Session rows say when they started. Panels that hold a
