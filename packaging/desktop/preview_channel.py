@@ -16,6 +16,10 @@ import tempfile
 CHANNEL = "channel-preview"
 FEED = "updates-preview.json"
 MARKER = "<!-- agentdocker-preview-channel-v1 -->"
+WINDOWS_CHANNEL = "channel-preview-windows"
+WINDOWS_FEED = "updates-preview-windows.json"
+WINDOWS_MARKER = "<!-- agentdocker-preview-windows-channel-v1 -->"
+WINDOWS_TARGETS = {"x86_64-pc-windows-msvc"}
 LIMIT = 128 * 1024
 TARGETS = {"aarch64-apple-darwin", "x86_64-apple-darwin",
            "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"}
@@ -48,10 +52,12 @@ def hex_value(value, width):
 
 
 class GitHub:
-    def __init__(self, repo):
+    def __init__(self, repo, windows=False):
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
             raise ValueError("invalid repository")
         self.repo = repo
+        self.windows = windows
+        self.channel = WINDOWS_CHANNEL if windows else CHANNEL
 
     def command(self, *args):
         result = subprocess.run(["gh", *args], capture_output=True, timeout=120)
@@ -75,7 +81,7 @@ class GitHub:
         if status[1] == b"404":
             # The tag endpoint only returns published releases. An initial
             # channel is deliberately a draft until its uploaded bytes verify.
-            if tag == CHANNEL:
+            if tag == self.channel:
                 return self.draft_channel()
             return None
         if result.returncode or status[1] != b"200":
@@ -92,7 +98,7 @@ class GitHub:
                            or not isinstance(entry.get("tag_name"), str)
                            for entry in entries)):
                 raise ValueError("invalid release inventory while looking for the draft channel")
-            matches.extend(entry for entry in entries if entry.get("tag_name") == CHANNEL)
+            matches.extend(entry for entry in entries if entry.get("tag_name") == self.channel)
             if len(matches) > 1:
                 raise ValueError("ambiguous preview channel releases; preserved")
             if len(entries) < 100:
@@ -126,23 +132,23 @@ class GitHub:
         return data
 
     def create(self, notes, source):
-        self.command("release", "create", CHANNEL, "--repo", self.repo, "--target", source,
+        self.command("release", "create", self.channel, "--repo", self.repo, "--target", source,
                      "--title", "Preview update channel", "--notes-file", str(notes),
                      "--draft", "--prerelease", "--latest=false")
 
     def record(self, notes):
-        self.command("release", "edit", CHANNEL, "--repo", self.repo,
+        self.command("release", "edit", self.channel, "--repo", self.repo,
                      "--notes-file", str(notes), "--prerelease", "--latest=false")
 
     def upload(self, feed):
-        self.command("release", "upload", CHANNEL, str(feed), "--repo", self.repo, "--clobber")
+        self.command("release", "upload", self.channel, str(feed), "--repo", self.repo, "--clobber")
 
     def publish(self):
-        self.command("release", "edit", CHANNEL, "--repo", self.repo,
+        self.command("release", "edit", self.channel, "--repo", self.repo,
                      "--draft=false", "--prerelease", "--latest=false")
 
 
-def assets(release, repair_feed=False):
+def assets(release, repair_feed=False, feed_name=FEED):
     if not isinstance(release, dict):
         raise ValueError("release has an invalid asset inventory")
     entries = release.get("assets")
@@ -156,7 +162,7 @@ def assets(release, repair_feed=False):
         # GitHub can retain an empty starter asset after a failed upload.
         # Only the recognized channel's exact-version retry opts into this;
         # versioned assets and unrelated or nonempty unfinished assets stay strict.
-        starter = (repair_feed and name == FEED and asset.get("state") == "starter"
+        starter = (repair_feed and name == feed_name and asset.get("state") == "starter"
                    and type(asset.get("size")) is int and asset["size"] == 0)
         if not isinstance(name, str) or name in result or (asset.get("state") != "uploaded" and not starter):
             raise ValueError("release contains ambiguous or unfinished assets")
@@ -164,7 +170,8 @@ def assets(release, repair_feed=False):
     return result
 
 
-def feed_tag(data):
+def feed_tag(data, windows=False):
+    targets = WINDOWS_TARGETS if windows else TARGETS
     if len(data) > LIMIT:
         raise ValueError("preview feed exceeds its limit")
     value = json.loads(data)
@@ -178,12 +185,12 @@ def feed_tag(data):
             or policy.get("daemon_replacement") != "deferred_until_sessions_finish"):
         raise ValueError("preview feed must preserve explicit update consent")
     releases = value.get("releases")
-    if not isinstance(releases, list) or len(releases) != len(TARGETS):
-        raise ValueError("preview feed must contain all four desktop targets")
+    if not isinstance(releases, list) or len(releases) != len(targets):
+        raise ValueError("preview feed must contain all expected desktop targets")
     if any(not isinstance(entry, dict) or not isinstance(entry.get("target"), str)
            or not isinstance(entry.get("version"), str) for entry in releases):
         raise ValueError("preview feed has an invalid release entry")
-    if {entry.get("target") for entry in releases} != TARGETS:
+    if {entry.get("target") for entry in releases} != targets:
         raise ValueError("preview feed has missing or duplicate targets")
     versions = {entry.get("version") for entry in releases}
     if len(versions) != 1 or not isinstance(next(iter(versions)), str):
@@ -193,8 +200,8 @@ def feed_tag(data):
     return tag, value
 
 
-def verify_feed(data, tag, release, repo, source):
-    actual, value = feed_tag(data)
+def verify_feed(data, tag, release, repo, source, windows=False):
+    actual, value = feed_tag(data, windows)
     if actual != tag:
         raise ValueError("preview feed version does not match its published tag")
     inventory = assets(release)
@@ -207,7 +214,9 @@ def verify_feed(data, tag, release, repo, source):
             raise ValueError("invalid preview state schema")
         schemas.add(schema)
         target = entry["target"]
-        name = "agentdocker-desktop-" + target + (".zip" if target.endswith("darwin") else ".tar.gz")
+        name = "agentdocker-desktop-" + target + (".zip" if target.endswith("darwin") or windows else ".tar.gz")
+        if windows and (entry.get("signing") != "unsigned-preview" or entry.get("notarized") is not False):
+            raise ValueError("Windows preview feed has an invalid signing policy")
         archive = entry.get("archive", {})
         if not isinstance(archive, dict):
             raise ValueError("preview feed has an invalid archive entry")
@@ -224,25 +233,33 @@ def verify_feed(data, tag, release, repo, source):
 
 
 def promotion(github, tag):
+    windows = getattr(github, "windows", False)
+    channel_name = WINDOWS_CHANNEL if windows else CHANNEL
+    feed_name = WINDOWS_FEED if windows else FEED
+    marker = WINDOWS_MARKER if windows else MARKER
     requested = version_key(tag)
     release = github.release(tag)
     if (not isinstance(release, dict) or release.get("tag_name") != tag or release.get("draft") is not False
             or release.get("prerelease") is not True or not release.get("published_at")):
         raise ValueError("preview channel requires an already published prerelease")
-    asset = assets(release).get(FEED)
+    asset = assets(release).get(feed_name)
+    if asset is None and windows:
+        # Older portable previews have no installer feed. Preserve any newer
+        # Windows channel without reading or mutating it.
+        return {"action": "unavailable", "tag": tag}
     if asset is None:
         raise ValueError("published preview has no update feed")
     data = github.download(asset)
     source = github.source(tag)
-    verify_feed(data, tag, release, github.repo, source)
-    channel = github.release(CHANNEL)
+    verify_feed(data, tag, release, github.repo, source, windows)
+    channel = github.release(channel_name)
     if channel is not None:
-        if (not isinstance(channel, dict) or channel.get("tag_name") != CHANNEL
+        if (not isinstance(channel, dict) or channel.get("tag_name") != channel_name
                 or channel.get("prerelease") is not True or type(channel.get("draft")) is not bool
                 or not isinstance(channel.get("body"), str)
-                or not channel["body"].startswith(MARKER + "\n")):
+                or not channel["body"].startswith(marker + "\n")):
             raise ValueError("refusing to replace an unrecognized channel release")
-        record = json.loads(channel["body"][len(MARKER) + 1:])
+        record = json.loads(channel["body"][len(marker) + 1:])
         if (not isinstance(record, dict) or type(record.get("format")) is not int or record["format"] != 1
                 or not hex_value(record.get("feed_sha256"), 64)
                 or not hex_value(record.get("source_commit"), 40)):
@@ -254,12 +271,12 @@ def promotion(github, tag):
             raise ValueError("same-version preview feed bytes changed")
         if requested == previous and record["source_commit"] != source:
             raise ValueError("same-version preview source changed")
-        inventory = assets(channel, repair_feed=requested == previous)
-        if set(inventory) - {FEED}:
+        inventory = assets(channel, repair_feed=requested == previous, feed_name=feed_name)
+        if set(inventory) - {feed_name}:
             raise ValueError("channel contains unrelated assets; preserved")
-        if FEED in inventory and inventory[FEED]["state"] == "uploaded":
-            existing = github.download(inventory[FEED])
-            existing_tag, _ = feed_tag(existing)
+        if feed_name in inventory and inventory[feed_name]["state"] == "uploaded":
+            existing = github.download(inventory[feed_name])
+            existing_tag, _ = feed_tag(existing, windows)
             if version_key(existing_tag) > previous:
                 raise ValueError("channel feed is newer than its promotion record; preserved")
             if existing == data and channel.get("draft") is False:
@@ -267,10 +284,10 @@ def promotion(github, tag):
     record = {"format": 1, "tag": tag, "source_commit": source, "feed_sha256": digest(data)}
     with tempfile.TemporaryDirectory(prefix="agentdocker-preview-channel-") as directory:
         root = Path(directory)
-        feed = root / FEED
+        feed = root / feed_name
         feed.write_bytes(data)
         notes = root / "notes.md"
-        notes.write_text(MARKER + "\n" + json.dumps(record, indent=2) + "\n")
+        notes.write_text(marker + "\n" + json.dumps(record, indent=2) + "\n")
         # Record the new high-water version BEFORE clobber can remove the old
         # asset. A failed upload cannot permit an older release to take over.
         if channel:
@@ -278,12 +295,12 @@ def promotion(github, tag):
         else:
             github.create(notes, source)
         github.upload(feed)
-        uploaded = github.release(CHANNEL)
-        published_asset = assets(uploaded).get(FEED)
+        uploaded = github.release(channel_name)
+        published_asset = assets(uploaded).get(feed_name)
         if published_asset is None or github.download(published_asset) != data:
             raise ValueError("uploaded preview channel feed did not verify")
         github.publish()
-        published = github.release(CHANNEL)
+        published = github.release(channel_name)
         if (not isinstance(published, dict) or published.get("draft") is not False
                 or published.get("prerelease") is not True or not published.get("published_at")):
             raise ValueError("preview channel publication did not verify")
@@ -294,5 +311,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", "brandopakel/AgentDocker"))
+    parser.add_argument("--windows", action="store_true", help="promote the separate Windows installer preview channel when present")
     args = parser.parse_args()
-    print(json.dumps(promotion(GitHub(args.repo), args.tag), indent=2))
+    print(json.dumps(promotion(GitHub(args.repo, args.windows), args.tag), indent=2))

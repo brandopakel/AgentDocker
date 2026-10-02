@@ -69,3 +69,12 @@ additional adapters, container log following and proposed CLI conveniences remai
 deferred proposals. See [architecture](ARCHITECTURE.md#planned-protocol-and-event-additions)
 and [containers](CONTAINER-ENGINES.md). The operational sequence remains in
 [local trial](LOCAL-TRIAL.md).
+
+Windows installer candidate follow-up: canonical native image spelling now
+preserves active-copy registration. Release code prepares a separate Windows
+preview feed only with exact installed lifecycle acceptance; public publishing
+and hosted Windows update/rollback remain open. Native `91dd78bd` passed its
+host regressions but portable service setup timed out at its 20-second
+PowerShell bound in run 36980029481, so installed maintenance/service/uninstall
+still require a passing native trial. Start menu/PATH, physical/actual-provider
+and login/reboot acceptance remain open.

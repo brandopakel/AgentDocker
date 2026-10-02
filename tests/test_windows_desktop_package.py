@@ -74,13 +74,14 @@ class WindowsDesktopPackaging(unittest.TestCase):
             self.assertEqual((app / name).read_bytes(), (self.binaries / name).read_bytes())
         self.assertEqual((app / "licenses/LICENSE-AgentDocker.txt").read_bytes(), (ROOT / "LICENSE").read_bytes())
         self.assertEqual((app / "licenses/LICENSE-Inter.txt").read_bytes(), (ROOT / "crates/ui/src/fonts/LICENSE-Inter.txt").read_bytes())
-        self.assertIn("no installer", (app / "README.txt").read_text(encoding="utf-8"))
+        self.assertIn("desktop install --from . --local-preview", (app / "README.txt").read_text(encoding="utf-8"))
         self.assertEqual((self.output / (archive.name + ".sha256")).read_text().strip(), info["artifacts"][archive.name] + "  " + archive.name)
 
     def accepted_fixture(self):
         # This is synthetic acceptance for promotion-policy tests only;
         # windows_package_smoke supplies real execution evidence in CI.
         self.manifest["version"] = self.args.version = "0.2.0-rc.1"
+        self.manifest["launcher_redirect"] = 2
         self.save_manifest()
         info, archive = self.build()
         desktop = self.output / "smoke/desktop"
@@ -92,12 +93,22 @@ class WindowsDesktopPackaging(unittest.TestCase):
                          "desktop": {"result": "passed", "screenshot_sha256": PACKAGE.sha256(screenshot),
                                      "native_result": {"result": "passed", "connected": True}}}
         self.report = {key: info[key] for key in ("source_commit", "source_input_sha256", "binary_sha256", "artifacts")}
-        self.report.update(result="passed", steps=1, desktop=self.observed["desktop"])
+        self.report.update(result="passed", steps=1, desktop=self.observed["desktop"],
+                           installation={"result": "passed", "steps": 1})
+        self.installed = {"result": "passed", "source_commit": info["source_commit"],
+                          "binary_sha256": info["binary_sha256"], "service_requested": True,
+                          "scratch_removed": True, "steps": [{"passed": True}],
+                          "service": {"result": "passed", "steps": 1}}
+        self.service = {"result": "passed", "cleanup_errors": [], "scratch_removed": True, "installed_launchers": True,
+                        "binary_sha256": info["binary_sha256"], "steps": [{"ok": True}]}
+        (self.output / "installation/service").mkdir(parents=True)
         self.save_acceptance()
         return info, archive
 
     def save_acceptance(self):
         (self.output / "package-acceptance.json").write_text(json.dumps(self.report))
+        (self.output / "installation/result.json").write_text(json.dumps(self.installed))
+        (self.output / "installation/service/result.json").write_text(json.dumps(self.service))
         (self.output / "smoke/windows-daemon-smoke.json").write_text(json.dumps(self.observed))
 
     def promote(self, tag="v0.2.0-rc.1", source="a" * 40):
@@ -111,9 +122,15 @@ class WindowsDesktopPackaging(unittest.TestCase):
         self.assertEqual((release / archive.name).read_bytes(), archive.read_bytes())
         self.assertEqual(json.loads((release / "windows-preview-manifest.json").read_text()), info)
         self.assertEqual(json.loads((release / "windows-preview-acceptance.json").read_text()), self.report)
-        self.assertFalse(list(release.glob("manifest-*.json")))  # not an update-feed input
-        self.assertIn("no installer", (release / "WINDOWS-PREVIEW.txt").read_text())
-        self.assertEqual(len(list(release.iterdir())), 5)
+        self.assertFalse(list(release.glob("manifest-*.json")))  # not a Mac/Linux feed input
+        self.assertFalse((release / "updates-preview.json").exists())
+        feed = json.loads((release / "updates-preview-windows.json").read_text())
+        self.assertEqual([entry["target"] for entry in feed["releases"]], [self.target])
+        self.assertEqual(feed["releases"][0]["archive"]["sha256"], info["artifacts"][archive.name])
+        self.assertEqual(feed["releases"][0]["signing"], "unsigned-preview")
+        self.assertEqual(feed["policy"]["activation"], "explicit")
+        self.assertIn("desktop install --from . --local-preview", (release / "WINDOWS-PREVIEW.txt").read_text())
+        self.assertEqual(len(list(release.iterdir())), 8)
         with self.assertRaises(FileExistsError):
             self.promote()
 
@@ -152,6 +169,29 @@ class WindowsDesktopPackaging(unittest.TestCase):
         (self.output / "smoke/desktop/window.png").write_bytes(b"replaced")
         with self.assertRaisesRegex(ValueError, "screenshot"):
             self.promote()
+
+    def test_windows_feed_requires_successful_exact_installed_lifecycle(self):
+        self.accepted_fixture()
+        original_install, original_service = json.dumps(self.installed), json.dumps(self.service)
+        mutations = [lambda: self.installed.update(result="failed"),
+                     lambda: self.installed.update(source_commit="f" * 40),
+                     lambda: self.installed.update(binary_sha256={}),
+                     lambda: self.installed.update(service_requested=False),
+                     lambda: self.installed.update(scratch_removed=False),
+                     lambda: self.installed["steps"][0].update(passed=False),
+                     lambda: self.installed.update(service={}),
+                     lambda: self.service.update(result="failed"),
+                     lambda: self.service.update(installed_launchers=False),
+                     lambda: self.service.update(cleanup_errors=["still running"]),
+                     lambda: self.service.update(binary_sha256={}),
+                     lambda: self.service["steps"][0].update(ok=False)]
+        for mutation in mutations:
+            self.installed, self.service = json.loads(original_install), json.loads(original_service)
+            mutation()
+            self.save_acceptance()
+            with self.assertRaisesRegex(ValueError, "installed lifecycle"):
+                self.promote()
+            self.assertFalse((self.root / "release").exists())
 
     def test_windows_preview_refuses_archive_replaced_during_promotion(self):
         _, archive = self.accepted_fixture()

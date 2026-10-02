@@ -1728,3 +1728,14 @@ deletion lets already-loaded bootstraps finish. Partial cleanup retains an
 inactive record and can be resumed without removing provider settings or pinned
 releases. Native acceptance and remaining lifecycle work are tracked in
 [the Windows port](WINDOWS-PORT.md).
+
+Windows preview publication emits `updates-preview-windows.json` only after the
+exact archive passes native installation, maintenance, loaded-launcher removal
+and installed Task Scheduler lifecycle checks, with source/binary hashes and
+clean fixture cleanup verified. Its fixed `channel-preview-windows` release has
+an independent ownership marker and monotonic promotion record; a failed upload
+can be repaired only with the recorded bytes/version. Older releases without a
+Windows installer feed leave this channel unchanged. The four-target Mac/Linux
+feed remains unchanged for older client compatibility; no unsigned Windows
+stable feed is published. Default Windows checks use the separate preview feed
+and reserve `updates-windows.json` for a future stable distribution.

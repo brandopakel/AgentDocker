@@ -49,7 +49,7 @@ def main():
     env = {k: v for k, v in os.environ.items() if not k.startswith('AGENTDOCKER_')}
     env.update(AGENTDOCKER_HOME=str(home), AGENTDOCKER_SOCKET=endpoint,
                AGENTDOCKER_NO_AUTOSTART='1', AGENTDOCKER_STARTUP_TRACE='1')
-    report = {'result': 'failed', 'scope': __doc__, 'home': str(home),
+    report = {'result': 'failed', 'scope': __doc__, 'home': str(home), 'installed_launchers': bool(args.installed_prefix),
               'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
               'driver_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'binary_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()

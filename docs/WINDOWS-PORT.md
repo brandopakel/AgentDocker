@@ -543,3 +543,12 @@ the extracted portable checks. The later `f0426f72` installer trial passed its s
 acceptance remains separate from that source.
 
 Installed service acceptance on `3fbbd8c2` exposed a DOS-versus-verbatim path mismatch: the active CLI was falsely classified as obsolete during registration. Registration now compares canonical filesystem paths, still checks the active release and verified bootstrap receipt, and includes native path-spelling and actual copied-process regressions. The original failed trial is retained; corrected installed service/uninstall acceptance is still required.
+
+The Windows CLI installation candidate also stages a separate preview update
+channel and refuses publication unless both installation and installed service
+acceptance pass on the exact archive. `91dd78bd` passed native host registration
+regressions but run 36980029481 failed at portable `daemon install`: the bounded
+PowerShell command timed out after 20 seconds before installed tests began.
+This does not establish installed-service or uninstall acceptance. The original
+failed service report and full native log remain retained; the timeout cause is
+still open.

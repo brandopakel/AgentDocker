@@ -36,12 +36,19 @@ use super::{Layout, perform};
 
 /// Where releases advertise themselves. GitHub redirects this to the asset of
 /// the newest release, so the URL never changes.
+#[cfg(not(windows))]
 pub const DEFAULT_FEED: &str =
     "https://github.com/brandopakel/AgentDocker/releases/latest/download/updates.json";
+#[cfg(windows)]
+pub const DEFAULT_FEED: &str =
+    "https://github.com/brandopakel/AgentDocker/releases/latest/download/updates-windows.json";
 /// Where the newest prerelease's feed is kept. GitHub's `latest` never
 /// names a prerelease, so each prerelease also publishes its feed to this one
 /// fixed release, which only moves forward.
+#[cfg(not(windows))]
 pub const PREVIEW_FEED: &str = "https://github.com/brandopakel/AgentDocker/releases/download/channel-preview/updates-preview.json";
+#[cfg(windows)]
+pub const PREVIEW_FEED: &str = "https://github.com/brandopakel/AgentDocker/releases/download/channel-preview-windows/updates-preview-windows.json";
 /// Environment override for the feed, so a fixture can point the app at a
 /// local feed without a flag reaching through the desktop screen.
 pub const FEED_ENV: &str = "AGENTDOCKER_UPDATE_FEED";
