@@ -711,6 +711,8 @@ pub enum Message {
     Adopt(u32),
     AdoptAll,
     Stop(String),
+    /// Put an armed Stop back without stopping anything.
+    DisarmStop,
     ShowLaunch,
     LaunchRuntime(String),
     LaunchName(String),
@@ -2019,6 +2021,7 @@ impl App {
                     self.send(Cmd::Adopt(pid));
                 }
             }
+            Message::DisarmStop => self.confirm_stop = None,
             Message::Stop(id) => {
                 if self.connected.is_ok()
                     && self

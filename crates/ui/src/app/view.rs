@@ -438,8 +438,8 @@ pub(super) fn item_row<'a>(
     container(line).padding([10, 14]).width(Fill).into()
 }
 
-/// Rows in one card, each separated from the next by a rule.
-pub(super) fn rows_card<'a>(rows: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
+/// Rows separated by rules, unframed: the body of a [`section`].
+pub(super) fn rows_list<'a>(rows: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
     let mut list = column![].width(Fill);
     for (index, item) in rows.into_iter().enumerate() {
         if index > 0 {
@@ -447,10 +447,89 @@ pub(super) fn rows_card<'a>(rows: Vec<Element<'a, Message>>, c: Colors) -> Eleme
         }
         list = list.push(item);
     }
-    container(list)
+    list.into()
+}
+
+/// Rows in one card, each separated from the next by a rule.
+pub(super) fn rows_card<'a>(rows: Vec<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
+    container(rows_list(rows, c))
         .width(Fill)
+        .padding(1)
         .style(move |_| c.card_style())
         .into()
+}
+
+/// Three faint rows in the shape of the list that will fill this place:
+/// a mark, a long bar and a short one, fading downwards. Static.
+pub(super) fn ghost_rows<'a>(c: Colors) -> Element<'a, Message> {
+    let mut rows = column![].spacing(14).width(Fill);
+    for (fade, long) in [(1.0_f32, 168.0_f32), (0.6, 132.0), (0.3, 150.0)] {
+        let bar = move |width: f32, height: f32| {
+            container(Space::new().width(width).height(height)).style(move |_| container::Style {
+                background: Some(alpha(c.text, 0.07 * fade).into()),
+                border: iced::Border {
+                    radius: super::style::RADIUS_XS.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        };
+        rows = rows.push(
+            row![
+                bar(28.0, 28.0),
+                column![bar(long, 10.0), bar(long * 0.45, 8.0)].spacing(7),
+                Space::new().width(Fill),
+                bar(56.0, 8.0),
+            ]
+            .spacing(12)
+            .align_y(Center),
+        );
+    }
+    container(rows).padding([28, 24]).width(Fill).into()
+}
+
+/// A scrollbar that stays out of the way: no track, a thin scroller in
+/// a wash of the ink that firms up under the pointer and while dragged.
+pub(super) fn quiet_scroll(
+    theme: &iced::Theme,
+    status: iced::widget::scrollable::Status,
+    c: Colors,
+) -> iced::widget::scrollable::Style {
+    use iced::widget::scrollable::{self as scroll, Status};
+    let mut style = scroll::default(theme, status);
+    let strength = match status {
+        Status::Dragged { .. } => 0.40,
+        Status::Hovered { .. } => 0.28,
+        Status::Active { .. } => 0.16,
+    };
+    for rail in [&mut style.vertical_rail, &mut style.horizontal_rail] {
+        rail.background = None;
+        rail.border = iced::Border::default();
+        rail.scroller.background = alpha(c.text, strength).into();
+        rail.scroller.border = iced::Border {
+            radius: 3.0.into(),
+            ..Default::default()
+        };
+    }
+    style
+}
+
+/// How long since `then`, coarsely: "now", "3m", "1h 12m", "2d". Rows
+/// refresh on the clock sweep; seconds would only make them twitch.
+pub(super) fn elapsed(now: chrono::DateTime<Utc>, then: chrono::DateTime<Utc>) -> String {
+    let minutes = (now - then).num_minutes().max(0);
+    match minutes {
+        0 => "now".to_owned(),
+        m if m < 60 => format!("{m}m"),
+        m if m < 60 * 24 => {
+            if m % 60 == 0 || m >= 600 {
+                format!("{}h", m / 60)
+            } else {
+                format!("{}h {}m", m / 60, m % 60)
+            }
+        }
+        m => format!("{}d", m / (60 * 24)),
+    }
 }
 
 /// A card with a header strip: what it holds and why on the left, an
@@ -969,12 +1048,7 @@ impl App {
             content = content.push(attention(
                 column![
                     text(error.clone()).size(14).color(c.amber),
-                    action(
-                        "dismiss-error",
-                        "Dismiss",
-                        Some(Message::DismissError),
-                        false
-                    )
+                    ghost("dismiss-error", "Dismiss", Some(Message::DismissError))
                 ]
                 .spacing(10),
                 c.amber,
@@ -1059,32 +1133,40 @@ impl App {
             content = content.push(column![tabs, rule(c)].spacing(0));
         }
         if self.shell.adding {
-            content = content.push(card(
-                column![
-                    heading("Add an existing project", 18),
-                    note(
-                        "Choose a folder. Nothing is launched or written into it.",
-                        c
-                    ),
-                    input(
-                        "project-path",
-                        "Project folder",
-                        &self.shell.add_path,
-                        Message::AddPath
-                    ),
-                    row![
-                        primary(
-                            "pin-folder",
-                            "Add project",
-                            (!self.shell.add_path.trim().is_empty())
-                                .then_some(Message::ResolveFolder),
-                        ),
-                        action("browse-folder", "Browse…", Some(Message::PickFolder), false),
-                        action("cancel-add", "Cancel", Some(Message::ShowAdd), false)
+            content = content.push(section(
+                "Add an existing project",
+                Some("Choose a folder. Nothing is launched or written into it.".to_owned()),
+                None,
+                container(
+                    column![
+                        row![
+                            container(input(
+                                "project-path",
+                                "Project folder",
+                                &self.shell.add_path,
+                                Message::AddPath
+                            ))
+                            .width(Fill),
+                            action("browse-folder", "Browse…", Some(Message::PickFolder), false),
+                        ]
+                        .spacing(8)
+                        .align_y(Center),
+                        row![
+                            Space::new().width(Fill),
+                            ghost("cancel-add", "Cancel", Some(Message::ShowAdd)),
+                            primary(
+                                "pin-folder",
+                                "Add project",
+                                (!self.shell.add_path.trim().is_empty())
+                                    .then_some(Message::ResolveFolder),
+                            ),
+                        ]
+                        .spacing(8)
+                        .align_y(Center),
                     ]
-                    .spacing(6)
-                ]
-                .spacing(12),
+                    .spacing(12),
+                )
+                .padding([12, 16]),
                 c,
             ));
         }
@@ -1121,10 +1203,14 @@ impl App {
                 .width(Fill)
                 .height(Fill)
                 .id("workspace-scroll")
+                .style(move |theme, status| quiet_scroll(theme, status, c))
                 .into()
         };
+        // In dark the rail and the page are near in tone, so a hairline
+        // parts them; in light the navy rail does that on its own.
+        let edge = if c.dark { 1.0 } else { 0.0 };
         row![
-            container(Space::new().width(1).height(Fill)).style(move |_| c.rule()),
+            container(Space::new().width(edge).height(Fill)).style(move |_| c.rule()),
             container(workspace)
                 .padding(if narrow { [18, 18] } else { [24, 30] })
                 .width(Fill)
@@ -1526,6 +1612,9 @@ impl App {
                             .scroller_width(4)
                             .spacing(2),
                     ))
+                    // The rail's own ink for the scroller: the page's
+                    // grey would sit on navy like a smudge.
+                    .style(move |theme, status| quiet_scroll(theme, status, r))
                     .height(Fill),
             )
             .push(Space::new().height(6))
@@ -2203,51 +2292,58 @@ impl App {
                 0
             };
         if !records.is_empty() {
-            panel_col = panel_col.push(panel(self.session_rows(&records, c), c));
+            panel_col = panel_col.push(self.session_rows(&records, c));
         }
         if filter == Filter::Current && !available.is_empty() {
-            let mut discovered = column![
-                eyebrow("Running here, not connected", c),
-                note(
-                    "Started outside AgentDocker. Connect one to see what it is doing and message it.",
-                    c
-                )
-            ]
-            .spacing(6);
+            let mut rows = Vec::new();
             for process in available {
-                discovered = discovered.push(
-                    row![
-                        dot(c.cyan, 8.0, c),
-                        column![
-                            text(super::runtime_label(&process.runtime)).size(14),
-                            small(
-                                process
-                                    .cwd
-                                    .as_ref()
-                                    .map(|cwd| shorten_home(cwd))
-                                    .unwrap_or_else(|| "folder unknown".to_owned()),
-                                c
-                            )
-                        ]
-                        .spacing(2)
-                        .width(Fill),
-                        action(
-                            format!("adopt-{}", process.pid),
-                            if self.shell.adopting.contains(&process.pid) {
-                                "Connecting…"
-                            } else {
-                                "Connect"
-                            },
-                            (self.connected.is_ok() && !self.shell.adopting.contains(&process.pid))
-                                .then_some(Message::Adopt(process.pid)),
-                            false
-                        ),
-                    ]
-                    .spacing(12)
-                    .align_y(Center),
-                );
+                let label = super::runtime_label(&process.runtime);
+                rows.push(item_row(
+                    Some(icon_tile(
+                        text(label.chars().next().unwrap_or('·').to_string())
+                            .size(12)
+                            .font(weight(iced::font::Weight::Semibold))
+                            .color(c.cyan),
+                        28.0,
+                        c,
+                    )),
+                    label,
+                    Some(
+                        text(
+                            process
+                                .cwd
+                                .as_ref()
+                                .map(|cwd| shorten_home(cwd))
+                                .unwrap_or_else(|| "folder unknown".to_owned()),
+                        )
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .color(c.faint)
+                        .into(),
+                    ),
+                    Some(action(
+                        format!("adopt-{}", process.pid),
+                        if self.shell.adopting.contains(&process.pid) {
+                            "Connecting…"
+                        } else {
+                            "Connect"
+                        },
+                        (self.connected.is_ok() && !self.shell.adopting.contains(&process.pid))
+                            .then_some(Message::Adopt(process.pid)),
+                        false,
+                    )),
+                ));
             }
-            panel_col = panel_col.push(card(discovered.spacing(10), c));
+            panel_col = panel_col.push(section(
+                "Running here, not connected",
+                Some(
+                    "Started outside AgentDocker. Connect one to see what it is doing and message it."
+                        .to_owned(),
+                ),
+                None,
+                rows_list(rows, c),
+                c,
+            ));
         }
         // A search can match only the Earlier group, which opens below.
         // Those results must not be paired with a "No matching sessions" card.
@@ -2255,8 +2351,34 @@ impl App {
             && !earlier.is_empty()
             && !self.shell.search.trim().is_empty();
         if count == 0 && !earlier_matches {
+            if !self.shell.search.is_empty() {
+                // A search that found nothing says what it looked for and
+                // offers the way back.
+                panel_col = panel_col.push(empty(
+                    "No matching sessions",
+                    "Try another name, tool, or branch.",
+                    Some(
+                        column![
+                            small(
+                                format!("Nothing matches “{}”.", self.shell.search.trim()),
+                                c
+                            ),
+                            action(
+                                "session-search-clear",
+                                "Clear search",
+                                Some(Message::Search(String::new())),
+                                false,
+                            )
+                        ]
+                        .spacing(10)
+                        .align_x(Center)
+                        .into(),
+                    ),
+                    c,
+                ));
+            }
             let (title_text, hint) = if !self.shell.search.is_empty() {
-                ("No matching sessions", "Try another name, tool, or branch.")
+                ("", "")
             } else {
                 match filter {
                     Filter::Current if self.all_projects() => (
@@ -2276,26 +2398,43 @@ impl App {
                     Filter::Earlier => ("No sessions", "Nothing has run here yet."),
                 }
             };
-            panel_col = panel_col.push(empty(title_text, hint, None, c));
+            if !title_text.is_empty() {
+                // An empty list shows the shape of what will fill it.
+                panel_col = panel_col
+                    .push(column![ghost_rows(c), empty(title_text, hint, None, c)].spacing(0));
+            }
         }
         if filter == Filter::Current && !earlier.is_empty() {
             // Ended sessions are not a tab: one collapsed group under the
             // current ones, opened by a search that finds something there.
             let open = self.shell.earlier_open || !self.shell.search.trim().is_empty();
             let shown = self.shell.earlier_shown.max(EARLIER_PAGE);
-            let mut group = column![custom(
+            let mut group = column![crate::controls::custom_sized(
                 "sessions-earlier",
                 format!("Earlier ({})", earlier.len()),
                 row![
-                    text(if open { "▾" } else { "▸" }).size(11).color(c.muted),
-                    eyebrow(format!("Earlier ({})", earlier.len()), c),
+                    icon(
+                        if open {
+                            Icon::ChevronDown
+                        } else {
+                            Icon::ChevronRight
+                        },
+                        c.muted,
+                        12.0
+                    ),
+                    text("Earlier")
+                        .size(13)
+                        .font(weight(iced::font::Weight::Medium))
+                        .color(c.muted),
+                    text(earlier.len().to_string()).size(12).color(c.faint),
                 ]
                 .spacing(8)
                 .align_y(Center),
                 Some(Message::ToggleEarlier),
                 false,
-                Kind::Quiet,
-                [6, 12],
+                Kind::Ghost,
+                [5, 8],
+                iced::Length::Shrink,
             )]
             .spacing(6);
             if open {
@@ -2303,17 +2442,13 @@ impl App {
                 // from last week is a click away, not on every screen.
                 let page: Vec<&AgentRecord> = earlier.iter().copied().take(shown).collect();
                 let older = earlier.len().saturating_sub(page.len());
-                group = group.push(panel(self.session_rows(&page, c), c));
+                group = group.push(self.session_rows(&page, c));
                 if older > 0 {
-                    group = group.push(
-                        container(action(
-                            "sessions-earlier-more",
-                            format!("Show {} older", older.min(EARLIER_PAGE)),
-                            Some(Message::MoreEarlier),
-                            false,
-                        ))
-                        .padding([0, 12]),
-                    );
+                    group = group.push(ghost(
+                        "sessions-earlier-more",
+                        format!("Show {} older", older.min(EARLIER_PAGE)),
+                        Some(Message::MoreEarlier),
+                    ));
                 }
             }
             panel_col = panel_col.push(group);
@@ -2321,8 +2456,8 @@ impl App {
         if let Some(agent) = selected {
             let inspector = self.inspector(agent, c);
             if self.shell.width / self.scale_factor() >= 1120.0 {
-                return row![panel_col, container(inspector).width(320)]
-                    .spacing(20)
+                return row![panel_col, container(inspector).width(340)]
+                    .spacing(16)
                     .into();
             }
             return inspector;
@@ -2330,15 +2465,20 @@ impl App {
         panel_col.into()
     }
 
-    /// The rows of one list of sessions, with a project eyebrow before each
-    /// project's rows when every project is on view.
+    /// The rows of one list of sessions in one card, a rule between rows
+    /// and a project label before each project's rows when every project
+    /// is on view. A row reads left to right: who (the session's mark, its
+    /// name over its tool and branch), how it is (a dot and a word, how
+    /// long), and the one thing to do with it, only when there is one.
     fn session_rows<'a>(&'a self, records: &[&'a AgentRecord], c: Colors) -> Element<'a, Message> {
-        let mut rows = column![].spacing(if self.settings.roomy { 6 } else { 2 });
+        let now = Utc::now();
+        let narrow = self.narrow();
+        let mut items: Vec<Element<'a, Message>> = Vec::new();
         let mut previous_project = None;
         for (index, agent) in records.iter().enumerate() {
             let project_root = agent.project.as_ref().map(|p| &p.root);
             if self.all_projects() && (index == 0 || previous_project != project_root) {
-                rows = rows.push(
+                items.push(
                     container(eyebrow(
                         agent
                             .project
@@ -2355,15 +2495,21 @@ impl App {
                             .unwrap_or_else(|| "Other sessions".into()),
                         c,
                     ))
-                    .padding([12, 12]),
+                    .padding([10, 14])
+                    .width(Fill)
+                    .style(move |_| container::Style {
+                        background: Some(alpha(c.text, 0.025).into()),
+                        ..Default::default()
+                    })
+                    .into(),
                 );
                 previous_project = project_root;
             }
             let id = agent.id.to_string();
             let activity = self.activity_label(agent);
+            let tone = self.activity_color(agent, c);
             let name = self.display_name(agent);
-            // The branch is in the name already when the record has one;
-            // the line under it says what the session is doing.
+            // The branch is in the name already when the record has one.
             let branch = agent
                 .vcs
                 .as_ref()
@@ -2375,36 +2521,77 @@ impl App {
                 activity
             );
             let spoken = format!("{name}\n{} · {}", agent.spec.runtime, meta);
-            let mut lines = column![
+            // A generated name already reads as the tool ("Claude Code ·
+            // 0180d761"), so only a chosen name says the tool again.
+            let mut facts = Vec::new();
+            if !agent.name_is_generated() {
+                facts.push(super::runtime_label(&agent.spec.runtime));
+            }
+            if let Some(branch) = branch {
+                facts.push(branch.to_owned());
+            }
+            let mut words = column![
                 text(name.clone())
                     .size(14)
-                    .font(weight(iced::font::Weight::Medium)),
-                small(meta, c)
+                    .font(weight(iced::font::Weight::Medium))
+                    .wrapping(iced::widget::text::Wrapping::None)
             ]
             .spacing(2)
             .width(Fill);
+            // Narrow, the status word moves under the name rather than
+            // squeezing the name off the row.
+            if narrow {
+                facts.push(activity.clone());
+            }
+            if !facts.is_empty() {
+                words = words.push(
+                    text(facts.join(" · "))
+                        .size(12)
+                        .color(c.muted)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                );
+            }
             if let Some(left) = self.soonest_answer_window(&id) {
-                lines = lines.push(
+                words = words.push(
                     container(meter(left, if left < 0.2 { c.red } else { c.amber }, c))
                         .width(160)
                         .padding([3, 0]),
                 );
             }
-            let mut content = row![dot(self.activity_color(agent, c), 8.0, c)]
-                .spacing(12)
-                .align_y(Center);
-            content = content.push(lines);
+            let mut content = row![
+                monogram(&name, &id, 28.0, c),
+                container(words).width(Fill).clip(true)
+            ]
+            .spacing(12)
+            .align_y(Center);
             if self.shell.unviewed_done.contains(&id) {
                 // Finished since you last looked. The observed state stays
-                // in the meta line; this says only that it is new to you.
+                // in the status word; this says only that it is new to you.
                 content = content.push(pill("Done", c.accent_soft, c.accent_ink, c));
             }
-            // A generated name already reads as the tool ("Claude Code ·
-            // 0180d761"); the runtime pill would say it twice. A chosen
-            // name keeps the pill, which is then the only place the tool
-            // is named.
-            if !agent.name_is_generated() {
-                content = content.push(pill(agent.spec.runtime.clone(), c.raised, c.muted, c));
+            if !narrow {
+                content = content.push(
+                    container(status_word(activity.clone(), tone, c))
+                        .width(iced::Length::Shrink)
+                        .max_width(220)
+                        .clip(true),
+                );
+                let since = agent.started_at.unwrap_or(agent.created_at);
+                content = content.push(
+                    container(
+                        text(if agent.status.is_live() {
+                            elapsed(now, since)
+                        } else {
+                            elapsed(now, agent.finished_at.unwrap_or(agent.last_seen))
+                        })
+                        .size(12)
+                        .color(c.faint),
+                    )
+                    .width(44)
+                    .align_x(iced::alignment::Horizontal::Right),
+                );
+            } else {
+                content = content.push(dot(tone, 8.0, c));
             }
             // An ended Claude Code session that can come back says so on
             // its row: the one thing to do with it is right there, not
@@ -2416,26 +2603,24 @@ impl App {
                 && self.reconnect_blocker(agent).is_none()
             {
                 let reconnecting = self.shell.reconnecting.as_deref() == Some(id.as_str());
-                content = content.push(
-                    container(custom(
-                        format!("row-reconnect-{id}"),
-                        format!("Reconnect {name} here"),
-                        text(if reconnecting {
-                            "Reconnecting…"
-                        } else {
-                            "Reconnect here"
-                        })
-                        .size(13),
-                        (!reconnecting && !self.shell.launching && self.connected.is_ok())
-                            .then_some(Message::Reconnect(id.clone())),
-                        false,
-                        Kind::Secondary,
-                        [5, 10],
-                    ))
-                    .align_x(iced::alignment::Horizontal::Right),
-                );
+                content = content.push(custom(
+                    format!("row-reconnect-{id}"),
+                    format!("Reconnect {name} here"),
+                    text(if reconnecting {
+                        "Reconnecting…"
+                    } else {
+                        "Reconnect here"
+                    })
+                    .size(12.5)
+                    .font(weight(iced::font::Weight::Medium)),
+                    (!reconnecting && !self.shell.launching && self.connected.is_ok())
+                        .then_some(Message::Reconnect(id.clone())),
+                    false,
+                    Kind::Secondary,
+                    [4, 10],
+                ));
             }
-            rows = rows.push(custom(
+            items.push(custom(
                 format!("session-{id}"),
                 spoken,
                 content,
@@ -2446,10 +2631,10 @@ impl App {
                 }),
                 self.shell.selected.as_deref() == Some(id.as_str()),
                 Kind::Quiet,
-                [if self.settings.roomy { 13 } else { 10 }, 12],
+                [if self.settings.roomy { 14 } else { 10 }, 14],
             ));
         }
-        rows.into()
+        rows_card(items, c)
     }
 
     fn inspector(&self, agent: &AgentRecord, c: Colors) -> Element<'_, Message> {
@@ -2458,23 +2643,37 @@ impl App {
             .confirm_stop
             .as_ref()
             .is_some_and(|(armed, at)| armed == &id && at.elapsed() < CONFIRM_WITHIN);
-        let mut body = column![
-            row![
-                dot(self.activity_color(agent, c), 10.0, c),
-                column![
-                    heading(self.display_name(agent), 18),
-                    note(
-                        format!("{} · {}", agent.spec.runtime, self.activity_label(agent)),
-                        c
-                    )
+        let name = self.display_name(agent);
+        let header = row![
+            monogram(&name, &id, 32.0, c),
+            column![
+                heading(name.clone(), 15).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                row![
+                    status_word(self.activity_label(agent), self.activity_color(agent, c), c),
+                    text(format!("· {}", super::runtime_label(&agent.spec.runtime)))
+                        .size(12)
+                        .color(c.muted),
                 ]
-                .spacing(3)
+                .spacing(6)
+                .align_y(Center)
+                .wrap()
             ]
-            .spacing(10)
-            .align_y(Center),
-            rule(c),
+            .spacing(4)
+            .width(Fill),
+            custom_sized(
+                "close-session",
+                "Back to sessions",
+                icon(Icon::Close, c.muted, 12.0),
+                Some(Message::CloseSession),
+                false,
+                Kind::Ghost,
+                [7, 7],
+                iced::Length::Shrink,
+            ),
         ]
-        .spacing(12);
+        .spacing(12)
+        .align_y(Center);
+        let mut body = column![].spacing(12);
         let delivery = agent.input_delivery.as_ref();
         let paused = delivery.is_some_and(|d| d.paused_for(agent.process_started_at));
         if agent.spec.runtime != "human" {
@@ -2629,34 +2828,44 @@ impl App {
         }
         // Answer opens the exact question, the way Needs you does; the
         // Messages screen alone would show no question selected.
-        if let Some(question) = self
+        // One filled action: answering, when the session asks something;
+        // otherwise its terminal. Everything else steps down.
+        let question = self
             .questions
             .iter()
-            .find(|q| q.from == id && !q.expired(Utc::now()))
-        {
-            body = body.push(primary(
+            .find(|q| q.from == id && !q.expired(Utc::now()));
+        let mut actions = row![].spacing(8).align_y(Center);
+        if let Some(question) = question {
+            actions = actions.push(primary(
                 "session-reply",
                 "Answer",
                 Some(Message::OpenQuestion(question.id.clone())),
             ));
         }
+        let terminal_kind = |label: &'static str, id: &'static str, message: Option<Message>| {
+            if question.is_some() {
+                action(id, label, message, false)
+            } else {
+                primary(id, label, message)
+            }
+        };
         if agent.managed && agent.spec.tty && agent.status.is_live() {
-            body = body.push(primary(
-                "attach-session",
+            actions = actions.push(terminal_kind(
                 "Open terminal",
+                "attach-session",
                 self.connected
                     .is_ok()
                     .then_some(Message::Attach(id.clone())),
             ));
         } else if agent.status.is_live() {
-            body = body.push(primary(
-                "open-original-terminal",
+            actions = actions.push(terminal_kind(
                 "Open original terminal",
+                "open-original-terminal",
                 (!self.shell.terminal_opening).then(|| Message::OpenAgentTerminal(id.clone())),
             ));
         }
         if agent.status.is_live() && agent.spec.runtime != "human" {
-            body = body.push(action(
+            actions = actions.push(action(
                 "session-message",
                 if self.shell.session_message {
                     "Hide message"
@@ -2666,6 +2875,19 @@ impl App {
                 Some(Message::ComposeSession),
                 self.shell.session_message,
             ));
+        }
+        if agent.status.is_live()
+            && agent.spec.runtime != agentdocker_core::HUMAN_RUNTIME
+            && !matches!(&self.shell.renaming, Some((renaming, _)) if renaming == &id)
+        {
+            actions = actions.push(ghost(
+                "rename-session",
+                "Rename…",
+                Some(Message::StartRename(id.clone())),
+            ));
+        }
+        body = body.push(actions.wrap());
+        if agent.status.is_live() && agent.spec.runtime != "human" {
             if self.shell.session_message {
                 let draft_key = self.session_draft_key(&id);
                 let entry = self.shell.session_drafts.get(&draft_key);
@@ -2744,18 +2966,14 @@ impl App {
                                     .then_some(Message::SubmitRename),
                             ),
                             row![
-                                primary(
+                                action(
                                     "rename-save",
                                     "Save name",
                                     (self.connected.is_ok() && valid.is_ok())
                                         .then_some(Message::SubmitRename),
+                                    false,
                                 ),
-                                action(
-                                    "rename-cancel",
-                                    "Cancel",
-                                    Some(Message::CancelRename),
-                                    false
-                                ),
+                                ghost("rename-cancel", "Cancel", Some(Message::CancelRename)),
                             ]
                             .spacing(6),
                         ]
@@ -2767,59 +2985,112 @@ impl App {
                         body = body.push(small(reason, c));
                     }
                 }
-                _ => {
-                    body = body.push(action(
-                        "rename-session",
-                        "Rename…",
-                        Some(Message::StartRename(id.clone())),
-                        false,
-                    ));
-                }
+                _ => {}
             }
         }
-        body = body.push(action(
+        let mut footer = column![].spacing(10);
+        footer = footer.push(custom_sized(
             "session-details",
             if self.shell.session_details {
                 "Hide details"
             } else {
                 "Details"
             },
+            row![
+                icon(
+                    if self.shell.session_details {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    },
+                    c.muted,
+                    12.0
+                ),
+                text(if self.shell.session_details {
+                    "Hide details"
+                } else {
+                    "Details"
+                })
+                .size(13)
+                .font(weight(iced::font::Weight::Medium))
+            ]
+            .spacing(6)
+            .align_y(Center),
             Some(Message::SessionDetails),
-            self.shell.session_details,
+            false,
+            Kind::Ghost,
+            [5, 8],
+            iced::Length::Shrink,
         ));
         if self.shell.session_details {
             // The full id is 32 hex digits with nowhere to wrap: shown short,
             // copied whole.
-            let mut details = column![
-                kv("Session", agent.id.short().to_string(), c),
-                action(
-                    "copy-session-id",
-                    "Copy session ID",
-                    Some(Message::CopyGuidance(agent.id.to_string())),
-                    false
+            let value = |value: String| -> Element<'_, Message> {
+                text(value)
+                    .size(12.5)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                    .into()
+            };
+            let mono_value = |value: String| -> Element<'_, Message> {
+                text(value)
+                    .size(12)
+                    .font(Font::MONOSPACE)
+                    .wrapping(iced::widget::text::Wrapping::WordOrGlyph)
+                    .into()
+            };
+            let mut facts: Vec<(String, Element<'_, Message>)> = vec![(
+                "Session".to_owned(),
+                row![
+                    text(agent.id.short().to_string())
+                        .size(12)
+                        .font(Font::MONOSPACE)
+                        .width(Fill),
+                    crate::controls::custom_sized(
+                        "copy-session-id",
+                        "Copy session ID",
+                        row![
+                            icon(Icon::Copy, c.muted, 12.0),
+                            text("Copy")
+                                .size(12)
+                                .font(weight(iced::font::Weight::Medium))
+                        ]
+                        .spacing(5)
+                        .align_y(Center),
+                        Some(Message::CopyGuidance(agent.id.to_string())),
+                        false,
+                        Kind::Ghost,
+                        [3, 6],
+                        iced::Length::Shrink,
+                    ),
+                ]
+                .align_y(Center)
+                .into(),
+            )];
+            facts.push((
+                "Folder".to_owned(),
+                mono_value(
+                    agent
+                        .spec
+                        .workdir
+                        .as_ref()
+                        .map(|p| shorten_home(p))
+                        .unwrap_or_else(|| "Working folder unknown".into()),
                 ),
-            ]
-            .spacing(6);
-            details = details.push(kv(
-                "Folder",
-                agent
-                    .spec
-                    .workdir
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "Working folder unknown".into()),
-                c,
             ));
-            details = details.push(kv("Last seen", ago(Utc::now(), agent.last_seen), c));
+            facts.push((
+                "Last seen".to_owned(),
+                value(ago(Utc::now(), agent.last_seen)),
+            ));
             if let Some(pid) = agent.pid {
-                details = details.push(kv("Process", pid.to_string(), c));
+                facts.push(("Process".to_owned(), mono_value(pid.to_string())));
             }
             if let Some(vcs) = &agent.vcs {
-                details = details.push(kv("Checkout", vcs.describe(), c));
+                facts.push(("Checkout".to_owned(), value(vcs.describe())));
             }
             if let Some(session) = &agent.session {
-                details = details.push(kv("Terminal", session.describe(), c));
+                facts.push(("Terminal".to_owned(), value(session.describe())));
             }
+            let mut details = column![kv_list(facts, c)].spacing(10);
             if let Some(guidance) =
                 super::send_readiness::reconnect(agent, &self.agents, "inspector", c)
             {
@@ -2831,7 +3102,7 @@ impl App {
                 // ended the button says why it waits.
                 if agent.spec.runtime == "claude-code" {
                     let blocker = self.reconnect_blocker(agent);
-                    let mut reconnect = row![primary(
+                    let mut reconnect = row![action(
                         format!("reconnect-{}", agent.id),
                         if self.shell.reconnecting.as_deref() == Some(agent.id.as_str()) {
                             "Reconnecting…"
@@ -2840,6 +3111,7 @@ impl App {
                         },
                         (blocker.is_none() && !self.shell.launching && self.connected.is_ok())
                             .then_some(Message::Reconnect(agent.id.to_string())),
+                        false,
                     )]
                     .spacing(8)
                     .align_y(Center);
@@ -2854,15 +3126,37 @@ impl App {
                     details = details.push(reconnect);
                 }
             }
-            body = body.push(details);
+            footer = footer.push(details);
         }
+        // Stop takes two presses: the first arms it in place — the same
+        // slot turns solid red and says Confirm stop, with a square to
+        // put it back — and the second, within five seconds, sends it.
         if agent.status.is_live() {
-            body = body.push(if stop_armed {
-                danger(
-                    "stop-session",
-                    "Confirm stop",
-                    self.connected.is_ok().then_some(Message::Stop(id)),
-                )
+            let stop: Element<'_, Message> = if stop_armed {
+                column![
+                    row![
+                        danger(
+                            "stop-session",
+                            "Confirm stop",
+                            self.connected.is_ok().then_some(Message::Stop(id.clone())),
+                        ),
+                        custom_sized(
+                            "stop-session-cancel",
+                            "Keep running",
+                            icon(Icon::Close, c.muted, 12.0),
+                            Some(Message::DisarmStop),
+                            false,
+                            Kind::Secondary,
+                            [9, 9],
+                            iced::Length::Shrink,
+                        ),
+                    ]
+                    .spacing(6)
+                    .align_y(Center),
+                    small("Confirm within five seconds to send the stop signal.", c),
+                ]
+                .spacing(6)
+                .into()
             } else {
                 action(
                     "stop-session",
@@ -2870,21 +3164,19 @@ impl App {
                     self.connected.is_ok().then_some(Message::Stop(id)),
                     false,
                 )
-            });
+            };
+            footer = footer.push(stop);
         }
-        if stop_armed {
-            body = body.push(note(
-                "Confirm within five seconds to send the stop signal.",
-                c,
-            ));
-        }
-        body = body.push(rule(c)).push(action(
-            "close-session",
-            "Back to sessions",
-            Some(Message::CloseSession),
-            false,
-        ));
-        card(body, c)
+        container(column![
+            container(header).padding([14, 16]),
+            rule(c),
+            container(body).padding([14, 16]),
+            rule(c),
+            container(footer).padding([12, 16]),
+        ])
+        .width(Fill)
+        .style(move |_| c.card_style())
+        .into()
     }
 
     /// The launch dialog: which tool, a name and its arguments, then
