@@ -134,8 +134,9 @@ def main():
                AGENTDOCKER_NO_AUTOSTART="1", AGENTDOCKER_NO_NOTIFICATIONS="1",
                AGENTDOCKER_FIXTURE_KEY="fixture-only", TERM="xterm-256color")
 
-    def rpc(value):
-        channel = WindowsSmokePipe(sock, timeout=3, read_timeout=5)
+    def rpc(value, timeout=5):
+        channel = WindowsSmokePipe(sock, timeout=min(3, timeout), read_timeout=timeout,
+                                   write_timeout=timeout)
         try:
             channel.write((json.dumps(value) + "\n").encode())
             result = json.loads(channel.readline())
@@ -218,6 +219,23 @@ def main():
         daemon = subprocess.Popen([str(daemon_exe)], cwd=repo, env=env, stdin=subprocess.DEVNULL,
                                   stdout=daemon_log, stderr=daemon_log)
         owned.append(psutil.Process(daemon.pid))
+        started = time.monotonic()
+
+        def ready():
+            if daemon.poll() is not None:
+                raise RuntimeError("private daemon exited before readiness")
+            remaining = 10 - (time.monotonic() - started)
+            if remaining <= 0:
+                raise TimeoutError("private daemon did not answer within ten seconds")
+            try:
+                return rpc({"op": "ping"}, timeout=min(0.2, remaining / 3)).get("type") == "pong"
+            except OSError:
+                return False
+
+        # Observe the same manually started process; do not restart it or rely
+        # on CLI autostart. The product's ten-second readiness bound is kept.
+        wait(ready, 10)
+        report["daemon_ready_seconds"] = time.monotonic() - started
         check_cli("ping")
         # One-off trust is limited to the fixture's sole SessionStart hook.
         provider = PtyProcess.spawn([str(codex), "--no-alt-screen", "--dangerously-bypass-hook-trust"],
@@ -324,6 +342,12 @@ def main():
                       automatic_bootstrap=True, draft_preserved=True, receiver_restart_no_replay=True)
     except Exception:
         report["error"] = traceback.format_exc()
+        if provider is not None and provider.isalive():
+            try:
+                provider.write("\x14")  # Capture Codex's startup-issue details.
+                time.sleep(0.3)
+            except Exception:
+                pass
     finally:
         closing.set()
         release.set()

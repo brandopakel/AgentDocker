@@ -440,8 +440,12 @@ receiver replacement without replay. The workflow checks the provider download's
 SHA-256 and retains its version, binary/driver hashes, logs and result. Its
 fixture process selects its own user as the default object owner before creating
 files, matching ordinary desktop ownership on elevated CI; no existing file ACL
-or saved provider configuration is changed. This new path still needs a passing
-native run. It does not establish real-account, physical keyboard or service
+or saved provider configuration is changed. The first native run passed all 62 existing package checks, then exposed an
+immediate-ping race in the new harness before Codex started. The harness now
+observes its original daemon within the existing ten-second bound. This path
+still needs a passing native Codex run. Separate Mac trials on the same receiver
+source passed delivery after an initial prompt but failed fresh startup and
+reopen without a prompt; both complete trial failures remain recorded. It does not establish real-account, physical keyboard or service
 acceptance; the held HTTP response is not a tool or permission wait.
 
 Setup publishes flushed receipts and configuration files through the host's
