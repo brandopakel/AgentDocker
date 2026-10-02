@@ -668,9 +668,18 @@ impl App {
                 c,
             ));
         }
+        // One filled action on the screen: the first tool that needs
+        // setting up; the others' Set up step down to an outline, and all
+        // of them do while a setup is under review (its Connect leads).
+        let mut led = self.setup_plan.is_some();
         let mut rows: Vec<Element<'_, Message>> = runtimes
             .into_iter()
-            .map(|runtime| self.tool_row(runtime, c))
+            .map(|runtime| {
+                let needs = self.tool_needs_action(runtime, c);
+                let lead = needs && !led;
+                led |= needs;
+                self.tool_row(runtime, lead, c)
+            })
             .collect();
         if other_count > 0 {
             let words = if self.shell.other_tools {
@@ -769,9 +778,24 @@ impl App {
         page.into()
     }
 
+    /// Whether a tool's row offers Set up.
+    fn tool_needs_action(&self, runtime: &RuntimeInfo, c: Colors) -> bool {
+        let state = self.tool_state(runtime, c);
+        state.installed
+            && state.supported
+            && (state.missing || state.unverified)
+            && !state.reporting
+    }
+
     /// One tool: its mark, its name over its status, and one thing to do
-    /// at the right — Set up when it needs it — then Details.
-    fn tool_row<'a>(&'a self, runtime: &'a RuntimeInfo, c: Colors) -> Element<'a, Message> {
+    /// at the right — Set up when it needs it, filled only for the `lead`
+    /// tool — then Details.
+    fn tool_row<'a>(
+        &'a self,
+        runtime: &'a RuntimeInfo,
+        lead: bool,
+        c: Colors,
+    ) -> Element<'a, Message> {
         let narrow = self.narrow();
         let state = self.tool_state(runtime, c);
         let version = runtime
@@ -779,10 +803,7 @@ impl App {
             .as_deref()
             .map(|v| format!(" · {v}"))
             .unwrap_or_default();
-        let needs_action = state.installed
-            && state.supported
-            && (state.missing || state.unverified)
-            && !state.reporting;
+        let needs_action = self.tool_needs_action(runtime, c);
         // A tool taking messages says so at the right, where a button
         // would otherwise be; every other state is a dot and its words
         // under the name.
@@ -806,14 +827,16 @@ impl App {
         };
         let mut trailing = row![].spacing(6).align_y(Center);
         if needs_action {
-            trailing = trailing.push(primary(
-                format!("setup-{}", runtime.name),
-                "Set up",
-                (!self.setup_busy).then_some(Message::Setup(vec![
-                    runtime.name.clone(),
-                    "--preview".into(),
-                ])),
-            ));
+            let id = format!("setup-{}", runtime.name);
+            let press = (!self.setup_busy).then_some(Message::Setup(vec![
+                runtime.name.clone(),
+                "--preview".into(),
+            ]));
+            trailing = trailing.push(if lead {
+                primary(id, "Set up", press)
+            } else {
+                action(id, "Set up", press, false)
+            });
         } else if state.ready {
             trailing =
                 trailing.push(container(status_word("Connected", c.green, c)).padding([0, 6]));
