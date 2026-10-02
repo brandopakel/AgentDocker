@@ -1803,6 +1803,35 @@ try:
 
             cleanup_step("provider", lambda: stop_child(provider))
 
+            def managed_provider_processes():
+                # New providers detach an app-server and its PID updater from
+                # the TUI's process group. Match only executables inside this
+                # trial's fresh private profile; never a user's daemon.
+                prefix = str(profile / "packages/app-server-daemon/releases") + "/"
+                rows = subprocess.check_output(
+                    ["ps", "-axo", "pid=,lstart=,command="], text=True, timeout=5)
+                found = []
+                for row in rows.splitlines():
+                    fields = row.split(None, 6)
+                    if len(fields) == 7 and fields[6].startswith(prefix):
+                        assert " app-server " in fields[6], "unexpected private provider process"
+                        found.append((int(fields[0]), " ".join(fields[1:6])))
+                return found
+
+            def end_managed_provider():
+                owned = managed_provider_processes()
+                report["managed_provider_processes"] = owned
+                if not owned:
+                    return
+                stopped = subprocess.run(
+                    [codex, "app-server", "daemon", "stop"], env=env, cwd=repo,
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+                assert stopped.returncode == 0, stopped.stderr
+                wait(lambda: not managed_provider_processes(), 10)
+                report["managed_provider_survivors"] = []
+
+            cleanup_step("managed provider", end_managed_provider)
+
             def end_controller():
                 try:
                     os.killpg(controller_pid, signal.SIGCONT)
