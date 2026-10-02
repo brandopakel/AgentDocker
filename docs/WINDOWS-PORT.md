@@ -161,6 +161,15 @@ crash, and what that means for a person:
   acceptance remains separate from source tests and the isolated supervisor
   prototype. See the [user commands](GUIDE.md) and
   [service semantics](ARCHITECTURE.md#starting-the-daemon).
+
+  Manual Windows workflow runs can enable `service_acceptance` to exercise
+  install, stop, start, restart, daemon-crash recovery and uninstall using the
+  exact extracted portable binaries. The trial creates one random private home
+  and its owned Task Scheduler task, disables client autostart, verifies the
+  serving process image and home before inducing a crash, and requires cleanup.
+  The report is retained beside package evidence. Native acceptance of this
+  driver is pending; an interactive-logon pass would not establish login/reboot
+  behavior or managed-provider survival.
 - A validation command is ended on a timeout, but only the command itself:
   there is no process group and no Job Object around it yet, so whether its
   descendants survived is not reported.
