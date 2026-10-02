@@ -216,6 +216,15 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          # Board is a tab beside Chat and Agents, not behind More.
                          step("wait_control", id="project-tab-Board", present=True),
                          step("wait_text", text="#everyone"), step("capture", name="project-chat-default"),
+                         # The command palette: open from the rail, search, run a row.
+                         step("click", id="command-palette"), step("wait_control", id="palette-search", present=True),
+                         step("wait_control", id="palette-item-go-settings", present=True), step("capture", name="command-palette"),
+                         step("fill", id="palette-search", text="disc"),
+                         step("wait_control", id="palette-item-go-settings", present=False),
+                         step("wait_control", id=f"palette-item-project-{project}", present=True),
+                         step("capture", name="command-palette-filtered"),
+                         step("click", id=f"palette-item-project-{project}"),
+                         step("wait_control", id="palette-search", present=False), step("wait_text", text="#everyone"),
                          step("click", id="project-tab-Agents"), step("wait_text", text="terminal-fixture"), step("wait_control", id=f"session-{agent['id']}", present=True),
                          step("wait_control", id=f"session-{previous['id']}", present=False), step("capture", name="projects-live"),
                          step("click", id="pause-project"),
@@ -696,7 +705,12 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
             assert any(m.get("payload") == "Fixture channel message" for m in messages), messages
             launched = [a for a in rpc(endpoint, {"op": "list", "all": True})["agents"] if a["spec"]["name"] == "launched-from-iced"]
             assert len(launched) == 1 and launched[0]["status"]["state"] == "exited", launched
-            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_control", id="project-terminal", present=True), step("click", id="project-tab-Agents"), step("wait_text", text="No agents in this project"), step("capture", name="restored-last-project"), step("click", id="sessions-earlier"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-earlier")])
+            report["restored_window"] = launch("restored", [step("wait_text", text="pinned-api"), step("wait_control", id="project-terminal", present=True), step("click", id="project-tab-Agents"), step("wait_text", text="No agents in this project"), step("capture", name="restored-last-project"), step("click", id="sessions-earlier"), step("wait_text", text="launched-from-iced"), step("capture", name="restored-earlier"),
+                step("click", id="command-palette"), step("wait_control", id="palette-search", present=True), step("capture", name="command-palette-dark"),
+                step("click", id="palette-item-action-launch"), step("wait_control", id="palette-back", present=True),
+                step("wait_control", id="palette-item-tool-codex", present=True), step("capture", name="command-palette-tools-dark"),
+                step("click", id="palette-back"), step("wait_control", id="palette-item-action-launch", present=True),
+                step("click", id="command-palette"), step("wait_control", id="palette-search", present=False)])
             checks.extend(["folder_pin_has_no_project_files", "same_project_after_launch", "last_project_restore", "quiet_project_retained", "saved_appearance"])
             # Private metadata fixture, not a model or idle-wake assertion.
             receiver = rpc(endpoint, {"op": "register", "spec": {

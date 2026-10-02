@@ -84,6 +84,8 @@ pub enum Icon {
     Download,
     /// A hash: a channel.
     Hash,
+    /// A circle half filled: light or dark appearance.
+    Contrast,
 }
 
 /// An icon inked in one colour.
@@ -366,6 +368,20 @@ impl Glyph {
                     b.line_to(p(13.0, 10.0));
                 });
                 frame.stroke(&hash, stroke);
+            }
+            Icon::Contrast => {
+                frame.stroke(&Path::circle(p(8.0, 8.0), 5.5), stroke);
+                let half = Path::new(|b| {
+                    b.move_to(p(8.0, 2.5));
+                    b.arc(canvas::path::Arc {
+                        center: p(8.0, 8.0),
+                        radius: 5.5,
+                        start_angle: iced::Radians(-std::f32::consts::FRAC_PI_2),
+                        end_angle: iced::Radians(std::f32::consts::FRAC_PI_2),
+                    });
+                    b.close();
+                });
+                frame.fill(&half, self.color);
             }
         }
     }
