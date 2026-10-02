@@ -149,7 +149,7 @@ def main():
         result = subprocess.run([str(cli), *argv], cwd=repo, env=env, stdin=subprocess.DEVNULL,
                                 capture_output=True, text=True, encoding="utf-8", timeout=30)
         assert result.returncode == 0, result.stderr
-        return json.loads(result.stdout)
+        return result.stdout
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -319,11 +319,16 @@ def main():
         assert [r["message"] for r in before["completed"]] == [r["id"] for r in report["sent"]]
         thread = agent["input_binding"]["provider"]["session"]
         assert all(r["receipt"]["thread"] == thread for r in before["completed"])
-        report["recovery_preview"] = check_cli("codex-queue-resolve", "--agent", aid)
+        report["recovery_preview"] = json.loads(check_cli("codex-queue-resolve", "--agent", aid))
         controller.kill()
         controller.wait(timeout=5)
-        rebound = wait(lambda: (a if (a := rpc({"op": "inspect", "agent": aid})["agent"])
-                               .get("input_binding", {}).get("controller", {}).get("pid") != controller.pid else None), 30)
+        def replacement():
+            agent = rpc({"op": "inspect", "agent": aid})["agent"]
+            binding = agent.get("input_binding") or {}
+            pid = binding.get("controller", {}).get("pid")
+            return agent if pid is not None and pid != controller.pid else None
+
+        rebound = wait(replacement, 30)
         new_controller = psutil.Process(rebound["input_binding"]["controller"]["pid"])
         assert daemon.pid in [p.pid for p in new_controller.parents()]
         owned.append(new_controller)

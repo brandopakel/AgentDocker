@@ -442,7 +442,11 @@ fixture process selects its own user as the default object owner before creating
 files, matching ordinary desktop ownership on elevated CI; no existing file ACL
 or saved provider configuration is changed. The first native run passed all 62 existing package checks, then exposed an
 immediate-ping race in the new harness before Codex started. The harness now
-observes its original daemon within the existing ten-second bound. This path
+observes its original daemon within the existing ten-second bound. The second
+run reached readiness in 0.81 seconds, then exposed a separate harness error:
+it parsed plain-text CLI `ping` output as JSON. Only the JSON recovery preview
+now receives JSON parsing, and the restart predicate waits through a missing
+binding instead of treating that transient state as a replacement. This path
 still needs a passing native Codex run. Separate Mac trials on the same receiver
 source passed delivery after an initial prompt but failed fresh startup and
 reopen without a prompt; both complete trial failures remain recorded. It does not establish real-account, physical keyboard or service
