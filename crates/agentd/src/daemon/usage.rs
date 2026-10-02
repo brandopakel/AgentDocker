@@ -520,6 +520,7 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
         }
     }
     let mut after = None;
+    let mut deferred = false;
     loop {
         if pages == 0 {
             return;
@@ -580,6 +581,7 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                 if !defer_growing_job(weak, &collection, job_id, &source) {
                     return;
                 }
+                deferred = true;
                 pages -= 1;
                 continue;
             }
@@ -625,6 +627,7 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
                     if !defer_growing_job(weak, &collection, job_id, &source) {
                         return;
                     }
+                    deferred = true;
                     pages -= 1;
                     break;
                 }
@@ -707,7 +710,7 @@ fn collect_generation_bounded(weak: &Weak<Daemon>, config: &UsageConfig, mut pag
             return;
         }
     }
-    if collection.pending_files.is_some_and(|pending| pending > 0) {
+    if deferred {
         // Deferred jobs and their original accepted cursors survive this pass.
         // A growing source never becomes a gap or "caught up" merely by retrying.
         return;
@@ -1196,7 +1199,7 @@ mod tests {
 
     #[tokio::test]
     async fn growing_usage_job_stays_pending_without_starving_peers_and_survives_reopen() {
-        for rewrite in [false, true] {
+        for (rewrite, partial_discovery) in [(false, false), (true, false), (false, true)] {
             let (temp, daemon, config, root) = fixture();
             for name in ["first", "second"] {
                 let content: String = (0..300)
@@ -1209,6 +1212,17 @@ mod tests {
             let first = query(&daemon).await;
             assert_eq!(first.rows[0].samples, 128);
             assert_eq!(first.coverage.collection.pending_files, Some(2));
+            if partial_discovery {
+                let mut collection = lock(&daemon.state)
+                    .store
+                    .usage_collection()
+                    .unwrap()
+                    .unwrap();
+                collection.discovery_complete = false;
+                collection.pending_files = None;
+                collection.pending_tail_files = None;
+                assert!(snapshot(&Arc::downgrade(&daemon), &collection, &[]));
+            }
             let job = lock(&daemon.state).store.usage_next_job().unwrap().unwrap();
             if rewrite {
                 let name = job.source.path.file_stem().unwrap().to_str().unwrap();
@@ -1235,7 +1249,10 @@ mod tests {
                 deferred.rows[0].samples, 428,
                 "other job must finish this pass"
             );
-            assert_eq!(deferred.coverage.collection.pending_files, Some(1));
+            assert_eq!(
+                deferred.coverage.collection.pending_files,
+                (!partial_discovery).then_some(1)
+            );
             assert_eq!(
                 deferred.coverage.collection.state,
                 CollectionState::Scanning
@@ -1259,8 +1276,18 @@ mod tests {
             assert_eq!(done.rows[0].samples, samples);
             assert_eq!(done.rows[0].counters.input_tokens.sum, Some(samples * 2));
             assert_eq!(done.coverage.source_gaps, u64::from(rewrite));
-            assert_eq!(done.coverage.collection.pending_files, Some(0));
-            assert_eq!(done.coverage.collection.state, CollectionState::CaughtUp);
+            assert_eq!(
+                done.coverage.collection.pending_files,
+                (!partial_discovery).then_some(0)
+            );
+            assert_eq!(
+                done.coverage.collection.state,
+                if partial_discovery {
+                    CollectionState::Scanning
+                } else {
+                    CollectionState::CaughtUp
+                }
+            );
             assert!(
                 lock(&daemon.state)
                     .store
@@ -1268,6 +1295,17 @@ mod tests {
                     .unwrap()
                     .is_none()
             );
+            assert!(lock(&daemon.state).storage_error.is_none());
+            if partial_discovery {
+                collect_generation(&Arc::downgrade(&daemon), &config);
+                let complete = query(&daemon).await;
+                assert_eq!(
+                    complete.coverage.collection.state,
+                    CollectionState::CaughtUp
+                );
+                assert_eq!(complete.rows[0].samples, samples);
+                assert_eq!(complete.coverage.source_gaps, 0);
+            }
         }
     }
 
