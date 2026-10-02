@@ -49,8 +49,11 @@ missing, ambiguous, stale or child bindings. It creates no app-server agent and
 never derives a thread from history or a display name. The native receiver keeps
 ownership of input receipts. Once resolved, a native question cannot fall back
 to a blocking legacy call if a binding changes during the request. This source
-change still needs native acceptance
-and independent review; it does not solve zero-prompt startup/reopen.
+change passed an actual Codex 0.160.0 macOS ARM64 loopback trial on
+`3065bd6e`: question identity matched the live TUI, its answer arrived once,
+and idle/draft/busy/recovery checks and private-process cleanup passed.
+Independent review and broader platform/version acceptance remain; this does
+not solve zero-prompt startup/reopen.
 
 The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;
