@@ -13,6 +13,12 @@ review, bounded terminal shutdown and retained provider sign-in failures.
 Hosted downloads and Mac/Linux update/rollback/explicit-install checks passed;
 physical, fresh-account, sustained and stable acceptance remain below.
 
+Native Windows installation work now has extracted-package install/rollback and
+local preview-feed acceptance (`f0426f72`, `8ae2a50c`); maintenance and installed
+service interlocks are under native validation. These WIP trials do not update
+the published beta.4 package or prove a hosted Windows upgrade. See
+[the Windows port](WINDOWS-PORT.md) for the exact scope.
+
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its
 installer and service are unfinished; it does not fulfill the full Windows

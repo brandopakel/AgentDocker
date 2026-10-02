@@ -1719,5 +1719,12 @@ paths. Install and rollback require native launcher contract 2, lifetime pins,
 explicit preview consent and compatible stored state. Update archives admit only
 the exact seven-file Windows ZIP layout, bounded expansion and verified feed
 hash/source/schema. Windows feeds remain preview-only; activation leaves existing
-processes running. Native acceptance and remaining lifecycle work are tracked in
+processes running. Maintenance holds the install lock and exclusive per-version
+pins before retiring verified unused payloads. Stopped service actions retain
+explicit version references; services using stable launchers do not prevent
+pruning unrelated versions. Uninstall refuses service references, atomically
+deactivates and removes only receipt-verified bootstrap names; Windows POSIX
+deletion lets already-loaded bootstraps finish. Partial cleanup retains an
+inactive record and can be resumed without removing provider settings or pinned
+releases. Native acceptance and remaining lifecycle work are tracked in
 [the Windows port](WINDOWS-PORT.md).

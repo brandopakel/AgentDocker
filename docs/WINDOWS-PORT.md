@@ -518,9 +518,15 @@ payload changed only a fixture README: this proves activation/rollback mechanics
 not a second hosted release. Modified bootstrap/retained bytes were refused and
 scratch was removed. The updater now accepts unsigned Windows preview feeds
 only, verifies archive bytes and the payload source/schema, and extracts only
-the seven exact portable files with bounded expansion and no links. Local
-preview-feed native acceptance, maintenance, Start menu and full installed
-lifecycle acceptance remain open.
+the seven exact portable files with bounded expansion and no links. Native preview-feed run 36976883757 on `8ae2a50c` also passed its
+local-fixture update/rollback, wrong-checksum and stable-policy refusal checks.
+This is not a hosted Windows upgrade. Maintenance now plans and guards removal
+of verified inactive versions, retaining active/rollback/held versions and stopped
+service references. Uninstall first publishes an inactive record, then unlinks
+only receipt-verified launchers using Windows POSIX deletion semantics; settings
+and running immutable releases are retained. An interrupted cleanup is resumable
+from the portable CLI. Native maintenance/service interlocks, Start menu and
+full installed lifecycle acceptance remain open.
 
 An initial Mac concurrency regression found that strict private-file reads
 rejected an opened handle unlinked by record replacement. A separate read-only

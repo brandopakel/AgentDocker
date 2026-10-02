@@ -141,6 +141,46 @@ pub fn publish_snapshot(staged: &Path, destination: &Path) -> io::Result<()> {
     }
 }
 
+/// Unlink a verified regular file while existing Windows image/reader handles
+/// finish using it. Used for owned desktop bootstraps during uninstall; unlike
+/// delayed reboot deletion, failure is returned synchronously to the caller.
+#[cfg(windows)]
+pub fn unlink_open_regular(path: &Path) -> io::Result<()> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::Foundation::GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_DISPOSITION_INFO_EX, FILE_FLAG_OPEN_REPARSE_POINT, FileDispositionInfoEx,
+        SetFileInformationByHandle,
+    };
+    let checked = open_regular(path)?;
+    let file = OpenOptions::new()
+        .access_mode(GENERIC_READ | DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    if same_file::Handle::from_file(checked)? != same_file::Handle::from_file(file.try_clone()?)? {
+        return Err(io::Error::other("file changed before unlink"));
+    }
+    // FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS. Deliberately
+    // omit FORCE_IMAGE_SECTION_CHECK: an owned loaded bootstrap may finish
+    // after its name is removed. No readonly-attribute or sharing bypass.
+    // https://learn.microsoft.com/openspecs/windows_protocols/ms-fscc/2e860264-018a-47b3-8555-565a13b35a45
+    let info = FILE_DISPOSITION_INFO_EX { Flags: 0x1 | 0x2 };
+    // SAFETY: the live file and correctly sized information buffer outlive
+    // the call. The link disappears when this delete handle closes.
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&info as *const FILE_DISPOSITION_INFO_EX).cast(),
+            std::mem::size_of_val(&info) as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod publication_tests {
     use super::*;

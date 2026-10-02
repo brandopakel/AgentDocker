@@ -3,10 +3,12 @@
 import argparse
 import hashlib
 import json
+import msvcrt
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -17,6 +19,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary-dir', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--service', action='store_true')
     args = parser.parse_args()
     if os.name != 'nt':
         parser.error('this trial requires native Windows')
@@ -135,11 +138,35 @@ def main():
         third = update_preview['candidate']['id']
         step('Windows archive preview verifies and stages without activation',
              update_preview['preview'] and desktop('status')['installation']['current']['id'] == first)
-        desktop(*update_args, '--apply')
+        pin_path = store / 'pins' / (second + '.lock')
+        with pin_path.open('r+b') as held:
+            msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, 1)
+            try:
+                applied = desktop(*update_args, '--apply')
+                step('activation preserves an inactive version whose lock is held',
+                     applied['retention']['completed'] and (store / 'versions' / second).is_dir())
+            finally:
+                held.seek(0)
+                msvcrt.locking(held.fileno(), msvcrt.LK_UNLCK, 1)
         status = desktop('status', executable=launcher)['installation']
         step('Windows preview update activates through the existing bootstrap',
              status['current']['id'] == third and status['previous']['id'] == first
              and (store / 'launcher.json').read_bytes() == receipt)
+        retained = desktop('prune', '--preview', '--keep', '1')
+        step('explicit additional retention keeps the old version', not retained['maintenance']['remove'])
+        cleanup = desktop('prune', '--preview')
+        step('unlocked inactive version becomes eligible for pruning',
+             len(cleanup['maintenance']['remove']) == 1 and Path(cleanup['maintenance']['remove'][0]).name == second)
+        unknown = store / 'versions/user-notes'
+        unknown.mkdir()
+        (unknown / 'keep.txt').write_text('driver-owned content must be preserved', encoding='utf-8')
+        desktop('prune', '--expect-plan', cleanup['plan_id'], good=False)
+        step('changed maintenance inventory invalidates the reviewed plan', (store / 'versions' / second).is_dir())
+        cleanup = desktop('prune', '--preview')
+        desktop('prune', '--expect-plan', cleanup['plan_id'])
+        step('pruning removes only the unlocked verified version',
+             not (store / 'versions' / second).exists() and (store / 'versions' / first).is_dir()
+             and (store / 'versions' / third).is_dir() and (unknown / 'keep.txt').is_file())
         desktop('rollback', '--local-preview', '--expect-current', third)
         step('an update can roll back to the original immutable payload',
              desktop('status')['installation']['current']['id'] == first)
@@ -152,6 +179,34 @@ def main():
         feed_path.write_text(json.dumps(feed), encoding='utf-8')
         desktop(*update_args, '--check', good=False)
         step('unsigned Windows packages cannot enter a stable feed', desktop('status')['installation']['current']['id'] == first)
+        if args.service:
+            subprocess.run([sys.executable, str(Path(__file__).with_name('windows_service_smoke.py')),
+                            '--binary-dir', str(store / 'bin'), '--installed-prefix', str(prefix),
+                            '--output', str(output / 'service')], check=True, timeout=600)
+            service = json.loads((output / 'service/result.json').read_text(encoding='utf-8'))
+            step('installed stable launchers pass the isolated Task Scheduler lifecycle',
+                 service['result'] == 'passed' and not service['cleanup_errors'])
+            report['service'] = {'result': 'passed', 'steps': len(service['steps'])}
+        foreign = store / 'bin/user-notes.txt'
+        foreign.write_text('driver-owned launcher neighbor', encoding='utf-8')
+        desktop('uninstall', '--preview', good=False)
+        step('foreign launcher neighbor prevents uninstall without deleting anything',
+             foreign.is_file() and launcher.is_file())
+        foreign.unlink()
+        uninstall = desktop('uninstall', '--preview', executable=launcher)
+        desktop('uninstall', '--expect-plan', '0' * 64, executable=launcher, good=False)
+        step('stale uninstall plan preserves launchers and activation',
+             launcher.is_file() and desktop('status')['installation']['current']['id'] == first)
+        desktop('uninstall', '--expect-plan', uninstall['plan_id'], executable=launcher)
+        step('installed command uninstalls its loaded bootstrap and deactivates atomically',
+             not (store / 'bin').exists() and not (store / 'launcher.json').exists()
+             and desktop('status')['installation'] is None)
+        step('uninstall preserves immutable releases and unrecognized retained content',
+             (store / 'versions' / first).is_dir() and (unknown / 'keep.txt').is_file())
+        desktop('install', '--from', app, '--local-preview', '--expect-current', 'none')
+        step('reinstall after uninstall restores the stable launcher',
+             desktop('status', executable=launcher)['installation']['current']['id'] == first)
+        desktop('uninstall')
         step('installation leaves provider state and daemon startup untouched', not home.exists())
         report['result'] = 'passed'
     except Exception as error:

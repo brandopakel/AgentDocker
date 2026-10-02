@@ -4,6 +4,8 @@ use super::*;
 use agentdocker_host::{files, installation, lock};
 use installation::windows as native;
 
+mod maintenance;
+
 pub(super) struct Layout {
     prefix: PathBuf,
     pub(super) root: PathBuf,
@@ -89,7 +91,17 @@ impl Layout {
             return Ok(None);
         }
         dirs::check_private_dir(&self.root)?;
-        let active: Option<Activation> = record(&self.root.join("activation.json"))?;
+        let value: Option<serde_json::Value> = record(&self.root.join("activation.json"))?;
+        if let Some(value) = &value
+            && value["inactive"] == true
+        {
+            ensure!(
+                value["format"] == 1 && value.get("current") == Some(&serde_json::Value::Null),
+                "invalid inactive installation record"
+            );
+            return Ok(None);
+        }
+        let active: Option<Activation> = value.map(serde_json::from_value).transpose()?;
         if let Some(active) = &active {
             ensure!(active.format == 1, "unknown installation activation format");
             validate(&active.current)?;
@@ -118,7 +130,29 @@ impl Layout {
                 dirs::check_private_dir(&path)?;
             }
         }
+        let receipt: Option<serde_json::Value> = record(&self.root.join("launcher.json"))?;
+        if let Some(receipt) = &receipt {
+            let hashes = receipt["binary_sha256"]
+                .as_object()
+                .context("invalid launcher receipt")?;
+            ensure!(
+                receipt["format"] == 1
+                    && hashes.len() == BINARIES.len()
+                    && BINARIES.iter().all(|name| hashes
+                        .get(*name)
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|hash| hash.len() == 64
+                            && hash
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))),
+                "unrecognized launcher receipt; preserved"
+            );
+        }
         if present(&self.bin)? {
+            ensure!(
+                receipt.is_some(),
+                "launcher directory has no ownership receipt; preserved"
+            );
             let names: std::collections::BTreeSet<_> = std::fs::read_dir(&self.bin)?
                 .map(|entry| entry.map(|entry| entry.file_name()))
                 .collect::<std::io::Result<_>>()?;
@@ -127,10 +161,14 @@ impl Layout {
                 .map(|name| std::ffi::OsString::from(*name))
                 .collect();
             ensure!(
-                names == expected,
+                names.is_subset(&expected),
                 "launcher directory has unrecognized contents; preserved"
             );
-            for name in BINARIES {
+            ensure!(
+                self.active()?.is_none() || names == expected,
+                "active installation has incomplete launchers"
+            );
+            for name in &names {
                 ensure!(
                     native::launcher_root(&self.bin.join(name))?.as_deref()
                         == Some(self.root.canonicalize()?.as_path()),
@@ -165,6 +203,10 @@ impl Layout {
     fn prepare_launchers(&self, release: &Release) -> Result<()> {
         self.preflight()?;
         if present(&self.bin)? {
+            ensure!(
+                BINARIES.iter().all(|name| self.bin.join(name).is_file()),
+                "finish the interrupted desktop uninstall before installing again"
+            );
             return Ok(());
         }
         let payload = self.payload(release);
@@ -314,6 +356,7 @@ pub(super) fn perform(
     let serving = serving_daemon(socket);
     report["daemon"] = json!({"answered":!serving.is_null(),"reloaded":false,"serving":serving,
         "summary":"activated for the next launch; running sessions and daemon continue unchanged"});
+    report["retention"] = maintenance::after_activation(layout, &_held);
     Ok(report)
 }
 
@@ -401,8 +444,18 @@ pub(super) fn run(args: DesktopArgs, socket: Option<PathBuf>) -> Result<()> {
                     },
                 );
             }
-            DesktopCommand::Prune { .. } | DesktopCommand::Uninstall { .. } => {
-                bail!("Windows installation maintenance is not available yet")
+            DesktopCommand::Prune {
+                keep,
+                preview,
+                expect_plan,
+            } => {
+                return maintenance::run(&layout, Some(keep), preview, expect_plan.as_deref());
+            }
+            DesktopCommand::Uninstall {
+                preview,
+                expect_plan,
+            } => {
+                return maintenance::run(&layout, None, preview, expect_plan.as_deref());
             }
         };
     let report = perform(

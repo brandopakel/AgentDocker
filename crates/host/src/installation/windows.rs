@@ -85,6 +85,14 @@ pub fn target(root: &Path, binary: &str) -> io::Result<Option<PathBuf>> {
         Err(error) => return Err(error),
     };
     let root = root.canonicalize()?;
+    if activation["inactive"] == true {
+        if activation.get("current") == Some(&Value::Null) {
+            return Ok(None);
+        }
+        return Err(invalid(
+            "inactive installation still names a current release",
+        ));
+    }
     let current = &activation["current"];
     let id = current["id"]
         .as_str()
