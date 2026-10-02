@@ -16,6 +16,7 @@ mod question_events;
 mod recovery;
 mod requests;
 mod review;
+mod session_identity;
 mod terminal;
 mod transport;
 
@@ -331,7 +332,10 @@ async fn session(
         "Codex conversation has another checkout"
     );
     ledger.bind_thread(thread.clone())?;
+    let mut session_bound = false;
     if resumed {
+        session_identity::bind(client, agent, &thread).await?;
+        session_bound = true;
         recovery::recover(provider, client, ledger, agent).await?;
     }
     let human = match call(
@@ -519,6 +523,10 @@ async fn session(
                     }
                     preflight(provider, &ledger.record().binding.cwd).await?;
                     let input = ledger.prepare_bound(message, Some(mcp_origin.clone()))?;
+                    if !session_bound {
+                        session_identity::bind(client, agent, &thread).await?;
+                        session_bound = true;
+                    }
                     activity(client, agent.id.as_str(), ReportedActivity::Working).await?;
                     let result = match provider.request("turn/start", json!({"threadId":thread,"clientUserMessageId":message.id,
                         "input":[{"type":"text","text":input,"text_elements":[]}]})).await {

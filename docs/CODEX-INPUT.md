@@ -911,3 +911,12 @@ and complete private-process cleanup. On Codex 0.160.0 Mac ARM64, driver
 wait, 65 queue observations and ordered peer/human receipts exactly once after
 one-time approval, with clean private-process retirement. Real-account, other
 versions/platforms and non-command permission surfaces remain open.
+
+The managed bridge records a prepared conversation as the existing managed
+agent's `session_id` before submitting its first turn, and confirms that same
+identity before recovering a retained attempt. It reuses atomic same-process
+registration: agent ID, process generation, owner and project must agree, and
+a conflicting session or changed registration reply pauses input. Empty unused
+threads are not registered; Codex may replace them on a later launch without
+splitting the managed agent. This label also lets token accounting attribute
+retained provider usage to the agent/project instead of leaving it unattributed.

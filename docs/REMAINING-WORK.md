@@ -64,3 +64,11 @@ additional adapters, container log following and proposed CLI conveniences remai
 deferred proposals. See [architecture](ARCHITECTURE.md#planned-protocol-and-event-additions)
 and [containers](CONTAINER-ENGINES.md). The operational sequence remains in
 [local trial](LOCAL-TRIAL.md).
+
+The independent `acce400f` endurance trial found complete token contributions
+but missing agent/project attribution for three managed Codex bridge sessions:
+their provider threads were retained only in local delivery ledgers. The bridge
+now learns the prepared session through the existing managed registration,
+with identity/generation checks and no provider input replay. Unit and native
+acceptance of the correction, including restart and unused-thread behavior,
+remain required; the original trial is preserved unchanged.

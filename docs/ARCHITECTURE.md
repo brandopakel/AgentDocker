@@ -1707,3 +1707,11 @@ birth, runtime and physical checkout verification. The existing
 `AgentSessionBound` transaction preserves its ID, owner and queue. A child hook
 or conflicting session cannot bind or recover the root channel receipt. Native
 Windows ancestry uses the host process table rather than Unix `ps`.
+
+Managed Codex bridges bind their first prepared provider thread through the
+existing `register`/`AgentSessionBound` transaction before turn submission.
+Reconciliation preserves the managed ID, ownership, project and process birth;
+conflicting known threads and mismatching replies fail closed. No session label
+is learned for an empty unused thread. Resumed prepared/history sessions confirm
+the same mapping before receipt recovery, enabling the usage collector's existing
+runtime/session attribution and late reconciliation without a new schema.
