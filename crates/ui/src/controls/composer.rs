@@ -52,6 +52,9 @@ struct Composer {
     change: Arc<dyn Fn(String) -> Message + Send + Sync>,
     enabled: bool,
     submit: Option<Message>,
+    /// Drawn without a surface or an edge of its own: the [`Frame`]
+    /// around it carries both, and shows its focus.
+    bare: bool,
 }
 
 // Keep selection, clipboard and navigation bindings supplied by Iced. During
@@ -80,10 +83,11 @@ impl Composer {
         suppress_enter: bool,
         drawn_status: Option<Status>,
     ) -> Element<'a, Edit> {
+        let bare = self.bare;
         let mut editor = iced::widget::text_editor(content)
             .id(widget::Id::from(self.id.clone()))
             .placeholder(&self.label)
-            .padding([10, 12])
+            .padding(if bare { [11, 14] } else { [10, 12] })
             .size(14)
             .height(Length::Shrink)
             // Shrink layout in Iced adds vertical padding after this bound.
@@ -93,7 +97,9 @@ impl Composer {
                 let status = drawn_status.unwrap_or(status);
                 use crate::app::style::{Colors, RADIUS_MD, alpha, mix};
                 let c = Colors::of(theme);
+                let clear = iced::Color::TRANSPARENT;
                 let (border, width, background) = match status {
+                    _ if bare => (clear, 0.0, clear),
                     Status::Focused { .. } => (alpha(c.accent, 0.8), 2.0, c.card),
                     Status::Hovered => (mix(c.line_strong, c.muted, 0.45), 1.0, c.card),
                     Status::Active => (c.line_strong, 1.0, c.card),
@@ -373,8 +379,65 @@ pub fn composer<'a>(
     enabled: bool,
     submit: Option<Message>,
 ) -> Element<'a, Message> {
-    let id = id.into();
-    let change = Arc::new(change);
+    build(
+        id.into(),
+        destination.into(),
+        label,
+        value,
+        Arc::new(change),
+        enabled,
+        submit,
+        false,
+    )
+}
+
+/// A composer in one frame with what goes under the words: the field on
+/// top, a hairline, then `footer` (hints and the send action). The frame
+/// is the surface and the edge, so focus shows on the whole of it, not
+/// on the field alone. Typing, Enter and the accessibility node are the
+/// plain [`composer`]'s.
+#[allow(clippy::too_many_arguments)]
+pub fn framed_composer<'a>(
+    id: impl Into<String>,
+    destination: impl Into<String>,
+    label: &str,
+    value: &str,
+    change: impl Fn(String) -> Message + Send + Sync + 'static,
+    enabled: bool,
+    submit: Option<Message>,
+    footer: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let field = build(
+        id.into(),
+        destination.into(),
+        label,
+        value,
+        Arc::new(change),
+        enabled,
+        submit,
+        true,
+    );
+    let hairline =
+        iced::widget::container(iced::widget::Space::new().width(Length::Fill).height(1))
+            .padding([0, 1])
+            .style(|theme: &iced::Theme| crate::app::style::Colors::of(theme).rule());
+    Element::new(Frame {
+        content: iced::widget::column![field, hairline, footer].into(),
+        enabled,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build<'a>(
+    id: String,
+    destination: String,
+    label: &str,
+    value: &str,
+    change: Arc<dyn Fn(String) -> Message + Send + Sync>,
+    enabled: bool,
+    submit: Option<Message>,
+    bare: bool,
+) -> Element<'a, Message> {
     let mut semantic = Semantic::input(
         id.clone(),
         format!("{label} Enter to send. Shift+Enter for a new line."),
@@ -389,17 +452,200 @@ pub fn composer<'a>(
     Control {
         content: Element::new(Composer {
             id,
-            destination: destination.into(),
+            destination,
             label: label.into(),
             value: value.into(),
             change,
             enabled,
             submit,
+            bare,
         }),
         semantic,
         button: false,
     }
     .into()
+}
+
+/// The surface and edge around a framed composer. The edge follows the
+/// editor inside it: focused, a wider accent edge; under the pointer, a
+/// stronger hairline; unavailable, the quiet line on a raised fill.
+struct Frame<'a> {
+    content: Element<'a, Message>,
+    enabled: bool,
+}
+
+#[derive(Default)]
+struct FrameState {
+    hovered: bool,
+}
+
+/// Whether the editor somewhere under `tree` has the keyboard.
+fn editor_focused(tree: &Tree) -> bool {
+    type EditorState = text_editor::State<iced::advanced::text::highlighter::PlainText>;
+    if tree.tag == tree::Tag::of::<EditorState>() {
+        return tree.state.downcast_ref::<EditorState>().is_focused();
+    }
+    tree.children.iter().any(editor_focused)
+}
+
+impl Widget<Message, iced::Theme, iced::Renderer> for Frame<'_> {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<FrameState>()
+    }
+    fn state(&self) -> tree::State {
+        tree::State::new(FrameState::default())
+    }
+    fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.content)]
+    }
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(std::slice::from_ref(&self.content));
+    }
+    fn size(&self) -> Size<Length> {
+        Size::new(Length::Fill, Length::Shrink)
+    }
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits)
+    }
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(&mut tree.children[0], layout, renderer, operation);
+    }
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        // One redraw when the pointer crosses the edge, none while it
+        // moves inside: the window is repainted in software.
+        let hovered = cursor.is_over(layout.bounds());
+        let state = tree.state.downcast_mut::<FrameState>();
+        if state.hovered != hovered {
+            state.hovered = hovered;
+            shell.request_redraw();
+        }
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        use crate::app::style::{Colors, RADIUS_LG, alpha, mix};
+        let c = Colors::of(theme);
+        let bounds = layout.bounds();
+        let focused = editor_focused(&tree.children[0]);
+        let hovered = tree.state.downcast_ref::<FrameState>().hovered;
+        let (edge, width) = if !self.enabled {
+            (c.line, 1.0)
+        } else if focused {
+            (alpha(c.accent, 0.8), 2.0)
+        } else if hovered {
+            (mix(c.line_strong, c.muted, 0.45), 1.0)
+        } else {
+            (c.line_strong, 1.0)
+        };
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds,
+                border: Border {
+                    radius: RADIUS_LG.into(),
+                    ..Border::default()
+                },
+                ..Default::default()
+            },
+            if self.enabled { c.card } else { c.raised },
+        );
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout,
+            cursor,
+            viewport,
+        );
+        // The edge goes over the content so the hairline under the field
+        // meets it cleanly at either side.
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds,
+                border: Border {
+                    color: edge,
+                    width,
+                    radius: RADIUS_LG.into(),
+                },
+                ..Default::default()
+            },
+            iced::Color::TRANSPARENT,
+        );
+    }
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout,
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: iced::Vector,
+    ) -> Option<iced::advanced::overlay::Element<'b, Message, iced::Theme, iced::Renderer>> {
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout,
+            renderer,
+            viewport,
+            translation,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -426,6 +672,7 @@ mod tests {
             change: Arc::new(Message::ChannelDraft),
             enabled,
             submit: ready.then_some(Message::SendChannel),
+            bare: false,
         }
     }
     fn key(key: keyboard::Key, modifiers: keyboard::Modifiers, repeat: bool) -> Event {
@@ -482,6 +729,37 @@ mod tests {
     }
     fn tree(composer: &Composer) -> Tree {
         Tree::new(composer as &dyn Widget<Message, iced::Theme, iced::Renderer>)
+    }
+
+    /// The frame around a framed composer finds the editor inside it, so
+    /// focus shows on the whole frame; the field itself draws no edge.
+    #[test]
+    fn a_framed_composer_shows_its_editors_focus_on_the_frame() {
+        let element = framed_composer(
+            "room",
+            "room",
+            "Message",
+            "words",
+            Message::ChannelDraft,
+            true,
+            Some(Message::SendChannel),
+            iced::widget::text("footer").into(),
+        );
+        let mut tree = Tree::new(&element);
+        assert!(!editor_focused(&tree.children[0]));
+        fn focus_editor(tree: &mut Tree) -> bool {
+            type EditorState = text_editor::State<iced::advanced::text::highlighter::PlainText>;
+            if tree.tag == tree::Tag::of::<EditorState>() {
+                tree.state.downcast_mut::<EditorState>().focus();
+                return true;
+            }
+            tree.children.iter_mut().any(focus_editor)
+        }
+        assert!(focus_editor(&mut tree));
+        assert!(editor_focused(&tree.children[0]));
+        // The plain composer keeps its own edge; the framed one has none.
+        let bare = fixture("room", "words", true, true);
+        assert!(!bare.bare);
     }
 
     #[test]

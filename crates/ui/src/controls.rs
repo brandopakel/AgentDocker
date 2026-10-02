@@ -3,7 +3,7 @@ use crate::{accessibility::Semantic, app::Message};
 use iced::advanced::Renderer as _;
 mod composer;
 mod popover;
-pub use composer::composer;
+pub use composer::{composer, framed_composer};
 pub use popover::popover;
 
 /// Scroll ancestors just enough to reveal the newly focused control, or,
