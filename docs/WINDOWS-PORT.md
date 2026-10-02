@@ -499,7 +499,8 @@ as `windows-failed-package-diagnostics`, never as an accepted preview. The
 OWNER RIGHTS fresh-home timeout in run35821898700 remains an unresolved failure;
 added diagnostics and any later pass alone do not establish its cause or a fix.
 
-The native desktop installer is under implementation. Its private atomic
+The native desktop installer candidate has passed isolated native lifecycle
+acceptance; hosted and physical acceptance remain open. Its private atomic
 activation record and receipt-checked launcher resolver reject malformed
 records, modified launchers, missing activation and escaped payloads. Bootstrap
 entrypoints select and pin the immutable executable, inherit arguments/stdio and
@@ -528,8 +529,9 @@ the public directory. A hash receipt precedes each retirement; loaded images
 finish without deletion and later activation/prune/uninstall collects closed
 images. Unexpected or changed content is preserved; eight directories and 256 MiB
 limit new retirement. Settings and running immutable releases are retained. An interrupted cleanup is resumable
-from the portable CLI. Native maintenance/service interlocks, Start menu and
-full installed lifecycle acceptance remain open.
+from the portable CLI. Native maintenance/service interlocks and the isolated
+installed lifecycle passed on `e190d919`; Start menu/PATH, hosted upgrades and
+physical login/reboot acceptance remain open.
 
 An initial Mac concurrency regression found that strict private-file reads
 rejected an opened handle unlinked by record replacement. A separate read-only
@@ -558,5 +560,10 @@ still open.
 
 Native loaded-image regression `a978d269` isolated access denied to
 `FileDispositionInfoEx` after the DELETE-capable open succeeded. The candidate
-now uses private rename retirement and ordinary collection after image closure;
-its loaded-image, bounded-retention and complete package acceptance remain pending.
+now uses private rename retirement and ordinary collection after image closure.
+Exact-head run 37069489729 on `e190d919` passed 319 core/host tests, 62 portable
+checks, 33 installer checks, 11 portable Task Scheduler checks and 13 installed
+Task Scheduler checks. Loaded-bootstrap uninstall, collection after reinstall
+and bounded retirement refusal passed; hashes match the clean native build,
+and both service fixtures removed owned tasks/scratch without cleanup errors.
+No hosted Windows update, physical console or login/reboot result is implied.
