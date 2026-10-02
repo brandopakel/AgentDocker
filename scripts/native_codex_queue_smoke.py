@@ -588,7 +588,7 @@ try:
             mcp_cli = (
                 args.legacy_cli if args.scenario in ("legacy-question", "legacy-reply", "migration") else cli
             )
-            if args.scenario in ("startup", "lifecycle"):
+            if mcp_cli:
                 mcp_wrapper = root / "agentdocker"
                 mcp_wrapper.write_text(
                     "#!"
@@ -599,6 +599,9 @@ try:
                     + ",'a') as log:\n"
                     + " log.write(json.dumps({'pid':os.getpid(),'parent':os.getppid(),'cwd':os.getcwd(),"
                     + "'session':os.environ.get('CODEX_THREAD_ID'),'profile':os.environ.get('CODEX_HOME')})+'\\n')\n"
+                    + "fd=os.open(" + repr(str(out / "mcp-stderr.log"))
+                    + ",os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)\n"
+                    + "os.dup2(fd,2)\nos.close(fd)\n"
                     + "os.execv("
                     + repr(str(mcp_cli))
                     + ",["
@@ -1900,6 +1903,11 @@ try:
                 (out / "bootstrap-controller.log").write_bytes(p.read_bytes())
             for p in profile.glob("sessions/**/*.jsonl"):
                 (out / p.name).write_bytes(p.read_bytes())
+            # Keep bounded startup diagnostics before retiring the private
+            # profile. A missing MCP namespace must be diagnosable even when
+            # the TUI collapses its warning into an unopened notice.
+            for p in (profile / "log").glob("*.log"):
+                (out / ("provider-" + p.name)).write_bytes(p.read_bytes()[-1024 * 1024:])
 except (Exception, KeyboardInterrupt) as e:  # noqa: BLE001 - Save evidence, clean up, and exit nonzero.
     report["result"] = "failed"
     report["error"] = str(e)
