@@ -429,6 +429,27 @@ def main():
             except Exception:
                 pass
     finally:
+        try:
+            report["registration_snapshot"] = rpc({"op": "list", "all": True}, timeout=1)["agents"]
+        except Exception as error:
+            report["registration_snapshot_error"] = str(error)
+        # Observe only this fixture's provider tree and non-secret identity
+        # variables. This diagnoses whether pre-turn MCP has a thread identity.
+        report["provider_identity_contexts"] = []
+        if report.get("provider_pid"):
+            try:
+                root_provider = psutil.Process(report["provider_pid"])
+                for process in [root_provider, *root_provider.children(recursive=True)][:128]:
+                    values = process.environ()
+                    report["provider_identity_contexts"].append({
+                        "pid": process.pid, "parent": process.ppid(),
+                        "created": process.create_time(), "executable": process.exe(),
+                        "environment": {key: values[key] for key in (
+                            "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_HOME",
+                            "AGENTDOCKER_AGENT_ID") if key in values},
+                    })
+            except (psutil.NoSuchProcess, psutil.AccessDenied) as error:
+                report["provider_identity_context_error"] = str(error)
         closing.set()
         release.set()
         cleanup = []
