@@ -135,7 +135,10 @@ impl Codex {
                     label(&payload["cli_version"]).ok_or("Codex log version is missing")?;
                 // Fixtures establish these local formats. Future formats must
                 // earn support rather than silently borrowing old semantics.
-                if !matches!(version.as_str(), "0.153.4" | "0.154.0" | "0.155.1") {
+                if !matches!(
+                    version.as_str(),
+                    "0.153.4" | "0.154.0" | "0.155.1" | "0.160.0"
+                ) {
                     return Err("unsupported Codex rollout version".into());
                 }
                 if self.session.as_ref().is_some_and(|old| old != &session) {
@@ -176,7 +179,11 @@ impl Codex {
                 Ok(Some(Sample {
                     source_id: identity("codex", session, &key),
                     runtime: "codex".into(),
-                    format: "codex-rollout-0.153.4-0.154.0-v1".into(),
+                    format: match self.version.as_deref() {
+                        Some("0.160.0") => "codex-rollout-0.160.0-v1",
+                        _ => "codex-rollout-0.153.4-0.154.0-v1",
+                    }
+                    .into(),
                     session_id: session.clone(),
                     at,
                     provider: self.provider.clone(),
@@ -359,6 +366,31 @@ mod tests {
     }
 
     #[test]
+    fn observed_codex_0160_records_keep_totals_and_deduplicate_after_cursor_resume() {
+        let records: Vec<Value> = include_str!("usage/fixtures/codex-0.160.0.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let mut parser = Codex::default();
+        assert!(parser.feed(&records[0], true).unwrap().is_none());
+        let expected = [
+            [Some(5), Some(0), Some(0), Some(2), Some(0)],
+            [Some(10), Some(0), Some(0), Some(4), Some(0)],
+        ];
+        for (index, (record, counts)) in records[1..].iter().zip(expected).enumerate() {
+            let sample = parser.feed(record, false).unwrap().unwrap();
+            assert_eq!(sample.format, "codex-rollout-0.160.0-v1");
+            assert_eq!(sample.counters.values(), counts);
+            assert_eq!(sample.semantics, Semantics::Cumulative);
+            assert_eq!(sample.proves_zero_baseline, index == 0);
+            parser = serde_json::from_str(&serde_json::to_string(&parser).unwrap()).unwrap();
+            let repeated = parser.feed(record, false).unwrap().unwrap();
+            assert_eq!(repeated.source_id, sample.source_id);
+            assert!(!repeated.proves_zero_baseline);
+        }
+    }
+
+    #[test]
     fn codex_uses_cumulative_totals_once_and_retains_only_usage_context() {
         let mut parser = Codex::default();
         parser.feed(&json!({"type":"session_meta","payload":{"id":"thread-a","cli_version":"0.154.0","model_provider":"local-fixture"}}), true).unwrap();
@@ -390,7 +422,7 @@ mod tests {
         let mut record = json!({"type":"event_msg","timestamp":"2026-09-16T12:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":totals,"last_token_usage":{"input_tokens":1,"output_tokens":1}}}});
         let mut parser = Codex::default();
         assert!(parser.feed(&record, false).is_err());
-        for version in ["0.153.4", "0.154.0", "0.155.1"] {
+        for version in ["0.153.4", "0.154.0", "0.155.1", "0.160.0"] {
             let mut supported = Codex::default();
             supported.feed(&json!({"type":"session_meta","payload":{"id":"thread-a","cli_version":version}}), true).unwrap();
             assert!(
