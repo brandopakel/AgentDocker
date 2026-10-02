@@ -84,6 +84,8 @@ pub enum Icon {
     Download,
     /// A hash: a channel.
     Hash,
+    /// A chevron pointing up: a disclosure that is open.
+    ChevronUp,
 }
 
 /// An icon inked in one colour.
@@ -366,6 +368,12 @@ impl Glyph {
                     b.line_to(p(13.0, 10.0));
                 });
                 frame.stroke(&hash, stroke);
+            }
+            Icon::ChevronUp => {
+                frame.stroke(
+                    &polyline(&[p(4.0, 10.0), p(8.0, 6.0), p(12.0, 10.0)]),
+                    stroke,
+                );
             }
         }
     }

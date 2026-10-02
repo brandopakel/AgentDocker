@@ -758,6 +758,9 @@ pub enum Message {
     Captured(window::Screenshot),
     Focus(String),
     Accessibility(crate::accessibility::Snapshot),
+    // Tools, settings and installation
+    /// Put off the available update: its banner steps down.
+    UpdateLater,
 }
 
 /// A wake becomes one frame, a moment later: the answers to a sweep (seven
@@ -2476,6 +2479,10 @@ impl App {
                     ));
                 }
                 return Task::batch(tasks);
+            }
+            // Tools, settings and installation
+            Message::UpdateLater => {
+                self.desktop.later = self.desktop.update_available().map(str::to_owned);
             }
         }
         // Catalog removal and missing-folder cleanup can choose another
