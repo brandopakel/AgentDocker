@@ -445,6 +445,17 @@ impl App {
             ConversationKind::Dm | ConversationKind::Notices => label.clone(),
             _ => label.strip_prefix('#').unwrap_or(&label).to_owned(),
         };
+        // As many characters as the row has room for, ending in an
+        // ellipsis rather than a glyph cut in half: what is left of the
+        // row after its padding, mark and counts, at the width of an
+        // average character of each face.
+        let chips = if unread > 0 {
+            if summary.mentions > 0 { 72.0 } else { 36.0 }
+        } else {
+            0.0
+        };
+        let room = (width - 16.0 - 30.0 - 10.0 - chips).max(60.0);
+        let shown = fit(&shown, (room / 7.6) as usize);
         let mut name = text(shown)
             .size(13.5)
             .font(weight(if unread > 0 {
@@ -473,16 +484,6 @@ impl App {
                     }
                 })
                 .unwrap_or_default();
-            // As many characters as the row has room for, ending in an
-            // ellipsis rather than a glyph cut in half: what is left of the
-            // row after its padding, mark and counts, at the width of an
-            // average character of the 12-point face.
-            let chips = if unread > 0 {
-                if summary.mentions > 0 { 72.0 } else { 36.0 }
-            } else {
-                0.0
-            };
-            let room = (width - 16.0 - 30.0 - 10.0 - chips).max(60.0);
             let budget = ((room / 6.6) as usize).max(8);
             let preview = if matches!(
                 summary.kind,
@@ -696,10 +697,14 @@ impl App {
                 container(
                     row![
                         container(
-                            text(format!(
-                                "{unread_total} unread in {owed} conversation{}",
-                                if owed == 1 { "" } else { "s" }
-                            ))
+                            text(if row_width >= 300.0 {
+                                format!(
+                                    "{unread_total} unread in {owed} conversation{}",
+                                    if owed == 1 { "" } else { "s" }
+                                )
+                            } else {
+                                format!("{unread_total} unread")
+                            })
                             .size(12)
                             .color(c.muted)
                             .wrapping(iced::widget::text::Wrapping::None),
@@ -1066,7 +1071,7 @@ impl App {
             iced::Padding {
                 top: 1.0,
                 right: 8.0,
-                bottom: 3.0,
+                bottom: 1.0,
                 left: 8.0,
             }
         };
@@ -1119,7 +1124,7 @@ impl App {
             Some(thread_message),
             open,
             Kind::Ghost,
-            [3, 9],
+            [2, 8],
         ))
         .padding(1)
         .style(move |_| iced::widget::container::Style {
@@ -1135,7 +1140,7 @@ impl App {
                 .width(Fill)
                 .align_right(Fill)
                 .padding(iced::Padding {
-                    top: 3.0,
+                    top: if head || system { 3.0 } else { 0.0 },
                     right: 8.0,
                     bottom: 0.0,
                     left: 0.0,
@@ -2317,6 +2322,18 @@ impl App {
     }
 }
 
+/// `text` cut to at most `budget` characters, the last one an ellipsis
+/// when anything was cut.
+fn fit(text: &str, budget: usize) -> String {
+    let budget = budget.max(4);
+    if text.chars().count() <= budget {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(budget - 1).collect();
+    out.push('…');
+    out
+}
+
 /// The name being typed after a trailing `@`, when the draft ends in one:
 /// `ask @co` gives `co`, `ask @` gives an empty prefix (everyone), and a
 /// draft whose last word is not a mention gives nothing.
@@ -2355,6 +2372,14 @@ mod tests {
         assert_eq!(complete_mention("@", "user"), "@user ");
     }
     use std::sync::mpsc::sync_channel;
+
+    #[test]
+    fn a_row_name_is_cut_with_an_ellipsis_only_when_it_does_not_fit() {
+        assert_eq!(fit("planning", 20), "planning");
+        assert_eq!(fit("fixture-coordination", 12), "fixture-coo…");
+        assert_eq!(fit("日本語のチャンネル名", 5), "日本語の…");
+        assert_eq!(fit("abcdef", 0), "abc…");
+    }
 
     /// The badge counts what the person owes: a channel, a broadcast and
     /// their own direct messages. A collision room's contested-path notices,

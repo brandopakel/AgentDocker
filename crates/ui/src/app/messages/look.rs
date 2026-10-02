@@ -3,8 +3,8 @@
 //! rail, dividers, a notice line and one-line status. Presentation only;
 //! what each one says is decided by the screens that use them.
 use super::super::icons::{Icon, icon};
-use super::super::style::{Colors, RADIUS_SM, alpha, mix, weight};
-use super::super::view::{dot, small};
+use super::super::style::{Colors, RADIUS_SM, mix, weight};
+use super::super::view::{dot, kbd, small};
 use crate::app::Message;
 use crate::controls::{Kind, custom};
 use iced::{
@@ -334,23 +334,7 @@ pub(in crate::app) fn flush_link<'a>(
 /// A keycap and what it does: `Enter` send.
 pub(in crate::app) fn key_hint<'a>(key: &str, does: &str, c: Colors) -> Element<'a, Message> {
     row![
-        container(
-            text(key.to_owned())
-                .size(10.5)
-                .line_height(iced::Pixels(14.0))
-                .font(weight(iced::font::Weight::Medium))
-                .color(c.muted),
-        )
-        .padding([0, 5])
-        .style(move |_| container::Style {
-            background: Some(alpha(c.text, if c.dark { 0.08 } else { 0.06 }).into()),
-            border: iced::Border {
-                color: c.line,
-                width: 1.0,
-                radius: 4.0.into(),
-            },
-            ..Default::default()
-        }),
+        kbd(key.to_owned(), c),
         small(does.to_owned(), c).size(11.5).color(c.faint),
     ]
     .spacing(5)
