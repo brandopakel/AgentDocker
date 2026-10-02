@@ -181,7 +181,9 @@ crash, and what that means for a person:
   names without regard to case before checking ownership. The native driver
   additionally creates a harmless, unstarted foreign task under a case-variant
   name and requires install/uninstall refusal with its XML unchanged. That
-  regression awaits a native run; prior lifecycle passes do not establish it.
+  regression passed on `c0dd784e` in native run 36963606339: all 62 portable
+  checks and 11 service checks passed, the foreign task XML stayed identical,
+  and all owned tasks, processes and scratch were removed cleanly.
   Failed cleanup retires verified process generations, supervisor first, while
   retaining the failed result and any cleanup errors.
 - A validation command is ended on a timeout, but only the command itself:
