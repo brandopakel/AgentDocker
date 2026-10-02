@@ -541,3 +541,5 @@ run still failed two lifetime-pin fixtures that constructed the old Unix layout
 on Windows; those fixtures now exercise the native store. Native run 36970015868 on `9b79675b` passed all 317 core/host tests and
 the extracted portable checks. The later `f0426f72` installer trial passed its separate 14 checks; updater
 acceptance remains separate from that source.
+
+Installed service acceptance on `3fbbd8c2` exposed a DOS-versus-verbatim path mismatch: the active CLI was falsely classified as obsolete during registration. Registration now compares canonical filesystem paths, still checks the active release and verified bootstrap receipt, and includes native path-spelling and actual copied-process regressions. The original failed trial is retained; corrected installed service/uninstall acceptance is still required.

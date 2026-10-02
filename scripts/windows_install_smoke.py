@@ -39,8 +39,8 @@ def main():
     names = ('agentdocker.exe', 'agentd.exe', 'agentdocker-ui.exe')
     report = {'result': 'failed', 'source_commit': json.loads((app / 'build.json').read_text())['source_commit'],
               'binary_sha256': {n: hashlib.sha256((app / n).read_bytes()).hexdigest() for n in names},
-              'scope': 'Native private-prefix install and rollback. Second payload changes a fixture README only; a third metadata-only fixture exercises the local preview feed. No hosted update, service, actual provider, Start menu or reboot claim.',
-              'scratch': str(scratch), 'steps': [], 'commands': []}
+              'scope': 'Native private-prefix install and rollback. Second payload changes a fixture README only; a third metadata-only fixture exercises the local preview feed. No hosted update, actual provider, Start menu or reboot claim.',
+              'scratch': str(scratch), 'service_requested': args.service, 'steps': [], 'commands': []}
 
     def save():
         (output / 'result.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')

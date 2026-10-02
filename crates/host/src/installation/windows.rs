@@ -189,7 +189,12 @@ pub fn stable_executable(executable: &Path) -> io::Result<PathBuf> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| invalid("invalid managed executable name"))?;
-    if target(&root, binary)?.as_deref() != Some(executable) {
+    // QueryFullProcessImageNameW returns a DOS path, while activation targets
+    // are canonical verbatim paths. Compare filesystem-resolved spellings;
+    // lexical equality would reject the currently running installed binary.
+    let root = root.canonicalize()?;
+    let executable = executable.canonicalize()?;
+    if target(&root, binary)?.as_deref() != Some(executable.as_path()) {
         return Err(invalid(
             "this copy is no longer active; reopen before configuring integrations",
         ));
@@ -291,6 +296,44 @@ mod tests {
         assert!(target(&root, "../agentdocker.exe").is_err());
     }
 
+    #[test]
+    fn windows_registration_requires_the_active_release_and_verified_launcher() {
+        let (_temp, root, selected, launcher) = fixture();
+        assert_eq!(stable_executable(&selected).unwrap(), launcher);
+        let obsolete = root
+            .join("versions")
+            .join("b".repeat(64))
+            .join("AgentDocker/agentdocker.exe");
+        std::fs::create_dir_all(obsolete.parent().unwrap()).unwrap();
+        std::fs::write(&obsolete, b"obsolete executable").unwrap();
+        assert!(
+            stable_executable(&obsolete)
+                .unwrap_err()
+                .to_string()
+                .contains("no longer active")
+        );
+        std::fs::write(&launcher, b"changed executable").unwrap();
+        assert!(
+            stable_executable(&selected)
+                .unwrap_err()
+                .to_string()
+                .contains("modified")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_registration_accepts_the_dos_spelling_of_the_active_image() {
+        let (_temp, _root, selected, launcher) = fixture();
+        let selected = selected.canonicalize().unwrap();
+        let dos = Path::new(selected.to_str().unwrap().strip_prefix(r"\\?\").unwrap());
+        assert_ne!(dos, selected);
+        assert_eq!(
+            stable_executable(dos).unwrap(),
+            launcher.canonicalize().unwrap()
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     #[ignore = "owned subprocess invoked by copied_windows_bootstrap_starts_and_pins_its_payload"]
@@ -298,6 +341,11 @@ mod tests {
         super::super::redirect_managed_launcher().unwrap();
         let executable = crate::procinfo::executable_path().unwrap();
         let (root, _, id) = managed(&executable).expect("selected immutable executable");
+        assert_eq!(
+            stable_executable(&executable).unwrap(),
+            root.canonicalize().unwrap().join("bin/agentdocker.exe"),
+            "the kernel-reported running image can register its stable launcher"
+        );
         let _pin = super::super::pin_current_executable()
             .unwrap()
             .expect("lifetime pin");
