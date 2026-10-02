@@ -336,6 +336,14 @@ pub enum Request {
         agent: String,
         observation: crate::ActivityObservation,
     },
+    /// The closing text of an agent's turn, offered by its adapter for the
+    /// opt-in judge's `questions` judgment. Answered `ok` at once; read
+    /// only while that judgment runs and never stored — only the
+    /// likelihood that the turn ended on a question is recorded.
+    TurnEnded {
+        agent: String,
+        closing: String,
+    },
     /// Actual adapter contact, bound to a live provider process generation.
     /// It does not establish idle wake or provider message consumption.
     ReportAdapter {

@@ -357,6 +357,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     watcher::spawn(daemon.clone());
     daemon.notify_desktop();
     daemon.reload_webhooks().await;
+    daemon.reload_judge().await;
     daemon.collect_usage();
 
     let maintenance = async {
@@ -385,6 +386,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 daemon.refresh_vcs(None).await;
                 let _ = daemon.scan_agents().await;
                 daemon.reload_webhooks().await;
+                daemon.reload_judge().await;
             }
             if ticks.is_multiple_of(60) {
                 daemon.prune_events();

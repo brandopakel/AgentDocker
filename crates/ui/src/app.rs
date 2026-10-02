@@ -1674,7 +1674,12 @@ impl App {
             | EventKind::TaskPulled { .. }
             | EventKind::TaskMoved { .. }
             | EventKind::TaskUpdated { .. }
-            | EventKind::TaskArchived { .. } => self.request_tasks(),
+            | EventKind::TaskArchived { .. }
+            | EventKind::TaskAcceptanceChecked { .. } => self.request_tasks(),
+            // The judge read a turn as a question: the record carries it.
+            EventKind::TurnEndedOnQuestion { .. } => self.send(Cmd::Agents),
+            // The archive carries the flag; the conversation is read again.
+            EventKind::MessageFlagged { .. } => self.on_conversation_activity(),
             // Collection moved: the report on view is read again, only
             // while it is on view.
             EventKind::UsageRecorded { .. } | EventKind::UsageReconciled { .. } => {
@@ -1753,6 +1758,14 @@ impl App {
                 self.journal.push(entry.clone());
                 let excess = self.journal.len().saturating_sub(JOURNAL_WINDOW);
                 self.journal.drain(..excess);
+            }
+            // A summary the judge trimmed replaces the one on view.
+            EventKind::JournalChecked { entry }
+                if self.journal_project.as_deref() == Some(entry.project.as_str()) =>
+            {
+                if let Some(shown) = self.journal.iter_mut().find(|e| e.seq == entry.seq) {
+                    *shown = entry.clone();
+                }
             }
             _ => {}
         }
@@ -5509,6 +5522,7 @@ pub(crate) mod tests {
                 envelope
             },
             replies: 0,
+            flagged: Vec::new(),
         };
         let page = |from: u64| {
             (from..from + HISTORY_PAGE as u64)
@@ -5673,6 +5687,7 @@ pub(crate) mod tests {
                     conversation: agentdocker_core::ConversationId::from(room),
                     envelope,
                     replies: 0,
+                    flagged: Vec::new(),
                 }],
             ))
             .unwrap();
@@ -5713,6 +5728,7 @@ pub(crate) mod tests {
                                 Utc::now(),
                             ),
                             replies: 0,
+                            flagged: Vec::new(),
                         })
                         .collect();
                     app.history.insert(room.clone(), page);
@@ -5780,6 +5796,7 @@ pub(crate) mod tests {
                 envelope
             },
             replies: 0,
+            flagged: Vec::new(),
         };
         let page = |from: u64| {
             (from..from + HISTORY_PAGE as u64)
@@ -6473,6 +6490,7 @@ pub(crate) mod tests {
                         seq: 7,
                         conversation: room.clone().into(),
                         replies: 0,
+                        flagged: Vec::new(),
                         envelope: agentdocker_core::Envelope::new(
                             "sender",
                             agentdocker_core::Destination::Broadcast,
@@ -6534,6 +6552,7 @@ pub(crate) mod tests {
                 Utc::now(),
             ),
             replies: 0,
+            flagged: Vec::new(),
         };
         app.conversations = vec![agentdocker_core::ConversationSummary {
             conversation: agentdocker_core::ConversationId::from(room.clone()),

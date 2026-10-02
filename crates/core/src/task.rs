@@ -125,6 +125,46 @@ pub struct Task {
     /// message, a memory for whoever takes it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<crate::Link>,
+    /// What the opt-in judge found in the holder's journal against the
+    /// acceptance text after the card's last move to Review or Done.
+    /// Advisory: it never moves the card back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_check: Option<AcceptanceCheck>,
+}
+
+/// The holder's journal read against each acceptance criterion, after a
+/// move to Review or Done. A later move or an edit of the acceptance
+/// text clears it, since it described the card as it was.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptanceCheck {
+    /// The column the card had moved to.
+    pub column: Column,
+    pub at: DateTime<Utc>,
+    pub criteria: Vec<CriterionCheck>,
+    /// How many of the holder's journal entries were read.
+    pub evidence: usize,
+    /// The versioned model that answered.
+    pub model: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CriterionCheck {
+    pub text: String,
+    /// The likelihood, as a percentage, that the journal reports it done.
+    pub percent: u8,
+}
+
+impl CriterionCheck {
+    pub fn evidenced(&self) -> bool {
+        f64::from(self.percent) / 100.0 >= crate::judgment::EVIDENCED
+    }
+}
+
+impl AcceptanceCheck {
+    /// The criteria nothing in the journal reports done.
+    pub fn unmet(&self) -> impl Iterator<Item = &CriterionCheck> {
+        self.criteria.iter().filter(|c| !c.evidenced())
+    }
 }
 
 /// What an update changes: each field left `None` stays as it was;
@@ -214,6 +254,7 @@ impl Task {
             updated_at: now,
             archived_at: None,
             links,
+            acceptance_check: None,
         })
     }
 
@@ -290,6 +331,7 @@ impl Task {
         if by_is_human && matches!(column, Column::Backlog | Column::Ready) {
             self.assignee = None;
         }
+        self.acceptance_check = None;
         self.updated_at = now;
         Ok(())
     }
@@ -333,7 +375,11 @@ impl Task {
             self.title = title.trim().to_owned();
         }
         if let Some(acceptance) = acceptance {
-            self.acceptance = acceptance.trim().to_owned();
+            let acceptance = acceptance.trim();
+            if acceptance != self.acceptance {
+                self.acceptance_check = None;
+            }
+            self.acceptance = acceptance.to_owned();
         }
         if let Some(assignee) = assignee {
             self.assignee = assignee;
@@ -367,6 +413,55 @@ impl Task {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A check describes the card as it was judged: moving it again or
+    /// changing what done means clears it; other edits keep it.
+    #[test]
+    fn an_acceptance_check_lasts_until_the_card_moves_or_its_acceptance_changes() {
+        let now = Utc::now();
+        let agent = AgentId::from("a1");
+        let mut card = ready_card();
+        card.pull(&agent, now).unwrap();
+        card.move_to("a1", false, Column::Review, now).unwrap();
+        let check = AcceptanceCheck {
+            column: Column::Review,
+            at: now,
+            criteria: vec![
+                CriterionCheck {
+                    text: "parser accepts tabs".into(),
+                    percent: 91,
+                },
+                CriterionCheck {
+                    text: "docs say so".into(),
+                    percent: 12,
+                },
+            ],
+            evidence: 3,
+            model: crate::judgment::DEFAULT_MODEL.into(),
+        };
+        assert_eq!(
+            check.unmet().map(|c| c.text.as_str()).collect::<Vec<_>>(),
+            ["docs say so"]
+        );
+        card.acceptance_check = Some(check.clone());
+        let same = card.acceptance.clone();
+        let edit = TaskEdit {
+            title: Some("renamed"),
+            acceptance: Some(&same),
+            ..TaskEdit::default()
+        };
+        card.update("a1", false, edit, now).unwrap();
+        assert_eq!(card.acceptance_check.as_ref(), Some(&check));
+        let edit = TaskEdit {
+            acceptance: Some("something else"),
+            ..TaskEdit::default()
+        };
+        card.update("a1", false, edit, now).unwrap();
+        assert!(card.acceptance_check.is_none());
+        card.acceptance_check = Some(check);
+        card.move_to("a1", false, Column::InProgress, now).unwrap();
+        assert!(card.acceptance_check.is_none());
+    }
 
     fn ready_card() -> Task {
         Task::new(

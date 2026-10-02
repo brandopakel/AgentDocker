@@ -52,6 +52,7 @@ mod conversations;
 mod handoff;
 pub mod humans;
 mod images;
+mod judge;
 mod panes;
 mod pause;
 pub mod policies;
@@ -215,6 +216,7 @@ fn mutates(request: &Request) -> bool {
             | Request::Overlap { .. }
             | Request::Questions { .. }
             | Request::Activity { .. }
+            | Request::TurnEnded { .. }
             | Request::Waiting
             | Request::Pauses
             | Request::Contests { .. }
@@ -270,6 +272,9 @@ pub struct Daemon {
     /// The webhook sinks, run off the state lock; never held across an
     /// await.
     webhooks: Mutex<webhooks::Sinks>,
+    /// The opt-in judge, run off the state lock; never held across an
+    /// await, and never held together with the state lock.
+    judges: Mutex<judge::Judges>,
     /// The listener and daemon lock, kept here from serving onward so a
     /// handover can pass them to a successor. Never held across an await.
     held: Mutex<Option<reload::Held>>,
@@ -1528,6 +1533,7 @@ impl Daemon {
             scanning: std::sync::atomic::AtomicBool::new(false),
             owner_mode: supervisor::OwnerMode::detect(),
             webhooks: Mutex::new(webhooks::Sinks::default()),
+            judges: Mutex::new(judge::Judges::default()),
             held: Mutex::new(None),
             transferred_exit: Notify::new(),
             #[cfg(test)]
@@ -1888,6 +1894,7 @@ impl Daemon {
             Request::ReportActivity { agent, observation } => {
                 lock(&self.state).report_activity(&agent, observation, Utc::now())
             }
+            Request::TurnEnded { agent, closing } => self.judge_turn(&agent, &closing),
             Request::Role { agent, role } => lock(&self.state).set_role(&agent, role, Utc::now()),
             Request::Rename { agent, name } => lock(&self.state).rename(&agent, name, Utc::now()),
             Request::ReportAdapter {
@@ -5913,6 +5920,7 @@ impl State {
             head_before,
             head_after: record.vcs.as_ref().and_then(|v| v.head.clone()),
             changes: range,
+            check: None,
         })
     }
 
@@ -5944,6 +5952,7 @@ impl State {
             head_before: None,
             head_after: record.vcs.as_ref().and_then(|v| v.head.clone()),
             changes: None,
+            check: None,
         })
     }
 
@@ -6160,6 +6169,7 @@ impl State {
             head_before: None,
             head_after: None,
             changes: None,
+            check: None,
         };
         entry.branch = new.branch.clone();
         entry.head_before = old.and_then(|o| o.head.clone());

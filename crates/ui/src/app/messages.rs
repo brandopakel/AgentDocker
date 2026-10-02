@@ -4,7 +4,7 @@
 //! daemon's conversations: the archive is what is shown, the queues stay
 //! the agents' own.
 use super::panes::{Grid, Slot};
-use super::style::{Colors, weight};
+use super::style::{Colors, alpha, weight};
 use super::view::{
     dot, empty, eyebrow, first_line, monogram, note, panel, pill, rule, small, split_style,
 };
@@ -851,6 +851,24 @@ impl App {
         // A message that names the person says so where the eye lands.
         if mentions_me {
             head = head.push(pill("mentions you", c.accent, iced::Color::WHITE, c));
+        }
+        // The opt-in judge read a browser agent's message as trying to
+        // steer its reader; it was delivered as sent, and says so here.
+        if !message.flagged.is_empty() {
+            head = head.push(pill(
+                format!(
+                    "flagged: {}",
+                    message
+                        .flagged
+                        .iter()
+                        .map(|hazard| hazard.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                alpha(c.amber, 0.2),
+                c.amber,
+                c,
+            ));
         }
         head = head.push(small(
             message

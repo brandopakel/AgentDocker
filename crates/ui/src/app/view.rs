@@ -455,6 +455,8 @@ impl App {
         let id = agent.id.to_string();
         if self.needs_input(&id) {
             "needs input".to_owned()
+        } else if self.asked_in_prose(agent) {
+            "may be waiting on you".to_owned()
         } else if let Some((_, state)) = agentdocker_core::provider_block(agent, &self.agents) {
             state
                 .issue
@@ -480,7 +482,10 @@ impl App {
     }
     /// The colour that goes with [`Self::activity_label`].
     fn activity_color(&self, agent: &AgentRecord, c: Colors) -> iced::Color {
-        if self.needs_input(&agent.id.to_string()) || self.delivery_needs_you(agent) {
+        if self.needs_input(&agent.id.to_string())
+            || self.delivery_needs_you(agent)
+            || self.asked_in_prose(agent)
+        {
             c.amber
         } else if agent.status.is_live() {
             // Green is a report, not a heartbeat: a process we only know is
@@ -1499,6 +1504,24 @@ impl App {
                     format!("needs-you-{control}-{}", agent.id),
                     label,
                     Some(open),
+                    false,
+                ),
+            ));
+        }
+        // A question asked in prose, as the opt-in judge read it: worded
+        // as the reading it is, and gone once the session works again.
+        for agent in self
+            .agents
+            .iter()
+            .filter(|a| self.asked_in_prose(a) && self.has_project(a.project.as_ref()))
+        {
+            items.push((
+                dot(c.amber, 8.0, c),
+                format!("{} looks to be waiting on you", self.display_name(agent)),
+                action(
+                    format!("needs-you-asked-{}", agent.id),
+                    "Open",
+                    Some(Message::OpenSession(agent.id.to_string())),
                     false,
                 ),
             ));

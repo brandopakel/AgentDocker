@@ -68,6 +68,11 @@ The count is the larger of the queue and the input the receiver could not
 prove it handed over, never their sum. Right after launch, before the first
 activity snapshot, nothing is shown rather than a guess. An ended session with
 nothing waiting is simply ended: it sits in Earlier, not in Needs you.
+With the opt-in [judge](ARCHITECTURE.md#the-judge)'s `questions` judgment on,
+a Claude Code session whose last turn ended on a question asked in prose —
+not through AgentDocker — is listed as *… looks to be waiting on you*
+(**Open**), and its row reads *may be waiting on you*, until the session works
+again.
 Finished sessions keep their **Done** badge on the row. Question previews use at
 most 80 characters from the first line. Answer opens and reveals the exact
 question without submitting or changing drafts; full approval details remain in
@@ -182,7 +187,11 @@ agent gone — says *not being worked on* beside the holder; nobody takes it by 
 plain pull, only by naming that holder (`pull_task` with `take_over_from`)
 or by your **Hand to**, which ends the old hold and gives a running agent
 the card's lease in one step. A move back to Ready or Backlog, or to Done,
-ends the hold. The board reads again on every board or lease event; when it
+ends the hold. With the judge's `acceptance` judgment on, a card moved to
+Review or Done whose holder's journal reports some criteria not done says so:
+*2 of 5 not shown done* on the card, and, opened, which ones and how many
+entries were read. It is a reading, not a gate; the card stays where it was
+moved, and moving it again clears it. The board reads again on every board or lease event; when it
 could not be read the last board stays and the status says why. A card's draft is the project's: text typed for one board waits
 while another is on view, and filing it is answered by its own reply — a
 move or hand of some other card never clears it, and a filing the app could
@@ -392,7 +401,11 @@ picked — and the person is in it as its opener; the room opens as soon as
 the daemon has it. `@` in a composer offers who is here and a pick finishes
 the name (`@codex-51242`, the record's own name, which is what a mention
 reaches); a row whose unread rows name the person shows an **@n** pill beside
-its count, and such a message carries **mentions you** in its header.
+its count, and such a message carries **mentions you** in its header. A
+message from a browser agent that the judge's `screening` judgment read as
+trying to steer its reader carries *flagged: override* (or `secrets`,
+`destructive`, `impersonation`) in its header and an AgentDocker notice
+threaded under it; it was delivered as sent.
 The selected project also scopes archived direct conversations. Project message search retains finished sessions' direct messages and AgentDocker notices after restart.
 
 Conversation, thread, channel, session and unfinished answer text is saved locally for

@@ -335,6 +335,16 @@ pub fn event_line(event: &Event) -> String {
             "contest entry    {contest}: {} scored {score}",
             agent.short()
         ),
+        EventKind::ContestJudged {
+            contest,
+            agent,
+            score,
+            confidence,
+            ..
+        } => format!(
+            "contest judged   {contest}: {} placed at {score} ({confidence}% confident)",
+            agent.short()
+        ),
         EventKind::ContestClosed {
             contest,
             winner,
@@ -405,6 +415,51 @@ pub fn event_line(event: &Event) -> String {
             reason,
             dropped,
         } => format!("webhook failed   {name}: {kind} {reason}, {dropped} dropped"),
+        EventKind::JudgeFailed {
+            judgment,
+            reason,
+            dropped,
+        } => format!("judge failed     {judgment} {reason}, {dropped} not judged"),
+        EventKind::JournalChecked { entry } => format!(
+            "journal checked  {} #{} {}",
+            entry.project.short(),
+            entry.seq,
+            entry.line()
+        ),
+        EventKind::TurnEndedOnQuestion { agent, likelihood } => format!(
+            "turn asked       {} looks to be waiting on you ({likelihood}%)",
+            agent.short()
+        ),
+        EventKind::TaskAcceptanceChecked {
+            task,
+            criteria,
+            unmet,
+            ..
+        } => format!(
+            "card checked     {task}: {} of {criteria} criteria reported done",
+            criteria - unmet
+        ),
+        EventKind::ConversationStalled {
+            conversation,
+            progress,
+            waiting,
+            ..
+        } => format!(
+            "conversation stalled {conversation}: progress {progress} of 2, waiting on each other {waiting}%"
+        ),
+        EventKind::MessageFlagged {
+            message,
+            from,
+            hazards,
+        } => format!(
+            "message flagged  {message} from {}: {}",
+            from.short(),
+            hazards
+                .iter()
+                .map(|h| h.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         EventKind::ProjectPaused {
             project,
             by,

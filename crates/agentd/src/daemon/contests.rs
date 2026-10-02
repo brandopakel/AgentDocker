@@ -12,6 +12,10 @@
 //! Everything else is the channel's. A margin inside the declared noise
 //! floor is a tie, and a tie is settled by what the other agents say
 //! about the work, which is what row 21 is for.
+//!
+//! A judged measure is the one number neither side gives: the opt-in
+//! judge reads each entry's change against the opener's HEAD and places
+//! it on the opener's levels. The entry waits, unranked, until it does.
 
 use super::*;
 use agentdocker_core::channel::{Channel, ChannelId, ChannelSubject};
@@ -60,6 +64,27 @@ impl Daemon {
                 "a reported measure needs a name, so every entrant reports the same one",
             );
         }
+        if let Measure::Judged { rubric } = &metric.measure {
+            if let Err(reason) = check_rubric(rubric) {
+                return Response::error(ErrorCode::Invalid, reason);
+            }
+            if metric.direction != agentdocker_core::contest::Direction::Higher {
+                return Response::error(
+                    ErrorCode::Invalid,
+                    "a judged measure ranks higher first: its levels run from worst to best",
+                );
+            }
+            if !self
+                .judgments()
+                .contains(&agentdocker_core::judgment::Judgment::Contests)
+            {
+                return Response::error(
+                    ErrorCode::Unavailable,
+                    "a judged contest needs the judge: name `contests` in the [judge] judgments \
+                     of agentd.toml",
+                );
+            }
+        }
         let mut state = lock(&self.state);
         let opener = match state.resolve(reference) {
             Ok(id) => id,
@@ -95,6 +120,18 @@ impl Daemon {
             ids.clone(),
             Utc::now(),
         );
+        if metric.measure.is_judged() {
+            match record.vcs.as_ref().and_then(|vcs| vcs.head.clone()) {
+                Some(head) => contest.base = Some(head),
+                None => {
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        "open a judged contest from a checkout: each entry's change is read \
+                         against its HEAD",
+                    );
+                }
+            }
+        }
 
         // A room from the start: a tie has to be argued somewhere, and
         // asking for one after the numbers are in looks like a loser
@@ -252,6 +289,15 @@ impl Daemon {
                     );
                 }
             },
+            // Placed by the judge once it has read the change; until then
+            // the entry waits and is not ranked.
+            Measure::Judged { .. } if reported.is_some() => {
+                return Response::error(
+                    ErrorCode::Invalid,
+                    "this contest is judged: the judge gives the score, not the entrant",
+                );
+            }
+            Measure::Judged { .. } => 0.0,
         };
 
         let entry = Entry {
@@ -261,6 +307,7 @@ impl Daemon {
             validation: validation.to_owned(),
             score,
             submitted_at: Utc::now(),
+            judged: None,
         };
         if let Err(err) = contest.submit(entry, true) {
             return Response::error(
@@ -276,7 +323,11 @@ impl Daemon {
             contest: contest.id.clone(),
             agent,
             validation: validation.to_owned(),
-            score: format!("{score}"),
+            score: if contest.metric.measure.is_judged() {
+                "pending".to_owned()
+            } else {
+                format!("{score}")
+            },
         });
         let standing = contest.standing();
         if let Some(channel) = contest.channel.clone()
@@ -370,6 +421,19 @@ impl Daemon {
                 Ok(id) => Some(id),
                 Err(e) => return *e,
             },
+            // An entry the judge has not read yet could still lead, so
+            // the ranking cannot decide until every answer is in.
+            None if contest
+                .entries
+                .iter()
+                .any(|entry| !contest.is_scored(entry)) =>
+            {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "entries are still waiting for the judge, so the ranking cannot decide yet; \
+                     wait for them, or close with an explicit winner",
+                );
+            }
             // No winner named: the ranking decides, which it can only do
             // when the metric actually separated them.
             None => match contest.standing() {
@@ -484,8 +548,85 @@ fn describe_failure(validation: &Validation) -> String {
     }
 }
 
+/// The levels of a judged measure: two to ten, each said in words.
+fn check_rubric(rubric: &[String]) -> Result<(), String> {
+    use agentdocker_core::contest::{RUBRIC_CHARS, RUBRIC_MAX, RUBRIC_MIN};
+    if !(RUBRIC_MIN..=RUBRIC_MAX).contains(&rubric.len()) {
+        return Err(format!(
+            "a judged measure has {RUBRIC_MIN} to {RUBRIC_MAX} levels, worst first"
+        ));
+    }
+    if rubric
+        .iter()
+        .any(|level| level.trim().is_empty() || level.chars().count() > RUBRIC_CHARS)
+    {
+        return Err(format!(
+            "each level says what it means, in at most {RUBRIC_CHARS} characters"
+        ));
+    }
+    Ok(())
+}
+
+impl State {
+    /// Record the judge's answer on the submission it was for, and say
+    /// where the contest stands now.
+    pub(super) fn judge_entry(
+        &mut self,
+        id: &ContestId,
+        agent: &AgentId,
+        validation: &str,
+        score: f64,
+        judged: agentdocker_core::contest::Judged,
+    ) {
+        let Some(mut contest) = self.contest(id) else {
+            return;
+        };
+        let confidence = judged.confidence;
+        if !contest.judge(agent, validation, score, judged) {
+            return;
+        }
+        self.save_contest(&contest);
+        self.emit(EventKind::ContestJudged {
+            contest: contest.id.clone(),
+            agent: agent.clone(),
+            validation: validation.to_owned(),
+            score: format!("{score:.2}"),
+            confidence: agentdocker_core::judgment::percent(confidence),
+        });
+        let standing = contest.standing();
+        if let Some(channel) = contest.channel.clone()
+            && let Some(room) = self.channels.get(&channel).cloned()
+        {
+            self.tell_channel(&room, standing_line(&contest, &standing));
+        }
+    }
+}
+
+/// A score as a channel reads it: a judged one to two places.
+fn shown(contest: &Contest, score: f64) -> String {
+    if contest.metric.measure.is_judged() {
+        format!("{score:.2}")
+    } else {
+        format!("{score}")
+    }
+}
+
 /// Where a contest stands, in a sentence for the channel.
 fn standing_line(contest: &Contest, standing: &Standing) -> String {
+    let line = standing_sentence(contest, standing);
+    let waiting = contest
+        .entries
+        .iter()
+        .filter(|entry| !contest.is_scored(entry))
+        .count();
+    if waiting > 0 && !matches!(standing, Standing::Settled { .. }) {
+        format!("{line} {waiting} waiting for the judge.")
+    } else {
+        line
+    }
+}
+
+fn standing_sentence(contest: &Contest, standing: &Standing) -> String {
     let unit = contest.metric.measure.name();
     match standing {
         Standing::Open { entrants, entries } => {
@@ -496,22 +637,26 @@ fn standing_line(contest: &Contest, standing: &Standing) -> String {
             score,
             margin: Some(margin),
         } => format!(
-            "{} leads on {unit} with {score}, {margin} clear of the next.",
-            agent.short()
+            "{} leads on {unit} with {}, {} clear of the next.",
+            agent.short(),
+            shown(contest, *score),
+            shown(contest, *margin)
         ),
         Standing::Leader { agent, score, .. } => {
             format!(
-                "{} is the only entry so far: {score} {unit}.",
-                agent.short()
+                "{} is the only entry so far: {} {unit}.",
+                agent.short(),
+                shown(contest, *score)
             )
         }
         Standing::Tied { agents, score } => format!(
-            "{} are tied at {score} {unit}, inside the {} noise floor — review settles it.",
+            "{} are tied at {} {unit}, inside the {} noise floor — review settles it.",
             agents
                 .iter()
                 .map(|a| a.short().to_owned())
                 .collect::<Vec<_>>()
                 .join(" and "),
+            shown(contest, *score),
             contest.metric.noise
         ),
         Standing::Settled { winner, .. } => format!("Settled: {} wins.", winner.short()),

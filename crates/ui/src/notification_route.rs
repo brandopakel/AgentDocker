@@ -650,6 +650,7 @@ mod tests {
                 conversation: agentdocker_core::ConversationId::of(&envelope).unwrap(),
                 envelope,
                 replies: 0,
+                flagged: Vec::new(),
             }
         };
         #[derive(Clone, Copy)]

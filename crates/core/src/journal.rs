@@ -129,6 +129,26 @@ pub struct JournalEntry {
     /// Ledger seq range for drill-down while those rows exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changes: Option<(u64, u64)>,
+    /// What the opt-in judge made of a transcript-quoted summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<SummaryCheck>,
+}
+
+/// What the opt-in judge made of a summary quoted from a transcript: the
+/// sentences that only narrated what came next were dropped, or every
+/// sentence did. Only ever the agent's own words are kept; nothing is
+/// written for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SummaryCheck {
+    /// The summary as quoted, when the entry's `summary` is no longer it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original: Option<String>,
+    /// Every sentence only narrated what came next. The summary stays as
+    /// quoted, or — for an entry naming files — says which were edited.
+    #[serde(default)]
+    pub narration_only: bool,
+    /// The versioned model that answered.
+    pub model: String,
 }
 
 /// A failure reason with an exit report's fields spelled out in it
@@ -222,9 +242,16 @@ impl JournalEntry {
                 if named.is_empty() {
                     text = format!("{who} released");
                 }
-                match self.summary_source {
+                let text = match self.summary_source {
                     SummarySource::Synthesised => text,
                     _ => format!("{text}: \"{}\"", self.summary),
+                };
+                match &self.check {
+                    Some(check) if check.narration_only => format!("{text} (narration only)"),
+                    Some(check) if check.original.is_some() => {
+                        format!("{text} (narration trimmed)")
+                    }
+                    _ => text,
                 }
             }
             JournalKind::Note => format!("{who} noted: \"{}\"", self.summary),
@@ -536,13 +563,31 @@ pub fn cursor_donor<'a>(
 /// trimmed to [`SUMMARY_CHARS`] at a word boundary. Lines that do not
 /// parse — the cut first line of a tail, say — are skipped.
 pub fn transcript_summary(tail: &str) -> Option<String> {
+    assistant_texts(tail)
+        .filter_map(|text| summarise_text(&text))
+        .next()
+}
+
+/// The end of the last thing the model said, from the same tail: the
+/// last assistant message with text, code dropped and markdown stripped,
+/// paragraphs kept, as at most [`crate::judgment::CLOSING_CHARS`]
+/// characters of its end. What the opt-in judge reads to tell whether a
+/// turn ended on a question for the person.
+pub fn transcript_closing(tail: &str) -> Option<String> {
+    assistant_texts(tail)
+        .filter_map(|text| closing_text(&text))
+        .next()
+}
+
+/// The text of each assistant message in a transcript tail, newest first.
+fn assistant_texts(tail: &str) -> impl Iterator<Item = String> + '_ {
     tail.lines()
         .rev()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|event| event.get("type").and_then(|t| t.as_str()) == Some("assistant"))
         .filter_map(|event| {
             let content = event.get("message")?.get("content")?;
-            let text = match content {
+            Some(match content {
                 serde_json::Value::String(text) => text.clone(),
                 serde_json::Value::Array(blocks) => blocks
                     .iter()
@@ -551,10 +596,48 @@ pub fn transcript_summary(tail: &str) -> Option<String> {
                     .collect::<Vec<_>>()
                     .join("\n\n"),
                 _ => return None,
-            };
-            summarise_text(&text)
+            })
         })
-        .next()
+}
+
+/// Markdown to plain paragraphs, code dropped, cut to the last
+/// [`crate::judgment::CLOSING_CHARS`] characters; `None` when nothing
+/// readable is left.
+pub fn closing_text(text: &str) -> Option<String> {
+    let mut kept = String::new();
+    let mut in_fence = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence {
+            kept.push_str(&strip_markdown_line(line));
+            kept.push('\n');
+        }
+    }
+    let closing = kept
+        .split("\n\n")
+        .map(|p| {
+            p.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let count = closing.chars().count();
+    if count == 0 {
+        return None;
+    }
+    let max = crate::judgment::CLOSING_CHARS;
+    Some(if count > max {
+        closing.chars().skip(count - max).collect()
+    } else {
+        closing
+    })
 }
 
 /// Markdown to one plain paragraph within [`SUMMARY_CHARS`]; `None` when
@@ -795,6 +878,7 @@ mod tests {
             head_before: None,
             head_after: None,
             changes: None,
+            check: None,
         }
     }
 
@@ -1218,6 +1302,20 @@ mod tests {
             )
         );
         assert_eq!(transcript_summary("not json\n{\"type\":\"user\"}"), None);
+        // The judge reads the same message from its end, paragraphs kept.
+        assert_eq!(
+            transcript_closing(&tail).as_deref(),
+            Some(
+                "Done\n\nRewrote the tokenizer in src/lexer.rs to handle unicode escapes. \
+                 Second line of the paragraph.\n\nNext I will look at the parser."
+            )
+        );
+        assert_eq!(transcript_closing("not json\n{\"type\":\"user\"}"), None);
+        let long = format!("{}\n\nShould I open the PR?", "word ".repeat(600));
+        let closing = closing_text(&long).unwrap();
+        assert!(closing.ends_with("Should I open the PR?"));
+        assert_eq!(closing.chars().count(), crate::judgment::CLOSING_CHARS);
+        assert_eq!(closing_text("```\nonly code\n```"), None);
         assert_eq!(
             transcript_summary(&line(
                 serde_json::json!({"type":"assistant","message":{"content":"plain string"}})

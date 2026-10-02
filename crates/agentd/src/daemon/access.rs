@@ -290,6 +290,7 @@ impl Daemon {
             | Request::AckInbox { agent, .. }
             | Request::ReportProvider { agent, .. }
             | Request::ReportActivity { agent, .. }
+            | Request::TurnEnded { agent, .. }
             | Request::Role { agent, .. }
             | Request::Release { agent, .. }
             | Request::ReleaseAll { agent, .. }

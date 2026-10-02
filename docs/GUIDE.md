@@ -425,7 +425,7 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
-| `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first |
+| `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first; `contest open --measure judged --level "…" --level "…"` ranks by where the opt-in [judge](ARCHITECTURE.md#the-judge) places each entry's change |
 
 ### Containers
 
@@ -607,6 +607,18 @@ Newest first. Only what changes how the product is used.
 
 ### Unreleased
 
+- An opt-in judge: name judgments under `[judge]` in `agentd.toml`, with a
+  private file holding a TypeSafe API key, and the daemon asks TypeSafe's
+  Jev model narrow questions about text it already holds. `summaries` trims
+  a quoted release summary to the sentences that report something;
+  `questions` lists a Claude Code session whose turn ended on a question
+  under Needs you; `acceptance` says which of a card's criteria nothing in
+  its holder's journal reports done; `progress` tells you when two agents'
+  messages stop moving the work forward; `screening` flags a browser agent's
+  message that tries to steer its reader; `contests` adds a judged measure,
+  `contest open --measure judged --level "…" --level "…"`. Every judgment
+  is a flag or a trim, never a decision; nothing is sent until you name it.
+  See [the judge](ARCHITECTURE.md#the-judge).
 - **Reconnect here** in a Claude Code session's Details, and `agentdocker
   reconnect <session>`: once the session has exited in its terminal, the daemon
   brings it back under its own record with its conversation (`--resume`) and

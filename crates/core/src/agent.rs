@@ -371,6 +371,19 @@ pub struct AgentRecord {
     /// have been injected. Cleared as messages leave the queue.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub legacy_offers: std::collections::BTreeMap<crate::MessageId, DateTime<Utc>>,
+    /// The opt-in judge read the end of this agent's last turn as a
+    /// question for the person. See [`AgentRecord::open_turn_question`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_question: Option<TurnQuestion>,
+}
+
+/// A turn that ended, as the judge read it, on a question for the person.
+/// Only a likelihood is kept: the words stay in the agent's transcript.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnQuestion {
+    pub ended_at: DateTime<Utc>,
+    /// The likelihood, as a percentage.
+    pub likelihood: u8,
 }
 
 /// The label a role is kept in (`role=reviewer`), so a hand-off or a
@@ -501,6 +514,26 @@ impl AgentRecord {
             adapter_contacts: Default::default(),
             input_binding: None,
             legacy_offers: Default::default(),
+            turn_question: None,
+        }
+    }
+
+    /// The likelihood that this agent's last turn ended on a question for
+    /// the person, while that turn is still its last: nothing since has
+    /// reported it working, and it is still running.
+    pub fn open_turn_question(&self) -> Option<u8> {
+        let question = self.turn_question.as_ref()?;
+        if !self.status.is_live() {
+            return None;
+        }
+        match &self.reported_activity {
+            Some(seen)
+                if seen.activity == crate::ReportedActivity::Working
+                    && seen.observed_at > question.ended_at =>
+            {
+                None
+            }
+            _ => Some(question.likelihood),
         }
     }
 }
@@ -508,6 +541,50 @@ impl AgentRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A judged question stays open while the agent's last turn is still
+    /// its last: a later report of work, or an exit, closes it.
+    #[test]
+    fn a_turn_question_is_open_until_the_agent_works_again() {
+        let now = Utc::now();
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: "codex-1".into(),
+                ..AgentSpec::default()
+            },
+            false,
+            now,
+        );
+        record.status = AgentStatus::Running;
+        assert_eq!(record.open_turn_question(), None);
+        record.turn_question = Some(TurnQuestion {
+            ended_at: now,
+            likelihood: 92,
+        });
+        let seen = |activity, at| crate::ActivityObservation {
+            activity,
+            observed_at: at,
+        };
+        record.reported_activity = Some(seen(crate::ReportedActivity::Idle, now));
+        assert_eq!(record.open_turn_question(), Some(92));
+        record.reported_activity = Some(seen(
+            crate::ReportedActivity::Working,
+            now - chrono::Duration::seconds(5),
+        ));
+        assert_eq!(
+            record.open_turn_question(),
+            Some(92),
+            "work before the turn ended"
+        );
+        record.reported_activity = Some(seen(
+            crate::ReportedActivity::Working,
+            now + chrono::Duration::seconds(5),
+        ));
+        assert_eq!(record.open_turn_question(), None, "working again");
+        record.reported_activity = None;
+        record.status = AgentStatus::Exited { code: Some(0) };
+        assert_eq!(record.open_turn_question(), None, "gone");
+    }
 
     #[test]
     fn legacy_claude_names_do_not_replace_other_runtimes_chosen_names() {

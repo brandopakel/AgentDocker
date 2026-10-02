@@ -27,6 +27,11 @@ pub struct DaemonConfig {
     /// posted anywhere unless the person writes a sink here.
     #[serde(default)]
     pub webhooks: Vec<WebhookConfig>,
+    /// An opt-in judge model asked narrow questions about text the
+    /// daemon holds. Nothing is sent anywhere unless the person names
+    /// judgments here.
+    #[serde(default)]
+    pub judge: JudgeConfig,
 }
 
 /// Local accounting roots only; transcript text is parsed but never retained.
@@ -134,38 +139,8 @@ impl WebhookConfig {
         {
             return Err("a webhook name is 1–40 lowercase letters, digits or hyphens".into());
         }
-        let (scheme, rest) = self
-            .url
-            .split_once("://")
-            .ok_or_else(|| format!("webhook {name}: the url needs a scheme"))?;
-        if rest.contains('#') {
-            return Err(format!("webhook {name}: the url has a fragment"));
-        }
-        let authority = rest.split(['/', '?']).next().unwrap_or("");
-        if authority.contains('@') {
-            return Err(format!(
-                "webhook {name}: the url carries credentials; put a secret in secret_file"
-            ));
-        }
-        let host = authority
-            .rsplit_once(':')
-            .filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit()))
-            .map_or(authority, |(host, _)| host)
-            .trim_matches(['[', ']']);
-        if host.is_empty() {
-            return Err(format!("webhook {name}: the url has no host"));
-        }
-        let local = matches!(host, "127.0.0.1" | "::1" | "localhost");
-        match scheme {
-            "https" => {}
-            "http" if local => {}
-            "http" => {
-                return Err(format!(
-                    "webhook {name}: plain http only reaches this machine (127.0.0.1, ::1 or localhost); use https"
-                ));
-            }
-            other => return Err(format!("webhook {name}: {other}:// is not http or https")),
-        }
+        check_outbound(&self.url, "put a secret in secret_file")
+            .map_err(|error| format!("webhook {name}: {error}"))?;
         if self.secret_file.as_os_str().is_empty() || !self.secret_file.is_absolute() {
             return Err(format!("webhook {name}: secret_file is an absolute path"));
         }
@@ -190,6 +165,124 @@ impl WebhookConfig {
             }
         }
         Ok(())
+    }
+}
+
+/// The shape of an address the daemon sends to: a host, no credentials
+/// or fragment in it, and `https` — plain `http` only to this machine.
+/// `hint` says where a credential belongs instead.
+fn check_outbound(url: &str, hint: &str) -> Result<(), String> {
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| "the url needs a scheme".to_owned())?;
+    if rest.contains('#') {
+        return Err("the url has a fragment".into());
+    }
+    let authority = rest.split(['/', '?']).next().unwrap_or("");
+    if authority.contains('@') {
+        return Err(format!("the url carries credentials; {hint}"));
+    }
+    let host = authority
+        .rsplit_once(':')
+        .filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit()))
+        .map_or(authority, |(host, _)| host)
+        .trim_matches(['[', ']']);
+    if host.is_empty() {
+        return Err("the url has no host".into());
+    }
+    let local = matches!(host, "127.0.0.1" | "::1" | "localhost");
+    match scheme {
+        "https" => Ok(()),
+        "http" if local => Ok(()),
+        "http" => Err(
+            "plain http only reaches this machine (127.0.0.1, ::1 or localhost); use https".into(),
+        ),
+        other => Err(format!("{other}:// is not http or https")),
+    }
+}
+
+/// The judge: which judgments run, the key they are sent with, and the
+/// model and address that answer. With no judgments named — the default
+/// — nothing is read, kept or sent.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JudgeConfig {
+    /// Judgments by name: `summaries`, `questions`, `acceptance`,
+    /// `progress`, `screening`, `contests`. Each names the text it sends
+    /// (see `agentdocker_core::judgment::Judgment`).
+    #[serde(default)]
+    pub judgments: Vec<String>,
+    /// A private file (a regular file of this user, mode 0600) whose
+    /// trimmed content is the TypeSafe API key.
+    #[serde(default)]
+    pub key_file: Option<std::path::PathBuf>,
+    /// A versioned model, so the thresholds keep their meaning; an alias
+    /// such as `jev-latest` moves underneath them.
+    #[serde(default = "judge_model")]
+    pub model: String,
+    #[serde(default = "judge_url")]
+    pub url: String,
+}
+
+fn judge_model() -> String {
+    crate::judgment::DEFAULT_MODEL.to_owned()
+}
+
+fn judge_url() -> String {
+    crate::judgment::DEFAULT_URL.to_owned()
+}
+
+impl Default for JudgeConfig {
+    fn default() -> Self {
+        Self {
+            judgments: Vec::new(),
+            key_file: None,
+            model: judge_model(),
+            url: judge_url(),
+        }
+    }
+}
+
+impl JudgeConfig {
+    /// The judgments to run, checked with everything they need: a key
+    /// file at an absolute path, a model name, an address that goes
+    /// nowhere surprising. None named is valid and runs nothing.
+    pub fn enabled(&self) -> Result<std::collections::BTreeSet<crate::judgment::Judgment>, String> {
+        let mut enabled = std::collections::BTreeSet::new();
+        for name in &self.judgments {
+            let judgment = crate::judgment::Judgment::parse(name).ok_or_else(|| {
+                format!(
+                    "judge: `{name}` is not a judgment ({})",
+                    crate::judgment::Judgment::ALL
+                        .map(|j| j.as_str())
+                        .join(", ")
+                )
+            })?;
+            if !enabled.insert(judgment) {
+                return Err(format!("judge: `{name}` is named twice"));
+            }
+        }
+        if enabled.is_empty() {
+            return Ok(enabled);
+        }
+        match &self.key_file {
+            Some(path) if path.is_absolute() => {}
+            _ => return Err("judge: key_file is an absolute path".into()),
+        }
+        if self.model.is_empty()
+            || self.model.len() > 64
+            || !self
+                .model
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+        {
+            return Err(
+                "judge: model is 1–64 letters, digits, dots, hyphens or underscores".into(),
+            );
+        }
+        check_outbound(&self.url, "put the key in key_file")
+            .map_err(|error| format!("judge: {error}"))?;
+        Ok(enabled)
     }
 }
 
@@ -365,6 +458,67 @@ secret_file = {secret:?}
         assert!(config.webhooks().is_err());
         let none: DaemonConfig = toml::from_str("").unwrap();
         assert!(none.webhooks().unwrap().is_empty());
+    }
+
+    /// The judge sends nothing unless judgments are named, and when they
+    /// are it needs a key file, a model and an address of the safe shape.
+    #[test]
+    fn the_judge_is_off_until_named_and_checked_when_it_is() {
+        use crate::judgment::Judgment;
+        let parse = |text: &str| toml::from_str::<DaemonConfig>(text).unwrap();
+        assert!(parse("").judge.enabled().unwrap().is_empty());
+        assert!(
+            parse("[judge]\nkey_file = \"relative\"\n")
+                .judge
+                .enabled()
+                .unwrap()
+                .is_empty()
+        );
+        let key = std::env::temp_dir().join("typesafe.key");
+        let config = parse(&format!(
+            "[judge]\njudgments = [\"summaries\", \"screening\"]\nkey_file = {:?}\n",
+            key.display().to_string()
+        ));
+        assert_eq!(
+            config
+                .judge
+                .enabled()
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [Judgment::Summaries, Judgment::Screening]
+        );
+        assert_eq!(config.judge.model, "jev-1.13.0");
+        assert_eq!(config.judge.url, "https://api.typesafe.ai/v1/systemone");
+
+        let with = |edit: &dyn Fn(&mut JudgeConfig)| {
+            let mut judge = config.judge.clone();
+            edit(&mut judge);
+            judge.enabled()
+        };
+        assert!(with(&|j| j.key_file = None).is_err(), "no key");
+        assert!(
+            with(&|j| j.key_file = Some("typesafe.key".into())).is_err(),
+            "relative key"
+        );
+        assert!(
+            with(&|j| j.judgments.push("summaries".into())).is_err(),
+            "twice"
+        );
+        assert!(
+            with(&|j| j.judgments.push("everything".into())).is_err(),
+            "unknown"
+        );
+        assert!(with(&|j| j.model = "jev latest".into()).is_err(), "model");
+        assert!(
+            with(&|j| j.url = "http://example.com/v1".into()).is_err(),
+            "plain http"
+        );
+        assert!(
+            with(&|j| j.url = "http://127.0.0.1:9/v1".into()).is_ok(),
+            "local http"
+        );
+        assert!(toml::from_str::<DaemonConfig>("[judge]\nkey = \"x\"\n").is_err());
     }
 
     #[test]

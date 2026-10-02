@@ -394,6 +394,16 @@ pub enum EventKind {
         /// where anyone ranking things reads it.
         score: String,
     },
+    /// The judge placed a judged contest's entry on the opener's levels:
+    /// the expected level, rendered, and how concentrated the answer
+    /// was, as a percentage. The entry ranks from now on.
+    ContestJudged {
+        contest: crate::ContestId,
+        agent: AgentId,
+        validation: String,
+        score: String,
+        confidence: u8,
+    },
     /// The answer, and whether the metric settled it or a person did.
     ContestClosed {
         contest: crate::ContestId,
@@ -473,6 +483,56 @@ pub enum EventKind {
         kind: String,
         reason: String,
         dropped: u64,
+    },
+    /// The opt-in judge could not answer: which judgment, why in a word
+    /// (`refused`, `unreachable`, `unreadable`, `dropped`), and how many
+    /// judgments were lost since the last such notice. Nothing waited on
+    /// them; what they would have flagged is simply not flagged.
+    JudgeFailed {
+        judgment: String,
+        reason: String,
+        dropped: u64,
+    },
+    /// The judge read a transcript-quoted release summary: sentences that
+    /// only narrated what came next were dropped, or all of them did. The
+    /// entry as it now stands.
+    JournalChecked {
+        entry: JournalEntry,
+    },
+    /// The judge read the end of an agent's turn as a question for the
+    /// person, with this likelihood as a percentage. Shown until the
+    /// agent works again; nothing is answered on its behalf.
+    TurnEndedOnQuestion {
+        agent: AgentId,
+        likelihood: u8,
+    },
+    /// The judge read the holder's journal against a card's acceptance
+    /// text after it moved to Review or Done; the card carries each
+    /// criterion. `unmet` of `criteria` were not reported done.
+    TaskAcceptanceChecked {
+        task: crate::TaskId,
+        project: ProjectId,
+        criteria: usize,
+        unmet: usize,
+    },
+    /// The judge read the latest direct messages between two agents as
+    /// not moving the work forward: the expected level on 0 (repeating)
+    /// to 2 (converging), rendered, and the likelihood as a percentage
+    /// that each waits on the other. A flag for the person; nothing is
+    /// held back.
+    ConversationStalled {
+        conversation: crate::ConversationId,
+        agents: Vec<AgentId>,
+        progress: String,
+        waiting: u8,
+    },
+    /// The judge read a message from a browser agent as trying to steer
+    /// whoever reads it. The message was delivered as sent; its readers
+    /// were told.
+    MessageFlagged {
+        message: MessageId,
+        from: AgentId,
+        hazards: Vec<crate::judgment::Hazard>,
     },
     /// The person told a project's agents to hold, and why.
     ProjectPaused {

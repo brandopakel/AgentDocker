@@ -328,6 +328,16 @@ impl State {
         // delayed idle report fall back to "working" after its own expiry.
         record.last_seen = record.last_seen.max(observation.observed_at);
         record.reported_activity = Some(observation.clone());
+        // A turn that ended on a question is answered, or overtaken, once
+        // the agent works again.
+        if observation.activity == agentdocker_core::ReportedActivity::Working
+            && record
+                .turn_question
+                .as_ref()
+                .is_some_and(|question| question.ended_at < observation.observed_at)
+        {
+            record.turn_question = None;
+        }
         let mut event = agentdocker_core::Event::new(
             agentdocker_core::EventKind::AgentActivityReported {
                 agent: id.clone(),

@@ -88,8 +88,18 @@ impl App {
         (blocked || self.ended_with_undelivered(agent)) && !self.notice_dismissed(agent)
     }
 
+    /// The opt-in judge read the end of this session's last turn as a
+    /// question for the person, and nothing since says it moved on. A
+    /// question asked through AgentDocker already lists it; this is for
+    /// one asked in prose, which only the judge can see.
+    pub(super) fn asked_in_prose(&self, agent: &AgentRecord) -> bool {
+        agent.open_turn_question().is_some() && !self.needs_input(agent.id.as_str())
+    }
+
     fn needs_attention(&self, agent: &AgentRecord) -> bool {
-        self.needs_input(agent.id.as_str()) || self.delivery_needs_you(agent)
+        self.needs_input(agent.id.as_str())
+            || self.delivery_needs_you(agent)
+            || self.asked_in_prose(agent)
     }
 
     pub(super) fn session_records(&self, filter: Filter) -> Vec<&AgentRecord> {
