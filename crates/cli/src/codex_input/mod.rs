@@ -523,10 +523,6 @@ async fn session(
                     }
                     preflight(provider, &ledger.record().binding.cwd).await?;
                     let input = ledger.prepare_bound(message, Some(mcp_origin.clone()))?;
-                    if !session_bound {
-                        session_identity::bind(client, agent, &thread).await?;
-                        session_bound = true;
-                    }
                     activity(client, agent.id.as_str(), ReportedActivity::Working).await?;
                     let result = match provider.request("turn/start", json!({"threadId":thread,"clientUserMessageId":message.id,
                         "input":[{"type":"text","text":input,"text_elements":[]}]})).await {
@@ -543,6 +539,15 @@ async fn session(
                         }
                     };
                     turn = Some(result["turn"]["id"].as_str().context("Codex accepted no identifiable turn")?.to_owned());
+                    // Bind only after the provider accepts the turn. A daemon
+                    // binding error must not strand an input that was never
+                    // submitted or give an unused thread a permanent label.
+                    // Receipt recovery remains unchanged, and the collector
+                    // reconciles any samples scanned before this late binding.
+                    if !session_bound {
+                        session_identity::bind(client, agent, &thread).await?;
+                        session_bound = true;
+                    }
                 }
                 }
             }

@@ -1710,10 +1710,14 @@ birth, runtime and physical checkout verification. The existing
 or conflicting session cannot bind or recover the root channel receipt. Native
 Windows ancestry uses the host process table rather than Unix `ps`.
 
-Managed Codex bridges bind their first prepared provider thread through the
-existing `register`/`AgentSessionBound` transaction before turn submission.
+Managed Codex bridges bind their first accepted provider thread through the
+existing `register`/`AgentSessionBound` transaction after turn acceptance.
 Reconciliation preserves the managed ID, ownership, project and process birth;
 conflicting known threads and mismatching replies fail closed. No session label
 is learned for an empty unused thread. Resumed prepared/history sessions confirm
 the same mapping before receipt recovery, enabling the usage collector's existing
 runtime/session attribution and late reconciliation without a new schema.
+Initial binding runs after the accepted `turn/start` response so daemon binding
+failure cannot introduce a new pre-submission uncertainty window. Samples
+collected before binding are reassigned by existing usage reconciliation;
+receipt recovery remains required for uncertain provider submissions.

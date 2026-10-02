@@ -68,7 +68,7 @@ and [containers](CONTAINER-ENGINES.md). The operational sequence remains in
 The independent `acce400f` endurance trial found complete token contributions
 but missing agent/project attribution for three managed Codex bridge sessions:
 their provider threads were retained only in local delivery ledgers. The bridge
-now learns the prepared session through the existing managed registration,
+now learns the accepted session through the existing managed registration,
 with identity/generation checks and no provider input replay. Three identity tests and CLI lint pass; native `1ac7256d` on Codex 0.160.0
 bound the same managed identity and preserved authentication recovery, but
 accounting timed out because that log version was unsupported. The candidate
@@ -80,6 +80,9 @@ resume delivered once, an unused-thread crash replaced only the empty thread,
 and a used-thread crash preserved identity/receipts without replay. Both cleaned
 all fixture processes without force or errors. Full CI gates passed on the same
 implementation: Mac 1,451 Rust and Ubuntu 1,439 Rust checks, plus 162 Python tests
-each (one skipped), with zero retries. Independent review and sustained
-real-account/installed acceptance remain required; failed evidence and the
+each (one skipped), with zero retries. Independent review identified a new
+pre-submission failure window around identity binding. The follow-up moves that
+binding after Codex accepts the first turn, relying on existing late usage
+reconciliation; corrected native trials and final checks are pending. Sustained
+real-account/installed acceptance remains required; failed evidence and the
 original endurance trial are preserved unchanged.

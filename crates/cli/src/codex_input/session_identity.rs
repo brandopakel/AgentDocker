@@ -1,4 +1,4 @@
-//! Give accounting the prepared conversation's identity without registering a
+//! Give accounting the accepted conversation's identity without registering a
 //! second process. Empty unused threads remain replaceable after restart.
 use crate::client::{Backend, into_result};
 use agentdocker_core::{AgentRecord, Request, Response};
@@ -31,8 +31,9 @@ pub(super) async fn bind(
         !thread.is_empty() && thread.len() <= 256 && !thread.chars().any(char::is_control),
         "Codex returned an invalid conversation identity"
     );
-    // Bound the whole inspect/reconcile sequence. A timeout cannot trigger a
-    // provider submission; a later restart reconciles the same prepared thread.
+    // Bound the whole inspect/reconcile sequence. Initial binding happens after
+    // turn acceptance, so a timeout adds no pre-submission recovery window.
+    // A later restart reconciles the same retained thread without resubmission.
     tokio::time::timeout(Duration::from_secs(5), async {
         let Response::Agent { agent: current } = into_result(
             backend
