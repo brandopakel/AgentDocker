@@ -74,12 +74,16 @@ pub fn target(root: &Path, binary: &str) -> io::Result<Option<PathBuf>> {
     if !root.is_absolute() || !root.ends_with(STORE_SUFFIX) || !BINARIES.contains(&binary) {
         return Err(invalid("invalid Windows installation path or entrypoint"));
     }
+    match dirs::check_private_dir(root) {
+        Ok(()) => (),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    }
     let activation = match record(&root.join("activation.json"), 64 * 1024) {
         Ok(activation) => activation,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    dirs::check_private_dir(root)?;
     let root = root.canonicalize()?;
     let current = &activation["current"];
     let id = current["id"]
@@ -227,6 +231,41 @@ mod tests {
                 .to_string()
                 .contains("modified")
         );
+    }
+
+    #[test]
+    fn windows_activation_readers_observe_complete_atomic_records() {
+        let (_temp, root, first, _launcher) = fixture();
+        let second = root
+            .join("versions")
+            .join("b".repeat(64))
+            .join("AgentDocker/agentdocker.exe");
+        std::fs::create_dir_all(second.parent().unwrap()).unwrap();
+        std::fs::write(&second, b"second executable").unwrap();
+        let barrier = std::sync::Barrier::new(5);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    for _ in 0..200 {
+                        let observed = target(&root, "agentdocker.exe").unwrap().unwrap();
+                        assert!(observed == first || observed == second);
+                    }
+                });
+            }
+            barrier.wait();
+            for index in 0..100 {
+                let staged = root.join("activation.staged");
+                let id = if index % 2 == 0 { "b" } else { "a" }.repeat(64);
+                write_record(
+                    &staged,
+                    &serde_json::json!({"format":1,
+                    "current":{"id":id,"payload":"AgentDocker","installation_lock":1}}),
+                );
+                files::publish_staged(&staged, &root.join("activation.json")).unwrap();
+            }
+        });
+        assert_eq!(target(&root, "agentdocker.exe").unwrap(), Some(first));
     }
 
     #[test]
