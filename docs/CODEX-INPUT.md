@@ -902,7 +902,7 @@ its separate connection has not established a route to steer that terminal's
 active turn. This is not an additional ownership requirement in the API contract.
 
 The native queue acceptance driver also has an `approval-wait` scenario. It
-uses a private `untrusted` approval policy, accepts its bootstrap hook once,
-then holds a harmless print command for 65 seconds while peer and human input
+uses a private `on-request` policy and a narrowly matched prompt rule, then
+holds a harmless print command for 65 seconds while peer and human input
 remain queued. It requires ordered provider receipts after one-time approval
 and complete private-process cleanup. Native acceptance is still pending.

@@ -15,7 +15,7 @@ fault injection into the isolated receiver ledger (never the provider database),
 and explicitly closing/reopening the same TUI conversation with queued input.
 The long-busy scenario holds a direct user turn for 65 seconds, verifies retained
 peer input without a false idle pause, then requires ordered provider receipts.
-The approval-wait scenario enables approval prompts only in its private profile,
+The approval-wait scenario adds one prompt rule only in its private profile,
 holds a harmless print command for 65 seconds, and checks queued input before
 approving that command once. No saved user policy or provider account is changed.
 Active-hook scenarios accept --active-peer-kind answer to exercise an ordinary
@@ -534,7 +534,12 @@ try:
             + ']\ntrust_level = "trusted"\n'
         )
         if args.scenario == "approval-wait":
-            config = config.replace('approval_policy = "never"', 'approval_policy = "untrusted"')
+            config = config.replace('approval_policy = "never"', 'approval_policy = "on-request"')
+            (profile / "rules").mkdir()
+            approval_rule = profile / "rules" / "approval-fixture.rules"
+            approval_rule.write_text('prefix_rule(pattern = '
+                + json.dumps(["python3", "-c", "print('APPROVAL_EXECUTED_NONCE')"])
+                + ', decision = "prompt", justification = "Private approval-wait fixture")\n')
         (profile / "config.toml").write_text(config)
         env = {
             k: v
@@ -547,6 +552,12 @@ try:
             TERM="xterm-256color",
         )
         report["provider_version"] = subprocess.check_output([codex, "--version"], text=True).strip()
+        if args.scenario == "approval-wait":
+            decision = subprocess.run([codex, "execpolicy", "check", "--rules", str(approval_rule),
+                "--", "python3", "-c", "print('APPROVAL_EXECUTED_NONCE')"], env=env,
+                cwd=repo, capture_output=True, text=True, timeout=15, check=True)
+            report["fixture_rule"] = json.loads(decision.stdout)
+            assert report["fixture_rule"]["decision"] == "prompt"
         report["cli_sha256"] = hashlib.sha256(cli.read_bytes()).hexdigest()
         report["daemon_sha256"] = hashlib.sha256(cli.with_name("agentd").read_bytes()).hexdigest()
         adhome = root / "ad"
@@ -724,13 +735,6 @@ try:
                 return (b"Would you like to run the following command?" in text
                         and b"Yes, proceed" in text and marker in text)
 
-            if args.scenario == "approval-wait":
-                # Only the already-vetted bootstrap hook command is pending.
-                # Enter selects the visible one-time acceptance, not a rule.
-                wait(lambda: approval_visible(0, b"'hook'"), 30)
-                (out / "bootstrap-approval.bin").write_bytes(output)
-                os.write(master, b"\r")
-                report["bootstrap_approved_once"] = True
             if args.scenario == "startup":
                 started = wait(
                     lambda: next(
