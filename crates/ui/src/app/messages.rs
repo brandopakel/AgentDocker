@@ -836,7 +836,7 @@ impl App {
         }));
         container(
             scrollable(list)
-                .direction(look::slim_scrollbar())
+                .direction(look::slim_scrollbar(4.0))
                 .height(Fill)
                 .id("conversations-scroll"),
         )
@@ -2107,7 +2107,7 @@ impl App {
                     bottom: 8.0,
                     left: 0.0,
                 }))
-                .direction(look::slim_scrollbar())
+                .direction(look::slim_scrollbar(8.0))
                 .height(Fill)
                 .anchor_bottom()
                 .id(format!("history-{key}"))
@@ -2225,9 +2225,12 @@ impl App {
                     bottom: 8.0,
                     left: 0.0,
                 }))
-                .direction(look::slim_scrollbar())
+                .direction(look::slim_scrollbar(8.0))
                 .height(Fill)
                 .anchor_bottom()
+                // End-anchored: `history-` is how a reveal knows to
+                // count its offset from the end.
+                .id(format!("history-thread-{root_id}"))
             )
             .height(Fill),
             container(

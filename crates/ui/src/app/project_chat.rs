@@ -72,7 +72,7 @@ impl App {
             .push(
                 container(
                     scrollable(self.project_chat_agents(c))
-                        .direction(super::messages::look::slim_scrollbar())
+                        .direction(super::messages::look::slim_scrollbar(4.0))
                         .id("chat-agents"),
                 )
                 .width(250)
