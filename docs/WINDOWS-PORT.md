@@ -446,8 +446,13 @@ observes its original daemon within the existing ten-second bound. The second
 run reached readiness in 0.81 seconds, then exposed a separate harness error:
 it parsed plain-text CLI `ping` output as JSON. Only the JSON recovery preview
 now receives JSON parsing, and the restart predicate waits through a missing
-binding instead of treating that transient state as a replacement. This path
-still needs a passing native Codex run. Separate Mac trials on the same receiver
+binding instead of treating that transient state as a replacement. The corrected
+Windows run reached the actual TUI, then failed zero-prompt startup after 45
+seconds with no receiver, hook or model request observed and clean cleanup.
+The workflow retains that strict failure and separately runs the explicit
+`established` scenario, which begins one fixture prompt before testing delivery.
+A narrower pass cannot change the failed startup result or make that workflow
+pass. This path still needs a passing native Codex run. Separate Mac trials on the same receiver
 source passed delivery after an initial prompt but failed fresh startup and
 reopen without a prompt; both complete trial failures remain recorded. It does not establish real-account, physical keyboard or service
 acceptance; the held HTTP response is not a tool or permission wait.

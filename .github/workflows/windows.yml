@@ -70,6 +70,7 @@ jobs:
           $actual = (Get-FileHash artifacts/codex.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne 'eba0f32c976667cb9298efafd98513e823eeda7b576a03ec658bb8be8d336316') { throw "Codex digest mismatch" }
       - name: Extracted Windows desktop package acceptance
+        id: package
         # Every command in it is bounded; a hang is a finding, not a wait.
         # Forty samples can exceed ten minutes within their command bounds;
         # reserve time to finish cleanup and retain the diagnostic report.
@@ -78,6 +79,11 @@ jobs:
         env:
           STARTUP_SAMPLES: ${{ inputs.startup_samples || '0' }}
         run: python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES" --codex artifacts/codex.exe
+      - name: Diagnose established-session native Codex after startup failure
+        # A narrower pass never changes the failed strict startup outcome.
+        if: ${{ !cancelled() && steps.package.outcome == 'failure' }}
+        timeout-minutes: 10
+        run: python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-established-package --codex artifacts/codex.exe --codex-scenario established
       - name: Preserve tested unsigned portable preview
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -116,4 +122,7 @@ jobs:
             artifacts/windows-desktop-package/package-acceptance.json
             artifacts/windows-desktop-package/smoke/
             artifacts/windows-desktop-package/native-codex/
+            artifacts/windows-established-package/package-acceptance.json
+            artifacts/windows-established-package/smoke/
+            artifacts/windows-established-package/native-codex/
           if-no-files-found: warn

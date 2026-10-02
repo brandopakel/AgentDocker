@@ -56,6 +56,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--codex", type=Path,
                         help="actual native Codex executable for private ConPTY/loopback receiver acceptance")
+    parser.add_argument("--codex-scenario", choices=("startup", "established"), default="startup")
     parser.add_argument("--startup-samples", type=int, default=0,
                         help="additional fresh-home samples per Windows ancestry type (0..20)")
     args = parser.parse_args()
@@ -95,6 +96,7 @@ def main():
                 import psutil
                 trial = subprocess.Popen([sys.executable, str(ROOT / "scripts/windows_native_codex_smoke.py"),
                                           "--binary-dir", str(app), "--codex", str(args.codex.resolve(strict=True)),
+                                          "--scenario", args.codex_scenario,
                                           "--output", str(output / "native-codex")], cwd=scratch)
                 owner = psutil.Process(trial.pid)
                 try:

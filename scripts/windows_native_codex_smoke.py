@@ -96,6 +96,8 @@ def main():
     parser.add_argument("--binary-dir", type=Path, required=True)
     parser.add_argument("--codex", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--scenario", choices=("startup", "established"), default="startup",
+                        help="strict zero-prompt startup, or explicitly begin one fixture turn before delivery")
     args = parser.parse_args()
     if os.name != "nt":
         parser.error("requires native Windows; use native_codex_queue_smoke.py on Unix")
@@ -114,7 +116,10 @@ def main():
     profile, repo, home = root / "profile", root / "project", root / "state"
     profile.mkdir()
     repo.mkdir()
-    report = {"result": "failed", "scope": __doc__, "requests": [], "sent": [],
+    initial_prompt = "WINDOWS_FIXTURE_WARMUP" if args.scenario == "established" else None
+    request_offset = int(initial_prompt is not None)
+    report = {"result": "failed", "scope": __doc__, "scenario": args.scenario,
+              "initial_prompt": initial_prompt, "requests": [], "sent": [],
               "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
               "binary_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                                 for p in (cli, daemon_exe, codex)},
@@ -238,7 +243,10 @@ def main():
         report["daemon_ready_seconds"] = time.monotonic() - started
         check_cli("ping")
         # One-off trust is limited to the fixture's sole SessionStart hook.
-        provider = PtyProcess.spawn([str(codex), "--no-alt-screen", "--dangerously-bypass-hook-trust"],
+        provider_argv = [str(codex), "--no-alt-screen", "--dangerously-bypass-hook-trust"]
+        if initial_prompt is not None:
+            provider_argv.append(initial_prompt)
+        provider = PtyProcess.spawn(provider_argv,
                                     cwd=str(repo), env=env, dimensions=(40, 160), backend=Backend.ConPTY)
         owned.append(psutil.Process(provider.pid))
         report["provider_pid"] = provider.pid
@@ -265,7 +273,12 @@ def main():
         reader.start()
         agent = wait(lambda: next((a for a in rpc({"op": "list", "all": True})["agents"]
                                   if a.get("pid") == provider.pid and a.get("input_binding")), None), 45)
-        assert not agent["managed"] and not report["requests"]
+        assert not agent["managed"]
+        wait(lambda: len(report["requests"]) >= request_offset)
+        assert len(report["requests"]) == request_offset
+        if initial_prompt is not None:
+            assert initial_prompt in report["requests"][0]["latest_user"]
+            wait(lambda: "WINDOWS_FIXTURE_OK_1" in "".join(output))
         assert agent["input_binding"].get("launch")
         aid = agent["id"]
         report["agent"] = aid
@@ -282,6 +295,7 @@ def main():
             assert rpc({"op": "inbox", "agent": aid, "drain": False})["type"] == "input_owned"
 
         def received(number, text):
+            number += request_offset
             wait(lambda: len(report["requests"]) >= number)
             assert len(report["requests"]) == number
             assert text in report["requests"][number - 1]["latest_user"]
@@ -293,7 +307,7 @@ def main():
         time.sleep(1)
         send("PEER_NATIVE_DRAFT")
         received(2, "PEER_NATIVE_DRAFT")
-        assert "UNSUBMITTED_NATIVE_DRAFT" not in report["requests"][1]["latest_user"]
+        assert "UNSUBMITTED_NATIVE_DRAFT" not in report["requests"][1 + request_offset]["latest_user"]
         provider.write("\r")
         received(3, "UNSUBMITTED_NATIVE_DRAFT")
         provider.write("BUSY_NATIVE")
@@ -303,15 +317,15 @@ def main():
         send("PEER_NATIVE_BUSY")
         send("HUMAN_NATIVE_BUSY", "user")
         time.sleep(2)
-        assert len(report["requests"]) == 4
+        assert len(report["requests"]) == 4 + request_offset
         release.set()
-        assert "BUSY_NATIVE" in report["requests"][3]["latest_user"]
-        wait(lambda: "WINDOWS_FIXTURE_OK_4" in "".join(output))
-        wait(lambda: len(report["requests"]) >= 6, 45)
-        assert len(report["requests"]) == 6
-        assert "PEER_NATIVE_BUSY" in report["requests"][4]["latest_user"]
-        assert "HUMAN_NATIVE_BUSY" in report["requests"][5]["latest_user"]
-        wait(lambda: "WINDOWS_FIXTURE_OK_6" in "".join(output))
+        assert "BUSY_NATIVE" in report["requests"][3 + request_offset]["latest_user"]
+        wait(lambda: f"WINDOWS_FIXTURE_OK_{4 + request_offset}" in "".join(output))
+        wait(lambda: len(report["requests"]) >= 6 + request_offset, 45)
+        assert len(report["requests"]) == 6 + request_offset
+        assert "PEER_NATIVE_BUSY" in report["requests"][4 + request_offset]["latest_user"]
+        assert "HUMAN_NATIVE_BUSY" in report["requests"][5 + request_offset]["latest_user"]
+        wait(lambda: f"WINDOWS_FIXTURE_OK_{6 + request_offset}" in "".join(output))
         wait(lambda: not rpc({"op": "peek_input", "agent": aid})["messages"])
         ledgerpath = home / "codex-queue" / aid / "delivery.json"
         wait(lambda: len(json.loads(ledgerpath.read_text(encoding="utf-8"))["completed"]) == len(report["sent"]))
@@ -334,7 +348,7 @@ def main():
         owned.append(new_controller)
         wait(lambda: rpc({"op": "inspect", "agent": aid})["agent"]["input_delivery"].get("paused") is False)
         time.sleep(2)
-        assert len(report["requests"]) == 6, "receiver restart replayed provider input"
+        assert len(report["requests"]) == 6 + request_offset, "receiver restart replayed provider input"
         send("PEER_NATIVE_RECOVERED")
         received(7, "PEER_NATIVE_RECOVERED")
         wait(lambda: len(json.loads(ledgerpath.read_text(encoding="utf-8"))["completed"]) == len(report["sent"]))
@@ -344,7 +358,8 @@ def main():
         assert all(r["receipt"]["thread"] == thread for r in after["completed"])
         assert profile_hashes == {name: hashlib.sha256((profile / name).read_bytes()).hexdigest() for name in profile_hashes}
         report.update(result="passed", completed_receipts=after["completed"], thread=thread,
-                      automatic_bootstrap=True, draft_preserved=True, receiver_restart_no_replay=True)
+                      automatic_bootstrap=True, startup_without_prompt=initial_prompt is None,
+                      draft_preserved=True, receiver_restart_no_replay=True)
     except Exception:
         report["error"] = traceback.format_exc()
         if provider is not None and provider.isalive():
