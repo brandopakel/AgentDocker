@@ -167,15 +167,17 @@ crash, and what that means for a person:
   exact extracted portable binaries. The trial creates one random private home
   and its owned Task Scheduler task, disables client autostart, verifies the
   serving process image and home before inducing a crash, and requires cleanup.
-  The report is retained beside package evidence. Native acceptance of this
-  driver is pending; an interactive-logon pass would not establish login/reboot
-  behavior or managed-provider survival. Its first native run on `bbfb4dcb`
+  The report is retained beside package evidence. An interactive-logon pass
+  does not establish login/reboot behavior or managed-provider survival. Its
+  first native run on `bbfb4dcb`
   passed the 62 portable checks, then failed service install/uninstall before
   creating a task: the missing-task query returned a silent PowerShell failure.
   Lookup now selects the exact task from successful enumeration and propagates
-  query errors instead of treating every error as absence. Native acceptance of
-  that correction remains pending; the original report and cleanup failure are
-  retained.
+  query errors instead of treating every error as absence. Corrected native
+  run 36958504870 on `bf48452d` passed all 62 portable checks and eight service
+  checks, including crash recovery without client autostart and repeat
+  uninstall. The private task, processes and scratch were removed with no
+  cleanup errors. The original failure remains retained.
 - A validation command is ended on a timeout, but only the command itself:
   there is no process group and no Job Object around it yet, so whether its
   descendants survived is not reported.
