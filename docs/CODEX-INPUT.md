@@ -36,6 +36,25 @@ an observed gap**. MCP startup supplies no thread/profile identity in its
 environment, so it cannot safely infer that binding. The provider still requires review/trust
 of new hook definitions through `/hooks`. Merely
 installing MCP or receiving a hook event does not prove idle wake.
+Codex 0.160.0 can host MCP in a detached app-server instead of the TUI process.
+A local loopback trial exposed questions attributed to that server's separate
+agent, leaving the native conversation without asynchronous answer delivery.
+The candidate resolves each detached-host tool call using Codex's `threadId`
+and `sessionId` metadata against one existing live native binding in the same
+canonical provider profile and checkout. It verifies the app-server process
+birth and executable. The canonical package-cache path supplies the host profile
+when Codex filters `CODEX_HOME` from the MCP environment; an explicitly supplied
+profile must agree. It requires the root thread/session to agree and refuses
+missing, ambiguous, stale or child bindings. It creates no app-server agent and
+never derives a thread from history or a display name. The native receiver keeps
+ownership of input receipts. Once resolved, a native question cannot fall back
+to a blocking legacy call if a binding changes during the request. This source
+change passed an actual Codex 0.160.0 macOS ARM64 loopback trial on
+`3065bd6e`: question identity matched the live TUI, its answer arrived once,
+and idle/draft/busy/recovery checks and private-process cleanup passed.
+Independent review and broader platform/version acceptance remain; this does
+not solve zero-prompt startup/reopen.
+
 The receiver probes the read-only queue/history APIs before taking ownership.
 Hooks keep their normal delivery while that probe is pending or unsupported;
 only an accepted daemon binding suppresses their competing reads. An incompatible
@@ -881,3 +900,14 @@ requires an active turn on the target thread and a matching `expectedTurnId`.
 The current independent-terminal bridge has a local compatibility limitation:
 its separate connection has not established a route to steer that terminal's
 active turn. This is not an additional ownership requirement in the API contract.
+
+The native queue acceptance driver also has an `approval-wait` scenario. It
+uses a private `on-request` policy and a narrowly matched prompt rule, then
+holds a harmless print command for 65 seconds while peer and human input
+remain queued; the approval-triggering message may also retain its receipt
+until the current turn completes. It requires ordered provider receipts after one-time approval
+and complete private-process cleanup. On Codex 0.160.0 Mac ARM64, driver
+`d3361106` with immutable runtime `3065bd6e` passed a 65.259-second approval
+wait, 65 queue observations and ordered peer/human receipts exactly once after
+one-time approval, with clean private-process retirement. Real-account, other
+versions/platforms and non-command permission surfaces remain open.
