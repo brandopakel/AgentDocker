@@ -6,8 +6,8 @@ account is required to organize local agent work.
 
 After a send, **Queued · N sessions need attention** appears when recipients
 have missing or stale input receivers, paused delivery, ended sessions or provider
-limits. **Delivery details** names them and offers **Open session** and **Copy
-instructions**. These are the facts when the message was queued, not a receipt.
+limits. **Details** beside it (read aloud as *Delivery details*) names them and
+offers **Open session** and **Copy instructions**. These are the facts when the message was queued, not a receipt.
 The details stay with that conversation or thread even if you switch while
 sending. In a small pane the feedback scrolls below the input, keeping typing
 and Send visible while every delivery action remains reachable.
@@ -348,15 +348,19 @@ about (the task or contested paths, a pair's branches, a broadcast's
 members). The pane shows the newest 200 archived messages, newest
 last, with **Show earlier messages** at the top until the first is on view,
 day dividers and a **New** divider before the unread part; a question keeps
-its card (Answer, Allow, Deny) in place; other kinds of message carry a small
-kind pill; long ones fold behind **Show more**. The window keeps as much of
+its card (Answer, Allow, Deny) in place. Messages from one sender run together
+under one mark and one header — the name, the kind as a word and the time —
+until the sender or kind changes, five minutes pass, or a message names you;
+AgentDocker's own notices are single quiet lines. Long messages fold behind
+**Show more**. The window keeps as much of
 one conversation as the daemon does (5,000 messages), so paging back reaches
 the earliest it has; when the daemon prunes, the window drops every archive
 and the open thread, reads the open conversation again, and ignores replies
 from before the prune; a thread whose root was pruned closes. Opening a conversation
 marks it read, which acknowledges those rows for you and nothing an agent
 still owns; in a narrow window only the conversation on view is read, never
-the list or a thread shown instead of it. **Reply** (or *n replies*) under a message opens
+the list or a thread shown instead of it. **Reply** (at a message's top right under the
+pointer or keyboard focus) or *n replies* under it opens
 its thread beside the conversation, or in place of it when narrow with
 **‹ Conversation** to return; the thread is read whole. The thread has a
 composer of its own with its own draft, and only it sends with `reply_to`;
@@ -403,8 +407,10 @@ is typed), what it is for, and who is in it — everyone here when nobody is
 picked — and the person is in it as its opener; the room opens as soon as
 the daemon has it. `@` in a composer offers who is here and a pick finishes
 the name (`@codex-51242`, the record's own name, which is what a mention
-reaches); a row whose unread rows name the person shows an **@n** pill beside
-its count, and such a message carries **mentions you** in its header.
+reaches); a row whose unread rows name the person shows an **@n** count beside
+its count, and such a message carries **mentions you** in its header and an
+amber edge. The composer is one frame: the text, then a footer with its keys
+(Enter sends, Shift+Enter starts a line, @ mentions) and the send arrow.
 The selected project also scopes archived direct conversations. Project message search retains finished sessions' direct messages and AgentDocker notices after restart.
 
 Conversation, thread, channel, session and unfinished answer text is saved locally for

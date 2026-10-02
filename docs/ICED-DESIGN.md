@@ -213,6 +213,46 @@ control does, its id or its accessible label:
   from 1180 points wide). A channel is a card headed by a `#` tile, its name,
   Open or Closed as a dot and a word, its purpose and members, and a small
   stack of member marks.
+- **Messages** (`app/messages.rs`, helpers in `app/messages/look.rs`). The
+  conversation list is rows of a 28-point mark (with a presence dot for a
+  direct conversation) or a `#` tile, the name over one line of preview, cut
+  with an ellipsis, and a quiet unread count (the `@n` count in the accent);
+  its groups fold behind a chevron with their rows on a guide rail. The
+  history groups messages into runs at render time — one mark and one header
+  (name, kind as a word, time) until the sender or kind changes, five minutes
+  pass or a message names the person — with flat rows in the full text
+  colour; AgentDocker's notices are single muted lines on a small disc.
+  Unread rows are tinted under the **New** divider; the open thread's message
+  and a notification's target carry a 2-point accent rail, a mention an
+  amber one. **Reply** is drawn only under the pointer or keyboard focus
+  (Iced's `hover` widget), so it is always present for the driver and
+  assistive technology. `controls::framed_composer` is the field, a hairline
+  and a footer of keycap hints and a 28-point send arrow (`send-<key>`,
+  spoken *Send*), the whole frame showing focus; one status line under it
+  says the error, the queued state with **Details**, recoveries or the
+  recipient's readiness. Mention offers float above it. The thread quotes
+  its parent on the accent rail; the new-conversation form is a card with a
+  Direct message | Channel segmented control. The project chat's side panel
+  lists agents as a mark, the name over *status · 3m* and a terminal glyph.
+- **Tools, Settings, Installation** (`app/tools_view.rs`). Tools is one card of
+  rows: a two-letter mark on the tool's tint, the name over a dot and its
+  status words, then one action — **Set up** filled only for the first tool
+  that needs it (an outline for the rest, and for all while a setup is under
+  review), a green **Connected** word for a tool taking messages — and a
+  **Details** disclosure with a definition list. A setup review is one card:
+  the change count, a step list with small state tiles, a block per file
+  with a path header, +N and tinted lines with a left bar, and a footer whose
+  one filled action is **Connect**. Settings is section cards of rows (title
+  and a line on the left, the control on the right): the theme as a
+  segmented control, text sizes as `− 14 pt +` steppers, switches for roomier
+  rows, daily update checks and preview builds, terminal palettes as preview
+  swatches with an accent ring, the keyboard as keycap rows. The terminal
+  pane has a header (status dot, agent over its folder in mono, Live and a
+  small Detach) above the grid on its palette's ground; Commands is a panel
+  with an amber `$` prompt. Installation leads with one update row (**Later**
+  as a ghost, the update the one filled action; `UpdateLater` steps it down
+  for that version, window-local), then versions in mono with status words
+  and a stage rail for a plan under review.
 - **Questions and approvals** (`app/view/approvals.rs`). A question card is
   headed by an amber tile, the question as its title, who asked and when, and
   the time left as a small ring and words. Structured choices are full-width
@@ -415,7 +455,8 @@ database remains a manual step.
 
 Send receipts carry bounded recipient-readiness metadata into the draft for the
 original session, channel, conversation or thread. The default presentation is
-one attention line with **Delivery details**; expanded details scroll within a
+one status line under the composer with a quiet **Details** link (spoken
+*Delivery details*); expanded details scroll within a
 180-point area and show named recipients plus explicit open/copy controls. The
 snapshot is not persisted and never changes message acknowledgement, provider
 consent or queue order. Expanded session/tool details compute current guidance
