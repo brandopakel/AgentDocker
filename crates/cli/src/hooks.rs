@@ -1058,7 +1058,7 @@ async fn found_by_pid<B: Backend>(
     // characters and a name outlives the session that chose it, so a
     // live record answering to it may be a different process entirely —
     // it still has to pass.
-    if let Some(named) = named.filter(&ours) {
+    if let Some(named) = named.filter(ours) {
         return Ok(Some(named));
     }
     match backend
