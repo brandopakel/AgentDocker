@@ -19,6 +19,7 @@ mod send_readiness;
 mod sessions;
 mod shell;
 pub(crate) mod style;
+mod tools_view;
 mod usage;
 mod view;
 use queue::{Receiver as CommandReceiver, Sender as CommandSender};

@@ -785,6 +785,9 @@ pub enum Message {
     /// Back out of a nested page: the back arrow, or Backspace with
     /// nothing typed.
     CommandBack,
+    // Tools, settings and installation
+    /// Put off the available update: its banner steps down.
+    UpdateLater,
 }
 
 /// A wake becomes one frame, a moment later: the answers to a sweep (seven
@@ -2526,6 +2529,10 @@ impl App {
             | Message::CommandRun(_)
             | Message::CommandEscape
             | Message::CommandBack) => tasks.push(self.command_palette(message)),
+            // Tools, settings and installation
+            Message::UpdateLater => {
+                self.desktop.later = self.desktop.update_available().map(str::to_owned);
+            }
         }
         // Catalog removal and missing-folder cleanup can choose another
         // project too. Its header must never accompany the previous queue.

@@ -99,6 +99,8 @@ pub enum Icon {
     Handoff,
     /// A shield: access asked for.
     Shield,
+    /// A chevron pointing up: a disclosure that is open.
+    ChevronUp,
 }
 
 /// An icon inked in one colour.
@@ -464,6 +466,12 @@ impl Glyph {
                 });
                 frame.stroke(&shield, stroke);
                 frame.stroke(&polyline(&[p(5.9, 8.0), p(7.4, 9.5), p(10.2, 6.5)]), stroke);
+            }
+            Icon::ChevronUp => {
+                frame.stroke(
+                    &polyline(&[p(4.0, 10.0), p(8.0, 6.0), p(12.0, 10.0)]),
+                    stroke,
+                );
             }
         }
     }
