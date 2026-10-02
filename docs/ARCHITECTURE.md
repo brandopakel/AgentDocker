@@ -1609,7 +1609,13 @@ attempt or mark a task complete.
 Claude's asynchronous `StopFailure` records typed errors without releasing
 leases or waking the model; normal `Stop` can report recovery. Managed Codex
 normalizes structured app-server errors, keeps the owned provider alive when
-`turn/start` returns an error, and reconciles retained attempts before new input.
+`turn/start` returns an error, and reconciles retained attempts before new input. Within
+one active turn, a generic error retains the most recent structured failure kind;
+a newer recognized kind replaces it. Unbound or other-turn errors cannot affect
+that turn, and the retained detail is discarded when the turn finishes. A generic
+terminal error therefore cannot replace an observed authentication rejection with
+unknown availability. This retains normalized status only; it does not clear a
+block, replay received input, parse error prose or infer successful recovery.
 MCP-only and custom adapters can report the same state explicitly. Missing
 signals remain unverified; discovery alone is not provider-limit detection.
 The desktop shows the reason and queue count, suppresses Done for known blocked
