@@ -1,4 +1,5 @@
-//! Bounded JSONL transport to an owned Codex app-server child.
+//! Bounded owned-stdio and authenticated loopback Codex transports.
+mod websocket;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 
@@ -61,7 +62,8 @@ const MAX_BUFFERED_EVENTS: usize = 512;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) struct Provider {
-    child: Child,
+    child: Option<Child>,
+    remote: Option<websocket::Remote>,
     input: Option<ChildStdin>,
     output: Option<BufReader<ChildStdout>>,
     frame: Vec<u8>,
@@ -100,9 +102,25 @@ impl Provider {
         let input = child.stdin.take().context("Codex stdin is unavailable")?;
         let output = child.stdout.take().context("Codex stdout is unavailable")?;
         Ok(Self {
-            child,
+            child: Some(child),
+            remote: None,
             input: Some(input),
             output: Some(BufReader::new(output)),
+            frame: Vec::new(),
+            pending: VecDeque::new(),
+            pending_bytes: 0,
+            sequence: 0,
+        })
+    }
+
+    /// Attach only to an independently verified private native server. Closing
+    /// this observer never owns or terminates the server or its native TUI.
+    pub async fn connect_native(port: u16, token: &str) -> Result<Self> {
+        Ok(Self {
+            child: None,
+            remote: Some(websocket::Remote::connect(port, token).await?),
+            input: None,
+            output: None,
             frame: Vec::new(),
             pending: VecDeque::new(),
             pending_bytes: 0,
@@ -116,6 +134,14 @@ impl Provider {
             data.len() <= MAX_FRAME,
             "Codex request exceeds the frame limit"
         );
+        if let Some(remote) = self.remote.as_mut() {
+            // A native observer has no authority to answer server requests.
+            ensure!(
+                value["method"].is_string(),
+                "native observer cannot answer a provider request"
+            );
+            return remote.send(data).await;
+        }
         data.push(b'\n');
         let input = self.input.as_mut().context("Codex transport is closed")?;
         timeout(Duration::from_secs(5), async {
@@ -128,6 +154,9 @@ impl Provider {
     }
 
     async fn receive(&mut self) -> Result<Value> {
+        if let Some(remote) = self.remote.as_mut() {
+            return remote.receive().await;
+        }
         let output = self.output.as_mut().context("Codex transport is closed")?;
         let data = read_frame(output, &mut self.frame).await?;
         serde_json::from_slice(&data).context("Codex sent an invalid protocol frame")
@@ -142,6 +171,7 @@ impl Provider {
         let deadline = Instant::now() + REQUEST_TIMEOUT;
         self.send(&json!({"id":id,"method":method,"params":params}))
             .await?;
+        let (mut ignored_events, mut ignored_bytes) = (0_usize, 0_usize);
         loop {
             let value = timeout_at(deadline, self.receive())
                 .await
@@ -162,6 +192,21 @@ impl Provider {
                     .cloned()
                     .context("Codex response has no result");
             }
+            if self.remote.is_some() {
+                ensure!(
+                    value.get("id").is_none() && value["method"].is_string(),
+                    "native observer received an unexpected request or response"
+                );
+                ignored_events += 1;
+                ignored_bytes = ignored_bytes.saturating_add(serde_json::to_vec(&value)?.len());
+                ensure!(
+                    ignored_events <= MAX_BUFFERED_EVENTS && ignored_bytes <= MAX_FRAME,
+                    "native notifications exceeded the request bound; retained input needs recovery"
+                );
+                // The native terminal owns events and approvals. This observer
+                // proves receipts through durable history, never these hints.
+                continue;
+            }
             // A provider may emit the user item before the turn/start response.
             // Retain it in order; never silently drop a potential receipt.
             let bytes = serde_json::to_vec(&value)?.len();
@@ -176,6 +221,10 @@ impl Provider {
     }
 
     pub async fn next(&mut self) -> Result<Value> {
+        ensure!(
+            self.remote.is_none(),
+            "native observers do not own provider events"
+        );
         if let Some((value, bytes)) = self.pending.pop_front() {
             self.pending_bytes -= bytes;
             return Ok(value);
@@ -183,27 +232,47 @@ impl Provider {
         self.receive().await
     }
 
-    pub async fn initialize(&mut self) -> Result<()> {
-        self.request("initialize", json!({"clientInfo": {
+    pub async fn initialize(&mut self) -> Result<Value> {
+        let mut capabilities = json!({"experimentalApi":true});
+        if self.remote.is_some() {
+            capabilities["optOutNotificationMethods"] = json!([
+                "thread/started",
+                "thread/status/changed",
+                "thread/tokenUsage/updated",
+                "remoteControl/status/changed",
+                "item/agentMessage/delta",
+                "item/reasoning/textDelta",
+                "item/reasoning/summaryTextDelta"
+            ]);
+        }
+        let initialized = self.request("initialize", json!({"clientInfo": {
             "name":"agentdocker_codex_input", "title":"AgentDocker", "version":env!("CARGO_PKG_VERSION")
-        },"capabilities":{"experimentalApi":true}})).await?;
+        },"capabilities":capabilities})).await?;
         self.send(&json!({"method":"initialized","params":{}}))
-            .await
+            .await?;
+        Ok(initialized)
     }
 
     pub async fn shutdown(mut self) -> Result<()> {
+        if let Some(remote) = self.remote.take() {
+            return remote.close().await;
+        }
+        let child = self
+            .child
+            .as_mut()
+            .context("owned Codex child is unavailable")?;
         // Drop both owned pipes before waiting: EOF permits normal shutdown and
         // a full output pipe cannot prevent the child from exiting.
         self.input.take();
         self.output.take();
-        match timeout(Duration::from_secs(5), self.child.wait()).await {
+        match timeout(Duration::from_secs(5), child.wait()).await {
             Ok(result) => {
                 result?;
                 Ok(())
             }
             Err(_) => {
-                self.child.start_kill()?;
-                timeout(Duration::from_secs(5), self.child.wait())
+                child.start_kill()?;
+                timeout(Duration::from_secs(5), child.wait())
                     .await
                     .context("owned Codex process did not exit")??;
                 bail!("owned Codex process required forced shutdown; session recovery is paused")

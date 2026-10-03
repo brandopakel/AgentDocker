@@ -8,6 +8,7 @@ pub mod hooks;
 mod ledger;
 mod local;
 mod receipts;
+mod remote;
 pub mod resolve;
 mod resume;
 pub mod upgrade;
@@ -55,6 +56,9 @@ pub struct Args {
     /// A verified prior binding to this persisted conversation.
     #[arg(long)]
     pub predecessor: Option<String>,
+    /// Private exact-generation app-server record (owned-launch integration).
+    #[arg(long, hide = true)]
+    pub app_server_record: Option<PathBuf>,
 }
 
 fn alive(binding: &Binding) -> bool {
@@ -174,7 +178,16 @@ async fn acknowledge(client: &Client, ledger: &mut Ledger) -> Result<()> {
 }
 
 async fn verify_provider(provider: &mut Provider, binding: &Binding) -> Result<()> {
-    provider.initialize().await?;
+    let initialized = provider.initialize().await?;
+    if binding.remote.is_some() {
+        ensure!(
+            initialized["codexHome"]
+                .as_str()
+                .and_then(|p| Path::new(p).canonicalize().ok())
+                == Some(PathBuf::from(&binding.provider.profile)),
+            "native server initialized with a different provider profile"
+        );
+    }
     let value = provider
         .request(
             "thread/read",
@@ -203,13 +216,20 @@ async fn verify_provider(provider: &mut Provider, binding: &Binding) -> Result<(
     Ok(())
 }
 
-async fn preflight(binding: &Binding) -> Result<()> {
-    let mut provider = Provider::start_profile(
+async fn connect_provider(binding: &Binding) -> Result<Provider> {
+    if let Some(remote) = &binding.remote {
+        return remote::connect(remote, binding).await;
+    }
+    Provider::start_profile(
         &binding.executable,
         &[],
         &binding.cwd,
         Some(Path::new(&binding.provider.profile)),
-    )?;
+    )
+}
+
+async fn preflight(binding: &Binding) -> Result<()> {
+    let mut provider = connect_provider(binding).await?;
     let checked = verify_provider(&mut provider, binding).await;
     let stopped = provider.shutdown().await;
     checked.and(stopped)
@@ -382,7 +402,7 @@ async fn refresh(
 pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<()> {
     let client = client.with_start_timeout(None);
     let home = dirs::home();
-    let binding = Binding {
+    let mut binding = Binding {
         agent: args.agent,
         provider: ProviderGeneration {
             process: ProcessIdentity {
@@ -400,7 +420,11 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
         socket: socket.unwrap_or_else(|| dirs::socket_path(&home)),
         cwd: args.cwd.canonicalize()?,
         executable: args.program.canonicalize()?,
+        remote: None,
     };
+    if let Some(path) = args.app_server_record {
+        binding.remote = Some(remote::describe(&path, &binding)?);
+    }
     ensure!(
         procinfo::executable_path_of(binding.provider.process.pid)?.canonicalize()?
             == binding.executable,
@@ -468,12 +492,7 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
     }
     while alive(&binding) {
         let result = async {
-            let mut provider = Provider::start_profile(
-                &binding.executable,
-                &[],
-                &binding.cwd,
-                Some(Path::new(&binding.provider.profile)),
-            )?;
+            let mut provider = connect_provider(&binding).await?;
             let result = async {
                 verify_provider(&mut provider, &binding).await?;
                 service(&client, &mut provider, &mut ledger, &hooks, &resolve).await

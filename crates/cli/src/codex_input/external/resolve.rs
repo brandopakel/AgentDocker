@@ -284,7 +284,7 @@ pub(super) async fn while_paused(
         stream = listener.accept() => {
             let stream = stream?;
             let binding = ledger.record().binding.clone();
-            let mut provider = Provider::start_profile(&binding.executable, &[], &binding.cwd, Some(std::path::Path::new(&binding.provider.profile)))?;
+            let mut provider = super::connect_provider(&binding).await?;
             let result = async {
                 verify_provider(&mut provider, &binding).await?;
                 serve(stream, client, &mut provider, ledger).await
@@ -385,6 +385,7 @@ mod tests {
             socket: socket.clone(),
             cwd: home.clone(),
             executable: home.join("codex"),
+            remote: None,
         };
         let message = Envelope::new(
             "peer",

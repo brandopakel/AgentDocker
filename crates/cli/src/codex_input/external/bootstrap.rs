@@ -19,7 +19,7 @@ pub(super) fn launch(binding: &Binding) -> Result<ControllerLaunch> {
             .context("native receiver path is not UTF-8")?
             .into())
     };
-    let descriptor = ControllerLaunch {
+    let mut descriptor = ControllerLaunch {
         executable: procinfo::executable_path()?.canonicalize()?,
         args: vec![
             "--socket".into(),
@@ -43,6 +43,11 @@ pub(super) fn launch(binding: &Binding) -> Result<ControllerLaunch> {
         cwd: binding.cwd.clone(),
         env: [("AGENTDOCKER_NO_AUTOSTART".into(), "1".into())].into(),
     };
+    if let Some(remote) = &binding.remote {
+        descriptor
+            .args
+            .extend(["--app-server-record".into(), path(&remote.record)?]);
+    }
     ensure!(
         descriptor.valid(),
         "native receiver launch descriptor is invalid"
@@ -124,6 +129,7 @@ pub async fn ensure_started(client: &Client, agent: &AgentRecord) -> Result<bool
             .context("Codex checkout is unavailable")?
             .canonicalize()?,
         executable: procinfo::executable_path_of(pid)?.canonicalize()?,
+        remote: None,
     };
     let home = dirs::home();
     let predecessor = if agent.input_binding.is_none() {
@@ -237,6 +243,7 @@ mod tests {
             socket: "/socket".into(),
             cwd: "/checkout".into(),
             executable: "/codex".into(),
+            remote: None,
         };
         assert!(marker_running(&current, &current, process.clone()).unwrap());
         let mut previous = current.clone();

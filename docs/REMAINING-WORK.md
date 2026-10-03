@@ -33,7 +33,11 @@ Provider-only Windows `ac6351e9` passed later-turn pagination, native approval,
 preserved draft and two exact receipts. Actual0.160 refuses turn pagination
 before its first user message; that limitation remains a failure rather than
 being interpreted as empty history. The provider-only authenticated remote-TUI startup/approval passes do
-not close AgentDocker's owned launcher, shared transport or zero-prompt binding.
+not close AgentDocker's owned launcher or zero-prompt binding. A candidate
+receiver transport now accepts a private exact-generation server descriptor
+and attaches through bounded authenticated loopback WebSocket. Transport and
+record regression coverage, native integration acceptance, owned startup,
+hook/MCP bootstrap and safe initial-history admission remain to be completed.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its

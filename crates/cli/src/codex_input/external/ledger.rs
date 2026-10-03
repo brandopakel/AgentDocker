@@ -42,6 +42,8 @@ pub(super) struct Binding {
     pub socket: PathBuf,
     pub cwd: PathBuf,
     pub executable: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<super::remote::Descriptor>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -174,7 +176,7 @@ impl Ledger {
                     "bound native input ledger is missing; retained input needs reconciliation"
                 );
                 Record {
-                    version: 4,
+                    version: 5,
                     binding: binding.clone(),
                     token: uuid::Uuid::new_v4().simple().to_string(),
                     attempt: None,
@@ -507,12 +509,19 @@ impl Record {
             );
             self.version = 4;
         }
+        if self.version == 4 {
+            ensure!(
+                self.binding.remote.is_none(),
+                "old native record contains a remote server"
+            );
+            self.version = 5;
+        }
         Ok(())
     }
 
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
-            self.version == 4 && &self.binding == binding,
+            self.version == 5 && &self.binding == binding,
             "native queue provider binding changed; reconcile retained input before reconnecting"
         );
         ensure!(
@@ -520,7 +529,11 @@ impl Record {
                 && Path::new(&binding.provider.profile).is_absolute()
                 && binding.cwd.is_absolute()
                 && binding.executable.is_absolute()
-                && binding.socket.is_absolute(),
+                && binding.socket.is_absolute()
+                && binding
+                    .remote
+                    .as_ref()
+                    .is_none_or(super::remote::Descriptor::valid),
             "invalid native queue binding"
         );
         ensure!(
@@ -684,6 +697,7 @@ mod tests {
             socket: home.join("sock"),
             cwd: home.into(),
             executable: home.join("codex"),
+            remote: None,
         }
     }
 
@@ -931,9 +945,32 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let ledger = Ledger::open(home.path(), binding, None).unwrap();
         let mut upgraded = serde_json::to_value(&ledger.record).unwrap();
-        assert_eq!(upgraded["version"], 4);
+        assert_eq!(upgraded["version"], 5);
         upgraded["version"] = serde_json::json!(2);
         assert_eq!(upgraded, old);
+    }
+
+    #[test]
+    fn remote_binding_is_immutable_and_cannot_be_smuggled_into_an_old_ledger() {
+        let home = tempfile::tempdir().unwrap();
+        let mut binding = binding(home.path());
+        let ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
+        let path = ledger.path.clone();
+        let original = std::fs::read(&path).unwrap();
+        drop(ledger);
+        binding.remote = Some(super::super::remote::Descriptor {
+            record: home.path().join("server.json"),
+            sha256: "a".repeat(64),
+        });
+        assert!(Ledger::open(home.path(), binding.clone(), None).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let mut old: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        old["binding"] = serde_json::to_value(&binding).unwrap();
+        old["version"] = serde_json::json!(4);
+        let changed = serde_json::to_vec(&old).unwrap();
+        std::fs::write(&path, &changed).unwrap();
+        assert!(Ledger::open(home.path(), binding, None).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), changed);
     }
 
     #[test]

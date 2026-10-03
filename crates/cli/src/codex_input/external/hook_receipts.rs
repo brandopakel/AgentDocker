@@ -494,6 +494,7 @@ mod tests {
             socket: root.join("sock"),
             cwd: root.clone(),
             executable: root.join("codex"),
+            remote: None,
         };
         let path = root.join("sessions/rollout.jsonl");
         std::fs::write(
@@ -691,6 +692,7 @@ mod tests {
             socket: root.join("sock"),
             cwd: root.clone(),
             executable: root.join("codex"),
+            remote: None,
         };
         let path = root.join("sessions/rollout.jsonl");
         std::fs::write(

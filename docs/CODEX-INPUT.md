@@ -60,6 +60,19 @@ Hooks keep their normal delivery while that probe is pending or unsupported;
 only an accepted daemon binding suppresses their competing reads. An incompatible
 provider version on an existing binding keeps the queue and reports a pause.
 
+The candidate receiver also has a hidden `--app-server-record` integration path
+for an existing authenticated loopback app-server. Its private immutable record
+pins the native terminal and server process births, executable, checkout, profile,
+thread, numeric loopback port and capability-file digest. The ledger retains the
+record path and digest; reconnect verifies both processes and the capability
+again, then checks the initialized profile and existing thread. It does not
+create or resume a conversation. The WebSocket observer bounds frames and
+notifications, reads durable history for receipts, refuses provider requests
+and cannot answer approvals. Closing it closes only its socket. This internal
+path is not an automatic launcher: owned server/TUI startup, initial empty
+history admission, hook/MCP bootstrap and restart/adoption acceptance remain.
+An unavailable pre-first-message history API still refuses delivery.
+
 For a first installation, preview **Tools → Codex → Review setup** (or
 `agentdocker setup codex --preview`), then apply the reviewed plan. The plan
 installs MCP, hooks and the shared coordination skill; it does not start a
@@ -236,7 +249,9 @@ an input still scheduled under its original client or queue ID, even if its text
 was edited. A missing project journal refuses before any disposition is written.
 The existing provider, receiver ownership and queue order remain intact.
 
-Ledger version 4 migrates versions 2/3 without changing their input or token. It
+Ledger version 5 migrates versions 2/3/4 without changing their input or token.
+It adds the optional immutable remote-server descriptor and refuses a remote
+descriptor in an older record. The existing manual readback protocol
 persists the manual intent, journals its resolution ID, acknowledges that one ID
 through the existing token-bound inbox, then records completion. Loss of a journal
 reply can produce duplicate notes with the same resolution ID; lost ACK/reply or

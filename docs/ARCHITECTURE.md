@@ -87,7 +87,7 @@ Reads are served from memory; every mutation is written through to SQLite (`rusq
 
 An unresolved Codex hook offer may be settled only by exact provider evidence or
 explicit `codex-queue-resolve` readback. The latter is receiver-local administration,
-not a new daemon receipt kind: ledger version 4 retains the generation-bound input
+not a new daemon receipt kind: ledger version 5 retains the generation-bound input
 digest, hook nonce, operator process and resolution ID; existing `journal_add`
 records the manual disposition before token-bound `provider_inbox` ACK. It never
 emits `report_input(received)` for manual reading. Retries retain the same intent;
@@ -1789,3 +1789,18 @@ and bounds each lookup to 100 pages, 5,000 items, 8 MiB and one minute. Transpor
 frames remain limited to 4 MiB. Errors after partial pagination, absent/partial
 items, limits and missing receipts retain delivery for recovery; they never
 cause a resubmission or resume the TUI.
+
+The native receiver's optional authenticated WebSocket transport attaches only
+to numeric IPv4 loopback after validating a private immutable server record.
+That record binds both native TUI/server PID births, kernel executable paths,
+server checkout, thread/profile and capability file/digest. Ledger version 5
+retains its absolute path and SHA-256; migration from versions 2/3/4 accepts no
+preexisting remote descriptor and preserves all delivery state. Reconnect
+revalidates generations and capability before and after connection, and checks
+the initialized profile and thread. A maintained WebSocket implementation bounds
+frames to 4 MiB and connection/write/close to five seconds. Each 30-second RPC
+discards at most 512 notifications/4 MiB; it never buffers unbounded broadcasts
+or answers native approval requests. Unexpected requests, foreign responses and
+limits fail closed. Socket shutdown never terminates the shared native server.
+The hidden record argument is an internal integration point; automatic owned
+launch/bootstrap and initial empty-history admission remain unimplemented.
