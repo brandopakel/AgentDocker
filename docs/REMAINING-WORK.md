@@ -192,5 +192,8 @@ rechecks ownership after waiting. A native fixture delays startup under the real
 lock and revokes ownership before release. Source `a64fd575` passed the full
 local gate (1,511 Rust and 169 Python tests run, zero retries). Follow-up review
 requested human status output on stderr, ownership-flag help and current
-validation wording; these are corrected. Windows lifecycle execution and final
-validation/review remain pending before integration.
+validation wording; these are corrected. Portable and installed Windows lifecycle
+execution, including delayed-start ownership revocation, passed on `a64fd575`
+(20 portable and 24 installed connector checks). Final integration, CI and review
+remain open, along with the account, tunnel, logon/reboot and broader acceptance
+work listed above.
