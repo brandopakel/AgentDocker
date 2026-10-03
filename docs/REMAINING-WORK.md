@@ -97,3 +97,11 @@ unchanged, and all fixture processes/scratch retired gracefully. This is short
 real-account attribution evidence, not sign-in recovery or endurance acceptance;
 its concurrent load is disclosed in the original endurance measurements. Failed evidence and the
 original endurance trial are preserved unchanged.
+
+The growing-source candidate’s final Mac CI (`6d8d25eb`) exposed a separate
+four-record test assumption: a cooperative 100 ms scan was treated as complete
+before it reached the malformed record. The fixture now follows bounded
+continuations and compares complete records, gaps and serialized cursors while
+asserting each pass’s record/byte bounds. Product deadlines are unchanged;
+the prior `cc57c86d` native growth/restart evidence remains valid for its
+unchanged implementation, and corrected final checks remain required.

@@ -609,26 +609,56 @@ mod tests {
         let path = dir.path().join("log");
         let text = format!("{}{{\"type\":\"user\"}}\ninvalid\n{}", row(0), row(1));
         std::fs::write(&path, &text).unwrap();
-        let whole = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
+        // A cooperative time slice may end before the record cap. Compare
+        // complete logical scans, retaining every intermediate cursor, sample
+        // and gap; neither the default nor the two-record scan must fit in one
+        // wall-clock slice on a loaded host. The four-record fixture is bounded
+        // to eight passes, and every proposal still obeys its record/byte cap.
+        let complete = |limits: Budget| {
+            let mut cursor: Option<Cursor> = None;
+            let mut samples = Vec::new();
+            let mut gaps = Vec::new();
+            for pass in 1..=8 {
+                let before = cursor.as_ref().map_or(0, Cursor::offset);
+                let batch = scan(&path, Runtime::Claude, cursor.as_ref(), limits).unwrap();
+                let after = batch.cursor.offset();
+                assert!(after >= before);
+                let records = text.as_bytes()[before as usize..after as usize]
+                    .iter()
+                    .filter(|byte| **byte == b'\n')
+                    .count();
+                assert!(records <= limits.records);
+                assert!(batch.bytes_read <= limits.bytes);
+                samples.extend(batch.samples);
+                gaps.extend(batch.gaps);
+                let restored =
+                    serde_json::from_str::<Cursor>(&serde_json::to_string(&batch.cursor).unwrap())
+                        .unwrap();
+                assert_eq!(restored, batch.cursor);
+                if batch.stop == Stop::Complete {
+                    assert_eq!(after, text.len() as u64);
+                    return (restored, samples, gaps, pass);
+                }
+                assert_eq!(batch.stop, Stop::Budget);
+                cursor = Some(restored);
+            }
+            panic!("four-record fixture did not finish within eight bounded passes");
+        };
+        let (whole_cursor, whole_samples, whole_gaps, _) = complete(Budget::default());
+        assert_eq!(whole_samples.len(), 2);
+        assert_eq!(whole_gaps.len(), 1);
+        assert_eq!(whole_gaps[0].reason, "invalid JSON record");
         let limits = Budget {
             records: 2,
             ..Budget::default()
         };
-        let first = scan(&path, Runtime::Claude, None, limits).unwrap();
-        assert_eq!(first.stop, Stop::Budget);
-        assert_eq!(first.samples.len(), 1);
-        assert!(first.gaps.is_empty());
-        let restored =
-            serde_json::from_str(&serde_json::to_string(&first.cursor).unwrap()).unwrap();
-        let replay = scan(&path, Runtime::Claude, None, limits).unwrap();
-        assert_eq!(first.cursor, replay.cursor);
-        assert_eq!(first.samples, replay.samples);
-        let second = scan(&path, Runtime::Claude, Some(&restored), limits).unwrap();
-        assert_eq!(second.stop, Stop::Complete);
-        assert_eq!(second.samples.len(), 1);
-        assert_eq!(second.gaps, whole.gaps);
-        assert_eq!(second.cursor, whole.cursor);
-        assert_eq!([first.samples, second.samples].concat(), whole.samples);
+        for _ in 0..2 {
+            let (cursor, samples, gaps, passes) = complete(limits);
+            assert!(passes >= 2);
+            assert_eq!(cursor, whole_cursor);
+            assert_eq!(samples, whole_samples);
+            assert_eq!(gaps, whole_gaps);
+        }
         for records in [0, MAX_RECORDS + 1] {
             assert!(matches!(
                 scan(&path, Runtime::Claude, None, Budget { records, ..limits }),
