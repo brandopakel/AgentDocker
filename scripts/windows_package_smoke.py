@@ -104,7 +104,7 @@ def main():
                                 "--binary-dir", str(app), "--output", str(output / "connector-service")],
                                cwd=scratch, check=True, timeout=600)
                 connector = json.loads((output / "connector-service/result.json").read_text(encoding="utf-8"))
-                if connector.get("result") != "passed" or any(
+                if connector.get("result") != "passed" or connector.get("cleanup_errors") or any(
                     connector.get("binary_sha256", {}).get(name) != info["binary_sha256"][name]
                     for name in ("agentdocker.exe", "agentd.exe")
                 ):

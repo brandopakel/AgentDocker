@@ -195,7 +195,8 @@ trigger network refreshes or change their existing configuration.
   actions until it finishes. It has its own bounded worker; failure remains on the card, while ordinary
   message delivery and refresh continue. Service installation is not successful
   browser consent or a provider receipt. Final-package graphical/service
-  acceptance remains a separate gate; Windows login-service source is a separate unvalidated candidate described below.
+  acceptance remains a separate gate; Windows isolated login-service lifecycle
+  acceptance passed as described below.
 - Not yet exercised against a real account: the vendors' Client ID Metadata
   Document path (both vendors used DCR when they connected; the next connection
   a vendor makes after this metadata is served is the trial).
@@ -220,12 +221,17 @@ install`, then review `connector install ... --dry-run` or use conservative
 retains the selected endpoint and never starts a daemon as its own child.
 Uninstall requests an exact connector generation's graceful exit, preserving
 the daemon and saved browser grants. A changed or foreign task is refused.
-Native service, reboot and actual-account acceptance of this candidate remain
-pending; this is not a published Windows connector-service acceptance claim.
+Native isolated lifecycle acceptance passed on `6c830458`: 17 portable and
+21 installed connector checks, including exact generation cleanup and preserved
+daemon/grants. Hosted distribution, reboot and actual-account acceptance remain
+open; the candidate is not yet a published Windows connector service.
 
 Windows login-service setup resolves configured project, egress-feed and tunnel
 executable paths at installation time, so a relative shell path does not become
 a different path under Task Scheduler's working directory. `tailscale.exe` and
 `cloudflared.exe` are discovered through the executable PATH lookup on Windows;
-an explicit executable path remains supported. The candidate's native fixture
-includes a relative project and feed, with acceptance still pending.
+an explicit executable path remains supported. Discovered tunnel paths are
+captured before argument serialization, so the installed task and its reparsed
+service-run command keep the same order with vendor allowlists. The accepted
+native fixture includes a relative project and feed; acceptance of the later
+discovery-order correction remains pending.
