@@ -701,3 +701,10 @@ synthetic Return before checking the result and retained draft. The observing
 WebSocket client never answers an approval. Windows acceptance of this scenario
 is pending; neither it nor the startup probe proves AgentDocker receiver
 integration, a real provider account or a human permission interaction.
+
+The first Windows remote approval trial (`ceaff20a`) passed all twelve functional
+checks, including the visible pending command, native one-time decision,
+unchanged prompt rule, retained draft and two exact receipts. It remains failed:
+all fixture processes and scratch were removed, but pywinpty's forwarding socket
+kept the terminal reader blocked. Cleanup now cancels private PTY I/O, shuts down
+its socket and verifies both readers exit; corrected acceptance is pending.

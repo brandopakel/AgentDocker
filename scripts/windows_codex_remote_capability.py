@@ -443,6 +443,29 @@ def main():
                     provider.wait(timeout=5)
                 except Exception as error:
                     report['cleanup_errors'].append(str(error))
+            if tui is not None:
+                # pywinpty 3.0.5 reads through a forwarding socket, which may
+                # remain blocked after its child exits. isalive() also marks
+                # the wrapper closed, making close() skip these handles.
+                # Cancel only this fixture's PTY I/O and shut down its socket
+                # before joining either reader; never signal a cached PID here.
+                try:
+                    tui.pty.cancel_io()
+                except Exception as error:
+                    report['cleanup_errors'].append('cancel PTY I/O: ' + str(error))
+                try:
+                    tui.fileobj.shutdown(socket.SHUT_RDWR)
+                except OSError as error:
+                    if error.winerror not in (10038, 10057, 10058):
+                        report['cleanup_errors'].append(str(error))
+                except Exception as error:
+                    report['cleanup_errors'].append(str(error))
+                finally:
+                    tui.fileobj.close()
+                    tui._server.close()
+                tui._thread.join(timeout=2)
+                if tui._thread.is_alive():
+                    report['cleanup_errors'].append('PTY forwarding reader did not retire')
             if reader is not None:
                 reader.join(timeout=2)
                 if reader.is_alive():
