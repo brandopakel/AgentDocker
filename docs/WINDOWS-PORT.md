@@ -664,3 +664,10 @@ identity, first queued input, preserved draft and exact user receipts. It does
 not create an AgentDocker controller or read an account. This tests whether the
 Mac-observed transport capability exists on Windows; it does not replace the
 strict product startup gate or establish native permission/physical acceptance.
+
+The first Windows remote capability run (`412d0f50`) exposed the sole empty
+native thread, rejected a wrong token and delivered the first queued input to
+the loopback model while the draft remained visible. Its receipt assertion
+failed because that provider store does not support `thread/items/list`; no
+complete capability pass is recorded. The two-input fixture now uses bounded
+`thread/read` history hydration, retaining exact thread/cwd/user-receipt checks.

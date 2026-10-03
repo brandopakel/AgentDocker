@@ -219,6 +219,7 @@ def main():
             step('dedicated server exposes exactly one native thread before any prompt', len(ids) == 1)
             thread = ids[0]
             metadata = call('thread/read', {'threadId': thread, 'includeTurns': False})['thread']
+            report['initial_thread'] = metadata
             step('empty thread belongs to the private checkout', os.path.samefile(metadata['cwd'], repo))
             step('initialization caused no model requests', not report['requests'])
             report['thread'] = thread
@@ -233,15 +234,20 @@ def main():
             def history(expected):
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
-                    entries = call('thread/items/list', {'threadId': thread, 'limit': 20,
-                                                         'sortDirection': 'asc'}).get('data', [])
-                    users = [v['item'] for v in entries if v.get('item', {}).get('type') == 'userMessage']
+                    # The Windows provider's legacy history store does not
+                    # implement thread/items/list. This fresh two-input probe
+                    # can use bounded full hydration without changing the TUI.
+                    view = call('thread/read', {'threadId': thread, 'includeTurns': True})['thread']
+                    assert view['id'] == thread and os.path.samefile(view['cwd'], repo)
+                    turns = view.get('turns', [])
+                    assert len(turns) <= 4
+                    users = [item for turn in turns for item in turn.get('items', [])
+                             if item.get('type') == 'userMessage']
                     if any(expected in json.dumps(item) for item in users):
                         return users
                     time.sleep(0.2)
                 raise TimeoutError('provider history did not contain submitted input')
 
-            first = history(queue_text)
             deadline = time.monotonic() + 25
             idle = False
             while time.monotonic() < deadline:
@@ -250,15 +256,16 @@ def main():
                 if report['requests'] and idle:
                     break
                 time.sleep(0.2)
+            first = history(queue_text)
             step('first queued input finishes without submitting the typed draft',
                  idle and any(v['queue_nonce_present'] for v in report['requests']) and
                  not any(v['draft_nonce_present'] for v in report['requests']) and
                  sum(queue_text in json.dumps(v) for v in first) == 1)
             tui.write('\r')
-            users = history(draft_text)
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline and not any(v['draft_nonce_present'] for v in report['requests']):
                 time.sleep(0.1)
+            users = history(draft_text)
             step('native Return submits the preserved draft exactly once',
                  any(v['draft_nonce_present'] for v in report['requests']) and len(users) == 2 and
                  sum(queue_text in json.dumps(v) for v in users) == 1 and
