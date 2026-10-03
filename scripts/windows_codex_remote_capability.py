@@ -5,7 +5,7 @@ Uses a fresh private profile, a loopback model and an authenticated dedicated
 app-server. Without --binary-dir, no AgentDocker binding is exercised. The
 optional receiver trial manually binds exact generations after an explicit
 fixture user turn and tests shared-server delivery/replacement and original
-terminal MCP identity; automatic
+terminal MCP and PostToolUse hook identity; automatic
 bootstrap and zero-prompt delivery remain unaccepted. No real account, physical
 input or production configuration is exercised. The optional approval
 probe uses one private print command and a synthetic native Return. A pass is capability evidence,
@@ -204,6 +204,8 @@ def main():
                 receiver = Receiver(args.binary_dir, root, repo, profile, out, env, report)
                 receiver.start_daemon()
                 config += receiver.mcp_config()
+                config = config.replace('[features]\n', '[features]\nhooks = true\n')
+                receiver.configure_hook()
             (profile / 'config.toml').write_text(config, encoding='utf-8')
             if args.approval:
                 (profile / 'rules').mkdir()
@@ -245,7 +247,9 @@ def main():
                 status = None
             step('dedicated server rejects an invalid capability token', status in (401, 403), status)
             tui = PtyProcess.spawn(
-                [str(codex), '--no-alt-screen', '--remote', endpoint,
+                [str(codex), '--no-alt-screen'] +
+                (['--dangerously-bypass-hook-trust'] if receiver is not None else []) +
+                ['--remote', endpoint,
                  '--remote-auth-token-env', 'AD_PRIVATE_WS_TOKEN'],
                 cwd=str(repo), env=env, dimensions=(40, 160), backend=Backend.ConPTY)
             remember(tui.pid)
@@ -445,6 +449,8 @@ def main():
                      report['receiver_first_receipt']['receipt']['thread'] == thread)
                 receiver.check_mcp_identity(report.get('mcp_output'), tui, provider)
                 step('dedicated MCP call identifies the original terminal without a helper registration', True)
+                receiver.check_hook_identity(thread)
+                step('actual native hooks keep original identity with no outer registration or config change', True)
             tui.write('\r')
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline and not any(v['draft_nonce_present'] for v in report['requests']):

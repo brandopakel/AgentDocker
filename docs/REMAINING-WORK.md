@@ -65,7 +65,9 @@ checks on Debug binaries: the hook and MCP call both use the original TUI, no
 outer/helper agent is created, hook output has no error, and queue/draft/restart
 checks and cleanup pass. A mistakenly overlapping targeted build is disclosed
 in the retained evidence. Full gate, Release-binary and Windows hook acceptance
-remain pending; active hook-offer delivery is not established by contact alone.
+remain pending; the Windows receiver fixture now also checks actual
+PostToolUse identity and unchanged hook configuration. Active hook-offer delivery
+is not established by contact alone.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its

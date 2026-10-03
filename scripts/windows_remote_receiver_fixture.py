@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import uuid
 
 from windows_native_codex_smoke import fixture_controller, read_snapshot, response_events, wait
@@ -118,6 +119,34 @@ class Receiver:
                 '[mcp_servers.agentdocker.env]\nAGENTDOCKER_HOME = ' + json.dumps(str(self.home))
                 + '\nAGENTDOCKER_SOCKET = ' + json.dumps(self.socket)
                 + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n')
+
+    def configure_hook(self):
+        runner = self.root / 'capture_hook.py'
+        self.hook_log = self.out / 'hooks.jsonl'
+        runner.write_text('import sys,subprocess,json,os\n'
+            + 'raw=sys.stdin.read()\n'
+            + 'p=subprocess.run(' + repr([str(self.cli), '--socket', self.socket, 'hook', 'codex'])
+            + ',input=raw,text=True,capture_output=True,timeout=8)\n'
+            + 'with open(' + repr(str(self.hook_log)) + ',"a",encoding="utf-8") as f: '
+            + 'f.write(json.dumps({"input":json.loads(raw),"stdout":p.stdout,"stderr":p.stderr,'
+            + '"code":p.returncode,"parent":os.getppid()})+"\\n")\n'
+            + 'print(p.stdout,end="")\nsys.exit(p.returncode)\n', encoding='utf-8')
+        self.hooks_config = json.dumps({'hooks': {'PostToolUse': [{'hooks': [{'type': 'command',
+            'command': subprocess.list2cmdline([sys.executable, str(runner)])}]}]}})
+        (self.profile / 'hooks.json').write_text(self.hooks_config, encoding='utf-8')
+        self.report['hook_trust'] = 'one-off trust for sole vetted private fixture command; no saved account policy changed'
+
+    def check_hook_identity(self, thread):
+        calls = [json.loads(line) for line in self.hook_log.read_text(encoding='utf-8').splitlines()]
+        self.report['hook_calls'] = calls
+        assert calls and all(h['code'] == 0 and not h['stderr'] and h['input']['session_id'] == thread
+                             for h in calls), 'native hook returned an error or different session'
+        agent = self.rpc({'op': 'inspect', 'agent': self.agent})['agent']
+        assert agent['adapter_contacts']['hooks']['process_started_at'] == agent['process_started_at']
+        agents = self.rpc({'op': 'list', 'all': True})['agents']
+        assert [a['id'] for a in agents if a['spec']['runtime'] == 'codex'] == [self.agent]
+        assert (self.profile / 'hooks.json').read_text(encoding='utf-8') == self.hooks_config
+        self.report['hook_observed_agent'] = agent
 
     def mcp_events(self, number, body):
         matches = [(tool['name'], child) for tool in body.get('tools', [])
