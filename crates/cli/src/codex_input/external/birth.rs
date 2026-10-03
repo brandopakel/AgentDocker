@@ -17,6 +17,12 @@ pub(super) struct Witness {
     pub created_at: i64,
 }
 
+fn trace(stage: &str) {
+    if std::env::var_os("AGENTDOCKER_TRACE_NATIVE_STARTUP").is_some() {
+        eprintln!("native-startup: {stage}");
+    }
+}
+
 impl Witness {
     pub fn valid(&self, provider: &ProviderGeneration, server: &ProcessIdentity) -> bool {
         self.launcher.pid > 0
@@ -29,11 +35,33 @@ impl Witness {
     }
 
     pub fn owns_children(&self, provider: &ProviderGeneration, server: &ProcessIdentity) -> bool {
-        self.valid(provider, server)
-            && procinfo::start_time(self.launcher.pid) == Some(self.launcher.started_at)
-            && [provider.process.pid, server.pid].into_iter().all(|pid| {
-                procinfo::inspect(pid).is_some_and(|child| child.ppid == self.launcher.pid)
-            })
+        if !self.valid(provider, server) {
+            trace("birth receipt generations do not match");
+            return false;
+        }
+        if procinfo::start_time(self.launcher.pid) != Some(self.launcher.started_at) {
+            trace("launcher generation no longer matches");
+            return false;
+        }
+        for (pid, label) in [(provider.process.pid, "terminal"), (server.pid, "server")] {
+            let Some(child) = procinfo::inspect(pid) else {
+                trace(if label == "terminal" {
+                    "terminal ancestry unavailable"
+                } else {
+                    "server ancestry unavailable"
+                });
+                return false;
+            };
+            if child.ppid != self.launcher.pid {
+                trace(if label == "terminal" {
+                    "terminal is not a direct launcher child"
+                } else {
+                    "server is not a direct launcher child"
+                });
+                return false;
+            }
+        }
+        true
     }
 
     pub fn matches_empty(&self, thread: &Value, provider: &ProviderGeneration, cwd: &Path) -> bool {

@@ -217,6 +217,11 @@ class Receiver:
             descriptor['version'] = 2
             descriptor['birth'] = {'launcher': {'pid': os.getpid(), 'started_at': process_birth(os.getpid())},
                                    'created_at': birth_created_at}
+            self.env['AGENTDOCKER_TRACE_NATIVE_STARTUP'] = '1'
+            self.report['birth_descriptor'] = descriptor
+            self.report['birth_processes'] = {
+                name: {'pid': pid, 'ppid': self.psutil.Process(pid).ppid(), 'started_at': process_birth(pid)}
+                for name, pid in [('launcher', os.getpid()), ('server', server.pid), ('terminal', tui.pid)]}
         record = self.root / 'server.json'
         record.write_text(json.dumps(descriptor), encoding='utf-8')
         self.command = [self.cli, '--socket', self.socket, 'codex-queue', '--agent', self.agent,
@@ -242,7 +247,11 @@ class Receiver:
 
     def start(self):
         self.receiver = self.spawn(self.command, 'receiver.log')
-        bound = wait(self.binding, 30)
+        def bound_or_exited():
+            status = self.receiver.poll()
+            assert status is None, 'receiver exited before binding: ' + (self.out / 'receiver.log').read_text(encoding='utf-8')
+            return self.binding()
+        bound = wait(bound_or_exited, 30)
         assert bound['provider'] == self.report['receiver_generation']
         assert '--app-server-record' in bound['launch']['args']
         fixture_controller(self.psutil, bound, self.cli)

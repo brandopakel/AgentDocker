@@ -406,6 +406,7 @@ def main():
             time.sleep(0.3)
             if receiver is not None:
                 if args.witnessed_birth:
+                    report['thread_before_receiver_start'] = read_thread()
                     step('receiver starts with no explicit user turn or model request', not report['requests'])
                 receiver.start()
             else:

@@ -234,6 +234,9 @@ pub(super) async fn fresh_anchor(provider: &mut Provider, binding: &Binding) -> 
         )
         .await?;
     if !birth.matches_empty(&value["thread"], &binding.provider, &binding.cwd) {
+        if std::env::var_os("AGENTDOCKER_TRACE_NATIVE_STARTUP").is_some() {
+            eprintln!("native-startup: thread metadata no longer matches an empty owned birth");
+        }
         return Ok(false);
     }
     let queue = provider
@@ -248,6 +251,9 @@ pub(super) async fn fresh_anchor(provider: &mut Provider, binding: &Binding) -> 
         && queue
             .get("nextCursor")
             .is_some_and(serde_json::Value::is_null);
+    if !empty && std::env::var_os("AGENTDOCKER_TRACE_NATIVE_STARTUP").is_some() {
+        eprintln!("native-startup: provider queue is not verified empty");
+    }
     // Recheck the immutable record's generations after asynchronous reads.
     verify(&descriptor.record, &record, binding)?;
     Ok(empty && birth.owns_children(&record.provider, &record.server))

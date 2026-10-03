@@ -950,3 +950,8 @@ any history error as empty history. Writing the first attempt permanently spends
 that allowance; receipt recovery, explicit resolution and upgrades keep normal
 history requirements. Version-1 records cannot opt into it. The owned launcher
 and native acceptance of this candidate remain unfinished.
+
+`AGENTDOCKER_TRACE_NATIVE_STARTUP=1` optionally records fixed startup refusal
+stages (launcher generation/child ancestry, empty-thread metadata or queue). It
+does not log arguments, capability contents or environment values and does not
+change admission or retry a submitted message.

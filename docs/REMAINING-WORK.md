@@ -88,8 +88,13 @@ in the first queued turn, without an extra user turn. Three original receipts,
 draft, replacement and private configuration were preserved. Automatic
 no-prompt startup remains open. A private version-2 owned-birth receipt now
 allows initial admission only for the unchanged new thread and a pristine
-ledger; no provider history rejection is reinterpreted. Its actual-binary
-acceptance and automatic launcher remain pending.
+ledger; no provider history rejection is reinterpreted. Mac Release `38352db1` passed first-input receipt, receiver replacement and
+exact submission of the retained draft without a warmup. Separate legacy-record
+and foreign-launcher controls refused with the original input queued and zero
+model requests; all cleanup was unforced. Windows `72123a08` refused binding
+before model input; fixed-stage traces and private ancestry/metadata diagnostics
+now distinguish the missing proof. Windows acceptance and the automatic product
+launcher remain pending.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its
