@@ -199,6 +199,29 @@ pub(super) async fn connect(descriptor: &Descriptor, binding: &Binding) -> Resul
     Ok(provider)
 }
 
+/// Resolve MCP identity only through an already accepted, immutable receiver
+/// binding. A server's arguments or tool metadata alone grant no identity.
+pub(super) fn verify_mcp_host(
+    descriptor: &Descriptor,
+    binding: &Binding,
+    host: &ProcessIdentity,
+    executable: &Path,
+    cwd: &Path,
+) -> Result<()> {
+    ensure!(descriptor.valid(), "invalid native server descriptor");
+    let (record, digest) = read(&descriptor.record)?;
+    ensure!(
+        digest == descriptor.sha256,
+        "native server record changed after binding"
+    );
+    ensure!(
+        record.server == *host && record.executable == executable && record.cwd == cwd,
+        "Codex MCP host differs from the accepted native server"
+    );
+    verify(&descriptor.record, &record, binding)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,5 +353,47 @@ mod tests {
             assert!(matches_binding(&r, &binding).is_err());
         }
         assert!(verify(&root.join("server.json"), &record, &binding).is_err());
+        dirs::secure_state_dir(&root).unwrap();
+        let path = root.join("server.json");
+        let bytes = serde_json::to_vec(&record).unwrap();
+        dirs::create_private_file(&path)
+            .unwrap()
+            .write_all(&bytes)
+            .unwrap();
+        let descriptor = Descriptor {
+            record: path.clone(),
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+        };
+        for kind in 0..4 {
+            let mut host = record.server.clone();
+            let mut executable = record.executable.clone();
+            let mut cwd = record.cwd.clone();
+            match kind {
+                0 => host.pid = record.provider.process.pid,
+                1 => host.started_at += chrono::Duration::seconds(1),
+                2 => executable = root.join("other-codex"),
+                _ => cwd = root.join("other-project"),
+            }
+            let error =
+                verify_mcp_host(&descriptor, &binding, &host, &executable, &cwd).unwrap_err();
+            assert!(error.to_string().contains("differs from the accepted"));
+        }
+        let changed = Descriptor {
+            sha256: "0".repeat(64),
+            ..descriptor
+        };
+        assert!(
+            verify_mcp_host(
+                &changed,
+                &binding,
+                &record.server,
+                &record.executable,
+                &record.cwd,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("record changed")
+        );
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
     }
 }

@@ -95,7 +95,7 @@ pub(super) struct Ledger {
     record: Record,
 }
 
-pub(super) fn directory(home: &Path, agent: &str) -> Result<PathBuf> {
+fn directory_path(home: &Path, agent: &str) -> Result<PathBuf> {
     ensure!(
         !agent.is_empty()
             && agent.len() <= 128
@@ -104,9 +104,13 @@ pub(super) fn directory(home: &Path, agent: &str) -> Result<PathBuf> {
                 .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
         "invalid native queue agent ID"
     );
+    Ok(home.join("codex-queue").join(agent))
+}
+
+pub(super) fn directory(home: &Path, agent: &str) -> Result<PathBuf> {
+    let directory = directory_path(home, agent)?;
     let parent = home.join("codex-queue");
     dirs::secure_state_dir(&parent)?;
-    let directory = parent.join(agent);
     dirs::secure_state_dir(&directory)?;
     Ok(directory)
 }
@@ -129,7 +133,10 @@ pub(super) fn upgrade_credential(
     agent: &str,
     accepted: &InputBinding,
 ) -> Result<(Binding, String)> {
-    let path = directory(home, agent)?.join("delivery.json");
+    let directory = directory_path(home, agent)?;
+    dirs::check_private_dir(&home.join("codex-queue"))?;
+    dirs::check_private_dir(&directory)?;
+    let path = directory.join("delivery.json");
     let mut data = Vec::new();
     dirs::open_private_snapshot(&path)?
         .take((MAX_STATE + 1) as u64)
@@ -1008,6 +1015,12 @@ mod tests {
         accepted.token_sha256 = "wrong".into();
         assert!(upgrade_credential(home.path(), "agent", &accepted).is_err());
         assert_eq!(std::fs::read(&ledger.path).unwrap(), bytes);
+        let missing = tempfile::tempdir().unwrap();
+        assert!(upgrade_credential(missing.path(), "agent", &accepted).is_err());
+        assert!(
+            !missing.path().join("codex-queue").exists(),
+            "an identity probe must not create missing receiver state"
+        );
     }
 
     #[test]

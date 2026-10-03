@@ -45,7 +45,11 @@ hosted runner: exact receipts, native pending approval, retained draft, receiver
 replacement without replay, unchanged private config/rule and clean teardown.
 Both platforms use a loopback model and an explicit fixture user turn. Owned
 startup, hook/MCP bootstrap, safe initial-history admission, real accounts and
-physical input remain open.
+physical input remain open. Dedicated-server MCP identity now requires the
+accepted receiver ledger, pinned server record, exact live host generation/image
+and root-thread metadata before attributing calls to the original TUI. Cached
+detached-server profile checks remain. Targeted and native acceptance of this
+identity follow-up are pending.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its

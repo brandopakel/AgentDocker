@@ -65,6 +65,26 @@ fn alive(binding: &Binding) -> bool {
     procinfo::start_time(binding.provider.process.pid) == Some(binding.provider.process.started_at)
 }
 
+/// A dedicated app-server may host MCP for its native TUI. Verify its private
+/// capability and ledger against daemon ownership before attributing a call.
+pub(crate) fn verify_mcp_host(
+    agent: &AgentRecord,
+    host: &ProcessIdentity,
+    executable: &Path,
+    cwd: &Path,
+) -> Result<()> {
+    let accepted = agent
+        .input_binding
+        .as_ref()
+        .context("Codex MCP host has no accepted native binding")?;
+    let (binding, _) = ledger::upgrade_credential(&dirs::home(), agent.id.as_str(), accepted)?;
+    let descriptor = binding
+        .remote
+        .as_ref()
+        .context("Codex MCP host is not bound to a dedicated native server")?;
+    remote::verify_mcp_host(descriptor, &binding, host, executable, cwd)
+}
+
 async fn identity(client: &Client, binding: &Binding) -> Result<AgentRecord> {
     let Response::Agent { agent } = call(
         client,
