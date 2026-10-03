@@ -236,3 +236,12 @@ service-run command keep the same order with vendor allowlists. The accepted
 native fixture includes a relative project and feed. The corrected source
 repeated all 17 portable and 21 installed lifecycle checks; a real Clap
 round-trip regression covers discovered binaries with vendor allowlists.
+
+Startup now holds the service mutation lock from ownership validation through
+publication of its exact process generation. It waits up to 30 seconds for an
+in-progress install/remove operation, then rechecks the receipt; removal holds
+the same lock while stopping the published generation. The runtime releases
+this lock before serving, so graceful shutdown does not wait on the remover.
+This review correction and its native delayed-start/ownership-revocation fixture
+await full local and Windows validation; earlier sequential passes do not prove
+the concurrent-startup case.

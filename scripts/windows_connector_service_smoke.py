@@ -93,6 +93,7 @@ def main():
     processes = []
     foreign_task = foreign_xml = None
     modified_task = original_xml = None
+    revoked = None
     daemon_installed = connector_installed = False
 
     def save():
@@ -351,9 +352,53 @@ def main():
         step('owned task supervisor restarts a crashed connector without replacing its daemon or grants',
              recovered_identity != replacement and ping()['pid'] == daemon_identity[0] and
              state_path.read_bytes() == state_bytes)
+        # Stop the live generation while retaining its registration, then hold
+        # the real mutation lock across a delayed runner's startup. Revoking
+        # the receipt under that lock models removal's final commit before
+        # startup is allowed to validate ownership and publish its generation.
+        import msvcrt
+        delayed_command = recovered.cmdline()
+        generation = read_snapshot(running_path)
+        fixture_json(stop_path, generation)
+        recovered.wait(timeout=25)
+        step('clean stop retains registration before the startup/removal race',
+             receipt_path.exists() and not running_path.exists() and
+             not (root / 'serve.json').exists() and ping()['pid'] == daemon_identity[0])
+        revoked = root / 'fixture-revoked-service.json'
+        with (root / 'windows-service.lock').open('r+b') as held:
+            msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, 1)
+            try:
+                with (output / 'delayed-start.log').open('wb') as log:
+                    delayed = subprocess.Popen(delayed_command, env=env, cwd=cli_cwd,
+                                               stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+                    remember(delayed.pid, selected_cli, ['connector', 'service-run'])
+                    until = time.monotonic() + 3
+                    while time.monotonic() < until:
+                        assert delayed.poll() is None, 'delayed runner exited before lock release'
+                        assert not running_path.exists() and not (root / 'serve.json').exists(), \
+                            'runner published while removal held the mutation lock'
+                        time.sleep(0.1)
+                    refused = run('connector', 'uninstall', check=False)
+                    step('startup and removal both respect the same held mutation lock',
+                         refused['exit'] != 0 and 'operation is in progress' in refused['stderr']
+                         and receipt_path.exists() and delayed.poll() is None)
+                    receipt_path.rename(revoked)
+            finally:
+                held.seek(0)
+                msvcrt.locking(held.fileno(), msvcrt.LK_UNLCK, 1)
+        try:
+            delayed.wait(timeout=15)
+            step('delayed startup rechecks revoked ownership without serving or publishing',
+                 delayed.returncode != 0 and 'ownership is unavailable' in
+                 (output / 'delayed-start.log').read_text(encoding='utf-8') and
+                 not running_path.exists() and not (root / 'serve.json').exists() and
+                 ping()['pid'] == daemon_identity[0] and state_path.read_bytes() == state_bytes)
+        finally:
+            if revoked.exists():
+                assert not receipt_path.exists()
+                revoked.rename(receipt_path)
         run('connector', 'uninstall')
         connector_installed = False
-        recovered.wait(timeout=10)
         step('graceful connector uninstall preserves daemon identity and seeded grant bytes',
              not receipt_path.exists() and not running_path.exists() and not stop_path.exists() and
              not (root / 'serve.json').exists() and not task_xml(task) and
@@ -414,6 +459,12 @@ def main():
     except Exception as error:
         report['error'] = f'{type(error).__name__}: {error}'
     finally:
+        if revoked is not None and revoked.exists():
+            try:
+                assert not receipt_path.exists(), 'fixture receipt was replaced during revocation'
+                revoked.rename(receipt_path)
+            except Exception as error:
+                report['cleanup_errors'].append(f'restore revoked fixture ownership: {error}')
         if modified_task:
             try:
                 restore_task(modified_task, original_xml)

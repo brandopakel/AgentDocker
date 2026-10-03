@@ -182,3 +182,10 @@ attribution remain recorded for this older source; later accounting fixes do
 not retroactively establish its coverage. Separate short concurrent trials are
 disclosed. Multi-day, installed-current-accounting and sleep/wake/reboot trials
 remain open.
+
+The Windows connector follow-up review identified a startup/removal race: a
+runner could validate ownership before uninstall observed its process record.
+The candidate now serializes validation/publication with service mutations and
+rechecks ownership after waiting. A native fixture delays startup under the real
+lock and revokes ownership before release. This correction awaits full local,
+Windows lifecycle and independent review; PR #284 remains draft meanwhile.

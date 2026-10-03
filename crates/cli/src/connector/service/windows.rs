@@ -339,6 +339,23 @@ async fn stopped(home: PathBuf, expected: Running) {
 pub(crate) async fn run(client: crate::client::Client, mut args: RunArgs) -> Result<()> {
     args.serve.service_socket = Some(client.socket_path().to_owned());
     let layout = super::layout(&args.serve)?;
+    let root = directory(&layout.home);
+    dirs::secure_state_dir(&root)?;
+    // Installation starts the scheduled task while holding this same lock.
+    // Wait for it to finish, then keep ownership validation and publication
+    // atomic with respect to replacement/removal. Never wait on this lock
+    // during shutdown: uninstall holds it while waiting for our exact exit.
+    let until = tokio::time::Instant::now() + Duration::from_secs(30);
+    let startup = loop {
+        if let Some(held) = lock::try_exclusive(&root.join("windows-service.lock"))? {
+            break held;
+        }
+        ensure!(
+            tokio::time::Instant::now() < until,
+            "connector service operation did not finish; startup was refused"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
     let record = receipt(&layout)?.context("connector service ownership is unavailable")?;
     let definition = desired(&layout, Some(&record))?;
     ensure!(
@@ -347,8 +364,6 @@ pub(crate) async fn run(client: crate::client::Client, mut args: RunArgs) -> Res
             .any(|owned| *owned == definition && owned.description == args.owner),
         "connector service arguments differ from the owned task"
     );
-    let root = directory(&layout.home);
-    dirs::secure_state_dir(&root)?;
     let _lock = lock::try_exclusive(&root.join("windows-running.lock"))?
         .context("another connector service already owns this home")?;
     ensure!(
@@ -369,6 +384,7 @@ pub(crate) async fn run(client: crate::client::Client, mut args: RunArgs) -> Res
         },
     };
     write(&root.join("windows-running.json"), &running)?;
+    drop(startup);
     let result = async {
         scheduler::connector_dependency(&layout.home, &layout.user_home, true)?;
         let client = client.with_start_timeout(None);
