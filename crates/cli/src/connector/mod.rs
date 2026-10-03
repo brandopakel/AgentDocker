@@ -44,6 +44,8 @@ const MAX_CLIENTS: usize = 200;
 /// Connections served at once.
 const MAX_CONNECTIONS: usize = 64;
 
+type ShutdownFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
 #[derive(Args, Debug)]
 pub struct ConnectorArgs {
     #[command(subcommand)]
@@ -54,9 +56,13 @@ pub struct ConnectorArgs {
 pub enum ConnectorCommand {
     /// Serve the connector on loopback, behind a tunnel you run or one it starts for you.
     Serve(ServeArgs),
+    /// Internal owned Windows login-task entry point.
+    #[cfg(windows)]
+    #[command(hide = true)]
+    ServiceRun(service::windows::RunArgs),
     /// Whether a connector is serving here: its address, pairing code and tunnel.
     Status,
-    /// Run the connector as a login service (launchd or systemd) with these serve arguments.
+    /// Run the connector as a login service with these serve arguments.
     Install(InstallArgs),
     /// Install and start a new login service, or start its unchanged definition.
     /// Refuses to replace a differently configured service.
@@ -87,6 +93,9 @@ pub struct InstallArgs {
 
 #[derive(Args, Debug, Default, Clone)]
 pub struct ServeArgs {
+    /// Captured by Windows login-service installation, never a serve option.
+    #[arg(skip)]
+    service_socket: Option<PathBuf>,
     /// The HTTPS address the tunnel publishes this connector at, without a
     /// trailing slash: the vendors add `/mcp` to it. Not needed with a
     /// quick tunnel, which chooses its own; required with a named one.
@@ -187,10 +196,20 @@ impl ServeArgs {
 
 pub async fn run(client: Client, args: ConnectorArgs) -> Result<()> {
     match args.command {
-        ConnectorCommand::Serve(args) => serve(client, args).await,
+        ConnectorCommand::Serve(args) => serve(client, args, None).await,
+        #[cfg(windows)]
+        ConnectorCommand::ServiceRun(args) => service::windows::run(client, args).await,
         ConnectorCommand::Status => status(&client).await,
-        ConnectorCommand::Install(args) => service::install(&args.serve, args.dry_run),
-        ConnectorCommand::Enable(args) => service::enable(&args.serve, args.dry_run),
+        ConnectorCommand::Install(args) => {
+            let mut serve = args.serve;
+            serve.service_socket = cfg!(windows).then(|| client.socket_path().to_owned());
+            service::install(&serve, args.dry_run)
+        }
+        ConnectorCommand::Enable(args) => {
+            let mut serve = args.serve;
+            serve.service_socket = cfg!(windows).then(|| client.socket_path().to_owned());
+            service::enable(&serve, args.dry_run)
+        }
         ConnectorCommand::Uninstall { dry_run } => service::uninstall(dry_run),
         ConnectorCommand::Grants => grants(&client).await,
         ConnectorCommand::Revoke { agent } => revoke(&client, &agent).await,
@@ -1057,7 +1076,11 @@ fn page(title: &str, body: &str) -> String {
     )
 }
 
-async fn serve(client: Client, args: ServeArgs) -> Result<()> {
+async fn serve(
+    client: Client,
+    args: ServeArgs,
+    service_stop: Option<ShutdownFuture>,
+) -> Result<()> {
     let default_project = match &args.project {
         Some(path) => {
             if !path.is_dir() {
@@ -1180,6 +1203,7 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
     );
     let limit = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     let mut shutdown = shutdown_signal();
+    let mut service_stop = service_stop.unwrap_or_else(|| Box::pin(std::future::pending()));
     let mut tunnel_check = tokio::time::interval(std::time::Duration::from_secs(2));
     let refresh = refresh_allowlist(connector.allowlist.as_ref(), &home, serving.clone());
     tokio::pin!(refresh);
@@ -1228,6 +1252,10 @@ async fn serve(client: Client, args: ServeArgs) -> Result<()> {
                 eprintln!("agentdocker connector: stopping");
                 break Ok(());
             }
+            _ = &mut service_stop => {
+                eprintln!("agentdocker connector: stopping the owned login service");
+                break Ok(());
+            }
         }
     };
     service::clear_status(&home, pid);
@@ -1266,7 +1294,7 @@ async fn refresh_allowlist(
 }
 
 /// Ctrl-C, or the SIGTERM a service manager sends.
-fn shutdown_signal() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+fn shutdown_signal() -> ShutdownFuture {
     Box::pin(async {
         #[cfg(unix)]
         {

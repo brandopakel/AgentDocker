@@ -20,7 +20,7 @@ use crate::format;
 
 #[cfg(any(windows, test))]
 #[cfg_attr(not(windows), allow(dead_code))]
-mod windows;
+pub(crate) mod windows;
 
 pub(crate) const LABEL: &str = "dev.agentdocker.agentd";
 /// How long `daemon reload` waits for a mutation that is still executing

@@ -5,7 +5,7 @@
 //! injected is "not measured" until it is, never a zero.
 use super::icons::{Icon, icon};
 use super::style::{Colors, weight};
-use super::view::{empty, eyebrow, heading, icon_tile, monogram, note, rule, segmented, small};
+use super::view::{empty, eyebrow, heading, icon_tile, logo_tile, note, rule, segmented, small};
 use super::*;
 use crate::controls::{Kind, custom};
 use agentdocker_core::usage::report::{CollectionState, CounterReports, Group, Report, Row};
@@ -523,16 +523,23 @@ impl App {
         }
     }
 
-    /// Who or what a row is, at a glance: an agent's own monogram, a
-    /// neutral letter for a model or provider, a clock for an hour.
+    /// Who or what a row is, at a glance: an agent's tool's logo (or its
+    /// monogram), a model's or provider's logo where it has one (a neutral
+    /// letter otherwise), a clock for an hour.
     fn usage_identity(&self, row_: &Row, by: Group, c: Colors) -> Element<'_, Message> {
         const SIZE: f32 = 22.0;
         let Some(key) = &row_.key else {
             return icon_tile(icon(Icon::Question, c.faint, 12.0), SIZE, c);
         };
         match by {
-            Group::Agent => monogram(&self.name_of(key), key, SIZE, c),
+            Group::Agent => self.agent_mark_for(key, &self.name_of(key), SIZE, c),
             Group::Hour => icon_tile(icon(Icon::Clock, c.muted, 12.0), SIZE, c),
+            Group::Model if let Some(logo) = super::logos::Logo::for_model(key) => {
+                logo_tile(logo, SIZE, c)
+            }
+            Group::Provider if let Some(logo) = super::logos::Logo::for_vendor(key) => {
+                logo_tile(logo, SIZE, c)
+            }
             _ => {
                 let letter: String = key
                     .chars()

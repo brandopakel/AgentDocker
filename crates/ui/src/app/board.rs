@@ -299,7 +299,7 @@ impl App {
                     && &l.holder == a
                     && l.mode == agentdocker_core::LeaseMode::Exclusive
             });
-            (self.name_of(a.as_str()), live, held)
+            (self.name_of(a.as_str()), live, held, a.as_str())
         });
         let lapsed =
             |held: bool| !held && matches!(task.column, Column::InProgress | Column::Review);
@@ -311,12 +311,14 @@ impl App {
         ]
         .spacing(6)
         .width(Fill);
-        if let Some((name, live, held)) = &holder {
+        if let Some((name, live, held, id)) = &holder {
             // One line for the name, clipped: a long name never pushes
-            // the state off the card or wraps under the dot.
+            // the state off the card or wraps under the dot. The holder's
+            // tool mark sits between the dot and the name.
             head = head.push(
                 row![
                     dot(if *live { c.green } else { c.faint }, 6.0, c),
+                    self.agent_mark_for(id, name, 16.0, c),
                     container(
                         text(name.clone())
                             .size(12)
@@ -346,7 +348,7 @@ impl App {
         // The control's name says the state too, so a screen reader — and
         // the smoke — hear who holds the card without opening it.
         let label = match &holder {
-            Some((name, _, held)) => {
+            Some((name, _, held, _)) => {
                 if lapsed(*held) {
                     format!("{} — {name}'s, not being worked on", task.title)
                 } else {

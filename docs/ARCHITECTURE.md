@@ -190,6 +190,26 @@ Design points:
 
 The one place AgentDocker speaks HTTP, and it is not the daemon. An agent that works inside a browser — Claude's or ChatGPT's side panel — runs on the vendor's side and reaches tools only through a remote MCP server over public HTTPS with OAuth. The connector is that server as a separate opt-in process: it binds loopback, a tunnel the person runs gives it its public name and TLS, and it is a client of the daemon over the local socket like any other. It reuses `McpServer` in a `remote` mode whose tools are the messaging ones (`REMOTE_TOOLS`: `whoami`, `list_agents`, `inspect_agent`, `send_message`, `read_inbox`, `acknowledge_messages`, `ask_human`, `open_questions`, `read_journal`, `journal_note`, `report_activity`) and refuses the rest by name, because the agent has no checkout. Its own OAuth 2.1 authorization server (`connector/oauth.rs`, pure, every step given `now`) admits a client two ways, both limited to the vendors' callback URLs: dynamic client registration, or a Client ID Metadata Document — a `client_id` that is an HTTPS URL on a vendor's host, fetched by `connector/cimd.rs` (the connector's one outbound request: HTTPS only, no redirects, bounded, once an hour, never to a host outside the vendors' or an `--allow-callback`'s) and admitted only when it names its own URL and that vendor's callbacks; every authorization response names the issuer (RFC 9207). PKCE `S256`, one-hour access tokens and rotating refresh tokens; clients and grants as hashes in `$AGENTDOCKER_HOME/connector/state.json`. Consent needs the pairing code printed by `serve` and chooses the project (from `list`, the projects the daemon has seen agents in, or any directory on the machine); the daemon registers the browser agent — external, pidless, runtime `claude-browser` or `chatgpt-browser`, in the chosen project — only when the code is redeemed (`register`), heartbeats it on every accepted tool call (`heartbeat`; initializing and listing tools is a client loading the connector, not the agent in use), checks it is still live before answering (`inspect`), and `revoke` deregisters it. A browser agent has no process whose end could retire it, so it counts as present (`AgentRecord::is_present`) only within `CONNECTOR_PRESENCE` — one hour, an access token's lifetime — of its last tool call; past that `ps` shows it `not connected` and the desktop neither counts nor lists it as a live session, while its record, grant and queue stand and its next request makes it present again. No protocol change: the connector uses the requests any client can. HTTP is hand-rolled and bounded (`connector/http.rs`: 8 KiB line, 32 KiB headers, 1 MiB body, 15 s, one request per connection), for the reason the JSON-RPC is. `--tunnel cloudflared` runs cloudflared as a child (`connector/tunnel.rs`), reading a quick tunnel's hostname from its output and holding it back a few seconds so no resolver caches its absence; `connector install` writes a launchd agent or systemd user unit (`connector/service.rs`) and `serve` describes itself in `connector/serve.json` (`agentdocker_host::connector::Serving`) for `status` and for the desktop's Tools screen, which reads the file with its process alive and shows the connector's state on the in-browser runtimes' cards; `--tunnel tailscale` sets a Tailscale Funnel on this machine's own stable `*.ts.net` name (no child: a configuration in tailscaled, set on entry and cleared on exit); `--allow-from` (`connector/net.rs`) admits only the given prefixes — Anthropic's published range, OpenAI's feed file re-read when it changes — by the client address the tunnel reports, on the vendor-facing endpoints only. In remote mode `project` as a recipient is the root of the project the grant's consent chose, never the process's working directory; one connector serves every project on the machine. [The remote connector](REMOTE-CONNECTOR.md) is the contract; what it cannot do — wake a browser agent, or see one that never connected — is stated there.
 
+The Windows connector login-service candidate uses a separate per-home
+`AgentDocker-Connector-*` Task Scheduler task, exact action/owner/principal checks,
+and private current/previous ownership receipts. It requires the home's owned
+daemon login task and starts that task separately; the connector disables
+on-demand daemon startup so stopping its task cannot terminate a daemon in its
+child tree. The selected daemon endpoint is retained in the task action.
+Configured project, egress-file and tunnel-executable paths are resolved against
+the installing shell's working directory before registration; the login task
+does not depend on that directory. Windows tunnel discovery searches for the
+native `.exe` names. The task captures native output with `Continue` and returns
+the native exit code, since PowerShell 5.1's `Stop` aborts on ordinary stderr.
+`enable` preserves a differently configured service; `install` explicitly
+replaces only an owned task. Identical enablement leaves the running task's log
+handle intact; only a new/replaced task prepares the log for writing. Graceful
+stop requests name the exact process birth
+and a fresh run nonce in private bounded snapshots, then wait for tunnel cleanup
+before stopping the task. Browser grants and daemon state are retained. This
+candidate still requires full and native lifecycle acceptance; no new daemon
+protocol or schema is introduced.
+
 ### `agentdocker hook` (`crates/cli/src/hooks.rs`)
 
 Where the MCP server offers tools the model *may* call, hooks make coordination unconditional. `agentdocker hook install claude-code` merges six entries into Claude Code's `settings.json` (idempotently — entries whose command already runs `hook claude-code` are left alone), each running `agentdocker hook claude-code`, which reads the event JSON from stdin:
@@ -1804,5 +1824,20 @@ frames to 4 MiB and connection/write/close to five seconds. Each 30-second RPC
 discards at most 512 notifications/4 MiB; it never buffers unbounded broadcasts
 or answers native approval requests. Unexpected requests, foreign responses and
 limits fail closed. Socket shutdown never terminates the shared native server.
-The hidden record argument is an internal integration point; automatic owned
-launch/bootstrap and initial empty-history admission remain unimplemented.
+The hidden record argument is an internal integration point. The experimental
+`codex-native` launcher owns the dedicated server and native TUI. An observed
+empty server and unique new root thread permit a private version-2 birth record,
+usable only with a pristine ledger before the first durable input attempt.
+Explicit UUID reopen instead requires ordinary persisted history and a version-1
+record; the daemon hands the unique dead predecessor's canonical queue to the
+new generation and starts its receiver. The launcher reaps its initial receiver
+while the TUI runs so Linux zombies cannot prevent daemon-owned replacement.
+Desktop/default-launch integration remains unfinished.
+
+The Windows connector task supervises failed native exits with a two-second
+backoff and at most three retries; a run lasting ten minutes resets that budget.
+A zero exit stays stopped. Scheduler-level failure retries are disabled so they
+cannot multiply the local budget. Each child still verifies the exact owned
+action, nonce and current/previous receipt before serving; graceful stop targets
+the running child generation and then retires the owned task. The separate daemon
+service is unaffected.
