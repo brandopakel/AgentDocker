@@ -554,7 +554,7 @@ impl App {
         let sessions: Vec<_> = self
             .agents
             .iter()
-            .filter(|agent| agent.spec.runtime == runtime.name && agent.status.is_live())
+            .filter(|agent| agent.spec.runtime == runtime.name && self.live_session(agent))
             .collect();
         let ready = self.connected.is_ok()
             && sessions.iter().any(|agent| {

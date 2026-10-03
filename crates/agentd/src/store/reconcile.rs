@@ -37,7 +37,8 @@ struct Document {
     value: Value,
 }
 
-/// A session come back, planned: see [`Store::plan_resume`].
+/// A session come back, or one session's duplicates, planned: see
+/// [`Store::plan_fold`].
 #[derive(Debug)]
 pub(crate) struct ResumePlan {
     pub canonical: AgentRecord,
@@ -50,6 +51,10 @@ pub(crate) struct ResumePlan {
     documents: Vec<Document>,
     remove_reads: Vec<String>,
     duplicate_inbox_rows: Vec<i64>,
+    /// Retired rows that move behind the canonical record's queue, in
+    /// this order, by taking new sequence numbers: empty unless its head
+    /// is kept.
+    append: Vec<i64>,
     /// The one queue, as the store will hold it: durable `seq` order,
     /// each message once. Memory takes this, not an order of its own,
     /// so a reopen delivers the same way.
@@ -458,9 +463,20 @@ impl Store {
         })
     }
 
-    /// The plan for a session come back: every life it left — the fresh
-    /// record and any earlier ended one — retired into the record that
-    /// ended last. What the offline repair does for one pair, on the live
+    /// [`Self::plan_fold`] for a session come back, as the tests ask for it.
+    #[cfg(test)]
+    pub(crate) fn plan_resume(
+        &self,
+        canonical: &AgentRecord,
+        retired: &[AgentId],
+    ) -> Result<ResumePlan> {
+        self.plan_fold(canonical, retired, false)
+    }
+
+    /// The plan for retiring records into one: a session come back, every
+    /// life it left — the fresh record and any earlier ended one — into the
+    /// record that ended last, or one live session's duplicates into the
+    /// record that stays. What the offline repair does for one pair, on the live
     /// connection for several: the queued rows of all of them become one
     /// queue in durable `seq` order with each message once (the same
     /// broadcast reached more than one life; a duplicate that differs in
@@ -473,10 +489,18 @@ impl Store {
     /// lease is refused here too. Observations join by physical path,
     /// retaining the latest capture; conflicting captures at the same
     /// time refuse the entire fold. Nothing is written.
-    pub(crate) fn plan_resume(
+    ///
+    /// With `keep_head` the canonical record's queue stays exactly as it is,
+    /// in front: a live record whose receiver may have offered its head is
+    /// folded into without anything going ahead of that head. Its own rows
+    /// win a duplicate message, and the retired records' remaining rows
+    /// follow in their own order, moved behind it in the store by taking new
+    /// sequence numbers.
+    pub(crate) fn plan_fold(
         &self,
         canonical: &AgentRecord,
         retired: &[AgentId],
+        keep_head: bool,
     ) -> Result<ResumePlan> {
         let kept = &canonical.id;
         anyhow::ensure!(!retired.is_empty(), "nothing to fold");
@@ -521,8 +545,17 @@ impl Store {
         let mut seen = BTreeMap::new();
         let mut duplicate_inbox_rows = Vec::new();
         let mut queue = Vec::new();
+        let mut append = Vec::new();
         let mut bytes = 0usize;
-        for (seq, _, id, raw) in &inbox {
+        let ordered: Vec<&(i64, String, String, String)> = if keep_head {
+            let (own, theirs): (Vec<_>, Vec<_>) = inbox
+                .iter()
+                .partition(|(_, agent, _, _)| agent == kept.as_str());
+            own.into_iter().chain(theirs).collect()
+        } else {
+            inbox.iter().collect()
+        };
+        for (seq, agent, id, raw) in ordered {
             let envelope: Envelope = serde_json::from_str(raw)?;
             anyhow::ensure!(
                 envelope.id.as_str() == id,
@@ -540,6 +573,9 @@ impl Store {
                     bytes = bytes.saturating_add(raw.len());
                     seen.insert(id.clone(), envelope.clone());
                     queue.push(envelope);
+                    if keep_head && agent != kept.as_str() {
+                        append.push(*seq);
+                    }
                 }
             }
         }
@@ -639,6 +675,7 @@ impl Store {
             aliases,
             documents,
             duplicate_inbox_rows,
+            append,
             remove_reads,
             queue,
         })
@@ -662,6 +699,14 @@ impl Store {
                 .execute("DELETE FROM journal_cursors WHERE agent=?1", [old.as_str()])?;
             self.conn
                 .execute("DELETE FROM agents WHERE id=?1", [old.as_str()])?;
+        }
+        // Behind the canonical queue: a new sequence number each, in order.
+        for seq in &plan.append {
+            self.conn.execute(
+                "INSERT INTO inbox (agent, message_id, json) SELECT agent, message_id, json FROM inbox WHERE seq=?1",
+                [seq],
+            )?;
+            self.conn.execute("DELETE FROM inbox WHERE seq=?1", [seq])?;
         }
         for doc in &plan.documents {
             self.put_document(&doc.kind, &doc.id, &doc.value)?;
