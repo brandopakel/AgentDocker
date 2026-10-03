@@ -35,9 +35,13 @@ before its first user message; that limitation remains a failure rather than
 being interpreted as empty history. The provider-only authenticated remote-TUI startup/approval passes do
 not close AgentDocker's owned launcher or zero-prompt binding. A candidate
 receiver transport now accepts a private exact-generation server descriptor
-and attaches through bounded authenticated loopback WebSocket. Transport and
-record regression coverage, native integration acceptance, owned startup,
-hook/MCP bootstrap and safe initial-history admission remain to be completed.
+and attaches through bounded authenticated loopback WebSocket. Source `873e7663`
+passed the full local gate (1,508 Rust and 169 Python tests run, one Python test
+skipped) and nine native Mac ARM64 checks: exact generations, pre-first-message
+refusal, two queued receipts, preserved draft and receiver replacement without
+replay. The fixture explicitly establishes one ordinary user turn after the
+refusal. Windows shared-server/approval acceptance, owned startup, hook/MCP
+bootstrap and safe initial-history admission remain open.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its

@@ -2,7 +2,11 @@
 """Provider-only Windows Codex remote-TUI startup capability probe.
 
 Uses a fresh private profile, a loopback model and an authenticated dedicated
-app-server. No AgentDocker binding, real account, physical input or production configuration is exercised. The optional approval
+app-server. Without --binary-dir, no AgentDocker binding is exercised. The
+optional receiver trial manually binds exact generations after an explicit
+fixture user turn and tests shared-server delivery/replacement; automatic
+bootstrap and zero-prompt delivery remain unaccepted. No real account, physical
+input or production configuration is exercised. The optional approval
 probe uses one private print command and a synthetic native Return. A pass is capability evidence,
 not acceptance of AgentDocker's native controller.
 """
@@ -38,6 +42,7 @@ def main():
     parser.add_argument('--codex', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--approval', action='store_true', help='Check a private native command approval')
+    parser.add_argument('--binary-dir', type=Path, help='Also test AgentDocker shared-server receiver after one explicit user turn')
     args = parser.parse_args()
     if os.name != 'nt':
         parser.error('requires native Windows')
@@ -58,7 +63,7 @@ def main():
               'cleanup_errors': [], 'retired_processes': [], 'reader_errors': []}
     owned, output = [], []
     closing = threading.Event()
-    provider = tui = channel = server = reader = None
+    provider = tui = channel = server = reader = receiver = None
     queue_text = 'AD_PRIVATE_FIRST_QUEUE_' + secrets.token_hex(8)
     draft_text = 'AD_PRIVATE_RETAINED_DRAFT_' + secrets.token_hex(8)
     approval_marker = 'AD_PRIVATE_APPROVAL_' + secrets.token_hex(8)
@@ -67,6 +72,9 @@ def main():
     approval_called = False
     report['approval_requested'] = args.approval
     report['observer_approval_requests'] = []
+    report['receiver_requested'] = args.binary_dir is not None
+    report['source_commit'] = subprocess.check_output(
+        ['git', 'rev-parse', 'HEAD'], cwd=Path(__file__).resolve().parents[1], text=True, timeout=10).strip()
 
     def approval_events(number, body):
         namespace, found = None, False
@@ -332,12 +340,34 @@ def main():
             else:
                 raise AssertionError('pinned provider unexpectedly accepted unmaterialized turn history')
 
+            if args.binary_dir is not None:
+                from windows_remote_receiver_fixture import Receiver
+                helper = Path(__file__).with_name('windows_remote_receiver_fixture.py')
+                report['receiver_helper_sha256'] = hashlib.sha256(helper.read_bytes()).hexdigest()
+                receiver = Receiver(args.binary_dir, root, repo, profile, out, env, report)
+                receiver.prepare(codex, tui, provider, thread, port, token_file)
+                first_message = receiver.send(queue_text)
+                receiver.refuse_empty_history()
+                step('AgentDocker refuses pre-first-message history without binding or input', not report['requests'])
+                report['explicit_initial_user_turn'] = 'AD_EXPLICIT_ESTABLISHED_SESSION'
+                tui.write(report['explicit_initial_user_turn']); time.sleep(0.3); tui.write('\r')
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    if report['requests'] and read_thread()['status']['type'] == 'idle':
+                        break
+                    time.sleep(0.2)
+                else:
+                    raise TimeoutError('explicit fixture user turn did not finish')
+
             # The API's source label is diagnostic only, never process identity.
             time.sleep(1)
             tui.write(draft_text)
             time.sleep(0.3)
-            call('thread/queue/add', {'threadId': thread, 'clientUserMessageId': 'ad-private-' + secrets.token_hex(8),
-                                    'input': [{'type': 'text', 'text': queue_text, 'text_elements': []}]})
+            if receiver is not None:
+                receiver.start()
+            else:
+                call('thread/queue/add', {'threadId': thread, 'clientUserMessageId': 'ad-private-' + secrets.token_hex(8),
+                                        'input': [{'type': 'text', 'text': queue_text, 'text_elements': []}]})
 
             def history(expected):
                 deadline = time.monotonic() + 30
@@ -355,7 +385,7 @@ def main():
                         assert isinstance(cursor, str) and cursor and cursor not in cursors
                         cursors.add(cursor)
                     else:
-                        raise AssertionError('private two-input history exceeded four pages')
+                        raise AssertionError('private history exceeded four pages')
                     if any(expected in json.dumps(item) for item in users):
                         return users
                     time.sleep(0.2)
@@ -398,13 +428,17 @@ def main():
                  idle and any(v['queue_nonce_present'] for v in report['requests']) and
                  not any(v['draft_nonce_present'] for v in report['requests']) and
                  sum(queue_text in json.dumps(v) for v in first) == 1)
+            if receiver is not None:
+                report['receiver_first_receipt'] = receiver.received(first_message)
+                step('AgentDocker records the exact original queued-message receipt',
+                     report['receiver_first_receipt']['receipt']['thread'] == thread)
             tui.write('\r')
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline and not any(v['draft_nonce_present'] for v in report['requests']):
                 time.sleep(0.1)
             users = history(draft_text)
             step('native Return submits the preserved draft exactly once',
-                 any(v['draft_nonce_present'] for v in report['requests']) and len(users) == 2 and
+                 any(v['draft_nonce_present'] for v in report['requests']) and len(users) == 2 + int(receiver is not None) and
                  sum(queue_text in json.dumps(v) for v in users) == 1 and
                  sum(draft_text in json.dumps(v) for v in users) == 1 and tui.isalive())
             deadline = time.monotonic() + 25
@@ -414,13 +448,25 @@ def main():
                 time.sleep(0.2)
             else:
                 raise TimeoutError('draft turn did not finish before cleanup')
+            if receiver is not None:
+                receiver.replace()
+                replacement_text = 'AD_PRIVATE_REPLACEMENT_' + secrets.token_hex(8)
+                second_message = receiver.send(replacement_text)
+                receiver.received(second_message)
+                users = history(replacement_text)
+                step('replacement preserves native server terminal and all exact receipts without replay',
+                     provider.poll() is None and tui.isalive() and len(users) == 4 and
+                     all(sum(text in json.dumps(item) for item in users) == 1
+                         for text in (queue_text, draft_text, replacement_text)) and
+                     [item['message'] for item in receiver.ledger()['completed']] == [first_message, second_message])
+                report['receiver_receipts'] = receiver.ledger()['completed']
             if args.approval:
                 step('native one-time decision did not change the private prompt rule',
                      rule.read_text(encoding='utf-8') == rule_text)
             report['user_receipts'] = users
             step('private configuration is unchanged',
                  (profile / 'config.toml').read_text(encoding='utf-8') == config)
-            report['result'] = 'capability_observed'
+            report['result'] = 'receiver_observed' if receiver is not None else 'capability_observed'
         except Exception:
             report['error'] = traceback.format_exc()
         finally:
@@ -471,6 +517,11 @@ def main():
                     provider.wait(timeout=5)
                 except Exception as error:
                     report['cleanup_errors'].append(str(error))
+            if receiver is not None:
+                try:
+                    receiver.close()
+                except Exception as error:
+                    report['cleanup_errors'].append('receiver cleanup: ' + str(error))
             if tui is not None:
                 # pywinpty 3.0.5 reads through a forwarding socket, which may
                 # remain blocked after its child exits. isalive() also marks
@@ -510,7 +561,7 @@ def main():
                 report['result'] = 'failed'
             (out / 'result.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({k: report[k] for k in ('result', 'steps', 'cleanup_errors', 'scratch_removed')}))
-    return 0 if report['result'] == 'capability_observed' else 1
+    return 0 if report['result'] in ('capability_observed', 'receiver_observed') else 1
 
 
 if __name__ == '__main__':

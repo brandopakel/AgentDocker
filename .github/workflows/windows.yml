@@ -14,6 +14,10 @@ on:
         description: Include one private command approval through the native ConPTY UI
         type: boolean
         default: false
+      receiver_acceptance:
+        description: In capability_only mode, build and test the shared-server receiver after one explicit fixture turn
+        type: boolean
+        default: false
       startup_samples:
         description: Additional fresh-home samples per ancestry type (0..20)
         type: choice
@@ -165,11 +169,23 @@ jobs:
   remote-tui:
     if: ${{ inputs.capability_only }}
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: ${{ inputs.receiver_acceptance && 60 || 10 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        if: inputs.receiver_acceptance
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        if: inputs.receiver_acceptance
+        with:
+          key: windows-native-foundations
+          cache-on-failure: true
+      - name: Build the shared-server receiver candidate
+        if: inputs.receiver_acceptance
+        run: cargo build --locked --release -p agentdocker --bins
       - name: Prepare pinned provider and native terminal dependencies
         run: |
           python -m pip install --disable-pip-version-check pywinpty==3.0.5 psutil==7.0.0 websockets==15.0.1
@@ -182,9 +198,11 @@ jobs:
       - name: Dedicated server and native ConPTY capability
         env:
           CAPABILITY_APPROVAL: ${{ inputs.capability_approval }}
+          RECEIVER_ACCEPTANCE: ${{ inputs.receiver_acceptance }}
         run: |
           $options = @()
           if ($env:CAPABILITY_APPROVAL -eq 'true') { $options += '--approval' }
+          if ($env:RECEIVER_ACCEPTANCE -eq 'true') { $options += '--binary-dir'; $options += 'target/release' }
           python scripts/windows_codex_remote_capability.py --codex artifacts/codex.exe --output artifacts/capability @options
       - name: Preserve bounded capability evidence
         if: always()

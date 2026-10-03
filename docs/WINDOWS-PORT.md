@@ -705,3 +705,16 @@ PTY I/O and shuts down pywinpty's forwarding socket before joining both readers;
 the earlier `ceaff20a` cleanup failure remains in the verification index. This
 is provider capability evidence, not AgentDocker receiver integration, a real
 provider account or a human permission interaction.
+
+The same manual workflow accepts `capability_only=true` with
+`receiver_acceptance=true` to build the candidate CLI/daemon and exercise its
+private shared-server receiver. The fixture registers exact native generations,
+requires refusal before the first user message, then explicitly starts one
+fixture user turn before checking queued delivery, a retained draft and automatic
+receiver replacement with exact receipts. `capability_approval=true` also checks
+the native print-command approval while the receiver is connected. The record
+uses native 100ns process birth and canonical Windows paths; no account or saved
+configuration is used. This acceptance is pending. Automatic launcher/bootstrap
+and zero-prompt input are separate gates. Source `873e7663` passed the corresponding
+nine-check Mac ARM64 shared-server trial and the full local suite; that pass
+does not establish Windows acceptance.
