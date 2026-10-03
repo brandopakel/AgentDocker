@@ -1331,8 +1331,16 @@ in bounded passes (up to 4 MiB / 100 ms each) before parsing. A scan rechecks it
 new bounded suffix and generation before committing; a restart discards the
 proof and rehashes the saved prefix. An appended generation of the same file may
 retain parser state only after all accepted prefix bytes match. Rewrites,
-replacement, truncation or a changing snapshot keep coverage incomplete and
-require an explicit gap/replay. A version-3, version-4 or version-5 parser cursor first verifies its old
+replacement and truncation keep coverage incomplete and require an explicit
+gap/replay. Growth during verification instead invalidates the current proposal:
+the collector atomically refreshes that pending job's captured high-water mark
+with the existing `usage_recorded` event, retaining its accepted cursor and
+pending count. It visits each job at most once per pass, allowing other files to
+finish, and retries the full old-prefix proof on the next pass or after restart.
+Growth alone proves neither corruption nor append-only content; a rewrite that
+also grows must still fail the new prefix proof. Repeated growth stays pending,
+never caught up or a permanent source gap solely because its snapshot advanced.
+No discovery schema or transcript storage changes are required. A version-3, version-4 or version-5 parser cursor first verifies its old
 prefix, then replays from zero using version 6 without inventing a source-change
 gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
