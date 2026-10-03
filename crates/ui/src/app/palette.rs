@@ -308,7 +308,30 @@ pub(super) enum Handling {
     Pass,
     /// The palette's, but a held key repeating it does nothing more.
     Swallow,
-    Send(Message),
+    Send(Command),
+}
+
+/// The palette's own keys, as the messages they send. A small value of its
+/// own rather than a `Message`, which is large on some targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Command {
+    Palette,
+    Move(i32),
+    Submit,
+    Escape,
+    Back,
+}
+
+impl From<Command> for Message {
+    fn from(command: Command) -> Self {
+        match command {
+            Command::Palette => Message::CommandPalette,
+            Command::Move(step) => Message::CommandMove(step),
+            Command::Submit => Message::CommandSubmit,
+            Command::Escape => Message::CommandEscape,
+            Command::Back => Message::CommandBack,
+        }
+    }
 }
 
 /// The palette's reading of a key press.
@@ -320,7 +343,7 @@ pub(super) fn handle(
     repeat: bool,
 ) -> Handling {
     use keyboard::{Key, key::Named};
-    let once = |message: Message| {
+    let once = |message: Command| {
         if repeat {
             Handling::Swallow
         } else {
@@ -332,21 +355,21 @@ pub(super) fn handle(
         && !modifiers.alt()
         && key.to_latin(physical) == Some('k');
     match keys {
-        Keys::Closed { shortcut: true } if shortcut => once(Message::CommandPalette),
+        Keys::Closed { shortcut: true } if shortcut => once(Command::Palette),
         Keys::Closed { .. } => Handling::Pass,
-        Keys::Open { .. } if shortcut => once(Message::CommandPalette),
+        Keys::Open { .. } if shortcut => once(Command::Palette),
         Keys::Open {
             query_empty,
             nested,
         } => match key {
-            Key::Named(Named::Escape) => once(Message::CommandEscape),
-            Key::Named(Named::Enter) => once(Message::CommandSubmit),
-            Key::Named(Named::ArrowDown) => Handling::Send(Message::CommandMove(1)),
-            Key::Named(Named::ArrowUp) => Handling::Send(Message::CommandMove(-1)),
+            Key::Named(Named::Escape) => once(Command::Escape),
+            Key::Named(Named::Enter) => once(Command::Submit),
+            Key::Named(Named::ArrowDown) => Handling::Send(Command::Move(1)),
+            Key::Named(Named::ArrowUp) => Handling::Send(Command::Move(-1)),
             Key::Named(Named::Tab) => {
-                Handling::Send(Message::CommandMove(if modifiers.shift() { -1 } else { 1 }))
+                Handling::Send(Command::Move(if modifiers.shift() { -1 } else { 1 }))
             }
-            Key::Named(Named::Backspace) if query_empty && nested => once(Message::CommandBack),
+            Key::Named(Named::Backspace) if query_empty && nested => once(Command::Back),
             _ => Handling::Pass,
         },
     }
@@ -435,8 +458,8 @@ impl Widget<Message, iced::Theme, iced::Renderer> for Shortcuts<'_> {
                         shell.capture_event();
                         return;
                     }
-                    Handling::Send(message) => {
-                        shell.publish(message);
+                    Handling::Send(command) => {
+                        shell.publish(command.into());
                         shell.capture_event();
                         return;
                     }
@@ -1204,7 +1227,7 @@ mod tests {
         };
         assert!(matches!(
             press(nested(true), backspace.clone(), none),
-            Handling::Send(Message::CommandBack)
+            Handling::Send(Command::Back)
         ));
         assert!(matches!(
             press(nested(false), backspace.clone(), none),
@@ -1239,11 +1262,11 @@ mod tests {
         let closed = Keys::Closed { shortcut: true };
         assert!(matches!(
             press(closed, k.clone(), command),
-            Handling::Send(Message::CommandPalette)
+            Handling::Send(Command::Palette)
         ));
         assert!(matches!(
             press(open, k.clone(), command),
-            Handling::Send(Message::CommandPalette)
+            Handling::Send(Command::Palette)
         ));
         assert!(matches!(
             press(Keys::Closed { shortcut: false }, k.clone(), command),
@@ -1257,19 +1280,19 @@ mod tests {
         ));
         assert!(matches!(
             press(open, Key::Named(Named::Escape), none),
-            Handling::Send(Message::CommandEscape)
+            Handling::Send(Command::Escape)
         ));
         assert!(matches!(
             press(open, Key::Named(Named::ArrowDown), none),
-            Handling::Send(Message::CommandMove(1))
+            Handling::Send(Command::Move(1))
         ));
         assert!(matches!(
             press(open, Key::Named(Named::Tab), keyboard::Modifiers::SHIFT),
-            Handling::Send(Message::CommandMove(-1))
+            Handling::Send(Command::Move(-1))
         ));
         assert!(matches!(
             press(open, Key::Named(Named::Enter), none),
-            Handling::Send(Message::CommandSubmit)
+            Handling::Send(Command::Submit)
         ));
         assert!(matches!(
             handle(
