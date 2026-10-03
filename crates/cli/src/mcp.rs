@@ -1985,7 +1985,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                 "properties": {
                     "contest": { "type": "string" },
                     "validation": { "type": "string", "description": "From `validate`; must be yours and must have passed." },
-                    "score": { "type": "number", "description": "Only for a reported measure; a `seconds` contest is timed by the daemon." }
+                    "score": { "type": "number", "description": "Only for a reported measure; a `seconds` contest is timed by the daemon, and a judged one is scored by the judge." }
                 },
                 "required": ["contest", "validation"],
                 "additionalProperties": false

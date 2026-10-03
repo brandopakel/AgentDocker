@@ -71,14 +71,30 @@ pub enum Measure {
     /// A number the entrant reports, named here so that everyone reports
     /// the same one. The daemon cannot check it; the channel can.
     Reported { name: String },
+    /// Where the opt-in judge model places each entry's change on levels
+    /// the opener described, worst first: the expected level, so higher
+    /// is better. The daemon asks once per submission and the entrant is
+    /// not consulted; an entry is ranked once its answer is in.
+    Judged { rubric: Vec<String> },
 }
+
+/// A judged measure has at least this many levels…
+pub const RUBRIC_MIN: usize = 2;
+/// …and at most this many, each at most [`RUBRIC_CHARS`] characters.
+pub const RUBRIC_MAX: usize = 10;
+pub const RUBRIC_CHARS: usize = 300;
 
 impl Measure {
     pub fn name(&self) -> &str {
         match self {
             Self::ValidationSeconds => "validation seconds",
             Self::Reported { name } => name,
+            Self::Judged { .. } => "judged quality",
         }
+    }
+
+    pub fn is_judged(&self) -> bool {
+        matches!(self, Self::Judged { .. })
     }
 
     /// Whether the daemon takes this number itself rather than being told
@@ -136,6 +152,21 @@ pub struct Entry {
     pub validation: String,
     pub score: f64,
     pub submitted_at: DateTime<Utc>,
+    /// For a judged measure, the answer `score` came from; until it is
+    /// in, the entry waits and is not ranked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judged: Option<Judged>,
+}
+
+/// The judge's answer for one entry.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Judged {
+    /// How concentrated the answer was, 0 to 1: a low one is a reading
+    /// the channel should look at before trusting the order.
+    pub confidence: f64,
+    /// The versioned model that answered.
+    pub model: String,
+    pub at: DateTime<Utc>,
 }
 
 /// Where a contest stands.
@@ -187,6 +218,10 @@ pub struct Contest {
     pub winner: Option<AgentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
+    /// For a judged measure, the commit each entry's change is read
+    /// against: the opener's HEAD when the contest opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
 }
 
 /// Why an entry was refused.
@@ -235,6 +270,7 @@ impl Contest {
             closed_at: None,
             winner: None,
             resolution: None,
+            base: None,
         }
     }
 
@@ -281,10 +317,37 @@ impl Contest {
         self.entries.iter().find(|e| e.agent == *agent)
     }
 
+    /// Whether an entry has its number: always, except a judged entry
+    /// whose answer is not in.
+    pub fn is_scored(&self, entry: &Entry) -> bool {
+        !self.metric.measure.is_judged() || entry.judged.is_some()
+    }
+
+    /// Record the judge's answer for an agent's entry, if that entry is
+    /// still the submission the answer was for and still waits for one.
+    pub fn judge(&mut self, agent: &AgentId, validation: &str, score: f64, judged: Judged) -> bool {
+        if !self.is_open() || !self.metric.measure.is_judged() || !score.is_finite() {
+            return false;
+        }
+        match self
+            .entries
+            .iter_mut()
+            .find(|e| e.agent == *agent && e.validation == validation && e.judged.is_none())
+        {
+            Some(entry) => {
+                entry.score = score;
+                entry.judged = Some(judged);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Entries best-first. Only submitted ones are here, and only
-    /// passing ones were ever accepted, so the whole list is ranked.
+    /// passing ones were ever accepted; a judged entry still waiting for
+    /// its answer is left out until it has one.
     pub fn ranked(&self) -> Vec<&Entry> {
-        let mut ranked: Vec<&Entry> = self.entries.iter().collect();
+        let mut ranked: Vec<&Entry> = self.entries.iter().filter(|e| self.is_scored(e)).collect();
         ranked.sort_by(|a, b| {
             let ordering = a
                 .score
@@ -314,7 +377,7 @@ impl Contest {
         let Some(best) = ranked.first() else {
             return Standing::Open {
                 entrants: self.entrants.len(),
-                entries: 0,
+                entries: self.entries.len(),
             };
         };
         let tied: Vec<AgentId> = ranked
@@ -380,7 +443,61 @@ mod tests {
             validation: format!("v-{agent}"),
             score,
             submitted_at: now() + chrono::Duration::seconds(seconds),
+            judged: None,
         }
+    }
+
+    /// A judged entry waits, unranked, until its answer is in; the answer
+    /// lands only on the submission it was for, once, while the contest
+    /// is open; then it ranks like any number, higher first.
+    #[test]
+    fn a_judged_entry_ranks_only_once_its_answer_is_in() {
+        let mut contest = contest(Direction::Higher, 0.25);
+        contest.metric.measure = Measure::Judged {
+            rubric: vec!["broken".into(), "works".into(), "clean and complete".into()],
+        };
+        contest.submit(entry("a", 0.0, 0), true).unwrap();
+        contest.submit(entry("b", 0.0, 1), true).unwrap();
+        assert!(contest.ranked().is_empty(), "nothing judged yet");
+        assert!(matches!(contest.standing(), Standing::Open { .. }));
+        let judged = |confidence| Judged {
+            confidence,
+            model: "jev-1.13.0".into(),
+            at: now(),
+        };
+        assert!(
+            !contest.judge(&AgentId::from("a"), "v-other", 1.0, judged(0.9)),
+            "another submission"
+        );
+        assert!(
+            !contest.judge(&AgentId::from("a"), "v-a", f64::NAN, judged(0.9)),
+            "not a number"
+        );
+        assert!(contest.judge(&AgentId::from("a"), "v-a", 1.2, judged(0.8)));
+        assert!(
+            !contest.judge(&AgentId::from("a"), "v-a", 2.0, judged(0.8)),
+            "answered once"
+        );
+        let Standing::Leader {
+            agent,
+            score,
+            margin,
+        } = contest.standing()
+        else {
+            panic!("one judged entry leads")
+        };
+        assert_eq!((agent.as_str(), score, margin), ("a", 1.2, None));
+        assert!(contest.judge(&AgentId::from("b"), "v-b", 1.9, judged(0.7)));
+        let ranked: Vec<&str> = contest.ranked().iter().map(|e| e.agent.as_str()).collect();
+        assert_eq!(ranked, ["b", "a"], "higher is better");
+        contest.closed_at = Some(now());
+        contest.entries[0].judged = None;
+        assert!(
+            !contest.judge(&AgentId::from("a"), "v-a", 2.0, judged(0.8)),
+            "closed"
+        );
+        let json = serde_json::to_string(&contest).unwrap();
+        assert_eq!(serde_json::from_str::<Contest>(&json).unwrap(), contest);
     }
 
     #[test]

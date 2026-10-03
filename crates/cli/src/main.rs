@@ -1279,10 +1279,16 @@ enum ContestCommand {
         /// What everyone is attempting.
         task: String,
         /// What is compared: `seconds` (how long each entry's own
-        /// validation took, as the daemon timed it — nobody reports it)
-        /// or any other name, which entrants report themselves.
+        /// validation took, as the daemon timed it — nobody reports it),
+        /// `judged` (where the opt-in judge places each entry's change on
+        /// the `--level`s; higher is better), or any other name, which
+        /// entrants report themselves.
         #[arg(long, default_value = "seconds")]
         measure: String,
+        /// For `--measure judged`: one level of the rubric, worst first,
+        /// in words — repeat it two to ten times.
+        #[arg(long = "level", value_name = "TEXT")]
+        levels: Vec<String>,
         /// More is better, rather than less.
         #[arg(long)]
         higher_is_better: bool,
@@ -3376,6 +3382,7 @@ async fn contest(client: &Client, command: ContestCommand) -> Result<()> {
         agent,
         task,
         measure,
+        levels,
         higher_is_better,
         noise,
         entrant,
@@ -3383,6 +3390,10 @@ async fn contest(client: &Client, command: ContestCommand) -> Result<()> {
         no_channel,
     } = command
     {
+        let judged = measure == "judged";
+        if judged != !levels.is_empty() {
+            bail!("--level goes with --measure judged, and a judged contest needs its levels");
+        }
         let request = Request::ContestOpen {
             agent,
             project: project.as_deref().map(project_selector),
@@ -3392,11 +3403,13 @@ async fn contest(client: &Client, command: ContestCommand) -> Result<()> {
                 // the default: a number nobody can inflate.
                 measure: match measure.as_str() {
                     "seconds" | "validation_seconds" => Measure::ValidationSeconds,
+                    "judged" => Measure::Judged { rubric: levels },
                     name => Measure::Reported {
                         name: name.to_owned(),
                     },
                 },
-                direction: if higher_is_better {
+                // A judged level runs worst to best.
+                direction: if higher_is_better || judged {
                     Direction::Higher
                 } else {
                     Direction::Lower
@@ -3479,12 +3492,33 @@ async fn print_contest(client: &Client, contest: &Contest, standing: &Standing) 
         contest.metric.noise,
         if contest.metric.measure.measured() {
             " — measured by the daemon, not reported"
+        } else if contest.metric.measure.is_judged() {
+            " — placed by the opt-in judge, so review is the check"
         } else {
             " — reported by entrants, so review is the check"
         }
     );
+    if let Measure::Judged { rubric } = &contest.metric.measure {
+        for (level, words) in rubric.iter().enumerate() {
+            println!("  {level}  {words}");
+        }
+        if let Some(base) = &contest.base {
+            println!("each change read against {}", &base[..base.len().min(7)]);
+        }
+    }
     if let Some(channel) = &contest.channel {
         println!("channel: {channel}");
+    }
+    let waiting = contest
+        .entries
+        .iter()
+        .filter(|entry| !contest.is_scored(entry))
+        .count();
+    if waiting > 0 {
+        println!(
+            "{waiting} entr{} waiting for the judge",
+            if waiting == 1 { "y" } else { "ies" }
+        );
     }
     let ranked = contest.ranked();
     if ranked.is_empty() {
@@ -3501,7 +3535,14 @@ async fn print_contest(client: &Client, contest: &Contest, standing: &Standing) 
                 vec![
                     (place + 1).to_string(),
                     named(&names, &entry.agent),
-                    format!("{}", entry.score),
+                    match &entry.judged {
+                        Some(judged) => format!(
+                            "{:.2} ({}% confident)",
+                            entry.score,
+                            agentdocker_core::judgment::percent(judged.confidence)
+                        ),
+                        None => format!("{}", entry.score),
+                    },
                     entry
                         .head
                         .as_deref()

@@ -202,6 +202,7 @@ fn repair_keeps_fifo_payloads_history_and_before_images() {
             head_before: None,
             head_after: None,
             changes: None,
+            check: None,
         };
         store.append_journal(&entry).unwrap();
         store
@@ -622,6 +623,7 @@ fn repair_moves_typed_protection_and_membership_and_refuses_self_review() {
         updated_at: now(),
         archived_at: Some(now()),
         links: Vec::new(),
+        acceptance_check: None,
     };
     store.put_document("task", card.id.as_str(), &card).unwrap();
     let lease = Lease {
@@ -1140,6 +1142,7 @@ fn resumed_cards_keep_their_work_without_inventing_a_hold() {
         updated_at: now(),
         archived_at: None,
         links: Vec::new(),
+        acceptance_check: None,
     };
     store.put_document("task", task.id.as_str(), &task).unwrap();
     let lease = Lease {

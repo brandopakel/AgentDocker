@@ -343,6 +343,12 @@ impl App {
                 .align_y(Center),
             );
         }
+        // The opt-in judge found criteria nothing in the holder's journal
+        // reports done: said on the card, never acted on.
+        let unshown = unshown_done(task);
+        if let Some(phrase) = &unshown {
+            head = head.push(status_word(phrase, c.amber, c));
+        }
         // The control's name says the state too, so a screen reader — and
         // the smoke — hear who holds the card without opening it.
         let label = match &holder {
@@ -355,6 +361,10 @@ impl App {
             }
             None if task.column == Column::Ready => format!("{} — unassigned", task.title),
             None => task.title.clone(),
+        };
+        let label = match &unshown {
+            Some(phrase) => format!("{label} — {phrase}"),
+            None => label,
         };
         let in_place = open && inline_detail;
         let message = Message::TaskOpen(id.clone());
@@ -411,18 +421,42 @@ impl App {
             .into()
     }
 
-    /// When the task counts as done, or that nothing says.
+    /// When the task counts as done, or that nothing says — and, after a
+    /// move to Review or Done, which criteria nothing in the holder's
+    /// journal reports done, as the opt-in judge read it.
     fn acceptance(&self, task: &Task, c: Colors) -> Element<'_, Message> {
         let acceptance = if task.acceptance.is_empty() {
             "Nothing says when this is done; the agent decides for itself.".to_owned()
         } else {
             format!("Done when: {}", task.acceptance)
         };
-        text(acceptance)
-            .size(13)
-            .color(c.muted)
-            .wrapping(iced::widget::text::Wrapping::Word)
-            .into()
+        let mut said = column![
+            text(acceptance)
+                .size(13)
+                .color(c.muted)
+                .wrapping(iced::widget::text::Wrapping::Word)
+        ]
+        .spacing(4);
+        if let Some(check) = &task.acceptance_check {
+            let unmet: Vec<&str> = check.unmet().map(|c| c.text.as_str()).collect();
+            if !unmet.is_empty() {
+                let reading = if check.evidence == 0 {
+                    "Nothing in the holder's journal since it was filed".to_owned()
+                } else {
+                    format!(
+                        "Not reported done in the holder's journal ({} entries read)",
+                        check.evidence
+                    )
+                };
+                said = said.push(
+                    text(format!("{reading}: {}", unmet.join("; ")))
+                        .size(13)
+                        .color(c.amber)
+                        .wrapping(iced::widget::text::Wrapping::Word),
+                );
+            }
+        }
+        said.into()
     }
 
     /// The open card beneath the lanes: where it is, its title, what done
@@ -551,4 +585,13 @@ impl App {
         }
         rows.into()
     }
+}
+
+/// "2 of 5 not shown done" when the judge's reading of the holder's
+/// journal left criteria unreported; nothing when there is no reading or
+/// every criterion was reported.
+fn unshown_done(task: &Task) -> Option<String> {
+    let check = task.acceptance_check.as_ref()?;
+    let unmet = check.unmet().count();
+    (unmet > 0).then(|| format!("{unmet} of {} not shown done", check.criteria.len()))
 }

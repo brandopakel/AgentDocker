@@ -1015,6 +1015,25 @@ impl App {
                     .color(c.text),
             );
         }
+        // The opt-in judge read a browser agent's message as trying to
+        // steer its reader: said under every such message, header or not,
+        // with what was done about it, which is nothing.
+        if !message.flagged.is_empty() {
+            words = words.push(
+                text(format!(
+                    "flagged: {} · delivered as sent",
+                    message
+                        .flagged
+                        .iter()
+                        .map(|hazard| hazard.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+                .size(11.5)
+                .font(weight(iced::font::Weight::Medium))
+                .color(c.amber),
+            );
+        }
         if !message.envelope.links.is_empty() {
             words = words.push(super::view::links(&message.envelope.links, c));
         }
@@ -2731,6 +2750,7 @@ mod tests {
                 envelope
             },
             replies: 0,
+            flagged: Vec::new(),
         };
         let first = message("agent-a", "chat", 0);
         assert!(App::starts_run(None, &first, false));

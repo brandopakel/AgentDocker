@@ -612,6 +612,30 @@ impl App {
                 ),
             ));
         }
+        // A question asked in prose, as the opt-in judge read it: worded
+        // as the reading it is, and gone once the session works again.
+        for agent in self
+            .agents
+            .iter()
+            .filter(|a| self.asked_in_prose(a) && self.has_project(a.project.as_ref()))
+        {
+            let name = self.display_name(agent);
+            let what = "looks to be waiting on you".to_owned();
+            rows.push(waiting_row(
+                spoken(
+                    format!("needs-you-line-{}", agent.id),
+                    format!("{name} {what}"),
+                    waiting_words(name, None, what, narrow, c),
+                ),
+                None,
+                compact(
+                    format!("needs-you-asked-{}", agent.id),
+                    "Open",
+                    Some(Message::OpenSession(agent.id.to_string())),
+                    Kind::Secondary,
+                ),
+            ));
+        }
         // Nobody waiting: on a fresh install the card turns into the two
         // things that get a person started, then disappears for good.
         // Finished sessions are not in it; they are not asking for anything

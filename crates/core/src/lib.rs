@@ -21,6 +21,7 @@ pub use input::{
     ReceivedInput, controller_backoff,
 };
 pub mod journal;
+pub mod judgment;
 pub mod lease;
 pub mod link;
 pub mod message;
@@ -37,7 +38,8 @@ pub use provider::{
 pub mod registry;
 
 pub use agent::{
-    AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, RestartPolicy, VcsState,
+    AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, RestartPolicy, TurnQuestion,
+    VcsState,
 };
 pub use change::{Attribution, Change, ChangeKind, Overlap, OverlapParty, overlaps};
 pub use event::{Event, EventCursor, EventKind, WaitOutcome};

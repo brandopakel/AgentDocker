@@ -3204,6 +3204,7 @@ mod tests {
             updated_at: Utc::now(),
             archived_at: None,
             links: Vec::new(),
+            acceptance_check: None,
         };
         app.request_tasks();
         let (ask, _, _) = board_asks(&requests).pop().expect("asked");
@@ -3331,6 +3332,7 @@ mod tests {
                     updated_at: Utc::now(),
                     archived_at: None,
                     links: Vec::new(),
+                    acceptance_check: None,
                 })
                 .collect::<Vec<_>>()
         };
@@ -5587,6 +5589,7 @@ mod tests {
                     conversation: agentdocker_core::ConversationId::from(conversation),
                     envelope,
                     replies: 0,
+                    flagged: Vec::new(),
                 }],
             ))
             .unwrap();

@@ -26,7 +26,7 @@ use std::io::Read;
 use std::os::unix::process::parent_id;
 use std::path::{Path, PathBuf};
 
-use agentdocker_core::journal::transcript_summary;
+use agentdocker_core::journal::{transcript_closing, transcript_summary};
 use agentdocker_core::{
     AgentRecord, AgentSpec, DigestRequest, Envelope, ErrorCode, LeaseMode, MessageId, Request,
     Response, SummarySource,
@@ -755,12 +755,11 @@ pub async fn claude_code<B: Backend>(
             let Some(me) = session_agent(backend, input).await? else {
                 return Ok(None);
             };
-            // What the model last said is what the release entry quotes.
-            let summary = input
-                .transcript_path
-                .as_deref()
-                .and_then(transcript_tail)
-                .and_then(|tail| transcript_summary(&tail));
+            // What the model last said is what the release entry quotes,
+            // and how it ended is what the opt-in judge may read.
+            let tail = input.transcript_path.as_deref().and_then(transcript_tail);
+            let summary = tail.as_deref().and_then(transcript_summary);
+            let closing = tail.as_deref().and_then(transcript_closing);
             // The edit leases this adapter took during the turn go back;
             // a worktree, a branch or a build campaign the agent claimed
             // itself is held until it says otherwise or the TTL ends. A
@@ -775,10 +774,12 @@ pub async fn claude_code<B: Backend>(
                 return Ok(None);
             }
             if opts.no_wake || input.stop_hook_active {
+                offer_closing(backend, &me, closing).await;
                 return Ok(None);
             }
             let inbox = drain_inbox(backend, &me).await?;
             if inbox.is_empty() {
+                offer_closing(backend, &me, closing).await;
                 return Ok(None);
             }
             let agents = all_agents(backend).await?;
@@ -804,6 +805,20 @@ pub async fn claude_code<B: Backend>(
             Ok(None)
         }
         _ => Ok(None),
+    }
+}
+
+/// Offer how a finished turn ended to the daemon's opt-in judge. The
+/// daemon reads it only while its `questions` judgment runs and keeps
+/// none of it; an older daemon refuses the request, which changes nothing.
+async fn offer_closing<B: Backend>(backend: &B, me: &AgentRecord, closing: Option<String>) {
+    if let Some(closing) = closing {
+        let _ = backend
+            .call(Request::TurnEnded {
+                agent: me.id.to_string(),
+                closing,
+            })
+            .await;
     }
 }
 
@@ -2497,8 +2512,18 @@ mod tests {
             "{:?}",
             backend.requests()[1]
         );
+        // How the turn ended goes to the daemon's opt-in judge, whole.
+        assert!(
+            backend.requests().iter().any(|r| matches!(
+                r,
+                Request::TurnEnded { closing, .. } if closing == "Rewrote the tokenizer.\n\nMore later."
+            )),
+            "{:?}",
+            backend.requests()
+        );
 
-        // No transcript, or an unreadable one: a plain release.
+        // No transcript, or an unreadable one: a plain release, and
+        // nothing offered.
         let backend = Mock::with(vec![
             Response::Agent { agent: me.clone() },
             Response::Leases { leases: vec![] },
@@ -2513,6 +2538,12 @@ mod tests {
                 ..
             }
         ));
+        assert!(
+            !backend
+                .requests()
+                .iter()
+                .any(|r| matches!(r, Request::TurnEnded { .. }))
+        );
     }
 
     /// A session whose agent is named by the other half is still found.

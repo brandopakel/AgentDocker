@@ -157,6 +157,10 @@ pub struct ArchivedMessage {
     /// How many replies this message has as a thread root, when asked for.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub replies: u64,
+    /// What the opt-in judge read this message as trying to make its
+    /// reader do. Delivered as sent all the same; a flag, not a filter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flagged: Vec<crate::judgment::Hazard>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -382,12 +386,14 @@ mod tests {
             conversation: ConversationId::from("everyone:p"),
             envelope: envelope("aaa", Destination::Project(ProjectId::from("p"))),
             replies: 0,
+            flagged: Vec::new(),
         };
         let mut reply = ArchivedMessage {
             seq: 2,
             conversation: ConversationId::from("everyone:p"),
             envelope: envelope("bbb", Destination::Project(ProjectId::from("p"))),
             replies: 0,
+            flagged: Vec::new(),
         };
         reply.envelope.reply_to = Some(root.envelope.id.clone());
         assert!(threads_under(&reply, Some(&root)));

@@ -212,6 +212,8 @@ const JOURNAL_FTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS journal_fts USING 
 const MESSAGES_FTS: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(line, content='', contentless_delete=1)";
 /// Archived messages kept per conversation, whatever the retention window.
 pub const CONVERSATION_CAP: usize = 5_000;
+/// The document kind a judged message's flag is kept under, by message id.
+const MESSAGE_FLAG: &str = "message_flag";
 
 pub struct Store {
     conn: Connection,
@@ -1407,6 +1409,7 @@ impl Store {
         let conversation: String = row.get(1)?;
         let json: String = row.get(2)?;
         let replies: i64 = row.get(3)?;
+        let flagged: Option<String> = row.get(4)?;
         let envelope: Envelope = serde_json::from_str(&json).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
         })?;
@@ -1415,11 +1418,17 @@ impl Store {
             conversation: ConversationId::from(conversation),
             envelope,
             replies: u64::try_from(replies).unwrap_or_default(),
+            // A flag a newer build wrote in words this one does not know
+            // is no flag here, rather than a message that cannot be read.
+            flagged: flagged
+                .and_then(|json| serde_json::from_str(&json).ok())
+                .unwrap_or_default(),
         })
     }
 
     const ARCHIVED_COLUMNS: &'static str = "m.seq, m.conversation, m.json, \
-        (SELECT COUNT(*) FROM messages r WHERE r.reply_to = m.message_id AND r.conversation = m.conversation)";
+        (SELECT COUNT(*) FROM messages r WHERE r.reply_to = m.message_id AND r.conversation = m.conversation), \
+        (SELECT d.json FROM documents d WHERE d.kind = 'message_flag' AND d.id = m.message_id)";
 
     /// The newest `limit` messages of a conversation before `before_seq`,
     /// oldest first, each root with its reply count.
@@ -1824,6 +1833,10 @@ impl Store {
     fn delete_archived(&self, seqs: &[i64]) -> Result<usize> {
         let mut removed = 0;
         for seq in seqs {
+            self.conn.execute(
+                "DELETE FROM documents WHERE kind = ?1 AND id = (SELECT message_id FROM messages WHERE seq = ?2)",
+                params![MESSAGE_FLAG, seq],
+            )?;
             removed += self
                 .conn
                 .execute("DELETE FROM messages WHERE seq = ?1", [seq])?;
@@ -2078,6 +2091,63 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// One journal entry by its project and sequence.
+    pub fn journal_entry(&self, project: &ProjectId, seq: u64) -> Result<Option<JournalEntry>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT json FROM journal WHERE project = ?1 AND seq = ?2",
+                params![project.as_str(), i64::try_from(seq).unwrap_or(i64::MAX)],
+                |row| row.get(0),
+            )
+            .optional()?;
+        json.map(|json| serde_json::from_str(&json).map_err(Into::into))
+            .transpose()
+    }
+
+    /// Rewrite an entry the judge checked — its summary, its search row
+    /// and its record — with the replay event that says so, together.
+    pub fn revise_journal_with_event(&self, entry: &JournalEntry, event: &Event) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let id: i64 = self.conn.query_row(
+            "SELECT id FROM journal WHERE project = ?1 AND seq = ?2",
+            params![
+                entry.project.as_str(),
+                i64::try_from(entry.seq).unwrap_or(i64::MAX)
+            ],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "UPDATE journal SET summary = ?1, json = ?2 WHERE id = ?3",
+            params![entry.summary, serde_json::to_string(entry)?, id],
+        )?;
+        if self.fts {
+            self.conn
+                .execute("DELETE FROM journal_fts WHERE rowid = ?1", [id])?;
+            self.conn.execute(
+                "INSERT INTO journal_fts (rowid, summary) VALUES (?1, ?2)",
+                params![id, entry.summary],
+            )?;
+        } else {
+            self.conn
+                .execute("DELETE FROM meta WHERE key='journal_fts_complete'", [])?;
+        }
+        self.append_event(event)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Record what the judge flagged on an archived message, with the
+    /// event that says so. The flag goes when the message does.
+    pub fn flag_message_with_event(
+        &self,
+        message: &MessageId,
+        hazards: &[agentdocker_core::judgment::Hazard],
+        event: &Event,
+    ) -> Result<()> {
+        self.put_document_with_event(MESSAGE_FLAG, message.as_str(), hazards, event)
     }
 
     /// Journal and ordered replay event must survive or roll back together.
@@ -4118,6 +4188,7 @@ mod tests {
             head_before: None,
             head_after: None,
             changes: None,
+            check: None,
         };
         assert_eq!(store.max_journal_seq(&project).unwrap(), 0);
 
@@ -4281,6 +4352,7 @@ mod tests {
             head_before: None,
             head_after: None,
             changes: None,
+            check: None,
         };
 
         // A database from before the column existed: the blob is the only

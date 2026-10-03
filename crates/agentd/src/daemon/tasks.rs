@@ -8,7 +8,7 @@ use agentdocker_core::task::{Task, TaskError};
 use agentdocker_core::{Column, HUMAN, LeaseMode, ResourceKey};
 use chrono::DateTime;
 
-const DOCUMENT: &str = "task";
+pub(super) const DOCUMENT: &str = "task";
 
 /// How long a pull holds a card without a word from its holder. Long
 /// enough for a working session, short enough that a card whose agent
