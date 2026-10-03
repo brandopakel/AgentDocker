@@ -66,8 +66,13 @@ outer/helper agent is created, hook output has no error, and queue/draft/restart
 checks and cleanup pass. A mistakenly overlapping targeted build is disclosed
 in the retained evidence. Full gate, Release-binary and Windows hook acceptance
 remain pending; the Windows receiver fixture now also checks actual
-PostToolUse identity and unchanged hook configuration. Active hook-offer delivery
-is not established by contact alone.
+PostToolUse identity and unchanged hook configuration. A stronger Mac Debug
+trial passed 17 checks, including a busy queued message delivered through the
+actual hook in the existing turn with an exact receipt and no extra user turn.
+Windows `b41faa01` passed 13 checks before hook failure: the Python capture
+wrapper corrupted the non-ASCII checkout path while relaying text between
+different encodings. The wrapper now relays bytes unchanged and checks the
+reported checkout; the failed trial is retained, and native rerun is pending.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its

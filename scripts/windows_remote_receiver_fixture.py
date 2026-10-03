@@ -123,14 +123,16 @@ class Receiver:
     def configure_hook(self):
         runner = self.root / 'capture_hook.py'
         self.hook_log = self.out / 'hooks.jsonl'
+        # Relay provider JSON bytes unchanged: Windows Python's stream encoding
+        # and subprocess locale can differ, corrupting non-ASCII checkout paths.
         runner.write_text('import sys,subprocess,json,os\n'
-            + 'raw=sys.stdin.read()\n'
+            + 'raw=sys.stdin.buffer.read()\n'
             + 'p=subprocess.run(' + repr([str(self.cli), '--socket', self.socket, 'hook', 'codex'])
-            + ',input=raw,text=True,capture_output=True,timeout=8)\n'
+            + ',input=raw,capture_output=True,timeout=8)\n'
             + 'with open(' + repr(str(self.hook_log)) + ',"a",encoding="utf-8") as f: '
-            + 'f.write(json.dumps({"input":json.loads(raw),"stdout":p.stdout,"stderr":p.stderr,'
+            + 'f.write(json.dumps({"input":json.loads(raw),"stdout":p.stdout.decode("utf-8"),"stderr":p.stderr.decode("utf-8"),'
             + '"code":p.returncode,"parent":os.getppid()})+"\\n")\n'
-            + 'print(p.stdout,end="")\nsys.exit(p.returncode)\n', encoding='utf-8')
+            + 'sys.stdout.buffer.write(p.stdout)\nsys.exit(p.returncode)\n', encoding='utf-8')
         self.hooks_config = json.dumps({'hooks': {'PostToolUse': [{'hooks': [{'type': 'command',
             'command': subprocess.list2cmdline([sys.executable, str(runner)])}]}]}})
         (self.profile / 'hooks.json').write_text(self.hooks_config, encoding='utf-8')
@@ -141,6 +143,7 @@ class Receiver:
         self.report['hook_calls'] = calls
         assert calls and all(h['code'] == 0 and not h['stderr'] and h['input']['session_id'] == thread
                              for h in calls), 'native hook returned an error or different session'
+        assert all(os.path.samefile(h['input']['cwd'], self.repo) for h in calls)
         agent = self.rpc({'op': 'inspect', 'agent': self.agent})['agent']
         assert agent['adapter_contacts']['hooks']['process_started_at'] == agent['process_started_at']
         agents = self.rpc({'op': 'list', 'all': True})['agents']
