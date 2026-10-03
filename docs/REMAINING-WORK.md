@@ -21,7 +21,12 @@ retirement isolation and canonical daemon selection passed the exact-head
 integrated `22396f38` repeated those checks and both full gates. A subsequent
 review correction reports extraction cleanup failure separately from successful
 activation, including the retained path in the CLI and app. Its native held-handle
-regression and full gates passed on `f155249d`. Final integration/review, hosted
+regression and full gates passed on `f155249d`. Integrated `c9980fa6` passed
+the native installer and both service lifecycles with verified hashes and clean
+cleanup. Review found one remaining test assumption: a budget stop may precede
+any cursor progress. Its continuation now allows bounded empty passes while
+retaining exact final records, gaps and cursor checks; production limits are
+unchanged. Final integration/review, hosted
 Windows publication, Start menu/PATH,
 physical and actual-provider acceptance, and login/reboot remain. These trials
 do not update the published beta.4 package or prove a hosted Windows upgrade. See
