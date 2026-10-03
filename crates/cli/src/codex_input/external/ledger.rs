@@ -234,6 +234,15 @@ impl Ledger {
         Ok(ledger)
     }
 
+    /// Fresh admission is one-way: a prepared, completed, failed or manually
+    /// disposed input can never acquire another empty-history allowance.
+    pub fn pristine(&self) -> bool {
+        self.record.attempt.is_none()
+            && self.record.completed.is_empty()
+            && self.record.failed_turn.is_none()
+            && self.record.manual_reads.is_empty()
+    }
+
     pub fn record(&self) -> &Record {
         &self.record
     }
@@ -661,6 +670,38 @@ impl Record {
 mod tests {
     use super::*;
     use agentdocker_core::{Destination, ProcessIdentity};
+
+    #[test]
+    fn first_input_admission_is_spent_before_submission_and_survives_restart() {
+        let home = tempfile::tempdir().unwrap();
+        let bound = binding(home.path());
+        let envelope = Envelope::new(
+            "peer",
+            Destination::parse("agent"),
+            "chat",
+            serde_json::json!({"text":"first input"}),
+            None,
+            chrono::Utc::now(),
+        );
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
+        assert!(ledger.pristine());
+        ledger.prepare(&envelope, None).unwrap();
+        assert!(!ledger.pristine());
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
+        assert!(!ledger.pristine());
+        ledger
+            .received(Receipt {
+                thread: "thread".into(),
+                turn: "turn".into(),
+                item: "item".into(),
+            })
+            .unwrap();
+        ledger.acknowledge().unwrap();
+        assert!(!ledger.pristine());
+        drop(ledger);
+        assert!(!Ledger::open(home.path(), bound, None).unwrap().pristine());
+    }
 
     #[test]
     fn publication_preserves_a_held_readback_and_exposes_only_complete_records() {

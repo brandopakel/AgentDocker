@@ -53,6 +53,8 @@ struct Record {
     port: u16,
     token_file: PathBuf,
     token_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    birth: Option<super::birth::Witness>,
 }
 
 fn read(path: &Path) -> Result<(Record, String)> {
@@ -79,8 +81,11 @@ fn read(path: &Path) -> Result<(Record, String)> {
 
 fn matches_binding(record: &Record, binding: &Binding) -> Result<()> {
     ensure!(
-        record.version == 1
-            && record.provider.valid()
+        (match (record.version, &record.birth) {
+            (1, None) => true,
+            (2, Some(birth)) => birth.valid(&record.provider, &record.server),
+            _ => false,
+        }) && record.provider.valid()
             && record.server.pid > 0
             && record.provider == binding.provider
             && record.cwd == binding.cwd
@@ -197,6 +202,55 @@ pub(super) async fn connect(descriptor: &Descriptor, binding: &Binding) -> Resul
     // A slow connection must not accept a generation which exited meanwhile.
     verify(&descriptor.record, &record, binding)?;
     Ok(provider)
+}
+
+/// Establish an initial anchor from an owned birth receipt, without converting
+/// a rejected history request into empty history. Caller must prove its durable
+/// ledger has never attempted or disposed of input. Ordinary v1 records cannot
+/// use this path; after any attempt, all receipt/recovery reads stay mandatory.
+pub(super) async fn fresh_anchor(provider: &mut Provider, binding: &Binding) -> Result<bool> {
+    let Some(descriptor) = &binding.remote else {
+        return Ok(false);
+    };
+    ensure!(descriptor.valid(), "invalid native server descriptor");
+    let (record, digest) = read(&descriptor.record)?;
+    ensure!(
+        digest == descriptor.sha256,
+        "native server record changed after binding"
+    );
+    verify(&descriptor.record, &record, binding)?;
+    let Some(birth) = &record.birth else {
+        return Ok(false);
+    };
+    if !birth.owns_children(&record.provider, &record.server) {
+        return Ok(false);
+    }
+    let value = provider
+        .request(
+            "thread/read",
+            serde_json::json!({
+                "threadId":binding.provider.session,"includeTurns":false
+            }),
+        )
+        .await?;
+    if !birth.matches_empty(&value["thread"], &binding.provider, &binding.cwd) {
+        return Ok(false);
+    }
+    let queue = provider
+        .request(
+            "thread/queue/list",
+            serde_json::json!({
+                "threadId":binding.provider.session,"limit":1
+            }),
+        )
+        .await?;
+    let empty = queue["data"].as_array().is_some_and(Vec::is_empty)
+        && queue
+            .get("nextCursor")
+            .is_some_and(serde_json::Value::is_null);
+    // Recheck the immutable record's generations after asynchronous reads.
+    verify(&descriptor.record, &record, binding)?;
+    Ok(empty && birth.owns_children(&record.provider, &record.server))
 }
 
 /// Resolve MCP identity only through an already accepted, immutable receiver
@@ -347,8 +401,25 @@ mod tests {
             port: 1234,
             token_file: root.join("token"),
             token_sha256: "a".repeat(64),
+            birth: None,
         };
         matches_binding(&record, &binding).unwrap();
+        let mut owned: Record =
+            serde_json::from_value(serde_json::to_value(&record).unwrap()).unwrap();
+        owned.version = 2;
+        assert!(matches_binding(&owned, &binding).is_err());
+        owned.birth = Some(super::super::birth::Witness {
+            launcher: ProcessIdentity {
+                pid: 3,
+                started_at: provider.process.started_at - chrono::Duration::seconds(1),
+            },
+            created_at: provider.process.started_at.timestamp(),
+        });
+        matches_binding(&owned, &binding).unwrap();
+        owned.version = 1;
+        assert!(matches_binding(&owned, &binding).is_err());
+        owned.version = 3;
+        assert!(matches_binding(&owned, &binding).is_err());
         for kind in 0..7 {
             let mut r: Record =
                 serde_json::from_value(serde_json::to_value(&record).unwrap()).unwrap();

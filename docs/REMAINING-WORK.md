@@ -86,7 +86,10 @@ no forced cleanup. Windows `3ac2c7f0` then passed 19 native checks, including
 the busy message offered once through the held PostToolUse hook and receipted
 in the first queued turn, without an extra user turn. Three original receipts,
 draft, replacement and private configuration were preserved. Automatic
-no-prompt startup remains open.
+no-prompt startup remains open. A private version-2 owned-birth receipt now
+allows initial admission only for the unchanged new thread and a pristine
+ledger; no provider history rejection is reinterpreted. Its actual-binary
+acceptance and automatic launcher remain pending.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its

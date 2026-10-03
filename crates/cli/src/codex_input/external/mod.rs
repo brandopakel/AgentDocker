@@ -1,6 +1,7 @@
 //! Feed an existing Codex CLI through its native queue without resuming it.
 mod answers;
 mod availability;
+mod birth;
 mod bootstrap;
 mod history;
 mod hook_receipts;
@@ -198,6 +199,14 @@ async fn acknowledge(client: &Client, ledger: &mut Ledger) -> Result<()> {
 }
 
 async fn verify_provider(provider: &mut Provider, binding: &Binding) -> Result<()> {
+    verify_provider_with_birth(provider, binding, false).await
+}
+
+async fn verify_provider_with_birth(
+    provider: &mut Provider,
+    binding: &Binding,
+    pristine: bool,
+) -> Result<()> {
     let initialized = provider.initialize().await?;
     if binding.remote.is_some() {
         ensure!(
@@ -232,7 +241,9 @@ async fn verify_provider(provider: &mut Provider, binding: &Binding) -> Result<(
         .context("this Codex version does not expose the native input queue")?;
     // These are read-only calls. In particular, never thread/resume or turn/start:
     // the original TUI owns its lifecycle, draft, tools and permission prompts.
-    receipts::latest_item(provider, &binding.provider.session).await?;
+    if !(pristine && remote::fresh_anchor(provider, binding).await?) {
+        receipts::latest_item(provider, &binding.provider.session).await?;
+    }
     Ok(())
 }
 
@@ -317,7 +328,9 @@ async fn service(
                 );
             }
         } else {
-            if !availability::check(client, provider, ledger, &agent).await? {
+            let fresh = ledger.pristine()
+                && remote::fresh_anchor(provider, &ledger.record().binding).await?;
+            if !fresh && !availability::check(client, provider, ledger, &agent).await? {
                 refresh(client, ledger, &mut last_refresh).await?;
                 wait_for_hook(hooks, resolve, client, provider, ledger, &origin).await?;
                 continue;
@@ -357,7 +370,11 @@ async fn service(
                     !uncertain.contains(&envelope.id),
                     "a legacy reader already offered this message; reconcile that receipt before native delivery"
                 );
-                let anchor = receipts::latest_item(provider, &thread).await?;
+                let anchor = if fresh {
+                    None
+                } else {
+                    receipts::latest_item(provider, &thread).await?
+                };
                 ledger.prepare(envelope, anchor)?;
                 let attempt = ledger.record().attempt.as_ref().expect("prepared input");
                 let value = provider.request("thread/queue/add", json!({"threadId":thread,
@@ -466,7 +483,14 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
     // Prove the read-only native queue/history APIs before suppressing legacy
     // delivery. A missing API on an unbound session leaves hooks working. An
     // already bound session retains its queue and reports the incompatibility.
-    if let Err(error) = preflight(&binding).await {
+    let checked = async {
+        let mut provider = connect_provider(&binding).await?;
+        let checked = verify_provider_with_birth(&mut provider, &binding, ledger.pristine()).await;
+        let stopped = provider.shutdown().await;
+        checked.and(stopped)
+    }
+    .await;
+    if let Err(error) = checked {
         if agent.input_binding.is_some() {
             let _ = report(&client, &ledger, crate::input_status::paused(&error)).await;
         }
@@ -514,7 +538,7 @@ pub async fn run(client: Client, socket: Option<PathBuf>, args: Args) -> Result<
         let result = async {
             let mut provider = connect_provider(&binding).await?;
             let result = async {
-                verify_provider(&mut provider, &binding).await?;
+                verify_provider_with_birth(&mut provider, &binding, ledger.pristine()).await?;
                 service(&client, &mut provider, &mut ledger, &hooks, &resolve).await
             }
             .await;

@@ -939,3 +939,14 @@ Binding after acceptance avoids an additional pre-submission failure window:
 an unavailable daemon cannot make this accounting step strand an input that
 Codex never received. Existing receipt recovery still prevents replay; the
 collector reconciles samples scanned before the label becomes available.
+
+The native shared-server candidate also accepts a private version-2 birth receipt
+for a launcher that observed an empty dedicated server and then its sole TUI
+creating a new thread. Initial history admission requires both children still
+belong to that exact live launcher, matching empty/idle root-thread metadata,
+an empty native queue and a receiver ledger with no attempted, completed, failed
+or manually disposed input. This establishes an initial anchor without treating
+any history error as empty history. Writing the first attempt permanently spends
+that allowance; receipt recovery, explicit resolution and upgrades keep normal
+history requirements. Version-1 records cannot opt into it. The owned launcher
+and native acceptance of this candidate remain unfinished.
