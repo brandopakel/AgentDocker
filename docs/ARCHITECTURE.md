@@ -1795,3 +1795,11 @@ Initial binding runs after the accepted `turn/start` response so daemon binding
 failure cannot introduce a new pre-submission uncertainty window. Samples
 collected before binding are reassigned by existing usage reconciliation;
 receipt recovery remains required for uncertain provider submissions.
+
+The Windows connector task supervises failed native exits with a two-second
+backoff and at most three retries; a run lasting ten minutes resets that budget.
+A zero exit stays stopped. Scheduler-level failure retries are disabled so they
+cannot multiply the local budget. Each child still verifies the exact owned
+action, nonce and current/previous receipt before serving; graceful stop targets
+the running child generation and then retires the owned task. The separate daemon
+service is unaffected.

@@ -109,9 +109,12 @@ fn desired(layout: &Layout, previous: Option<&Receipt>) -> Result<Definition> {
     // the task definition carries an AgentDocker agent identity or credentials.
     // Windows PowerShell 5.1 turns redirected native stderr into error
     // records. Stop would abort the task on the connector's normal banner.
-    // Keep setup strict, then use the native exit code at this boundary.
+    // Keep setup strict, then supervise only failed native exits here. Task
+    // Scheduler's RestartOnFailure did not recover the actual crash trial.
+    // A clean service shutdown stays stopped; three failures are retried, with
+    // a stable ten-minute run resetting the budget, as for the daemon service.
     let script = format!(
-        "$ErrorActionPreference='Stop';$env:AGENTDOCKER_HOME={};$env:AGENTDOCKER_NO_AUTOSTART='1';Remove-Item Env:AGENTDOCKER_AGENT_ID,Env:AGENTDOCKER_AGENT_NAME,Env:AGENTDOCKER_SOCKET,Env:AGENTDOCKER_TOKEN_FILE -ErrorAction SilentlyContinue; $ErrorActionPreference='Continue'; & {} --socket {} connector service-run --owner {} {args} *> {}; $code=$LASTEXITCODE; if($null -eq $code){{exit 1}}; exit $code",
+        "$ErrorActionPreference='Stop';$env:AGENTDOCKER_HOME={};$env:AGENTDOCKER_NO_AUTOSTART='1';Remove-Item Env:AGENTDOCKER_AGENT_ID,Env:AGENTDOCKER_AGENT_NAME,Env:AGENTDOCKER_SOCKET,Env:AGENTDOCKER_TOKEN_FILE -ErrorAction SilentlyContinue; $ErrorActionPreference='Continue'; $restarts=0; while($true){{$began=[DateTime]::UtcNow;$LASTEXITCODE=$null; & {} --socket {} connector service-run --owner {} {args} *> {}; $code=$LASTEXITCODE; if($null -eq $code){{exit 1}}; if($code -eq 0){{exit 0}}; if(([DateTime]::UtcNow-$began).TotalSeconds -ge 600){{$restarts=0}}; if($restarts -ge 3){{exit $code}}; $restarts++; Start-Sleep -Seconds 2}}",
         scheduler::quoted(&layout.home.to_string_lossy()),
         scheduler::quoted(&controller.to_string_lossy()),
         scheduler::quoted(&endpoint.to_string_lossy()),
@@ -133,7 +136,7 @@ fn desired(layout: &Layout, previous: Option<&Receipt>) -> Result<Definition> {
 fn install_script(record: &Receipt, only_missing: bool) -> String {
     let value = &record.current;
     let register = format!(
-        "$action=New-ScheduledTaskAction -Execute {} -Argument {}; $trigger=New-ScheduledTaskTrigger -AtLogOn -User $sid; $principal=New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Limited; $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1); Register-ScheduledTask -TaskPath $taskPath -TaskName {} -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description {} -Force | Out-Null;",
+        "$action=New-ScheduledTaskAction -Execute {} -Argument {}; $trigger=New-ScheduledTaskTrigger -AtLogOn -User $sid; $principal=New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Limited; $settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew; Register-ScheduledTask -TaskPath $taskPath -TaskName {} -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description {} -Force | Out-Null;",
         scheduler::quoted(&value.executable.to_string_lossy()),
         scheduler::quoted(&value.arguments),
         scheduler::quoted(&value.task),

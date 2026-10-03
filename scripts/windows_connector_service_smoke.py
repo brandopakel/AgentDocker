@@ -348,7 +348,7 @@ def main():
         second.wait(timeout=10)
         recovered, recovered_identity, _ = connector_ready(
             previous=replacement, expected_origin=origin + '/replacement', seconds=100)
-        step('Scheduler restarts a crashed connector without replacing its daemon or grants',
+        step('owned task supervisor restarts a crashed connector without replacing its daemon or grants',
              recovered_identity != replacement and ping()['pid'] == daemon_identity[0] and
              state_path.read_bytes() == state_bytes)
         run('connector', 'uninstall')

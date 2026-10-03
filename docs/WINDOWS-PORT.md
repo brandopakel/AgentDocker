@@ -648,3 +648,12 @@ it; Task Scheduler actions and ownership comparisons remain exact. On
 `1b240a64`, phase traces worked and daemon lifecycle/startup/HTTP passed, but
 repeated enablement exceeded the Windows command-line limit before PowerShell
 started. The corrected full connector lifecycle remains unaccepted.
+
+Native `3d8bd088` passed portable startup, daemon lifecycle and eleven connector
+checks through repeated enable, stale-stop refusal, changed/foreign ownership
+refusal and interrupted-registration repair. Scheduler failure settings did not
+restart the deliberately killed connector within 100 seconds; owned cleanup was
+unforced and complete. The task now retries failed native exits itself, after
+two seconds, at most three times; ten stable minutes reset the budget. A clean
+exit stays stopped, and Scheduler-level retries are disabled. Complete portable
+and installed connector lifecycle acceptance is still pending.

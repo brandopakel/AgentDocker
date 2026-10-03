@@ -42,7 +42,10 @@ do not exceed Windows' command-line limit. Opt-in phase traces distinguish
 process entry, task lookup and ownership; an earlier 20-second Scheduler timeout
 remains unexplained. Full local gates passed, but corrected portable/installed
 connector lifecycle, crash/reboot and actual browser/tunnel acceptance remain
-unverified. Exact failures and partial passes are retained in
+unverified. The `3d8bd088` native trial passed repeated enable, foreign ownership
+refusal and interrupted-install repair, then failed Scheduler crash recovery.
+The owned task now provides bounded failed-exit supervision with clean exits
+remaining stopped; corrected acceptance is pending. Exact failures and partial passes are retained in
 [the verification index](verification/INDEX.md).
 
 **The rollout is not complete.** The user requires macOS, Linux and native
