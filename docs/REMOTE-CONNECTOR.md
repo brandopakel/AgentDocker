@@ -250,7 +250,9 @@ the same lock while stopping the published generation. The runtime releases
 this lock before serving, so graceful shutdown does not wait on the remover.
 Source `a64fd575` passed the full local gate (1,511 Rust and 169 Python tests
 run, zero retries). Independent follow-up review requested status-output and
-help/documentation corrections, now applied. The native delayed-start fixture
-and final validation/review remain pending; earlier sequential passes do not
-prove the concurrent-startup case. Service confirmations go to stderr, as on
+help/documentation corrections, now applied. The native delayed-start fixture passed on `a64fd575`: 20 portable and
+24 installed connector checks, including refusal to publish or serve after
+ownership revocation under the held mutation lock. Owned cleanup was unforced
+and error-free. The review corrections passed the full local gate on `f87fc48f`;
+final CI and follow-up review remain pending. Service confirmations go to stderr, as on
 Unix; dry-run plans remain on stdout.
