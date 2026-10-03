@@ -305,6 +305,12 @@ impl overlay::Overlay<Message, iced::Theme, iced::Renderer> for Popup<'_, '_> {
             shell,
             &layout.bounds(),
         );
+        // The popup is a surface, not a stencil: a press on its padding,
+        // a separator or a line of text stops here rather than reaching
+        // the control drawn beneath it.
+        if matches!(event, Event::Mouse(_)) && cursor.is_over(layout.bounds()) {
+            shell.capture_event();
+        }
     }
     fn mouse_interaction(
         &self,
@@ -312,13 +318,20 @@ impl overlay::Overlay<Message, iced::Theme, iced::Renderer> for Popup<'_, '_> {
         cursor: mouse::Cursor,
         renderer: &iced::Renderer,
     ) -> mouse::Interaction {
-        self.content.as_widget().mouse_interaction(
+        let inner = self.content.as_widget().mouse_interaction(
             self.tree,
             layout,
             cursor,
             &layout.bounds(),
             renderer,
-        )
+        );
+        // Iced takes `None` to mean the pointer is not over an overlay and
+        // hands it to the page beneath; over the popup it never is.
+        if inner == mouse::Interaction::None && cursor.is_over(layout.bounds()) {
+            mouse::Interaction::Idle
+        } else {
+            inner
+        }
     }
     fn overlay<'c>(
         &'c mut self,

@@ -942,15 +942,11 @@ impl App {
             // The launch form is a dialog over the window: a scrim (a flat
             // wash, no blur) that closes it when pressed, and the form
             // centred on it, which takes its own presses.
-            let dialog = iced::widget::opaque(container(self.launch_view(c)).max_width(520).style(
-                move |_| container::Style {
-                    border: iced::Border {
-                        radius: (super::style::RADIUS_LG + 2.0).into(),
-                        ..c.overlay_style().border
-                    },
-                    ..c.overlay_style()
-                },
-            ));
+            let dialog = iced::widget::opaque(
+                container(self.launch_view(c))
+                    .max_width(520)
+                    .style(move |_| c.dialog_style()),
+            );
             let scrim = iced::widget::mouse_area(container(dialog).center(Fill).padding(24).style(
                 move |_| container::Style {
                     background: Some(
@@ -2093,7 +2089,7 @@ impl App {
                     ]
                     .spacing(10)
                     .align_y(Center),
-                    Some(Message::LaunchWith(runtime.name.clone())),
+                    ready.then(|| Message::LaunchWith(runtime.name.clone())),
                     false,
                     Kind::Quiet,
                     [6, 8],

@@ -86,6 +86,12 @@ pub(super) struct State {
     /// The project row under the pointer: its menu button shows only
     /// there, on the selected row and while its menu is open.
     pub rail_hover: Option<PathBuf>,
+    /// The control a pointer (or assistive technology) last pressed,
+    /// until a key is pressed. A menu opened from that control was opened
+    /// by pointer and keeps the focus where it is; opened from the
+    /// keyboard, the menu takes the focus to its first entry, since menus
+    /// float above the page and would otherwise be last in the Tab order.
+    pub pressed: Option<String>,
     /// The project being renamed, and the name so far.
     pub project_rename: Option<(PathBuf, String)>,
     /// The conversation open in Inbox: one agent, or every agent at once.
@@ -975,6 +981,17 @@ impl App {
         ])
     }
 
+    /// Focus a menu's first entry when the menu was opened from the
+    /// keyboard; a pointer-opened menu leaves the focus alone.
+    fn menu_focus(&self, trigger: &str, first: String) -> Task<Message> {
+        if self.shell.pressed.as_deref() == Some(trigger) {
+            return Task::none();
+        }
+        iced::widget::operation::focus(iced::advanced::widget::Id::from(first))
+            .chain(crate::controls::reveal_focus())
+            .chain(crate::accessibility::collect())
+    }
+
     pub fn boot() -> (Self, Task<Message>) {
         (
             Self::new(),
@@ -984,6 +1001,12 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         let mut tasks = Vec::new();
+        if matches!(
+            &message,
+            Message::Event(iced::Event::Keyboard(keyboard::Event::KeyPressed { .. }))
+        ) {
+            self.shell.pressed = None;
+        }
         if matches!(
             &message,
             Message::Draft(..)
@@ -1185,6 +1208,7 @@ impl App {
                 self.shell.notification_message = None;
                 self.screen = screen;
                 self.shell.more = false;
+                self.shell.launch_menu = false;
                 if screen == Screen::Chat {
                     self.open_project_chat();
                 }
@@ -1648,8 +1672,15 @@ impl App {
             }
             Message::ProjectMenu(path) => {
                 let open = self.shell.project_menu.as_ref() == Some(&path);
+                let key = path.display().to_string();
                 self.shell.project_menu = (!open).then_some(path);
                 self.shell.project_rename = None;
+                if !open {
+                    tasks.push(self.menu_focus(
+                        &format!("project-menu-{key}"),
+                        format!("project-rename-start-{key}"),
+                    ));
+                }
             }
             Message::ProjectRenameStart(path) => {
                 let name = self
@@ -1727,7 +1758,12 @@ impl App {
                 self.shell.selected = None;
                 self.confirm_stop = None;
             }
-            Message::More => self.shell.more = !self.shell.more,
+            Message::More => {
+                self.shell.more = !self.shell.more;
+                if self.shell.more {
+                    tasks.push(self.menu_focus("project-more", "project-tab-Journal".to_owned()));
+                }
+            }
             Message::ResumeProvider(agent, blocked_at) => {
                 if self.connected.is_ok() {
                     self.send(Cmd::ResumeProvider(agent, blocked_at));
@@ -2111,16 +2147,24 @@ impl App {
                 self.shell.overlaps_open = true;
                 return self.update(Message::Navigate(Screen::Channels));
             }
-            Message::LaunchMenu => self.shell.launch_menu = !self.shell.launch_menu,
+            Message::LaunchMenu => {
+                self.shell.launch_menu = !self.shell.launch_menu;
+                if self.shell.launch_menu
+                    && let Some(first) = self.runtimes.iter().find(|r| r.cli.is_some())
+                {
+                    let first = format!("launch-with-{}", first.name);
+                    tasks.push(self.menu_focus("launch-menu", first));
+                }
+            }
             Message::LaunchWith(runtime) => {
                 self.shell.launch_menu = false;
-                let task = if self.shell.launch {
+                let open = if self.shell.launch {
                     Task::none()
                 } else {
                     self.update(Message::ShowLaunch)
                 };
-                let _ = self.update(Message::LaunchRuntime(runtime));
-                return task;
+                let chosen = self.update(Message::LaunchRuntime(runtime));
+                return Task::batch([open, chosen]);
             }
             Message::OpenLaunch => {
                 self.shell.launch_menu = false;
@@ -2503,11 +2547,12 @@ impl App {
                     tasks.push(smoke.captured(capture));
                 }
             }
-            Message::Focus(id) => tasks.push(
+            Message::Focus(id) => tasks.push({
+                self.shell.pressed = Some(id.clone());
                 iced::widget::operation::focus(iced::advanced::widget::Id::from(id))
                     .chain(crate::controls::reveal_focus())
-                    .chain(crate::accessibility::collect()),
-            ),
+                    .chain(crate::accessibility::collect())
+            }),
             Message::Accessibility(snapshot) => {
                 if let Some(scenario) = self.smoke.as_mut().and_then(|s| s.scenario.as_mut()) {
                     scenario.snapshot = snapshot.clone();
@@ -3079,6 +3124,38 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    #[test]
+    fn a_menu_opened_by_pointer_keeps_focus_and_navigation_closes_the_launch_menu() {
+        let (mut app, _commands, _messages) = app();
+        // A pointer press on the trigger marks it; a key press forgets it.
+        let _ = app.update(Message::Focus("project-more".into()));
+        assert_eq!(app.shell.pressed.as_deref(), Some("project-more"));
+        let _ = app.update(Message::More);
+        assert!(app.shell.more);
+        let _ = app.update(Message::Event(iced::Event::Keyboard(
+            keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Tab),
+                modified_key: keyboard::Key::Named(keyboard::key::Named::Tab),
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: None,
+                repeat: false,
+            },
+        )));
+        assert_eq!(app.shell.pressed, None, "the keyboard is back in charge");
+        // The Launch agent menu never outlives the screen it opened on.
+        let _ = app.update(Message::LaunchMenu);
+        assert!(app.shell.launch_menu);
+        let _ = app.update(Message::Navigate(Screen::Settings));
+        assert!(!app.shell.launch_menu);
+        let _ = app.update(Message::LaunchMenu);
+        app.reset_session_view();
+        assert!(!app.shell.launch_menu);
     }
 
     /// The board asks sent so far, newest last: `(request, offset, limit)`.

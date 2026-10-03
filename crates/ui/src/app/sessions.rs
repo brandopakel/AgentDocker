@@ -18,6 +18,7 @@ impl App {
         self.shell.needs_you_expanded = false;
         self.shell.more = false;
         self.shell.launch = false;
+        self.shell.launch_menu = false;
         self.confirm_stop = None;
     }
 

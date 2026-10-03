@@ -209,6 +209,21 @@ impl Colors {
         }
     }
 
+    /// A dialog or the command palette: the overlay surface without the
+    /// menu's shadow. These are large, and tiny-skia evaluates a blurred
+    /// shadow over every pixel it covers on every frame; the scrim behind
+    /// them does the lifting instead.
+    pub fn dialog_style(self) -> container::Style {
+        container::Style {
+            shadow: iced::Shadow::default(),
+            border: Border {
+                radius: (RADIUS_LG + 2.0).into(),
+                ..self.overlay_style().border
+            },
+            ..self.overlay_style()
+        }
+    }
+
     /// A small square tile behind a glyph or a keycap: raised fill and a
     /// hairline.
     pub fn tile(self, radius: f32) -> container::Style {
