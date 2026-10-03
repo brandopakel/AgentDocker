@@ -40,8 +40,12 @@ passed the full local gate (1,508 Rust and 169 Python tests run, one Python test
 skipped) and nine native Mac ARM64 checks: exact generations, pre-first-message
 refusal, two queued receipts, preserved draft and receiver replacement without
 replay. The fixture explicitly establishes one ordinary user turn after the
-refusal. Windows shared-server/approval acceptance, owned startup, hook/MCP
-bootstrap and safe initial-history admission remain open.
+refusal. Windows source `98e81ddc` then passed 16 shared-server checks on a
+hosted runner: exact receipts, native pending approval, retained draft, receiver
+replacement without replay, unchanged private config/rule and clean teardown.
+Both platforms use a loopback model and an explicit fixture user turn. Owned
+startup, hook/MCP bootstrap, safe initial-history admission, real accounts and
+physical input remain open.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its
