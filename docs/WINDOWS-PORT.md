@@ -582,3 +582,10 @@ fixture's `RUNNER~1` path spelling against the correctly canonicalized
 `runneradmin` path in the diagnostic. The fixture now resolves its expected
 path; no product refusal or ownership rule changed. A complete corrected native
 run remains required.
+
+Corrected `4cf51767` passed native acceptance: 320 core/host checks, 83 portable
+checks with five extra startup samples per configured ancestry type, 38 installer
+checks, and 11 portable plus 13 installed Task Scheduler checks. Native hashes
+and clean source/tree matched every fixture; owned tasks and scratch were
+removed with zero cleanup errors. Final review/integration, hosted distribution
+and physical/actual-provider/logon/reboot acceptance remain.
