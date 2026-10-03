@@ -969,6 +969,14 @@ never types a warmup or answers approvals. Configuration flags after `--` use th
 existing conservative app-server mapping. `--profile` and `--cwd` select existing
 paths without editing the provider profile; initial prompts and resume commands
 are refused. The launcher retires its own children on exit, revokes its capability
-and retains bounded private server diagnostics. This candidate still requires
-end-to-end acceptance, reopen/adoption and desktop integration; it does not change
-ordinary `codex` or the current managed bridge.
+and retains bounded private server diagnostics. Source `e3445323` passed the full
+1,528-Rust/169-Python gate (zero retries) and an actual Mac Release trial: automatic
+binding before the first prompt, original queued receipt, receiver replacement
+and retained draft submitted once with unchanged private configuration. Launcher
+exit retired its own provider children and revoked the token. A stronger repeat
+also verified the replacement receiver retired before fixture cleanup; only the
+private test daemon was terminated by the fixture. Native Windows product-launch
+acceptance remains pending. The first Mac attempt
+stopped after binding on a fixture process-group assumption, before model input;
+that failure is retained. Reopen/adoption and desktop integration remain open;
+ordinary `codex` and the current managed bridge are unchanged.

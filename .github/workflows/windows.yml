@@ -22,6 +22,10 @@ on:
         description: With receiver_acceptance, manually witness the new native thread and test first input without a warmup
         type: boolean
         default: false
+      automatic_launcher:
+        description: With capability_only and receiver_acceptance, test the product-owned native launcher without fixture binding
+        type: boolean
+        default: false
       startup_samples:
         description: Additional fresh-home samples per ancestry type (0..20)
         type: choice
@@ -204,7 +208,13 @@ jobs:
           CAPABILITY_APPROVAL: ${{ inputs.capability_approval }}
           RECEIVER_ACCEPTANCE: ${{ inputs.receiver_acceptance }}
           WITNESSED_BIRTH: ${{ inputs.witnessed_birth }}
+          AUTOMATIC_LAUNCHER: ${{ inputs.automatic_launcher }}
         run: |
+          if ($env:AUTOMATIC_LAUNCHER -eq 'true') {
+            if ($env:RECEIVER_ACCEPTANCE -ne 'true') { throw 'automatic launcher requires receiver_acceptance' }
+            python scripts/windows_native_launcher_smoke.py --codex artifacts/codex.exe --binary-dir target/release --output artifacts/capability
+            exit $LASTEXITCODE
+          }
           $options = @()
           if ($env:CAPABILITY_APPROVAL -eq 'true') { $options += '--approval' }
           if ($env:RECEIVER_ACCEPTANCE -eq 'true') { $options += '--binary-dir'; $options += 'target/release' }
