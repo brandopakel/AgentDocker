@@ -2750,6 +2750,7 @@ mod tests {
                 envelope
             },
             replies: 0,
+            flagged: Vec::new(),
         };
         let first = message("agent-a", "chat", 0);
         assert!(App::starts_run(None, &first, false));
