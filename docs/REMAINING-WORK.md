@@ -13,24 +13,17 @@ review, bounded terminal shutdown and retained provider sign-in failures.
 Hosted downloads and Mac/Linux update/rollback/explicit-install checks passed;
 physical, fresh-account, sustained and stable acceptance remain below.
 
-Native Windows installation and local preview-feed update/rollback passed the
-`e190d919` installed lifecycle, including maintenance and Task Scheduler service
-interlocks. Review corrections for extraction cleanup, idempotent retention,
-retirement isolation and canonical daemon selection passed the exact-head
-`4cf51767` native trial, including both service lifecycles and extra startup samples;
-integrated `22396f38` repeated those checks and both full gates. A subsequent
-review correction reports extraction cleanup failure separately from successful
-activation, including the retained path in the CLI and app. Its native held-handle
-regression and full gates passed on `f155249d`. Integrated `c9980fa6` passed
-the native installer and both service lifecycles with verified hashes and clean
-cleanup. Review found one remaining test assumption: a budget stop may precede
-any cursor progress. Its continuation now allows bounded empty passes while
-retaining exact final records, gaps and cursor checks; production limits are
-unchanged. Final integration/review, hosted
-Windows publication, Start menu/PATH,
-physical and actual-provider acceptance, and login/reboot remain. These trials
-do not update the published beta.4 package or prove a hosted Windows upgrade. See
-[the Windows port](WINDOWS-PORT.md) for the exact scope.
+Native Windows source implements installation, local preview-feed update/rollback,
+maintenance and Task Scheduler service interlocks. Activation succeeds even when
+extraction cleanup fails, with the retained path and error reported in the CLI
+and app. Native installer and both service lifecycles passed on integrated
+`c9980fa6`; the held-handle cleanup regression passed on `f155249d`. Local and CI
+full-suite evidence and revision-by-revision trials are retained in
+[the verification index](verification/INDEX.md). Final integration/review, hosted
+Windows publication, Start menu/PATH, physical and actual-provider acceptance,
+and login/reboot remain. These trials do not update the published beta.4 package
+or prove a hosted Windows upgrade. See [the Windows port](WINDOWS-PORT.md) for
+the exact scope.
 
 A separate Windows browser-connector candidate implements owned login-task
 registration, relative-path capture, conservative enablement and graceful
