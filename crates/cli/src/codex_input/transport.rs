@@ -1,4 +1,5 @@
 //! Bounded owned-stdio and authenticated loopback Codex transports.
+pub(crate) mod birth;
 mod websocket;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};

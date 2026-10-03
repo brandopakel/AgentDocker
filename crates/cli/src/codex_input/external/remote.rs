@@ -44,17 +44,17 @@ fn confidential(metadata: &std::fs::Metadata) -> Result<()> {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Record {
-    version: u32,
-    provider: ProviderGeneration,
-    server: ProcessIdentity,
-    executable: PathBuf,
-    cwd: PathBuf,
-    port: u16,
-    token_file: PathBuf,
-    token_sha256: String,
+pub(super) struct Record {
+    pub version: u32,
+    pub provider: ProviderGeneration,
+    pub server: ProcessIdentity,
+    pub executable: PathBuf,
+    pub cwd: PathBuf,
+    pub port: u16,
+    pub token_file: PathBuf,
+    pub token_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    birth: Option<super::birth::Witness>,
+    pub birth: Option<super::birth::Witness>,
 }
 
 fn read(path: &Path) -> Result<(Record, String)> {

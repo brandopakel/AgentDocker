@@ -959,3 +959,16 @@ and native acceptance of this candidate remain unfinished.
 stages (launcher generation/child ancestry, empty-thread metadata or queue). It
 does not log arguments, capability contents or environment values and does not
 change admission or retry a submitted message.
+
+The experimental hidden `codex-native --program <native-codex-executable>`
+launcher owns one dedicated authenticated loopback server and its native TUI.
+It observes an empty server before launching the terminal, requires the sole new
+thread birth, then registers the exact TUI and publishes its private birth
+receipt before starting the receiver. The TUI inherits the terminal; the launcher
+never types a warmup or answers approvals. Configuration flags after `--` use the
+existing conservative app-server mapping. `--profile` and `--cwd` select existing
+paths without editing the provider profile; initial prompts and resume commands
+are refused. The launcher retires its own children on exit, revokes its capability
+and retains bounded private server diagnostics. This candidate still requires
+end-to-end acceptance, reopen/adoption and desktop integration; it does not change
+ordinary `codex` or the current managed bridge.

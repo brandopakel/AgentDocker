@@ -95,8 +95,13 @@ model requests; all cleanup was unforced. Windows `72123a08` refused binding
 before model input. Diagnostic `8e4b7c02` isolated the cause: live Codex metadata
 reconstructs both timestamps on every pre-materialization read. The candidate now
 accepts equal timestamps bounded by witnessed creation and current read time,
-while retaining every thread/process/empty-state check. Windows acceptance and
-the automatic product launcher remain pending.
+while retaining every thread/process/empty-state check. Source `f21ca717` passed
+the full1,526Rust/169Python gate and all21 Windows checks without a warmup:
+first receipt, actual original-TUI MCP/hooks, same-turn busy input, native approval,
+draft and receiver replacement. Windows teardown still explicitly kills pinned
+provider processes. A hidden owned `codex-native` launcher now automates witness
+and receipt creation; its end-to-end acceptance, reopen/adoption and desktop
+integration remain pending.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its

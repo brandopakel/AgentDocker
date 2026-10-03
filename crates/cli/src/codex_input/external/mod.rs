@@ -6,6 +6,7 @@ mod bootstrap;
 mod history;
 mod hook_receipts;
 pub mod hooks;
+pub mod launch;
 mod ledger;
 mod local;
 mod receipts;
