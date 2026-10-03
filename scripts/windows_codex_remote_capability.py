@@ -318,9 +318,19 @@ def main():
                     assert turn.get('id') and isinstance(turn.get('items'), list)
                 return value
 
-            empty = turn_page()
-            step('read-only turn pagination exposes the empty native history',
-                 empty['data'] == [] and empty.get('nextCursor') is None)
+            # This provider explicitly refuses turn pages until the first
+            # ordinary user message. Retain that limitation; the production
+            # receiver must not turn a failed history read into empty history.
+            try:
+                turn_page()
+            except ProviderRefusal as error:
+                expected = (f'thread {thread} is not materialized yet; '
+                            'thread/turns/list is unavailable before first user message')
+                step('fresh thread explicitly refuses pre-materialization turn pagination',
+                     error.error.get('code') == -32600 and error.error.get('message') == expected,
+                     error.error)
+            else:
+                raise AssertionError('pinned provider unexpectedly accepted unmaterialized turn history')
 
             # The API's source label is diagnostic only, never process identity.
             time.sleep(1)

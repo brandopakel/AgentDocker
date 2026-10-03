@@ -26,8 +26,9 @@ or prove a hosted Windows upgrade. See [the Windows port](WINDOWS-PORT.md) for
 the exact scope.
 
 Native Codex source now has a bounded read-only turn-page fallback for stores
-that explicitly lack item pagination. Corrected compatibility acceptance is
-pending. The provider-only authenticated remote-TUI startup/approval passes do
+that explicitly lack item pagination. Corrected later-turn compatibility
+acceptance is pending; actual0.160 refuses turn pagination before its first user
+message, which is retained as a failure rather than interpreted as empty history. The provider-only authenticated remote-TUI startup/approval passes do
 not close AgentDocker's owned launcher, shared transport or zero-prompt binding.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
