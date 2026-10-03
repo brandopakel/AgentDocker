@@ -21,7 +21,7 @@ pub use session::{Preparation, Session};
 const MAX_BATCH: u64 = 16 * 1024 * 1024;
 // Revisit prior unsupported Claude patch versions and old quarantine decisions.
 // The collector replays an older cursor with source-ID deduplication.
-const CURSOR_VERSION: u32 = 5;
+const CURSOR_VERSION: u32 = 6;
 const MAX_RECORD: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 4096;
 const PREFIX_DEADLINE: Duration = Duration::from_secs(1);
@@ -69,6 +69,18 @@ struct Generation {
 }
 
 impl Generation {
+    /// Growth invalidates this snapshot, but is not proof that accepted bytes
+    /// changed. The collector must recapture and verify the entire old prefix.
+    fn check(&self, observed: Self) -> Result<(), Error> {
+        if *self == observed {
+            Ok(())
+        } else if self.identity == observed.identity && observed.length > self.length {
+            Err(Error::SnapshotAdvanced)
+        } else {
+            Err(Error::Changed)
+        }
+    }
+
     fn capture(file: &File) -> io::Result<Self> {
         let meta = file.metadata()?;
         #[cfg(unix)]
@@ -129,8 +141,9 @@ impl Cursor {
     pub fn capture(path: &Path, runtime: Runtime) -> Result<Self, Error> {
         let file = crate::files::open_regular(path)?;
         let generation = Generation::capture(&file)?;
-        if generation != Generation::capture(&crate::files::open_regular(path)?)? {
-            return Err(Error::Changed);
+        match generation.check(Generation::capture(&crate::files::open_regular(path)?)?) {
+            Ok(()) | Err(Error::SnapshotAdvanced) => {}
+            Err(error) => return Err(error),
         }
         Ok(Self {
             version: CURSOR_VERSION,
@@ -172,9 +185,8 @@ impl Cursor {
         let mut file = crate::files::open_regular(path)?;
         let bytes = self.validate_file(&mut file, PREFIX_DEADLINE)?;
         // Also check the current path: an old descriptor survives replacement.
-        if self.generation != Generation::capture(&crate::files::open_regular(path)?)? {
-            return Err(Error::Changed);
-        }
+        self.generation
+            .check(Generation::capture(&crate::files::open_regular(path)?)?)?;
         Ok(bytes)
     }
 
@@ -195,9 +207,7 @@ impl Cursor {
         {
             return Err(Error::Cursor);
         }
-        if self.generation != Generation::capture(file)? {
-            return Err(Error::Changed);
-        }
+        self.generation.check(Generation::capture(file)?)?;
         if self.offset - start > MAX_BATCH {
             return Err(Error::ValidationIncomplete);
         }
@@ -232,9 +242,8 @@ impl Cursor {
         if started.elapsed() >= elapsed {
             return Err(Error::ValidationIncomplete);
         }
-        if self.generation != Generation::capture(reader.get_ref().get_ref())? {
-            return Err(Error::Changed);
-        }
+        self.generation
+            .check(Generation::capture(reader.get_ref().get_ref())?)?;
         Ok(covered - start)
     }
 }
@@ -280,6 +289,10 @@ pub enum Error {
     Io(#[from] io::Error),
     #[error("usage file generation changed; retain the previous cursor and record a source gap")]
     Changed,
+    #[error(
+        "usage snapshot advanced; retain pending work and verify the old prefix against a fresh snapshot"
+    )]
+    SnapshotAdvanced,
     #[error("invalid usage scan budget")]
     Budget,
     #[error(
@@ -338,9 +351,7 @@ fn scan_checked(
             {
                 return Err(Error::Cursor);
             }
-            if prior.generation != generation {
-                return Err(Error::Changed);
-            }
+            prior.generation.check(generation.clone())?;
             if !prepared {
                 validation_bytes_read += prior.validate_file(&mut file, PREFIX_DEADLINE)?;
             }
@@ -455,9 +466,7 @@ fn scan_checked(
     let bytes_read = boundary_bytes + allowance - reader.get_ref().limit();
     // Check both the opened object and the path. A renamed/replaced file must
     // not validate the earlier path merely because its old descriptor survives.
-    if generation != Generation::capture(reader.get_ref().get_ref())? {
-        return Err(Error::Changed);
-    }
+    generation.check(Generation::capture(reader.get_ref().get_ref())?)?;
     if prepared {
         let prior = previous.ok_or(Error::Cursor)?;
         let mut check = crate::files::open_regular(path)?;
@@ -467,9 +476,7 @@ fn scan_checked(
             prior.prefix_digest,
             PREFIX_DEADLINE,
         )?;
-        if generation != Generation::capture(&crate::files::open_regular(path)?)? {
-            return Err(Error::Changed);
-        }
+        generation.check(Generation::capture(&crate::files::open_regular(path)?)?)?;
     } else {
         validation_bytes_read += cursor.validate_counted(path)?;
     }
@@ -602,26 +609,56 @@ mod tests {
         let path = dir.path().join("log");
         let text = format!("{}{{\"type\":\"user\"}}\ninvalid\n{}", row(0), row(1));
         std::fs::write(&path, &text).unwrap();
-        let whole = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
+        // A cooperative time slice may end before the record cap. Compare
+        // complete logical scans, retaining every intermediate cursor, sample
+        // and gap; neither the default nor the two-record scan must fit in one
+        // wall-clock slice on a loaded host. The four-record fixture is bounded
+        // to eight passes, and every proposal still obeys its record/byte cap.
+        let complete = |limits: Budget| {
+            let mut cursor: Option<Cursor> = None;
+            let mut samples = Vec::new();
+            let mut gaps = Vec::new();
+            for pass in 1..=8 {
+                let before = cursor.as_ref().map_or(0, Cursor::offset);
+                let batch = scan(&path, Runtime::Claude, cursor.as_ref(), limits).unwrap();
+                let after = batch.cursor.offset();
+                assert!(after >= before);
+                let records = text.as_bytes()[before as usize..after as usize]
+                    .iter()
+                    .filter(|byte| **byte == b'\n')
+                    .count();
+                assert!(records <= limits.records);
+                assert!(batch.bytes_read <= limits.bytes);
+                samples.extend(batch.samples);
+                gaps.extend(batch.gaps);
+                let restored =
+                    serde_json::from_str::<Cursor>(&serde_json::to_string(&batch.cursor).unwrap())
+                        .unwrap();
+                assert_eq!(restored, batch.cursor);
+                if batch.stop == Stop::Complete {
+                    assert_eq!(after, text.len() as u64);
+                    return (restored, samples, gaps, pass);
+                }
+                assert_eq!(batch.stop, Stop::Budget);
+                cursor = Some(restored);
+            }
+            panic!("four-record fixture did not finish within eight bounded passes");
+        };
+        let (whole_cursor, whole_samples, whole_gaps, _) = complete(Budget::default());
+        assert_eq!(whole_samples.len(), 2);
+        assert_eq!(whole_gaps.len(), 1);
+        assert_eq!(whole_gaps[0].reason, "invalid JSON record");
         let limits = Budget {
             records: 2,
             ..Budget::default()
         };
-        let first = scan(&path, Runtime::Claude, None, limits).unwrap();
-        assert_eq!(first.stop, Stop::Budget);
-        assert_eq!(first.samples.len(), 1);
-        assert!(first.gaps.is_empty());
-        let restored =
-            serde_json::from_str(&serde_json::to_string(&first.cursor).unwrap()).unwrap();
-        let replay = scan(&path, Runtime::Claude, None, limits).unwrap();
-        assert_eq!(first.cursor, replay.cursor);
-        assert_eq!(first.samples, replay.samples);
-        let second = scan(&path, Runtime::Claude, Some(&restored), limits).unwrap();
-        assert_eq!(second.stop, Stop::Complete);
-        assert_eq!(second.samples.len(), 1);
-        assert_eq!(second.gaps, whole.gaps);
-        assert_eq!(second.cursor, whole.cursor);
-        assert_eq!([first.samples, second.samples].concat(), whole.samples);
+        for _ in 0..2 {
+            let (cursor, samples, gaps, passes) = complete(limits);
+            assert!(passes >= 2);
+            assert_eq!(cursor, whole_cursor);
+            assert_eq!(samples, whole_samples);
+            assert_eq!(gaps, whole_gaps);
+        }
         for records in [0, MAX_RECORDS + 1] {
             assert!(matches!(
                 scan(&path, Runtime::Claude, None, Budget { records, ..limits }),
@@ -648,10 +685,13 @@ mod tests {
             .unwrap()
             .write_all(b"\n")
             .unwrap();
-        assert!(matches!(batch.cursor.validate(&path), Err(Error::Changed)));
+        assert!(matches!(
+            batch.cursor.validate(&path),
+            Err(Error::SnapshotAdvanced)
+        ));
         assert!(matches!(
             scan(&path, Runtime::Claude, Some(&batch.cursor), budget()),
-            Err(Error::Changed)
+            Err(Error::SnapshotAdvanced)
         ));
         let again = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
         assert_eq!(again.stop, Stop::Complete);
@@ -793,11 +833,11 @@ mod tests {
         content.extend_from_slice(row(1).as_bytes());
         std::fs::write(&path, &content).unwrap();
         // This fixture has two records. A cooperative time slice may end
-        // between them on a loaded host; verify its resumable contract rather
-        // than assuming both records always fit in one 100 ms pass.
+        // before or between them on a loaded host; verify bounded continuation
+        // without assuming each 100 ms pass necessarily advances a record.
         let complete = |previous: Option<&Cursor>| {
             let mut batch = scan(&path, Runtime::Claude, previous, Budget::default()).unwrap();
-            for _ in 0..2 {
+            for _ in 0..8 {
                 if batch.stop == Stop::Complete {
                     return batch;
                 }
@@ -809,7 +849,12 @@ mod tests {
                     Budget::default(),
                 )
                 .unwrap();
-                assert!(next.cursor.offset() > batch.cursor.offset());
+                assert!(next.cursor.offset() >= batch.cursor.offset());
+                if next.cursor.offset() == batch.cursor.offset() {
+                    assert_eq!(next.stop, Stop::Budget);
+                    assert!(next.samples.is_empty());
+                    assert!(next.gaps.is_empty());
+                }
                 batch.cursor = next.cursor;
                 batch.stop = next.stop;
                 batch.samples.extend(next.samples);

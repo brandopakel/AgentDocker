@@ -190,7 +190,8 @@ pub fn activated_daemon(executable: &Path) -> Option<PathBuf> {
 pub fn activated_daemon(executable: &Path) -> Option<PathBuf> {
     let (root, version, _) = managed(executable)?;
     let target = windows::target(&root, "agentd.exe").ok()??;
-    (!target.starts_with(version)).then_some(target)
+    let running = version.canonicalize().ok()?;
+    (!target.starts_with(running)).then_some(target)
 }
 
 /// The `agentd` a client starts when no daemon answers. A client from a

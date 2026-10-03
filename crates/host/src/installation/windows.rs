@@ -323,6 +323,36 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn daemon_activation_compares_dos_and_verbatim_paths_consistently() {
+        let (_temp, root, selected, _) = fixture();
+        let daemon = selected.with_file_name("agentd.exe");
+        std::fs::write(&daemon, b"test daemon").unwrap();
+        let canonical = selected.canonicalize().unwrap();
+        let dos = Path::new(canonical.to_str().unwrap().strip_prefix(r"\\?\").unwrap());
+        assert!(super::super::activated_daemon(dos).is_none());
+        assert!(super::super::activated_daemon(&canonical).is_none());
+        let obsolete = root
+            .join("versions")
+            .join("b".repeat(64))
+            .join("AgentDocker/agentdocker.exe");
+        std::fs::create_dir_all(obsolete.parent().unwrap()).unwrap();
+        std::fs::write(&obsolete, b"old client").unwrap();
+        let canonical_old = obsolete.canonicalize().unwrap();
+        let dos_old = Path::new(
+            canonical_old
+                .to_str()
+                .unwrap()
+                .strip_prefix(r"\\?\")
+                .unwrap(),
+        );
+        assert_eq!(
+            super::super::activated_daemon(dos_old),
+            Some(daemon.canonicalize().unwrap())
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_registration_accepts_the_dos_spelling_of_the_active_image() {
         let (_temp, _root, selected, launcher) = fixture();
         let selected = selected.canonicalize().unwrap();

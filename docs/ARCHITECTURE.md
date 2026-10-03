@@ -1340,9 +1340,17 @@ in bounded passes (up to 4 MiB / 100 ms each) before parsing. A scan rechecks it
 new bounded suffix and generation before committing; a restart discards the
 proof and rehashes the saved prefix. An appended generation of the same file may
 retain parser state only after all accepted prefix bytes match. Rewrites,
-replacement, truncation or a changing snapshot keep coverage incomplete and
-require an explicit gap/replay. A version-3 or version-4 parser cursor first verifies its old
-prefix, then replays from zero using version 5 without inventing a source-change
+replacement and truncation keep coverage incomplete and require an explicit
+gap/replay. Growth during verification instead invalidates the current proposal:
+the collector atomically refreshes that pending job's captured high-water mark
+with the existing `usage_recorded` event, retaining its accepted cursor and
+pending count. It visits each job at most once per pass, allowing other files to
+finish, and retries the full old-prefix proof on the next pass or after restart.
+Growth alone proves neither corruption nor append-only content; a rewrite that
+also grows must still fail the new prefix proof. Repeated growth stays pending,
+never caught up or a permanent source gap solely because its snapshot advanced.
+No discovery schema or transcript storage changes are required. A version-3, version-4 or version-5 parser cursor first verifies its old
+prefix, then replays from zero using version 6 without inventing a source-change
 gap. Unknown cursor versions and failed prefix verification still record gaps. No transcript bytes enter durable cursors; only
 one incomplete verification record is buffered in memory, at most 16 MiB.
 Collector parsing batches stop after 128 complete source records, including
@@ -1400,16 +1408,18 @@ Only accounting metadata was retained; temporary raw transcript copies and the
 private trial databases were removed.
 
 Accounting-only fixtures from the installed Claude Code 2.1.277, 2.1.278 and
-2.1.280 transcripts and Codex 0.155.1 rollouts extend that explicit version
-coverage. Top-level Claude counters remain authoritative: nested iteration/cache
+2.1.280 transcripts, Codex 0.155.1 rollouts and observed Codex 0.160.0
+loopback rollouts extend that explicit version coverage. Codex 0.160.0 retains
+cumulative counters, optional cache/reasoning fields and stable replay identities;
+its sample format is named separately. Top-level Claude counters remain authoritative: nested iteration/cache
 details are not added again, zero counters stay zero and absent reasoning remains
 unknown. Codex still reports cumulative snapshots. Unobserved patch versions are
 not assumed compatible. Accounting-only observations also cover historical Claude
 2.1.246, 2.1.247, 2.1.248, 2.1.251, 2.1.259, 2.1.260, 2.1.261, 2.1.263 and
 2.1.267. These are explicit supported patches, not an accepted version range.
 Their response semantics and sample format identity match the existing family;
-nested cache details do not contribute a second time. Parser cursor v5 verifies
-and replays v3/v4 scans with the same stable
+nested cache details do not contribute a second time. Parser cursor v6 verifies
+and replays v3/v4/v5 scans with the same stable
 source identities, allowing newly supported records to be collected without
 recounting earlier accepted samples. Existing historical gaps remain visible;
 this change does not claim their reconciliation or provider-billing accuracy.
@@ -1758,3 +1768,15 @@ Windows installer feed leave this channel unchanged. The four-target Mac/Linux
 feed remains unchanged for older client compatibility; no unsigned Windows
 stable feed is published. Default Windows checks use the separate preview feed
 and reserve `updates-windows.json` for a future stable distribution.
+
+Managed Codex bridges bind their first accepted provider thread through the
+existing `register`/`AgentSessionBound` transaction after turn acceptance.
+Reconciliation preserves the managed ID, ownership, project and process birth;
+conflicting known threads and mismatching replies fail closed. No session label
+is learned for an empty unused thread. Resumed prepared/history sessions confirm
+the same mapping before receipt recovery, enabling the usage collector's existing
+runtime/session attribution and late reconciliation without a new schema.
+Initial binding runs after the accepted `turn/start` response so daemon binding
+failure cannot introduce a new pre-submission uncertainty window. Samples
+collected before binding are reassigned by existing usage reconciliation;
+receipt recovery remains required for uncertain provider submissions.

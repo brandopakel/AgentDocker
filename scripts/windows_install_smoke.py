@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Exercise native installation using the extracted Windows package only."""
 import argparse
+from contextlib import contextmanager
+import ctypes
+from ctypes import wintypes
 import hashlib
 import json
 import msvcrt
@@ -10,9 +13,83 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
+
+
+@contextmanager
+def hold_update_extraction(downloads):
+    """Hold the fixture's new extraction directory without delete sharing."""
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    invalid = ctypes.c_void_p(-1).value
+    stop = threading.Event()
+    evidence = {'open_attempts': 0}
+
+    def open_held(path):
+        # GENERIC_READ, SHARE_READ|WRITE, OPEN_EXISTING, BACKUP_SEMANTICS.
+        # Attribute-only access does not impose Windows sharing restrictions.
+        return kernel.CreateFileW(str(path), 0x80000000, 3, None, 3, 0x02000000, None)
+
+    # Prove that this runner enforces the intended fault before relying on the
+    # concurrent extraction observer. A merely open metadata handle is not it.
+    with tempfile.TemporaryDirectory(prefix='AgentDocker sharing control ') as control:
+        probe = Path(control) / 'held'
+        probe.mkdir()
+        handle = open_held(probe)
+        if handle == invalid:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            try:
+                probe.rmdir()
+            except OSError as error:
+                evidence['control_delete_error'] = error.winerror
+                if error.winerror != 32:  # ERROR_SHARING_VIOLATION
+                    raise
+            else:
+                raise AssertionError('fixture handle did not prevent directory deletion')
+        finally:
+            if not kernel.CloseHandle(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+    def watch():
+        try:
+            while not stop.is_set():
+                for path in downloads.glob('*/payload-*'):
+                    uuid.UUID(path.name.removeprefix('payload-'))
+                    evidence['open_attempts'] += 1
+                    handle = open_held(path)
+                    if handle == invalid:
+                        evidence['last_open_error'] = ctypes.get_last_error()
+                        continue
+                    try:
+                        evidence['path'] = path
+                        if not stop.wait(60):
+                            evidence['error'] = 'extraction hold exceeded fixture deadline'
+                    finally:
+                        if not kernel.CloseHandle(handle):
+                            evidence['error'] = str(ctypes.WinError(ctypes.get_last_error()))
+                    return
+                stop.wait(0.001)
+        except Exception as error:
+            evidence['error'] = repr(error)
+
+    watcher = threading.Thread(target=watch, name='fixture-extraction-hold')
+    watcher.start()
+    try:
+        yield evidence
+    finally:
+        stop.set()
+        watcher.join(timeout=5)
+        if watcher.is_alive():
+            raise AssertionError('fixture extraction watcher did not stop')
 
 
 def main():
@@ -138,16 +215,39 @@ def main():
         third = update_preview['candidate']['id']
         step('Windows archive preview verifies and stages without activation',
              update_preview['preview'] and desktop('status')['installation']['current']['id'] == first)
+        step('Windows update preview removes its temporary extracted payload',
+             not list((store / 'downloads').glob('*/payload-*')))
         pin_path = store / 'pins' / (second + '.lock')
         with pin_path.open('r+b') as held:
             msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, 1)
             try:
-                applied = desktop(*update_args, '--apply')
+                with hold_update_extraction(store / 'downloads') as held_extraction:
+                    applied = desktop(*update_args, '--apply')
+                    report['extraction_hold'] = {
+                        key: str(value) if isinstance(value, Path) else value
+                        for key, value in held_extraction.items()}
+                    save()
+                    step('fixture holds an extracted directory without delete sharing',
+                         'path' in held_extraction and not held_extraction.get('error'))
+                    step('completed update reports its extraction cleanup failure',
+                         applied.get('extraction_cleanup', {}).get('error'))
+                    step('cleanup diagnostic identifies the held filesystem object',
+                         Path(applied['extraction_cleanup']['path']).samefile(held_extraction['path']))
+                    step('a held extraction does not turn a published update into failure',
+                         desktop('status')['installation']['current']['id'] == third)
+                step('extraction hold closes cleanly', not held_extraction.get('error'))
+                shutil.rmtree(held_extraction['path'])
                 step('activation preserves an inactive version whose lock is held',
                      applied['retention']['completed'] and (store / 'versions' / second).is_dir())
             finally:
                 held.seek(0)
                 msvcrt.locking(held.fileno(), msvcrt.LK_UNLCK, 1)
+        step('fixture removes only its released extraction after the reported cleanup failure',
+             not list((store / 'downloads').glob('*/payload-*')))
+        desktop('install', '--from', update_app, '--local-preview', '--expect-current', third)
+        step('idempotent active installation preserves retained inactive versions',
+             (store / 'versions' / second).is_dir()
+             and desktop('status')['installation']['previous']['id'] == first)
         status = desktop('status', executable=launcher)['installation']
         step('Windows preview update activates through the existing bootstrap',
              status['current']['id'] == third and status['previous']['id'] == first
@@ -203,12 +303,26 @@ def main():
              and desktop('status')['installation'] is None)
         step('uninstall preserves immutable releases and unrecognized retained content',
              (store / 'versions' / first).is_dir() and (unknown / 'keep.txt').is_file())
+        retirement = store / 'retired-launchers'
+        foreign_retirement = retirement / str(uuid.uuid4())
+        foreign_retirement.mkdir()
+        (foreign_retirement / 'keep.txt').write_text('preserve unrecognized retirement')
         desktop('install', '--from', app, '--local-preview', '--expect-current', 'none')
         step('reinstall after uninstall restores the stable launcher',
              desktop('status', executable=launcher)['installation']['current']['id'] == first)
-        retirement = store / 'retired-launchers'
-        step('reinstall collects closed retired launcher images',
-             not any(retirement.iterdir()))
+        step('reinstall collects closed retired launchers while preserving an unrecognized directory',
+             set(retirement.iterdir()) == {foreign_retirement}
+             and (foreign_retirement / 'keep.txt').read_text() == 'preserve unrecognized retirement')
+        prune = desktop('prune', '--preview')
+        desktop('prune', '--expect-plan', prune['plan_id'])
+        step('unrecognized retirement does not prevent verified maintenance',
+             (foreign_retirement / 'keep.txt').is_file())
+        desktop('uninstall', executable=launcher, good=False)
+        step('uninstall preserves unaccountable retirement and identifies the directory before deactivation',
+             str(foreign_retirement.resolve()) in report['commands'][-1]['stderr']
+             and desktop('status')['installation']['current']['id'] == first and launcher.is_file())
+        (foreign_retirement / 'keep.txt').unlink()
+        foreign_retirement.rmdir()
         oversized = [retirement / str(uuid.uuid4()) for _ in range(9)]
         for directory in oversized:
             directory.mkdir()

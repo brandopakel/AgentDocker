@@ -156,8 +156,9 @@ crash, and what that means for a person:
 - Live daemon reload and the descriptor handover (`daemon reload`): the
   daemon holds no descriptors a successor could inherit; stop and start it.
 - Container workspace transport and grants: the endpoint is a Unix socket.
-- The desktop installer (`desktop install`, updates, rollback) and connector
-  service remain unavailable. Daemon login startup is now implemented through
+- The connector service remains unavailable. Per-user desktop installation and
+  local preview update/rollback passed the native lifecycle described below.
+  Daemon login startup is now implemented through
   a limited per-user Task Scheduler task, with a private ownership receipt and
   a bounded crash supervisor. `daemon install`, `uninstall`, `start`, `stop`,
   `restart` and `status` handle that task; start/stop still operate on demand
@@ -249,8 +250,8 @@ Work still required before platform support can be claimed:
   daemon's `PATH` by its bare name and reads its arguments back from its
   log. Not established: a real provider's shim (Node under the pseudo
   console) — that is the provider trial.
-- Daemon service/session startup, per-user desktop installation, Start menu
-  integration, updates/rollback and signed packages.
+- Start menu/PATH integration, hosted Windows update/rollback, signed packages,
+  and physical actual-provider service/session login and reboot acceptance.
 - The daemon and CLI test suites on the Windows runner (they still carry
   Unix-only fixtures), native graphical acceptance, then a fresh
   real-provider integration and sustained lifecycle trials.
@@ -672,3 +673,23 @@ process-generation ownership, shared transport and restart/adoption remain. The
 provider API's `vscode` source label is not process identity. Earlier unsupported
 history and transient-read failures remain in the verification index; later
 passes do not erase them or replace the strict product startup gate.
+
+Installer review corrections clean update extractions, preserve inactive releases
+on idempotent install, compare canonical daemon paths and retain unrecognized
+retirement directories while collecting verified siblings. Uninstall refuses
+before deactivation when a preserved directory cannot be accounted for.
+A completed activation remains successful if extraction cleanup fails: the CLI
+report and desktop identify the retained path/error. Failed operations preserve
+their original error, and later attempts use fresh extraction directories.
+
+Exact-head `f155249d` passed 322 native core/host, 83 portable, 43 installer,
+11 portable-service and 13 installed-service checks. This includes an actual
+update under a deliberately held directory handle: activation succeeds, the
+cleanup diagnostic identifies sharing violation 32, and the fixture closes its
+own handle and removes its extraction. Source/tree/binary hashes match; owned
+tasks and scratch were removed with zero service cleanup errors. Full Mac/Linux
+gates passed 1,465/1,453 Rust and 169 Python tests each (one skipped), zero retries.
+The earlier fixture failures are retained in the verification index.
+Integration with accepted growing-source accounting requires final checks and
+follow-up review; hosted distribution, physical and actual-provider/logon/reboot
+acceptance remain open.
