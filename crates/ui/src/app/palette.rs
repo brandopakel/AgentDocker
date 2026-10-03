@@ -148,6 +148,8 @@ pub(super) enum Mark {
         name: String,
         seed: String,
     },
+    /// A tool, by its runtime name: its logo, or the terminal glyph.
+    Tool(String),
 }
 
 /// What a row shows at its right edge.
@@ -573,6 +575,10 @@ fn item_view<'a>(item: &Item, active: bool, c: Colors) -> Element<'a, Message> {
     let mark: Element<'a, Message> = match &item.mark {
         Mark::Glyph(glyph) => container(icon(*glyph, ink, 16.0)).center(20).into(),
         Mark::Monogram { name, seed } => monogram(name, seed, 20.0, c),
+        Mark::Tool(runtime) => match super::logos::Logo::for_runtime(runtime) {
+            Some(logo) => super::view::logo_tile(logo, 20.0, c),
+            None => container(icon(Icon::Terminal, ink, 16.0)).center(20).into(),
+        },
     };
     let mut words = row![
         text(item.label.clone())
@@ -859,7 +865,7 @@ impl App {
                     group: Group::Tools,
                     label: runtime.label.clone(),
                     detail: short_path(cli),
-                    mark: Mark::Glyph(Icon::Terminal),
+                    mark: Mark::Tool(runtime.name.clone()),
                     hint: Hint::None,
                     run: Run::send(Message::LaunchWith(runtime.name.clone()), None),
                 })

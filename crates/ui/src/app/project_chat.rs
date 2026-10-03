@@ -2,7 +2,7 @@
 use super::icons::{Icon, icon};
 use super::messages::look::{link, with_presence};
 use super::style::{Colors, weight};
-use super::view::{dot, monogram, note, rule};
+use super::view::{agent_mark, dot, note, rule};
 use super::*;
 use crate::controls::{Kind, custom, custom_sized};
 use iced::{
@@ -250,7 +250,7 @@ impl App {
                 "Open agent",
                 row![
                     with_presence(
-                        monogram(&name, &id, 28.0, c),
+                        agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 28.0, c),
                         28.0,
                         Some(self.chat_agent_tone(agent, c)),
                         c.ground,
@@ -339,7 +339,7 @@ impl App {
                 name.clone(),
                 row![
                     with_presence(
-                        monogram(&name, &id, 20.0, c),
+                        agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 20.0, c),
                         20.0,
                         Some(self.chat_agent_tone(agent, c)),
                         c.ground,

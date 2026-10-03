@@ -6,7 +6,7 @@
 use super::icons::{Icon, icon};
 use super::panes::{Grid, Slot};
 use super::style::{Colors, alpha, weight};
-use super::view::{empty, first_line, monogram, note, panel, pill, rule, split_style};
+use super::view::{empty, first_line, note, panel, pill, rule, split_style};
 use super::*;
 use crate::controls::{
     Kind, custom, custom_sized, framed_composer, input_enabled, input_submitting, popover, primary,
@@ -430,13 +430,13 @@ impl App {
                     .counterpart(summary)
                     .unwrap_or(summary.conversation.as_str());
                 with_presence(
-                    monogram(&label, seed, 28.0, c),
+                    super::view::agent_mark(self.runtime_of(seed), &label, seed, 28.0, c),
                     28.0,
                     presence.map(|live| if live { c.green } else { c.faint }),
                     ring,
                 )
             }
-            ConversationKind::Notices => monogram("AgentDocker", "agentdocker", 28.0, c),
+            ConversationKind::Notices => super::view::brand_tile(28.0, c),
             ConversationKind::Collision => channel_mark(28.0, c.amber, c),
             _ => channel_mark(28.0, c.muted, c),
         };
@@ -1049,7 +1049,7 @@ impl App {
         let mark: Element<'_, Message> = if system {
             disc(Icon::Pulse, mark_size, c)
         } else if head {
-            monogram(&name, from, mark_size, c)
+            super::view::agent_mark(self.runtime_of(from), &name, from, mark_size, c)
         } else {
             Space::new().width(mark_size).height(1.0).into()
         };
@@ -1308,7 +1308,13 @@ impl App {
                         format!("mention-{id}"),
                         format!("@{}", agent.spec.name),
                         row![
-                            monogram(&shown, id, 20.0, c),
+                            super::view::agent_mark(
+                                Some(agent.spec.runtime.as_str()),
+                                &shown,
+                                id,
+                                20.0,
+                                c
+                            ),
                             container(
                                 text(shown.clone())
                                     .size(13)
@@ -1638,7 +1644,13 @@ impl App {
                                 shown.clone(),
                                 row![
                                     with_presence(
-                                        monogram(&shown, id, 24.0, c),
+                                        super::view::agent_mark(
+                                            Some(agent.spec.runtime.as_str()),
+                                            &shown,
+                                            id,
+                                            24.0,
+                                            c
+                                        ),
                                         24.0,
                                         Some(c.green),
                                         c.card,
@@ -1714,7 +1726,13 @@ impl App {
                                 shown.clone(),
                                 row![
                                     Self::checkbox(picked, c),
-                                    monogram(&shown, id, 20.0, c),
+                                    super::view::agent_mark(
+                                        Some(agent.spec.runtime.as_str()),
+                                        &shown,
+                                        id,
+                                        20.0,
+                                        c
+                                    ),
                                     container(
                                         text(shown)
                                             .size(13)
@@ -1814,7 +1832,13 @@ impl App {
                     let shown = self.name_of(id);
                     container(
                         row![
-                            monogram(&shown, id, 24.0, c),
+                            super::view::agent_mark(
+                                Some(agent.spec.runtime.as_str()),
+                                &shown,
+                                id,
+                                24.0,
+                                c
+                            ),
                             column![
                                 text(shown.clone())
                                     .size(13)
@@ -1926,7 +1950,7 @@ impl App {
             && let Some(id) = self.counterpart(&summary)
         {
             title_row = title_row.push(with_presence(
-                monogram(&label, id, 28.0, c),
+                super::view::agent_mark(self.runtime_of(id), &label, id, 28.0, c),
                 28.0,
                 Some(if self.agent_live(id) {
                     c.green
