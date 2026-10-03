@@ -590,70 +590,44 @@ Integration with accepted growing-source accounting requires final checks and
 follow-up review; hosted distribution, physical and actual-provider/logon/reboot
 acceptance remain open.
 
-Windows browser-connector service source now provides `connector install`,
-`enable` and `uninstall` through a distinct limited per-user login task.
-The owned daemon login service is a prerequisite, started through its own task;
-no on-demand daemon is launched within the connector task. Registration checks
-the exact action, ownership marker and current-user principal before mutation.
-A private run record pins PID, kernel birth and a new nonce; uninstall requests
-that generation's graceful exit and tunnel teardown before removing its task.
-The task action retains the selected daemon endpoint and strips session identity
-from the environment. Differently configured/foreign tasks and browser grants
-are preserved. This candidate is unvalidated: native fresh-home/install/enable/
-replace/uninstall, interrupted update, daemon-survival, crash and login/reboot
-checks remain required.
+Windows browser-connector service source provides `connector install`, `enable`
+and `uninstall` through a distinct limited per-user login task. The owned daemon
+login service is a prerequisite, started through its own task; no on-demand
+daemon is launched within the connector task. Registration checks the exact
+action, ownership marker and current-user principal before mutation. A private
+run record pins PID, kernel birth and a new nonce; uninstall requests that
+generation's graceful exit and tunnel teardown before removing its task. The
+task captures the selected daemon endpoint and absolute configured paths while
+stripping session identity. Differently configured/foreign tasks and browser
+grants are preserved. A stopped connector registration protects installed
+launchers without retaining unrelated inactive payloads.
 
-The connector candidate has an opt-in extracted-package fixture for the owned
-Task Scheduler/HTTP lifecycle: missing daemon dependency, conservative enable,
-stale stop generation, changed/foreign task refusal, interrupted registration,
-explicit replacement, crash restart and graceful uninstall. It checks the daemon
-identity and seeded grant bytes are retained. No public tunnel, real consent or
-reboot is exercised. The initial Windows build failed strict unused-code checks;
-platform-specific helpers/imports are corrected, and native acceptance remains
-pending. Cleanup attempts both service records and retains the original serving
-error if record cleanup also fails.
-
-The same connector fixture also runs through installed stable launchers and
-verifies that a stopped connector registration, after daemon uninstall, still
-prevents launcher removal without retaining unrelated inactive payloads. An
-additional compile failure exposed Unix service-label constants still imported
-by the shared maintenance module; those constants remain available on Windows.
-The initial compiler failures and corrected acceptance are tracked separately;
-no native connector pass is claimed yet.
-
-The first compiled connector lifecycle (`53cb17ea`) passed read-only cold setup
-and missing-dependency refusal, then failed readiness: a run/status record named
-a process which exited, while its redirected log stayed empty. Owned cleanup
-completed without forced processes or errors. The task used Windows PowerShell
-5.1's Stop policy around native stderr, including the connector's normal banner.
-The correction retains strict setup, switches the native-command boundary to
-Continue, and propagates the executable exit code. A paired native-stderr
-control plus the full lifecycle must pass before this is accepted. Fixture
-snapshot reads also permit atomic replacement and require one matching live
-process generation; no longer readiness deadline or replay is introduced.
-
-With `AGENTDOCKER_STARTUP_TRACE=1`, Windows service operations also retain a
-private `windows-service-trace.log` with per-operation Rust entry/return,
-PowerShell entry/completion, task lookup and ownership phases. The trace resets
-above64KiB before another operation and contains no task arguments or credentials.
-It is best effort, creates no missing cold state home, and leaves the existing
-20-second command bound unchanged. Both native service fixtures retain it. This
-narrows future Scheduler timeouts; it does not diagnose historical failures.
-
+The owned task retries failed native exits after two seconds, at most three
+times; ten stable minutes reset the budget. A clean exit stays stopped, and
+Scheduler-level retries are disabled. Strict setup errors remain fatal while
+the native-command boundary captures ordinary stderr and its actual exit code.
 Scheduler operations stage at most 512 KiB of UTF-8 script in a fresh private
-temporary file, retained only until the bounded command exits. A short encoded
-loader reads its exact contents, avoiding command-line expansion of repeated
-current/previous ownership checks. The writer is closed before PowerShell reads
-it; Task Scheduler actions and ownership comparisons remain exact. On
-`1b240a64`, phase traces worked and daemon lifecycle/startup/HTTP passed, but
-repeated enablement exceeded the Windows command-line limit before PowerShell
-started. The corrected full connector lifecycle remains unaccepted.
+temporary file. A short encoded loader reads it after its writer is closed,
+avoiding Windows' command-line limit while retaining exact ownership checks.
+The temporary file is removed after the bounded command exits.
 
-Native `3d8bd088` passed portable startup, daemon lifecycle and eleven connector
-checks through repeated enable, stale-stop refusal, changed/foreign ownership
-refusal and interrupted-registration repair. Scheduler failure settings did not
-restart the deliberately killed connector within 100 seconds; owned cleanup was
-unforced and complete. The task now retries failed native exits itself, after
-two seconds, at most three times; ten stable minutes reset the budget. A clean
-exit stays stopped, and Scheduler-level retries are disabled. Complete portable
-and installed connector lifecycle acceptance is still pending.
+With `AGENTDOCKER_STARTUP_TRACE=1`, service operations retain a private
+`windows-service-trace.log` with Rust/PowerShell entry/return and task lookup/
+ownership phases. It resets above 64 KiB before another operation, excludes
+arguments and credentials, creates no missing cold state home, and preserves
+the 20-second command bound. An earlier Scheduler timeout remains unexplained.
+
+Native `f28d85ae` passed 17 portable and 21 installed connector checks, including
+relative-path startup/HTTP, repeated enable, stale/foreign ownership refusal,
+interrupted registration repair, replacement, crash restart and graceful
+uninstall. Daemon identity and seeded grant bytes survived; owned tasks,
+processes and scratch were removed without forced cleanup or errors. The same
+run passed 62 portable package, 44 installer, 11 portable daemon-service and
+13 installed daemon-service checks with matching source/tree/binary hashes.
+Full local verification passed 1,471 Rust and 169 Python checks (one skipped),
+with zero retries. Original failures and exact trial pins remain in
+[the verification index](verification/INDEX.md).
+
+Final integration/review, public tunnels, real browser consent/CIMD and
+login/reboot remain open. Seeded grant preservation does not establish OAuth
+acceptance, and the native fixture does not exercise a public tunnel or reboot.

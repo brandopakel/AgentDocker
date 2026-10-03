@@ -25,20 +25,15 @@ and login/reboot remain. These trials do not update the published beta.4 package
 or prove a hosted Windows upgrade. See [the Windows port](WINDOWS-PORT.md) for
 the exact scope.
 
-A separate Windows browser-connector candidate implements owned login-task
-registration, relative-path capture, conservative enablement and graceful
-process-generation-scoped shutdown. It requires an already installed owned
-daemon task. Native trials reached serving HTTP with the selected daemon;
-identical enablement now preserves the running task's log handle. Scheduler
-operations use a bounded private temporary script so repeated ownership checks
-do not exceed Windows' command-line limit. Opt-in phase traces distinguish
-process entry, task lookup and ownership; an earlier 20-second Scheduler timeout
-remains unexplained. Full local gates passed, but corrected portable/installed
-connector lifecycle, crash/reboot and actual browser/tunnel acceptance remain
-unverified. The `3d8bd088` native trial passed repeated enable, foreign ownership
-refusal and interrupted-install repair, then failed Scheduler crash recovery.
-The owned task now provides bounded failed-exit supervision with clean exits
-remaining stopped; corrected acceptance is pending. Exact failures and partial passes are retained in
+The Windows browser-connector candidate implements an owned login task with
+captured configuration paths, conservative enablement and graceful shutdown
+scoped to the exact process generation. An owned daemon task is required.
+Native `f28d85ae` passed both portable and installed connector lifecycles,
+including crash recovery, repeated enable, ownership refusals, interrupted
+registration repair and retained daemon/grant bytes. Full local verification
+also passed. Final integration/review, real browser/tunnel/CIMD acceptance and
+login/reboot remain. An earlier 20-second Scheduler timeout remains unexplained;
+opt-in phase traces and the original failed trials are retained in
 [the verification index](verification/INDEX.md).
 
 **The rollout is not complete.** The user requires macOS, Linux and native
