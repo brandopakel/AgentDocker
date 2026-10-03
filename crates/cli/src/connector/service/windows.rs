@@ -272,7 +272,7 @@ pub(super) fn install(layout: &Layout, dry_run: bool, enable: bool) -> Result<()
             ..pending
         },
     )?;
-    println!(
+    eprintln!(
         "Connector login service enabled; `agentdocker connector status` reports readiness. Log: {}",
         layout.log().display()
     );
@@ -294,7 +294,7 @@ pub(super) fn uninstall(layout: &Layout, dry_run: bool) -> Result<()> {
             &layout.user_home,
             &scheduler::task_context_named(&task_name(&layout.home), None),
         )?;
-        println!("the Windows connector service is not installed");
+        eprintln!("the Windows connector service is not installed");
         return Ok(());
     }
     let _lock = lock::try_exclusive(&directory(&layout.home).join("windows-service.lock"))?
@@ -310,12 +310,13 @@ pub(super) fn uninstall(layout: &Layout, dry_run: bool) -> Result<()> {
         ),
     )?;
     std::fs::remove_file(receipt_path(&layout.home))?;
-    println!("Connector login service removed; daemon and browser grants retained");
+    eprintln!("Connector login service removed; daemon and browser grants retained");
     Ok(())
 }
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct RunArgs {
+    /// Ownership marker from this home's registered connector task.
     #[arg(long)]
     owner: String,
     #[command(flatten)]

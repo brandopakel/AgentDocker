@@ -248,6 +248,9 @@ publication of its exact process generation. It waits up to 30 seconds for an
 in-progress install/remove operation, then rechecks the receipt; removal holds
 the same lock while stopping the published generation. The runtime releases
 this lock before serving, so graceful shutdown does not wait on the remover.
-This review correction and its native delayed-start/ownership-revocation fixture
-await full local and Windows validation; earlier sequential passes do not prove
-the concurrent-startup case.
+Source `a64fd575` passed the full local gate (1,511 Rust and 169 Python tests
+run, zero retries). Independent follow-up review requested status-output and
+help/documentation corrections, now applied. The native delayed-start fixture
+and final validation/review remain pending; earlier sequential passes do not
+prove the concurrent-startup case. Service confirmations go to stderr, as on
+Unix; dry-run plans remain on stdout.

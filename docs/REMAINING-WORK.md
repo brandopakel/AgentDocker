@@ -187,5 +187,8 @@ The Windows connector follow-up review identified a startup/removal race: a
 runner could validate ownership before uninstall observed its process record.
 The candidate now serializes validation/publication with service mutations and
 rechecks ownership after waiting. A native fixture delays startup under the real
-lock and revokes ownership before release. This correction awaits full local,
-Windows lifecycle and independent review; PR #284 remains draft meanwhile.
+lock and revokes ownership before release. Source `a64fd575` passed the full
+local gate (1,511 Rust and 169 Python tests run, zero retries). Follow-up review
+requested human status output on stderr, ownership-flag help and current
+validation wording; these are corrected. Windows lifecycle execution and final
+validation/review remain pending before integration.
