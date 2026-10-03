@@ -612,3 +612,11 @@ reboot is exercised. The initial Windows build failed strict unused-code checks;
 platform-specific helpers/imports are corrected, and native acceptance remains
 pending. Cleanup attempts both service records and retains the original serving
 error if record cleanup also fails.
+
+The same connector fixture also runs through installed stable launchers and
+verifies that a stopped connector registration, after daemon uninstall, still
+prevents launcher removal without retaining unrelated inactive payloads. An
+additional compile failure exposed Unix service-label constants still imported
+by the shared maintenance module; those constants remain available on Windows.
+The initial compiler failures and corrected acceptance are tracked separately;
+no native connector pass is claimed yet.

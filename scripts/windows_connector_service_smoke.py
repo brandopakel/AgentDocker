@@ -24,6 +24,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary-dir', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--installed-prefix', type=Path)
     args = parser.parse_args()
     if os.name != 'nt':
         parser.error('native Windows and an interactive logon are required')
@@ -32,6 +33,13 @@ def main():
 
     binaries = args.binary_dir.resolve(strict=True)
     cli, daemon = (binaries / name for name in ('agentdocker.exe', 'agentd.exe'))
+    selected = binaries
+    if args.installed_prefix:
+        store = args.installed_prefix.resolve(strict=True) / 'AgentDocker/desktop'
+        assert os.path.samefile(binaries, store / 'bin')
+        activation = json.loads((store / 'activation.json').read_text(encoding='utf-8'))
+        selected = store / 'versions' / activation['current']['id'] / 'AgentDocker'
+    selected_cli, selected_daemon = (selected / name for name in ('agentdocker.exe', 'agentd.exe'))
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     token = uuid.uuid4().hex
@@ -49,6 +57,7 @@ def main():
     origin = 'https://connector-smoke.example.invalid'
     serve_args = ['--public-url', origin, '--bind', '127.0.0.1:0']
     report = {'result': 'failed', 'scope': __doc__, 'home': str(home),
+              'installed_launchers': bool(args.installed_prefix),
               'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
               'driver_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'binary_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -142,12 +151,20 @@ def main():
         while time.monotonic() < until:
             try:
                 value = ping()
-                process = remember(value['pid'], daemon, ['--home'])
+                process = remember(value['pid'], selected_daemon, ['--home'])
                 argv = process.cmdline()
                 assert os.path.samefile(argv[argv.index('--home') + 1], home)
                 supervisor = process.parent()
                 assert supervisor is not None
-                remember(supervisor.pid, cli, ['daemon', 'supervise'])
+                if args.installed_prefix:
+                    remember(supervisor.pid, daemon, ['--home'])
+                    supervisor = supervisor.parent()
+                    assert supervisor is not None
+                remember(supervisor.pid, selected_cli, ['daemon', 'supervise'])
+                if args.installed_prefix:
+                    bootstrap = supervisor.parent()
+                    assert bootstrap is not None
+                    remember(bootstrap.pid, cli, ['daemon', 'supervise'])
                 return process
             except (OSError, TimeoutError, psutil.Error):
                 time.sleep(0.1)
@@ -161,7 +178,11 @@ def main():
                 status = json.loads((root / 'serve.json').read_text(encoding='utf-8'))
                 running = json.loads(running_path.read_text(encoding='utf-8'))
                 assert status['pid'] == running['process']['pid']
-                process = remember(status['pid'], cli, ['connector', 'service-run'])
+                process = remember(status['pid'], selected_cli, ['connector', 'service-run'])
+                if args.installed_prefix:
+                    bootstrap = process.parent()
+                    assert bootstrap is not None
+                    remember(bootstrap.pid, cli, ['connector', 'service-run'])
                 identity = (process.pid, process.create_time())
                 if previous == identity or status['public_url'] != expected_origin:
                     time.sleep(0.1)
@@ -289,6 +310,35 @@ def main():
             refused = run('connector', operation, *arguments, check=False)
             step(f'{operation} preserves a foreign case-variant task', refused['exit'] != 0 and
                  task_xml(foreign_task) == foreign_xml and not receipt_path.exists())
+        assert task_xml(foreign_task) == foreign_xml
+        powershell(f"Unregister-ScheduledTask -TaskPath '\\' -TaskName {quote(foreign_task)} -Confirm:$false")
+        assert not task_xml(foreign_task)
+        foreign_task = foreign_xml = None
+        report['foreign_task_removed'] = True
+        if args.installed_prefix:
+            connector_installed = True
+            run('connector', 'enable', *serve_args)
+            stopped, _, generation = connector_ready()
+            fixture_json(stop_path, generation)
+            stopped.wait(timeout=25)
+            step('owned stop exits cleanly while preserving its login registration',
+                 not running_path.exists() and not stop_path.exists() and receipt_path.exists() and
+                 state_path.read_bytes() == state_bytes)
+            run('daemon', 'uninstall')
+            daemon_installed = False
+            daemon_process.wait(timeout=10)
+            blocked = run('desktop', '--prefix', str(args.installed_prefix), 'uninstall', '--preview', check=False)
+            step('a stopped connector alone protects installed launchers after daemon uninstall',
+                 blocked['exit'] != 0 and 'service references this installation' in blocked['stderr'])
+            maintenance = json.loads(run('desktop', '--prefix', str(args.installed_prefix),
+                                         'prune', '--preview')['stdout'])
+            step('connector registration on stable paths does not pin unrelated inactive versions',
+                 all(item['reason'] != 'a stopped service may reference retained binaries'
+                     for item in maintenance['maintenance']['retained']))
+            run('connector', 'uninstall')
+            connector_installed = False
+            step('stopped connector can uninstall after its dependency was removed',
+                 not receipt_path.exists() and not task_xml(task) and state_path.read_bytes() == state_bytes)
         report['result'] = 'passed'
     except Exception as error:
         report['error'] = f'{type(error).__name__}: {error}'

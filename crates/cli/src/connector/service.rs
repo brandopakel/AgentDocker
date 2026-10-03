@@ -18,9 +18,7 @@ use crate::service::{Cmd, Plan};
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod windows;
 
-#[cfg(any(not(windows), test))]
 pub const LABEL: &str = "dev.agentdocker.connector";
-#[cfg(any(not(windows), test))]
 pub const UNIT: &str = "agentdocker-connector.service";
 
 /// What a serving connector writes about itself lives in the host crate,
