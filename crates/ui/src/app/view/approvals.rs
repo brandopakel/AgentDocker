@@ -1274,7 +1274,7 @@ impl App {
                 })
                 .unwrap_or_default();
             let mut row_content = row![
-                monogram(&name, id, 28.0, c),
+                self.agent_mark_for(id, &name, 28.0, c),
                 column![
                     row![
                         text(name.clone())
@@ -1531,7 +1531,7 @@ impl App {
             ));
         }
         let mark: Element<'_, Message> = if show_name {
-            monogram(&name, &message.from, 28.0, c)
+            self.agent_mark_for(&message.from, &name, 28.0, c)
         } else {
             Space::new().width(28).into()
         };
