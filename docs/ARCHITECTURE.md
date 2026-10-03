@@ -202,7 +202,9 @@ does not depend on that directory. Windows tunnel discovery searches for the
 native `.exe` names. The task captures native output with `Continue` and returns
 the native exit code, since PowerShell 5.1's `Stop` aborts on ordinary stderr.
 `enable` preserves a differently configured service; `install` explicitly
-replaces only an owned task. Graceful stop requests name the exact process birth
+replaces only an owned task. Identical enablement leaves the running task's log
+handle intact; only a new/replaced task prepares the log for writing. Graceful
+stop requests name the exact process birth
 and a fresh run nonce in private bounded snapshots, then wait for tunnel cleanup
 before stopping the task. Browser grants and daemon state are retained. This
 candidate still requires full and native lifecycle acceptance; no new daemon

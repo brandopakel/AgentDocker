@@ -253,7 +253,13 @@ pub(super) fn install(layout: &Layout, dry_run: bool, enable: bool) -> Result<()
             _ => None,
         }),
     };
-    dirs::private_file(&layout.log(), true, false)?;
+    // A running PowerShell task keeps the log open without sharing writes.
+    // Identical enablement must leave that task and its output handle intact.
+    // A new/replaced definition prepares its private log before it is started.
+    if !enable || selected != "current" {
+        dirs::private_file(&layout.log(), true, false)
+            .context("cannot prepare the connector service log")?;
+    }
     write(&receipt_path(&layout.home), &pending)?;
     scheduler::evaluate_at(&layout.user_home, &install_script(&pending, enable))?;
     write(

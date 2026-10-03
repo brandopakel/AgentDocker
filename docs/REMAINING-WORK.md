@@ -42,8 +42,11 @@ reproduced that behavior; native exit-code handling then reached serving HTTP on
 `0de2747f`. That trial stopped at a fixture ACL module-load error and cleaned all
 owned tasks/processes without force. Configured relative paths are now captured
 before registration, and tunnel lookup includes native `.exe` names. Full native
-lifecycle, daemon survival, crash/reboot and actual browser/tunnel acceptance
-remain unverified.
+lifecycle on `17bbbdae` confirmed those paths and reached HTTP, then failed
+identical enablement because it reopened the running task's unshared log for
+writing. Identical enablement now preserves that handle. Cleanup passed without
+force/errors. Both full local gates passed; corrected native lifecycle, daemon
+survival, crash/reboot and actual browser/tunnel acceptance remain unverified.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its
