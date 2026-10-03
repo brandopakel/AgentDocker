@@ -132,10 +132,42 @@ impl<'a> Naming<'a> {
         ids
     }
 
-    /// Whether a record is a former id of another: shown under that one,
-    /// not listed as an agent of its own.
+    /// Whether a record is a former id of another, or a second live record
+    /// of one session: shown under the record that stands for it, not
+    /// listed or counted as an agent of its own.
     pub fn folded(&self, agent: &AgentRecord) -> bool {
-        self.aliases.contains_key(agent.id.as_str())
+        self.aliases.contains_key(agent.id.as_str()) || self.duplicate(agent)
+    }
+
+    /// One provider session the daemon holds twice — live records with the
+    /// same process birth, runtime, project and named session — and this
+    /// is not the record that stays. The daemon folds such a record into
+    /// the one that stays as soon as nothing would be lost; until it has,
+    /// the session is one row here. Nothing else is evidence: no name,
+    /// directory or pid alone.
+    fn duplicate(&self, agent: &AgentRecord) -> bool {
+        // Cheap refusals first: lists ask this of every record, most of
+        // them ended.
+        if !agent.status.is_live()
+            || agent.process_started_at.is_none()
+            || agent
+                .spec
+                .labels
+                .get("session_id")
+                .is_none_or(|id| id.is_empty())
+        {
+            return false;
+        }
+        let session: Vec<&AgentRecord> = self
+            .agents
+            .iter()
+            .filter(|other| {
+                other.id == agent.id || agentdocker_core::identity::same_live_session(other, agent)
+            })
+            .collect();
+        session.len() > 1
+            && agentdocker_core::identity::keeper(session, |_| false)
+                .is_some_and(|kept| kept.id != agent.id)
     }
 
     /// The line under a name, when the checkout says where the session
@@ -349,5 +381,64 @@ mod tests {
         let names = Naming::new(&agents, &aliases);
         assert!(names.display(&current).starts_with("Claude Code · "));
         assert_eq!(names.display(&former), names.display(&current));
+    }
+
+    /// The daemon can hold one session twice for a while: a hook that ran
+    /// from a subdirectory registered a second live record for the same
+    /// process and session (`claude-83083752` beside `claude-code-2923`),
+    /// and the daemon folds it only once nothing would be lost. Until then
+    /// the session is one row — the record that stays — and is counted
+    /// once. Two sessions in one process, or records without a known
+    /// process birth, are not one session.
+    #[test]
+    fn one_session_held_twice_is_one_row_until_the_daemon_folds_it() {
+        let born = Utc::now() - Duration::hours(1);
+        let session = |name: &str, id: &str, session: &str, minutes: i64| {
+            let mut record = record(name, "claude-code", id, "/p/a");
+            record.pid = Some(51890);
+            record.process_started_at = Some(born);
+            record.created_at = born + Duration::minutes(minutes);
+            record
+                .spec
+                .labels
+                .insert("session_id".into(), session.into());
+            record
+        };
+        let kept = session("claude-code-2923", "id-kept", "83083752", 0);
+        let mut drifted = session("claude-83083752", "id-drifted", "83083752", 35);
+        drifted.spec.workdir = Some("/p/a/artifacts/21st".into());
+        let other = session("claude-0ther000", "id-other", "another-session", 40);
+        let aliases = BTreeMap::new();
+        let agents = vec![drifted.clone(), kept.clone(), other.clone()];
+        let names = Naming::new(&agents, &aliases);
+        assert!(
+            names.folded(&drifted),
+            "the second record is the session's shadow"
+        );
+        assert!(!names.folded(&kept), "the record that stays is listed");
+        assert!(!names.folded(&other), "another session is another agent");
+        // A receiver on the later record makes it the one that stays.
+        let mut receiving = drifted.clone();
+        receiving.input_delivery = Some(agentdocker_core::InputDelivery {
+            process_started_at: born,
+            paused: false,
+            pause_reason: None,
+            reported_at: born,
+            received: None,
+            received_at: None,
+        });
+        let agents = vec![kept.clone(), receiving.clone()];
+        let names = Naming::new(&agents, &aliases);
+        assert!(names.folded(&kept) && !names.folded(&receiving));
+        // Ended, or without a known birth, is no evidence of one session.
+        let mut ended = drifted.clone();
+        ended.status = AgentStatus::Exited { code: None };
+        let mut unknown = drifted.clone();
+        unknown.process_started_at = None;
+        for second in [ended, unknown] {
+            let agents = vec![kept.clone(), second.clone()];
+            let names = Naming::new(&agents, &aliases);
+            assert!(!names.folded(&second) && !names.folded(&kept));
+        }
     }
 }

@@ -187,6 +187,17 @@ pub enum EventKind {
         session: String,
         pid: u32,
     },
+    /// Several live records of one provider session in one process — the
+    /// same process birth, runtime, project and session — were made one:
+    /// the others were retired into `agent` exactly as a resumed session's
+    /// are (queue, documents, observations, aliases), and their ids are
+    /// aliases of it from now on.
+    SessionDuplicatesFolded {
+        agent: AgentId,
+        retired: Vec<AgentId>,
+        session: String,
+        pid: u32,
+    },
     /// An ended session is being brought back by this daemon as a process
     /// it supervises, under the same record; `agent_started` follows when
     /// the process is up, `agent_exited`/failed if it never comes.
