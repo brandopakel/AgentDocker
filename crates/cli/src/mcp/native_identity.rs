@@ -60,10 +60,8 @@ impl Context {
         let Some(host) = table.iter().find(|p| p.pid == pid) else {
             return Ok(None);
         };
-        if !procinfo::is_codex_binary(&host.argv)
-            || !host.argv.iter().any(|v| v == "app-server")
-            || !host.argv.iter().any(|v| v == "--managed-daemon")
-        {
+        // The daemon refuses to register this host by the same predicate.
+        if !procinfo::detached_codex_app_server(&host.argv) {
             return Ok(None);
         }
         let executable = procinfo::executable_path_of(pid)?.canonicalize()?;

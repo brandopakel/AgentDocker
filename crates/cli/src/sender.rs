@@ -73,7 +73,7 @@ fn select(
     runtime: &str,
     owns_provider: impl Fn(&AgentRecord) -> bool,
 ) -> Result<String> {
-    let owners: BTreeSet<_> = agents
+    let records: Vec<&AgentRecord> = agents
         .iter()
         .filter(|agent| {
             agent.status.is_live()
@@ -82,8 +82,21 @@ fn select(
                 && ((agent.pid == Some(pid) && agent.process_started_at == Some(born))
                     || owns_provider(agent))
         })
-        .map(|agent| agent.id.to_string())
         .collect();
+    // One provider session the daemon still holds twice (a hook from a
+    // moved shell registered it again; the daemon folds the second into the
+    // first when nothing would be lost) is one caller: the record that
+    // stays speaks for it, as it answers the session's registrations.
+    if let [first, rest @ ..] = records.as_slice()
+        && !rest.is_empty()
+        && rest
+            .iter()
+            .all(|other| agentdocker_core::identity::same_live_session(first, other))
+        && let Some(kept) = agentdocker_core::identity::keeper(records.iter().copied(), |_| false)
+    {
+        return Ok(kept.id.to_string());
+    }
+    let owners: BTreeSet<_> = records.iter().map(|agent| agent.id.to_string()).collect();
     ensure!(
         owners.len() == 1,
         "provider caller has no unique live registered identity; use its bound MCP tools or specify the sender explicitly"
@@ -163,11 +176,39 @@ mod tests {
         duplicate.process_started_at = agent.process_started_at;
         duplicate.status = AgentStatus::Running;
         assert!(
-            select(&[agent.clone(), duplicate], 20, born, "claude-code", |_| {
-                false
-            })
+            select(
+                &[agent.clone(), duplicate.clone()],
+                20,
+                born,
+                "claude-code",
+                |_| false
+            )
             .is_err()
         );
+        // The same named session held twice is one caller, the record that
+        // stays (the first registered); two sessions in one process are not.
+        let named = |record: &AgentRecord, session: &str| {
+            let mut record = record.clone();
+            record
+                .spec
+                .labels
+                .insert("session_id".into(), session.into());
+            record
+        };
+        let first = named(&agent, "83083752");
+        let mut second = named(&duplicate, "83083752");
+        second.created_at = born + chrono::Duration::minutes(35);
+        for order in [
+            [first.clone(), second.clone()],
+            [second.clone(), first.clone()],
+        ] {
+            assert_eq!(
+                select(&order, 20, born, "claude-code", |_| false).unwrap(),
+                first.id.to_string()
+            );
+        }
+        let other = named(&duplicate, "another-session");
+        assert!(select(&[first, other], 20, born, "claude-code", |_| false).is_err());
         agent.status = AgentStatus::Exited { code: Some(0) };
         assert!(select(&[agent], 20, born, "claude-code", |_| false).is_err());
         assert!(select(&[], 20, born, "claude-code", |_| false).is_err());
