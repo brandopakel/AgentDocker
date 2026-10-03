@@ -310,6 +310,18 @@ def main():
                         report.setdefault('materialization_read_retries', []).append(error.error)
                         time.sleep(0.2)
 
+            def turn_page(cursor=None):
+                value = call('thread/turns/list', {'threadId': thread, 'limit': 1,
+                            'itemsView': 'full', 'sortDirection': 'desc', 'cursor': cursor})
+                assert isinstance(value.get('data'), list) and len(value['data']) <= 1
+                for turn in value['data']:
+                    assert turn.get('id') and isinstance(turn.get('items'), list)
+                return value
+
+            empty = turn_page()
+            step('read-only turn pagination exposes the empty native history',
+                 empty['data'] == [] and empty.get('nextCursor') is None)
+
             # The API's source label is diagnostic only, never process identity.
             time.sleep(1)
             tui.write(draft_text)
@@ -320,14 +332,20 @@ def main():
             def history(expected):
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
-                    # This fresh two-input probe can use bounded full hydration
-                    # without assuming paginated list support or changing the TUI.
-                    view = read_thread(include_turns=True)
-                    assert view['id'] == thread and os.path.samefile(view['cwd'], repo)
-                    turns = view.get('turns', [])
-                    assert len(turns) <= 4
-                    users = [item for turn in turns for item in turn.get('items', [])
-                             if item.get('type') == 'userMessage']
+                    # Exercise the receiver's bounded legacy-store fallback:
+                    # one complete turn per read-only page, no full hydration.
+                    users, cursor, cursors = [], None, set()
+                    for page_number in range(4):
+                        page = turn_page(cursor)
+                        users.extend(item for turn in page['data'] for item in turn['items']
+                                     if item.get('type') == 'userMessage')
+                        cursor = page.get('nextCursor')
+                        if cursor is None:
+                            break
+                        assert isinstance(cursor, str) and cursor and cursor not in cursors
+                        cursors.add(cursor)
+                    else:
+                        raise AssertionError('private two-input history exceeded four pages')
                     if any(expected in json.dumps(item) for item in users):
                         return users
                     time.sleep(0.2)

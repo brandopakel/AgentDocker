@@ -2,6 +2,7 @@
 mod answers;
 mod availability;
 mod bootstrap;
+mod history;
 mod hook_receipts;
 pub mod hooks;
 mod ledger;

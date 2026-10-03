@@ -39,6 +39,16 @@ pub(super) fn steering_refusal(error: &anyhow::Error, expected: &str) -> Option<
         .filter(|actual| !actual.is_empty() && *actual != expected && !actual.contains('`'))
         .map(|_| SteeringRefusal::ChangedTurn)
 }
+/// Only this explicit read-only capability refusal allows turn pagination.
+/// Timeouts, missing threads and arbitrary provider errors remain failures.
+pub(super) fn items_list_unsupported(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<RpcRejection>().is_some_and(|r| {
+        r.method == "thread/items/list"
+            && r.error["code"].as_i64() == Some(-32601)
+            && r.error["message"].as_str() == Some("thread/items/list is not supported yet")
+    })
+}
+
 use std::{collections::VecDeque, path::Path, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader},

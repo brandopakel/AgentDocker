@@ -25,6 +25,11 @@ and login/reboot remain. These trials do not update the published beta.4 package
 or prove a hosted Windows upgrade. See [the Windows port](WINDOWS-PORT.md) for
 the exact scope.
 
+Native Codex source now has a bounded read-only turn-page fallback for stores
+that explicitly lack item pagination. Corrected compatibility acceptance is
+pending. The provider-only authenticated remote-TUI startup/approval passes do
+not close AgentDocker's owned launcher, shared transport or zero-prompt binding.
+
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its
 installer and service are unfinished; it does not fulfill the full Windows

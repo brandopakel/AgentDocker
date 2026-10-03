@@ -1780,3 +1780,12 @@ Initial binding runs after the accepted `turn/start` response so daemon binding
 failure cannot introduce a new pre-submission uncertainty window. Samples
 collected before binding are reassigned by existing usage reconciliation;
 receipt recovery remains required for uncertain provider submissions.
+
+The external native Codex receiver prefers read-only item pagination. Only the
+provider's exact `-32601` “thread/items/list is not supported yet” refusal on
+the first page enables a fallback to `thread/turns/list`, one complete turn per
+page. It preserves exact turn/item receipts and anchors, rejects cursor cycles,
+and bounds each lookup to 100 pages, 5,000 items, 8 MiB and one minute. Transport
+frames remain limited to 4 MiB. Errors after partial pagination, absent/partial
+items, limits and missing receipts retain delivery for recovery; they never
+cause a resubmission or resume the TUI.
