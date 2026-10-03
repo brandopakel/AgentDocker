@@ -22,6 +22,16 @@ impl App {
         self.confirm_stop = None;
     }
 
+    /// Whether a record counts as a live session on screen: live, heard from
+    /// lately if a browser agent reached through the connector (which no
+    /// process ends — `AgentRecord::is_present`), and not the shadow of a
+    /// record that stands for the same session (`Naming::folded`). Counts,
+    /// the current list and a project's agents use this; whether the record
+    /// has ended is still `status.is_live()`.
+    pub(super) fn live_session(&self, agent: &AgentRecord) -> bool {
+        agent.is_present(Utc::now()) && !self.naming().folded(agent)
+    }
+
     pub(super) fn needs_input(&self, id: &str) -> bool {
         self.questions
             .iter()
@@ -95,16 +105,21 @@ impl App {
 
     pub(super) fn session_records(&self, filter: Filter) -> Vec<&AgentRecord> {
         let needle = self.shell.search.to_lowercase();
+        let naming = self.naming();
+        let now = Utc::now();
         let mut records: Vec<_> = self
             .agents
             .iter()
             .filter(|a| {
                 a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
                     && self.has_project(a.project.as_ref())
+                    // One session, one row, in every list.
+                    && !naming.folded(a)
                     && match filter {
-                        Filter::Current => a.status.is_live(),
+                        Filter::Current => a.is_present(now),
                         Filter::NeedsInput => self.needs_attention(a),
-                        Filter::Earlier => !a.status.is_live(),
+                        // Ended, or a browser agent nobody has used lately.
+                        Filter::Earlier => !a.is_present(now),
                     }
                     && format!(
                         "{} {} {} {}",
@@ -403,6 +418,78 @@ mod tests {
         app.shell.search = finished.id.to_string();
         assert!(app.session_records(Filter::Current).is_empty());
         assert_eq!(app.session_records(Filter::Earlier).len(), 1);
+    }
+
+    /// What the desktop counted on the machine that reported it: one Claude
+    /// Code session held twice by the daemon (a hook from a subdirectory
+    /// registered a second record for the same process and session) beside
+    /// a second real session, and browser agents nobody had used for days,
+    /// which no process ends. The project read five where there were two.
+    /// Each session counts once, under the record that stays, and a browser
+    /// agent counts while it is heard from.
+    #[test]
+    fn a_session_held_twice_and_an_unused_browser_agent_are_not_live_sessions() {
+        let mut app = app();
+        let root = std::path::PathBuf::from("/fixture/AgentDocker");
+        let project = ProjectRef::directory(&root);
+        let born = Utc::now() - chrono::Duration::hours(1);
+        let claude = |name: &str, session: &str, pid: u32, minutes: i64| {
+            let mut record = record(name);
+            record.spec.runtime = "claude-code".into();
+            record.project = Some(project.clone());
+            record.pid = Some(pid);
+            record.process_started_at = Some(born);
+            record.created_at = born + chrono::Duration::minutes(minutes);
+            record
+                .spec
+                .labels
+                .insert("session_id".into(), session.into());
+            record
+        };
+        let first = claude("claude-code-2923", "83083752", 51890, 0);
+        let drifted = claude("claude-83083752", "83083752", 51890, 35);
+        let second = claude("claude-code-9529", "b3a71bac", 9529, 10);
+        let mut unused = record("chatgpt-browser-nsq1");
+        unused.spec.runtime = "chatgpt-browser".into();
+        unused.project = Some(project.clone());
+        unused.spec.labels.insert(
+            agentdocker_core::agent::CONNECTOR_LABEL.into(),
+            "true".into(),
+        );
+        unused.last_seen = Utc::now() - chrono::Duration::days(9);
+        let mut in_use = unused.clone();
+        in_use.id = agentdocker_core::AgentId::generate();
+        in_use.spec.name = "claude-browser-9gok".into();
+        in_use.last_seen = Utc::now();
+        app.agents = vec![
+            first.clone(),
+            drifted.clone(),
+            second.clone(),
+            unused.clone(),
+            in_use.clone(),
+        ];
+        assert_eq!(app.live_in(&root), 3, "two sessions and one browser agent");
+        let ids = |records: Vec<&AgentRecord>| {
+            let mut ids: Vec<String> = records.iter().map(|r| r.id.to_string()).collect();
+            ids.sort();
+            ids
+        };
+        let mut expected = vec![
+            first.id.to_string(),
+            second.id.to_string(),
+            in_use.id.to_string(),
+        ];
+        expected.sort();
+        assert_eq!(ids(app.session_records(Filter::Current)), expected);
+        assert_eq!(
+            ids(app.session_records(Filter::Earlier)),
+            vec![unused.id.to_string()],
+            "the unused browser agent is kept, not current; the duplicate is in no list"
+        );
+        assert_eq!(app.activity_label(&unused), "not connected");
+        // Heard from again, it is current again.
+        app.agents[3].last_seen = Utc::now();
+        assert_eq!(app.live_in(&root), 4);
     }
 
     #[test]

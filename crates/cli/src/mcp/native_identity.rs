@@ -72,11 +72,13 @@ impl Context {
         let Some(host) = table.iter().find(|p| p.pid == pid) else {
             return Ok(None);
         };
-        if !procinfo::is_codex_binary(&host.argv) || !host.argv.iter().any(|v| v == "app-server") {
-            return Ok(None);
-        }
-        let cached = host.argv.iter().any(|v| v == "--managed-daemon");
-        if !cached && !host.argv.iter().any(|v| v == "--listen") {
+        // Reuse the daemon's cached-host predicate while also supporting the
+        // explicitly authenticated dedicated server accepted by this receiver.
+        let cached = procinfo::detached_codex_app_server(&host.argv);
+        let dedicated = procinfo::is_codex_binary(&host.argv)
+            && host.argv.iter().any(|v| v == "app-server")
+            && host.argv.iter().any(|v| v == "--listen");
+        if !cached && !dedicated {
             return Ok(None);
         }
         let executable = procinfo::executable_path_of(pid)?.canonicalize()?;
