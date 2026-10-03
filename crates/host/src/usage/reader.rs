@@ -833,11 +833,11 @@ mod tests {
         content.extend_from_slice(row(1).as_bytes());
         std::fs::write(&path, &content).unwrap();
         // This fixture has two records. A cooperative time slice may end
-        // between them on a loaded host; verify its resumable contract rather
-        // than assuming both records always fit in one 100 ms pass.
+        // before or between them on a loaded host; verify bounded continuation
+        // without assuming each 100 ms pass necessarily advances a record.
         let complete = |previous: Option<&Cursor>| {
             let mut batch = scan(&path, Runtime::Claude, previous, Budget::default()).unwrap();
-            for _ in 0..2 {
+            for _ in 0..8 {
                 if batch.stop == Stop::Complete {
                     return batch;
                 }
@@ -849,7 +849,12 @@ mod tests {
                     Budget::default(),
                 )
                 .unwrap();
-                assert!(next.cursor.offset() > batch.cursor.offset());
+                assert!(next.cursor.offset() >= batch.cursor.offset());
+                if next.cursor.offset() == batch.cursor.offset() {
+                    assert_eq!(next.stop, Stop::Budget);
+                    assert!(next.samples.is_empty());
+                    assert!(next.gaps.is_empty());
+                }
                 batch.cursor = next.cursor;
                 batch.stop = next.stop;
                 batch.samples.extend(next.samples);
