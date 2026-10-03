@@ -152,9 +152,10 @@ crash, and what that means for a person:
 - Live daemon reload and the descriptor handover (`daemon reload`): the
   daemon holds no descriptors a successor could inherit; stop and start it.
 - Container workspace transport and grants: the endpoint is a Unix socket.
-- The connector login-service candidate is being implemented separately; its
-  native acceptance remains pending. Per-user desktop installation and
-  local preview update/rollback passed the native lifecycle described below.
+- Per-user desktop installation, local preview update/rollback and both
+  connector login-service lifecycles passed the native trials described below.
+  Hosted Windows publication, actual browser/provider and login/reboot
+  acceptance remain open.
   Daemon login startup is now implemented through
   a limited per-user Task Scheduler task, with a private ownership receipt and
   a bounded crash supervisor. `daemon install`, `uninstall`, `start`, `stop`,
