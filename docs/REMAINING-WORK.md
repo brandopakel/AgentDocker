@@ -72,7 +72,11 @@ actual hook in the existing turn with an exact receipt and no extra user turn.
 Windows `b41faa01` passed 13 checks before hook failure: the Python capture
 wrapper corrupted the non-ASCII checkout path while relaying text between
 different encodings. The wrapper now relays bytes unchanged and checks the
-reported checkout; the failed trial is retained, and native rerun is pending.
+reported checkout. The `de1deb99` rerun preserved Unicode but still failed
+with a missing path: the provider inherited the provider-only environment, so
+hooks lacked the private AgentDocker ledger home that MCP received explicitly.
+The fixture now passes the private receiver environment to the provider and
+verifies the actual hook home. Both failures remain retained; rerun is pending.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its

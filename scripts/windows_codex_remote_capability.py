@@ -202,6 +202,9 @@ def main():
                 helper = Path(__file__).with_name('windows_remote_receiver_fixture.py')
                 report['receiver_helper_sha256'] = hashlib.sha256(helper.read_bytes()).hexdigest()
                 receiver = Receiver(args.binary_dir, root, repo, profile, out, env, report)
+                # Hooks inherit the provider environment. MCP has explicit
+                # config, but hooks also need this private ledger home.
+                env = receiver.env.copy()
                 receiver.start_daemon()
                 config += receiver.mcp_config()
                 config = config.replace('[features]\n', '[features]\nhooks = true\n')

@@ -131,7 +131,7 @@ class Receiver:
             + ',input=raw,capture_output=True,timeout=8)\n'
             + 'with open(' + repr(str(self.hook_log)) + ',"a",encoding="utf-8") as f: '
             + 'f.write(json.dumps({"input":json.loads(raw),"stdout":p.stdout.decode("utf-8"),"stderr":p.stderr.decode("utf-8"),'
-            + '"code":p.returncode,"parent":os.getppid()})+"\\n")\n'
+            + '"code":p.returncode,"parent":os.getppid(),"home":os.environ.get("AGENTDOCKER_HOME")})+"\\n")\n'
             + 'sys.stdout.buffer.write(p.stdout)\nsys.exit(p.returncode)\n', encoding='utf-8')
         self.hooks_config = json.dumps({'hooks': {'PostToolUse': [{'hooks': [{'type': 'command',
             'command': subprocess.list2cmdline([sys.executable, str(runner)])}]}]}})
@@ -144,6 +144,7 @@ class Receiver:
         assert calls and all(h['code'] == 0 and not h['stderr'] and h['input']['session_id'] == thread
                              for h in calls), 'native hook returned an error or different session'
         assert all(os.path.samefile(h['input']['cwd'], self.repo) for h in calls)
+        assert all(h['home'] and os.path.samefile(h['home'], self.home) for h in calls)
         agent = self.rpc({'op': 'inspect', 'agent': self.agent})['agent']
         assert agent['adapter_contacts']['hooks']['process_started_at'] == agent['process_started_at']
         agents = self.rpc({'op': 'list', 'all': True})['agents']
