@@ -100,6 +100,16 @@ def main():
                 ):
                     raise ValueError("service lifecycle did not pass on the exact archive binaries")
                 report["service"] = {"result": "passed", "steps": len(service["steps"])}
+                subprocess.run([sys.executable, str(ROOT / "scripts/windows_connector_service_smoke.py"),
+                                "--binary-dir", str(app), "--output", str(output / "connector-service")],
+                               cwd=scratch, check=True, timeout=600)
+                connector = json.loads((output / "connector-service/result.json").read_text(encoding="utf-8"))
+                if connector.get("result") != "passed" or connector.get("cleanup_errors") or any(
+                    connector.get("binary_sha256", {}).get(name) != info["binary_sha256"][name]
+                    for name in ("agentdocker.exe", "agentd.exe")
+                ):
+                    raise ValueError("connector service did not pass on the exact archive binaries")
+                report["connector_service"] = {"result": "passed", "steps": len(connector["steps"])}
             subprocess.run([sys.executable, str(ROOT / "scripts/windows_install_smoke.py"),
                             "--binary-dir", str(app), "--output", str(output / "installation"),
                             *(["--service"] if args.service else [])],

@@ -9,7 +9,14 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 
 use super::ServeArgs;
-use crate::service::{Cmd, Plan, execute};
+#[cfg(not(windows))]
+use crate::service::execute;
+#[cfg(any(not(windows), test))]
+use crate::service::{Cmd, Plan};
+
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod windows;
 
 pub const LABEL: &str = "dev.agentdocker.connector";
 pub const UNIT: &str = "agentdocker-connector.service";
@@ -23,16 +30,22 @@ pub use agentdocker_host::connector::{
 /// The service's files and commands, from the executable, the state home
 /// and the arguments `serve` was given.
 pub struct Layout {
+    #[cfg_attr(windows, allow(dead_code))]
     pub agentdocker: PathBuf,
     pub home: PathBuf,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub socket: Option<PathBuf>,
     pub user_home: PathBuf,
+    #[cfg_attr(windows, allow(dead_code))]
     pub uid: u32,
     pub serve_args: Vec<String>,
     /// Directories the service's PATH must have: where cloudflared is.
+    #[cfg_attr(windows, allow(dead_code))]
     pub path_dirs: Vec<PathBuf>,
 }
 
 impl Layout {
+    #[cfg(any(not(windows), test))]
     pub fn argv(&self) -> Vec<String> {
         let mut argv = vec![
             self.agentdocker.to_string_lossy().into_owned(),
@@ -47,24 +60,29 @@ impl Layout {
         self.home.join("connector").join("serve.log")
     }
 
+    #[cfg(any(not(windows), test))]
     pub fn plist_path(&self) -> PathBuf {
         self.user_home
             .join("Library/LaunchAgents")
             .join(format!("{LABEL}.plist"))
     }
 
+    #[cfg(any(not(windows), test))]
     pub fn unit_path(&self) -> PathBuf {
         self.user_home.join(".config/systemd/user").join(UNIT)
     }
 
+    #[cfg(any(not(windows), test))]
     fn domain(&self) -> String {
         format!("gui/{}", self.uid)
     }
 
+    #[cfg(any(not(windows), test))]
     fn target(&self) -> String {
         format!("gui/{}/{LABEL}", self.uid)
     }
 
+    #[cfg(any(not(windows), test))]
     fn path_value(&self) -> String {
         let mut dirs: Vec<String> = self
             .path_dirs
@@ -80,12 +98,14 @@ impl Layout {
     }
 }
 
+#[cfg(any(not(windows), test))]
 fn xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
 
+#[cfg(any(not(windows), test))]
 fn systemd_quote(s: &str) -> String {
     if s.chars()
         .all(|c| c.is_ascii_alphanumeric() || "/-._=:@".contains(c))
@@ -99,6 +119,7 @@ fn systemd_quote(s: &str) -> String {
 /// A launchd agent: starts at login, restarts after a crash, not after a
 /// clean exit; its output is the serve log, which holds the banner and
 /// so the pairing code.
+#[cfg(any(not(windows), test))]
 pub fn launchd_plist(layout: &Layout) -> String {
     let args: String = layout
         .argv()
@@ -144,6 +165,7 @@ pub fn launchd_plist(layout: &Layout) -> String {
     )
 }
 
+#[cfg(any(not(windows), test))]
 pub fn systemd_unit(layout: &Layout) -> String {
     let exec: Vec<String> = layout.argv().iter().map(|a| systemd_quote(a)).collect();
     format!(
@@ -166,6 +188,7 @@ pub fn systemd_unit(layout: &Layout) -> String {
     )
 }
 
+#[cfg(any(not(windows), test))]
 pub fn install_plan(layout: &Layout, macos: bool) -> Plan {
     if macos {
         let plist = layout.plist_path();
@@ -212,6 +235,7 @@ pub fn install_plan(layout: &Layout, macos: bool) -> Plan {
     }
 }
 
+#[cfg(any(not(windows), test))]
 pub fn uninstall_plan(layout: &Layout, macos: bool) -> Plan {
     if macos {
         Plan {
@@ -249,6 +273,8 @@ pub fn uninstall_plan(layout: &Layout, macos: bool) -> Plan {
 fn layout(args: &ServeArgs) -> Result<Layout> {
     let agentdocker = std::env::current_exe().context("cannot locate this executable")?;
     let home = agentdocker_host::dirs::home();
+    #[cfg(windows)]
+    let home = home.canonicalize().unwrap_or(home);
     let user_home = std::env::home_dir().context("no home directory")?;
     let mut serve_args = args.to_argv();
     let mut path_dirs = Vec::new();
@@ -280,6 +306,7 @@ fn layout(args: &ServeArgs) -> Result<Layout> {
     Ok(Layout {
         agentdocker,
         home,
+        socket: args.service_socket.clone(),
         user_home,
         uid: crate::service::current_uid_for_service(),
         serve_args,
@@ -290,6 +317,7 @@ fn layout(args: &ServeArgs) -> Result<Layout> {
 /// launchd unloads a job asynchronously: a `bootstrap` right after
 /// `bootout` can meet the old job still there and fail with I/O error 5.
 /// Wait, briefly, until the label is gone.
+#[cfg(not(windows))]
 fn wait_for_bootout(target: &str) {
     for _ in 0..50 {
         let present = std::process::Command::new("launchctl")
@@ -305,6 +333,7 @@ fn wait_for_bootout(target: &str) {
     }
 }
 
+#[cfg(not(windows))]
 pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
     let macos = cfg!(target_os = "macos");
     if !macos && !cfg!(target_os = "linux") {
@@ -346,6 +375,7 @@ pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
 /// Desktop setup must not replace a service configured outside this action.
 /// A complete, synced definition is published exclusively. A concurrent creator
 /// is compared, never overwritten or observed while its content is incomplete.
+#[cfg(any(not(windows), test))]
 fn ensure_definition(path: &std::path::Path, contents: &str) -> Result<()> {
     use std::io::{Read, Write};
     let parent = path.parent().context("service definition has no parent")?;
@@ -378,6 +408,7 @@ fn ensure_definition(path: &std::path::Path, contents: &str) -> Result<()> {
 
 /// Start an identical installed service, or install it without overwriting any
 /// existing definition. This is the conservative entry point for desktop setup.
+#[cfg(not(windows))]
 pub fn enable(args: &ServeArgs, dry_run: bool) -> Result<()> {
     let macos = cfg!(target_os = "macos");
     anyhow::ensure!(
@@ -429,6 +460,7 @@ pub fn enable(args: &ServeArgs, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
 pub fn uninstall(dry_run: bool) -> Result<()> {
     let macos = cfg!(target_os = "macos");
     if !macos && !cfg!(target_os = "linux") {
@@ -438,14 +470,140 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
     execute(&uninstall_plan(&layout, macos), dry_run)
 }
 
+/// A login task does not inherit the installing shell's working directory.
+/// Capture configured project, feed and executable paths before registration.
+#[cfg(any(windows, test))]
+fn capture_windows_paths(args: &ServeArgs, cwd: &std::path::Path) -> Result<ServeArgs> {
+    anyhow::ensure!(
+        cwd.is_absolute(),
+        "service setup directory must be absolute"
+    );
+    let resolve = |path: &std::path::Path| {
+        cwd.join(path)
+            .canonicalize()
+            .with_context(|| format!("cannot resolve connector service path {}", path.display()))
+    };
+    let mut args = args.clone();
+    for path in [
+        &mut args.project,
+        &mut args.cloudflared,
+        &mut args.tailscale,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        *path = resolve(path)?;
+    }
+    for value in &mut args.allow_from {
+        if let Some(raw) = value.strip_prefix('@') {
+            anyhow::ensure!(!raw.is_empty(), "connector feed path is empty");
+            let path = resolve(std::path::Path::new(raw))?;
+            *value = format!(
+                "@{}",
+                path.to_str().context("connector feed path is not UTF-8")?
+            );
+        }
+    }
+    Ok(args)
+}
+
+#[cfg(windows)]
+fn windows_layout(args: &ServeArgs) -> Result<Layout> {
+    if args.tunnel.is_none() && args.public_url.is_none() {
+        bail!("choose a tunnel or provide its public URL");
+    }
+    let captured =
+        capture_windows_arguments(args, &std::env::current_dir()?, |tunnel| match tunnel {
+            "cloudflared" => super::tunnel::find_cloudflared(None),
+            "tailscale" => super::tunnel::find_tailscale(None),
+            _ => unreachable!("only supported tunnel variants are resolved"),
+        })?;
+    layout(&captured)
+}
+
+#[cfg(any(windows, test))]
+fn capture_windows_arguments(
+    args: &ServeArgs,
+    cwd: &std::path::Path,
+    find: impl Fn(&str) -> Result<PathBuf>,
+) -> Result<ServeArgs> {
+    let mut args = capture_windows_paths(args, cwd)?;
+    // Pin discovery before serialization so install and reparsed service-run
+    // produce the same argument order, even with trailing allowlist options.
+    match args.tunnel.as_deref() {
+        Some("cloudflared") if args.cloudflared.is_none() => {
+            args.cloudflared = Some(find("cloudflared")?.canonicalize()?);
+        }
+        Some("tailscale") if args.tailscale.is_none() => {
+            args.tailscale = Some(find("tailscale")?.canonicalize()?);
+        }
+        _ => {}
+    }
+    Ok(args)
+}
+
+#[cfg(windows)]
+pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
+    windows::install(&windows_layout(args)?, dry_run, false)
+}
+
+#[cfg(windows)]
+pub fn enable(args: &ServeArgs, dry_run: bool) -> Result<()> {
+    windows::install(&windows_layout(args)?, dry_run, true)
+}
+
+#[cfg(windows)]
+pub fn uninstall(dry_run: bool) -> Result<()> {
+    windows::uninstall(&layout(&ServeArgs::default())?, dry_run)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovered_windows_tunnel_arguments_survive_service_run_reparse() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parsed {
+            #[command(flatten)]
+            args: ServeArgs,
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("tunnel.exe");
+        std::fs::write(&binary, "fixture").unwrap();
+        for tunnel in ["cloudflared", "tailscale"] {
+            let initial = Parsed::parse_from([
+                "test",
+                "--tunnel",
+                tunnel,
+                "--allow-from",
+                "openai",
+                "--allow-from",
+                "anthropic",
+            ])
+            .args;
+            let captured = capture_windows_arguments(&initial, temp.path(), |kind| {
+                assert_eq!(kind, tunnel);
+                Ok(binary.clone())
+            })
+            .unwrap();
+            let installed = super::layout(&captured).unwrap();
+            let reparsed = Parsed::parse_from(
+                std::iter::once("test".to_string()).chain(installed.serve_args.clone()),
+            )
+            .args;
+            let running = super::layout(&reparsed).unwrap();
+            assert_eq!(installed.serve_args, running.serve_args);
+            assert!(initial.cloudflared.is_none() && initial.tailscale.is_none());
+        }
+    }
 
     fn layout() -> Layout {
         Layout {
             agentdocker: "/opt/agentdocker".into(),
             home: "/Users/p/.agentdocker".into(),
+            socket: None,
             user_home: "/Users/p".into(),
             uid: 501,
             serve_args: vec![
@@ -457,6 +615,55 @@ mod tests {
                 "anthropic".into(),
             ],
             path_dirs: vec!["/opt/homebrew/bin".into()],
+        }
+    }
+
+    #[test]
+    fn login_configuration_captures_paths_without_changing_the_callers_arguments() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("project")).unwrap();
+        std::fs::write(temp.path().join("egress.txt"), "127.0.0.1/32\n").unwrap();
+        std::fs::write(temp.path().join("tunnel.exe"), "fixture").unwrap();
+        let args = ServeArgs {
+            project: Some("project".into()),
+            cloudflared: Some("tunnel.exe".into()),
+            allow_from: vec!["@egress.txt".into(), "openai".into(), "192.0.2.0/24".into()],
+            ..ServeArgs::default()
+        };
+        let captured = capture_windows_paths(&args, temp.path()).unwrap();
+        assert_eq!(
+            captured.project.unwrap(),
+            temp.path().join("project").canonicalize().unwrap()
+        );
+        assert_eq!(
+            captured.cloudflared.unwrap(),
+            temp.path().join("tunnel.exe").canonicalize().unwrap()
+        );
+        assert_eq!(
+            captured.allow_from[0],
+            format!(
+                "@{}",
+                temp.path()
+                    .join("egress.txt")
+                    .canonicalize()
+                    .unwrap()
+                    .display()
+            )
+        );
+        assert_eq!(&captured.allow_from[1..], &args.allow_from[1..]);
+        assert_eq!(args.project.unwrap(), PathBuf::from("project"));
+        assert_eq!(args.allow_from[0], "@egress.txt");
+    }
+
+    #[test]
+    fn login_configuration_refuses_an_unresolved_feed_before_registration() {
+        let temp = tempfile::tempdir().unwrap();
+        for value in ["@missing", "@"] {
+            let args = ServeArgs {
+                allow_from: vec![value.into()],
+                ..ServeArgs::default()
+            };
+            assert!(capture_windows_paths(&args, temp.path()).is_err());
         }
     }
 

@@ -152,8 +152,10 @@ crash, and what that means for a person:
 - Live daemon reload and the descriptor handover (`daemon reload`): the
   daemon holds no descriptors a successor could inherit; stop and start it.
 - Container workspace transport and grants: the endpoint is a Unix socket.
-- The connector service remains unavailable. Per-user desktop installation and
-  local preview update/rollback passed the native lifecycle described below.
+- Per-user desktop installation, local preview update/rollback and both
+  connector login-service lifecycles passed the native trials described below.
+  Hosted Windows publication, actual browser/provider and login/reboot
+  acceptance remain open.
   Daemon login startup is now implemented through
   a limited per-user Task Scheduler task, with a private ownership receipt and
   a bounded crash supervisor. `daemon install`, `uninstall`, `start`, `stop`,
@@ -588,3 +590,45 @@ The earlier fixture failures are retained in the verification index.
 Integration with accepted growing-source accounting requires final checks and
 follow-up review; hosted distribution, physical and actual-provider/logon/reboot
 acceptance remain open.
+
+Windows browser-connector service source provides `connector install`, `enable`
+and `uninstall` through a distinct limited per-user login task. The owned daemon
+login service is a prerequisite, started through its own task; no on-demand
+daemon is launched within the connector task. Registration checks the exact
+action, ownership marker and current-user principal before mutation. A private
+run record pins PID, kernel birth and a new nonce; uninstall requests that
+generation's graceful exit and tunnel teardown before removing its task. The
+task captures the selected daemon endpoint and absolute configured paths while
+stripping session identity. Differently configured/foreign tasks and browser
+grants are preserved. A stopped connector registration protects installed
+launchers without retaining unrelated inactive payloads.
+
+The owned task retries failed native exits after two seconds, at most three
+times; ten stable minutes reset the budget. A clean exit stays stopped, and
+Scheduler-level retries are disabled. Strict setup errors remain fatal while
+the native-command boundary captures ordinary stderr and its actual exit code.
+Scheduler operations stage at most 512 KiB of UTF-8 script in a fresh private
+temporary file. A short encoded loader reads it after its writer is closed,
+avoiding Windows' command-line limit while retaining exact ownership checks.
+The temporary file is removed after the bounded command exits.
+
+With `AGENTDOCKER_STARTUP_TRACE=1`, service operations retain a private
+`windows-service-trace.log` with Rust/PowerShell entry/return and task lookup/
+ownership phases. It resets above 64 KiB before another operation, excludes
+arguments and credentials, creates no missing cold state home, and preserves
+the 20-second command bound. An earlier Scheduler timeout remains unexplained.
+
+Native review-correction source `30e78859` passed 17 portable and 21 installed connector checks, including
+relative-path startup/HTTP, repeated enable, stale/foreign ownership refusal,
+interrupted registration repair, replacement, crash restart and graceful
+uninstall. Daemon identity and seeded grant bytes survived; owned tasks,
+processes and scratch were removed without forced cleanup or errors. The same
+run passed 62 portable package, 44 installer, 11 portable daemon-service and
+13 installed daemon-service checks with matching source/tree/binary hashes.
+Full local verification passed 1,497 Rust and 169 Python checks (one skipped),
+with zero retries. Original failures and exact trial pins remain in
+[the verification index](verification/INDEX.md).
+
+Final integration/review, public tunnels, real browser consent/CIMD and
+login/reboot remain open. Seeded grant preservation does not establish OAuth
+acceptance, and the native fixture does not exercise a public tunnel or reboot.
