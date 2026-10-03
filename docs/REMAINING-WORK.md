@@ -17,9 +17,11 @@ Native Windows source implements installation, local preview-feed update/rollbac
 maintenance and Task Scheduler service interlocks. Activation succeeds even when
 extraction cleanup fails, with the retained path and error reported in the CLI
 and app. Native installer and both service lifecycles passed on integrated
-`c9980fa6`; the held-handle cleanup regression passed on `f155249d`. Local and CI
-full-suite evidence and revision-by-revision trials are retained in
-[the verification index](verification/INDEX.md). Final integration/review, hosted
+`c9980fa6`; the held-handle cleanup regression passed on `f155249d`. UI integration
+`97b25b83` passed the full local gate: 1,493 Rust tests and 169 Python tests run
+(one Python test skipped), with zero retries. Local and CI full-suite evidence
+and revision-by-revision trials are retained in
+[the verification index](verification/INDEX.md). Final CI/follow-up review, hosted
 Windows publication, Start menu/PATH, physical and actual-provider acceptance,
 and login/reboot remain. These trials do not update the published beta.4 package
 or prove a hosted Windows upgrade. See [the Windows port](WINDOWS-PORT.md) for
