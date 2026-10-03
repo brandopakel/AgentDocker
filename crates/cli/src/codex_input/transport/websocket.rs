@@ -115,6 +115,21 @@ mod tests {
 
     const TOKEN: &str = "private-test-capability-0123456789abcdef";
 
+    struct VerifyAuth;
+    impl tokio_tungstenite::tungstenite::handshake::server::Callback for VerifyAuth {
+        fn on_request(
+            self,
+            request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+            response: tokio_tungstenite::tungstenite::handshake::server::Response,
+        ) -> std::result::Result<
+            tokio_tungstenite::tungstenite::handshake::server::Response,
+            tokio_tungstenite::tungstenite::handshake::server::ErrorResponse,
+        > {
+            assert_eq!(request.headers()[AUTHORIZATION], format!("Bearer {TOKEN}"));
+            Ok(response)
+        }
+    }
+
     async fn read(socket: &mut WebSocketStream<TcpStream>) -> Value {
         let message = timeout(Duration::from_secs(3), socket.next())
             .await
@@ -130,15 +145,9 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            let mut socket = tokio_tungstenite::accept_hdr_async(
-                stream,
-                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
-                    assert_eq!(request.headers()[AUTHORIZATION], format!("Bearer {TOKEN}"));
-                    Ok(response)
-                },
-            )
-            .await
-            .unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(stream, VerifyAuth)
+                .await
+                .unwrap();
             let initialize = read(&mut socket).await;
             assert_eq!(initialize["method"], "initialize");
             assert!(
