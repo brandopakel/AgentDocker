@@ -109,8 +109,9 @@ control does, its id or its accessible label:
   18-point line inside 7 points of padding is 32 points, for buttons, inputs
   and the split button alike. Depth is tint and hairline: rail under ground
   under card under raised, with `overlay` (menus, popovers, tooltips, the
-  launch dialog) the only surface above a card and the only one with a
-  shadow.
+  launch dialog, the palette) the only surface above a card. Small menus and
+  tooltips carry its small shadow; the dialog and the palette do not
+  (`Colors::dialog_style`): they are large, and the scrim lifts them.
 - **No blurred shadows on large surfaces.** tiny-skia renders a quad's shadow
   by building a per-pixel colour buffer for the whole shadow area on every
   frame, including the part scrolled out of view. With a hundred session rows
@@ -138,7 +139,12 @@ control does, its id or its accessible label:
   and, while the application says it is open, places its popup as an
   overlay under the anchor (above it when there is no room), aligned to the
   anchor's start or end and kept inside the window; a press outside both or
-  Escape asks for it to close. Opening a menu moves nothing on the page.
+  Escape asks for it to close. Opening a menu moves nothing on the page, and
+  a press anywhere on an open menu — its padding, a separator, a line of
+  text — stays in it rather than reaching the control beneath. A menu opened
+  from the keyboard takes the focus to its first entry (`shell::State::
+  pressed` tells a pointer-opened menu, which leaves the focus alone), since
+  overlays come last in the Tab order.
   Iced runs operations over overlays too, so the popup's controls are
   focusable, carry accessibility nodes and are found by the workflow driver.
   The project row's **⋯** menu (Rename…, Pin, Remove from list, the path),

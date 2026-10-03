@@ -1427,6 +1427,9 @@ impl App {
         // The names float from the whole composer, frame and status lines
         // together: it sits at the foot of its pane, so they open above
         // the words being typed and never over the lines under them.
+        // A dialog or the palette over the window hides the names: an
+        // overlay floats above every layer, scrim included.
+        let offers = offers.filter(|_| !self.shell.launch && !self.shell.palette.open);
         popover(block, offers).width(280.0).into()
     }
 

@@ -12,7 +12,7 @@
 //! Nothing animates: the palette is a layer over a flat scrim, placed high
 //! in the window so the field stays put while the list changes length.
 use super::icons::{Icon, icon};
-use super::style::{Colors, RADIUS_LG, RADIUS_MD, alpha, weight};
+use super::style::{Colors, RADIUS_MD, alpha, weight};
 use super::view::{eyebrow, kbd, monogram};
 use super::*;
 use crate::controls::{Kind, custom, custom_sized};
@@ -1067,13 +1067,7 @@ impl App {
         let panel = container(column![search, hairline(c), results, hairline(c), footer])
             .width(Fill)
             .max_width(WIDTH)
-            .style(move |_| container::Style {
-                border: iced::Border {
-                    radius: (RADIUS_LG + 2.0).into(),
-                    ..c.overlay_style().border
-                },
-                ..c.overlay_style()
-            });
+            .style(move |_| c.dialog_style());
         let scrim = iced::widget::mouse_area(
             container(iced::widget::opaque(panel))
                 .center_x(Fill)

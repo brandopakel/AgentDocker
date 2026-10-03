@@ -153,8 +153,6 @@ pub fn reveal_focus() -> iced::Task<Message> {
 /// Scroll so the container with this id is in view, without touching focus.
 /// Ids the view hands out for this: `notification-question-<id>`,
 /// `notification-message-<id>`, `notification-channel-<id>`.
-// Wired by notification routing in `app/shell.rs`; unused until that lands.
-#[allow(dead_code)]
 pub fn reveal(id: impl Into<String>) -> iced::Task<Message> {
     iced::advanced::widget::operate(Reveal {
         target: Some(widget::Id::from(id.into())),
