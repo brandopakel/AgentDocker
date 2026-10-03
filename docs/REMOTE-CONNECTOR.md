@@ -221,7 +221,7 @@ install`, then review `connector install ... --dry-run` or use conservative
 retains the selected endpoint and never starts a daemon as its own child.
 Uninstall requests an exact connector generation's graceful exit, preserving
 the daemon and saved browser grants. A changed or foreign task is refused.
-Native isolated lifecycle acceptance passed on `6c830458`: 17 portable and
+Native isolated lifecycle acceptance passed on reviewed-correction source `30e78859`: 17 portable and
 21 installed connector checks, including exact generation cleanup and preserved
 daemon/grants. Hosted distribution, reboot and actual-account acceptance remain
 open; the candidate is not yet a published Windows connector service.
@@ -233,5 +233,6 @@ a different path under Task Scheduler's working directory. `tailscale.exe` and
 an explicit executable path remains supported. Discovered tunnel paths are
 captured before argument serialization, so the installed task and its reparsed
 service-run command keep the same order with vendor allowlists. The accepted
-native fixture includes a relative project and feed; acceptance of the later
-discovery-order correction remains pending.
+native fixture includes a relative project and feed. The corrected source
+repeated all 17 portable and 21 installed lifecycle checks; a real Clap
+round-trip regression covers discovered binaries with vendor allowlists.
