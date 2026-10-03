@@ -3,15 +3,16 @@
 //! where samples said; the report's own range, retention, gaps and
 //! collection state sit under the table, and the overhead AgentDocker
 //! injected is "not measured" until it is, never a zero.
+use super::icons::{Icon, icon};
 use super::style::{Colors, weight};
-use super::view::{empty, eyebrow, note, panel, rule, segmented, small};
+use super::view::{empty, eyebrow, heading, icon_tile, monogram, note, rule, segmented, small};
 use super::*;
-use crate::controls::segment;
-use agentdocker_core::usage::report::{CollectionState, Group, Report, Row};
+use crate::controls::{Kind, custom};
+use agentdocker_core::usage::report::{CollectionState, CounterReports, Group, Report, Row};
 use agentdocker_core::usage::{CounterReport, Coverage};
 use iced::{
     Center, Element, Fill,
-    widget::{column, container, row, text},
+    widget::{Space, column, container, row, text},
 };
 
 /// The window shown until the person picks another.
@@ -135,6 +136,135 @@ pub fn range_line(report: &Report) -> String {
     line
 }
 
+/// One counter summed over every row, with the coverage the rows give it
+/// together: complete only where every row was, unknown where none said.
+pub fn total(report: &Report, pick: Pick) -> CounterReport {
+    let mut sum = 0u64;
+    let mut known_samples = 0u64;
+    let mut said = false;
+    let mut complete = true;
+    for row_ in &report.rows {
+        let counter = pick(&row_.counters);
+        if let Some(value) = counter.sum {
+            sum = sum.saturating_add(value);
+            said = true;
+        }
+        known_samples = known_samples.saturating_add(counter.known_samples);
+        complete &= counter.coverage == Coverage::Complete;
+    }
+    CounterReport {
+        sum: said.then_some(sum),
+        known_samples,
+        coverage: match (said, complete) {
+            (false, _) => Coverage::Unknown,
+            (true, true) => Coverage::Complete,
+            (true, false) => Coverage::Partial,
+        },
+    }
+}
+
+/// A large count in three figures: `9,999`, `12.3K`, `1.23M`. Exact
+/// below ten thousand; the table beside it keeps every digit.
+pub fn compact(value: u64) -> String {
+    if value < 10_000 {
+        return thousands(value);
+    }
+    let mut scaled = value as f64;
+    for unit in ["K", "M", "B", "T"] {
+        scaled /= 1000.0;
+        let digits = if scaled < 10.0 {
+            2
+        } else if scaled < 100.0 {
+            1
+        } else {
+            0
+        };
+        let rounded = format!("{scaled:.digits$}");
+        if rounded.parse::<f64>().is_ok_and(|r| r < 1000.0) || unit == "T" {
+            return format!("{rounded}{unit}");
+        }
+    }
+    thousands(value)
+}
+
+/// [`counter`] in three figures, with the same coverage marks.
+pub fn compact_counter(report: &CounterReport) -> String {
+    match (report.sum, report.coverage) {
+        (None, _) | (_, Coverage::Unknown) => "—".to_owned(),
+        (Some(sum), Coverage::Complete) => compact(sum),
+        (Some(sum), Coverage::Partial) => format!("{}~", compact(sum)),
+    }
+}
+
+/// The tokens a row moved, every kind but reasoning (which providers
+/// count inside output): the length of its share bar. Only what samples
+/// said is counted.
+fn moved(counters: &CounterReports) -> u64 {
+    [
+        &counters.input_tokens,
+        &counters.cache_read_input_tokens,
+        &counters.cache_write_input_tokens,
+        &counters.output_tokens,
+    ]
+    .iter()
+    .filter_map(|c| c.sum)
+    .fold(0u64, u64::saturating_add)
+}
+
+/// The rows largest first — what a person asks of agents, models and
+/// providers — except hours, which read in time order as reported.
+fn ranked(report: &Report) -> Vec<&Row> {
+    let mut rows: Vec<&Row> = report.rows.iter().collect();
+    if report.by != Group::Hour {
+        rows.sort_by_key(|r| std::cmp::Reverse(moved(&r.counters)));
+    }
+    rows
+}
+
+/// A share in whole percent; a share too small to round to one is said
+/// as less than one rather than as nothing, and one short of the whole
+/// as more than ninety-nine rather than as all of it.
+fn percent(fraction: f32) -> String {
+    let whole = (fraction * 100.0).round();
+    if whole < 1.0 && fraction > 0.0 {
+        "<1%".to_owned()
+    } else if whole >= 100.0 && fraction < 1.0 {
+        ">99%".to_owned()
+    } else {
+        format!("{whole:.0}%")
+    }
+}
+
+/// Which of a row's counters a column reads.
+type Pick = fn(&CounterReports) -> &CounterReport;
+
+/// The five counters as the table and the cards name them.
+const COUNTERS: [(&str, Pick); 5] = [
+    ("Input", |c| &c.input_tokens),
+    ("Cache read", |c| &c.cache_read_input_tokens),
+    ("Cache write", |c| &c.cache_write_input_tokens),
+    ("Output", |c| &c.output_tokens),
+    ("Reasoning", |c| &c.reasoning_output_tokens),
+];
+
+/// What a group's rows are called, one and many.
+fn group_noun(by: Group) -> (&'static str, &'static str) {
+    match by {
+        Group::Agent => ("agent", "agents"),
+        Group::Model => ("model", "models"),
+        Group::Provider => ("provider", "providers"),
+        Group::Project => ("project", "projects"),
+        Group::Hour => ("hour", "hours"),
+    }
+}
+
+/// A numeric column's width in the table.
+const NUMBER: f32 = 96.0;
+/// The samples column: counts of records, never as long as tokens.
+const SAMPLES: f32 = 72.0;
+/// The workspace the share bars need beside the numbers.
+const BARS_FIT: f32 = 1180.0;
+
 impl App {
     pub(super) fn usage_view(&self, c: Colors) -> Element<'_, Message> {
         let Some(project) = self.selected_project_root() else {
@@ -150,14 +280,21 @@ impl App {
         } else {
             self.shell.usage_since
         };
+        // The tracks say the choice in a word; each control still says
+        // the whole of it to a screen reader.
         let windows = segmented(
             WINDOWS
                 .iter()
                 .map(|(key, label)| {
-                    segment(
+                    choice(
                         format!("usage-since-{key}"),
-                        *label,
-                        Some(Message::UsageSince(key)),
+                        label,
+                        match *key {
+                            "24h" => "24 hours",
+                            "7d" => "7 days",
+                            _ => "30 days",
+                        },
+                        Message::UsageSince(key),
                         since == *key,
                     )
                 })
@@ -166,38 +303,62 @@ impl App {
         );
         let groups = segmented(
             [
-                (Group::Agent, "By agent"),
-                (Group::Model, "By model"),
-                (Group::Provider, "By provider"),
-                (Group::Hour, "By hour"),
+                (Group::Agent, "By agent", "Agent"),
+                (Group::Model, "By model", "Model"),
+                (Group::Provider, "By provider", "Provider"),
+                (Group::Hour, "By hour", "Hour"),
             ]
             .into_iter()
-            .map(|(group, label)| {
-                segment(
+            .map(|(group, label, word)| {
+                choice(
                     format!("usage-by-{group:?}"),
                     label,
-                    Some(Message::UsageBy(group)),
+                    word,
+                    Message::UsageBy(group),
                     self.shell.usage_by == group,
                 )
             })
             .collect(),
             c,
         );
-        let compact = self.narrow() || self.panes.workspace_width() < 940.0;
-        let filters: Element<'_, Message> = if compact {
-            column![windows, groups].spacing(10).into()
-        } else {
-            row![windows, groups].spacing(10).align_y(Center).into()
-        };
-        let mut page = column![filters].spacing(14).width(Fill);
-        if let Some(error) = &self.usage_error {
-            page = page.push(note(format!("Could not read usage: {error}"), c).color(c.amber));
-        }
+        let width = self.panes.workspace_width();
+        let compact = self.narrow() || width < 940.0;
         let report = self
             .usage
             .as_ref()
             .filter(|(p, _)| *p == project)
             .map(|(_, r)| r);
+        let window = WINDOWS
+            .iter()
+            .find(|(key, _)| *key == since)
+            .map_or("Last 24 hours", |(_, label)| *label);
+        let summary = match report {
+            Some(report) if !report.rows.is_empty() => {
+                let (one, many) = group_noun(report.by);
+                let n = report.rows.len();
+                format!("{window} · {n} {}", if n == 1 { one } else { many })
+            }
+            _ => window.to_owned(),
+        };
+        let title = column![
+            heading("Usage", 18),
+            note(format!("{summary} · tokens the providers reported"), c)
+        ]
+        .spacing(2);
+        let header: Element<'_, Message> = if compact {
+            column![title, row![windows, groups].spacing(8).wrap()]
+                .spacing(12)
+                .into()
+        } else {
+            row![title.width(Fill), windows, groups]
+                .spacing(10)
+                .align_y(Center)
+                .into()
+        };
+        let mut page = column![header].spacing(16).width(Fill);
+        if let Some(error) = &self.usage_error {
+            page = page.push(note(format!("Could not read usage: {error}"), c).color(c.amber));
+        }
         let Some(report) = report else {
             if self.usage_error.is_none() {
                 page = page.push(note("Reading…", c));
@@ -213,92 +374,133 @@ impl App {
                     c,
                 )
             } else {
-                column![
-                    text("No usage in this window")
-                        .size(15)
-                        .font(weight(iced::font::Weight::Medium)),
-                    note(range_line(report), c),
-                ]
-                .spacing(4)
-                .into()
+                // The range it covers is said once, with the notes below.
+                text("No usage in this window")
+                    .size(15)
+                    .font(weight(iced::font::Weight::Medium))
+                    .into()
             });
         } else {
-            page = page.push(self.usage_table(report, compact, c));
+            page = page.push(kpis(report, compact, c)).push(self.usage_table(
+                report,
+                compact,
+                width >= BARS_FIT,
+                c,
+            ));
         }
         page = page.push(
             column![
-                small(range_line(report), c),
-                small(collection_line(report), c),
-                small(overhead_line(report), c),
+                small(range_line(report), c).color(c.faint),
+                small(collection_line(report), c).color(c.faint),
+                small(overhead_line(report), c).color(c.faint),
             ]
             .spacing(4),
         );
         page.into()
     }
 
-    /// The rows as a table: the key, how many samples, then each count
-    /// with its coverage mark; a legend under it.
-    fn usage_table(&self, report: &Report, compact: bool, c: Colors) -> Element<'_, Message> {
-        let key = match report.by {
-            Group::Agent => "Agent",
-            Group::Model => "Model",
-            Group::Provider => "Provider",
-            Group::Project => "Project",
-            Group::Hour => "Hour",
-        };
+    /// The rows: wide, one framed table — the key, its share of the
+    /// tokens, how many samples, then each count with its coverage mark,
+    /// numbers to the right; narrow, the same rows as entries in one card,
+    /// every count still named and marked.
+    fn usage_table(
+        &self,
+        report: &Report,
+        compact: bool,
+        bars: bool,
+        c: Colors,
+    ) -> Element<'_, Message> {
+        let legend = small("~ partial coverage · — not reported", c).color(c.faint);
+        let rows = ranked(report);
         if compact {
-            let mut cards = column![].spacing(10).width(Fill);
-            for row_ in &report.rows {
-                let mut card = column![
-                    text(self.usage_key(row_))
-                        .size(15)
-                        .font(weight(iced::font::Weight::Medium)),
-                    small(format!("{} samples", thousands(row_.samples)), c),
+            let mut entries = column![].width(Fill);
+            for (index, row_) in rows.iter().copied().enumerate() {
+                if index > 0 {
+                    entries = entries.push(rule(c));
+                }
+                let mut entry = column![
+                    row![
+                        self.usage_identity(row_, report.by, c),
+                        text(self.usage_key(row_))
+                            .size(14)
+                            .font(weight(iced::font::Weight::Medium))
+                            .width(Fill)
+                            .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                        small(format!("{} samples", thousands(row_.samples)), c),
+                    ]
+                    .spacing(10)
+                    .align_y(Center)
                 ]
                 .spacing(6)
                 .width(Fill);
-                for (label, value) in [
-                    ("Input", &row_.counters.input_tokens),
-                    ("Cache read", &row_.counters.cache_read_input_tokens),
-                    ("Cache write", &row_.counters.cache_write_input_tokens),
-                    ("Output", &row_.counters.output_tokens),
-                    ("Reasoning", &row_.counters.reasoning_output_tokens),
-                ] {
-                    card = card.push(
-                        row![
-                            container(small(label, c)).width(Fill),
-                            text(counter(value)).size(13).color(c.text),
+                // Every count named and marked, as many to a line as fit.
+                let mut counts = row![].spacing(0);
+                for (label, pick) in COUNTERS {
+                    counts = counts.push(
+                        column![
+                            small(label, c),
+                            text(counter(pick(&row_.counters))).size(13).color(c.text),
                         ]
-                        .spacing(12),
+                        .spacing(2)
+                        .width(124)
+                        .padding(iced::Padding {
+                            bottom: 6.0,
+                            ..iced::Padding::ZERO
+                        }),
                     );
                 }
-                cards = cards.push(panel(card, c));
+                entry = entry.push(counts.wrap());
+                entries = entries.push(container(entry).padding([12, 14]));
             }
-            return cards
-                .push(small("~ partial coverage · — not reported", c))
-                .into();
-        }
-        let head = |label: &str| eyebrow(label.to_owned(), c);
-        let mut table = column![
-            row![
-                container(head(key)).width(Fill),
-                container(head("Samples")).width(90),
-                container(head("Input")).width(110),
-                container(head("Cache read")).width(110),
-                container(head("Cache write")).width(110),
-                container(head("Output")).width(110),
-                container(head("Reasoning")).width(110),
+            return column![
+                container(entries)
+                    .width(Fill)
+                    .style(move |_| c.card_style()),
+                legend
             ]
-            .spacing(8),
-            rule(c),
-        ]
-        .spacing(6)
-        .width(Fill);
-        for row_ in &report.rows {
-            table = table.push(self.usage_row(row_, c));
+            .spacing(8)
+            .into();
         }
-        table = table.push(small("~ partial coverage · — not reported", c));
-        panel(table, c)
+        let (_, many) = group_noun(report.by);
+        let head = |label: &str, width: f32| {
+            container(eyebrow(label.to_owned(), c))
+                .width(width)
+                .align_x(iced::alignment::Horizontal::Right)
+        };
+        let mut header = row![container(eyebrow(many, c)).width(iced::Length::FillPortion(3))]
+            .spacing(12)
+            .align_y(Center);
+        if bars {
+            header =
+                header.push(container(eyebrow("Share", c)).width(iced::Length::FillPortion(2)));
+        }
+        header = header.push(head("Samples", SAMPLES));
+        for (label, _) in COUNTERS {
+            header = header.push(head(label, NUMBER));
+        }
+        let all: u64 = report
+            .rows
+            .iter()
+            .map(|r| moved(&r.counters))
+            .fold(0, u64::saturating_add);
+        let mut table = column![container(header).padding([10, 0]), rule(c)].width(Fill);
+        for (index, row_) in rows.iter().copied().enumerate() {
+            if index > 0 {
+                table = table.push(rule(c));
+            }
+            table = table.push(
+                container(self.usage_row(row_, report.by, bars.then_some(all), c)).padding([9, 0]),
+            );
+        }
+        column![
+            container(table)
+                .padding([2, 16])
+                .width(Fill)
+                .style(move |_| c.card_style()),
+            legend
+        ]
+        .spacing(8)
+        .into()
     }
 
     fn usage_key(&self, row_: &Row) -> String {
@@ -306,33 +508,212 @@ impl App {
             Some(key) if matches!(self.usage.as_ref().map(|(_, r)| r.by), Some(Group::Agent)) => {
                 self.name_of(key)
             }
+            Some(key) if matches!(self.usage.as_ref().map(|(_, r)| r.by), Some(Group::Hour)) => {
+                chrono::DateTime::parse_from_rfc3339(key).map_or_else(
+                    |_| key.clone(),
+                    |at| {
+                        at.with_timezone(&chrono::Utc)
+                            .format("%b %-d %H:%M")
+                            .to_string()
+                    },
+                )
+            }
             Some(key) => key.clone(),
             None => "(unattributed)".to_owned(),
         }
     }
 
-    fn usage_row(&self, row_: &Row, c: Colors) -> Element<'_, Message> {
-        let key = self.usage_key(row_);
-        let cell = |value: String| {
+    /// Who or what a row is, at a glance: an agent's own monogram, a
+    /// neutral letter for a model or provider, a clock for an hour.
+    fn usage_identity(&self, row_: &Row, by: Group, c: Colors) -> Element<'_, Message> {
+        const SIZE: f32 = 22.0;
+        let Some(key) = &row_.key else {
+            return icon_tile(icon(Icon::Question, c.faint, 12.0), SIZE, c);
+        };
+        match by {
+            Group::Agent => monogram(&self.name_of(key), key, SIZE, c),
+            Group::Hour => icon_tile(icon(Icon::Clock, c.muted, 12.0), SIZE, c),
+            _ => {
+                let letter: String = key
+                    .chars()
+                    .find(|ch| ch.is_alphanumeric())
+                    .map(|ch| ch.to_uppercase().collect())
+                    .unwrap_or_else(|| "·".to_owned());
+                icon_tile(
+                    text(letter)
+                        .size(11)
+                        .font(weight(iced::font::Weight::Semibold))
+                        .color(c.muted),
+                    SIZE,
+                    c,
+                )
+            }
+        }
+    }
+
+    fn usage_row(
+        &self,
+        row_: &Row,
+        by: Group,
+        share_of: Option<u64>,
+        c: Colors,
+    ) -> Element<'_, Message> {
+        let cell = |value: String, width: f32| {
             container(text(value).size(13).color(c.text))
-                .width(110)
+                .width(width)
                 .align_x(iced::alignment::Horizontal::Right)
         };
-        row![
-            container(text(key).size(13).font(weight(iced::font::Weight::Medium))).width(Fill),
-            container(text(thousands(row_.samples)).size(13).color(c.muted))
-                .width(90)
-                .align_x(iced::alignment::Horizontal::Right),
-            cell(counter(&row_.counters.input_tokens)),
-            cell(counter(&row_.counters.cache_read_input_tokens)),
-            cell(counter(&row_.counters.cache_write_input_tokens)),
-            cell(counter(&row_.counters.output_tokens)),
-            cell(counter(&row_.counters.reasoning_output_tokens)),
+        let mut line = row![
+            row![
+                self.usage_identity(row_, by, c),
+                container(
+                    text(self.usage_key(row_))
+                        .size(13)
+                        .font(weight(iced::font::Weight::Medium))
+                        .wrapping(iced::widget::text::Wrapping::None)
+                )
+                .width(Fill)
+                .clip(true),
+            ]
+            .spacing(10)
+            .align_y(Center)
+            .width(iced::Length::FillPortion(3))
         ]
-        .spacing(8)
-        .align_y(Center)
-        .into()
+        .spacing(12)
+        .align_y(Center);
+        if let Some(all) = share_of {
+            let part = moved(&row_.counters);
+            let fraction = if all == 0 {
+                0.0
+            } else {
+                (part as f64 / all as f64) as f32
+            };
+            line = line.push(
+                row![
+                    share_bar(fraction, c),
+                    container(text(percent(fraction)).size(12).color(c.muted))
+                        .width(36)
+                        .align_x(iced::alignment::Horizontal::Right),
+                ]
+                .spacing(8)
+                .align_y(Center)
+                .width(iced::Length::FillPortion(2)),
+            );
+        }
+        line = line.push(
+            container(text(thousands(row_.samples)).size(13).color(c.muted))
+                .width(SAMPLES)
+                .align_x(iced::alignment::Horizontal::Right),
+        );
+        for (_, pick) in COUNTERS {
+            line = line.push(cell(counter(pick(&row_.counters)), NUMBER));
+        }
+        line.into()
     }
+}
+
+/// A segmented choice whose visible word is shorter than what it says to
+/// a screen reader.
+fn choice<'a>(
+    id: String,
+    spoken: &str,
+    word: &str,
+    message: Message,
+    selected: bool,
+) -> Element<'a, Message> {
+    custom(
+        id,
+        spoken.to_owned(),
+        text(word.to_owned())
+            .size(13)
+            .font(weight(iced::font::Weight::Medium)),
+        Some(message),
+        selected,
+        Kind::Segment,
+        [5, 12],
+    )
+}
+
+/// The headline counts over every row: input, cache read and write and
+/// output, each in three figures with its coverage mark. Two by two when
+/// the table has become cards.
+fn kpis<'a>(report: &Report, compact: bool, c: Colors) -> Element<'a, Message> {
+    let tile = |label: &str, value: String| -> Element<'a, Message> {
+        container(
+            column![
+                text(label.to_owned())
+                    .size(12)
+                    .font(weight(iced::font::Weight::Medium))
+                    .color(c.muted),
+                text(value)
+                    .size(22)
+                    .font(weight(iced::font::Weight::Semibold))
+                    .color(c.text),
+            ]
+            .spacing(6),
+        )
+        .padding([12, 14])
+        .width(Fill)
+        .style(move |_| c.card_style())
+        .into()
+    };
+    let tiles: Vec<Element<'a, Message>> = COUNTERS[..4]
+        .iter()
+        .map(|(label, pick)| tile(label, compact_counter(&total(report, *pick))))
+        .collect();
+    if compact {
+        let mut tiles = tiles.into_iter();
+        let mut grid = column![].spacing(10).width(Fill);
+        while let Some(first) = tiles.next() {
+            let mut line = row![first].spacing(10).width(Fill);
+            if let Some(second) = tiles.next() {
+                line = line.push(second);
+            }
+            grid = grid.push(line);
+        }
+        grid.into()
+    } else {
+        let mut line = row![].spacing(12).width(Fill);
+        for tile in tiles {
+            line = line.push(tile);
+        }
+        line.into()
+    }
+}
+
+/// A row's share of the tokens as a bar on a quiet track: one hue for
+/// every row, the number beside it.
+fn share_bar<'a>(fraction: f32, c: Colors) -> Element<'a, Message> {
+    let filled = (fraction.clamp(0.0, 1.0) * 1000.0).round() as u16;
+    let mut bar = row![].spacing(0);
+    if filled > 0 {
+        bar = bar.push(
+            container(Space::new().width(Fill).height(8))
+                .width(iced::Length::FillPortion(filled))
+                .style(move |_| container::Style {
+                    background: Some(super::style::mix(c.card, c.accent, 0.7).into()),
+                    border: iced::Border {
+                        radius: 2.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+        );
+    }
+    if filled < 1000 {
+        bar = bar.push(Space::new().width(iced::Length::FillPortion(1000 - filled)));
+    }
+    container(bar)
+        .width(Fill)
+        .style(move |_| container::Style {
+            background: Some(super::style::alpha(c.text, 0.06).into()),
+            border: iced::Border {
+                radius: 2.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 #[cfg(test)]
@@ -500,6 +881,81 @@ mod tests {
                 .any(|cmd| matches!(cmd, Cmd::Usage { ref project, .. } if *project == second.root.display().to_string())),
             "asked again on reconnect"
         );
+    }
+
+    /// The headline counts sum what the rows said and carry the weakest
+    /// coverage among them; three figures never round past their unit.
+    #[test]
+    fn headline_counts_carry_the_rows_coverage_in_three_figures() {
+        let counter = |sum: Option<u64>, coverage| CounterReport {
+            sum,
+            known_samples: sum.map_or(0, |_| 1),
+            coverage,
+        };
+        let row_with = |input: CounterReport| Row {
+            key: Some("k".into()),
+            samples: 1,
+            counters: CounterReports {
+                input_tokens: input,
+                cache_read_input_tokens: counter(None, Coverage::Unknown),
+                cache_write_input_tokens: counter(None, Coverage::Unknown),
+                output_tokens: counter(Some(5), Coverage::Complete),
+                reasoning_output_tokens: counter(None, Coverage::Unknown),
+            },
+        };
+        let mut both = report(
+            vec![
+                row_with(counter(Some(12_000), Coverage::Complete)),
+                row_with(counter(Some(400), Coverage::Partial)),
+            ],
+            CollectionState::CaughtUp,
+            Some(1),
+        );
+        let input = total(&both, |c| &c.input_tokens);
+        assert_eq!(
+            (input.sum, input.coverage),
+            (Some(12_400), Coverage::Partial)
+        );
+        assert_eq!(compact_counter(&input), "12.4K~");
+        let output = total(&both, |c| &c.output_tokens);
+        assert_eq!(compact_counter(&output), "10");
+        assert_eq!(
+            compact_counter(&total(&both, |c| &c.cache_read_input_tokens)),
+            "—"
+        );
+        both.rows.clear();
+        assert_eq!(compact_counter(&total(&both, |c| &c.input_tokens)), "—");
+        assert_eq!(compact(9_999), "9,999");
+        assert_eq!(compact(12_345), "12.3K");
+        assert_eq!(compact(123_456), "123K");
+        assert_eq!(compact(999_950), "1.00M");
+        assert_eq!(compact(1_234_567), "1.23M");
+        assert_eq!(compact(45_600_000_000), "45.6B");
+        assert_eq!(percent(0.0), "0%");
+        assert_eq!(percent(0.004), "<1%");
+        assert_eq!(percent(0.916), "92%");
+        assert_eq!(percent(0.9999), ">99%");
+        assert_eq!(percent(1.0), "100%");
+        let small_first = report(
+            vec![
+                row_with(counter(Some(10), Coverage::Complete)),
+                row_with(counter(Some(9_000), Coverage::Complete)),
+            ],
+            CollectionState::CaughtUp,
+            Some(1),
+        );
+        let order: Vec<_> = ranked(&small_first)
+            .iter()
+            .map(|r| r.counters.input_tokens.sum)
+            .collect();
+        assert_eq!(order, vec![Some(9_000), Some(10)], "largest first");
+        let mut hours = small_first.clone();
+        hours.by = Group::Hour;
+        let order: Vec<_> = ranked(&hours)
+            .iter()
+            .map(|r| r.counters.input_tokens.sum)
+            .collect();
+        assert_eq!(order, vec![Some(10), Some(9_000)], "hours keep time order");
     }
 
     /// A count shows as the report knows it and never as an invented
