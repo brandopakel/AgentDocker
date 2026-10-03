@@ -24,6 +24,7 @@ pub(crate) struct Job {
 pub(crate) enum Change<'a> {
     Start(&'a Progress),
     Page(&'a Progress, &'a [Job]),
+    RefreshJob(usize, &'a reader::Cursor),
     FinishedJob(usize),
     Complete,
 }
@@ -47,11 +48,24 @@ impl Store {
         }))
     }
 
+    #[cfg(test)]
     pub(crate) fn usage_next_job(&self) -> Result<Option<Job>> {
+        self.usage_job_after(None)
+    }
+
+    /// A deferred growing file is visited at most once per collector pass, so
+    /// it cannot starve later files. Restart starts again at the first job.
+    pub(crate) fn usage_job_after(&self, after: Option<(bool, usize)>) -> Result<Option<Job>> {
+        let (priority, id) = match after {
+            Some((priority, id)) => (i64::from(priority), i64::try_from(id)?),
+            None => (2, -1),
+        };
         self.conn
             .query_row(
-                "SELECT id,json FROM usage_discovery_jobs ORDER BY priority DESC,id LIMIT 1",
-                [],
+                "SELECT id,json FROM usage_discovery_jobs
+                 WHERE priority < ?1 OR (priority = ?1 AND id > ?2)
+                 ORDER BY priority DESC,id LIMIT 1",
+                params![priority, id],
                 |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
             )
             .optional()?
@@ -99,6 +113,29 @@ impl Store {
                     )?;
                 }
                 Some(progress)
+            }
+            Change::RefreshJob(id, captured) => {
+                let value: String = self.conn.query_row(
+                    "SELECT json FROM usage_discovery_jobs WHERE id=?1",
+                    [i64::try_from(id)?],
+                    |row| row.get(0),
+                )?;
+                let mut job: Job = serde_json::from_str(&value)?;
+                anyhow::ensure!(
+                    job.id == id && id < MAX_FILES,
+                    "invalid discovery job identity"
+                );
+                job.captured = captured.clone();
+                let value = serde_json::to_string(&job)?;
+                anyhow::ensure!(value.len() <= 128 * 1024, "discovery job exceeds bounds");
+                anyhow::ensure!(
+                    self.conn.execute(
+                        "UPDATE usage_discovery_jobs SET json=?1 WHERE id=?2",
+                        params![value, i64::try_from(id)?],
+                    )? == 1,
+                    "discovery job is no longer pending"
+                );
+                None
             }
             Change::FinishedJob(id) => {
                 anyhow::ensure!(
@@ -188,6 +225,84 @@ mod tests {
         assert!(
             store.usage_discovery().is_err(),
             "SQL errors must not be hidden"
+        );
+    }
+
+    #[test]
+    fn refreshing_pending_snapshot_rolls_back_with_its_event() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("source.jsonl");
+        std::fs::write(&path, "initial\n").unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let roots = vec![Root {
+            runtime: Runtime::Claude,
+            path: temp.path().to_owned(),
+        }];
+        let mut progress = Progress {
+            frontier: Walk::new(roots.clone()).unwrap().checkpoint(),
+            roots,
+            generation: 1,
+            jobs: 0,
+            failures: 0,
+        };
+        let now = Utc::now();
+        let collection = Collection {
+            discovery_generation: Some(1),
+            pending_files: Some(1),
+            ..Collection::default()
+        };
+        store
+            .usage_snapshot(&collection, &[], now, 1, Some(Change::Start(&progress)))
+            .unwrap();
+        let job = Job {
+            id: 0,
+            source: Source {
+                runtime: Runtime::Claude,
+                path: path.clone(),
+            },
+            captured: reader::Cursor::capture(&path, Runtime::Claude).unwrap(),
+            priority: true,
+        };
+        progress.jobs = 1;
+        store
+            .usage_snapshot(
+                &collection,
+                &[],
+                now,
+                2,
+                Some(Change::Page(&progress, std::slice::from_ref(&job))),
+            )
+            .unwrap();
+        std::fs::write(&path, "initial\nappended\n").unwrap();
+        let refreshed = reader::Cursor::capture(&path, Runtime::Claude).unwrap();
+        let refresh = || {
+            store.usage_snapshot(
+                &collection,
+                &[],
+                now,
+                3,
+                Some(Change::RefreshJob(0, &refreshed)),
+            )
+        };
+        store.conn.execute_batch("CREATE TRIGGER fail_refresh BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT,'event refused'); END;").unwrap();
+        assert!(refresh().is_err());
+        assert_eq!(
+            store.usage_next_job().unwrap().unwrap().captured,
+            job.captured
+        );
+        store
+            .conn
+            .execute_batch("DROP TRIGGER fail_refresh")
+            .unwrap();
+        refresh().unwrap();
+        let saved = store.usage_next_job().unwrap().unwrap();
+        assert_eq!(saved.captured, refreshed);
+        assert_eq!(saved.source.path, job.source.path);
+        assert!(saved.priority);
+        assert!(store.usage_job_after(Some((true, 0))).unwrap().is_none());
+        assert_eq!(
+            store.usage_collection().unwrap().unwrap().pending_files,
+            Some(1)
         );
     }
 

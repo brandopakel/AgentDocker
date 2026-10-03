@@ -15,6 +15,9 @@ fault injection into the isolated receiver ledger (never the provider database),
 and explicitly closing/reopening the same TUI conversation with queued input.
 The long-busy scenario holds a direct user turn for 65 seconds, verifies retained
 peer input without a false idle pause, then requires ordered provider receipts.
+The approval-wait scenario adds one prompt rule only in its private profile,
+holds a harmless print command for 65 seconds, and checks queued input before
+approving that command once. No saved user policy or provider account is changed.
 Active-hook scenarios accept --active-peer-kind answer to exercise an ordinary
 peer reply at the queue head followed by human input in the same active turn.
 The subagent-hook scenario uses a real child conversation on the same loopback
@@ -33,6 +36,7 @@ import hashlib
 import json
 import os
 import pty
+import re
 import select
 import shlex
 import signal
@@ -76,6 +80,7 @@ parser.add_argument(
         "subagent-hook",
         "controller-upgrade",
         "long-busy",
+        "approval-wait",
         "startup",
         "lifecycle",
         "question",
@@ -151,6 +156,7 @@ def source_manifest():
 report["source"] = source_manifest()
 bootstrap_called = args.scenario in ("startup", "lifecycle")
 question_called = False
+approval_called = False
 request_lock = threading.Lock()
 request_sequence = 0
 limit_active = args.scenario == "rate-limit"
@@ -210,7 +216,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
-        global bootstrap_called, question_called, request_sequence
+        global bootstrap_called, question_called, approval_called, request_sequence
         global scope_spawned, scope_child_calls, scope_root_calls
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert self.headers.get("Authorization") == "Bearer fixture-only"
@@ -411,6 +417,13 @@ class Handler(BaseHTTPRequestHandler):
                 {"type": "response.output_item.done", "output_index": 0, "item": item},
                 {"type": "response.completed", "response": response},
             ]
+        if (args.scenario == "approval-wait" and users
+                and "APPROVAL_START_NONCE" in json.dumps(users[-1]) and not approval_called):
+            approval_called = True
+            events = scope_tool_events(response, body, "exec_command", {
+                "cmd": "python3 -c \"print('APPROVAL_EXECUTED_NONCE')\"",
+                "max_output_tokens": 1000,
+            })
         if scope == "root":
             scope_root_calls += 1
             assert scope_root_calls <= 8, "root did not receive its scoped input"
@@ -520,6 +533,13 @@ try:
             + json.dumps(str(repo))
             + ']\ntrust_level = "trusted"\n'
         )
+        if args.scenario == "approval-wait":
+            config = config.replace('approval_policy = "never"', 'approval_policy = "on-request"')
+            (profile / "rules").mkdir()
+            approval_rule = profile / "rules" / "approval-fixture.rules"
+            approval_rule.write_text('prefix_rule(pattern = '
+                + json.dumps(["python3", "-c", "print('APPROVAL_EXECUTED_NONCE')"])
+                + ', decision = "prompt", justification = "Private approval-wait fixture")\n')
         (profile / "config.toml").write_text(config)
         env = {
             k: v
@@ -532,6 +552,12 @@ try:
             TERM="xterm-256color",
         )
         report["provider_version"] = subprocess.check_output([codex, "--version"], text=True).strip()
+        if args.scenario == "approval-wait":
+            decision = subprocess.run([codex, "execpolicy", "check", "--rules", str(approval_rule),
+                "--", "python3", "-c", "print('APPROVAL_EXECUTED_NONCE')"], env=env,
+                cwd=repo, capture_output=True, text=True, timeout=15, check=True)
+            report["fixture_rule"] = json.loads(decision.stdout)
+            assert report["fixture_rule"]["decision"] == "prompt"
         report["cli_sha256"] = hashlib.sha256(cli.read_bytes()).hexdigest()
         report["daemon_sha256"] = hashlib.sha256(cli.with_name("agentd").read_bytes()).hexdigest()
         adhome = root / "ad"
@@ -588,7 +614,7 @@ try:
             mcp_cli = (
                 args.legacy_cli if args.scenario in ("legacy-question", "legacy-reply", "migration") else cli
             )
-            if args.scenario in ("startup", "lifecycle"):
+            if mcp_cli:
                 mcp_wrapper = root / "agentdocker"
                 mcp_wrapper.write_text(
                     "#!"
@@ -599,6 +625,9 @@ try:
                     + ",'a') as log:\n"
                     + " log.write(json.dumps({'pid':os.getpid(),'parent':os.getppid(),'cwd':os.getcwd(),"
                     + "'session':os.environ.get('CODEX_THREAD_ID'),'profile':os.environ.get('CODEX_HOME')})+'\\n')\n"
+                    + "fd=os.open(" + repr(str(out / "mcp-stderr.log"))
+                    + ",os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)\n"
+                    + "os.dup2(fd,2)\nos.close(fd)\n"
                     + "os.execv("
                     + repr(str(mcp_cli))
                     + ",["
@@ -700,6 +729,12 @@ try:
 
             thread = threading.Thread(target=reader, daemon=True)
             thread.start()
+
+            def approval_visible(since, marker):
+                text = re.sub(rb'\x1b\[[0-?]*[ -/]*[@-~]', b'', bytes(output[since:]))
+                return (b"Would you like to run the following command?" in text
+                        and b"Yes, proceed" in text and marker in text)
+
             if args.scenario == "startup":
                 started = wait(
                     lambda: next(
@@ -729,15 +764,6 @@ try:
                 ]
             wait(lambda: len(report["requests"]) == 1, 30)
             wait(lambda: b"FIXTURE_OK_1" in output, 10)
-            files = [
-                p
-                for p in profile.glob("sessions/**/*.jsonl")
-                if json.loads(p.read_text().splitlines()[0])["payload"].get("source") == "cli"
-            ]
-            assert len(files) == 1, files
-            meta = json.loads(files[0].read_text().splitlines()[0])
-            tid = meta["payload"]["id"]
-            report["thread"] = tid
             registered = wait(
                 lambda: next(
                     (
@@ -749,6 +775,22 @@ try:
                 ),
                 20,
             )
+            # Match the verified binding, not a provider UI label. Codex
+            # 0.160's standalone TUI records source="vscode"; the bound process,
+            # session and private profile are the identities this trial owns.
+            generation = registered["input_binding"]["provider"]
+            assert generation["process"]["pid"] == provider.pid
+            assert Path(generation["profile"]).resolve() == profile.resolve()
+            tid = generation["session"]
+            files = []
+            for path in profile.glob("sessions/**/*.jsonl"):
+                with path.open() as stream:
+                    meta = json.loads(stream.readline())
+                if meta.get("type") == "session_meta" and meta["payload"].get("id") == tid:
+                    assert Path(meta["payload"]["cwd"]).resolve() == repo.resolve()
+                    files.append(path)
+            assert len(files) == 1, files
+            report["thread"] = tid
             aid = registered["id"]
             birth = registered["process_started_at"]
             report["agent"] = aid
@@ -1076,7 +1118,57 @@ try:
             time.sleep(3)
             assert len(report["requests"]) == 7
             report["automatic_receiver_restart_no_replay"] = True
-            if args.scenario == "rate-limit":
+            if args.scenario == "approval-wait":
+                screen_start = len(output)
+                queued("APPROVAL_START_NONCE")
+                approval_message = report["queue_results"][-1]["message_id"]
+                wait(lambda: approval_visible(screen_start, b"APPROVAL_EXECUTED_NONCE"), 30)
+                (out / "pending-approval.bin").write_bytes(output[screen_start:])
+                assert len(report["requests"]) == 8
+                held_ids = []
+                for text in ("PEER_DURING_APPROVAL", "HUMAN_DURING_APPROVAL"):
+                    queued(text)
+                    held_ids.append(report["queue_results"][-1]["message_id"])
+                started = time.monotonic()
+                samples = []
+                report["approval_wait_samples"] = samples
+                while time.monotonic() - started < 65:
+                    observed = rpc({"op": "inspect", "agent": aid})["agent"]
+                    pending = rpc({"op": "peek_input", "agent": aid})["messages"]
+                    completed = json.loads((adhome / "codex-queue" / aid / "delivery.json").read_text())["completed"]
+                    # The triggering message is already in provider context,
+                    # but its receipt can remain pending until this approved
+                    # turn completes. Later inputs must remain ordered behind
+                    # it; never demand an early acknowledgement of that head.
+                    pending_ids = [m["id"] for m in pending]
+                    assert pending_ids in (held_ids, [approval_message, *held_ids]), pending
+                    assert not any(r["message"] in held_ids for r in completed), 'input acknowledged before approval'
+                    assert len(report["requests"]) == 8, 'provider continued before approval'
+                    assert observed["input_binding"]["provider"]["process"]["pid"] == provider.pid
+                    samples.append({"seconds":time.monotonic()-started,
+                        "pending":pending_ids, "delivery":observed.get("input_delivery")})
+                    time.sleep(1)
+                held_seconds = time.monotonic() - started
+                os.write(master, b"\r")
+                wait(lambda: len(report["requests"]) == 11, 45)
+                wait(lambda: b"FIXTURE_OK_11" in output, 15)
+                assert any(item.get("type") == "function_call_output"
+                           and "APPROVAL_EXECUTED_NONCE" in json.dumps(item.get("output"))
+                           for item in report["requests"][8]["body"]["input"])
+                for request, marker in zip(report["requests"][9:11],
+                        ("PEER_DURING_APPROVAL", "HUMAN_DURING_APPROVAL"), strict=True):
+                    latest = [i for i in request["body"]["input"] if i.get("role") == "user"][-1]
+                    assert marker in json.dumps(latest)
+                ledger_path = adhome / "codex-queue" / aid / "delivery.json"
+                wait(lambda: all(mid in {r["message"] for r in json.loads(ledger_path.read_text())["completed"]}
+                                 for mid in held_ids), 15)
+                completed = json.loads(ledger_path.read_text())["completed"]
+                assert [r["message"] for r in completed if r["message"] in held_ids] == held_ids
+                time.sleep(3)
+                assert len(report["requests"]) == 11, 'approval input replayed'
+                report["long_approval_wait"] = {"held_seconds":held_seconds,
+                    "messages":held_ids, "ordered_receipts":True, "one_time_approval":True}
+            elif args.scenario == "rate-limit":
                 queued("LIMIT_NONCE")
                 queued("AFTER_PROVIDER_RESET")
                 availability = wait(
@@ -1126,6 +1218,15 @@ try:
                     35,
                 )
                 if args.scenario == "question":
+                    asker = rpc({"op": "inspect", "agent": question["from"]})["agent"]
+                    report["question_identity"] = {
+                        "expected_agent": aid, "observed_agent": question["from"],
+                        "expected_provider_pid": provider.pid,
+                        "observed_pid": asker.get("pid"),
+                        "observed_birth": asker.get("process_started_at"),
+                        "has_native_binding": bool(asker.get("input_binding")),
+                    }
+                    assert question["from"] == aid, "MCP question used a different agent identity"
                     wait(lambda: len(report["requests"]) == 9, 20)
                     handover("pending-question")
                     retained = next(q for q in rpc({"op": "questions", "agent": "user"})["questions"]
@@ -1796,6 +1897,66 @@ try:
 
             cleanup_step("provider", lambda: stop_child(provider))
 
+            def managed_provider_processes():
+                # New providers detach an app-server and its PID updater from
+                # the TUI's process group. Match only executables inside this
+                # trial's fresh private profile; never a user's daemon.
+                prefix = str(profile / "packages/app-server-daemon/releases") + "/"
+                rows = subprocess.check_output(
+                    ["ps", "-axo", "pid=,lstart=,command="], text=True, timeout=5)
+                found = []
+                for row in rows.splitlines():
+                    fields = row.split(None, 6)
+                    if len(fields) == 7 and fields[6].startswith(prefix):
+                        assert " app-server " in fields[6], "unexpected private provider process"
+                        found.append((int(fields[0]), " ".join(fields[1:6]), fields[6]))
+                return found
+
+            def end_managed_provider():
+                owned = managed_provider_processes()
+                report["managed_provider_processes"] = owned
+                if not owned:
+                    return
+                stop_error = None
+                try:
+                    stopped = subprocess.run(
+                        [codex, "app-server", "daemon", "stop"], env=env, cwd=repo,
+                        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20)
+                    assert stopped.returncode == 0, stopped.stderr
+                except (subprocess.TimeoutExpired, AssertionError) as error:
+                    stop_error = error
+                # `daemon stop` retires the server but leaves its detached PID
+                # updater alive in 0.160. A pending approval can also prevent
+                # stop from returning. Always retire exact owned generations,
+                # retaining the failed stop as a cleanup error after cleanup.
+                updaters = []
+                forced = []
+                for identity in managed_provider_processes():
+                    updater = identity[2].endswith(" app-server daemon pid-update-loop")
+                    if updater or stop_error is not None:
+                        assert identity in owned, "private provider identity changed"
+                        assert identity in managed_provider_processes()
+                        os.kill(identity[0], signal.SIGTERM)
+                        (updaters if updater else forced).append(identity[0])
+                report["managed_provider_updaters_stopped"] = updaters
+                report["managed_provider_forced_retirement"] = forced
+                try:
+                    wait(lambda: not managed_provider_processes(), 10)
+                except TimeoutError:
+                    for identity in managed_provider_processes():
+                        assert identity in owned, "private provider identity changed before kill"
+                        assert identity in managed_provider_processes()
+                        os.kill(identity[0], signal.SIGKILL)
+                    wait(lambda: not managed_provider_processes(), 5)
+                    if stop_error is None:
+                        stop_error = RuntimeError("private provider required forced kill after stop")
+                finally:
+                    report["managed_provider_survivors"] = managed_provider_processes()
+                if stop_error is not None:
+                    raise stop_error
+
+            cleanup_step("managed provider", end_managed_provider)
+
             def end_controller():
                 try:
                     os.killpg(controller_pid, signal.SIGCONT)
@@ -1844,6 +2005,11 @@ try:
                 (out / "bootstrap-controller.log").write_bytes(p.read_bytes())
             for p in profile.glob("sessions/**/*.jsonl"):
                 (out / p.name).write_bytes(p.read_bytes())
+            # Keep bounded startup diagnostics before retiring the private
+            # profile. A missing MCP namespace must be diagnosable even when
+            # the TUI collapses its warning into an unopened notice.
+            for p in (profile / "log").glob("*.log"):
+                (out / ("provider-" + p.name)).write_bytes(p.read_bytes()[-1024 * 1024:])
 except (Exception, KeyboardInterrupt) as e:  # noqa: BLE001 - Save evidence, clean up, and exit nonzero.
     report["result"] = "failed"
     report["error"] = str(e)

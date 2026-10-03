@@ -16,6 +16,7 @@ mod question_events;
 mod recovery;
 mod requests;
 mod review;
+mod session_identity;
 mod terminal;
 mod transport;
 
@@ -331,7 +332,10 @@ async fn session(
         "Codex conversation has another checkout"
     );
     ledger.bind_thread(thread.clone())?;
+    let mut session_bound = false;
     if resumed {
+        session_identity::bind(client, agent, &thread).await?;
+        session_bound = true;
         recovery::recover(provider, client, ledger, agent).await?;
     }
     let human = match call(
@@ -535,6 +539,15 @@ async fn session(
                         }
                     };
                     turn = Some(result["turn"]["id"].as_str().context("Codex accepted no identifiable turn")?.to_owned());
+                    // Bind only after the provider accepts the turn. A daemon
+                    // binding error must not strand an input that was never
+                    // submitted or give an unused thread a permanent label.
+                    // Receipt recovery remains unchanged, and the collector
+                    // reconciles any samples scanned before this late binding.
+                    if !session_bound {
+                        session_identity::bind(client, agent, &thread).await?;
+                        session_bound = true;
+                    }
                 }
                 }
             }

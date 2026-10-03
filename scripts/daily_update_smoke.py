@@ -89,7 +89,7 @@ else:
             launch('default-off', [step('click', id='settings'), step('wait_text', text='Daily update checks: off'), step('pause', millis=1500)])
             assert not records() and (not forbidden.exists())
             report['checks'].append('new_preferences_default_to_no_automatic_requests')
-            launch('enable', [step('click', id='settings'), step('wait_text', text='Daily update checks: off'), step('pause', millis=1500), step('click', id='automatic-update-checks'), step('wait_text', text='Daily update checks: on'), step('wait_control', id='open-available-update', present=True), step('click', id='open-available-update'), step('wait_text', text='Desktop installation'), step('wait_text', text='Version 0.2.0 is available'), step('wait_text', text='No managed installation at this prefix.'), step('wait_text', text='Download and preview 0.2.0'), step('capture', name='available-update'), step('pause', millis=1200)])
+            launch('enable', [step('click', id='settings'), step('wait_text', text='Daily update checks: off'), step('pause', millis=1500), step('click', id='automatic-update-checks'), step('wait_text', text='Daily update checks: on'), step('wait_control', id='open-available-update', present=True), step('click', id='open-available-update'), step('wait_text', text='Update available — 0.2.0'), step('wait_text', text='No managed installation at this prefix.'), step('wait_text', text='Download and preview 0.2.0'), step('capture', name='available-update'), step('pause', millis=1200)])
             assert len(records()) == 1, records()
             assert catalog()['updates']['enabled']
             attempt = catalog()['updates']['last_attempt']

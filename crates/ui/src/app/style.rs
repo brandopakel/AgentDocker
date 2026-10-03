@@ -2,8 +2,24 @@
 //!
 //! The palette comes from the mark: a deep navy ground, electric blue for
 //! selection and primary actions, cyan as the secondary brand tone. Light
-//! and dark keep the same roles so the hierarchy reads identically.
+//! and dark keep the same roles so the hierarchy reads identically, and
+//! the rail stays navy in both, so the cube always sits on navy
+//! (`Colors::rail`).
+//!
+//! Depth comes from tint and hairline, never from blur: rail under ground
+//! under card under raised, with `overlay` the only surface above a card.
+//! Radii follow one scale (`RADIUS_*`): keycaps and checkboxes 4, controls
+//! 6, menus and tracks 8, cards and panels 10.
 use iced::{Border, Color, Font, Theme, color, widget::container};
+
+/// Keycaps, checkboxes, menu items.
+pub const RADIUS_XS: f32 = 4.0;
+/// Buttons, inputs, tooltips, rows, small tiles.
+pub const RADIUS_SM: f32 = 6.0;
+/// Menus, segmented tracks, rail rows, icon tiles.
+pub const RADIUS_MD: f32 = 8.0;
+/// Cards and panels.
+pub const RADIUS_LG: f32 = 10.0;
 
 /// The interface face. Inter is bundled (Regular, Medium, SemiBold; SIL OFL),
 /// so weights and glyph coverage are the same on every host. The system
@@ -25,15 +41,24 @@ pub struct Colors {
     pub sidebar: Color,
     /// A raised surface: cards, list panels, inputs.
     pub card: Color,
-    /// Hover and pressed states, and quiet secondary buttons.
+    /// Secondary-button fill, segmented tracks, keycaps and icon tiles.
     pub raised: Color,
+    /// A row or a quiet control under the pointer.
+    pub hover: Color,
+    /// Menus, popovers and tooltips: the one surface above a card.
+    pub overlay: Color,
     pub text: Color,
     pub muted: Color,
     /// Eyebrows and tertiary detail.
     pub faint: Color,
+    /// Card borders and row rules.
     pub line: Color,
+    /// Inputs, outline buttons and unchecked controls.
+    pub line_strong: Color,
     /// Primary actions and the selected mark.
     pub accent: Color,
+    /// A primary action under the pointer.
+    pub accent_hover: Color,
     /// Tinted ground behind a selected control.
     pub accent_soft: Color,
     /// Ink on `accent_soft`.
@@ -42,6 +67,8 @@ pub struct Colors {
     pub green: Color,
     pub amber: Color,
     pub red: Color,
+    /// The fill of an armed destructive action; white reads on it.
+    pub danger: Color,
 }
 
 impl Colors {
@@ -49,40 +76,50 @@ impl Colors {
         if dark {
             Self {
                 dark,
-                ground: color!(0x0f141c),
-                sidebar: color!(0x0b1017),
-                card: color!(0x161d28),
-                raised: color!(0x1e2734),
-                text: color!(0xe8edf5),
-                muted: color!(0x98a4b8),
-                faint: color!(0x8996aa),
-                line: color!(0x263042),
-                accent: color!(0x286be0),
-                accent_soft: color!(0x1a2f52),
-                accent_ink: color!(0xbdd3ff),
-                cyan: color!(0x2bd4f0),
-                green: color!(0x4fd18b),
-                amber: color!(0xe8b95b),
-                red: color!(0xf26d6d),
+                ground: color!(0x0b1018),
+                sidebar: color!(0x070b12),
+                card: color!(0x111826),
+                raised: color!(0x18212f),
+                hover: color!(0x141c29),
+                overlay: color!(0x1a2333),
+                text: color!(0xe8ecf2),
+                muted: color!(0x97a2b4),
+                faint: color!(0x808ca0),
+                line: color!(0x1f2938),
+                line_strong: color!(0x2e3a4d),
+                accent: color!(0x2c6ae4),
+                accent_hover: color!(0x326fe6),
+                accent_soft: color!(0x132748),
+                accent_ink: color!(0xb7cdfd),
+                cyan: color!(0x2fc4dd),
+                green: color!(0x46c08a),
+                amber: color!(0xe0ad55),
+                red: color!(0xee6b68),
+                danger: color!(0xc43b3b),
             }
         } else {
             Self {
                 dark,
-                ground: color!(0xf6f8fb),
-                sidebar: color!(0xedf1f6),
+                ground: color!(0xf8f9fc),
+                sidebar: color!(0x0f1a2f),
                 card: Color::WHITE,
-                raised: color!(0xe6edf8),
-                text: color!(0x111827),
-                muted: color!(0x5a6678),
-                faint: color!(0x5e6a7b),
-                line: color!(0xdce3ec),
-                accent: color!(0x1f6feb),
-                accent_soft: color!(0xe4edff),
-                accent_ink: color!(0x1749b3),
-                cyan: color!(0x0e9bb8),
-                green: color!(0x1f8a57),
-                amber: color!(0xa3661c),
-                red: color!(0xc43d3d),
+                raised: color!(0xebeff6),
+                hover: color!(0xf2f5f9),
+                overlay: Color::WHITE,
+                text: color!(0x0b1324),
+                muted: color!(0x545f72),
+                faint: color!(0x5f6a7c),
+                line: color!(0xdfe4ec),
+                line_strong: color!(0xc9d1dd),
+                accent: color!(0x2563eb),
+                accent_hover: color!(0x1d55d0),
+                accent_soft: color!(0xe5edff),
+                accent_ink: color!(0x1a45a8),
+                cyan: color!(0x0a7c96),
+                green: color!(0x1b7f50),
+                amber: color!(0x9a5f12),
+                red: color!(0xc43b3b),
+                danger: color!(0xc43b3b),
             }
         }
     }
@@ -90,6 +127,34 @@ impl Colors {
     /// The roles for whatever theme a style closure was handed.
     pub fn of(theme: &Theme) -> Self {
         Self::new(theme.palette().background.r < 0.5)
+    }
+
+    /// The roles inside the navigation rail. The rail is navy in both
+    /// appearances, so in light mode it carries its own light-on-navy
+    /// ink; every rail colour comes from here, never from the page roles.
+    /// `ground` is the rail itself, `raised` the selected row and `hover`
+    /// the row under the pointer.
+    pub fn rail(self) -> Self {
+        let base = if self.dark {
+            self
+        } else {
+            Self {
+                sidebar: color!(0x0f1a2f),
+                text: color!(0xd4d9e2),
+                muted: color!(0x8f9aae),
+                faint: color!(0x8f9aae),
+                ..Self::new(true)
+            }
+        };
+        Self {
+            ground: base.sidebar,
+            card: base.sidebar,
+            raised: mix(base.sidebar, base.text, 0.09),
+            hover: mix(base.sidebar, base.text, 0.05),
+            line: mix(base.sidebar, base.text, 0.10),
+            line_strong: mix(base.sidebar, base.text, 0.18),
+            ..base
+        }
     }
 
     pub fn theme(self) -> Theme {
@@ -114,7 +179,61 @@ impl Colors {
             border: Border {
                 color: self.line,
                 width: if bordered { 1.0 } else { 0.0 },
-                radius: 12.0.into(),
+                radius: RADIUS_LG.into(),
+            },
+            ..Default::default()
+        }
+    }
+
+    /// A menu, popover or tooltip: the overlay surface with the one small
+    /// shadow the renderer can afford (a few hundred pixels, not a card).
+    pub fn overlay_style(self) -> container::Style {
+        container::Style {
+            background: Some(self.overlay.into()),
+            text_color: Some(self.text),
+            border: Border {
+                color: if self.dark {
+                    self.line_strong
+                } else {
+                    self.line
+                },
+                width: 1.0,
+                radius: RADIUS_MD.into(),
+            },
+            shadow: iced::Shadow {
+                color: Color::from_rgba8(8, 12, 20, if self.dark { 0.35 } else { 0.12 }),
+                offset: iced::Vector::new(0.0, 2.0),
+                blur_radius: 8.0,
+            },
+            ..Default::default()
+        }
+    }
+
+    /// A dialog or the command palette: the overlay surface without the
+    /// menu's shadow. These are large, and tiny-skia evaluates a blurred
+    /// shadow over every pixel it covers on every frame; the scrim behind
+    /// them does the lifting instead.
+    pub fn dialog_style(self) -> container::Style {
+        container::Style {
+            shadow: iced::Shadow::default(),
+            border: Border {
+                radius: (RADIUS_LG + 2.0).into(),
+                ..self.overlay_style().border
+            },
+            ..self.overlay_style()
+        }
+    }
+
+    /// A small square tile behind a glyph or a keycap: raised fill and a
+    /// hairline.
+    pub fn tile(self, radius: f32) -> container::Style {
+        container::Style {
+            background: Some(self.raised.into()),
+            text_color: Some(self.muted),
+            border: Border {
+                color: self.line,
+                width: 1.0,
+                radius: radius.into(),
             },
             ..Default::default()
         }
@@ -129,25 +248,29 @@ impl Colors {
         self.surface(self.card, true)
     }
 
-    /// A card whose left-to-right hairline is tinted to ask for attention.
+    /// An inline notice in a tone: a faint wash of the tone and a hairline
+    /// of it, so it reads as a note rather than as another card.
     pub fn attention_style(self, tint: Color) -> container::Style {
         container::Style {
+            background: Some(mix(self.card, tint, if self.dark { 0.08 } else { 0.06 }).into()),
+            text_color: Some(self.text),
             border: Border {
-                color: alpha(tint, 0.55),
+                color: alpha(tint, if self.dark { 0.40 } else { 0.35 }),
                 width: 1.0,
-                radius: 12.0.into(),
+                radius: RADIUS_MD.into(),
             },
-            ..self.card_style()
+            ..Default::default()
         }
     }
 
-    /// A small rounded label.
+    /// A small rounded label: counts and kinds, never status (status is a
+    /// dot and a word).
     pub fn pill(self, background: Color, ink: Color) -> container::Style {
         container::Style {
             background: Some(background.into()),
             text_color: Some(ink),
             border: Border {
-                radius: 999.0.into(),
+                radius: RADIUS_SM.into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -253,28 +376,53 @@ mod tests {
     fn text_roles_stay_legible_on_every_surface() {
         for dark in [false, true] {
             let c = Colors::new(dark);
-            for ground in [c.ground, c.sidebar, c.card, c.raised] {
+            // The rail is checked with its own ink: it is navy in both
+            // appearances, so the page's light-mode ink would vanish on it.
+            let rail = c.rail();
+            for (roles, ground, place) in [
+                (c, c.ground, "ground"),
+                (c, c.card, "card"),
+                (c, c.raised, "raised"),
+                (c, c.hover, "hover"),
+                (c, c.overlay, "overlay"),
+                (rail, rail.ground, "rail"),
+                (rail, rail.raised, "selected rail row"),
+                (rail, rail.hover, "rail row under the pointer"),
+            ] {
                 assert!(
-                    contrast(c.text, ground) > 7.0,
-                    "text on surface, dark={dark}"
+                    contrast(roles.text, ground) > 7.0,
+                    "text on {place}, dark={dark}"
                 );
                 assert!(
-                    contrast(c.muted, ground) >= 4.5,
-                    "muted on surface, dark={dark}"
+                    contrast(roles.muted, ground) >= 4.5,
+                    "muted on {place}, dark={dark}: {}",
+                    contrast(roles.muted, ground)
                 );
                 assert!(
-                    contrast(c.faint, ground) >= 4.5,
-                    "faint on surface, dark={dark}"
+                    contrast(roles.faint, ground) >= 4.5,
+                    "faint on {place}, dark={dark}: {}",
+                    contrast(roles.faint, ground)
                 );
             }
+            assert_eq!(rail.ground, c.sidebar, "the rail is the sidebar colour");
             assert!(
                 contrast(c.accent_ink, c.accent_soft) >= 4.5,
                 "selected ink, dark={dark}"
             );
-            assert!(
-                contrast(Color::WHITE, c.accent) >= 4.5,
-                "primary label, dark={dark}"
-            );
+            for fill in [c.accent, c.accent_hover, c.danger] {
+                assert!(
+                    contrast(Color::WHITE, fill) >= 4.5,
+                    "white label on a filled action, dark={dark}: {}",
+                    contrast(Color::WHITE, fill)
+                );
+            }
+            for tone in [c.green, c.amber, c.red] {
+                assert!(
+                    contrast(tone, c.card) >= 4.5,
+                    "status word on a card, dark={dark}: {}",
+                    contrast(tone, c.card)
+                );
+            }
         }
     }
 
