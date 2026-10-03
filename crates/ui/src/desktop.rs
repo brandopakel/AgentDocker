@@ -34,6 +34,10 @@ pub struct Panel {
     /// offer a rollback only when there is a version to roll back to.
     /// `None` means nobody has asked yet.
     pub installed: Option<Installed>,
+    /// The available version the person put off with Later: its banner
+    /// steps down from the screen's primary action until a newer one is
+    /// found. Window-local; never saved.
+    pub later: Option<String>,
 }
 
 /// What is at a prefix, as far as the last status knows.
