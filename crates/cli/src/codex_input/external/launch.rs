@@ -30,6 +30,9 @@ pub struct Args {
     cwd: Option<PathBuf>,
     #[arg(long)]
     name: Option<String>,
+    /// Reopen this exact persisted root conversation UUID without a new prompt.
+    #[arg(long)]
+    resume: Option<uuid::Uuid>,
     /// Provider configuration flags; initial prompts and resume are not accepted.
     #[arg(last = true, allow_hyphen_values = true)]
     arguments: Vec<String>,
@@ -129,11 +132,31 @@ async fn bind(client: &Client, binding: &Binding, directory: &Path) -> Result<Ch
     let mut child = receiver
         .spawn()
         .context("cannot start owned native receiver")?;
-    let result = timeout(Duration::from_secs(30), async {
+    let result = wait_binding(client, binding, Some(&mut child)).await;
+    if let Err(error) = result {
+        retire(&mut child).await?;
+        return Err(error);
+    }
+    Ok(child)
+}
+
+async fn wait_binding(
+    client: &Client,
+    binding: &Binding,
+    mut child: Option<&mut Child>,
+) -> Result<()> {
+    let descriptor = bootstrap::launch(binding)?;
+    timeout(Duration::from_secs(30), async {
         loop {
+            if let Some(child) = child.as_mut() {
+                ensure!(
+                    child.try_wait()?.is_none(),
+                    "native receiver exited before binding"
+                );
+            }
             ensure!(
-                child.try_wait()?.is_none(),
-                "native receiver exited before binding"
+                super::alive(binding),
+                "native terminal exited before binding"
             );
             if let Response::Agent { agent } = crate::codex_input::call(
                 client,
@@ -148,19 +171,24 @@ async fn bind(client: &Client, binding: &Binding, directory: &Path) -> Result<Ch
                     input.provider == binding.provider,
                     "native receiver bound another provider generation"
                 );
-                return Ok(());
+                ensure!(
+                    input.launch.as_ref() == Some(&descriptor),
+                    "native receiver bound another launch descriptor"
+                );
+                if procinfo::start_time(input.controller.pid) == Some(input.controller.started_at)
+                    && child
+                        .as_ref()
+                        .is_none_or(|child| child.id() == Some(input.controller.pid))
+                {
+                    return Ok(());
+                }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
     .await
     .context("native receiver binding timed out")
-    .and_then(|result| result);
-    if let Err(error) = result {
-        retire(&mut child).await?;
-        return Err(error);
-    }
-    Ok(child)
+    .and_then(|result| result)
 }
 
 async fn wait_terminal(
@@ -200,6 +228,22 @@ struct Startup<'a> {
     port: u16,
     token: &'a str,
     name: Option<String>,
+    resume: Option<&'a str>,
+}
+
+fn resumed_root(thread: &Value, session: &str, cwd: &Path) -> bool {
+    thread["id"].as_str() == Some(session)
+        && thread["sessionId"].as_str() == Some(session)
+        && thread["cwd"]
+            .as_str()
+            .and_then(|p| Path::new(p).canonicalize().ok())
+            .as_deref()
+            == Some(cwd)
+        && thread["threadSource"].as_str() == Some("user")
+        && thread.get("forkedFromId").is_some_and(Value::is_null)
+        && thread.get("parentThreadId").is_some_and(Value::is_null)
+        && thread["ephemeral"].as_bool() == Some(false)
+        && thread["status"]["type"].as_str() == Some("idle")
 }
 
 impl Startup<'_> {
@@ -217,27 +261,31 @@ impl Startup<'_> {
             }
         };
         // Inherit the physical terminal. No synthetic input or terminal proxy.
+        let mut terminal = command(
+            self.program,
+            self.cwd,
+            self.profile,
+            &dirs::home(),
+            self.client,
+        );
+        if let Some(session) = self.resume {
+            terminal.args(["resume", session]);
+        }
         *tui = Some(
-            command(
-                self.program,
-                self.cwd,
-                self.profile,
-                &dirs::home(),
-                self.client,
-            )
-            .args([
-                "--no-alt-screen",
-                "--remote",
-                &format!("ws://127.0.0.1:{}", self.port),
-                "--remote-auth-token-env",
-                "AGENTDOCKER_NATIVE_CAPABILITY",
-            ])
-            .env("AGENTDOCKER_NATIVE_CAPABILITY", self.token)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .context("cannot start native Codex terminal")?,
+            terminal
+                .args([
+                    "--no-alt-screen",
+                    "--remote",
+                    &format!("ws://127.0.0.1:{}", self.port),
+                    "--remote-auth-token-env",
+                    "AGENTDOCKER_NATIVE_CAPABILITY",
+                ])
+                .env("AGENTDOCKER_NATIVE_CAPABILITY", self.token)
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .context("cannot start native Codex terminal")?,
         );
         let terminal = tui.as_mut().context("native terminal unavailable")?;
         let thread = timeout(Duration::from_secs(45), async {
@@ -246,7 +294,11 @@ impl Startup<'_> {
                     server.try_wait()?.is_none() && terminal.try_wait()?.is_none(),
                     "owned native startup process exited"
                 );
-                if let Some(thread) = observer.observed().await? {
+                let observed = match self.resume {
+                    Some(session) => observer.resumed(session).await?,
+                    None => observer.observed().await?,
+                };
+                if let Some(thread) = observed {
                     return Ok::<Value, anyhow::Error>(thread);
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -273,22 +325,39 @@ impl Startup<'_> {
             started_at: procinfo::start_time(std::process::id())
                 .context("native launcher birth unavailable")?,
         };
-        let birth = Witness {
-            launcher,
-            created_at: thread["createdAt"]
-                .as_i64()
-                .context("native birth timestamp unavailable")?,
+        let birth = if let Some(expected) = self.resume {
+            ensure!(
+                resumed_root(&thread, expected, self.cwd),
+                "native terminal did not reopen the exact idle root conversation"
+            );
+            for process in [&provider.process, &server] {
+                ensure!(
+                    procinfo::inspect(process.pid).is_some_and(|p| p.ppid == launcher.pid),
+                    "resumed native process is not owned by this launcher"
+                );
+            }
+            // A resumed conversation must satisfy ordinary persisted history.
+            // It can never receive the fresh thread's first-input allowance.
+            None
+        } else {
+            let birth = Witness {
+                launcher,
+                created_at: thread["createdAt"]
+                    .as_i64()
+                    .context("native birth timestamp unavailable")?,
+            };
+            ensure!(
+                birth.owns_children(&provider, &server)
+                    && birth.matches_empty(
+                        &thread,
+                        &provider,
+                        self.cwd,
+                        chrono::Utc::now().timestamp()
+                    ),
+                "native birth lacks exact owned empty-thread proof"
+            );
+            Some(birth)
         };
-        ensure!(
-            birth.owns_children(&provider, &server)
-                && birth.matches_empty(
-                    &thread,
-                    &provider,
-                    self.cwd,
-                    chrono::Utc::now().timestamp()
-                ),
-            "native birth lacks exact owned empty-thread proof"
-        );
         let spec = AgentSpec {
             name: self
                 .name
@@ -320,7 +389,7 @@ impl Startup<'_> {
             remote: None,
         };
         let record = remote::Record {
-            version: 2,
+            version: if birth.is_some() { 2 } else { 1 },
             provider: binding.provider.clone(),
             server,
             executable: self.program.into(),
@@ -328,7 +397,7 @@ impl Startup<'_> {
             port: self.port,
             token_file: self.directory.join("capability"),
             token_sha256: format!("{:x}", Sha256::digest(self.token.as_bytes())),
-            birth: Some(birth),
+            birth,
         };
         let path = self.directory.join("server.json");
         let mut file = dirs::create_private_file(&path)?;
@@ -397,6 +466,7 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
     ));
     let mut tui = None;
     let mut receiver = None;
+    let resume = args.resume.map(|id| id.hyphenated().to_string());
     let startup = Startup {
         client: &client,
         cwd: &cwd,
@@ -406,12 +476,26 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         port,
         token: &token,
         name: args.name,
+        resume: resume.as_deref(),
     };
     let result = tokio::select! {
         _ = stop_signal() => Ok(()),
         result = async {
-            let binding = startup.witness(&mut server,&mut tui).await?;
-            receiver = Some(bind(&client,&binding,&directory).await?);
+            let mut binding = startup.witness(&mut server,&mut tui).await?;
+            let prior = if resume.is_some() {
+                super::preflight(&binding).await?;
+                super::resume::predecessor(&client, &binding).await?
+            } else {
+                None
+            };
+            if let Some(prior) = prior {
+                binding = super::resume::handoff(&client, binding, &prior).await?;
+                // Handoff publishes the canonical descriptor. Only the daemon
+                // starts its receiver, preserving the old queue and ledger.
+                wait_binding(&client, &binding, None).await?;
+            } else {
+                receiver = Some(bind(&client,&binding,&directory).await?);
+            }
             eprintln!("AgentDocker native input ready: {}",binding.agent);
             let terminal = tui.as_mut().context("native terminal unavailable")?;
             wait_terminal(terminal, &mut server, &mut receiver).await
@@ -438,10 +522,40 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
     result.and(cleanup)
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn reopen_requires_the_exact_idle_persisted_root_in_its_original_checkout() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().canonicalize().unwrap();
+        let thread = serde_json::json!({
+            "id":"original", "sessionId":"original", "cwd":cwd,
+            "threadSource":"user", "forkedFromId":null, "parentThreadId":null,
+            "ephemeral":false, "status":{"type":"idle"},
+            "createdAt":1, "preview":"prior conversation", "turns":[{"id":"old"}]
+        });
+        assert!(resumed_root(&thread, "original", &cwd));
+        for (key, value) in [
+            ("id", serde_json::json!("different")),
+            ("sessionId", serde_json::json!("different")),
+            ("cwd", serde_json::json!(cwd.join("other"))),
+            ("threadSource", serde_json::json!("subagent")),
+            ("forkedFromId", serde_json::json!("parent")),
+            ("parentThreadId", serde_json::json!("parent")),
+            ("ephemeral", serde_json::json!(true)),
+            ("status", serde_json::json!({"type":"active"})),
+        ] {
+            let mut changed = thread.clone();
+            changed[key] = value;
+            assert!(!resumed_root(&changed, "original", &cwd), "{key}");
+            changed.as_object_mut().unwrap().remove(key);
+            assert!(!resumed_root(&changed, "original", &cwd), "missing {key}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn receiver_is_reaped_while_native_terminal_remains_running() {
         fn sleeping_child() -> Child {

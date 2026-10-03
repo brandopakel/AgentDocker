@@ -114,6 +114,42 @@ impl BirthObserver {
         }
     }
 
+    /// Resume does not broadcast a new thread birth. An initially empty owned
+    /// server may load only the explicit requested thread. This proves no fresh
+    /// allowance: the launcher must still verify ordinary persisted history.
+    pub async fn resumed(&mut self, session: &str) -> Result<Option<Value>> {
+        let loaded = self.request("thread/loaded/list", json!({})).await?;
+        let ids = loaded["data"]
+            .as_array()
+            .context("native resumed threads unavailable")?;
+        ensure!(
+            ids.len() <= 1 && loaded.get("nextCursor").is_some_and(Value::is_null),
+            "native resumed thread is ambiguous"
+        );
+        let Some(id) = ids.first() else {
+            return Ok(None);
+        };
+        ensure!(
+            id.as_str() == Some(session)
+                && self
+                    .thread
+                    .as_ref()
+                    .is_none_or(|thread| thread["id"] == *id),
+            "native terminal loaded another conversation"
+        );
+        let value = self
+            .request(
+                "thread/read",
+                json!({"threadId":session,"includeTurns":false}),
+            )
+            .await?;
+        ensure!(
+            value["thread"]["id"].as_str() == Some(session),
+            "native resumed metadata names another conversation"
+        );
+        Ok(Some(value["thread"].clone()))
+    }
+
     pub async fn close(self) -> Result<()> {
         self.remote.close().await
     }

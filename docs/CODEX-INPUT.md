@@ -967,8 +967,15 @@ thread birth, then registers the exact TUI and publishes its private birth
 receipt before starting the receiver. The TUI inherits the terminal; the launcher
 never types a warmup or answers approvals. Configuration flags after `--` use the
 existing conservative app-server mapping. `--profile` and `--cwd` select existing
-paths without editing the provider profile; initial prompts and resume commands
-are refused. The launcher retires its own children on exit, revokes its capability
+paths without editing the provider profile. Initial prompts and positional
+resume commands are refused. The explicit `--resume <UUID>` option asks the native
+TUI to reopen that exact persisted root conversation. The launcher observes the
+same sole loaded thread, checks its checkout/root identity, requires normal
+persisted history, and publishes a version-1 record with no birth allowance. A
+unique dead predecessor hands off the canonical identity, original queued IDs
+and retained receipts through the daemon; a live or ambiguous predecessor
+refuses. The daemon alone starts the replacement receiver. This candidate
+reopen path still requires end-to-end native acceptance. The launcher retires its own children on exit, revokes its capability
 and retains bounded private server diagnostics. Source `e3445323` passed the full
 1,528-Rust/169-Python gate (zero retries) and an actual Mac Release trial: automatic
 binding before the first prompt, original queued receipt, receiver replacement
@@ -983,5 +990,5 @@ because the original receiver remained a zombie child. The launcher now reaps
 its receiver while the terminal continues, allowing daemon-owned replacement.
 Linux validation remains pending. The first Mac attempt
 stopped after binding on a fixture process-group assumption, before model input;
-that failure is retained. Reopen/adoption and desktop integration remain open;
+that failure is retained. Reopen/adoption acceptance and desktop integration remain open;
 ordinary `codex` and the current managed bridge are unchanged.

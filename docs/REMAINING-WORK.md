@@ -106,8 +106,10 @@ exit in private loopback trials. Oracle Linux compiled `096a01c4` (CLI inputs
 identical to `a3091852`) passed first binding/receipt but failed replacement: a
 diagnostic confirmed the launcher retained its exited receiver as a zombie.
 The launcher now reaps that child while the terminal runs; final validation and
-Linux acceptance remain pending. Reopen/adoption and desktop integration remain
-open.
+Linux acceptance remain pending. Explicit `--resume <UUID>` now requests the
+original root conversation through its native TUI, with strict history and
+daemon-owned canonical queue handoff; end-to-end reopen/adoption acceptance and
+desktop integration remain open.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its
