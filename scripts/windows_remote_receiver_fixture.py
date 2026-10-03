@@ -108,9 +108,10 @@ class Receiver:
         record = self.root / 'server.json'
         record.write_text(json.dumps(descriptor), encoding='utf-8')
         self.command = [self.cli, '--socket', self.socket, 'codex-queue', '--agent', self.agent,
-                        '--pid', tui.pid, '--started-at', agent['process_started_at'], '--thread', thread,
-                        '--profile', self.profile, '--cwd', self.repo, '--program', codex,
-                        '--app-server-record', record]
+                        '--pid', tui.pid, '--started-at', agent['process_started_at'].replace('Z', '+00:00'),
+                        '--thread', thread, '--profile', descriptor['provider']['profile'],
+                        '--cwd', descriptor['cwd'], '--program', descriptor['executable'],
+                        '--app-server-record', canonical(record)]
         self.ledger_path = self.home / 'codex-queue' / self.agent / 'delivery.json'
         self.report['receiver_generation'] = descriptor['provider']
 

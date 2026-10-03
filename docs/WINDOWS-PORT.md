@@ -714,7 +714,12 @@ fixture user turn before checking queued delivery, a retained draft and automati
 receiver replacement with exact receipts. `capability_approval=true` also checks
 the native print-command approval while the receiver is connected. The record
 uses native 100ns process birth and canonical Windows paths; no account or saved
-configuration is used. This acceptance is pending. Automatic launcher/bootstrap
+configuration is used. The first integrated run on `3591b3ad` built successfully,
+proved the pre-first-message refusal and accepted the native binding, then failed
+the fixture's command comparison: its manual launch used ordinary Windows paths
+and a `Z` timestamp while the stored restart command used canonical paths and
+the equivalent UTC offset. The fixture now supplies that exact canonical command;
+corrected acceptance is pending. Automatic launcher/bootstrap
 and zero-prompt input are separate gates. Source `873e7663` passed the corresponding
 nine-check Mac ARM64 shared-server trial and the full local suite; that pass
 does not establish Windows acceptance.
