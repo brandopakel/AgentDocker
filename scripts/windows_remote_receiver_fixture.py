@@ -123,10 +123,18 @@ class Receiver:
     def configure_hook(self):
         runner = self.root / 'capture_hook.py'
         self.hook_log = self.out / 'hooks.jsonl'
+        self.hook_entered = self.root / 'hook-entered'
+        self.release_hook = self.root / 'release-hook'
         # Relay provider JSON bytes unchanged: Windows Python's stream encoding
         # and subprocess locale can differ, corrupting non-ASCII checkout paths.
-        runner.write_text('import sys,subprocess,json,os\n'
-            + 'raw=sys.stdin.buffer.read()\n'
+        runner.write_text('import sys,subprocess,json,os,time\nfrom pathlib import Path\n'
+            + 'raw=sys.stdin.buffer.read()\npayload=json.loads(raw)\n'
+            + 'entered=Path(' + repr(str(self.hook_entered)) + ')\n'
+            + 'release=Path(' + repr(str(self.release_hook)) + ')\n'
+            + 'if payload.get("tool_name")=="mcp__agentdocker__whoami" and not entered.exists():\n'
+            + ' entered.touch()\n until=time.monotonic()+12\n'
+            + ' while not release.exists():\n'
+            + '  assert time.monotonic()<until, "private hook release deadline exceeded"\n  time.sleep(0.05)\n'
             + 'p=subprocess.run(' + repr([str(self.cli), '--socket', self.socket, 'hook', 'codex'])
             + ',input=raw,capture_output=True,timeout=8)\n'
             + 'with open(' + repr(str(self.hook_log)) + ',"a",encoding="utf-8") as f: '
@@ -137,6 +145,15 @@ class Receiver:
             'command': subprocess.list2cmdline([sys.executable, str(runner)])}]}]}})
         (self.profile / 'hooks.json').write_text(self.hooks_config, encoding='utf-8')
         self.report['hook_trust'] = 'one-off trust for sole vetted private fixture command; no saved account policy changed'
+
+    def queue_during_hook(self, text):
+        wait(self.hook_entered.exists, 10)
+        message = self.send(text)
+        wait(lambda: any(m['id'] == message for m in
+                         self.rpc({'op': 'peek_input', 'agent': self.agent})['messages']), 3)
+        self.release_hook.touch()
+        self.report['receiver_busy_message'] = message
+        return message
 
     def check_hook_identity(self, thread):
         calls = [json.loads(line) for line in self.hook_log.read_text(encoding='utf-8').splitlines()]

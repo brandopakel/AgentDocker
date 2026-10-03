@@ -67,6 +67,7 @@ def main():
     provider = tui = channel = server = reader = receiver = None
     queue_text = 'AD_PRIVATE_FIRST_QUEUE_' + secrets.token_hex(8)
     draft_text = 'AD_PRIVATE_RETAINED_DRAFT_' + secrets.token_hex(8)
+    busy_text = 'AD_PRIVATE_ACTIVE_HOOK_' + secrets.token_hex(8)
     approval_marker = 'AD_PRIVATE_APPROVAL_' + secrets.token_hex(8)
     approval_code = "print('" + approval_marker + "')"
     approval_command = 'python -c "' + approval_code + '"'
@@ -134,6 +135,7 @@ def main():
                 report['requests'].append({
                     'path': self.path, 'queue_nonce_present': queue_text in encoded,
                     'draft_nonce_present': draft_text in encoded,
+                    'busy_nonce_present': busy_text in encoded,
                     'tool_result_present': any(
                         v.get('type') == 'function_call_output' and approval_marker in str(v.get('output', ''))
                         for v in body.get('input', []) if isinstance(v, dict)),
@@ -433,6 +435,9 @@ def main():
                 step('one native Return approves the private print command',
                      any(r['tool_result_present'] for r in report['requests']))
 
+            if receiver is not None:
+                busy_message = receiver.queue_during_hook(busy_text)
+
             deadline = time.monotonic() + 25
             idle = False
             while time.monotonic() < deadline:
@@ -454,6 +459,12 @@ def main():
                 step('dedicated MCP call identifies the original terminal without a helper registration', True)
                 receiver.check_hook_identity(thread)
                 step('actual native hooks keep original identity with no outer registration or config change', True)
+                busy_receipt = receiver.received(busy_message)
+                report['receiver_busy_receipt'] = busy_receipt
+                step('busy input enters the active hook once with an exact same-turn receipt',
+                     busy_receipt['receipt']['turn'] == report['receiver_first_receipt']['receipt']['turn'] and
+                     any(r['busy_nonce_present'] and not r['title_request'] for r in report['requests']) and
+                     sum(h['stdout'].count(busy_message) for h in report['hook_calls']) == 1)
             tui.write('\r')
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline and not any(v['draft_nonce_present'] for v in report['requests']):
@@ -480,7 +491,7 @@ def main():
                      provider.poll() is None and tui.isalive() and len(users) == 4 and
                      all(sum(text in json.dumps(item) for item in users) == 1
                          for text in (queue_text, draft_text, replacement_text)) and
-                     [item['message'] for item in receiver.ledger()['completed']] == [first_message, second_message])
+                     [item['message'] for item in receiver.ledger()['completed']] == [first_message, busy_message, second_message])
                 report['receiver_receipts'] = receiver.ledger()['completed']
             if args.approval:
                 step('native one-time decision did not change the private prompt rule',
@@ -492,6 +503,8 @@ def main():
         except Exception:
             report['error'] = traceback.format_exc()
         finally:
+            if receiver is not None and hasattr(receiver, 'release_hook'):
+                receiver.release_hook.touch()
             closing.set()
             if channel is not None:
                 try:

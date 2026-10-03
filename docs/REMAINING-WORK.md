@@ -76,7 +76,14 @@ reported checkout. The `de1deb99` rerun preserved Unicode but still failed
 with a missing path: the provider inherited the provider-only environment, so
 hooks lacked the private AgentDocker ledger home that MCP received explicitly.
 The fixture now passes the private receiver environment to the provider and
-verifies the actual hook home. Both failures remain retained; rerun is pending.
+verifies the actual hook home. Both failures remain retained. Corrected
+`09ba31c0` passed the full local gate (1,524 Rust/169 Python, zero retries),
+18 Windows native checks and 17 Mac Release active-hook checks. Both adapters
+attribute only the original TUI; receipts, drafts and receiver replacement pass.
+The Windows fixture retires pinned provider processes explicitly and joins its
+readers; it does not prove graceful provider exit. The Mac active-hook trial has
+no forced cleanup. Windows same-turn active-hook delivery is now added to the
+fixture and awaits execution; automatic no-prompt startup remains open.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its
