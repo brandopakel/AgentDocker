@@ -25,10 +25,22 @@ pub struct AliasError {
     pub reason: &'static str,
 }
 
-/// Registration identity: exact known process birth, runtime and physical
-/// checkout. An absent session ID can join one known session, but callers must
-/// reject multiple candidates because this relation is intentionally not
-/// transitive across a sessionless transport and two named provider sessions.
+/// Registration identity: exact known process birth, runtime and project, and
+/// then the provider session where both records name one, the physical
+/// checkout where they do not.
+///
+/// Two records that name the same provider session in the same process are
+/// that session wherever each said it was working. A session's shell moves:
+/// Claude Code's hooks report as `cwd` wherever its Bash tool last changed
+/// directory, so a registration's directory is a fact about a moment, not
+/// about who registered. Requiring it to match made one session two agents
+/// the first time a hook ran from a subdirectory. Without a session on both
+/// sides the checkout still decides, because one process can host several
+/// sessions in several worktrees of one project and a sessionless transport
+/// would otherwise match all of them. An absent session ID can join one known
+/// session, but callers must reject multiple candidates because this relation
+/// is intentionally not transitive across a sessionless transport and two
+/// named provider sessions.
 pub fn same_registration(a: &AgentRecord, b: &AgentRecord) -> bool {
     b.pid.is_some()
         && b.process_started_at.is_some()
@@ -36,11 +48,72 @@ pub fn same_registration(a: &AgentRecord, b: &AgentRecord) -> bool {
         && a.process_started_at == b.process_started_at
         && a.spec.runtime == b.spec.runtime
         && a.project.as_ref().map(ProjectRef::id) == b.project.as_ref().map(ProjectRef::id)
-        && matches!((&a.spec.workdir, &b.spec.workdir), (Some(one), Some(other)) if one == other)
         && match (session_id(a), session_id(b)) {
             (Some(one), Some(other)) => one == other,
-            _ => true,
+            _ => matches!(
+                (&a.spec.workdir, &b.spec.workdir),
+                (Some(one), Some(other)) if one == other
+            ),
         }
+}
+
+/// Two live records that are one provider session twice over: both name the
+/// same session and agree on process birth, runtime and project. What a
+/// registration from a moved shell left behind before registrations stopped
+/// comparing the directory between two named sessions. One of them stays
+/// ([`keeper`]); the daemon retires the others into it when nothing would be
+/// lost.
+pub fn same_live_session(a: &AgentRecord, b: &AgentRecord) -> bool {
+    a.id != b.id
+        && a.status.is_live()
+        && b.status.is_live()
+        && session_id(a).is_some()
+        && session_id(b).is_some()
+        && same_registration(a, b)
+}
+
+/// Of records that are one session, the one that stays: one a live transport
+/// holds (`held` — a subscriber, which only the daemon can see), then one an
+/// input binding or a current receiver delivers through, then the first
+/// registered, then the lower id, so the answer does not depend on order.
+pub fn keeper<'a>(
+    records: impl IntoIterator<Item = &'a AgentRecord>,
+    held: impl Fn(&AgentRecord) -> bool,
+) -> Option<&'a AgentRecord> {
+    let rank = |record: &AgentRecord| {
+        (
+            !held(record),
+            !receives_input(record),
+            record.created_at,
+            record.id.clone(),
+        )
+    };
+    records.into_iter().min_by(|a, b| rank(a).cmp(&rank(b)))
+}
+
+/// Why a live duplicate cannot be retired into its keeper, or nothing when it
+/// can: it must be an external local session nobody else runs (not managed,
+/// contained, paned, restorable or restartable) and nothing may deliver input
+/// through it, since a receiver or binding owns the order of what it offered.
+/// Leases, waits, subscribers and the queue are the daemon's to check.
+pub fn retirable_duplicate(record: &AgentRecord) -> Result<(), &'static str> {
+    if !resumable(record) {
+        return Err("a managed, remote or restorable record is its owner's to retire");
+    }
+    if receives_input(record) {
+        return Err("input is delivered through this record");
+    }
+    Ok(())
+}
+
+/// An input binding, or a receiver reporting for the record's current
+/// process.
+fn receives_input(record: &AgentRecord) -> bool {
+    record.input_binding.is_some()
+        || record
+            .input_delivery
+            .as_ref()
+            .is_some_and(|delivery| Some(delivery.process_started_at) == record.process_started_at)
 }
 
 fn session_id(record: &AgentRecord) -> Option<&str> {
@@ -348,7 +421,13 @@ mod tests {
             match changed {
                 0 => b.process_started_at = None,
                 1 => b.pid = Some(124),
-                2 => b.spec.workdir = Some("/fixture/another-checkout".into()),
+                // Another checkout, and nothing on this side to say which
+                // session it is: the checkout is all that tells them apart.
+                // (Both naming the session is the moved-shell case below.)
+                2 => {
+                    b.spec.workdir = Some("/fixture/another-checkout".into());
+                    b.spec.labels.remove("session_id");
+                }
                 3 => b.managed = true,
                 4 => b.host = "another-host".into(),
                 _ => {
@@ -362,6 +441,108 @@ mod tests {
                 "case {changed}"
             );
         }
+    }
+
+    /// One Claude Code process, one session: its MCP server registered from
+    /// where the process was launched, and a hook ran after the session's
+    /// Bash tool had `cd`'d into a subdirectory, reporting that as its `cwd`.
+    /// Comparing the directory made the second registration a second agent
+    /// for the same session (`claude-code-2923` and `claude-83083752`, one
+    /// pid). Both name the session, so the directory is not who they are.
+    #[test]
+    fn one_named_session_is_one_registration_wherever_its_shell_has_moved() {
+        let mcp = record("mcp", Some("session"));
+        let mut moved = record("hook", Some("session"));
+        moved.spec.workdir = Some(
+            mcp.spec
+                .workdir
+                .as_ref()
+                .unwrap()
+                .join("artifacts")
+                .join("21st"),
+        );
+        assert!(same_registration(&mcp, &moved) && same_registration(&moved, &mcp));
+        assert!(same_live_session(&mcp, &moved));
+        assert!(
+            repair_pair([&mcp, &moved], &mcp.id, &moved.id).is_ok(),
+            "the offline repair can reconcile what was left behind"
+        );
+        // Still not on the session alone: another birth, runtime or project,
+        // or another session, is another agent.
+        for changed in 0..4 {
+            let mut other = moved.clone();
+            match changed {
+                0 => {
+                    other.process_started_at = Some(other.created_at + chrono::Duration::seconds(1))
+                }
+                1 => other.spec.runtime = "codex".into(),
+                2 => other.project = Some(ProjectRef::directory("/fixture/another-project")),
+                _ => {
+                    other
+                        .spec
+                        .labels
+                        .insert("session_id".into(), "another".into());
+                }
+            }
+            assert!(!same_registration(&mcp, &other), "case {changed}");
+            assert!(!same_live_session(&mcp, &other), "case {changed}");
+        }
+        // A sessionless transport still needs the checkout: it may belong to
+        // any session the process hosts.
+        let mut sessionless = moved.clone();
+        sessionless.spec.labels.remove("session_id");
+        assert!(!same_registration(&mcp, &sessionless));
+        assert!(!same_live_session(&mcp, &sessionless));
+        // Ended records are history, not a live duplicate.
+        let mut ended = moved.clone();
+        ended.status = crate::AgentStatus::Exited { code: None };
+        assert!(!same_live_session(&mcp, &ended));
+    }
+
+    /// Of one session's records the one a transport holds stays, then one
+    /// input is delivered through, then the first registered; order of the
+    /// list never picks it. A record input is delivered through, or one
+    /// somebody else runs, is never the one retired.
+    #[test]
+    fn the_keeper_is_what_delivers_input_or_registered_first() {
+        let mut first = record("b-first", Some("session"));
+        let mut second = record("a-second", Some("session"));
+        second.created_at = first.created_at + chrono::Duration::minutes(35);
+        let ids = |kept: Option<&AgentRecord>| kept.map(|r| r.id.to_string());
+        for order in [[&first, &second], [&second, &first]] {
+            assert_eq!(ids(keeper(order, |_| false)), Some("b-first".into()));
+            assert_eq!(
+                ids(keeper(order, |r| r.id.as_str() == "a-second")),
+                Some("a-second".into()),
+                "a held record stays"
+            );
+        }
+        second.input_delivery = Some(crate::InputDelivery {
+            process_started_at: second.process_started_at.unwrap(),
+            paused: false,
+            pause_reason: None,
+            reported_at: second.created_at,
+            received: None,
+            received_at: None,
+        });
+        assert_eq!(
+            ids(keeper([&first, &second], |_| false)),
+            Some("a-second".into())
+        );
+        assert!(retirable_duplicate(&first).is_ok());
+        assert!(retirable_duplicate(&second).is_err());
+        // A receiver report from an earlier process of the record does not
+        // count: it delivers nothing now.
+        second.input_delivery.as_mut().unwrap().process_started_at =
+            second.created_at - chrono::Duration::days(1);
+        assert!(retirable_duplicate(&second).is_ok());
+        assert_eq!(
+            ids(keeper([&first, &second], |_| false)),
+            Some("b-first".into())
+        );
+        first.managed = true;
+        assert!(retirable_duplicate(&first).is_err());
+        assert!(keeper(std::iter::empty(), |_| false).is_none());
     }
 
     #[test]

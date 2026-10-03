@@ -338,6 +338,17 @@ fn codex_runtime(arguments: &[String]) -> Option<&'static str> {
     codex_helper(arguments).is_none().then_some("codex")
 }
 
+/// Codex's detached app-server (`codex app-server … --managed-daemon`, 0.160
+/// and later): the process a Codex terminal session runs its MCP servers
+/// under. It is never the session. An MCP server whose parent it is serves
+/// whichever conversations call it, so it must neither register this process
+/// as an agent nor be taken for the session above it.
+pub fn detached_codex_app_server(argv: &[String]) -> bool {
+    is_codex_binary(argv)
+        && argv.iter().any(|v| v == "app-server")
+        && argv.iter().any(|v| v == "--managed-daemon")
+}
+
 /// Whether the process is Codex's own binary in any role, sidecar
 /// included: what the supervised bridge attributes its app-server by.
 pub fn is_codex_binary(argv: &[String]) -> bool {
@@ -782,6 +793,33 @@ mod tests {
             "node /x/other/cli.js --chrome-native-host",
         ] {
             assert_eq!(helper_of(&argv(command)), None, "{command}");
+        }
+    }
+
+    /// Only Codex's own binary in its detached app-server role is the MCP
+    /// host above a 0.160 terminal session; the plain sidecar a receiver
+    /// speaks to, the session itself and other programs are not.
+    #[test]
+    fn a_detached_codex_app_server_is_recognised_by_its_own_command_line() {
+        let argv = |command: &str| {
+            command
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        for command in [
+            "/Users/me/.codex/packages/app-server-daemon/releases/0.160.0-aarch64-apple-darwin/bin/codex app-server --listen unix:// --managed-daemon",
+            "node /x/@openai/codex/bin/codex.js app-server --managed-daemon",
+        ] {
+            assert!(detached_codex_app_server(&argv(command)), "{command}");
+        }
+        for command in [
+            "codex app-server --stdio",
+            "codex",
+            "codex resume 01a0 --managed-daemon",
+            "other app-server --managed-daemon",
+        ] {
+            assert!(!detached_codex_app_server(&argv(command)), "{command}");
         }
     }
 
