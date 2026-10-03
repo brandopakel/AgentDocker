@@ -1008,7 +1008,8 @@ async fn session_agent<B: Backend>(backend: &B, input: &HookInput) -> Result<Opt
 struct HookProcess {
     pid: u32,
     started: chrono::DateTime<chrono::Utc>,
-    /// The process's working directory, resolved; `None` when unreadable.
+    /// The process's working directory, resolved; `None` when unreadable,
+    /// and for a runtime whose process is not one session (opencode).
     checkout: Option<PathBuf>,
     /// The hook's `cwd`, resolved.
     shell: Option<PathBuf>,
@@ -1031,10 +1032,18 @@ impl HookProcess {
     /// the filesystem, and doing it per candidate would make the check cost
     /// grow with the fleet. Unverifiable ancestry authorises nothing, so no
     /// pid, no readable birth or no directory at all is `None`.
+    ///
+    /// Only Claude Code's process is one session launched in one place. An
+    /// opencode server serves several directories at once and its plugin
+    /// reports each session's own as `cwd`, so there the hook's directory is
+    /// where the session works and the server's says nothing about it.
     fn of(input: &HookInput, pid: Option<u32>) -> Option<Self> {
         let pid = pid?;
         let started = agentdocker_host::procinfo::start_time(pid)?;
-        let checkout = agentdocker_host::procinfo::cwd(pid).and_then(|dir| dir.canonicalize().ok());
+        let checkout = (input.runtime() == RUNTIME)
+            .then(|| agentdocker_host::procinfo::cwd(pid))
+            .flatten()
+            .and_then(|dir| dir.canonicalize().ok());
         let shell = input.cwd.as_ref().and_then(|dir| dir.canonicalize().ok());
         (checkout.is_some() || shell.is_some()).then_some(Self {
             pid,
@@ -2723,6 +2732,29 @@ mod tests {
     /// subdirectory (`claude-83083752` beside `claude-code-2923`), and
     /// thereafter found whichever record matched where the shell happened
     /// to be. The process's own directory is where its records are.
+    /// An opencode server serves several directories and its plugin reports
+    /// each session's own as `cwd`, so the server's directory places nothing:
+    /// its sessions register where they work, as before.
+    #[test]
+    fn only_claude_codes_process_directory_places_a_session() {
+        let me = std::process::id();
+        let dir = tempfile::tempdir().unwrap();
+        let mut opencode = input("Stop");
+        opencode.cwd = Some(dir.path().to_path_buf());
+        opencode.runtime = Some("opencode");
+        let process = HookProcess::of(&opencode, Some(me)).unwrap();
+        assert_eq!(process.checkout, None);
+        assert_eq!(process.workdir(), dir.path().canonicalize().ok().as_deref());
+        let mut claude = opencode.clone();
+        claude.runtime = None;
+        let process = HookProcess::of(&claude, Some(me)).unwrap();
+        assert_eq!(
+            process.checkout,
+            std::env::current_dir().unwrap().canonicalize().ok(),
+            "Claude Code's session is where its process was started"
+        );
+    }
+
     #[tokio::test]
     async fn a_session_whose_shell_moved_is_found_in_its_own_checkout() {
         let me = fixture_pid();

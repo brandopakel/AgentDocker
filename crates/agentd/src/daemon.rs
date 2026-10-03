@@ -134,8 +134,7 @@ const SUPERVISION_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// on its own schedule, not the sweep's.
 const DUPLICATE_FOLD_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Why a registration of Codex's detached app-server is refused, and why a
-/// record made for one before is retired.
+/// Why a registration of Codex's detached app-server is refused.
 const DETACHED_CODEX_HOST: &str = "this process is Codex's detached app-server, which hosts a \
      Codex session's MCP servers and is not a session; its tool calls act as the Codex \
      conversation that makes them";
@@ -416,10 +415,11 @@ struct State {
     /// sorted ids, with when to plan it again: said once, retried at
     /// [`DUPLICATE_FOLD_RETRY`] rather than on every sweep.
     refused_folds: BTreeMap<Vec<AgentId>, Instant>,
-    /// Live Codex records already checked for standing for Codex's
-    /// detached app-server rather than a session, so the process table is
-    /// asked about each record once.
-    helper_checked: HashSet<AgentId>,
+    /// Live Codex records checked for standing for Codex's detached
+    /// app-server rather than a session: `None` when shown not to be one,
+    /// so the process table is asked about it once, or when to look again
+    /// at one whose fold was refused or whose session was not found.
+    helper_checks: HashMap<AgentId, Option<Instant>>,
     /// A shared installation pin per binding that has a launch descriptor,
     /// held for the binding's life so the release its controller runs
     /// from is not pruned while the controller is dead and waiting to be
@@ -1023,21 +1023,34 @@ impl Daemon {
         }
     }
 
-    /// Retire what an MCP server registered for Codex's detached app-server:
-    /// the process a Codex terminal session runs its MCP servers under,
-    /// which is never the session — one Codex session counted twice
-    /// (`codex-88774`, the app-server, beside `codex-88544`, the session).
-    /// Registration refuses such a pid now, and a current MCP server never
-    /// asks; a record made before either stays live as long as the
-    /// app-server does. The evidence is the process itself: its own command
-    /// line, read between two readings of its birth, so a recycled pid is
-    /// never taken for it. Each record is asked about once.
+    /// Fold what an MCP server registered for Codex's detached app-server
+    /// into the Codex session it serves: the app-server is the process a
+    /// Codex terminal session runs its MCP servers under, never a session of
+    /// its own — one Codex session counted twice (`codex-88774`, the
+    /// app-server, beside `codex-88544`, the session). Registration refuses
+    /// such a pid now and a current MCP server never asks, but a record made
+    /// before either stays live as long as the app-server does, and the MCP
+    /// server that made it still calls under its id. So it is folded, not
+    /// ended: its id becomes an alias of the session's record and those
+    /// calls act as the session, which is what they always were. The
+    /// session is the live Codex record in the same project whose process
+    /// is the app-server's parent; with none, the helper's record is the
+    /// session's only identity and is left alone, and with several, which
+    /// one cannot be told. The evidence is the process itself: its own
+    /// command line and parent, read between two readings of its birth, so a
+    /// recycled pid is never taken for it. A record shown not to be one is
+    /// never asked about again; a fold refused, or a session not found, is
+    /// looked at again after [`DUPLICATE_FOLD_RETRY`].
     fn retire_helper_registrations(&self) {
+        let now = Instant::now();
         let unchecked: Vec<(AgentId, u32, DateTime<Utc>)> = {
             let mut state = lock(&self.state);
+            if state.fenced() || state.storage_error.is_some() {
+                return;
+            }
             let live: HashSet<AgentId> = state.registry.live().map(|a| a.id.clone()).collect();
-            state.helper_checked.retain(|id| live.contains(id));
-            let found: Vec<_> = state
+            state.helper_checks.retain(|id, _| live.contains(id));
+            state
                 .registry
                 .live()
                 .filter(|a| {
@@ -1045,39 +1058,66 @@ impl Daemon {
                         && !a.managed
                         && a.container.is_none()
                         && a.input_binding.is_none()
-                        && !state.helper_checked.contains(&a.id)
+                        && match state.helper_checks.get(&a.id) {
+                            None => true,
+                            Some(None) => false,
+                            Some(Some(retry)) => *retry <= now,
+                        }
                 })
                 .filter_map(|a| Some((a.id.clone(), a.pid?, a.process_started_at?)))
-                .collect();
-            for (id, ..) in &found {
-                state.helper_checked.insert(id.clone());
-            }
-            found
+                .collect()
         };
         for (id, pid, born) in unchecked {
-            let helper = procinfo::start_time(pid) == Some(born)
-                && procinfo::inspect(pid)
-                    .is_some_and(|process| procinfo::detached_codex_app_server(&process.argv))
-                && procinfo::start_time(pid) == Some(born);
-            if !helper {
-                continue;
-            }
+            let helper = (procinfo::start_time(pid) == Some(born))
+                .then(|| procinfo::inspect(pid))
+                .flatten()
+                .filter(|process| procinfo::detached_codex_app_server(&process.argv))
+                .filter(|_| procinfo::start_time(pid) == Some(born));
             let mut state = lock(&self.state);
-            if !state.registry.get(&id).is_some_and(|a| {
-                a.status.is_live() && a.pid == Some(pid) && a.process_started_at == Some(born)
-            }) {
+            let Some(helper) = helper else {
+                state.helper_checks.insert(id, None);
                 continue;
-            }
-            warn!(agent = %id, pid, "retiring a registration of Codex's detached app-server, which is not a session");
-            let ended = state.mark_exited(
-                &id,
-                AgentStatus::Failed {
-                    reason: DETACHED_CODEX_HOST.into(),
-                },
-            );
-            if ended.is_none_or(|record| record.status.is_live()) {
-                // Not written (fenced or failing): look again next sweep.
-                state.helper_checked.remove(&id);
+            };
+            let Some(record) = state
+                .registry
+                .get(&id)
+                .filter(|a| {
+                    a.status.is_live() && a.pid == Some(pid) && a.process_started_at == Some(born)
+                })
+                .cloned()
+            else {
+                continue;
+            };
+            let project = record.project.as_ref().map(ProjectRef::id);
+            let sessions: Vec<AgentRecord> = state
+                .registry
+                .live()
+                .filter(|a| {
+                    a.id != record.id
+                        && a.spec.runtime == "codex"
+                        && a.pid == Some(helper.ppid)
+                        && a.process_started_at.is_some()
+                        && a.project.as_ref().map(ProjectRef::id) == project
+                })
+                .cloned()
+                .collect();
+            let first_look = !state.helper_checks.contains_key(&id);
+            let retry = Some(now + DUPLICATE_FOLD_RETRY);
+            let [session] = sessions.as_slice() else {
+                state.helper_checks.insert(id, retry);
+                continue;
+            };
+            match state.fold_into(session.clone(), vec![record]) {
+                Ok(kept) => {
+                    info!(agent = %kept.id, helper = %id, pid, "folded a registration of Codex's detached app-server into the session it serves");
+                    state.helper_checks.remove(&id);
+                }
+                Err(reason) => {
+                    if first_look {
+                        warn!(agent = %id, pid, %reason, "a registration of Codex's detached app-server is not folded yet");
+                    }
+                    state.helper_checks.insert(id, retry);
+                }
             }
         }
     }
@@ -1603,7 +1643,7 @@ impl Daemon {
                 committing: std::collections::BTreeSet::new(),
                 reported_duplicates: std::collections::BTreeSet::new(),
                 refused_folds: BTreeMap::new(),
-                helper_checked: HashSet::new(),
+                helper_checks: HashMap::new(),
                 controller_pins: HashMap::new(),
                 question_waiters: HashSet::new(),
                 held_answers: HashMap::new(),
@@ -4478,7 +4518,7 @@ impl Daemon {
         wait_secs: u64,
         automatic: bool,
     ) -> Response {
-        let holder = match self.resolve(reference) {
+        let mut holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
@@ -4527,6 +4567,17 @@ impl Daemon {
                     .is_some_and(|a| a.status == AgentStatus::Running)
                 {
                     return Response::error(ErrorCode::Invalid, "agent is not running");
+                }
+                // The sweep may have folded the resolved record into its
+                // session's record since (during `localise`, or between
+                // attempts before any place was taken): a lease granted to
+                // the retired id would be one its session's releases never
+                // find. Claim as the record that stays.
+                if let Some(current) = state.registry.get(&holder).map(|a| a.id.clone())
+                    && current != holder
+                {
+                    holder = current;
+                    waiting.follow(holder.clone());
                 }
                 if let Some(error) = state.write_failure() {
                     return error;
@@ -6885,25 +6936,44 @@ impl State {
         let existing = match candidates.as_slice() {
             [only] => Some(only.clone()),
             [] => None,
-            // Several records that all name this registration's own session
-            // are not a question about which session it is: they are one
-            // session counted twice, left by a registration from a moved
-            // shell before the rule above. The record that stays answers,
-            // and the sweep retires the others into it.
-            many if session.is_some()
-                && many.iter().all(|id| {
-                    self.registry
-                        .get(id)
-                        .and_then(|a| a.spec.labels.get("session_id"))
-                        == session
-                }) =>
-            {
-                let records: Vec<&AgentRecord> =
-                    many.iter().filter_map(|id| self.registry.get(id)).collect();
-                agentdocker_core::identity::keeper(records, |a| {
-                    self.live_subscribers.get(&a.id).is_some_and(|n| *n > 0)
-                })
-                .map(|a| a.id.clone())
+            // A registration that names its session matches the records
+            // that name the same session, wherever each is, and a
+            // transport in its own checkout that names none yet. Several
+            // of the first are one session counted twice, left by a
+            // registration from a moved shell before the rule above: the
+            // record that stays answers, and the sweep retires the others
+            // into it. One of the second is what this registration joined
+            // before the rule matched the others at all: it joins it again
+            // and teaches it the session below, and then the sweep folds
+            // it with the rest. Several of the second cannot be told apart
+            // and are refused, as below.
+            many if session.is_some() => {
+                let (named, unnamed): (Vec<&AgentRecord>, Vec<&AgentRecord>) = many
+                    .iter()
+                    .filter_map(|id| self.registry.get(id))
+                    .partition(|a| {
+                        a.spec
+                            .labels
+                            .get("session_id")
+                            .is_some_and(|id| !id.is_empty())
+                    });
+                match unnamed.as_slice() {
+                    [] => agentdocker_core::identity::keeper(named, |a| {
+                        self.live_subscribers.get(&a.id).is_some_and(|n| *n > 0)
+                    })
+                    .map(|a| a.id.clone()),
+                    [only] => Some(only.id.clone()),
+                    several => {
+                        return Response::error(
+                            ErrorCode::Invalid,
+                            format!(
+                                "this process already has {} agents in this checkout that name \
+                                 no session, so which one is this session's cannot be told",
+                                several.len()
+                            ),
+                        );
+                    }
+                }
             }
             many => {
                 // Refused, not resolved and not given a record of its
@@ -7381,29 +7451,46 @@ impl State {
             .iter()
             .filter_map(|id| self.registry.get(id).cloned())
             .collect();
-        let subscribed: HashSet<AgentId> = records
-            .iter()
-            .filter(|record| {
-                self.live_subscribers
-                    .get(&record.id)
-                    .is_some_and(|n| *n > 0)
-            })
-            .map(|record| record.id.clone())
-            .collect();
-        let held = |record: &AgentRecord| subscribed.contains(&record.id);
-        let kept = agentdocker_core::identity::keeper(&records, held)
-            .ok_or("no records to fold")?
-            .clone();
-        let retired: Vec<&AgentRecord> = records.iter().filter(|r| r.id != kept.id).collect();
-        for &record in &retired {
+        let kept =
+            agentdocker_core::identity::keeper(&records, |record| self.subscribed(&record.id))
+                .ok_or("no records to fold")?
+                .clone();
+        let retired: Vec<AgentRecord> = records.into_iter().filter(|r| r.id != kept.id).collect();
+        self.fold_into(kept, retired)
+    }
+
+    /// Whether a live subscriber streams this record's messages.
+    fn subscribed(&self, id: &AgentId) -> bool {
+        self.live_subscribers.get(id).is_some_and(|n| *n > 0)
+    }
+
+    /// Fold `retired` into `kept` — one session's records, or what a helper
+    /// process registered for the session it serves — or say why not;
+    /// nothing changes on a refusal. Each retired record must be one nobody
+    /// else runs and nothing delivers input through
+    /// (`identity::retirable_duplicate`), and must hold nothing a fold would
+    /// strand: a subscriber's stream, a lease, a place in a lease queue, an
+    /// `ask` blocked on an answer, or something the daemon runs for it.
+    fn fold_into(
+        &mut self,
+        kept: AgentRecord,
+        retired: Vec<AgentRecord>,
+    ) -> Result<AgentRecord, String> {
+        for record in &retired {
             agentdocker_core::identity::retirable_duplicate(record)
                 .map_err(|reason| format!("{}: {reason}", record.id))?;
-            let busy = if held(record) {
+            let busy = if self.subscribed(&record.id) {
                 Some("a live subscriber holds it")
             } else if !self.leases.by_holder(&record.id).is_empty() {
                 Some("it holds a lease")
             } else if self.waiting.waiting_for(&record.id).is_some() {
                 Some("it is waiting for a lease")
+            } else if self.questions.values().any(|question| {
+                question.from == record.id.as_str() && self.question_waiters.contains(&question.id)
+            }) {
+                // The answer would go to the kept record while the `ask`
+                // waits for one to the retired id, until it timed out.
+                Some("it is waiting for an answer")
             } else if self.supervised.contains_key(&record.id)
                 || self.transports.contains_key(&record.id)
                 || self.controller_pins.contains_key(&record.id)
@@ -7417,7 +7504,7 @@ impl State {
             }
         }
         // Fail closed on unreadable observations, as a resumption does.
-        for record in &records {
+        for record in std::iter::once(&kept).chain(&retired) {
             if self
                 .store_read("reads", |store| {
                     store.document::<Vec<agentdocker_core::ReadMark>>("reads", record.id.as_str())
@@ -7428,7 +7515,7 @@ impl State {
             }
         }
         let mut canonical = kept.clone();
-        for &record in &retired {
+        for record in &retired {
             for (key, value) in &record.spec.labels {
                 canonical
                     .spec
@@ -7476,8 +7563,8 @@ impl State {
         };
         // A receiver or subscriber on the kept record may have offered its
         // queue's head already; nothing may be put in front of it.
-        let keep_head =
-            held(&kept) || agentdocker_core::identity::retirable_duplicate(&kept).is_err();
+        let keep_head = self.subscribed(&kept.id)
+            || agentdocker_core::identity::retirable_duplicate(&kept).is_err();
         self.commit_fold(canonical, &retired, kind, Utc::now(), keep_head)
     }
 }
@@ -8960,15 +9047,65 @@ mod tests {
             "and the record keeps the session's checkout"
         );
         assert_eq!(lock(&daemon.state).registry.live().count(), 1);
-        // Another session in the same process is another agent, wherever it
-        // registers from; a transport that names no session from another
-        // directory may belong to any session here, so it is not this one.
+        // A transport that names no session from another directory may
+        // belong to any session here, so it is not this one; another
+        // session in the same process is another agent, wherever it
+        // registers from (here it joins that sessionless transport, the one
+        // record in its directory that names no session yet).
+        let sessionless = agent(register_session(&daemon, "claude-code-other", &moved, None).await);
+        assert_ne!(sessionless.id, mcp.id);
         let other = agent(
             register_session(&daemon, "claude-0ther000", &moved, Some("another-session")).await,
         );
         assert_ne!(other.id, mcp.id);
-        let sessionless = agent(register_session(&daemon, "claude-code-other", &moved, None).await);
-        assert_ne!(sessionless.id, mcp.id);
+        assert_eq!(other.id, sessionless.id);
+    }
+
+    /// What a hook from a moved shell could leave before this rule: the MCP
+    /// server's record still names no session in the launch checkout, and
+    /// an old hook's record names the session in a subdirectory. A hook
+    /// from the launch checkout matches both; it joins the transport there,
+    /// as it did before, and teaches it the session, and the sweep then
+    /// folds the two. Refusing it instead left the session's hooks with no
+    /// identity anywhere but that subdirectory.
+    #[tokio::test]
+    async fn a_session_left_beside_a_sessionless_transport_joins_it_and_folds() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let checkout = TempDir::new().unwrap();
+        std::fs::write(checkout.path().join("Agentfile.toml"), "").unwrap();
+        let moved = checkout.path().join("artifacts");
+        std::fs::create_dir_all(&moved).unwrap();
+        let agent = |response: Response| match response {
+            Response::Agent { agent } => agent,
+            other => panic!("{other:?}"),
+        };
+        let drifted =
+            agent(register_session(&daemon, "claude-83083752", &moved, Some("83083752")).await);
+        let mcp = agent(register_session(&daemon, "claude-code-2923", checkout.path(), None).await);
+        assert_ne!(mcp.id, drifted.id);
+        let hook = agent(
+            register_session(
+                &daemon,
+                "claude-83083752",
+                checkout.path(),
+                Some("83083752"),
+            )
+            .await,
+        );
+        assert_eq!(hook.id, mcp.id, "the transport in its checkout, as before");
+        assert_eq!(
+            hook.spec.labels.get("session_id").map(String::as_str),
+            Some("83083752"),
+            "which learns the session"
+        );
+        daemon.check_liveness();
+        let state = lock(&daemon.state);
+        assert_eq!(state.registry.live().count(), 1);
+        assert_eq!(
+            state.registry.get(&drifted.id).unwrap().id,
+            state.registry.get(&mcp.id).unwrap().id
+        );
     }
 
     /// The duplicates the old rule already made: the sweep folds the one
@@ -9193,8 +9330,11 @@ mod tests {
     /// app-server, and an MCP server from before that was understood
     /// registered the app-server as a Codex session of its own beside the
     /// real one. Registration refuses it by what the process is, and a
-    /// record made before is retired by the sweep, on the evidence of the
-    /// process's own command line and birth.
+    /// record made before is folded by the sweep into the session whose
+    /// child the app-server is, on the evidence of the process's own command
+    /// line, parent and birth — not ended, because the MCP server that made
+    /// it still calls under its id. With no session to fold it into it is
+    /// the session's only identity and stays.
     #[cfg(unix)]
     #[tokio::test]
     async fn codexs_detached_app_server_is_never_a_session() {
@@ -9239,9 +9379,11 @@ mod tests {
                 if message.contains("detached app-server")),
             "{response:?}"
         );
-        // One made before the refusal existed is retired, and only that one.
+        // One made before the refusal existed is folded into its session.
+        let project = daemon.project_for(spec.workdir.clone(), true).await;
         let made_before = {
             let mut record = AgentRecord::new(spec, false, Utc::now());
+            record.project = project;
             record.pid = Some(pid);
             record.process_started_at = procinfo::start_time(pid);
             record.status = AgentStatus::Running;
@@ -9250,17 +9392,75 @@ mod tests {
             state.registry.insert(record.clone()).unwrap();
             record
         };
-        let session = register_here(&daemon, "codex-real", Some(std::process::id())).await;
+        // No Codex session registered for its parent: the helper's record
+        // is all that session has, and it stays.
+        daemon.check_liveness();
+        assert!(daemon.is_live(&made_before.id));
+        assert_eq!(
+            lock(&daemon.state)
+                .registry
+                .get(&made_before.id)
+                .unwrap()
+                .id,
+            made_before.id
+        );
+        // The session it serves, the app-server's parent (this test).
+        let mut real = spec_here("codex-real");
+        real.runtime = "codex".into();
+        let Response::Agent { agent: session } = daemon
+            .handle(Request::Register {
+                spec: real,
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await
+        else {
+            panic!("registering the session");
+        };
+        assert_ne!(session.id, made_before.id);
+        // A lease the helper's MCP server holds holds the fold back: ending
+        // or moving it under that server would hand its files to peers.
+        let Response::Lease { lease } =
+            claim(&daemon, made_before.id.as_str(), "lock:helper").await
+        else {
+            panic!("the helper's claim");
+        };
+        lock(&daemon.state).helper_checks.clear();
+        daemon.check_liveness();
+        assert_eq!(
+            lock(&daemon.state)
+                .registry
+                .get(&made_before.id)
+                .unwrap()
+                .id,
+            made_before.id,
+            "not folded while it holds a lease"
+        );
+        daemon
+            .handle(Request::Release {
+                agent: made_before.id.to_string(),
+                lease: lease.id.clone(),
+                summary: None,
+                summary_source: agentdocker_core::SummarySource::Explicit,
+            })
+            .await;
+        lock(&daemon.state).helper_checks.clear();
         daemon.check_liveness();
         {
             let state = lock(&daemon.state);
-            let record = state.registry.get(&made_before.id).unwrap();
-            assert!(
-                matches!(&record.status, AgentStatus::Failed { reason } if reason.contains("detached app-server")),
-                "{:?}",
-                record.status
+            let folded = state.registry.get(&made_before.id).unwrap();
+            assert_eq!(
+                folded.id, session.id,
+                "the helper's id is an alias of the session's record now"
             );
+            assert_eq!(state.registry.live().count(), 1);
         }
+        // Its MCP server's next call acts as the session.
+        let Response::Lease { lease } = claim(&daemon, made_before.id.as_str(), "lock:after").await
+        else {
+            panic!("a call under the helper's id");
+        };
+        assert_eq!(lease.holder, session.id);
         assert!(daemon.is_live(&session.id));
         host.kill().unwrap();
         host.wait().unwrap();

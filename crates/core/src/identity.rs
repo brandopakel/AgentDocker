@@ -95,6 +95,8 @@ pub fn keeper<'a>(
 /// can: it must be an external local session nobody else runs (not managed,
 /// contained, paned, restorable or restartable) and nothing may deliver input
 /// through it, since a receiver or binding owns the order of what it offered.
+/// A provider usage block it reported must be resolved first, as the offline
+/// repair requires: the fold carries the kept record's availability only.
 /// Leases, waits, subscribers and the queue are the daemon's to check.
 pub fn retirable_duplicate(record: &AgentRecord) -> Result<(), &'static str> {
     if !resumable(record) {
@@ -102,6 +104,13 @@ pub fn retirable_duplicate(record: &AgentRecord) -> Result<(), &'static str> {
     }
     if receives_input(record) {
         return Err("input is delivered through this record");
+    }
+    if record
+        .provider_availability
+        .as_ref()
+        .is_some_and(|availability| availability.issue.is_some())
+    {
+        return Err("resolve provider availability before folding this record");
     }
     Ok(())
 }
@@ -540,6 +549,15 @@ mod tests {
             ids(keeper([&first, &second], |_| false)),
             Some("b-first".into())
         );
+        // A usage limit it reported would be lost with it: resolved first.
+        let mut limited = first.clone();
+        limited.provider_availability = Some(crate::ProviderAvailability {
+            process_started_at: limited.process_started_at.unwrap(),
+            observed_at: limited.created_at,
+            issue: Some(crate::ProviderIssue::local(crate::ProviderIssueKind::Usage)),
+            cleared_observation: None,
+        });
+        assert!(retirable_duplicate(&limited).is_err());
         first.managed = true;
         assert!(retirable_duplicate(&first).is_err());
         assert!(keeper(std::iter::empty(), |_| false).is_none());
