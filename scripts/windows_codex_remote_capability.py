@@ -26,6 +26,12 @@ import traceback
 from windows_native_codex_smoke import current_user_objects, remove_fixture, response_events
 
 
+class ProviderRefusal(Exception):
+    def __init__(self, method, error):
+        super().__init__(f'{method}: {error}')
+        self.method, self.error = method, error
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--codex', type=Path, required=True)
@@ -200,6 +206,8 @@ def main():
                     assert remaining > 0, 'provider request deadline exceeded'
                     value = json.loads(channel.recv(timeout=remaining))
                     if value.get('id') == sequence and 'method' not in value:
+                        if 'error' in value:
+                            raise ProviderRefusal(method, value['error'])
                         assert 'result' in value, {'method': method, 'reply': value}
                         return value['result']
                     if 'method' in value and 'id' in value:
@@ -224,6 +232,22 @@ def main():
             step('initialization caused no model requests', not report['requests'])
             report['thread'] = thread
             report['reported_source'] = metadata.get('source')
+
+            def read_thread(include_turns=False):
+                # Native materialization briefly exposes an empty rollout.
+                # Retry only this exact private read error; never resubmit input
+                # or treat an arbitrary provider refusal as a transient success.
+                for attempt in range(20):
+                    try:
+                        return call('thread/read', {'threadId': thread, 'includeTurns': include_turns})['thread']
+                    except ProviderRefusal as error:
+                        expected = f"rollout at {metadata['path']} is empty"
+                        if (error.error.get('code') != -32603 or
+                                not error.error.get('message', '').endswith(expected) or attempt == 19):
+                            raise
+                        report.setdefault('materialization_read_retries', []).append(error.error)
+                        time.sleep(0.2)
+
             # The API's source label is diagnostic only, never process identity.
             time.sleep(1)
             tui.write(draft_text)
@@ -234,10 +258,9 @@ def main():
             def history(expected):
                 deadline = time.monotonic() + 30
                 while time.monotonic() < deadline:
-                    # The Windows provider's legacy history store does not
-                    # implement thread/items/list. This fresh two-input probe
-                    # can use bounded full hydration without changing the TUI.
-                    view = call('thread/read', {'threadId': thread, 'includeTurns': True})['thread']
+                    # This fresh two-input probe can use bounded full hydration
+                    # without assuming paginated list support or changing the TUI.
+                    view = read_thread(include_turns=True)
                     assert view['id'] == thread and os.path.samefile(view['cwd'], repo)
                     turns = view.get('turns', [])
                     assert len(turns) <= 4
@@ -251,7 +274,7 @@ def main():
             deadline = time.monotonic() + 25
             idle = False
             while time.monotonic() < deadline:
-                status = call('thread/read', {'threadId': thread, 'includeTurns': False})['thread']['status']
+                status = read_thread()['status']
                 idle = status['type'] == 'idle'
                 if report['requests'] and idle:
                     break
@@ -272,7 +295,7 @@ def main():
                  sum(draft_text in json.dumps(v) for v in users) == 1 and tui.isalive())
             deadline = time.monotonic() + 25
             while time.monotonic() < deadline:
-                if call('thread/read', {'threadId': thread, 'includeTurns': False})['thread']['status']['type'] == 'idle':
+                if read_thread()['status']['type'] == 'idle':
                     break
                 time.sleep(0.2)
             else:

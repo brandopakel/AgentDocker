@@ -671,3 +671,9 @@ the loopback model while the draft remained visible. Its receipt assertion
 failed because that provider store does not support `thread/items/list`; no
 complete capability pass is recorded. The two-input fixture now uses bounded
 `thread/read` history hydration, retaining exact thread/cwd/user-receipt checks.
+
+A subsequent probe (`04518eba`) observed the provider's transient empty-rollout
+read during first-input materialization before its receipt check. The fixture
+records and retries only that exact read error for the bound private rollout,
+at most twenty times; it never retries input submission. Unrelated refusals and
+exhausted reads remain failures. Native capability acceptance is still pending.
