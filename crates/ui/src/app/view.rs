@@ -142,6 +142,46 @@ pub(super) fn monogram<'a>(name: &str, seed: &str, size: f32, c: Colors) -> Elem
     })
     .into()
 }
+/// A tool's own mark on a quiet tile — the card colour and a hairline —
+/// so each vendor's colours read the same way in both appearances.
+pub(super) fn logo_tile<'a>(
+    logo: super::logos::Logo,
+    size: f32,
+    c: Colors,
+) -> Element<'a, Message> {
+    let inner = (size * 0.62).round();
+    container(
+        iced::widget::image(logo.handle(c.dark))
+            .width(inner)
+            .height(inner),
+    )
+    .center(size)
+    .style(move |_| container::Style {
+        background: Some(if c.dark { c.raised } else { c.card }.into()),
+        border: iced::Border {
+            color: c.line,
+            width: 1.0,
+            radius: (size * 0.25).round().into(),
+        },
+        ..Default::default()
+    })
+    .into()
+}
+/// An agent's mark: its tool's logo when the tool has one (`runtime` is
+/// the registry name, `claude-code`, `codex`, …), otherwise the identity
+/// monogram of its name. People and unknown tools keep the monogram.
+pub(super) fn agent_mark<'a>(
+    runtime: Option<&str>,
+    name: &str,
+    seed: &str,
+    size: f32,
+    c: Colors,
+) -> Element<'a, Message> {
+    match runtime.and_then(super::logos::Logo::for_runtime) {
+        Some(logo) => logo_tile(logo, size, c),
+        None => monogram(name, seed, size, c),
+    }
+}
 /// Something small that says what it means when pointed at. Used only
 /// where the words are not already printed beside it (the rail's project
 /// marks); a tooltip that repeats visible text is noise.
@@ -283,6 +323,23 @@ fn mark() -> iced::widget::image::Handle {
         iced::widget::image::Handle::from_rgba(info.width, info.height, rgba)
     })
     .clone()
+}
+/// AgentDocker's own cube on a quiet tile: what speaks for the app
+/// itself, such as the notices it sends.
+pub(super) fn brand_tile<'a>(size: f32, c: Colors) -> Element<'a, Message> {
+    let inner = (size * 0.66).round();
+    container(iced::widget::image(mark()).width(inner).height(inner))
+        .center(size)
+        .style(move |_| container::Style {
+            background: Some(if c.dark { c.raised } else { c.card }.into()),
+            border: iced::Border {
+                color: c.line,
+                width: 1.0,
+                radius: (size * 0.25).round().into(),
+            },
+            ..Default::default()
+        })
+        .into()
 }
 /// The mark and the two-tone wordmark, on the rail. Two plain texts
 /// rather than one rich text: the rich text widget resolves heavier faces
@@ -641,6 +698,24 @@ impl App {
     }
     pub fn scale_factor(&self) -> f32 {
         self.settings.text_size / 14.0
+    }
+    /// The runtime of the agent with this id (or a former id of it).
+    pub(super) fn runtime_of(&self, id: &str) -> Option<&str> {
+        let id = self.canonical_agent(id);
+        self.agents
+            .iter()
+            .find(|a| a.id.as_str() == id)
+            .map(|a| a.spec.runtime.as_str())
+    }
+    /// The mark of the agent with this id: its tool's logo, or its monogram.
+    pub(super) fn agent_mark_for<'a>(
+        &self,
+        id: &str,
+        name: &str,
+        size: f32,
+        c: Colors,
+    ) -> Element<'a, Message> {
+        agent_mark(self.runtime_of(id), name, id, size, c)
     }
     pub(super) fn selected_root(&self) -> Option<&std::path::Path> {
         self.shell.catalog.selected.as_deref()
@@ -1995,18 +2070,29 @@ impl App {
                 items = items.push(custom(
                     format!("launch-with-{}", runtime.name),
                     format!("Launch {}", runtime.label),
-                    column![
-                        text(runtime.label.clone())
-                            .size(13)
-                            .font(weight(iced::font::Weight::Medium)),
-                        text(binary)
-                            .size(11)
-                            .font(Font::MONOSPACE)
-                            .color(c.faint)
-                            .wrapping(iced::widget::text::Wrapping::None),
+                    row![
+                        agent_mark(
+                            Some(runtime.name.as_str()),
+                            &runtime.label,
+                            &runtime.name,
+                            24.0,
+                            c
+                        ),
+                        column![
+                            text(runtime.label.clone())
+                                .size(13)
+                                .font(weight(iced::font::Weight::Medium)),
+                            text(binary)
+                                .size(11)
+                                .font(Font::MONOSPACE)
+                                .color(c.faint)
+                                .wrapping(iced::widget::text::Wrapping::None),
+                        ]
+                        .spacing(2)
+                        .width(Fill)
                     ]
-                    .spacing(2)
-                    .width(Fill),
+                    .spacing(10)
+                    .align_y(Center),
                     Some(Message::LaunchWith(runtime.name.clone())),
                     false,
                     Kind::Quiet,
@@ -2122,14 +2208,17 @@ impl App {
             for process in available {
                 let label = super::runtime_label(&process.runtime);
                 rows.push(item_row(
-                    Some(icon_tile(
-                        text(label.chars().next().unwrap_or('·').to_string())
-                            .size(12)
-                            .font(weight(iced::font::Weight::Semibold))
-                            .color(c.cyan),
-                        28.0,
-                        c,
-                    )),
+                    Some(match super::logos::Logo::for_runtime(&process.runtime) {
+                        Some(logo) => logo_tile(logo, 28.0, c),
+                        None => icon_tile(
+                            text(label.chars().next().unwrap_or('·').to_string())
+                                .size(12)
+                                .font(weight(iced::font::Weight::Semibold))
+                                .color(c.cyan),
+                            28.0,
+                            c,
+                        ),
+                    }),
                     label,
                     Some(
                         text(
@@ -2379,7 +2468,7 @@ impl App {
                 approvals::ring(left, if left < 0.2 { c.red } else { c.amber }, 14.0, c)
             });
             let mut content = row![
-                monogram(&name, &id, 28.0, c),
+                agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 28.0, c),
                 container(words).width(Fill).clip(true)
             ]
             .spacing(12)
@@ -2468,7 +2557,7 @@ impl App {
             .is_some_and(|(armed, at)| armed == &id && at.elapsed() < CONFIRM_WITHIN);
         let name = self.display_name(agent);
         let header = row![
-            monogram(&name, &id, 32.0, c),
+            agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 32.0, c),
             column![
                 heading(name.clone(), 15).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
                 row![
@@ -3060,14 +3149,17 @@ impl App {
                 ..Default::default()
             });
             let content = row![
-                icon_tile(
-                    text(initial)
-                        .size(13)
-                        .font(weight(iced::font::Weight::Semibold))
-                        .color(c.muted),
-                    32.0,
-                    c
-                ),
+                match super::logos::Logo::for_runtime(&runtime.name) {
+                    Some(logo) => logo_tile(logo, 32.0, c),
+                    None => icon_tile(
+                        text(initial)
+                            .size(13)
+                            .font(weight(iced::font::Weight::Semibold))
+                            .color(c.muted),
+                        32.0,
+                        c,
+                    ),
+                },
                 column![
                     text(runtime.label.clone())
                         .size(14)
@@ -3446,14 +3538,27 @@ impl App {
         let mut pile = iced::widget::Stack::new().push(Space::new().width(width).height(FACE));
         for (index, id) in members.iter().take(SHOWN).enumerate() {
             let name = self.name_of(id.as_str());
-            let (tint, ink) = super::style::identity(id.as_str(), c.dark);
-            let initial: String = name
-                .chars()
-                .find(|ch| ch.is_alphanumeric())
-                .map(|ch| ch.to_uppercase().collect())
-                .unwrap_or_else(|| "·".to_owned());
-            pile = pile.push(
-                container(
+            // A member's disc carries its tool's logo where there is one,
+            // its initial on its own tint otherwise.
+            let face: Element<'a, Message> = match self
+                .runtime_of(id.as_str())
+                .and_then(super::logos::Logo::for_runtime)
+            {
+                Some(logo) => container(
+                    iced::widget::image(logo.handle(c.dark))
+                        .width(14)
+                        .height(14),
+                )
+                .center(FACE)
+                .style(move |_| ring(c.raised))
+                .into(),
+                None => {
+                    let (tint, ink) = super::style::identity(id.as_str(), c.dark);
+                    let initial: String = name
+                        .chars()
+                        .find(|ch| ch.is_alphanumeric())
+                        .map(|ch| ch.to_uppercase().collect())
+                        .unwrap_or_else(|| "·".to_owned());
                     container(
                         text(initial)
                             .size(11)
@@ -3461,13 +3566,14 @@ impl App {
                             .color(ink),
                     )
                     .center(FACE)
-                    .style(move |_| ring(tint)),
-                )
-                .padding(iced::Padding {
-                    left: STEP * index as f32,
-                    ..iced::Padding::ZERO
-                }),
-            );
+                    .style(move |_| ring(tint))
+                    .into()
+                }
+            };
+            pile = pile.push(container(face).padding(iced::Padding {
+                left: STEP * index as f32,
+                ..iced::Padding::ZERO
+            }));
         }
         if rest > 0 {
             pile = pile.push(

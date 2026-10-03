@@ -391,9 +391,12 @@ fn disclosure<'a>(
     )
 }
 
-/// A tool's mark: two letters on the tool's own tint, so the list scans
-/// like a list of logos without shipping anyone's logo.
+/// A tool's mark: its own logo where the app has one (`app/logos.rs`),
+/// otherwise two letters on the tool's own tint.
 fn tool_mark<'a>(label: &str, seed: &str, c: Colors) -> Element<'a, Message> {
+    if let Some(logo) = super::logos::Logo::for_runtime(seed) {
+        return super::view::logo_tile(logo, 32.0, c);
+    }
     let (tint, ink) = super::style::identity(seed, c.dark);
     let letters = mark_letters(label);
     container(text(letters).size(13).font(SEMIBOLD).color(ink))

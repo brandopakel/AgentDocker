@@ -160,7 +160,9 @@ Search applies to the
 selected project, both filters and the Earlier group. Switching projects
 returns to Current. Nothing is deleted when a row moves to Earlier.
 
-Session rows show the session's mark, the name over its tool (only when the
+Session rows show the session's mark — its tool's logo (Claude, OpenAI,
+Gemini, Copilot, Cursor, Windsurf, VS Code, OpenCode), or a letter tile for
+a tool without one — the name over its tool (only when the
 name is one somebody chose; a generated name already reads as the tool) and
 branch, the observed activity as a dot and a word, and how long it has run or
 since it ended. Sessions needing

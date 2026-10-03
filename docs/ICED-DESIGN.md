@@ -84,6 +84,20 @@ control does, its id or its accessible label:
   seeds can differ between machines or checkouts. Nothing needs to be chosen or
   stored. The tile leads each rail row at 20 points, the project heading
   at 32 and each session row at 28.
+- **Every agent carries its tool's mark.** A session, a tool, a launch
+  choice, a conversation with an agent, a transcript run, a channel member,
+  a board card's holder and a usage row by agent, model or provider show
+  the vendor's logo on a quiet tile (`view::agent_mark`, `logo_tile`):
+  Claude for Claude Code, Desktop and the browser extension; OpenAI for
+  Codex and ChatGPT; Gemini, GitHub Copilot, Cursor, Windsurf, VS Code and
+  OpenCode for theirs. A tool with no mark here (Aider, Goose, Amp), a
+  person and an unknown runtime keep the identity monogram, and the
+  notices AgentDocker sends carry the cube. The marks are the vendors'
+  trademarks, shown only to say which tool a session is; they come from
+  svgl.app's official logos, rasterised once to 96-pixel transparent PNGs
+  (`crates/ui/src/logos/`, light and dark variants for one-colour marks)
+  and decoded once each, like the cube — the build has no SVG renderer
+  (`app/logos.rs`).
 - **Finished, not yet viewed.** When a session's activity goes from working
   or blocked to idle or finished while the user is not looking at its project
   in a focused window, the session is marked unviewed: an accent pill on the
