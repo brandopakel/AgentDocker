@@ -3,7 +3,7 @@
 //! This is not a history-error fallback. The launcher must observe an empty
 //! dedicated server, start its sole TUI, then witness that thread's creation.
 //! Admission additionally requires both children still belong to that exact
-//! live launcher, pristine receiver state and unchanged empty thread metadata.
+//! live launcher, pristine receiver state and matching empty thread metadata.
 use agentdocker_core::{ProcessIdentity, ProviderGeneration};
 use agentdocker_host::procinfo;
 use serde::{Deserialize, Serialize};
@@ -64,16 +64,27 @@ impl Witness {
         true
     }
 
-    pub fn matches_empty(&self, thread: &Value, provider: &ProviderGeneration, cwd: &Path) -> bool {
-        thread["id"].as_str() == Some(&provider.session)
+    pub fn matches_empty(
+        &self,
+        thread: &Value,
+        provider: &ProviderGeneration,
+        cwd: &Path,
+        observed_at: i64,
+    ) -> bool {
+        // Before materialization Codex rebuilds metadata from its live snapshot,
+        // assigning both timestamps the current second on every read. The
+        // witnessed thread/session and live process generations establish
+        // identity; equal, bounded timestamps only establish empty metadata.
+        let created = thread["createdAt"].as_i64();
+        created.is_some_and(|value| value >= self.created_at && value <= observed_at)
+            && thread["updatedAt"].as_i64() == created
+            && thread["id"].as_str() == Some(&provider.session)
             && thread["sessionId"].as_str() == Some(&provider.session)
             && thread["cwd"]
                 .as_str()
                 .and_then(|p| Path::new(p).canonicalize().ok())
                 .as_deref()
                 == Some(cwd)
-            && thread["createdAt"].as_i64() == Some(self.created_at)
-            && thread["updatedAt"].as_i64() == Some(self.created_at)
             && thread["preview"].as_str() == Some("")
             && thread["status"]["type"].as_str() == Some("idle")
             && thread["threadSource"].as_str() == Some("user")
@@ -112,7 +123,7 @@ mod tests {
         let thread = json!({"id":"new-thread", "sessionId":"new-thread", "cwd":cwd,
             "createdAt":100,"updatedAt":100,"preview":"","status":{"type":"idle"},
             "threadSource":"user","forkedFromId":null,"parentThreadId":null,"ephemeral":false,"turns":[]});
-        assert!(witness.matches_empty(&thread, &provider, &cwd));
+        assert!(witness.matches_empty(&thread, &provider, &cwd, 102));
         for (field, value) in [
             ("id", json!("old-thread")),
             ("sessionId", json!("other")),
@@ -130,15 +141,29 @@ mod tests {
             let mut changed = thread.clone();
             changed[field] = value;
             assert!(
-                !witness.matches_empty(&changed, &provider, &cwd),
+                !witness.matches_empty(&changed, &provider, &cwd, 102),
                 "accepted changed {field}"
             );
             let mut missing = thread.clone();
             missing.as_object_mut().unwrap().remove(field);
             assert!(
-                !witness.matches_empty(&missing, &provider, &cwd),
+                !witness.matches_empty(&missing, &provider, &cwd, 102),
                 "accepted absent {field}"
             );
+        }
+        // Advancing together is the provider's pre-materialization snapshot,
+        // not a new thread. Missing, historical, future or unequal values refuse.
+        for stamp in [100, 101, 102] {
+            let mut snapshot = thread.clone();
+            snapshot["createdAt"] = json!(stamp);
+            snapshot["updatedAt"] = json!(stamp);
+            assert!(witness.matches_empty(&snapshot, &provider, &cwd, 102));
+        }
+        for stamp in [99, 103] {
+            let mut snapshot = thread.clone();
+            snapshot["createdAt"] = json!(stamp);
+            snapshot["updatedAt"] = json!(stamp);
+            assert!(!witness.matches_empty(&snapshot, &provider, &cwd, 102));
         }
         let server = ProcessIdentity {
             pid: 3,

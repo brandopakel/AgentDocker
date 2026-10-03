@@ -233,7 +233,12 @@ pub(super) async fn fresh_anchor(provider: &mut Provider, binding: &Binding) -> 
             }),
         )
         .await?;
-    if !birth.matches_empty(&value["thread"], &binding.provider, &binding.cwd) {
+    if !birth.matches_empty(
+        &value["thread"],
+        &binding.provider,
+        &binding.cwd,
+        chrono::Utc::now().timestamp(),
+    ) {
         if std::env::var_os("AGENTDOCKER_TRACE_NATIVE_STARTUP").is_some() {
             eprintln!("native-startup: thread metadata no longer matches an empty owned birth");
         }

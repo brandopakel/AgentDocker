@@ -4,9 +4,9 @@
 Uses a fresh private profile, a loopback model and an authenticated dedicated
 app-server. Without --binary-dir, no AgentDocker binding is exercised. The
 optional receiver trial manually binds exact generations after an explicit
-fixture user turn and tests shared-server delivery/replacement and original
-terminal MCP and PostToolUse hook identity; automatic
-bootstrap and zero-prompt delivery remain unaccepted. No real account, physical
+fixture user turn, or uses --witnessed-birth before any input. It tests shared-
+server delivery/replacement and original terminal MCP/PostToolUse identity.
+The automatic product launcher remains unaccepted. No real account, physical
 input or production configuration is exercised. The optional approval
 probe uses one private print command and a synthetic native Return. A pass is capability evidence,
 not acceptance of AgentDocker's native controller.
@@ -406,6 +406,9 @@ def main():
             time.sleep(0.3)
             if receiver is not None:
                 if args.witnessed_birth:
+                    # Cross a wall-clock second before reading live metadata.
+                    # Codex reconstructs both timestamps before materialization.
+                    time.sleep(2.1)
                     report['thread_before_receiver_start'] = read_thread()
                     step('receiver starts with no explicit user turn or model request', not report['requests'])
                 receiver.start()

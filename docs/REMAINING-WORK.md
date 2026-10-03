@@ -92,9 +92,11 @@ ledger; no provider history rejection is reinterpreted. Mac Release `38352db1` p
 exact submission of the retained draft without a warmup. Separate legacy-record
 and foreign-launcher controls refused with the original input queued and zero
 model requests; all cleanup was unforced. Windows `72123a08` refused binding
-before model input; fixed-stage traces and private ancestry/metadata diagnostics
-now distinguish the missing proof. Windows acceptance and the automatic product
-launcher remain pending.
+before model input. Diagnostic `8e4b7c02` isolated the cause: live Codex metadata
+reconstructs both timestamps on every pre-materialization read. The candidate now
+accepts equal timestamps bounded by witnessed creation and current read time,
+while retaining every thread/process/empty-state check. Windows acceptance and
+the automatic product launcher remain pending.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its

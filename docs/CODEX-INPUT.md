@@ -948,7 +948,11 @@ an empty native queue and a receiver ledger with no attempted, completed, failed
 or manually disposed input. This establishes an initial anchor without treating
 any history error as empty history. Writing the first attempt permanently spends
 that allowance; receipt recovery, explicit resolution and upgrades keep normal
-history requirements. Version-1 records cannot opt into it. The owned launcher
+history requirements. Version-1 records cannot opt into it. Codex reconstructs both timestamps from
+its current clock while a thread remains unmaterialized. They must be equal and
+bounded by the witnessed creation and current read time; they are not thread
+identity. Thread/session IDs, canonical checkout, live generations and all empty
+state checks remain required. The owned launcher
 and native acceptance of this candidate remain unfinished.
 
 `AGENTDOCKER_TRACE_NATIVE_STARTUP=1` optionally records fixed startup refusal
