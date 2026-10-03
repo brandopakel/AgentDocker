@@ -31,17 +31,43 @@ def hold_update_extraction(downloads):
     kernel.CloseHandle.restype = wintypes.BOOL
     invalid = ctypes.c_void_p(-1).value
     stop = threading.Event()
-    evidence = {}
+    evidence = {'open_attempts': 0}
+
+    def open_held(path):
+        # GENERIC_READ, SHARE_READ|WRITE, OPEN_EXISTING, BACKUP_SEMANTICS.
+        # Attribute-only access does not impose Windows sharing restrictions.
+        return kernel.CreateFileW(str(path), 0x80000000, 3, None, 3, 0x02000000, None)
+
+    # Prove that this runner enforces the intended fault before relying on the
+    # concurrent extraction observer. A merely open metadata handle is not it.
+    with tempfile.TemporaryDirectory(prefix='AgentDocker sharing control ') as control:
+        probe = Path(control) / 'held'
+        probe.mkdir()
+        handle = open_held(probe)
+        if handle == invalid:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            try:
+                probe.rmdir()
+            except OSError as error:
+                evidence['control_delete_error'] = error.winerror
+                if error.winerror != 32:  # ERROR_SHARING_VIOLATION
+                    raise
+            else:
+                raise AssertionError('fixture handle did not prevent directory deletion')
+        finally:
+            if not kernel.CloseHandle(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
 
     def watch():
         try:
             while not stop.is_set():
                 for path in downloads.glob('*/payload-*'):
                     uuid.UUID(path.name.removeprefix('payload-'))
-                    # READ_ATTRIBUTES, SHARE_READ|WRITE, OPEN_EXISTING,
-                    # BACKUP_SEMANTICS: the handle permits copying, not deletion.
-                    handle = kernel.CreateFileW(str(path), 0x80, 3, None, 3, 0x02000000, None)
+                    evidence['open_attempts'] += 1
+                    handle = open_held(path)
                     if handle == invalid:
+                        evidence['last_open_error'] = ctypes.get_last_error()
                         continue
                     try:
                         evidence['path'] = path
@@ -197,6 +223,10 @@ def main():
             try:
                 with hold_update_extraction(store / 'downloads') as held_extraction:
                     applied = desktop(*update_args, '--apply')
+                    report['extraction_hold'] = {
+                        key: str(value) if isinstance(value, Path) else value
+                        for key, value in held_extraction.items()}
+                    save()
                     step('a held extraction does not turn a published update into failure',
                          'path' in held_extraction and not held_extraction.get('error')
                          and applied.get('extraction_cleanup', {}).get('error')

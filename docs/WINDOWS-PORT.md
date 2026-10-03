@@ -601,3 +601,9 @@ The native installer fixture holds that directory without delete sharing during
 an actual update, checks successful activation and the diagnostic, then closes
 the fixture handle and removes only its own extraction. Acceptance of this new
 correction remains pending; prior passes above cover their recorded sources.
+Native `44340b77` activated successfully but its new fault fixture did not
+produce the expected cleanup warning: it requested attribute-only access, which
+does not impose Windows sharing restrictions. The fixture now requests directory
+read access, first proves deletion fails with a sharing violation in a separate
+control, and records its observed handle path and open errors. The original
+failure is retained; product cleanup handling is unchanged by this fixture fix.
