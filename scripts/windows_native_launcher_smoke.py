@@ -209,7 +209,9 @@ def main():
         wait(lambda: not terminal.isalive(), 30)
         wait(lambda: not Path(descriptor['token_file']).exists(), 10)
         step('native exit retires launcher and revokes capability', not terminal.isalive() and not Path(descriptor['token_file']).exists())
-        wait(lambda: not any(p.is_running() for p in owned + receiver.owned), 15)
+        wait(lambda: not any(p.is_running() for p in owned + receiver.owned
+                            if p.pid != receiver.daemon.pid), 15)
+        assert receiver.daemon.poll() is None, 'private daemon must survive provider reopen'
         close_console()
         (out / 'first-terminal.txt').write_text(''.join(output), encoding='utf-8')
         old_descriptor = descriptor
