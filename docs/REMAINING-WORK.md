@@ -53,12 +53,19 @@ and 169 Python tests run, one Python skipped). An actual Codex 0.160 Mac ARM64
 loopback trial passed 11 checks, including a native MCP `whoami` call attributed
 to the exact original TUI, no extra helper identity, two queued receipts,
 preserved draft and receiver replacement with unchanged config and clean
-teardown. Windows MCP identity acceptance and independent review remain. A separate
+teardown. Windows `f09d7abb` then passed 17 native checks including the same original
+MCP identity, held approval, exact receipts, preserved draft and receiver
+replacement with clean teardown. Independent review remains. A separate
 actual PostToolUse diagnostic then exposed hook ancestry escaping past the
 dedicated server into an older outer Codex process. The candidate now stops at
 the nearest Codex host and requires the accepted root binding before reporting
 activity; the receiver verifies hook ancestry against that pinned server.
-Corrected native acceptance remains pending.
+Corrected `db54e1e9` passed 25 focused regressions and 15 actual Mac native
+checks on Debug binaries: the hook and MCP call both use the original TUI, no
+outer/helper agent is created, hook output has no error, and queue/draft/restart
+checks and cleanup pass. A mistakenly overlapping targeted build is disclosed
+in the retained evidence. Full gate, Release-binary and Windows hook acceptance
+remain pending; active hook-offer delivery is not established by contact alone.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its
