@@ -1793,7 +1793,9 @@ cause a resubmission or resume the TUI.
 The native receiver's optional authenticated WebSocket transport attaches only
 to numeric IPv4 loopback after validating a private immutable server record.
 That record binds both native TUI/server PID births, kernel executable paths,
-server checkout, thread/profile and capability file/digest. Ledger version 5
+server checkout, thread/profile and capability file/digest. Both server and TUI
+arguments must select the same exact loopback endpoint without duplicate options.
+Ledger version 5
 retains its absolute path and SHA-256; migration from versions 2/3/4 accepts no
 preexisting remote descriptor and preserves all delivery state. Reconnect
 revalidates generations and capability before and after connection, and checks

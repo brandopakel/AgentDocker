@@ -95,6 +95,19 @@ fn matches_binding(record: &Record, binding: &Binding) -> Result<()> {
     Ok(())
 }
 
+fn exact_option<'a>(arguments: &'a [String], key: &str) -> Option<&'a str> {
+    let mut found = arguments.iter().enumerate().filter(|(_, arg)| *arg == key);
+    let (index, _) = found.next()?;
+    if found.next().is_some()
+        || arguments
+            .iter()
+            .any(|arg| arg.starts_with(&format!("{key}=")))
+    {
+        return None;
+    }
+    arguments.get(index + 1).map(String::as_str)
+}
+
 fn verify(path: &Path, record: &Record, binding: &Binding) -> Result<String> {
     matches_binding(record, binding)?;
     ensure!(
@@ -128,18 +141,18 @@ fn verify(path: &Path, record: &Record, binding: &Binding) -> Result<String> {
     );
     let process =
         procinfo::inspect(record.server.pid).context("native server arguments unavailable")?;
-    let pair = |key: &str, value: &str| {
-        process
-            .argv
-            .windows(2)
-            .any(|p| p[0] == key && p[1] == value)
-    };
+    let terminal = procinfo::inspect(record.provider.process.pid)
+        .context("native terminal arguments unavailable")?;
+    let endpoint = format!("ws://127.0.0.1:{}", record.port);
     ensure!(
         process.argv.iter().any(|arg| arg == "app-server")
-            && pair("--listen", &format!("ws://127.0.0.1:{}", record.port))
-            && pair("--ws-auth", "capability-token")
-            && process.argv.windows(2).any(|p| p[0] == "--ws-token-file"
-                && Path::new(&p[1]).canonicalize().ok().as_ref() == Some(&record.token_file)),
+            && exact_option(&process.argv, "--listen") == Some(endpoint.as_str())
+            && exact_option(&process.argv, "--ws-auth") == Some("capability-token")
+            && exact_option(&process.argv, "--ws-token-file")
+                .and_then(|p| Path::new(p).canonicalize().ok())
+                .as_ref()
+                == Some(&record.token_file)
+            && exact_option(&terminal.argv, "--remote") == Some(endpoint.as_str()),
         "native server launch does not match the private endpoint/capability"
     );
     let token_file = dirs::read_private_file(&record.token_file)?;
@@ -190,6 +203,27 @@ pub(super) async fn connect(descriptor: &Descriptor, binding: &Binding) -> Resul
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn native_endpoint_arguments_cannot_be_duplicated_or_hidden_in_another_value() {
+        let args = |values: &[&str]| values.iter().map(|v| v.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            exact_option(
+                &args(&["codex", "--remote", "ws://127.0.0.1:1234"]),
+                "--remote"
+            ),
+            Some("ws://127.0.0.1:1234")
+        );
+        for values in [
+            vec!["codex", "--remote"],
+            vec!["codex", "--remote=x"],
+            vec!["codex", "--remote", "x", "--remote", "y"],
+            vec!["codex", "--remote", "x", "--remote=y"],
+            vec!["codex", "some --remote x text"],
+        ] {
+            assert!(exact_option(&args(&values), "--remote").is_none());
+        }
+    }
 
     #[test]
     fn descriptor_reads_are_bounded_private_and_reject_links() {

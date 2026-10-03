@@ -63,7 +63,8 @@ provider version on an existing binding keeps the queue and reports a pause.
 The candidate receiver also has a hidden `--app-server-record` integration path
 for an existing authenticated loopback app-server. Its private immutable record
 pins the native terminal and server process births, executable, checkout, profile,
-thread, numeric loopback port and capability-file digest. The ledger retains the
+thread, numeric loopback port and capability-file digest. Both processes must
+select that exact endpoint in their arguments. The ledger retains the
 record path and digest; reconnect verifies both processes and the capability
 again, then checks the initialized profile and existing thread. It does not
 create or resume a conversation. The WebSocket observer bounds frames and
