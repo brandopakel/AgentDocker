@@ -470,12 +470,49 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
     execute(&uninstall_plan(&layout, macos), dry_run)
 }
 
+/// A login task does not inherit the installing shell's working directory.
+/// Capture configured project, feed and executable paths before registration.
+#[cfg(any(windows, test))]
+fn capture_windows_paths(args: &ServeArgs, cwd: &std::path::Path) -> Result<ServeArgs> {
+    anyhow::ensure!(
+        cwd.is_absolute(),
+        "service setup directory must be absolute"
+    );
+    let resolve = |path: &std::path::Path| {
+        cwd.join(path)
+            .canonicalize()
+            .with_context(|| format!("cannot resolve connector service path {}", path.display()))
+    };
+    let mut args = args.clone();
+    for path in [
+        &mut args.project,
+        &mut args.cloudflared,
+        &mut args.tailscale,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        *path = resolve(path)?;
+    }
+    for value in &mut args.allow_from {
+        if let Some(raw) = value.strip_prefix('@') {
+            anyhow::ensure!(!raw.is_empty(), "connector feed path is empty");
+            let path = resolve(std::path::Path::new(raw))?;
+            *value = format!(
+                "@{}",
+                path.to_str().context("connector feed path is not UTF-8")?
+            );
+        }
+    }
+    Ok(args)
+}
+
 #[cfg(windows)]
 fn windows_layout(args: &ServeArgs) -> Result<Layout> {
     if args.tunnel.is_none() && args.public_url.is_none() {
         bail!("choose a tunnel or provide its public URL");
     }
-    layout(args)
+    layout(&capture_windows_paths(args, &std::env::current_dir()?)?)
 }
 
 #[cfg(windows)]
@@ -513,6 +550,55 @@ mod tests {
                 "anthropic".into(),
             ],
             path_dirs: vec!["/opt/homebrew/bin".into()],
+        }
+    }
+
+    #[test]
+    fn login_configuration_captures_paths_without_changing_the_callers_arguments() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("project")).unwrap();
+        std::fs::write(temp.path().join("egress.txt"), "127.0.0.1/32\n").unwrap();
+        std::fs::write(temp.path().join("tunnel.exe"), "fixture").unwrap();
+        let args = ServeArgs {
+            project: Some("project".into()),
+            cloudflared: Some("tunnel.exe".into()),
+            allow_from: vec!["@egress.txt".into(), "openai".into(), "192.0.2.0/24".into()],
+            ..ServeArgs::default()
+        };
+        let captured = capture_windows_paths(&args, temp.path()).unwrap();
+        assert_eq!(
+            captured.project.unwrap(),
+            temp.path().join("project").canonicalize().unwrap()
+        );
+        assert_eq!(
+            captured.cloudflared.unwrap(),
+            temp.path().join("tunnel.exe").canonicalize().unwrap()
+        );
+        assert_eq!(
+            captured.allow_from[0],
+            format!(
+                "@{}",
+                temp.path()
+                    .join("egress.txt")
+                    .canonicalize()
+                    .unwrap()
+                    .display()
+            )
+        );
+        assert_eq!(&captured.allow_from[1..], &args.allow_from[1..]);
+        assert_eq!(args.project.unwrap(), PathBuf::from("project"));
+        assert_eq!(args.allow_from[0], "@egress.txt");
+    }
+
+    #[test]
+    fn login_configuration_refuses_an_unresolved_feed_before_registration() {
+        let temp = tempfile::tempdir().unwrap();
+        for value in ["@missing", "@"] {
+            let args = ServeArgs {
+                allow_from: vec![value.into()],
+                ..ServeArgs::default()
+            };
+            assert!(capture_windows_paths(&args, temp.path()).is_err());
         }
     }
 

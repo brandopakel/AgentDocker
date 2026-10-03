@@ -196,6 +196,11 @@ and private current/previous ownership receipts. It requires the home's owned
 daemon login task and starts that task separately; the connector disables
 on-demand daemon startup so stopping its task cannot terminate a daemon in its
 child tree. The selected daemon endpoint is retained in the task action.
+Configured project, egress-file and tunnel-executable paths are resolved against
+the installing shell's working directory before registration; the login task
+does not depend on that directory. Windows tunnel discovery searches for the
+native `.exe` names. The task captures native output with `Continue` and returns
+the native exit code, since PowerShell 5.1's `Stop` aborts on ordinary stderr.
 `enable` preserves a differently configured service; `install` explicitly
 replaces only an owned task. Graceful stop requests name the exact process birth
 and a fresh run nonce in private bounded snapshots, then wait for tunnel cleanup

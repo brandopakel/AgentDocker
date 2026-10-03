@@ -31,8 +31,14 @@ A separate Windows browser-connector login-service candidate now has source for
 owned Task Scheduler registration, conservative desktop enablement and graceful
 process-generation-scoped shutdown. It requires the already installed owned
 daemon login task; it does not install or replace that dependency automatically.
-Compilation, native task lifecycle, daemon survival, crash/reboot and actual
-browser/tunnel acceptance remain unverified.
+Strict native compilation passed. The first lifecycle trial exited at startup:
+PowerShell 5.1 treated ordinary stderr as an error under `Stop`. Paired controls
+reproduced that behavior; native exit-code handling then reached serving HTTP on
+`0de2747f`. That trial stopped at a fixture ACL module-load error and cleaned all
+owned tasks/processes without force. Configured relative paths are now captured
+before registration, and tunnel lookup includes native `.exe` names. Full native
+lifecycle, daemon survival, crash/reboot and actual browser/tunnel acceptance
+remain unverified.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its

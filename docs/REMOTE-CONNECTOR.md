@@ -222,3 +222,10 @@ Uninstall requests an exact connector generation's graceful exit, preserving
 the daemon and saved browser grants. A changed or foreign task is refused.
 Native service, reboot and actual-account acceptance of this candidate remain
 pending; this is not a published Windows connector-service acceptance claim.
+
+Windows login-service setup resolves configured project, egress-feed and tunnel
+executable paths at installation time, so a relative shell path does not become
+a different path under Task Scheduler's working directory. `tailscale.exe` and
+`cloudflared.exe` are discovered through the executable PATH lookup on Windows;
+an explicit executable path remains supported. The candidate's native fixture
+includes a relative project and feed, with acceptance still pending.

@@ -81,6 +81,8 @@ def main():
     state_path = root / 'state.json'
     origin = 'https://connector-smoke.example.invalid'
     serve_args = ['--public-url', origin, '--bind', '127.0.0.1:0']
+    cli_cwd = binaries
+    configured_project = None
     report = {'result': 'failed', 'scope': __doc__, 'home': str(home),
               'installed_launchers': bool(args.installed_prefix),
               'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -104,7 +106,7 @@ def main():
 
     def run(*arguments, check=True, timeout=90):
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-            result = subprocess.run([str(cli), *arguments], env=env, cwd=binaries,
+            result = subprocess.run([str(cli), *arguments], env=env, cwd=cli_cwd,
                                     stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
                                     timeout=timeout)
             stdout.seek(0); stderr.seek(0)
@@ -227,6 +229,9 @@ def main():
                                  timeout=2) as response:
                     metadata = json.load(response)
                 assert metadata['issuer'] == expected_origin, metadata
+                if configured_project is not None:
+                    assert os.path.samefile(status['default_project'], configured_project)
+                    assert status['allowlist_prefixes'] == 1
                 return process, identity, running
             except (OSError, TimeoutError, ValueError, psutil.Error) as error:
                 last = str(error)
@@ -237,8 +242,18 @@ def main():
         # Preserve the product-created file's owner/ACL. New synthetic stop/grant
         # files copy the protected running record's ACL, including its owner SID.
         path.write_text(json.dumps(value), encoding='utf-8')
-        powershell(f"Set-Acl -LiteralPath {quote(str(path))} -AclObject "
-                   f"(Get-Acl -LiteralPath {quote(str(running_path))})")
+        # Call the Windows PowerShell/.NET Framework API directly: inherited
+        # PSModulePath can resolve Get-Acl to an incompatible PowerShell module.
+        # A fresh descriptor marks the copied sections dirty before persistence.
+        powershell(
+            "$sections=[Security.AccessControl.AccessControlSections]'Access,Owner';"
+            f"$source=[IO.File]::GetAccessControl({quote(str(running_path))},$sections);"
+            "$copy=[Security.AccessControl.FileSecurity]::new();"
+            "$copy.SetSecurityDescriptorBinaryForm($source.GetSecurityDescriptorBinaryForm(),$sections);"
+            f"[IO.File]::SetAccessControl({quote(str(path))},$copy);"
+            f"$actual=[IO.File]::GetAccessControl({quote(str(path))},$sections);"
+            "if($source.GetSecurityDescriptorSddlForm($sections) -cne "
+            "$actual.GetSecurityDescriptorSddlForm($sections)){throw 'fixture ACL copy differs'}")
 
     save()
     try:
@@ -264,13 +279,21 @@ def main():
         run('daemon', 'install')
         daemon_process = daemon_ready()
         daemon_identity = (daemon_process.pid, daemon_process.create_time())
+        configured_project = home / 'service project'
+        configured_project.mkdir()
+        subprocess.run(['git', 'init', '-q', str(configured_project)], check=True, timeout=15)
+        (home / 'egress.txt').write_text('127.0.0.1/32\n', encoding='utf-8')
+        cli_cwd = home
+        relative_options = ['--project', 'service project', '--allow-from', '@egress.txt',
+                            '--client-ip-header', 'x-fixture-client-ip']
+        serve_args += relative_options
         connector_installed = True
         run('connector', 'enable', *serve_args)
         first, identity, running = connector_ready()
         receipt = read_snapshot(receipt_path)
         task = receipt['current']['task']
         report['task'] = task
-        step('connector serves HTTP through its owned task and selected daemon endpoint',
+        step('login service resolves relative project/feed paths and serves through its selected daemon',
              ping()['pid'] == daemon_identity[0], {'connector': identity, 'daemon': daemon_identity})
         seeded = {'clients': {}, 'grants': {'fixture-preserved-grant': {
             'agent_id': 'fixture-only', 'agent_name': 'private fixture', 'runtime': 'browser',
@@ -285,7 +308,7 @@ def main():
         fixture_json(stop_path, stale)
         time.sleep(0.5)
         step('stale generation stop request leaves the connector live', connector_ready()[1] == identity)
-        changed_args = ['--public-url', origin + '/replacement', '--bind', '127.0.0.1:0']
+        changed_args = ['--public-url', origin + '/replacement', '--bind', '127.0.0.1:0', *relative_options]
         refused = run('connector', 'enable', *changed_args, check=False)
         step('desktop enable refuses different settings without stopping the live service',
              refused['exit'] != 0 and 'differently configured' in refused['stderr'] and
