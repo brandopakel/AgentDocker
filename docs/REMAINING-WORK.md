@@ -45,7 +45,10 @@ before registration, and tunnel lookup includes native `.exe` names. Full native
 lifecycle on `17bbbdae` confirmed those paths and reached HTTP, then failed
 identical enablement because it reopened the running task's unshared log for
 writing. Identical enablement now preserves that handle. Cleanup passed without
-force/errors. Both full local gates passed; corrected native lifecycle, daemon
+force/errors. The next8215b78c run failed earlier in daemon install at the
+unchanged20-second PowerShell bound, before connector acceptance. Opt-in service
+phase traces now distinguish process entry, task lookup and ownership; the cause
+remains open. Both full local gates passed; corrected native lifecycle, daemon
 survival, crash/reboot and actual browser/tunnel acceptance remain unverified.
 
 **The rollout is not complete.** The user requires macOS, Linux and native

@@ -150,8 +150,45 @@ fn evaluate(layout: &Layout, script: &str) -> Result<String> {
 }
 
 pub(crate) fn evaluate_at(user_home: &Path, script: &str) -> Result<String> {
+    use std::io::Write;
+    // Opt-in diagnostics survive the bounded command's private capture files.
+    // Cold read-only absence must still create no state home. Diagnostic I/O
+    // never changes whether the actual Scheduler operation is attempted.
+    let trace = (std::env::var_os("AGENTDOCKER_STARTUP_TRACE").as_deref()
+        == Some(std::ffi::OsStr::new("1")))
+    .then(|| {
+        let path = agentdocker_host::dirs::home().join("windows-service-trace.log");
+        let file = agentdocker_host::dirs::private_file(&path, true, true).ok()?;
+        if file.metadata().ok()?.len() > 64 * 1024 {
+            file.set_len(0).ok()?;
+        }
+        drop(file);
+        Some((path, uuid::Uuid::new_v4()))
+    })
+    .flatten();
+    let emit = |stage: &str| {
+        if let Some((path, operation)) = &trace
+            && let Ok(mut file) = agentdocker_host::dirs::private_file(path, false, true)
+        {
+            let _ = writeln!(
+                file,
+                "{operation} {} {stage}",
+                chrono::Utc::now().to_rfc3339()
+            );
+        }
+    };
+    let tracing = trace.as_ref().map_or_else(
+        || "function Write-AgentDockerServiceTrace($stage){};".to_owned(),
+        |(path, operation)| {
+            format!(
+                "function Write-AgentDockerServiceTrace($stage){{try{{[IO.File]::AppendAllText({},('{} '+[DateTime]::UtcNow.ToString('o')+' '+$stage+[Environment]::NewLine))}}catch{{}};$null=0}};",
+                quoted(&path.to_string_lossy()),
+                operation,
+            )
+        },
+    );
     let script = format!(
-        "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();{script}"
+        "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();{tracing}Write-AgentDockerServiceTrace 'powershell-start';{script};Write-AgentDockerServiceTrace 'powershell-complete'"
     );
     let argv = vec![
         powershell()?.to_string_lossy().into_owned(),
@@ -160,8 +197,25 @@ pub(crate) fn evaluate_at(user_home: &Path, script: &str) -> Result<String> {
         "-EncodedCommand".into(),
         encoded(&script),
     ];
-    let output =
-        agentdocker_host::command::run(user_home, &argv, std::time::Duration::from_secs(20))?;
+    emit("rust-start");
+    let result =
+        agentdocker_host::command::run(user_home, &argv, std::time::Duration::from_secs(20));
+    emit(if result.is_ok() {
+        "rust-return"
+    } else {
+        "rust-error"
+    });
+    let output = result.with_context(|| {
+        trace.as_ref().map_or_else(
+            || "Windows service PowerShell operation failed".to_owned(),
+            |(path, operation)| {
+                format!(
+                    "Windows service PowerShell operation {operation} failed; diagnostics: {}",
+                    path.display()
+                )
+            },
+        )
+    })?;
     if !output.success {
         let detail = output.text.trim();
         bail!(
@@ -188,7 +242,7 @@ pub(crate) fn task_context_named(name: &str, receipt: Option<&Receipt>) -> Strin
     // failures remain terminating errors, never
     // permission to replace a task we could not inspect.
     format!(
-        "$taskPath='\\';$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$found=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {{$_.TaskPath -ieq $taskPath -and $_.TaskName -ieq {}}}); if($found.Count -gt 1){{throw 'The Windows service task lookup was ambiguous; no task was changed.'}}; $task=$null; if($found.Count -eq 1){{$task=$found[0]}};{};",
+        "$taskPath='\\';$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;Write-AgentDockerServiceTrace 'task-lookup-start';$found=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {{$_.TaskPath -ieq $taskPath -and $_.TaskName -ieq {}}});Write-AgentDockerServiceTrace 'task-lookup-complete'; if($found.Count -gt 1){{throw 'The Windows service task lookup was ambiguous; no task was changed.'}}; $task=$null; if($found.Count -eq 1){{$task=$found[0]}};{};Write-AgentDockerServiceTrace 'ownership-complete';",
         quoted(name),
         ownership_guard(receipt),
     )

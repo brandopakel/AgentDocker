@@ -73,7 +73,7 @@ def main():
     endpoint = '\\\\.\\pipe\\agentdocker-connector-smoke-' + token
     env = {k: v for k, v in os.environ.items() if not k.startswith('AGENTDOCKER_')}
     env.update(AGENTDOCKER_HOME=str(home), AGENTDOCKER_SOCKET=endpoint,
-               AGENTDOCKER_NO_AUTOSTART='1')
+               AGENTDOCKER_NO_AUTOSTART='1', AGENTDOCKER_STARTUP_TRACE='1')
     root = home / 'connector'
     receipt_path = root / 'windows-service.json'
     running_path = root / 'windows-running.json'
@@ -458,7 +458,8 @@ def main():
                     report['cleanup_errors'].append(f'owned process {key}: {error}')
             except psutil.Error as error:
                 report['cleanup_errors'].append(f'owned process {key}: {error}')
-        for path in (home / 'agentd.log', root / 'serve.log', receipt_path, running_path, stop_path):
+        for path in (home / 'agentd.log', home / 'windows-service-trace.log', root / 'serve.log',
+                     receipt_path, running_path, stop_path):
             if path.is_file():
                 (output / ('retained-' + path.name)).write_bytes(path.read_bytes()[-1024 * 1024:])
         if report['cleanup_errors'] or report['forced_processes'] or daemon_installed or connector_installed:

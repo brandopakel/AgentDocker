@@ -631,3 +631,11 @@ Continue, and propagates the executable exit code. A paired native-stderr
 control plus the full lifecycle must pass before this is accepted. Fixture
 snapshot reads also permit atomic replacement and require one matching live
 process generation; no longer readiness deadline or replay is introduced.
+
+With `AGENTDOCKER_STARTUP_TRACE=1`, Windows service operations also retain a
+private `windows-service-trace.log` with per-operation Rust entry/return,
+PowerShell entry/completion, task lookup and ownership phases. The trace resets
+above64KiB before another operation and contains no task arguments or credentials.
+It is best effort, creates no missing cold state home, and leaves the existing
+20-second command bound unchanged. Both native service fixtures retain it. This
+narrows future Scheduler timeouts; it does not diagnose historical failures.
