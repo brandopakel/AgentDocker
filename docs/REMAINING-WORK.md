@@ -20,8 +20,9 @@ retirement isolation and canonical daemon selection passed the exact-head
 `4cf51767` native trial, including both service lifecycles and extra startup samples;
 integrated `22396f38` repeated those checks and both full gates. A subsequent
 review correction reports extraction cleanup failure separately from successful
-activation, including the retained path in the CLI and app; its native held-handle
-regression and full gates remain pending. Integration/review, hosted Windows publication, Start menu/PATH,
+activation, including the retained path in the CLI and app. Its native held-handle
+regression and full gates passed on `f155249d`. Final integration/review, hosted
+Windows publication, Start menu/PATH,
 physical and actual-provider acceptance, and login/reboot remain. These trials
 do not update the published beta.4 package or prove a hosted Windows upgrade. See
 [the Windows port](WINDOWS-PORT.md) for the exact scope.
@@ -139,14 +140,14 @@ real-account attribution evidence, not sign-in recovery or endurance acceptance;
 its concurrent load is disclosed in the original endurance measurements. Failed evidence and the
 original endurance trial are preserved unchanged.
 
-The installer integrated with accepted managed accounting (`22396f38`) passed
-the exact-head native package and Task Scheduler trial: 322 core/host, 83
-portable, 38 installer, 11 portable-service and 13 installed-service checks.
-Clean source/tree and binary hashes match; both service fixtures removed owned
-tasks/scratch with no cleanup errors. Full gates passed 1,465 Rust checks on Mac
-and 1,453 on Ubuntu, plus 169 Python tests each (one skipped), zero retries.
-Final documentation checks and follow-up review remain required before merge;
-public Windows publication and physical/logon/reboot acceptance remain open.
+The corrected installer (`f155249d`) passed exact-head native acceptance:
+322 core/host, 83 portable, 43 installer, 11 portable-service and 13
+installed-service checks. The held-directory update fault returned a successful
+activation with the correct cleanup diagnostic; all owned tasks and scratch
+were removed. Source/tree/binary hashes matched. Full gates passed 1,465 Mac
+and 1,453 Ubuntu Rust checks plus 169 Python checks each (one skipped), zero
+retries. Final integration checks and follow-up review remain; hosted Windows
+publication and physical/logon/reboot acceptance remain open.
 
 The growing-source candidate’s final Mac CI (`6d8d25eb`) exposed a separate
 four-record test assumption: a cooperative 100 ms scan was treated as complete
@@ -154,4 +155,19 @@ before it reached the malformed record. The fixture now follows bounded
 continuations and compares complete records, gaps and serialized cursors while
 asserting each pass’s record/byte bounds. Product deadlines are unchanged;
 the prior `cc57c86d` native growth/restart evidence remains valid for its
-unchanged implementation, and corrected final checks remain required.
+unchanged implementation. Corrected `fcaa22f9` passed all final checks and
+independent review and is merged. A later independent Windows job exposed the
+same cooperative-yield assumption in the oversized-record fixture; that fixture
+now verifies bounded resumable progress without changing production deadlines.
+
+The original independent Oracle trial on `acce400f` completed 24 hours with
+three actual Codex sessions, ten projects and all 24 exact replies/ledger
+receipts. Configuration/authentication files and the unrelated runner were
+unchanged; shutdown was graceful and removed all fixture processes/scratch.
+Across 2,881 samples, mean daemon CPU was 0.942% of one core, peak RSS 14.715 MiB,
+and ping median/p95 were 0.407/0.701 ms (maximum 1,119 ms). Watches stayed at 110;
+tracking grew 37,030 bytes and state 2,397,265 bytes. Five source gaps and null
+attribution remain recorded for this older source; later accounting fixes do
+not retroactively establish its coverage. Separate short concurrent trials are
+disclosed. Multi-day, installed-current-accounting and sleep/wake/reboot trials
+remain open.

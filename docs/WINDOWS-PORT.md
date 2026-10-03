@@ -569,47 +569,22 @@ and bounded retirement refusal passed; hashes match the clean native build,
 and both service fixtures removed owned tasks/scratch without cleanup errors.
 No hosted Windows update, physical console or login/reboot result is implied.
 
-Installer review corrections remove temporary update extractions after preview/apply,
-preserve inactive releases during idempotent installation, and compare canonical
-Windows paths when deciding whether the daemon activation changed. Retirement
-maintenance skips unrecognized directories while collecting verified siblings;
-uninstall still refuses before deactivation if it cannot account for a preserved
-directory, identifying that path. Native `5654a107` failed only its final
-refusal-message assertion, which compared a fixture `RUNNER~1` path against the
-canonical diagnostic; corrected fixture and integrated acceptance follow below.
+Installer review corrections clean update extractions, preserve inactive releases
+on idempotent install, compare canonical daemon paths and retain unrecognized
+retirement directories while collecting verified siblings. Uninstall refuses
+before deactivation when a preserved directory cannot be accounted for.
+A completed activation remains successful if extraction cleanup fails: the CLI
+report and desktop identify the retained path/error. Failed operations preserve
+their original error, and later attempts use fresh extraction directories.
 
-Corrected `4cf51767` passed native acceptance: 320 core/host checks, 83 portable
-checks with five extra startup samples per configured ancestry type, 38 installer
-checks, and 11 portable plus 13 installed Task Scheduler checks. Native hashes
-and clean source/tree matched every fixture; owned tasks and scratch were
-removed with zero cleanup errors. Final review/integration, hosted distribution
-and physical/actual-provider/logon/reboot acceptance remain.
-
-Integrated `22396f38` repeated installer and service acceptance after merging
-accepted managed Codex accounting. Exact-head run37082197622 passed all 322
-core/host, 83 portable, 38 installer, 11 portable-service and 13 installed-service
-checks with matching source/hash provenance and clean Task Scheduler cleanup.
-Both full Mac/Linux gates passed; final checks and follow-up review remain.
-
-The follow-up correction preserves a completed preview/update report when a
-Windows sharing violation prevents extraction cleanup. The report's
-`extraction_cleanup` field and desktop screen identify the retained path and
-error; successful activation is not reported as a failed install. Cleanup is
-still attempted on a failed operation, whose original error is preserved.
-Each attempt uses its own extraction directory and never reuses a retained one.
-The native installer fixture holds that directory without delete sharing during
-an actual update, checks successful activation and the diagnostic, then closes
-the fixture handle and removes only its own extraction. Acceptance of this new
-correction remains pending; prior passes above cover their recorded sources.
-Native `44340b77` activated successfully but its new fault fixture did not
-produce the expected cleanup warning: it requested attribute-only access, which
-does not impose Windows sharing restrictions. The fixture now requests directory
-read access, first proves deletion fails with a sharing violation in a separate
-control, and records its observed handle path and open errors. The original
-failure is retained; product cleanup handling is unchanged by this fixture fix.
-Native `a8a28b8e` then established the intended sharing violation: the command
-returned success and the cleanup report identified error 32 and the correct
-extraction, but the fixture compared verbatim and DOS path spellings as strings.
-The diagnostic check now compares the actual filesystem objects with `samefile`,
-and separate assertions identify a failed hold, missing diagnostic or activation.
-Complete corrected native acceptance remains pending.
+Exact-head `f155249d` passed 322 native core/host, 83 portable, 43 installer,
+11 portable-service and 13 installed-service checks. This includes an actual
+update under a deliberately held directory handle: activation succeeds, the
+cleanup diagnostic identifies sharing violation 32, and the fixture closes its
+own handle and removes its extraction. Source/tree/binary hashes match; owned
+tasks and scratch were removed with zero service cleanup errors. Full Mac/Linux
+gates passed 1,465/1,453 Rust and 169 Python tests each (one skipped), zero retries.
+The earlier fixture failures are retained in the verification index.
+Integration with accepted growing-source accounting requires final checks and
+follow-up review; hosted distribution, physical and actual-provider/logon/reboot
+acceptance remain open.
