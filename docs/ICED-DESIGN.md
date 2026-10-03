@@ -65,11 +65,15 @@ where to check the permission if the action times out.
 | Settings | Appearance, installation, retained versions and diagnostics |
 
 Light and dark appearances share the same hierarchy and the same visual
-system, which is drawn from the mark:
+system, which is drawn from the mark. The October 2 redesign follows the
+owner's choices from a review of 21st.dev components (palette C, *Navy rail*,
+and one or more patterns per surface); only the look changed, never what a
+control does, its id or its accessible label:
 
 - **Brand.** The rail leads with the cube mark (`crates/ui/src/mark.png`, the
-  transparent mark downscaled to 96 px for a 30-point slot at 2× density) and
-  the two-tone wordmark: *Agent* in the text colour, *Docker* in the accent.
+  transparent mark downscaled to 96 px, drawn in a 26-point slot) and
+  the two-tone wordmark: *Agent* in the rail's ink, *Docker* in a lightened
+  accent that reads on navy.
   The mark also anchors empty states at reduced opacity.
 - **Every project has its own mark.** A rounded tile with the project's
   initial on a tint derived from the project's identity (`style::identity`:
@@ -78,8 +82,8 @@ system, which is drawn from the mark:
   and a unit test keeps the ink at 4.5:1 on every stop). Colours stay the same
   across machines when they use the same repository fingerprint. Root-path UUID
   seeds can differ between machines or checkouts. Nothing needs to be chosen or
-  stored. The tile leads each rail row at 20 points and the project
-  heading at 30.
+  stored. The tile leads each rail row at 20 points, the project heading
+  at 32 and each session row at 28.
 - **Finished, not yet viewed.** When a session's activity goes from working
   or blocked to idle or finished while the user is not looking at its project
   in a focused window, the session is marked unviewed: an accent pill on the
@@ -89,11 +93,25 @@ system, which is drawn from the mark:
   and the observed state stays in the row's meta line unchanged. Window-local
   state, never persisted (`shell::State::unviewed_done`, filled by
   `App::note_completions`).
-- **Colour roles** live in `app/style.rs`: ground, rail, card, raised, text,
-  muted, faint, line, accent, accent-soft/ink, cyan, green, amber, red. Dark
-  is a deep navy; light is cool off-white with white cards. A unit test keeps
-  text, muted text and selected ink above WCAG contrast thresholds on every
-  surface in both appearances.
+- **Colour roles** live in `app/style.rs`: ground, rail, card, raised, hover,
+  overlay, text, muted, faint, line, line-strong, accent, accent-hover,
+  accent-soft/ink, cyan, green, amber, red and danger (the solid fill of an
+  armed destructive action). Dark is a deep navy; light is cool off-white with
+  white cards. **The rail is navy in both appearances**, so the cube always
+  sits on navy: `Colors::rail()` gives the rail (and the status bar, which
+  is part of the same frame) its own light-on-navy ink. A unit test keeps
+  text, muted and faint ink above WCAG thresholds on every page surface and,
+  with the rail's ink, on the rail and its selected and hovered rows; white
+  labels on the filled actions and status words on a card are checked too.
+- **One radius scale** (`RADIUS_XS` 4 keycaps and checkboxes, `RADIUS_SM` 6
+  controls, rows and tooltips, `RADIUS_MD` 8 menus, tracks and tiles,
+  `RADIUS_LG` 10 cards) and one control height: a 13-point Medium label on an
+  18-point line inside 7 points of padding is 32 points, for buttons, inputs
+  and the split button alike. Depth is tint and hairline: rail under ground
+  under card under raised, with `overlay` (menus, popovers, tooltips, the
+  launch dialog, the palette) the only surface above a card. Small menus and
+  tooltips carry its small shadow; the dialog and the palette do not
+  (`Colors::dialog_style`): they are large, and the scrim lifts them.
 - **No blurred shadows on large surfaces.** tiny-skia renders a quad's shadow
   by building a per-pixel colour buffer for the whole shadow area on every
   frame, including the part scrolled out of view. With a hundred session rows
@@ -105,13 +123,37 @@ system, which is drawn from the mark:
 - **Status is a dot and a word.** Green is live, amber needs input, faint is
   finished, cyan marks a pinned project or a process available to connect.
   Header pills count live sessions and open questions for the project.
-- **Controls have kinds** (`controls::Kind`): one filled *primary* action per
-  screen, quiet raised *secondary* actions and filter chips, *quiet* rows and
-  rail entries that only gain a surface when hovered or selected (and
-  *inline* words with the same quiet look at their own width, so a card's
-  hand-to names sit side by side), underline *tabs* for the project
-  sections, and a red-tinted *danger* surface for an armed stop. Every kind is the same keyboard-focusable, AccessKit-labelled
-  control; a custom-content button still carries a spoken label.
+- **Controls have kinds** (`controls::Kind`) on one ladder: one filled
+  *primary* action per screen, *secondary* actions as hairline outlines with
+  no fill, *ghost* words for tertiary actions (Cancel, Dismiss, Details,
+  Pause…), *quiet* rows that only gain a surface when hovered or selected (and
+  *inline* words with the same quiet look at their own width), underline
+  *tabs*, *segments*, *nav* rows inked with the rail's roles, red
+  *destructive* words for a menu's Remove or Forget, and a solid red *danger*
+  fill for an armed stop. Hover and press are washes of the ink over whatever
+  the control sits on, so one rule reads on the ground, a card and the rail.
+  The keyboard focus ring is a 2-point accent edge drawn inside the control.
+  Every kind is the same keyboard-focusable, AccessKit-labelled control; a
+  custom-content button still carries a spoken label.
+- **Menus float.** `controls::popover` lays out its anchor where it stands
+  and, while the application says it is open, places its popup as an
+  overlay under the anchor (above it when there is no room), aligned to the
+  anchor's start or end and kept inside the window; a press outside both or
+  Escape asks for it to close. Opening a menu moves nothing on the page, and
+  a press anywhere on an open menu — its padding, a separator, a line of
+  text — stays in it rather than reaching the control beneath. A menu opened
+  from the keyboard takes the focus to its first entry (`shell::State::
+  pressed` tells a pointer-opened menu, which leaves the focus alone), since
+  overlays come last in the Tab order.
+  Iced runs operations over overlays too, so the popup's controls are
+  focusable, carry accessibility nodes and are found by the workflow driver.
+  The project row's **⋯** menu (Rename…, Pin, Remove from list, the path),
+  the **More** tab's menu (History, Channels, Files in use, Usage, AgentDocker
+  commands, then Pin and Forget project, the screen on view ticked) and the
+  **Launch agent** split button's menu of installed tools all float this way.
+  A project row's **⋯** shows only under the pointer, on the selected row and
+  while its menu is open; elsewhere it is drawn transparent but stays a
+  control for the keyboard and assistive technology.
 - **Type.** Inter is bundled (`crates/ui/src/fonts/`, Regular, Medium and
   SemiBold, SIL Open Font License; the license text ships beside the files and
   belongs in the app bundle's licenses). It is the default face, so weights and
@@ -120,9 +162,26 @@ system, which is drawn from the mark:
   monospace fallback. Headings are SemiBold; Bold is never requested. Section
   eyebrows are 11-point capitals; paths and identifiers use the system
   monospace.
+- **Jump to… (⌘K, Ctrl+K elsewhere).** A search-looking field under the
+  brand (`command-palette`) and the shortcut from anywhere, including a
+  focused text field, open one palette (`app/palette.rs`): a search field
+  (`palette-search`) over grouped rows — Go to (All projects, Messages or
+  Inbox, Tools, Settings, with their ⌘2–⌘4 keycaps), Projects (each with its
+  mark and folder), Actions (Launch agent… with a nested page of installed
+  tools, Open project terminal, Pause…, Add project…, the other appearance)
+  — each row an existing message (`palette-item-<kind>-<key>`). Matching is
+  case-insensitive: label prefix, then every term starting a label word, then
+  a substring, then words of the description. Up/Down or Tab move the
+  highlight, Enter runs it, Escape clears the search, then leaves a nested
+  page, then closes; Backspace on an empty search leaves a nested page. The
+  keys are read by a wrapper at the window root because a focused field
+  otherwise types the *k* and keeps Escape. The window is always the first
+  layer of one stack, with the launch dialog and the palette as optional
+  layers over it, so opening either resets nothing underneath.
 - **Segmented controls** (`controls::segment` in a `segmented` track) pick one
-  of a few peers: the session filters and the theme. The selected segment lifts
-  off the track; the others sit quietly on it.
+  of a few peers: the session filters and the theme. The track is an inset
+  with a hairline; the selected segment is a card-coloured thumb with a
+  hairline (and, in light, a one-point shadow), the others muted words.
 - **Marks explain themselves.** Where a mark has no words beside it (the
   rail's project tiles), pointing at it shows a tooltip with the words the row
   would otherwise print: live agents, pinned or discovered, and how many
@@ -147,8 +206,77 @@ system, which is drawn from the mark:
   wake becomes one frame forty milliseconds later (`WAKE_SETTLE`), so the
   seven answers to a sweep's snapshot requests, which land within a few
   milliseconds of each other, are one frame rather than seven.
+- **Board, History, Files in use, Usage, Channels.** The five lanes are
+  tinted wells with no border, headed by the lane's dot, name and a count
+  chip; cards are hairline cards (no shadow) whose edge firms under the
+  pointer and turns accent when open. Filing lives at the foot of the Ready
+  lane, and its **Add to Ready** is the board's one filled action; a card's
+  forward move is an outline, its back move a ghost. History is one row
+  grammar in one card: an icon tile per journal kind, the line, a muted line
+  of kind, branch and short sha, the time at the right. Usage leads with
+  range and grouping as segmented controls and four totals, then one framed
+  table with capital micro headers and right-aligned numbers (a share bar
+  from 1180 points wide). A channel is a card headed by a `#` tile, its name,
+  Open or Closed as a dot and a word, its purpose and members, and a small
+  stack of member marks.
+- **Messages** (`app/messages.rs`, helpers in `app/messages/look.rs`). The
+  conversation list is rows of a 28-point mark (with a presence dot for a
+  direct conversation) or a `#` tile, the name over one line of preview, cut
+  with an ellipsis, and a quiet unread count (the `@n` count in the accent);
+  its groups fold behind a chevron with their rows on a guide rail. The
+  history groups messages into runs at render time — one mark and one header
+  (name, kind as a word, time) until the sender or kind changes, five minutes
+  pass or a message names the person — with flat rows in the full text
+  colour; AgentDocker's notices are single muted lines on a small disc.
+  Unread rows are tinted under the **New** divider; the open thread's message
+  and a notification's target carry a 2-point accent rail, a mention an
+  amber one. **Reply** is drawn only under the pointer or keyboard focus
+  (Iced's `hover` widget), so it is always present for the driver and
+  assistive technology. `controls::framed_composer` is the field, a hairline
+  and a footer of keycap hints and a 28-point send arrow (`send-<key>`,
+  spoken *Send*), the whole frame showing focus; one status line under it
+  says the error, the queued state with **Details**, recoveries or the
+  recipient's readiness. Mention offers float above it. The thread quotes
+  its parent on the accent rail; the new-conversation form is a card with a
+  Direct message | Channel segmented control. The project chat's side panel
+  lists agents as a mark, the name over *status · 3m* and a terminal glyph.
+- **Tools, Settings, Installation** (`app/tools_view.rs`). Tools is one card of
+  rows: a two-letter mark on the tool's tint, the name over a dot and its
+  status words, then one action — **Set up** filled only for the first tool
+  that needs it (an outline for the rest, and for all while a setup is under
+  review), a green **Connected** word for a tool taking messages — and a
+  **Details** disclosure with a definition list. A setup review is one card:
+  the change count, a step list with small state tiles, a block per file
+  with a path header, +N and tinted lines with a left bar, and a footer whose
+  one filled action is **Connect**. Settings is section cards of rows (title
+  and a line on the left, the control on the right): the theme as a
+  segmented control, text sizes as `− 14 pt +` steppers, switches for roomier
+  rows, daily update checks and preview builds, terminal palettes as preview
+  swatches with an accent ring, the keyboard as keycap rows. The terminal
+  pane has a header (status dot, agent over its folder in mono, Live and a
+  small Detach) above the grid on its palette's ground; Commands is a panel
+  with an amber `$` prompt. Installation leads with one update row (**Later**
+  as a ghost, the update the one filled action; `UpdateLater` steps it down
+  for that version, window-local), then versions in mono with status words
+  and a stage rail for a plan under review.
+- **Questions and approvals** (`app/view/approvals.rs`). A question card is
+  headed by an amber tile, the question as its title, who asked and when, and
+  the time left as a small ring and words. Structured choices are full-width
+  option rows in one card, the label on the left and its consequence on the
+  right (the consequence is also the option's accessible value), a refusal
+  (Deny, Cancel, Stop) in red; once one is chosen the others go and the
+  chosen row stays filled, with a tick, while the answer is delivered
+  (`shell::State::chosen_answers`, display only). A request to run, change
+  files or reach the network is one framed card: a strip saying who wants
+  to run what and the time left, the command in a darker mono well behind an
+  amber `$` with a copy button, Folder and Reason as detail lines, and a
+  footer that steps down — solid Allow, outline Review changes (file
+  requests), plain-word Deny. **Needs you** is one card headed by an amber
+  dot, the words and a count chip, its rows the agent, the ask on one line,
+  the ring and **Answer** as an outline, with **Show N more** as a ghost.
 - **Meters.** A lease row carries a thin bar of the time left on it; it turns
-  amber under one fifth. A question card carries the time left to answer it,
+  amber under one fifth. A question carries the time left to answer it as a
+  small ring drawn once per change of fraction (cached like the glyphs),
   red under one fifth. Session rows say when they started. Panels that hold a
   series (Activity) start with a pane header: what the pane holds on the left,
   one quiet fact on the right.
@@ -160,7 +288,11 @@ system, which is drawn from the mark:
 - **Scroll anchors.** Question cards, transcript lines and channel cards carry
   container ids `notification-question-<id>`, `notification-message-<id>` and
   `notification-channel-<id>`; `controls::reveal(id)` scrolls one into view
-  without moving keyboard focus, for notification routing.
+  without moving keyboard focus, for notification routing and **Answer**. The
+  message histories are anchored to their end (their scrollables' ids start
+  `history-`): Iced reports their position from the top but takes a scroll
+  offset from the end, so reveal converts it, rather than landing on the
+  mirror-image place it used to.
   Direct questions retained in Inbox after leaving the pending list use a
   160-character first-line preview and explicit Show/Hide question controls.
   Their full text remains intact. Notification routing expands its target before
@@ -194,10 +326,20 @@ system, which is drawn from the mark:
   own scroll, where `Fill` has nothing to fill; `scripts/iced_workflow_smoke.py`
   asserts that reading a conversation acknowledges its rows and clears its
   unread count.
-- **Layout.** A rail (236 points to begin with, 204 when narrow) with the
-  selected entry marked by an accent bar, then a workspace that leads with
-  the project name, its path and the project's one primary action, then the
-  section tabs over a hairline. The rail and the workspace, and on the
+- **Layout.** A navy rail (236 points to begin with, 204 when narrow) whose
+  selected entry is a neutral pill, counts quiet chips (amber when something
+  waits on the person), then a workspace that leads with one toolbar line:
+  the project's mark, its name over its path in mono, then **Pause…** as a
+  ghost, **Open terminal** as an outline and the one filled action, the
+  **Launch agent…** split button whose chevron lists the installed tools
+  (`launch-menu`, `launch-with-<tool>`). Then the section tabs (glyph and
+  label, a 2-point accent bar under the selected one on the tabs' hairline).
+  Typing a pause reason is its own tinted row under the header; while paused
+  the header says **Paused · reason** in amber beside **Resume**. **Launch
+  agent…** opens a dialog over a flat scrim (no blur): each installed tool a
+  row with its binary and a radio, then the name and arguments, the idle
+  delivery switch for Claude and Codex, the exact command in a mono well,
+  and Cancel and Launch at the foot. Pressing the scrim closes it. The rail and the workspace, and on the
   Messages screen the sidebar, the conversation and the thread, are
   `pane_grid` panes with a draggable divider between each (`app/panes.rs`):
   the widths are kept in logical pixels, not shares, so a window resize
@@ -213,11 +355,24 @@ system, which is drawn from the mark:
   grids number their splits separately, so a resize event carries which grid
   it came from. The thread column is split off and closed with the thread.
   The dividers are 8 points wide, drawn as a 2-point accent line while
-  hovered or dragged. A narrow window keeps the fixed rail and the one
-  column on view. Lists are rows inside a panel; prose sits in cards; the terminal
+  hovered or dragged; at rest the rail meets the page with its own navy edge
+  (a hairline in dark, where the tones are close). Scrollbars are quiet: no
+  track, a thin scroller in a wash of the ink. A narrow window keeps the
+  fixed rail and the one column on view. Lists are rows inside a panel; prose sits in cards; the terminal
   and command output sit in a bezel of the chosen terminal palette's ground.
-  Filters sit left and search right on one row. A footer bar says the daemon
-  connection and the version once, so no page repeats them.
+  Filters sit left and search right on one row. A navy status bar says the
+  daemon connection once, as a dot and a word (**Connected — background
+  service**), with the version in mono at the right, so no page repeats them.
+  The agents list is one card of rows separated by rules: the session's
+  mark, its name over its tool and branch, its status as a dot and a word,
+  how long (coarse: *now*, *3m*, *1h 12m*), and an action only where there
+  is one (**Reconnect here**). An empty list shows three faint static rows in
+  the shape of what will fill it; a search that finds nothing says what it
+  looked for and offers **Clear search** (`session-search-clear`). A
+  session's panel has one filled action — **Answer** when it asks something,
+  otherwise its terminal — Details as a definition list, and Stop at the
+  foot: the first press turns that slot solid red, **Confirm stop**, with a
+  square **Keep running** (`stop-session-cancel`) beside it.
 - **Say each fact once.** Counts live in the sidebar (live agents per project,
   open questions on Inbox) and in the filter chips; the header does not repeat
   them. Messages in Channels and Inbox are transcript lines (when · who · what)
@@ -306,7 +461,8 @@ database remains a manual step.
 
 Send receipts carry bounded recipient-readiness metadata into the draft for the
 original session, channel, conversation or thread. The default presentation is
-one attention line with **Delivery details**; expanded details scroll within a
+one status line under the composer with a quiet **Details** link (spoken
+*Delivery details*); expanded details scroll within a
 180-point area and show named recipients plus explicit open/copy controls. The
 snapshot is not persisted and never changes message acknowledgement, provider
 consent or queue order. Expanded session/tool details compute current guidance
@@ -319,7 +475,8 @@ implementation and acceptance work.
 
 All action buttons participate in Tab/Shift-Tab traversal and activate with
 Enter/Space. Repeated key events do not repeat an activation. Escape closes
-forms/details; Command/Ctrl+1–4 switch primary sections. F6 leaves terminal input;
+forms/details; Command/Ctrl+1–4 switch primary sections and Command/Ctrl+K opens
+Jump to…. F6 leaves terminal input;
 Control+] detaches. Button focus follows stable identity when session rows move.
 The focus ring follows the input modality: a click focuses a control without
 it (the pointer knows where it clicked) and it stays off that control until a
