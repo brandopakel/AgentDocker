@@ -4,7 +4,8 @@
 Uses a fresh private profile, a loopback model and an authenticated dedicated
 app-server. Without --binary-dir, no AgentDocker binding is exercised. The
 optional receiver trial manually binds exact generations after an explicit
-fixture user turn and tests shared-server delivery/replacement; automatic
+fixture user turn and tests shared-server delivery/replacement and original
+terminal MCP identity; automatic
 bootstrap and zero-prompt delivery remain unaccepted. No real account, physical
 input or production configuration is exercised. The optional approval
 probe uses one private print command and a synthetic native Return. A pass is capability evidence,
@@ -137,6 +138,9 @@ def main():
                         v.get('type') == 'function_call_output' and approval_marker in str(v.get('output', ''))
                         for v in body.get('input', []) if isinstance(v, dict)),
                     'title_request': 'Generate a concise, single-line task title' in encoded})
+                for item in body.get('input', []):
+                    if item.get('type') == 'function_call_output' and item.get('call_id') == 'call_private_identity':
+                        report['mcp_output'] = item
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream')
                 self.end_headers()
@@ -144,6 +148,10 @@ def main():
                         not report['requests'][-1]['title_request']):
                     approval_called = True
                     events = approval_events(len(report['requests']), body)
+                elif (receiver is not None and not report.get('mcp_requested') and queue_text in encoded
+                      and not report['requests'][-1]['title_request']):
+                    report['mcp_requested'] = True
+                    events = receiver.mcp_events(len(report['requests']), body)
                 else:
                     events = response_events(len(report['requests']))
                 for event in events:
@@ -184,12 +192,19 @@ def main():
                       'request_max_retries = 0\nstream_max_retries = 0\nsupports_websockets = false\n'
                       '[projects.' + json.dumps(str(repo)) + ']\ntrust_level = "trusted"\n'
                       '[tui]\nscreen_reader_detection_done = true\nshow_tooltips = false\n')
-            (profile / 'config.toml').write_text(config, encoding='utf-8')
             env = {k: v for k, v in os.environ.items() if k.upper() in {
                 'PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP',
                 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)'}}
             env.update(CODEX_HOME=str(profile), AGENTDOCKER_FIXTURE_KEY='fixture-only',
                        TERM='xterm-256color', AD_PRIVATE_WS_TOKEN=token)
+            if args.binary_dir is not None:
+                from windows_remote_receiver_fixture import Receiver
+                helper = Path(__file__).with_name('windows_remote_receiver_fixture.py')
+                report['receiver_helper_sha256'] = hashlib.sha256(helper.read_bytes()).hexdigest()
+                receiver = Receiver(args.binary_dir, root, repo, profile, out, env, report)
+                receiver.start_daemon()
+                config += receiver.mcp_config()
+            (profile / 'config.toml').write_text(config, encoding='utf-8')
             if args.approval:
                 (profile / 'rules').mkdir()
                 rule = profile / 'rules' / 'private-approval.rules'
@@ -341,10 +356,6 @@ def main():
                 raise AssertionError('pinned provider unexpectedly accepted unmaterialized turn history')
 
             if args.binary_dir is not None:
-                from windows_remote_receiver_fixture import Receiver
-                helper = Path(__file__).with_name('windows_remote_receiver_fixture.py')
-                report['receiver_helper_sha256'] = hashlib.sha256(helper.read_bytes()).hexdigest()
-                receiver = Receiver(args.binary_dir, root, repo, profile, out, env, report)
                 receiver.prepare(codex, tui, provider, thread, port, token_file)
                 first_message = receiver.send(queue_text)
                 receiver.refuse_empty_history()
@@ -432,6 +443,8 @@ def main():
                 report['receiver_first_receipt'] = receiver.received(first_message)
                 step('AgentDocker records the exact original queued-message receipt',
                      report['receiver_first_receipt']['receipt']['thread'] == thread)
+                receiver.check_mcp_identity(report.get('mcp_output'), tui, provider)
+                step('dedicated MCP call identifies the original terminal without a helper registration', True)
             tui.write('\r')
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline and not any(v['draft_nonce_present'] for v in report['requests']):

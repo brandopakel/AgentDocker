@@ -12,7 +12,7 @@ from pathlib import Path
 import subprocess
 import uuid
 
-from windows_native_codex_smoke import fixture_controller, read_snapshot, wait
+from windows_native_codex_smoke import fixture_controller, read_snapshot, response_events, wait
 from windows_smoke_pipe import WindowsSmokePipe
 
 
@@ -48,6 +48,23 @@ def process_birth(pid):
                 + f'.{fractions * 100:09d}Z')
     finally:
         api.CloseHandle(handle)
+
+
+def decoded_values(value):
+    yield value
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from decoded_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from decoded_values(child)
+    elif isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return
+        if not isinstance(parsed, str):
+            yield from decoded_values(parsed)
 
 
 class Receiver:
@@ -87,13 +104,54 @@ class Receiver:
         finally:
             channel.close()
 
-    def prepare(self, codex, tui, server, thread, port, token_file):
+    def start_daemon(self):
         self.daemon = self.spawn([self.daemon_exe, '--socket', self.socket], 'receiver-daemon.log')
         def ready():
             assert self.daemon.poll() is None, 'private daemon exited'
             try: return self.rpc({'op': 'ping'})
             except (OSError, TimeoutError): return None
         wait(ready, 15)
+
+    def mcp_config(self):
+        return ('[mcp_servers.agentdocker]\ncommand = ' + json.dumps(str(self.cli))
+                + '\nargs = ["mcp", "--runtime", "codex"]\nrequired = true\n'
+                '[mcp_servers.agentdocker.env]\nAGENTDOCKER_HOME = ' + json.dumps(str(self.home))
+                + '\nAGENTDOCKER_SOCKET = ' + json.dumps(self.socket)
+                + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n')
+
+    def mcp_events(self, number, body):
+        matches = [(tool['name'], child) for tool in body.get('tools', [])
+                   if tool.get('type') == 'namespace' for child in tool.get('tools', [])
+                   if child.get('name') == 'whoami']
+        assert len(matches) == 1 and matches[0][0] == 'mcp__agentdocker'
+        self.report['mcp_tool_schema'] = matches[0][1]
+        item = {'type': 'function_call', 'id': 'fc_private_identity',
+                'call_id': 'call_private_identity', 'namespace': matches[0][0],
+                'name': 'whoami', 'arguments': json.dumps({'verbose': True}), 'status': 'completed'}
+        response = response_events(number)[-1]['response']
+        response['output'] = [item]
+        return [
+            {'type': 'response.created', 'response': dict(response, status='in_progress', output=[])},
+            {'type': 'response.output_item.added', 'output_index': 0,
+             'item': dict(item, arguments='', status='in_progress')},
+            {'type': 'response.function_call_arguments.delta', 'item_id': item['id'],
+             'output_index': 0, 'delta': item['arguments']},
+            {'type': 'response.function_call_arguments.done', 'item_id': item['id'],
+             'output_index': 0, 'arguments': item['arguments']},
+            {'type': 'response.output_item.done', 'output_index': 0, 'item': item},
+            {'type': 'response.completed', 'response': response}]
+
+    def check_mcp_identity(self, output, tui, server):
+        identified = [v for v in decoded_values(output) if isinstance(v, dict)
+                      and v.get('id') == self.agent and v.get('pid') == tui.pid and v.get('input_binding')]
+        assert len(identified) == 1, 'MCP did not resolve to the original bound terminal'
+        assert identified[0]['input_binding']['provider'] == self.report['receiver_generation']
+        agents = self.rpc({'op': 'list', 'all': True})['agents']
+        assert not any(a.get('pid') == server.pid and a.get('spec', {}).get('runtime') == 'codex'
+                       for a in agents), 'MCP registered the app-server as a conversation'
+
+    def prepare(self, codex, tui, server, thread, port, token_file):
+        assert self.daemon is not None and self.daemon.poll() is None
         agent = self.rpc({'op': 'register', 'spec': {'name': 'native-remote-fixture', 'runtime': 'codex',
                          'workdir': str(self.repo), 'labels': {'session_id': thread}}, 'pid': tui.pid})['agent']
         self.agent = agent['id']

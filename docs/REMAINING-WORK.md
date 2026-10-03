@@ -48,8 +48,12 @@ startup, hook/MCP bootstrap, safe initial-history admission, real accounts and
 physical input remain open. Dedicated-server MCP identity now requires the
 accepted receiver ledger, pinned server record, exact live host generation/image
 and root-thread metadata before attributing calls to the original TUI. Cached
-detached-server profile checks remain. Targeted and native acceptance of this
-identity follow-up are pending.
+detached-server profile checks remain. Nine targeted checks and the full local gate on `c876ef48` passed (1,509 Rust
+and 169 Python tests run, one Python skipped). An actual Codex 0.160 Mac ARM64
+loopback trial passed 11 checks, including a native MCP `whoami` call attributed
+to the exact original TUI, no extra helper identity, two queued receipts,
+preserved draft and receiver replacement with unchanged config and clean
+teardown. Windows MCP identity acceptance and independent review remain.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its
