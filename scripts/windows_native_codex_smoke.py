@@ -267,12 +267,13 @@ def main():
                   + '\nAGENTDOCKER_SOCKET = ' + json.dumps(sock)
                   + '\nAGENTDOCKER_NO_AUTOSTART = "1"\n')
         if report["provider_version"] == "codex-cli 0.160.0":
-            # Observed provider-owned first-launch bookkeeping, also written in
-            # the zero-turn control before any native receiver exists. Seed it
-            # in this nonphysical fixture; preserve strict byte equality during
-            # queue/draft/recovery acceptance. No user configuration is touched.
+            # Codex's startup tooltip increments a persisted introduction counter
+            # on each launch (rust-v0.160.0 tui/src/app/startup_prompts.rs).
+            # Disable that unrelated tooltip in this nonphysical fixture and
+            # seed screen-reader detection; keep strict config byte equality.
+            # No user configuration or physical accessibility claim is involved.
             config += ('\n[tui]\nscreen_reader_detection_done = true\n'
-                       '\n[tui.model_availability_nux]\n"gpt-6.1-sol" = 1\n')
+                       'show_tooltips = false\n')
         (profile / "config.toml").write_bytes(config.encode("utf-8"))
         hook = root / "hook.py"
         hook.write_text(

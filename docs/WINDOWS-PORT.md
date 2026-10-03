@@ -647,3 +647,11 @@ established controls: Codex normalized TOML line endings and persisted only
 The hook file was identical. The fixture now starts with LF and those observed
 0.160.0 TUI defaults, retaining its strict final byte assertion. This does not
 establish physical screen-reader acceptance or fix pre-first-turn registration.
+The `4c1c2777` trial retained all five established-session receipts, draft and
+restart checks, but failed the same strict profile assertion: the introduction
+counter advanced from one to two. Pinned 0.160.0 source confirms it increments
+on startup until four displays, unless TUI tooltips are disabled. The isolated
+fixture now disables that tooltip; it still requires byte-identical configuration
+and hooks after delivery. Corrected acceptance remains pending. The provider's
+MCP initialization supplies client capabilities/version, without a root thread
+identity, so it does not provide an alternate zero-prompt binding by itself.
