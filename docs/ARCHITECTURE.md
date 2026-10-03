@@ -815,6 +815,15 @@ and rechecks content identity. Pins outlive deleted versions to prevent inode
 replacement races. Active, rollback, legacy unpinned and running versions remain;
 an installed daemon or connector user service protects retained binaries and
 blocks uninstall, including stopped services that hold no running-process pin.
+Windows desktop activation under implementation uses a private JSON snapshot in
+`AgentDocker/desktop`, pointing only to a hash-named immutable version. Launcher
+contract 2 denotes receipt-checked Windows bootstrap forwarding and lifetime
+pinning; contract 1 continues to denote the macOS redirect. Windows snapshot
+publication uses a same-directory rename with POSIX replacement semantics so
+open readers retain their old complete record. It has no delete/copy fallback.
+The ordinary strict private-file APIs remain unchanged; only read-only atomic
+snapshot readers accept an opened file whose link count became zero.
+
 The macOS Applications entry is an intact signed copy whose three entry points redirect to the selected immutable release before dispatch. External launcher ownership and exact retained payload hashes permit replacement without modifying signed metadata. An atomic app exchange follows activation; a failed exchange restores the previous activation. App publication and pointer selection are separate filesystem operations, and a surviving older copy follows the selected release. Package metadata records `launcher_redirect: 1`. Selecting an older payload retains a compatible launcher copy and protects its backing release from cleanup; a fresh legacy-only install is refused before activation. The visible copy may therefore have newer metadata than the selected release after rollback; installation status reports the selected version. These are local host operations, not daemon protocol mutations. They preserve
 state/provider configuration and do not replace a running daemon. See
 [LOCAL-BUILD.md](LOCAL-BUILD.md) for the commands and [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md) for the limitations.
@@ -1748,6 +1757,43 @@ birth, runtime and physical checkout verification. The existing
 `AgentSessionBound` transaction preserves its ID, owner and queue. A child hook
 or conflicting session cannot bind or recover the root channel receipt. Native
 Windows ancestry uses the host process table rather than Unix `ps`.
+
+On Windows, the per-user desktop store is `%LOCALAPPDATA%/AgentDocker/desktop`
+(or below an explicit trial prefix). Private `activation.json` atomically records
+the current and previous immutable payloads. Receipt-verified executable copies
+in `bin` select and lifetime-pin the current release without symlinks; their
+process wrapper preserves native provider parent identity only after kernel-image,
+receipt and process-birth checks. Provider/service registrations keep those stable
+paths. Install and rollback require native launcher contract 2, lifetime pins,
+explicit preview consent and compatible stored state. Update archives admit only
+the exact seven-file Windows ZIP layout, bounded expansion and verified feed
+hash/source/schema. Windows feeds remain preview-only; activation leaves existing
+processes running. Maintenance holds the install lock and exclusive per-version
+pins before retiring verified unused payloads. Stopped service actions retain
+explicit version references; services using stable launchers do not prevent
+pruning unrelated versions. Uninstall refuses service references, atomically
+deactivates and moves only receipt-verified bootstrap names into private
+`retired-launchers/<uuid>` directories using handle-verified Windows rename.
+Loaded images finish there; ordinary deletion removes them once closed during
+the next changed activation, prune or uninstall. Each retirement retains the
+original hash receipt; unexpected/changed contents are preserved. A new retirement
+refuses before deactivation if it would exceed eight directories or 256 MiB.
+Direct POSIX deletion of the loaded image failed on native Windows and is not
+used. Partial cleanup retains an
+inactive record and can be resumed without removing provider settings or pinned
+releases. Native acceptance and remaining lifecycle work are tracked in
+[the Windows port](WINDOWS-PORT.md).
+
+Windows preview publication emits `updates-preview-windows.json` only after the
+exact archive passes native installation, maintenance, loaded-launcher removal
+and installed Task Scheduler lifecycle checks, with source/binary hashes and
+clean fixture cleanup verified. Its fixed `channel-preview-windows` release has
+an independent ownership marker and monotonic promotion record; a failed upload
+can be repaired only with the recorded bytes/version. Older releases without a
+Windows installer feed leave this channel unchanged. The four-target Mac/Linux
+feed remains unchanged for older client compatibility; no unsigned Windows
+stable feed is published. Default Windows checks use the separate preview feed
+and reserve `updates-windows.json` for a future stable distribution.
 
 Managed Codex bridges bind their first accepted provider thread through the
 existing `register`/`AgentSessionBound` transaction after turn acceptance.

@@ -144,7 +144,7 @@ def validate_inputs(args):
         if type(pin) is not int or pin not in (0, 1):
             raise ValueError("invalid desktop lifetime pin contract")
         redirect = manifest.get("launcher_redirect", 0)
-        if type(redirect) is not int or redirect not in (0, 1):
+        if type(redirect) is not int or redirect not in ((0, 1, 2) if "windows" in args.target else (0, 1)):
             raise ValueError("invalid desktop launcher redirect contract")
         if args.identity and args.identity != "-" and manifest.get("source_dirty"):
             raise ValueError("distribution signing requires a clean source build")
@@ -343,7 +343,7 @@ def linux(args, stage, info):
 
 
 def windows(args, stage, info):
-    # A portable preview: no system configuration, updater or service implied.
+    # The archive stays portable; explicit CLI commands install per-user state.
     info["signing"] = "unsigned"
     info["distribution"] = "portable-preview"
     app = stage / "AgentDocker"
@@ -359,10 +359,21 @@ def windows(args, stage, info):
         "Extract the entire ZIP into a folder you own before opening agentdocker-ui.exe.\n"
         "Keep agentdocker.exe and agentd.exe beside it. No Rust or Python is needed.\n"
         "The command line is .\\agentdocker.exe from PowerShell in that folder.\n\n"
-        "This preview has no installer or automatic updater.\n"
+        "To install for your Windows account, run:\n"
+        "  .\\agentdocker.exe desktop install --from . --local-preview\n"
+        "Launch the installed app from %LOCALAPPDATA%\\AgentDocker\\desktop\\bin.\n"
+        "Using agentdocker.exe in that installed bin folder:\n"
+        "  desktop update --check           Check the separate Windows preview feed.\n"
+        "  desktop update --local-preview   Verify and preview the proposed update.\n"
+        "  desktop update --local-preview --apply   Activate after explicit consent.\n"
+        "  desktop rollback --local-preview         Restore the previous release.\n"
+        "  desktop prune --preview                  Inspect retained old builds.\n"
+        "  desktop uninstall --preview              Inspect per-user removal.\n"
+        "  desktop uninstall                        Remove launchers, keeping state.\n"
+        "Running sessions retain their version; activation applies on next launch.\n"
         "Optional per-user Task Scheduler startup is implemented; login/reboot and\n"
         "managed-provider survival acceptance remain incomplete.\n"
-        "This ZIP is not included in the desktop update feeds.\n"
+        "Windows has a separate preview feed; stable and Mac/Linux feeds are unchanged.\n"
         "Before removing or replacing this folder, finish managed work and quit the app.\n"
         "If you enabled startup with daemon install, run .\\agentdocker.exe daemon uninstall,\n"
         "and run .\\agentdocker.exe daemon stop to stop its sessions and daemon.\n"

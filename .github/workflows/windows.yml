@@ -120,4 +120,5 @@ jobs:
             artifacts/windows-desktop-package/package-acceptance.json
             artifacts/windows-desktop-package/smoke/
             artifacts/windows-desktop-package/service/
+            artifacts/windows-desktop-package/installation/
           if-no-files-found: warn

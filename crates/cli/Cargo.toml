@@ -41,7 +41,9 @@ tempfile.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
+zip.workspace = true
 filetime.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

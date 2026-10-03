@@ -187,8 +187,9 @@ def collect(directory, output, tag):
 def windows_preview(native_manifest, accepted, output, tag, source):
     """Publishable assets from the exact portable bytes accepted on Windows.
 
-    This does not rebuild or run a package, and never adds Windows to the
-    installer/update feed. The native trial must have finished first.
+    The native installation and installed-service trials must finish first.
+    Windows gets a separate preview feed so existing Mac/Linux readers keep
+    their supported four-target schema.
     """
     if not preview(tag):
         raise ValueError("unsigned Windows portable assets require a prerelease tag")
@@ -225,6 +226,25 @@ def windows_preview(native_manifest, accepted, output, tag, source):
             or report.get("desktop") != desktop or desktop.get("result") != "passed"
             or native.get("result") != "passed" or native.get("connected") is not True):
         raise ValueError("Windows archive acceptance is missing, failed or inconsistent")
+    installed = json.loads((accepted / "installation/result.json").read_text(encoding="utf-8"))
+    service = json.loads((accepted / "installation/service/result.json").read_text(encoding="utf-8"))
+    install_steps, service_steps = installed.get("steps"), service.get("steps")
+    if (info.get("installation_lock") != 1 or info.get("launcher_redirect") != 2
+            or installed.get("result") != "passed" or installed.get("source_commit") != source
+            or installed.get("binary_sha256") != info["binary_sha256"]
+            or installed.get("service_requested") is not True or installed.get("scratch_removed") is not True
+            or not isinstance(install_steps, list) or not install_steps
+            or any(step.get("passed") is not True for step in install_steps)
+            or report.get("installation") != {"result": "passed", "steps": len(install_steps)}
+            or service.get("result") != "passed" or service.get("installed_launchers") is not True
+            or service.get("cleanup_errors") != []
+            or service.get("scratch_removed") is not True
+            or not isinstance(service_steps, list) or not service_steps
+            or any(step.get("ok") is not True for step in service_steps)
+            or any(service.get("binary_sha256", {}).get(name) != info["binary_sha256"][name]
+                   for name in ("agentdocker.exe", "agentd.exe"))
+            or installed.get("service") != {"result": "passed", "steps": len(service_steps)}):
+        raise ValueError("Windows installed lifecycle acceptance is missing, failed or inconsistent")
     packager = module("package")
     screenshot = accepted / "smoke/desktop/window.png"
     if packager.sha256(screenshot) != desktop.get("screenshot_sha256"):
@@ -254,6 +274,20 @@ def windows_preview(native_manifest, accepted, output, tag, source):
         (assets / (name + ".sha256")).write_text(info["artifacts"][name] + "  " + name + "\n")
         (assets / "windows-preview-manifest.json").write_text(json.dumps(info, indent=2) + "\n")
         (assets / "windows-preview-acceptance.json").write_text(json.dumps(report, indent=2) + "\n")
+        (assets / "windows-installation-acceptance.json").write_text(json.dumps(installed, indent=2) + "\n")
+        (assets / "windows-installed-service-acceptance.json").write_text(json.dumps(service, indent=2) + "\n")
+        # Keep the four-target feed byte/schema contract unchanged. Windows
+        # clients opt into their own explicit-activation, preview-only track.
+        feed = {"format": 1, "product": "agentdocker", "channel": "preview",
+                "policy": {"check_interval_hours": 24, "download": "manual", "activation": "explicit",
+                           "daemon_replacement": "deferred_until_sessions_finish"},
+                "releases": [{"target": WINDOWS_TARGET, "version": requested,
+                              "source_commit": source, "state_schema": info["state_schema"],
+                              "signing": "unsigned-preview", "notarized": False,
+                              "archive": {"name": name, "sha256": info["artifacts"][name],
+                                          "bytes": archive.stat().st_size,
+                                          "url": f"https://github.com/brandopakel/AgentDocker/releases/download/{tag}/{name}"}}]}
+        (assets / "updates-preview-windows.json").write_text(json.dumps(feed, indent=2) + "\n")
         shutil.copyfile(app / "README.txt", assets / "WINDOWS-PREVIEW.txt")
         assets.rename(output)
     return info
@@ -265,7 +299,8 @@ def preview_notes(tag, notes):
         return notes
     return (marker + "\nWindows x64 is an **unsigned portable preview**. Extract the whole ZIP "
             "and open `AgentDocker/agentdocker-ui.exe`; keep its sibling executables together. "
-            "It has no Windows installer or automatic updater. Optional per-user Task Scheduler "
+            "The CLI provides per-user install, explicit preview update, rollback and uninstall; "
+            "see `WINDOWS-PREVIEW.txt` for commands. Optional per-user Task Scheduler "
             "startup is implemented; login/reboot and managed-provider survival acceptance remain incomplete. "
             "Before replacing its folder, finish managed work and quit the app. If you enabled "
             "startup with `daemon install`, run `.\\agentdocker.exe daemon uninstall`; "
