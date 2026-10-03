@@ -13,6 +13,11 @@ review, bounded terminal shutdown and retained provider sign-in failures.
 Hosted downloads and Mac/Linux update/rollback/explicit-install checks passed;
 physical, fresh-account, sustained and stable acceptance remain below.
 
+The next source candidate is `0.2.0-beta.5`; it is not published. The Windows
+installer merged through PR #279 after its final local/CI checks and review.
+Complete connector review, final candidate validation and the protected-tag
+workflow before hosted Windows and Mac/Linux update/rollback acceptance.
+
 Native Windows source implements installation, local preview-feed update/rollback,
 maintenance and Task Scheduler service interlocks. Activation succeeds even when
 extraction cleanup fails, with the retained path and error reported in the CLI
@@ -21,8 +26,8 @@ and app. Native installer and both service lifecycles passed on integrated
 `97b25b83` passed the full local gate: 1,493 Rust tests and 169 Python tests run
 (one Python test skipped), with zero retries. Local and CI full-suite evidence
 and revision-by-revision trials are retained in
-[the verification index](verification/INDEX.md). Final CI/follow-up review, hosted
-Windows publication, Start menu/PATH, physical and actual-provider acceptance,
+[the verification index](verification/INDEX.md). PR #279 merged as `05cab841`
+after final CI and the addressed substantive review. Hosted Windows publication, Start menu/PATH, physical and actual-provider acceptance,
 and login/reboot remain. These trials do not update the published beta.4 package
 or prove a hosted Windows upgrade. See [the Windows port](WINDOWS-PORT.md) for
 the exact scope.
