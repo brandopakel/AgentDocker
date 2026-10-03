@@ -17,7 +17,11 @@ Native Windows installation and local preview-feed update/rollback passed the
 `e190d919` installed lifecycle, including maintenance and Task Scheduler service
 interlocks. Review corrections for extraction cleanup, idempotent retention,
 retirement isolation and canonical daemon selection passed the exact-head
-`4cf51767` native trial, including both service lifecycles and extra startup samples. Integration/review, hosted Windows publication, Start menu/PATH,
+`4cf51767` native trial, including both service lifecycles and extra startup samples;
+integrated `22396f38` repeated those checks and both full gates. A subsequent
+review correction reports extraction cleanup failure separately from successful
+activation, including the retained path in the CLI and app; its native held-handle
+regression and full gates remain pending. Integration/review, hosted Windows publication, Start menu/PATH,
 physical and actual-provider acceptance, and login/reboot remain. These trials
 do not update the published beta.4 package or prove a hosted Windows upgrade. See
 [the Windows port](WINDOWS-PORT.md) for the exact scope.

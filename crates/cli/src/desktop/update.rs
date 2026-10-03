@@ -12,8 +12,6 @@
 //!
 //! Nothing here restarts a daemon or stops an agent. The report says whether
 //! agents are live so the person can decide when to restart.
-// The installer, updates and retained versions run on macOS and Linux;
-// on Windows only the refusal in `run` is live, and the rest waits its slice.
 #![cfg_attr(windows, allow(dead_code))]
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -831,11 +829,14 @@ fn run_with_home(
     // perform copies into the immutable version store. Dispose of this owned
     // extraction after preview/apply, including errors; retain only the archive.
     #[cfg(windows)]
-    let cleanup =
-        std::fs::remove_dir_all(&extracted).context("remove temporary Windows update payload");
+    let cleanup = std::fs::remove_dir_all(&extracted);
     let mut report = performed?;
     #[cfg(windows)]
-    cleanup?;
+    if let Err(error) = cleanup {
+        // Activation may already be published. A scratch-file sharing violation
+        // must not turn a completed update into a false installation failure.
+        report["extraction_cleanup"] = json!({"path": extracted, "error": error.to_string()});
+    }
     report["update"] = update;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())

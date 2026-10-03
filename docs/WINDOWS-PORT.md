@@ -574,14 +574,9 @@ preserve inactive releases during idempotent installation, and compare canonical
 Windows paths when deciding whether the daemon activation changed. Retirement
 maintenance skips unrecognized directories while collecting verified siblings;
 uninstall still refuses before deactivation if it cannot account for a preserved
-directory, identifying that path. Corrected native and full-gate acceptance are
-pending; the earlier `e190d919` pass does not establish these changed paths.
-Native `5654a107` passed the new extraction/retention/retirement checks and both
-Task Scheduler lifecycles, then its refusal-message assertion compared the
-fixture's `RUNNER~1` path spelling against the correctly canonicalized
-`runneradmin` path in the diagnostic. The fixture now resolves its expected
-path; no product refusal or ownership rule changed. A complete corrected native
-run remains required.
+directory, identifying that path. Native `5654a107` failed only its final
+refusal-message assertion, which compared a fixture `RUNNER~1` path against the
+canonical diagnostic; corrected fixture and integrated acceptance follow below.
 
 Corrected `4cf51767` passed native acceptance: 320 core/host checks, 83 portable
 checks with five extra startup samples per configured ancestry type, 38 installer
@@ -595,3 +590,14 @@ accepted managed Codex accounting. Exact-head run37082197622 passed all 322
 core/host, 83 portable, 38 installer, 11 portable-service and 13 installed-service
 checks with matching source/hash provenance and clean Task Scheduler cleanup.
 Both full Mac/Linux gates passed; final checks and follow-up review remain.
+
+The follow-up correction preserves a completed preview/update report when a
+Windows sharing violation prevents extraction cleanup. The report's
+`extraction_cleanup` field and desktop screen identify the retained path and
+error; successful activation is not reported as a failed install. Cleanup is
+still attempted on a failed operation, whose original error is preserved.
+Each attempt uses its own extraction directory and never reuses a retained one.
+The native installer fixture holds that directory without delete sharing during
+an actual update, checks successful activation and the diagnostic, then closes
+the fixture handle and removes only its own extraction. Acceptance of this new
+correction remains pending; prior passes above cover their recorded sources.

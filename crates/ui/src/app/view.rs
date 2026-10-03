@@ -4793,6 +4793,16 @@ impl App {
                     }
                 }
             }
+            if let Some(cleanup) = report.get("extraction_cleanup") {
+                details = details.push(note(
+                    format!(
+                        "The operation completed, but temporary update files could not be removed: {} ({})",
+                        value(cleanup, "path"),
+                        value(cleanup, "error")
+                    ),
+                    c,
+                ));
+            }
             if report["preview"] == true {
                 details = details.push(primary(
                     "desktop-apply",

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Exercise native installation using the extracted Windows package only."""
 import argparse
+from contextlib import contextmanager
+import ctypes
+from ctypes import wintypes
 import hashlib
 import json
 import msvcrt
@@ -10,9 +13,57 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
+
+
+@contextmanager
+def hold_update_extraction(downloads):
+    """Hold the fixture's new extraction directory without delete sharing."""
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                  wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    invalid = ctypes.c_void_p(-1).value
+    stop = threading.Event()
+    evidence = {}
+
+    def watch():
+        try:
+            while not stop.is_set():
+                for path in downloads.glob('*/payload-*'):
+                    uuid.UUID(path.name.removeprefix('payload-'))
+                    # READ_ATTRIBUTES, SHARE_READ|WRITE, OPEN_EXISTING,
+                    # BACKUP_SEMANTICS: the handle permits copying, not deletion.
+                    handle = kernel.CreateFileW(str(path), 0x80, 3, None, 3, 0x02000000, None)
+                    if handle == invalid:
+                        continue
+                    try:
+                        evidence['path'] = path
+                        if not stop.wait(60):
+                            evidence['error'] = 'extraction hold exceeded fixture deadline'
+                    finally:
+                        if not kernel.CloseHandle(handle):
+                            evidence['error'] = str(ctypes.WinError(ctypes.get_last_error()))
+                    return
+                stop.wait(0.001)
+        except Exception as error:
+            evidence['error'] = repr(error)
+
+    watcher = threading.Thread(target=watch, name='fixture-extraction-hold')
+    watcher.start()
+    try:
+        yield evidence
+    finally:
+        stop.set()
+        watcher.join(timeout=5)
+        if watcher.is_alive():
+            raise AssertionError('fixture extraction watcher did not stop')
 
 
 def main():
@@ -144,13 +195,22 @@ def main():
         with pin_path.open('r+b') as held:
             msvcrt.locking(held.fileno(), msvcrt.LK_NBLCK, 1)
             try:
-                applied = desktop(*update_args, '--apply')
+                with hold_update_extraction(store / 'downloads') as held_extraction:
+                    applied = desktop(*update_args, '--apply')
+                    step('a held extraction does not turn a published update into failure',
+                         'path' in held_extraction and not held_extraction.get('error')
+                         and applied.get('extraction_cleanup', {}).get('error')
+                         and Path(applied['extraction_cleanup']['path']).resolve()
+                         == held_extraction['path'].resolve()
+                         and desktop('status')['installation']['current']['id'] == third)
+                step('extraction hold closes cleanly', not held_extraction.get('error'))
+                shutil.rmtree(held_extraction['path'])
                 step('activation preserves an inactive version whose lock is held',
                      applied['retention']['completed'] and (store / 'versions' / second).is_dir())
             finally:
                 held.seek(0)
                 msvcrt.locking(held.fileno(), msvcrt.LK_UNLCK, 1)
-        step('Windows update apply removes its temporary extracted payload',
+        step('fixture removes only its released extraction after the reported cleanup failure',
              not list((store / 'downloads').glob('*/payload-*')))
         desktop('install', '--from', update_app, '--local-preview', '--expect-current', third)
         step('idempotent active installation preserves retained inactive versions',
