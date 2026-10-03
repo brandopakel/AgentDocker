@@ -75,13 +75,17 @@ pub fn find_tailscale(explicit: Option<&Path>) -> Result<PathBuf> {
         }
         bail!("{} is not a file", path.display());
     }
-    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|path| {
-            std::env::split_paths(&path)
-                .map(|dir| dir.join("tailscale"))
-                .collect()
-        })
+    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
+    let name = if cfg!(windows) {
+        "tailscale.exe"
+    } else {
+        "tailscale"
+    };
+    let mut candidates: Vec<PathBuf> = agentdocker_host::command::find_program(&dirs, name)
+        .into_iter()
+        .collect();
     candidates.extend(
         [
             "/usr/local/bin/tailscale",
@@ -191,13 +195,17 @@ pub fn find_cloudflared(explicit: Option<&Path>) -> Result<PathBuf> {
         }
         bail!("{} is not a file", path.display());
     }
-    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|path| {
-            std::env::split_paths(&path)
-                .map(|dir| dir.join("cloudflared"))
-                .collect()
-        })
+    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
+    let name = if cfg!(windows) {
+        "cloudflared.exe"
+    } else {
+        "cloudflared"
+    };
+    let mut candidates: Vec<PathBuf> = agentdocker_host::command::find_program(&dirs, name)
+        .into_iter()
+        .collect();
     candidates.extend(
         ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
             .iter()

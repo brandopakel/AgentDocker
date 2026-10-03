@@ -8,27 +8,27 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-const RECORD_FORMAT: u32 = 1;
-const RECORD_LIMIT: u64 = 32 * 1024;
+pub(crate) const RECORD_FORMAT: u32 = 1;
+pub(crate) const RECORD_LIMIT: u64 = 32 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Definition {
-    task: String,
-    home: PathBuf,
-    description: String,
-    executable: PathBuf,
-    arguments: String,
+pub(crate) struct Definition {
+    pub(crate) task: String,
+    pub(crate) home: PathBuf,
+    pub(crate) description: String,
+    pub(crate) executable: PathBuf,
+    pub(crate) arguments: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Receipt {
-    format: u32,
-    current: Definition,
+pub(crate) struct Receipt {
+    pub(crate) format: u32,
+    pub(crate) current: Definition,
     // A prepared update accepts either exact definition after interruption.
-    previous: Option<Definition>,
+    pub(crate) previous: Option<Definition>,
 }
 
-fn quoted(value: &str) -> String {
+pub(crate) fn quoted(value: &str) -> String {
     // PowerShell treats typographic single quotes as delimiters too.
     // Double the original scalar so paths retain their exact spelling.
     let mut out = String::with_capacity(value.len() + 2);
@@ -46,7 +46,7 @@ fn quoted(value: &str) -> String {
     out
 }
 
-fn encoded(script: &str) -> String {
+pub(crate) fn encoded(script: &str) -> String {
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
@@ -56,7 +56,7 @@ fn task_name(home: &Path) -> String {
     format!("AgentDocker-{:x}", hash)
 }
 
-fn powershell() -> Result<PathBuf> {
+pub(crate) fn powershell() -> Result<PathBuf> {
     let root = std::env::var_os("SystemRoot").context("Windows SystemRoot is not set")?;
     let executable = PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
     if !executable.is_absolute() || !executable.is_file() {
@@ -65,7 +65,7 @@ fn powershell() -> Result<PathBuf> {
     Ok(executable)
 }
 
-fn matches_definition(definition: &Definition) -> String {
+pub(crate) fn matches_definition(definition: &Definition) -> String {
     format!(
         "($task.Description -ceq {} -and @($task.Actions).Count -eq 1 -and $task.Actions[0].Execute -ieq {} -and $task.Actions[0].Arguments -ceq {})",
         quoted(&definition.description),
@@ -146,21 +146,106 @@ fn write_receipt(layout: &Layout, receipt: &Receipt) -> Result<()> {
 }
 
 fn evaluate(layout: &Layout, script: &str) -> Result<String> {
-    let script = format!(
-        "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();{script}"
+    evaluate_at(&layout.user_home, script)
+}
+
+// Ownership checks can repeat two long task actions and the replacement action.
+// Base64 on the command line expands that beyond CreateProcessW's 32,767 UTF-16
+// unit limit. Keep only this short loader in argv; the bounded script lives in a
+// fresh owner-only temporary file until the entire bounded command has ended.
+fn stage_script(script: &str) -> Result<(tempfile::TempPath, String)> {
+    use std::io::Write;
+    if script.len() > 512 * 1024 {
+        bail!("Windows service operation script exceeds its size bound");
+    }
+    let mut file = tempfile::Builder::new()
+        .prefix("agentdocker-service-")
+        .make_in(
+            std::env::temp_dir(),
+            agentdocker_host::dirs::create_private_file,
+        )?;
+    file.write_all(script.as_bytes())?;
+    // Close the writer before .NET opens its read-only handle (FileShare.Read).
+    // TempPath still removes this private file on success, error or timeout.
+    let path = file.into_temp_path();
+    let loader = encoded(&format!(
+        "$ErrorActionPreference='Stop'; & ([ScriptBlock]::Create([IO.File]::ReadAllText({},[Text.UTF8Encoding]::new($false,$true))))",
+        quoted(&path.to_string_lossy()),
+    ));
+    if loader.len() > 30_000 {
+        bail!("Windows service temporary script path exceeds the command-line bound");
+    }
+    Ok((path, loader))
+}
+
+pub(crate) fn evaluate_at(user_home: &Path, script: &str) -> Result<String> {
+    use std::io::Write;
+    // Opt-in diagnostics survive the bounded command's private capture files.
+    // Cold read-only absence must still create no state home. Diagnostic I/O
+    // never changes whether the actual Scheduler operation is attempted.
+    let trace = (std::env::var_os("AGENTDOCKER_STARTUP_TRACE").as_deref()
+        == Some(std::ffi::OsStr::new("1")))
+    .then(|| {
+        let path = agentdocker_host::dirs::home().join("windows-service-trace.log");
+        let file = agentdocker_host::dirs::private_file(&path, true, true).ok()?;
+        if file.metadata().ok()?.len() > 64 * 1024 {
+            file.set_len(0).ok()?;
+        }
+        drop(file);
+        Some((path, uuid::Uuid::new_v4()))
+    })
+    .flatten();
+    let emit = |stage: &str| {
+        if let Some((path, operation)) = &trace
+            && let Ok(mut file) = agentdocker_host::dirs::private_file(path, false, true)
+        {
+            let _ = writeln!(
+                file,
+                "{operation} {} {stage}",
+                chrono::Utc::now().to_rfc3339()
+            );
+        }
+    };
+    let tracing = trace.as_ref().map_or_else(
+        || "function Write-AgentDockerServiceTrace($stage){};".to_owned(),
+        |(path, operation)| {
+            format!(
+                "function Write-AgentDockerServiceTrace($stage){{try{{[IO.File]::AppendAllText({},('{} '+[DateTime]::UtcNow.ToString('o')+' '+$stage+[Environment]::NewLine))}}catch{{}};$null=0}};",
+                quoted(&path.to_string_lossy()),
+                operation,
+            )
+        },
     );
+    let script = format!(
+        "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();{tracing}Write-AgentDockerServiceTrace 'powershell-start';{script};Write-AgentDockerServiceTrace 'powershell-complete'"
+    );
+    let (_script_file, loader) = stage_script(&script)?;
     let argv = vec![
         powershell()?.to_string_lossy().into_owned(),
         "-NoProfile".into(),
         "-NonInteractive".into(),
         "-EncodedCommand".into(),
-        encoded(&script),
+        loader,
     ];
-    let output = agentdocker_host::command::run(
-        &layout.user_home,
-        &argv,
-        std::time::Duration::from_secs(20),
-    )?;
+    emit("rust-start");
+    let result =
+        agentdocker_host::command::run(user_home, &argv, std::time::Duration::from_secs(20));
+    emit(if result.is_ok() {
+        "rust-return"
+    } else {
+        "rust-error"
+    });
+    let output = result.with_context(|| {
+        trace.as_ref().map_or_else(
+            || "Windows service PowerShell operation failed".to_owned(),
+            |(path, operation)| {
+                format!(
+                    "Windows service PowerShell operation {operation} failed; diagnostics: {}",
+                    path.display()
+                )
+            },
+        )
+    })?;
     if !output.success {
         let detail = output.text.trim();
         bail!(
@@ -176,6 +261,10 @@ fn evaluate(layout: &Layout, script: &str) -> Result<String> {
 }
 
 fn task_context(layout: &Layout, receipt: Option<&Receipt>) -> String {
+    task_context_named(&task_name(&layout.home), receipt)
+}
+
+pub(crate) fn task_context_named(name: &str, receipt: Option<&Receipt>) -> String {
     // A missing -TaskName is a cmdlet error even with SilentlyContinue. If
     // nothing follows the ownership guard, powershell.exe can exit 1 without
     // printing that suppressed error. Enumerate successfully, then select the
@@ -183,8 +272,8 @@ fn task_context(layout: &Layout, receipt: Option<&Receipt>) -> String {
     // failures remain terminating errors, never
     // permission to replace a task we could not inspect.
     format!(
-        "$taskPath='\\';$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$found=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {{$_.TaskPath -ieq $taskPath -and $_.TaskName -ieq {}}}); if($found.Count -gt 1){{throw 'The Windows service task lookup was ambiguous; no task was changed.'}}; $task=$null; if($found.Count -eq 1){{$task=$found[0]}};{};",
-        quoted(&task_name(&layout.home)),
+        "$taskPath='\\';$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;Write-AgentDockerServiceTrace 'task-lookup-start';$found=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {{$_.TaskPath -ieq $taskPath -and $_.TaskName -ieq {}}});Write-AgentDockerServiceTrace 'task-lookup-complete'; if($found.Count -gt 1){{throw 'The Windows service task lookup was ambiguous; no task was changed.'}}; $task=$null; if($found.Count -eq 1){{$task=$found[0]}};{};Write-AgentDockerServiceTrace 'ownership-complete';",
+        quoted(name),
         ownership_guard(receipt),
     )
 }
@@ -240,11 +329,46 @@ fn install_script(layout: &Layout, receipt: &Receipt) -> String {
 }
 
 fn stop_task_script(layout: &Layout, receipt: Option<&Receipt>) -> String {
-    let task = quoted(&task_name(&layout.home));
+    stop_task_named(&task_name(&layout.home), receipt)
+}
+
+pub(crate) fn stop_task_named(name: &str, receipt: Option<&Receipt>) -> String {
+    let task = quoted(name);
     format!(
         "{} if($null -ne $task){{Stop-ScheduledTask -TaskPath $taskPath -TaskName {task}; $until=[DateTime]::UtcNow.AddSeconds(10); do{{$task=Get-ScheduledTask -TaskPath $taskPath -TaskName {task}; if($task.State.ToString() -ne 'Running'){{break}}; Start-Sleep -Milliseconds 100}}while([DateTime]::UtcNow -lt $until); if($task.State.ToString() -eq 'Running'){{throw 'The owned task did not stop within 10 seconds.'}}}}",
-        task_context(layout, receipt),
+        task_context_named(name, receipt),
     )
+}
+
+/// Connector login tasks must start the daemon through its own verified task,
+/// so stopping a connector never retires a daemon inherited in its task tree.
+pub(crate) fn connector_dependency(home: &Path, user_home: &Path, start: bool) -> Result<()> {
+    let layout = Layout {
+        home: home.to_owned(),
+        user_home: user_home.to_owned(),
+        agentd: PathBuf::new(),
+        socket: None,
+        uid: 0,
+    };
+    let receipt = read_receipt(&layout)?.context(
+        "Windows connector startup requires the daemon login service; run `agentdocker daemon install` first",
+    )?;
+    let action = if start {
+        format!(
+            "Start-ScheduledTask -TaskPath $taskPath -TaskName {}",
+            quoted(&receipt.current.task)
+        )
+    } else {
+        String::new()
+    };
+    evaluate(
+        &layout,
+        &format!(
+            "{} if($null -eq $task){{throw 'The owned daemon login task is missing; run agentdocker daemon install first.'}}; {action}",
+            task_context(&layout, Some(&receipt))
+        ),
+    )?;
+    Ok(())
 }
 
 /// Only exact owned definitions may be started, stopped or removed. The
@@ -575,6 +699,20 @@ mod tests {
         assert!(script.contains("-ExecutionTimeLimit ([TimeSpan]::Zero)"));
         assert!(!script.contains("-Password"));
         assert!(stop_task_script(&layout, Some(&receipt)).contains("AddSeconds(10)"));
+    }
+
+    #[test]
+    fn long_scheduler_operations_keep_exact_private_content_off_the_command_line() {
+        let script = format!("# {}\n'ü literal $(not code)'", "long action ".repeat(4000));
+        assert!(encoded(&script).len() > 32_767);
+        let (path, loader) = stage_script(&script).unwrap();
+        let retained = path.to_path_buf();
+        agentdocker_host::dirs::read_private_file(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), script);
+        assert!(loader.len() < 30_000);
+        drop(path);
+        assert!(!retained.exists());
+        assert!(stage_script(&"x".repeat(512 * 1024 + 1)).is_err());
     }
 
     #[test]

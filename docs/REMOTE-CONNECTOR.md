@@ -131,7 +131,7 @@ what it reads on web pages.
 | --- | --- |
 | `connector serve [--public-url <https://…>] [--tunnel tailscale [--tunnel-port 443\|8443\|10000] [--tailscale <path>] \| --tunnel cloudflared [--tunnel-name <name>] [--cloudflared <path>]] [--bind 127.0.0.1:0] [--project <path>] [--allow-callback <url>]… [--allow-from <cidr>\|anthropic\|openai\|@<file>]… [--client-ip-header <name>]` | Serve every project on this machine; `--project` is the one proposed first at consent. Prints the MCP URL, the pairing code, the admitted addresses and the vendors' setup steps, and writes `$AGENTDOCKER_HOME/connector/serve.json` (mode 0600; `agentdocker_host::connector::Serving`, which the desktop reads too) with the same for `status`. Plain `http://` is accepted only for a loopback host, for a trial without a tunnel. |
 | `connector status` | Whether a connector is serving here: its address, listening socket, pairing code, proposed project, tunnel, admitted prefixes, and how many browser agents the daemon holds live. |
-| `connector install <serve arguments> [--dry-run]` | Run the connector as a login service — a launchd agent (`dev.agentdocker.connector`) or a systemd user unit — with those arguments, `AGENTDOCKER_HOME` and a PATH that includes where cloudflared was found; its log is `$AGENTDOCKER_HOME/connector/serve.log`. A quick tunnel gets a new hostname at every start and says so. |
+| `connector install <serve arguments> [--dry-run]` | Run the connector as a login service — a launchd agent (`dev.agentdocker.connector`) or a systemd user unit (Windows login-task candidate described below) — with those arguments, `AGENTDOCKER_HOME` and a PATH that includes where cloudflared was found; its log is `$AGENTDOCKER_HOME/connector/serve.log`. A quick tunnel gets a new hostname at every start and says so. |
 | `connector enable <serve arguments> [--dry-run]` | Install/start a new login service or start its byte-identical definition. A synced temporary file is published atomically without replacement; exact comparison refuses symlinks or different existing settings. Failed staging leaves no partial definition to block retry. The desktop uses this conservative entry point; `install` remains the explicit replacement command. |
 | `connector uninstall [--dry-run]` | Remove the service. |
 | `connector grants` | Every consent: agent, runtime, vendor, project, when connected and last used, whether active, and whether the daemon still holds the agent live. |
@@ -201,7 +201,8 @@ trigger network refreshes or change their existing configuration.
   actions until it finishes. It has its own bounded worker; failure remains on the card, while ordinary
   message delivery and refresh continue. Service installation is not successful
   browser consent or a provider receipt. Final-package graphical/service
-  acceptance remains a separate gate; Windows service setup is unavailable.
+  acceptance remains a separate gate; Windows isolated login-service lifecycle
+  acceptance passed as described below.
 - Not yet exercised against a real account: the vendors' Client ID Metadata
   Document path (both vendors used DCR when they connected; the next connection
   a vendor makes after this metadata is served is the trial).
@@ -218,3 +219,40 @@ One more thing to know: a connector added to a Claude account appears in every
 Claude surface of that account, Claude Code sessions included, as that
 account's browser-agent identity. A terminal session with its own AgentDocker
 tools should use those; the connector's instructions say so.
+
+The Windows login-service candidate requires an owned daemon login task for the
+same state home: install that prerequisite explicitly with `agentdocker daemon
+install`, then review `connector install ... --dry-run` or use conservative
+`connector enable`. The connector starts the daemon through its separate task,
+retains the selected endpoint and never starts a daemon as its own child.
+Uninstall requests an exact connector generation's graceful exit, preserving
+the daemon and saved browser grants. A changed or foreign task is refused.
+Native isolated lifecycle acceptance passed on reviewed-correction source `30e78859`: 17 portable and
+21 installed connector checks, including exact generation cleanup and preserved
+daemon/grants. Hosted distribution, reboot and actual-account acceptance remain
+open; the candidate is not yet a published Windows connector service.
+
+Windows login-service setup resolves configured project, egress-feed and tunnel
+executable paths at installation time, so a relative shell path does not become
+a different path under Task Scheduler's working directory. `tailscale.exe` and
+`cloudflared.exe` are discovered through the executable PATH lookup on Windows;
+an explicit executable path remains supported. Discovered tunnel paths are
+captured before argument serialization, so the installed task and its reparsed
+service-run command keep the same order with vendor allowlists. The accepted
+native fixture includes a relative project and feed. The corrected source
+repeated all 17 portable and 21 installed lifecycle checks; a real Clap
+round-trip regression covers discovered binaries with vendor allowlists.
+
+Startup now holds the service mutation lock from ownership validation through
+publication of its exact process generation. It waits up to 30 seconds for an
+in-progress install/remove operation, then rechecks the receipt; removal holds
+the same lock while stopping the published generation. The runtime releases
+this lock before serving, so graceful shutdown does not wait on the remover.
+Source `a64fd575` passed the full local gate (1,511 Rust and 169 Python tests
+run, zero retries). Independent follow-up review requested status-output and
+help/documentation corrections, now applied. The native delayed-start fixture passed on `a64fd575`: 20 portable and
+24 installed connector checks, including refusal to publish or serve after
+ownership revocation under the held mutation lock. Owned cleanup was unforced
+and error-free. The review corrections passed the full local gate on `f87fc48f`;
+final CI and follow-up review remain pending. Service confirmations go to stderr, as on
+Unix; dry-run plans remain on stdout.

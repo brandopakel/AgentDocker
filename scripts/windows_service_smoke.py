@@ -294,7 +294,7 @@ def main():
             except psutil.Error as error:
                 report['cleanup_errors'].append(f'owned process {process.pid}: {error}')
         # Keep bounded product diagnostics; no provider profile or auth exists.
-        for name in ('agentd.log', 'windows-service.json'):
+        for name in ('agentd.log', 'windows-service.json', 'windows-service-trace.log'):
             path = home / name
             if path.is_file():
                 (output / name).write_bytes(path.read_bytes()[-1024 * 1024:])

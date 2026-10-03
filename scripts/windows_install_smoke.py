@@ -287,6 +287,13 @@ def main():
             step('installed stable launchers pass the isolated Task Scheduler lifecycle',
                  service['result'] == 'passed' and not service['cleanup_errors'])
             report['service'] = {'result': 'passed', 'steps': len(service['steps'])}
+            subprocess.run([sys.executable, str(Path(__file__).with_name('windows_connector_service_smoke.py')),
+                            '--binary-dir', str(store / 'bin'), '--installed-prefix', str(prefix),
+                            '--output', str(output / 'connector-service')], check=True, timeout=600)
+            connector = json.loads((output / 'connector-service/result.json').read_text(encoding='utf-8'))
+            step('installed stable launchers pass the isolated connector lifecycle and retention guards',
+                 connector['result'] == 'passed' and not connector['cleanup_errors'])
+            report['connector_service'] = {'result': 'passed', 'steps': len(connector['steps'])}
         foreign = store / 'bin/user-notes.txt'
         foreign.write_text('driver-owned launcher neighbor', encoding='utf-8')
         desktop('uninstall', '--preview', good=False)
