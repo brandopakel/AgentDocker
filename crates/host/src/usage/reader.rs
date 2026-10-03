@@ -832,7 +832,40 @@ mod tests {
         let gap_len = content.len();
         content.extend_from_slice(row(1).as_bytes());
         std::fs::write(&path, &content).unwrap();
-        let all = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
+        // This fixture has two records. A cooperative time slice may end
+        // before or between them on a loaded host; verify bounded continuation
+        // without assuming each 100 ms pass necessarily advances a record.
+        let complete = |previous: Option<&Cursor>| {
+            let mut batch = scan(&path, Runtime::Claude, previous, Budget::default()).unwrap();
+            for _ in 0..8 {
+                if batch.stop == Stop::Complete {
+                    return batch;
+                }
+                assert_eq!(batch.stop, Stop::Budget);
+                let next = scan(
+                    &path,
+                    Runtime::Claude,
+                    Some(&batch.cursor),
+                    Budget::default(),
+                )
+                .unwrap();
+                assert!(next.cursor.offset() >= batch.cursor.offset());
+                if next.cursor.offset() == batch.cursor.offset() {
+                    assert_eq!(next.stop, Stop::Budget);
+                    assert!(next.samples.is_empty());
+                    assert!(next.gaps.is_empty());
+                }
+                batch.cursor = next.cursor;
+                batch.stop = next.stop;
+                batch.samples.extend(next.samples);
+                batch.gaps.extend(next.gaps);
+                batch.bytes_read += next.bytes_read;
+                batch.validation_bytes_read += next.validation_bytes_read;
+            }
+            assert_eq!(batch.stop, Stop::Complete);
+            batch
+        };
+        let all = complete(None);
         assert_eq!(all.stop, Stop::Complete);
         assert_eq!(all.samples.len(), 1);
         assert_eq!(all.gaps.len(), 1);
@@ -879,13 +912,7 @@ mod tests {
         assert_eq!(incomplete.stop, Stop::Quarantined);
         assert_eq!(incomplete.cursor.offset(), 0);
         assert!(incomplete.samples.is_empty());
-        let recovered = scan(
-            &path,
-            Runtime::Claude,
-            Some(&incomplete.cursor),
-            Budget::default(),
-        )
-        .unwrap();
+        let recovered = complete(Some(&incomplete.cursor));
         assert_eq!(recovered.stop, Stop::Complete);
         assert_eq!(recovered.cursor.prefix_digest, all.cursor.prefix_digest);
         assert_eq!(recovered.samples, all.samples);

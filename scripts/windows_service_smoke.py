@@ -23,6 +23,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary-dir', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--installed-prefix', type=Path)
     args = parser.parse_args()
     if os.name != 'nt':
         parser.error('this trial requires native Windows and an interactive logon')
@@ -31,6 +32,13 @@ def main():
 
     binaries = args.binary_dir.resolve(strict=True)
     cli, daemon = (binaries / name for name in ('agentdocker.exe', 'agentd.exe'))
+    selected = binaries
+    if args.installed_prefix:
+        store = args.installed_prefix.resolve(strict=True) / 'AgentDocker/desktop'
+        assert os.path.samefile(binaries, store / 'bin')
+        activation = json.loads((store / 'activation.json').read_text(encoding='utf-8'))
+        selected = store / 'versions' / activation['current']['id'] / 'AgentDocker'
+    selected_cli, selected_daemon = (selected / name for name in ('agentdocker.exe', 'agentd.exe'))
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     token = uuid.uuid4().hex
@@ -41,7 +49,7 @@ def main():
     env = {k: v for k, v in os.environ.items() if not k.startswith('AGENTDOCKER_')}
     env.update(AGENTDOCKER_HOME=str(home), AGENTDOCKER_SOCKET=endpoint,
                AGENTDOCKER_NO_AUTOSTART='1', AGENTDOCKER_STARTUP_TRACE='1')
-    report = {'result': 'failed', 'scope': __doc__, 'home': str(home),
+    report = {'result': 'failed', 'scope': __doc__, 'home': str(home), 'installed_launchers': bool(args.installed_prefix),
               'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
               'driver_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'binary_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -128,14 +136,22 @@ def main():
             try:
                 value = ping()
                 process = psutil.Process(value['pid'])
-                assert os.path.samefile(value['executable'], daemon), value
-                assert os.path.samefile(process.exe(), daemon), value
+                assert os.path.samefile(value['executable'], selected_daemon), value
+                assert os.path.samefile(process.exe(), selected_daemon), value
                 argv = process.cmdline()
                 assert '--home' in argv and os.path.samefile(argv[argv.index('--home') + 1], home)
                 identity = (process.pid, process.create_time())
                 if previous is None or identity != previous:
                     supervisor = process.parent()
-                    assert supervisor is not None and os.path.samefile(supervisor.exe(), cli)
+                    if args.installed_prefix:
+                        assert supervisor is not None and os.path.samefile(supervisor.exe(), daemon)
+                        processes.append(supervisor)
+                        supervisor = supervisor.parent()
+                    assert supervisor is not None and os.path.samefile(supervisor.exe(), selected_cli)
+                    if args.installed_prefix:
+                        bootstrap = supervisor.parent()
+                        assert bootstrap is not None and os.path.samefile(bootstrap.exe(), cli)
+                        processes.append(bootstrap)
                     parent_args = supervisor.cmdline()
                     assert parent_args[1:3] == ['daemon', 'supervise'], parent_args
                     assert '--home' in parent_args and os.path.samefile(
@@ -178,6 +194,14 @@ def main():
         run('daemon', 'stop')
         first.wait(timeout=10)
         step('explicit stop stays stopped despite crash supervision', absent_for())
+        if args.installed_prefix:
+            blocked = run('desktop', '--prefix', str(args.installed_prefix), 'uninstall', '--preview', check=False)
+            step('a stopped installed service prevents launcher removal', blocked['exit'] != 0 and
+                 'service references this installation' in blocked['stderr'])
+            maintenance = json.loads(run('desktop', '--prefix', str(args.installed_prefix), 'prune', '--preview')['stdout'])
+            step('a service on stable paths does not protect unrelated inactive versions',
+                 all(item['reason'] != 'a stopped service may reference retained binaries'
+                     for item in maintenance['maintenance']['retained']))
         run('daemon', 'start')
         second, identity = serving(previous=identity)
         step('owned service starts again', True, identity)

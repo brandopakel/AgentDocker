@@ -2546,6 +2546,16 @@ impl App {
             }
             body = body.push(kv_list(facts, c));
         }
+        if let Some(cleanup) = report.get("extraction_cleanup") {
+            body = body.push(note(
+                format!(
+                    "The operation completed, but temporary update files could not be removed: {} ({})",
+                    field(cleanup, "path"),
+                    field(cleanup, "error")
+                ),
+                c,
+            ));
+        }
         let mut card = column![container(body).padding([14, 16])].width(Fill);
         if preview {
             card = card.push(rule(c)).push(

@@ -28,7 +28,9 @@ if cmd == "register":
     if mode == "register-fails": sys.stderr.write("Error: the project is paused (paused)\n"); sys.exit(4)
     print("transient-id"); sys.exit(0)
 if cmd == "renew":
-    if mode == "renew-fails": sys.stderr.write("Error: no such lease (not_found)\n"); sys.exit(4)
+    marker = os.environ.get("FAKE_RENEW_AFTER")
+    if mode == "renew-fails" and (not marker or os.path.exists(marker)):
+        sys.stderr.write("Error: no such lease (not_found)\n"); sys.exit(4)
     sys.exit(0)
 if cmd in ("release", "deregister"): sys.exit(0)
 if cmd == "claim":
@@ -191,7 +193,9 @@ class VerifyCampaign(unittest.TestCase):
             cli = binary / "agentdocker"; cli.write_text(FAKE_CLI); cli.chmod(0o700)
             log = root / "calls.log"
             cargo = binary / "cargo"
-            cargo.write_text("#!/usr/bin/env python3\nimport json, os, pathlib, sys\n"
+            cargo.write_text("#!/usr/bin/env python3\nimport json, os, pathlib, sys, time\n"
+                # Force setup to outlast the first renewal, reproducing the race.
+                "if 'leases' in sys.argv: time.sleep(2)\n"
                 "root = pathlib.Path(os.environ['CARGO_TARGET_DIR']) / 'release'\n"
                 "for flag, name, path in [('--bin', 'agentd', root / 'agentd'), "
                 "('--example', 'socket_load', root / 'examples/socket_load')]:\n"
@@ -202,12 +206,15 @@ class VerifyCampaign(unittest.TestCase):
             target = build / "release/examples"; target.mkdir(parents=True)
             (target.parent / "agentd").write_text("fixture daemon")
             workload = target / "socket_load"
-            workload.write_text("#!/bin/sh\nprintf '%s %s\\n' \"$2\" \"$4\" >> calls\nsleep 3\necho '{}'\n")
+            workload.write_text("#!/bin/sh\nprintf '%s %s\\n' \"$2\" \"$4\" >> calls\nsleep 8\necho '{}'\n")
             workload.chmod(0o700)
             (root / "artifacts").mkdir()
             env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_") and k != "CI"}
             env.update(PATH=str(binary) + os.pathsep + os.environ["PATH"], FAKE_LOG=str(log),
-                       FAKE_MODE="renew-fails", CARGO_TARGET_DIR=str(build), HOME=str(root),
+                       # Fail renewal only after the workload actually enters;
+                       # compile/setup may legitimately take longer than one second.
+                       FAKE_MODE="renew-fails", FAKE_RENEW_AFTER=str(root / "calls"),
+                       CARGO_TARGET_DIR=str(build), HOME=str(root),
                        AGENTDOCKER_AGENT_ID="abc", AGENTDOCKER_CAMPAIGN_RENEW_SECS="1")
             result = subprocess.run(["bash", "scripts/verify.sh", "bench"], cwd=root, env=env,
                                     capture_output=True, text=True, timeout=40)

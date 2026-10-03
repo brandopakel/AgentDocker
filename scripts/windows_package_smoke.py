@@ -100,6 +100,14 @@ def main():
                 ):
                     raise ValueError("service lifecycle did not pass on the exact archive binaries")
                 report["service"] = {"result": "passed", "steps": len(service["steps"])}
+            subprocess.run([sys.executable, str(ROOT / "scripts/windows_install_smoke.py"),
+                            "--binary-dir", str(app), "--output", str(output / "installation"),
+                            *(["--service"] if args.service else [])],
+                           cwd=scratch, check=True, timeout=900)
+            installed = json.loads((output / "installation/result.json").read_text(encoding="utf-8"))
+            if installed.get("result") != "passed" or installed.get("binary_sha256") != info["binary_sha256"]:
+                raise ValueError("installation trial did not pass on the exact archive binaries")
+            report["installation"] = {"result": "passed", "steps": len(installed["steps"])}
             report.update(result="passed", steps=len(observed["steps"]), desktop=observed.get("desktop"))
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"

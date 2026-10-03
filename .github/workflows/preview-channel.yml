@@ -37,3 +37,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: python3 packaging/desktop/preview_channel.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
+      - name: Promote the separate Windows preview channel when the release provides it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python3 packaging/desktop/preview_channel.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --windows
