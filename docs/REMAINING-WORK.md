@@ -134,3 +134,12 @@ unchanged, and all fixture processes/scratch retired gracefully. This is short
 real-account attribution evidence, not sign-in recovery or endurance acceptance;
 its concurrent load is disclosed in the original endurance measurements. Failed evidence and the
 original endurance trial are preserved unchanged.
+
+The installer integrated with accepted managed accounting (`22396f38`) passed
+the exact-head native package and Task Scheduler trial: 322 core/host, 83
+portable, 38 installer, 11 portable-service and 13 installed-service checks.
+Clean source/tree and binary hashes match; both service fixtures removed owned
+tasks/scratch with no cleanup errors. Full gates passed 1,465 Rust checks on Mac
+and 1,453 on Ubuntu, plus 169 Python tests each (one skipped), zero retries.
+Final documentation checks and follow-up review remain required before merge;
+public Windows publication and physical/logon/reboot acceptance remain open.

@@ -589,3 +589,9 @@ checks, and 11 portable plus 13 installed Task Scheduler checks. Native hashes
 and clean source/tree matched every fixture; owned tasks and scratch were
 removed with zero cleanup errors. Final review/integration, hosted distribution
 and physical/actual-provider/logon/reboot acceptance remain.
+
+Integrated `22396f38` repeated installer and service acceptance after merging
+accepted managed Codex accounting. Exact-head run37082197622 passed all 322
+core/host, 83 portable, 38 installer, 11 portable-service and 13 installed-service
+checks with matching source/hash provenance and clean Task Scheduler cleanup.
+Both full Mac/Linux gates passed; final checks and follow-up review remain.
