@@ -27,10 +27,10 @@ impl Session {
     /// Use the collector's already captured high-water mark for this generation.
     pub fn at_snapshot(captured: Cursor, previous: Option<&Cursor>) -> Result<Self, Error> {
         let runtime = captured.runtime;
-        // Versions 3 and 4 have the same prefix proof, but their parsers skipped
-        // patch versions now supported by version 5. Verify that proof before replay;
+        // Versions 3 through 5 have the same prefix proof, but their parsers skipped
+        // patch versions now supported by version 6. Verify that proof before replay;
         // an upgrade must not hide a changed or truncated source.
-        let replay_parser = previous.is_some_and(|previous| matches!(previous.version, 3 | 4));
+        let replay_parser = previous.is_some_and(|previous| matches!(previous.version, 3..=5));
         let cursor = if let Some(previous) = previous {
             if (previous.version != CURSOR_VERSION && !replay_parser)
                 || previous.runtime != runtime
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn parser_upgrade_replays_only_after_the_old_prefix_is_verified() {
-        for version in [3, 4] {
+        for version in [3, 4, 5] {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("upgrade.jsonl");
             std::fs::write(&path, format!("{}{}", row(0), row(1))).unwrap();
@@ -227,6 +227,25 @@ mod tests {
                 Err(Error::Changed)
             ));
         }
+    }
+
+    #[test]
+    fn a_v5_codex_cursor_replays_previously_unsupported_0160_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("codex.jsonl");
+        std::fs::write(&path, include_str!("../fixtures/codex-0.160.0.jsonl")).unwrap();
+        let current = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
+        assert_eq!(current.samples.len(), 2);
+        let mut old = current.cursor.clone();
+        old.version = 5;
+        old.codex = Codex::default(); // v5 rejected the session metadata.
+        let mut session = Session::open(&path, Runtime::Codex, Some(&old)).unwrap();
+        prepare(&mut session, &path).unwrap();
+        assert_eq!(session.offset(), 0);
+        let replay = session.scan(&path, Budget::default()).unwrap();
+        assert_eq!(replay.samples, current.samples);
+        assert_eq!(replay.cursor, current.cursor);
+        session.validate(&path, &replay.cursor).unwrap();
     }
 
     #[test]
