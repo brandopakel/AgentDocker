@@ -4,7 +4,7 @@
 Fresh private profile/daemon, loopback model and synthetic ConPTY input. The
 fixture never creates a provider binding or server record. No account or saved
 configuration is used. Exercises first input, original-TUI MCP, receiver recovery,
-preserved draft and native exit; not physical-keyboard or reopen acceptance.
+preserved draft, native exit and explicit UUID reopen; not physical-keyboard acceptance.
 """
 import argparse
 import csv
@@ -24,7 +24,7 @@ import traceback
 from types import SimpleNamespace
 
 from windows_native_codex_smoke import current_user_objects, remove_fixture, response_events, wait
-from windows_remote_receiver_fixture import Receiver, process_birth
+from windows_remote_receiver_fixture import Receiver, fixture_controller, process_birth
 
 
 def main():
@@ -53,6 +53,23 @@ def main():
     owned = []; output = []; closing = threading.Event()
     queue_text = 'AD_AUTO_QUEUE_' + secrets.token_hex(8)
     draft_text = 'AD_AUTO_DRAFT_' + secrets.token_hex(8)
+    reopen_text = 'AD_AUTO_REOPEN_' + secrets.token_hex(8)
+    closed_consoles = set()
+
+    def close_console():
+        if terminal is None or id(terminal) in closed_consoles:
+            return
+        closing.set()
+        terminal.pty.cancel_io()
+        try: terminal.fileobj.shutdown(socket.SHUT_RDWR)
+        except OSError as error:
+            if error.winerror not in (10038, 10057, 10058): raise
+        terminal.fileobj.close(); terminal._server.close(); terminal._thread.join(timeout=2)
+        assert not terminal._thread.is_alive()
+        if reader is not None:
+            reader.join(timeout=2)
+            assert not reader.is_alive(), 'terminal reader did not retire'
+        closed_consoles.add(id(terminal))
 
     def normalized_birth(value):
         assert value.endswith('Z')
@@ -74,7 +91,7 @@ def main():
                 assert 0 < length <= 8 * 1024 * 1024 and len(report['requests']) < 20
                 body = json.loads(self.rfile.read(length)); encoded = json.dumps(body)
                 title = 'Generate a concise, single-line task title' in encoded
-                report['requests'].append({'queue': queue_text in encoded, 'draft': draft_text in encoded, 'title': title})
+                report['requests'].append({'queue': queue_text in encoded, 'draft': draft_text in encoded, 'reopen': reopen_text in encoded, 'title': title})
                 for item in body.get('input', []):
                     if item.get('type') == 'function_call_output' and item.get('call_id') == 'call_private_identity':
                         report['mcp_output'] = item
@@ -192,6 +209,65 @@ def main():
         wait(lambda: not terminal.isalive(), 30)
         wait(lambda: not Path(descriptor['token_file']).exists(), 10)
         step('native exit retires launcher and revokes capability', not terminal.isalive() and not Path(descriptor['token_file']).exists())
+        wait(lambda: not any(p.is_running() for p in owned + receiver.owned), 15)
+        close_console()
+        (out / 'first-terminal.txt').write_text(''.join(output), encoding='utf-8')
+        old_descriptor = descriptor
+        report['first_mcp_output'] = report.pop('mcp_output')
+        report['mcp_requested'] = False
+        queued = receiver.send(reopen_text)
+        report['queued_while_provider_down'] = queued
+        output.clear(); closing.clear()
+        terminal = PtyProcess.spawn([str(receiver.cli), '--socket', receiver.socket, 'codex-native',
+                    '--program', str(codex), '--profile', str(profile), '--cwd', str(repo),
+                    '--name', 'native-auto-resumed', '--resume', thread],
+                    cwd=str(repo), env=receiver.env, dimensions=(40, 160), backend=Backend.ConPTY)
+        launcher = psutil.Process(terminal.pid); owned.append(launcher)
+        reader = threading.Thread(target=drain, daemon=True); reader.start()
+        wait(ready, 65)
+        step('reopen binds the original canonical agent without a new prompt',
+             'AgentDocker native input ready: ' + receiver.agent in ''.join(output))
+        records = [p for p in (receiver.home / 'codex-native').glob('*/server.json') if p != record]
+        assert len(records) == 1
+        record = records[0]; descriptor = json.loads(record.read_text(encoding='utf-8'))
+        report['reopen_descriptor'] = descriptor
+        step('reopen uses the exact conversation and ordinary history with no birth allowance',
+             descriptor['version'] == 1 and 'birth' not in descriptor and
+             descriptor['provider']['session'] == thread and
+             descriptor['provider']['profile'] == old_descriptor['provider']['profile'] and
+             descriptor['provider']['process'] != old_descriptor['provider']['process'])
+        for process in launcher.children(recursive=True): owned.append(process)
+        receiver.owned.append(fixture_controller(psutil, receiver.binding(), receiver.cli))
+        report['receiver_generation'] = descriptor['provider']
+        report['reopen_binding'] = receiver.binding()
+        native = SimpleNamespace(pid=descriptor['provider']['process']['pid'])
+        provider = SimpleNamespace(pid=descriptor['server']['pid'])
+        second = receiver.received(queued)
+        wait(lambda: report.get('mcp_output'), 30)
+        receiver.check_mcp_identity(report['mcp_output'], native, provider)
+        step('offline original input and actual MCP retain the canonical identity across reopen',
+             receiver.ledger()['completed'] == [first, second] and
+             any(r['reopen'] for r in report['requests']))
+        token = Path(descriptor['token_file']).read_text(encoding='utf-8')
+        channel = connect(f"ws://127.0.0.1:{descriptor['port']}", additional_headers={'Authorization': 'Bearer ' + token},
+                          proxy=None, open_timeout=3, close_timeout=2, ping_interval=None, max_size=2 * 1024 * 1024)
+        sequence = 0
+        call('initialize', {'clientInfo': {'name': 'agentdocker_private_reopen_observer', 'version': '0'}, 'capabilities': {'experimentalApi': True}})
+        channel.send(json.dumps({'method': 'initialized'}))
+        wait(lambda: call('thread/read', {'threadId': thread, 'includeTurns': False})['thread']['status']['type'] == 'idle', 20)
+        page = call('thread/turns/list', {'threadId': thread, 'limit': 10, 'itemsView': 'full'})
+        users = [i for turn in page['data'] for i in turn['items'] if i['type'] == 'userMessage']
+        report['reopen_user_receipts'] = users; report['reopen_receipts'] = [first, second]
+        step('reopen preserves both original receipts and the draft with no extra user turn',
+             len(users) == 3 and sum(i.get('clientId') == queued for i in users) == 1 and
+             sum(i.get('clientId') == message for i in users) == 1 and
+             sum(draft_text in json.dumps(i) for i in users) == 1)
+        channel.close(); channel = None
+        terminal.write('\x04')
+        wait(lambda: not terminal.isalive(), 30)
+        wait(lambda: not Path(descriptor['token_file']).exists(), 10)
+        step('resumed terminal exits natively and revokes its capability',
+             not terminal.isalive() and not Path(descriptor['token_file']).exists())
         step('private provider configuration is unchanged', (profile / 'config.toml').read_text(encoding='utf-8') == config)
         report['result'] = 'passed'
     except Exception:
@@ -223,13 +299,7 @@ def main():
             try: receiver.close()
             except Exception as error: report['cleanup_errors'].append(str(error))
         if terminal is not None:
-            try:
-                terminal.pty.cancel_io()
-                try: terminal.fileobj.shutdown(socket.SHUT_RDWR)
-                except OSError as error:
-                    if error.winerror not in (10038, 10057, 10058): raise
-                terminal.fileobj.close(); terminal._server.close(); terminal._thread.join(timeout=2)
-                assert not terminal._thread.is_alive()
+            try: close_console()
             except Exception as error: report['cleanup_errors'].append(str(error))
         if reader is not None:
             reader.join(timeout=2)

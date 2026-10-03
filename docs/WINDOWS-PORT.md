@@ -751,3 +751,10 @@ submitted once, native terminal exit/token revocation and unchanged configuratio
 No fixture forced fallback, remaining reader or scratch remained. The launcher
 uses native process termination for its owned server; this is not graceful
 server-protocol shutdown, real-account, physical-input or reopen acceptance.
+
+The automatic-launcher workflow now additionally reopens the explicit persisted
+UUID after native exit, with an original message queued while the provider is
+down. It requires the canonical identity, prior receipts and draft to survive,
+normal version-1 history with no fresh-birth allowance, actual MCP identity in
+the new terminal, and native exit again. Windows execution is pending; Mac
+`d60efc14` passed the corresponding private loopback reopen trial.

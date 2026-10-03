@@ -975,7 +975,10 @@ persisted history, and publishes a version-1 record with no birth allowance. A
 unique dead predecessor hands off the canonical identity, original queued IDs
 and retained receipts through the daemon; a live or ambiguous predecessor
 refuses. The daemon alone starts the replacement receiver. This candidate
-reopen path still requires end-to-end native acceptance. The launcher retires its own children on exit, revokes its capability
+reopen path passed native Mac acceptance on `d60efc14`: after native exit,
+an original message queued while offline arrived once in the same canonical
+conversation without a warmup; prior receipts and the earlier draft remained
+exact. Windows/Linux reopen acceptance remains pending. The launcher retires its own children on exit, revokes its capability
 and retains bounded private server diagnostics. Source `e3445323` passed the full
 1,528-Rust/169-Python gate (zero retries) and an actual Mac Release trial: automatic
 binding before the first prompt, original queued receipt, receiver replacement
@@ -988,7 +991,8 @@ terminal exit; the launcher terminates its owned server through the native
 process API. Oracle Linux first binding/receipt passed, but replacement failed
 because the original receiver remained a zombie child. The launcher now reaps
 its receiver while the terminal continues, allowing daemon-owned replacement.
-Linux validation remains pending. The first Mac attempt
+Source `4e3c447f` passed the native Linux zombie regression and fresh Oracle
+first-receipt/replacement/draft/exit acceptance with complete unforced cleanup. The first Mac attempt
 stopped after binding on a fixture process-group assumption, before model input;
 that failure is retained. Reopen/adoption acceptance and desktop integration remain open;
 ordinary `codex` and the current managed bridge are unchanged.

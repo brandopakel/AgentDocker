@@ -105,11 +105,16 @@ first binding/receipt, receiver replacement, preserved draft and clean product
 exit in private loopback trials. Oracle Linux compiled `096a01c4` (CLI inputs
 identical to `a3091852`) passed first binding/receipt but failed replacement: a
 diagnostic confirmed the launcher retained its exited receiver as a zombie.
-The launcher now reaps that child while the terminal runs; final validation and
-Linux acceptance remain pending. Explicit `--resume <UUID>` now requests the
+The launcher now reaps that child while the terminal runs. Source `4e3c447f`
+passed the full1,528Rust/169Python gate, the Linux zombie regression and a fresh
+Oracle automatic first-receipt/replacement/draft/exit trial; original failures
+remain retained. Explicit `--resume <UUID>` now requests the
 original root conversation through its native TUI, with strict history and
-daemon-owned canonical queue handoff; end-to-end reopen/adoption acceptance and
-desktop integration remain open.
+daemon-owned canonical queue handoff. Mac `d60efc14` passed the full
+1,529Rust/169Python gate and actual native reopen: an original input queued
+while the provider was down arrived once after explicit UUID resume, with the
+same canonical agent/thread/profile and prior receipts, no warmup and only three
+user items. Windows/Linux reopen and desktop integration remain open.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its
