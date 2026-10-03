@@ -82,8 +82,11 @@ verifies the actual hook home. Both failures remain retained. Corrected
 attribute only the original TUI; receipts, drafts and receiver replacement pass.
 The Windows fixture retires pinned provider processes explicitly and joins its
 readers; it does not prove graceful provider exit. The Mac active-hook trial has
-no forced cleanup. Windows same-turn active-hook delivery is now added to the
-fixture and awaits execution; automatic no-prompt startup remains open.
+no forced cleanup. Windows `3ac2c7f0` then passed 19 native checks, including
+the busy message offered once through the held PostToolUse hook and receipted
+in the first queued turn, without an extra user turn. Three original receipts,
+draft, replacement and private configuration were preserved. Automatic
+no-prompt startup remains open.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its

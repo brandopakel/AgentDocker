@@ -723,3 +723,12 @@ corrected acceptance is pending. Automatic launcher/bootstrap
 and zero-prompt input are separate gates. Source `873e7663` passed the corresponding
 nine-check Mac ARM64 shared-server trial and the full local suite; that pass
 does not establish Windows acceptance.
+
+The strengthened shared-server trial on `3ac2c7f0` passed 19 native Windows
+checks with Codex 0.160.0: command approval, original-terminal MCP and hooks,
+busy input once through an active PostToolUse hook with a receipt in the same
+turn, preserved draft, three original receipts and receiver replacement. The
+fixture still uses an explicit initial user turn. Private configuration stays
+unchanged; teardown explicitly kills pinned provider processes and joins the
+readers, with no receiver cleanup errors and removed scratch. This does not
+prove graceful provider exit, real-account acceptance or automatic startup.
