@@ -2,8 +2,8 @@
 """Provider-only Windows Codex remote-TUI startup capability probe.
 
 Uses a fresh private profile, a loopback model and an authenticated dedicated
-app-server. No AgentDocker binding, real account, physical input, permission
-approval or production configuration is exercised. A pass is capability evidence,
+app-server. No AgentDocker binding, real account, physical input or production configuration is exercised. The optional approval
+probe uses one private print command and a synthetic native Return. A pass is capability evidence,
 not acceptance of AgentDocker's native controller.
 """
 import argparse
@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import socket
@@ -36,6 +37,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--codex', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--approval', action='store_true', help='Check a private native command approval')
     args = parser.parse_args()
     if os.name != 'nt':
         parser.error('requires native Windows')
@@ -59,6 +61,40 @@ def main():
     provider = tui = channel = server = reader = None
     queue_text = 'AD_PRIVATE_FIRST_QUEUE_' + secrets.token_hex(8)
     draft_text = 'AD_PRIVATE_RETAINED_DRAFT_' + secrets.token_hex(8)
+    approval_marker = 'AD_PRIVATE_APPROVAL_' + secrets.token_hex(8)
+    approval_code = "print('" + approval_marker + "')"
+    approval_command = 'python -c "' + approval_code + '"'
+    approval_called = False
+    report['approval_requested'] = args.approval
+    report['observer_approval_requests'] = []
+
+    def approval_events(number, body):
+        namespace, found = None, False
+        for tool in body.get('tools', []):
+            if tool.get('type') == 'function' and tool.get('name') == 'exec_command':
+                found = True
+            if (tool.get('type') == 'namespace' and
+                    any(t.get('name') == 'exec_command' for t in tool.get('tools', []))):
+                namespace, found = tool['name'], True
+        assert found, 'provider did not advertise exec_command'
+        response = response_events(number)[-1]['response']
+        item = {'type': 'function_call', 'id': 'fc_private_approval',
+                'call_id': 'call_private_approval', 'name': 'exec_command', 'status': 'completed',
+                'arguments': json.dumps({'cmd': approval_command, 'max_output_tokens': 1000})}
+        if namespace:
+            item['namespace'] = namespace
+        response['output'] = [item]
+        return [
+            {'type': 'response.created', 'response': dict(response, status='in_progress', output=[])},
+            {'type': 'response.output_item.added', 'output_index': 0,
+             'item': dict(item, arguments='', status='in_progress')},
+            {'type': 'response.function_call_arguments.delta', 'item_id': item['id'],
+             'output_index': 0, 'delta': item['arguments']},
+            {'type': 'response.function_call_arguments.done', 'item_id': item['id'],
+             'output_index': 0, 'arguments': item['arguments']},
+            {'type': 'response.output_item.done', 'output_index': 0, 'item': item},
+            {'type': 'response.completed', 'response': response}]
+
 
     def step(name, passed, detail=None):
         report['steps'].append({'step': name, 'passed': bool(passed), 'detail': detail})
@@ -78,6 +114,7 @@ def main():
             self.send_error(404)
 
         def do_POST(self):
+            nonlocal approval_called
             try:
                 self.connection.settimeout(5)
                 length = int(self.headers.get('Content-Length', 0))
@@ -88,11 +125,20 @@ def main():
                 report['requests'].append({
                     'path': self.path, 'queue_nonce_present': queue_text in encoded,
                     'draft_nonce_present': draft_text in encoded,
+                    'tool_result_present': any(
+                        v.get('type') == 'function_call_output' and approval_marker in str(v.get('output', ''))
+                        for v in body.get('input', []) if isinstance(v, dict)),
                     'title_request': 'Generate a concise, single-line task title' in encoded})
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream')
                 self.end_headers()
-                for event in response_events(len(report['requests'])):
+                if (args.approval and not approval_called and queue_text in encoded and
+                        not report['requests'][-1]['title_request']):
+                    approval_called = True
+                    events = approval_events(len(report['requests']), body)
+                else:
+                    events = response_events(len(report['requests']))
+                for event in events:
                     self.wfile.write(('data: ' + json.dumps(event) + '\n\n').encode())
                     self.wfile.flush()
             except Exception as error:
@@ -136,6 +182,17 @@ def main():
                 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)'}}
             env.update(CODEX_HOME=str(profile), AGENTDOCKER_FIXTURE_KEY='fixture-only',
                        TERM='xterm-256color', AD_PRIVATE_WS_TOKEN=token)
+            if args.approval:
+                (profile / 'rules').mkdir()
+                rule = profile / 'rules' / 'private-approval.rules'
+                rule_text = ('prefix_rule(pattern = ' + json.dumps(['python', '-c', approval_code]) +
+                             ', decision = "prompt", justification = "Private native approval fixture")\n')
+                rule.write_text(rule_text, encoding='utf-8')
+                decision = subprocess.run(
+                    [str(codex), 'execpolicy', 'check', '--rules', str(rule), '--', 'python', '-c', approval_code],
+                    cwd=repo, env=env, capture_output=True, text=True, timeout=10, check=True)
+                report['rule_decision'] = json.loads(decision.stdout)
+                assert report['rule_decision']['decision'] == 'prompt'
             report['provider_version'] = subprocess.check_output(
                 [str(codex), '--version'], env=env, text=True, timeout=10).strip()
             assert report['provider_version'] == 'codex-cli 0.160.0'
@@ -211,7 +268,12 @@ def main():
                         assert 'result' in value, {'method': method, 'reply': value}
                         return value['result']
                     if 'method' in value and 'id' in value:
-                        raise AssertionError('probe will not answer a provider approval request')
+                        assert args.approval, 'unexpected provider request in startup-only probe'
+                        assert value['method'] == 'item/commandExecution/requestApproval', value['method']
+                        assert len(report['observer_approval_requests']) < 20
+                        report['observer_approval_requests'].append({'id': value['id'], 'method': value['method']})
+                        # Observe only. The native terminal must own the decision;
+                        # this client never responds to server-initiated requests.
                 raise AssertionError('provider exceeded notification bound')
 
             call('initialize', {'clientInfo': {'name': 'agentdocker_private_startup_probe', 'version': '0'},
@@ -271,6 +333,30 @@ def main():
                     time.sleep(0.2)
                 raise TimeoutError('provider history did not contain submitted input')
 
+            if args.approval:
+                deadline = time.monotonic() + 25
+                while time.monotonic() < deadline:
+                    screen = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', ''.join(output))
+                    if ('Would you like to run the following command?' in screen and
+                            'Yes, proceed' in screen and approval_marker in screen):
+                        break
+                    read_thread()
+                    time.sleep(0.2)
+                else:
+                    raise AssertionError('native TUI did not display the private command approval')
+                step('native TUI displays the queued turn command approval', True)
+                assert not any(r['tool_result_present'] for r in report['requests'])
+                time.sleep(2)
+                step('private command stays pending until native approval',
+                     not any(r['tool_result_present'] for r in report['requests']))
+                tui.write('\r')
+                deadline = time.monotonic() + 25
+                while time.monotonic() < deadline and not any(r['tool_result_present'] for r in report['requests']):
+                    read_thread()
+                    time.sleep(0.2)
+                step('one native Return approves the private print command',
+                     any(r['tool_result_present'] for r in report['requests']))
+
             deadline = time.monotonic() + 25
             idle = False
             while time.monotonic() < deadline:
@@ -300,6 +386,9 @@ def main():
                 time.sleep(0.2)
             else:
                 raise TimeoutError('draft turn did not finish before cleanup')
+            if args.approval:
+                step('native one-time decision did not change the private prompt rule',
+                     rule.read_text(encoding='utf-8') == rule_text)
             report['user_receipts'] = users
             step('private configuration is unchanged',
                  (profile / 'config.toml').read_text(encoding='utf-8') == config)

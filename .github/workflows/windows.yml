@@ -10,6 +10,10 @@ on:
         description: Probe provider-only authenticated remote ConPTY startup (no product acceptance)
         type: boolean
         default: false
+      capability_approval:
+        description: Include one private command approval through the native ConPTY UI
+        type: boolean
+        default: false
       startup_samples:
         description: Additional fresh-home samples per ancestry type (0..20)
         type: choice
@@ -176,7 +180,12 @@ jobs:
           $actual = (Get-FileHash artifacts/codex.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actual -ne 'fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d') { throw "Codex digest mismatch" }
       - name: Dedicated server and native ConPTY capability
-        run: python scripts/windows_codex_remote_capability.py --codex artifacts/codex.exe --output artifacts/capability
+        env:
+          CAPABILITY_APPROVAL: ${{ inputs.capability_approval }}
+        run: |
+          $options = @()
+          if ($env:CAPABILITY_APPROVAL -eq 'true') { $options += '--approval' }
+          python scripts/windows_codex_remote_capability.py --codex artifacts/codex.exe --output artifacts/capability @options
       - name: Preserve bounded capability evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

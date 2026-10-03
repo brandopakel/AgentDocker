@@ -693,3 +693,11 @@ The earlier fixture failures are retained in the verification index.
 Integration with accepted growing-source accounting requires final checks and
 follow-up review; hosted distribution, physical and actual-provider/logon/reboot
 acceptance remain open.
+
+The provider-only remote-TUI probe also has an optional private command-approval
+scenario. It installs one prompt rule in its disposable profile, requires the
+native terminal to display and hold the print command, and supplies a single
+synthetic Return before checking the result and retained draft. The observing
+WebSocket client never answers an approval. Windows acceptance of this scenario
+is pending; neither it nor the startup probe proves AgentDocker receiver
+integration, a real provider account or a human permission interaction.
