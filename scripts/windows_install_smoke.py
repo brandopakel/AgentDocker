@@ -227,12 +227,14 @@ def main():
                         key: str(value) if isinstance(value, Path) else value
                         for key, value in held_extraction.items()}
                     save()
+                    step('fixture holds an extracted directory without delete sharing',
+                         'path' in held_extraction and not held_extraction.get('error'))
+                    step('completed update reports its extraction cleanup failure',
+                         applied.get('extraction_cleanup', {}).get('error'))
+                    step('cleanup diagnostic identifies the held filesystem object',
+                         Path(applied['extraction_cleanup']['path']).samefile(held_extraction['path']))
                     step('a held extraction does not turn a published update into failure',
-                         'path' in held_extraction and not held_extraction.get('error')
-                         and applied.get('extraction_cleanup', {}).get('error')
-                         and Path(applied['extraction_cleanup']['path']).resolve()
-                         == held_extraction['path'].resolve()
-                         and desktop('status')['installation']['current']['id'] == third)
+                         desktop('status')['installation']['current']['id'] == third)
                 step('extraction hold closes cleanly', not held_extraction.get('error'))
                 shutil.rmtree(held_extraction['path'])
                 step('activation preserves an inactive version whose lock is held',

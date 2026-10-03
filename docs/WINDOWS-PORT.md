@@ -607,3 +607,9 @@ does not impose Windows sharing restrictions. The fixture now requests directory
 read access, first proves deletion fails with a sharing violation in a separate
 control, and records its observed handle path and open errors. The original
 failure is retained; product cleanup handling is unchanged by this fixture fix.
+Native `a8a28b8e` then established the intended sharing violation: the command
+returned success and the cleanup report identified error 32 and the correct
+extraction, but the fixture compared verbatim and DOS path spellings as strings.
+The diagnostic check now compares the actual filesystem objects with `samefile`,
+and separate assertions identify a failed hold, missing diagnostic or activation.
+Complete corrected native acceptance remains pending.
