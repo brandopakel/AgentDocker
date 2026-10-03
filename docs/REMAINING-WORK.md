@@ -100,8 +100,14 @@ the full1,526Rust/169Python gate and all21 Windows checks without a warmup:
 first receipt, actual original-TUI MCP/hooks, same-turn busy input, native approval,
 draft and receiver replacement. Windows teardown still explicitly kills pinned
 provider processes. A hidden owned `codex-native` launcher now automates witness
-and receipt creation; its end-to-end acceptance, reopen/adoption and desktop
-integration remain pending.
+and receipt creation. Mac `e3445323` and Windows `a3091852` passed automatic
+first binding/receipt, receiver replacement, preserved draft and clean product
+exit in private loopback trials. Oracle Linux compiled `096a01c4` (CLI inputs
+identical to `a3091852`) passed first binding/receipt but failed replacement: a
+diagnostic confirmed the launcher retained its exited receiver as a zombie.
+The launcher now reaps that child while the terminal runs; final validation and
+Linux acceptance remain pending. Reopen/adoption and desktop integration remain
+open.
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its

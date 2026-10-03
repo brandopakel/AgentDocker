@@ -739,4 +739,15 @@ TUI, requires an empty server and that exact thread-start notification, then
 publishes a private version-2 birth receipt. It exercises first queued input
 without the established-session warmup, retaining the draft, approval, original
 hook/MCP attribution and receiver-replacement checks. This manual fixture is
-not the automatic product launcher; its native execution remains pending.
+not the automatic product launcher. Source `f21ca717` passed all 21 checks,
+including first queued input without a warmup, original-TUI hooks/MCP, native
+approval, same-turn busy input, draft and receiver replacement.
+
+With `automatic_launcher=true`, the capability-only receiver workflow invokes
+the product-owned `codex-native` launcher instead. Source `a3091852` passed seven
+checks: automatic birth/binding before input, exact child ownership, first
+receipt and original-terminal MCP identity, receiver replacement, retained draft
+submitted once, native terminal exit/token revocation and unchanged configuration.
+No fixture forced fallback, remaining reader or scratch remained. The launcher
+uses native process termination for its owned server; this is not graceful
+server-protocol shutdown, real-account, physical-input or reopen acceptance.

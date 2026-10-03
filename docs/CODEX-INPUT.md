@@ -952,8 +952,8 @@ history requirements. Version-1 records cannot opt into it. Codex reconstructs b
 its current clock while a thread remains unmaterialized. They must be equal and
 bounded by the witnessed creation and current read time; they are not thread
 identity. Thread/session IDs, canonical checkout, live generations and all empty
-state checks remain required. The owned launcher
-and native acceptance of this candidate remain unfinished.
+state checks remain required. The experimental owned launcher and its scoped
+platform acceptance are described below.
 
 `AGENTDOCKER_TRACE_NATIVE_STARTUP=1` optionally records fixed startup refusal
 stages (launcher generation/child ancestry, empty-thread metadata or queue). It
@@ -975,8 +975,13 @@ binding before the first prompt, original queued receipt, receiver replacement
 and retained draft submitted once with unchanged private configuration. Launcher
 exit retired its own provider children and revoked the token. A stronger repeat
 also verified the replacement receiver retired before fixture cleanup; only the
-private test daemon was terminated by the fixture. Native Windows product-launch
-acceptance remains pending. The first Mac attempt
+private test daemon was terminated by the fixture. Windows `a3091852` passed
+seven automatic product-launch checks, including actual MCP identity and native
+terminal exit; the launcher terminates its owned server through the native
+process API. Oracle Linux first binding/receipt passed, but replacement failed
+because the original receiver remained a zombie child. The launcher now reaps
+its receiver while the terminal continues, allowing daemon-owned replacement.
+Linux validation remains pending. The first Mac attempt
 stopped after binding on a fixture process-group assumption, before model input;
 that failure is retained. Reopen/adoption and desktop integration remain open;
 ordinary `codex` and the current managed bridge are unchanged.

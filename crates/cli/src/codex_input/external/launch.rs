@@ -163,6 +163,34 @@ async fn bind(client: &Client, binding: &Binding, directory: &Path) -> Result<Ch
     Ok(child)
 }
 
+async fn wait_terminal(
+    terminal: &mut Child,
+    server: &mut Child,
+    receiver: &mut Option<Child>,
+) -> Result<()> {
+    loop {
+        tokio::select! {
+            status = terminal.wait() => {
+                ensure!(status?.success(), "native Codex terminal exited unsuccessfully");
+                return Ok(());
+            },
+            _ = server.wait() => bail!("dedicated Codex server exited before its terminal"),
+            status = async {
+                match receiver.as_mut() {
+                    Some(child) => child.wait().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                status.context("cannot reap native receiver")?;
+                // The daemon owns replacement. Reap our original child promptly:
+                // Linux otherwise keeps its zombie PID/birth visible as alive,
+                // which prevents the daemon from starting a replacement.
+                *receiver = None;
+            },
+        }
+    }
+}
+
 struct Startup<'a> {
     client: &'a Client,
     cwd: &'a Path,
@@ -386,10 +414,7 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
             receiver = Some(bind(&client,&binding,&directory).await?);
             eprintln!("AgentDocker native input ready: {}",binding.agent);
             let terminal = tui.as_mut().context("native terminal unavailable")?;
-            tokio::select! {
-                status = terminal.wait() => { ensure!(status?.success(), "native Codex terminal exited unsuccessfully"); Ok(()) },
-                _ = server.wait() => bail!("dedicated Codex server exited before its terminal"),
-            }
+            wait_terminal(terminal, &mut server, &mut receiver).await
         } => result,
     };
     let mut cleanup = Ok(());
@@ -411,4 +436,46 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
     // Retain bounded private diagnostics/record; revoke the dead server capability.
     cleanup = cleanup.and(std::fs::remove_file(directory.join("capability")).map_err(Into::into));
     result.and(cleanup)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn receiver_is_reaped_while_native_terminal_remains_running() {
+        fn sleeping_child() -> Child {
+            Command::new("sleep")
+                .arg("60")
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap()
+        }
+        let mut terminal = sleeping_child();
+        let mut server = sleeping_child();
+        let receiver = sleeping_child();
+        let process = identity(&receiver).unwrap();
+        let mut receiver = Some(receiver);
+        procinfo::end(process.pid, process.started_at, false).unwrap();
+        let observed = async {
+            timeout(Duration::from_secs(5), async {
+                while procinfo::start_time(process.pid) == Some(process.started_at) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("exited receiver remained a zombie until terminal exit");
+        };
+        tokio::select! {
+            result = wait_terminal(&mut terminal, &mut server, &mut receiver) => {
+                panic!("receiver exit must not end the native terminal: {result:?}");
+            },
+            _ = observed => (),
+        }
+        assert!(receiver.is_none());
+        assert!(terminal.try_wait().unwrap().is_none());
+        assert!(server.try_wait().unwrap().is_none());
+        retire(&mut terminal).await.unwrap();
+        retire(&mut server).await.unwrap();
+    }
 }
