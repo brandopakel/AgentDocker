@@ -449,13 +449,19 @@ fn at(path: &Path, error: io::Error) -> io::Error {
 }
 
 fn check_kind(file: &File, directory: bool) -> io::Result<()> {
+    check_snapshot_kind(file, directory, false)
+}
+
+fn check_snapshot_kind(file: &File, directory: bool, unlinked_snapshot: bool) -> io::Result<()> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
         return Err(io::Error::last_os_error());
     }
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
         || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) != directory
-        || (!directory && info.nNumberOfLinks != 1)
+        || (!directory
+            && info.nNumberOfLinks != 1
+            && !(unlinked_snapshot && info.nNumberOfLinks == 0))
     {
         return Err(denied(
             "state must have the expected type without reparse points or file hard links",
@@ -516,6 +522,14 @@ fn open(
 /// untrusted write access is refused, without creating anything or
 /// narrowing an ACL — a read must never be a write.
 fn open_existing_read(path: &Path, directory: bool) -> io::Result<File> {
+    open_existing_snapshot(path, directory, false)
+}
+
+fn open_existing_snapshot(
+    path: &Path,
+    directory: bool,
+    unlinked_snapshot: bool,
+) -> io::Result<File> {
     let protection = Protection::new()?;
     let raw = wide(path)?;
     let access = READ_CONTROL
@@ -545,7 +559,7 @@ fn open_existing_read(path: &Path, directory: bool) -> io::Result<File> {
         return Err(io::Error::last_os_error());
     }
     let file = unsafe { File::from_raw_handle(handle) };
-    check_kind(&file, directory).map_err(|error| at(path, error))?;
+    check_snapshot_kind(&file, directory, unlinked_snapshot).map_err(|error| at(path, error))?;
     protection
         .validate_access(file.as_raw_handle(), Access::State)
         .map_err(|error| at(path, error))?;
@@ -560,6 +574,12 @@ pub fn read_private_file(path: &Path) -> io::Result<File> {
 
 pub fn open_private(path: &Path) -> io::Result<File> {
     open_existing_read(path, false)
+}
+
+/// An atomic replacement may unlink the opened read-only handle. Keep its
+/// owner/ACL/type checks; only that zero-link snapshot is also admissible.
+pub fn open_private_snapshot(path: &Path) -> io::Result<File> {
+    open_existing_snapshot(path, false, true)
 }
 
 pub fn check_private_dir(path: &Path) -> io::Result<()> {

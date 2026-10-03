@@ -990,16 +990,144 @@ async fn current_agent<B: Backend>(backend: &B, input: &HookInput) -> Result<Opt
 /// validates a named record before reusing it; the daemon resolves an
 /// unmatched registration against the same physical session identity.
 async fn session_agent<B: Backend>(backend: &B, input: &HookInput) -> Result<Option<AgentRecord>> {
-    found_by_pid(backend, input, host_pid()).await
+    found_by_pid(backend, input, HookProcess::of(input, host_pid())).await
 }
 
-/// The pid is taken rather than read so a fixture can supply one.
+/// The provider process a hook runs for, and the two directories that can
+/// place one of its records.
+///
+/// The process's own working directory is where the session was launched:
+/// what its MCP server inherited and registered, and what discovery reads.
+/// The hook's `cwd` is not that. Claude Code reports there wherever the
+/// session's Bash tool last changed directory, so it moves while the session
+/// lives — into `artifacts/21st`, into a smoke test's scratch directory — and
+/// a hook that registered from there, and was compared by it, made one
+/// session two agents. A registration names the process's directory; a
+/// record in either directory, or one naming this session, is this session.
+#[derive(Clone, Debug)]
+struct HookProcess {
+    pid: u32,
+    started: chrono::DateTime<chrono::Utc>,
+    /// The process's working directory, resolved; `None` when unreadable,
+    /// and for a runtime whose process is not one session (opencode).
+    checkout: Option<PathBuf>,
+    /// The hook's `cwd`, resolved.
+    shell: Option<PathBuf>,
+}
+
+/// How a record was placed in the hook's process, best first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Placed {
+    /// In the process's own working directory.
+    Checkout,
+    /// In the directory the hook ran from.
+    Shell,
+    /// Elsewhere, but naming this very session: the daemon's rule for two
+    /// named halves of one session in one process.
+    Session,
+}
+
+impl HookProcess {
+    /// Resolved once per hook, before any listing: canonicalising touches
+    /// the filesystem, and doing it per candidate would make the check cost
+    /// grow with the fleet. Unverifiable ancestry authorises nothing, so no
+    /// pid, no readable birth or no directory at all is `None`.
+    ///
+    /// Only Claude Code's process is one session launched in one place. An
+    /// opencode server serves several directories at once and its plugin
+    /// reports each session's own as `cwd`, so there the hook's directory is
+    /// where the session works and the server's says nothing about it.
+    fn of(input: &HookInput, pid: Option<u32>) -> Option<Self> {
+        let pid = pid?;
+        let started = agentdocker_host::procinfo::start_time(pid)?;
+        let checkout = (input.runtime() == RUNTIME)
+            .then(|| agentdocker_host::procinfo::cwd(pid))
+            .flatten()
+            .and_then(|dir| dir.canonicalize().ok());
+        let shell = input.cwd.as_ref().and_then(|dir| dir.canonicalize().ok());
+        (checkout.is_some() || shell.is_some()).then_some(Self {
+            pid,
+            started,
+            checkout,
+            shell,
+        })
+    }
+
+    /// The directory a registration names: the process's own, or the
+    /// hook's only when the process's cannot be read.
+    fn workdir(&self) -> Option<&Path> {
+        self.checkout.as_deref().or(self.shell.as_deref())
+    }
+
+    /// Whether `agent` is this hook's session, and how it was placed. The
+    /// same evidence the daemon registers by, because this answer releases
+    /// leases and deregisters: the live process (pid and birth), the
+    /// runtime, no other session, and then a directory or this session.
+    fn place(&self, runtime: &str, session: &str, agent: &AgentRecord) -> Option<Placed> {
+        let theirs = agent
+            .spec
+            .labels
+            .get("session_id")
+            .filter(|id| !id.is_empty());
+        if !(agent.status.is_live()
+            && agent.pid == Some(self.pid)
+            && agent.process_started_at == Some(self.started)
+            && agent.spec.runtime == runtime
+            && theirs.is_none_or(|theirs| theirs == session))
+        {
+            return None;
+        }
+        let dir = agent
+            .spec
+            .workdir
+            .as_ref()
+            .and_then(|dir| dir.canonicalize().ok());
+        if dir.is_some() && dir == self.checkout {
+            Some(Placed::Checkout)
+        } else if dir.is_some() && dir == self.shell {
+            Some(Placed::Shell)
+        } else if theirs.is_some() && !session.is_empty() {
+            Some(Placed::Session)
+        } else {
+            None
+        }
+    }
+
+    /// The one record that is this session: of those placed best, exactly
+    /// one. Two equally placed are a question this hook cannot answer, and
+    /// ending the wrong one is worse than ending none.
+    fn pick(
+        &self,
+        runtime: &str,
+        session: &str,
+        agents: impl IntoIterator<Item = AgentRecord>,
+    ) -> Option<AgentRecord> {
+        let mut best: Option<Placed> = None;
+        let mut found = Vec::new();
+        for agent in agents {
+            let Some(placed) = self.place(runtime, session, &agent) else {
+                continue;
+            };
+            match best {
+                Some(best) if placed > best => {}
+                Some(best) if placed == best => found.push(agent),
+                _ => {
+                    best = Some(placed);
+                    found = vec![agent];
+                }
+            }
+        }
+        if found.len() == 1 { found.pop() } else { None }
+    }
+}
+
+/// The process is taken rather than read so a fixture can supply one.
 /// `host_pid` walks real ancestry and is allowed to decline, and a test
 /// that skipped its assertion when it did would not be testing anything.
 async fn found_by_pid<B: Backend>(
     backend: &B,
     input: &HookInput,
-    pid: Option<u32>,
+    process: Option<HookProcess>,
 ) -> Result<Option<AgentRecord>> {
     // An explicit binding is authoritative. Whoever started this agent
     // set `AGENTDOCKER_AGENT_ID` and knows which record it is, and that
@@ -1025,40 +1153,27 @@ async fn found_by_pid<B: Backend>(
     // chose it, and eight characters of session id is not much to
     // collide. Ending nothing costs an expiry; ending the wrong agent
     // costs somebody their work.
-    let Some(pid) = pid else {
+    let Some(process) = process else {
         return Ok(None);
     };
-    let Some(started) = agentdocker_host::procinfo::start_time(pid) else {
-        return Ok(None);
-    };
-    // Resolved once, and before the listing: canonicalising touches the
-    // filesystem, and doing it per candidate inside the comparison would
-    // make the check cost grow with the fleet.
-    let Some(here) = input.cwd.as_ref().and_then(|cwd| cwd.canonicalize().ok()) else {
-        return Ok(None);
-    };
-    // The same predicate the daemon registers by, for the same reason:
+    // The same evidence the daemon registers by, for the same reason:
     // this hook is about to release another agent's leases and
     // deregister it, so "shares a pid" is nowhere near enough. A
-    // recycled pid, another runtime in one host, another project, or a
+    // recycled pid, another runtime in one host, another checkout, or a
     // second session multiplexed into this process are each a different
     // agent, and ending one of those instead would be worse than ending
     // nothing.
-    let ours = |agent: &AgentRecord| {
-        same_hook_session(
-            input.runtime(),
-            agent,
-            &input.session_id,
-            pid,
-            started,
-            &here,
-        )
-    };
+    //
     // The name is a hint, not proof. A session id prefix is eight
     // characters and a name outlives the session that chose it, so a
     // live record answering to it may be a different process entirely —
-    // it still has to pass.
-    if let Some(named) = named.filter(ours) {
+    // it still has to be in one of this session's directories.
+    if let Some(named) = named.filter(|agent| {
+        matches!(
+            process.place(input.runtime(), &input.session_id, agent),
+            Some(Placed::Checkout | Placed::Shell)
+        )
+    }) {
         return Ok(Some(named));
     }
     match backend
@@ -1068,19 +1183,13 @@ async fn found_by_pid<B: Backend>(
             // the daemon from the directory rather than compared here:
             // a project spans its main checkout and every linked
             // worktree, and only the daemon knows which is which.
-            project: input.cwd.as_ref().map(|cwd| cwd.display().to_string()),
+            project: process.workdir().map(|dir| dir.display().to_string()),
             labels: Default::default(),
         })
         .await?
     {
         Response::Agents { agents, .. } => {
-            let mut matching = agents.into_iter().filter(ours);
-            let first = matching.next();
-            Ok(if matching.next().is_none() {
-                first
-            } else {
-                None
-            })
+            Ok(process.pick(input.runtime(), &input.session_id, agents))
         }
         _ => Ok(None),
     }
@@ -1112,31 +1221,39 @@ fn same_hook_session(
 }
 
 async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result<AgentRecord> {
-    if let Some(me) = current_agent(backend, input).await? {
-        let explicit = std::env::var("AGENTDOCKER_AGENT_ID")
-            .ok()
-            .is_some_and(|id| !id.is_empty());
-        if explicit {
-            let pid = (input.hook_event_name == "SessionStart" && input.agent_id.is_none())
-                .then(host_pid)
-                .flatten();
-            return bind_start_session(backend, input, me, pid).await;
-        }
-        let pid = host_pid();
-        let verified = pid
-            .and_then(|pid| {
-                let started = agentdocker_host::procinfo::start_time(pid)?;
-                let here = input.cwd.as_ref()?.canonicalize().ok()?;
-                Some(same_hook_session(
-                    input.runtime(),
-                    &me,
-                    &input.session_id,
-                    pid,
-                    started,
-                    &here,
-                ))
-            })
-            .unwrap_or(false);
+    let named = current_agent(backend, input).await?;
+    let explicit = std::env::var("AGENTDOCKER_AGENT_ID")
+        .ok()
+        .is_some_and(|id| !id.is_empty());
+    if explicit && let Some(me) = named {
+        let pid = (input.hook_event_name == "SessionStart" && input.agent_id.is_none())
+            .then(host_pid)
+            .flatten();
+        return bind_start_session(backend, input, me, pid).await;
+    }
+    let pid = host_pid();
+    registered_as(backend, input, named, pid, HookProcess::of(input, pid)).await
+}
+
+/// Reuse the record found by this session's name when it is verifiably this
+/// process's, or register: from the process's own directory, so the record
+/// says where the session was launched and not where its shell has wandered.
+/// The pid and process are taken rather than read so a fixture can supply
+/// them.
+async fn registered_as<B: Backend>(
+    backend: &B,
+    input: &HookInput,
+    named: Option<AgentRecord>,
+    pid: Option<u32>,
+    process: Option<HookProcess>,
+) -> Result<AgentRecord> {
+    if let Some(me) = named {
+        let verified = process.as_ref().is_some_and(|process| {
+            matches!(
+                process.place(input.runtime(), &input.session_id, &me),
+                Some(Placed::Checkout | Placed::Shell)
+            )
+        });
         if verified {
             return bind_start_session(backend, input, me, pid).await;
         }
@@ -1155,14 +1272,20 @@ async fn ensure_registered<B: Backend>(backend: &B, input: &HookInput) -> Result
     let spec = AgentSpec {
         name: session_name_for(input),
         runtime: input.runtime().to_owned(),
-        workdir: input.cwd.clone(),
+        // Where the session works, not where its shell is now: the hook's
+        // `cwd` only when the process's own directory cannot be read.
+        workdir: process
+            .as_ref()
+            .and_then(HookProcess::workdir)
+            .map(Path::to_path_buf)
+            .or_else(|| input.cwd.clone()),
         labels,
         ..AgentSpec::default()
     };
     match backend
         .call(Request::Register {
             spec,
-            pid: host_pid(),
+            pid,
             // Read here rather than by the daemon: this process is
             // *inside* whatever session it is reporting, which is
             // first-hand — and on macOS the only way to know, since
@@ -1824,6 +1947,20 @@ mod tests {
         host_pid().unwrap_or_else(std::process::id)
     }
 
+    /// The fixture session's process as a hook resolves it, with the
+    /// fixture checkout as the process's own directory: the real process's
+    /// directory is wherever the test runner started, which no fixture
+    /// record is in.
+    fn fixture_process(input: &HookInput, pid: Option<u32>) -> Option<HookProcess> {
+        let pid = pid?;
+        Some(HookProcess {
+            pid,
+            started: agentdocker_host::procinfo::start_time(pid)?,
+            checkout: std::env::temp_dir().canonicalize().ok(),
+            shell: input.cwd.as_ref().and_then(|dir| dir.canonicalize().ok()),
+        })
+    }
+
     fn agent_with_pid(name: &str) -> AgentRecord {
         agent(name, true)
     }
@@ -2397,7 +2534,9 @@ mod tests {
         let backend = Mock::with(vec![Response::Agent {
             agent: ours.clone(),
         }]);
-        let found = found_by_pid(&backend, &input, Some(me)).await.unwrap();
+        let found = found_by_pid(&backend, &input, fixture_process(&input, Some(me)))
+            .await
+            .unwrap();
         assert_eq!(found.unwrap().id, ours.id);
         assert_eq!(
             backend.requests().len(),
@@ -2426,7 +2565,9 @@ mod tests {
                 ],
             },
         ]);
-        let found = found_by_pid(&backend, &input, Some(me)).await.unwrap();
+        let found = found_by_pid(&backend, &input, fixture_process(&input, Some(me)))
+            .await
+            .unwrap();
         assert_eq!(found.unwrap().id, theirs.id, "found by pid");
 
         let backend = Mock::with(vec![
@@ -2437,7 +2578,7 @@ mod tests {
             },
         ]);
         assert!(
-            found_by_pid(&backend, &input, Some(me))
+            found_by_pid(&backend, &input, fixture_process(&input, Some(me)))
                 .await
                 .unwrap()
                 .is_none(),
@@ -2473,7 +2614,7 @@ mod tests {
                 },
             ]);
             assert!(
-                found_by_pid(&backend, &input, Some(me))
+                found_by_pid(&backend, &input, fixture_process(&input, Some(me)))
                     .await
                     .unwrap()
                     .is_none(),
@@ -2502,7 +2643,7 @@ mod tests {
             },
         ]);
         assert_eq!(
-            found_by_pid(&backend, &input, Some(me))
+            found_by_pid(&backend, &input, fixture_process(&input, Some(me)))
                 .await
                 .unwrap()
                 .unwrap()
@@ -2522,7 +2663,10 @@ mod tests {
                 agent: live_but_unverifiable.clone(),
             }]);
             assert!(
-                found_by_pid(&backend, &input, pid).await.unwrap().is_none(),
+                found_by_pid(&backend, &input, fixture_process(&input, pid))
+                    .await
+                    .unwrap()
+                    .is_none(),
                 "a name is not proof when nothing can confirm the process"
             );
             assert_eq!(backend.requests().len(), 1, "and nothing is listed");
@@ -2550,7 +2694,7 @@ mod tests {
             },
         ]);
         assert!(
-            found_by_pid(&backend, &input, Some(me))
+            found_by_pid(&backend, &input, fixture_process(&input, Some(me)))
                 .await
                 .unwrap()
                 .is_none(),
@@ -2571,13 +2715,179 @@ mod tests {
             },
         ]);
         assert_eq!(
-            found_by_pid(&backend, &input, Some(me))
+            found_by_pid(&backend, &input, fixture_process(&input, Some(me)))
                 .await
                 .unwrap()
                 .unwrap()
                 .id,
             ours_by_id.id
         );
+    }
+
+    /// The session's Bash tool `cd`'d into a subdirectory, and Claude Code
+    /// reports that as every later hook's `cwd`. The MCP server registered
+    /// the session from where the process was launched. Comparing the
+    /// record's directory with the hook's `cwd` found nothing, so the hook
+    /// registered a second agent for the same process from the
+    /// subdirectory (`claude-83083752` beside `claude-code-2923`), and
+    /// thereafter found whichever record matched where the shell happened
+    /// to be. The process's own directory is where its records are.
+    /// An opencode server serves several directories and its plugin reports
+    /// each session's own as `cwd`, so the server's directory places nothing:
+    /// its sessions register where they work, as before.
+    #[test]
+    fn only_claude_codes_process_directory_places_a_session() {
+        let me = std::process::id();
+        let dir = tempfile::tempdir().unwrap();
+        let mut opencode = input("Stop");
+        opencode.cwd = Some(dir.path().to_path_buf());
+        opencode.runtime = Some("opencode");
+        let process = HookProcess::of(&opencode, Some(me)).unwrap();
+        assert_eq!(process.checkout, None);
+        assert_eq!(process.workdir(), dir.path().canonicalize().ok().as_deref());
+        let mut claude = opencode.clone();
+        claude.runtime = None;
+        let process = HookProcess::of(&claude, Some(me)).unwrap();
+        assert_eq!(
+            process.checkout,
+            std::env::current_dir().unwrap().canonicalize().ok(),
+            "Claude Code's session is where its process was started"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_shell_moved_is_found_in_its_own_checkout() {
+        let me = fixture_pid();
+        let launched = tempfile::tempdir().unwrap();
+        let moved = launched.path().join("artifacts").join("21st");
+        std::fs::create_dir_all(&moved).unwrap();
+        let mut input = input("Stop");
+        input.cwd = Some(moved.clone());
+        let process = HookProcess {
+            pid: me,
+            started: agentdocker_host::procinfo::start_time(me).unwrap(),
+            checkout: launched.path().canonicalize().ok(),
+            shell: moved.canonicalize().ok(),
+        };
+        let in_dir = |name: &str, dir: &std::path::Path| {
+            let mut record = agent_with_pid(name);
+            record.spec.workdir = Some(dir.to_path_buf());
+            record
+                .spec
+                .labels
+                .insert("session_id".into(), input.session_id.clone());
+            record
+        };
+        let mcp = in_dir("claude-code-2923", launched.path());
+        let drifted = in_dir("claude-83083752", &moved);
+        let listed = |agents: Vec<AgentRecord>| {
+            Mock::with(vec![
+                Response::error(ErrorCode::NotFound, "no such agent"),
+                Response::Agents {
+                    aliases: Default::default(),
+                    agents,
+                },
+            ])
+        };
+        let found = |backend: Mock, process: Option<HookProcess>| {
+            let input = input.clone();
+            async move {
+                found_by_pid(&backend, &input, process)
+                    .await
+                    .unwrap()
+                    .map(|agent| agent.spec.name)
+            }
+        };
+        assert_eq!(
+            found(listed(vec![mcp.clone()]), Some(process.clone())).await,
+            Some(mcp.spec.name.clone()),
+            "the launch checkout is this session's, wherever the shell is"
+        );
+        // Both, as a hook from the subdirectory left them: the record in
+        // the process's own checkout is the session's, in either order.
+        for agents in [
+            vec![mcp.clone(), drifted.clone()],
+            vec![drifted.clone(), mcp.clone()],
+        ] {
+            assert_eq!(
+                found(listed(agents), Some(process.clone())).await,
+                Some(mcp.spec.name.clone())
+            );
+        }
+        // The listing is narrowed to the session's project, not the
+        // shell's.
+        let backend = listed(vec![mcp.clone()]);
+        found_by_pid(&backend, &input, Some(process.clone()))
+            .await
+            .unwrap();
+        assert!(backend.requests().iter().any(|request| matches!(
+            request,
+            Request::List { project: Some(project), .. }
+                if std::path::Path::new(project) == launched.path().canonicalize().unwrap()
+        )));
+        // Unreadable process directory: a record elsewhere that names this
+        // session is still this session, but only one of them, and a
+        // sessionless record elsewhere is nobody's to end.
+        let blind = HookProcess {
+            checkout: None,
+            ..process.clone()
+        };
+        assert_eq!(
+            found(listed(vec![mcp.clone()]), Some(blind.clone())).await,
+            Some(mcp.spec.name.clone())
+        );
+        let mut twin = mcp.clone();
+        twin.id = AgentId::from("another-record");
+        assert_eq!(
+            found(listed(vec![mcp.clone(), twin]), Some(blind.clone())).await,
+            None
+        );
+        let mut sessionless = mcp.clone();
+        sessionless.spec.labels.remove("session_id");
+        assert_eq!(found(listed(vec![sessionless]), Some(blind)).await, None);
+        // Another session in the same process is not this one, wherever
+        // it is.
+        let mut other = mcp.clone();
+        other
+            .spec
+            .labels
+            .insert("session_id".into(), "another-session".into());
+        assert_eq!(found(listed(vec![other]), Some(process)).await, None);
+    }
+
+    /// The registration a moved shell sends names where the session works,
+    /// so the daemon joins it to the session's record instead of opening
+    /// another in a subdirectory.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hook_registers_from_the_sessions_directory_not_its_shells() {
+        let host = fixture_pid();
+        let checkout = agentdocker_host::procinfo::cwd(host)
+            .and_then(|dir| dir.canonicalize().ok())
+            .expect("the hook's own provider process directory is readable");
+        let shell = tempfile::tempdir().unwrap();
+        let moved = shell.path().join("artifacts").join("21st");
+        std::fs::create_dir_all(&moved).unwrap();
+        let mut event = input("PostToolUse");
+        event.cwd = Some(moved.clone());
+        let backend = Mock::with(vec![
+            Response::error(ErrorCode::NotFound, "no such agent"),
+            Response::Agent {
+                agent: agent_with_pid("claude-01234567"),
+            },
+        ]);
+        let _ = claude_code(&backend, &event, &opts()).await;
+        let registered = backend
+            .requests()
+            .into_iter()
+            .find_map(|request| match request {
+                Request::Register { spec, pid, .. } => Some((spec, pid)),
+                _ => None,
+            })
+            .expect("an unknown session registers");
+        assert_eq!(registered.0.workdir, Some(checkout));
+        assert_ne!(registered.0.workdir, Some(moved));
+        assert_eq!(registered.1, Some(host));
     }
 
     #[test]

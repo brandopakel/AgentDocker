@@ -1669,7 +1669,8 @@ impl App {
             | EventKind::InputRestartsReset { .. }
             | EventKind::InputControllerUpgraded { .. }
             | EventKind::InputResumed { .. }
-            | EventKind::SessionResumed { .. } => {
+            | EventKind::SessionResumed { .. }
+            | EventKind::SessionDuplicatesFolded { .. } => {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }

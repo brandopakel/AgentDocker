@@ -27,10 +27,10 @@ impl Session {
     /// Use the collector's already captured high-water mark for this generation.
     pub fn at_snapshot(captured: Cursor, previous: Option<&Cursor>) -> Result<Self, Error> {
         let runtime = captured.runtime;
-        // Versions 3 and 4 have the same prefix proof, but their parsers skipped
-        // patch versions now supported by version 5. Verify that proof before replay;
+        // Versions 3 through 5 have the same prefix proof, but their parsers skipped
+        // patch versions now supported by version 6. Verify that proof before replay;
         // an upgrade must not hide a changed or truncated source.
-        let replay_parser = previous.is_some_and(|previous| matches!(previous.version, 3 | 4));
+        let replay_parser = previous.is_some_and(|previous| matches!(previous.version, 3..=5));
         let cursor = if let Some(previous) = previous {
             if (previous.version != CURSOR_VERSION && !replay_parser)
                 || previous.runtime != runtime
@@ -75,9 +75,7 @@ impl Session {
             return Err(Error::Budget);
         }
         let mut file = crate::files::open_regular(path)?;
-        if Generation::capture(&file)? != self.cursor.generation {
-            return Err(Error::Changed);
-        }
+        self.cursor.generation.check(Generation::capture(&file)?)?;
         let start = Instant::now();
         file.seek(SeekFrom::Start(self.checked))?;
         let allowance = bytes.min(self.cursor.offset - self.checked);
@@ -103,11 +101,12 @@ impl Session {
             }
         }
         let bytes_read = allowance - reader.get_ref().limit();
-        if Generation::capture(reader.get_ref().get_ref())? != self.cursor.generation
-            || Generation::capture(&crate::files::open_regular(path)?)? != self.cursor.generation
-        {
-            return Err(Error::Changed);
-        }
+        self.cursor
+            .generation
+            .check(Generation::capture(reader.get_ref().get_ref())?)?;
+        self.cursor
+            .generation
+            .check(Generation::capture(&crate::files::open_regular(path)?)?)?;
         self.ready = self.checked == self.cursor.offset;
         if self.ready && (!self.line.is_empty() || self.prefix != self.cursor.prefix_digest) {
             self.ready = false;
@@ -153,9 +152,9 @@ impl Session {
         if !self.ready || cursor != &self.cursor {
             return Err(Error::Cursor);
         }
-        if Generation::capture(&crate::files::open_regular(path)?)? != cursor.generation {
-            return Err(Error::Changed);
-        }
+        cursor
+            .generation
+            .check(Generation::capture(&crate::files::open_regular(path)?)?)?;
         Ok(())
     }
 }
@@ -187,8 +186,56 @@ mod tests {
     }
 
     #[test]
+    fn growth_defers_each_snapshot_stage_but_a_rewritten_prefix_still_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("growing.jsonl");
+        std::fs::write(&path, row(0)).unwrap();
+        let accepted = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
+        let mut session = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
+        let append = |id| {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap()
+                .write_all(row(id).as_bytes())
+                .unwrap();
+        };
+        append(1);
+        assert!(matches!(
+            prepare(&mut session, &path),
+            Err(Error::SnapshotAdvanced)
+        ));
+        let mut session = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
+        prepare(&mut session, &path).unwrap();
+        append(2);
+        assert!(matches!(
+            session.scan(&path, Budget::default()),
+            Err(Error::SnapshotAdvanced)
+        ));
+        let mut session = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
+        prepare(&mut session, &path).unwrap();
+        let proposal = session.scan(&path, Budget::default()).unwrap();
+        assert_eq!(proposal.samples.len(), 2);
+        append(3);
+        assert!(matches!(
+            session.validate(&path, &proposal.cursor),
+            Err(Error::SnapshotAdvanced)
+        ));
+
+        // Growth alone cannot certify an append-only writer. A changed accepted
+        // record, even alongside an append, must fail the fresh prefix proof.
+        std::fs::write(
+            &path,
+            format!("{}{}{}{}{}", row(9), row(1), row(2), row(3), row(4)),
+        )
+        .unwrap();
+        let mut changed = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
+        assert!(matches!(prepare(&mut changed, &path), Err(Error::Changed)));
+    }
+
+    #[test]
     fn parser_upgrade_replays_only_after_the_old_prefix_is_verified() {
-        for version in [3, 4] {
+        for version in [3, 4, 5] {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("upgrade.jsonl");
             std::fs::write(&path, format!("{}{}", row(0), row(1))).unwrap();
@@ -227,6 +274,25 @@ mod tests {
                 Err(Error::Changed)
             ));
         }
+    }
+
+    #[test]
+    fn a_v5_codex_cursor_replays_previously_unsupported_0160_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("codex.jsonl");
+        std::fs::write(&path, include_str!("../fixtures/codex-0.160.0.jsonl")).unwrap();
+        let current = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
+        assert_eq!(current.samples.len(), 2);
+        let mut old = current.cursor.clone();
+        old.version = 5;
+        old.codex = Codex::default(); // v5 rejected the session metadata.
+        let mut session = Session::open(&path, Runtime::Codex, Some(&old)).unwrap();
+        prepare(&mut session, &path).unwrap();
+        assert_eq!(session.offset(), 0);
+        let replay = session.scan(&path, Budget::default()).unwrap();
+        assert_eq!(replay.samples, current.samples);
+        assert_eq!(replay.cursor, current.cursor);
+        session.validate(&path, &replay.cursor).unwrap();
     }
 
     #[test]
@@ -299,7 +365,7 @@ mod tests {
         assert!(matches!(prepare(&mut changed, &path), Err(Error::Changed)));
         assert!(matches!(
             session.validate(&path, &last),
-            Err(Error::Changed)
+            Err(Error::SnapshotAdvanced)
         ));
         std::fs::OpenOptions::new()
             .write(true)

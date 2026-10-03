@@ -59,7 +59,11 @@ pub fn executable_path_of(pid: u32) -> std::io::Result<PathBuf> {
     {
         std::fs::read_link(format!("/proc/{pid}/exe"))
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        imp::executable_path_of(pid)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         if pid == std::process::id() {
             std::env::current_exe()
@@ -159,11 +163,12 @@ pub fn end(pid: u32, started_at: DateTime<Utc>, force: bool) -> std::io::Result<
     }
 }
 
-/// This process's parent pid, from the process table: what
-/// `std::os::unix::process::parent_id` answers on Unix.
+/// This invocation's parent from the process table, unwrapping only a verified
+/// installed bootstrap. Ordinary processes retain their actual Windows parent.
 #[cfg(windows)]
 pub fn parent_id() -> u32 {
-    inspect(std::process::id()).map(|p| p.ppid).unwrap_or(0)
+    let actual = inspect(std::process::id()).map(|p| p.ppid).unwrap_or(0);
+    crate::installation::windows::original_parent(actual).unwrap_or(actual)
 }
 
 /// The current working directory of another process of ours.
@@ -331,6 +336,17 @@ fn codex_helper(arguments: &[String]) -> Option<&'static str> {
 
 fn codex_runtime(arguments: &[String]) -> Option<&'static str> {
     codex_helper(arguments).is_none().then_some("codex")
+}
+
+/// Codex's detached app-server (`codex app-server … --managed-daemon`, 0.160
+/// and later): the process a Codex terminal session runs its MCP servers
+/// under. It is never the session. An MCP server whose parent it is serves
+/// whichever conversations call it, so it must neither register this process
+/// as an agent nor be taken for the session above it.
+pub fn detached_codex_app_server(argv: &[String]) -> bool {
+    is_codex_binary(argv)
+        && argv.iter().any(|v| v == "app-server")
+        && argv.iter().any(|v| v == "--managed-daemon")
 }
 
 /// Whether the process is Codex's own binary in any role, sidecar
@@ -777,6 +793,33 @@ mod tests {
             "node /x/other/cli.js --chrome-native-host",
         ] {
             assert_eq!(helper_of(&argv(command)), None, "{command}");
+        }
+    }
+
+    /// Only Codex's own binary in its detached app-server role is the MCP
+    /// host above a 0.160 terminal session; the plain sidecar a receiver
+    /// speaks to, the session itself and other programs are not.
+    #[test]
+    fn a_detached_codex_app_server_is_recognised_by_its_own_command_line() {
+        let argv = |command: &str| {
+            command
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        for command in [
+            "/Users/me/.codex/packages/app-server-daemon/releases/0.160.0-aarch64-apple-darwin/bin/codex app-server --listen unix:// --managed-daemon",
+            "node /x/@openai/codex/bin/codex.js app-server --managed-daemon",
+        ] {
+            assert!(detached_codex_app_server(&argv(command)), "{command}");
+        }
+        for command in [
+            "codex app-server --stdio",
+            "codex",
+            "codex resume 01a0 --managed-daemon",
+            "other app-server --managed-daemon",
+        ] {
+            assert!(!detached_codex_app_server(&argv(command)), "{command}");
         }
     }
 

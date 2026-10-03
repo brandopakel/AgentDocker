@@ -839,6 +839,10 @@ impl App {
             "not receiving messages".to_owned()
         } else if self.ended_with_undelivered(agent) {
             format!("ended {}", undelivered_phrase(self.undelivered(agent)))
+        } else if agent.connector_absent(Utc::now()) {
+            // Registered until revoked, but nothing has come from the
+            // browser lately: its next request connects it again.
+            "not connected".to_owned()
         } else if agent.status.is_live() {
             match self.activity.get(&id) {
                 None | Some(Activity::Unknown) => "running".to_owned(),
@@ -1524,12 +1528,12 @@ impl App {
         })
     }
 
-    /// Live, non-human sessions in the project at `root`.
-    fn live_in(&self, root: &std::path::Path) -> usize {
+    /// Live, non-human sessions in the project at `root`, each session once.
+    pub(super) fn live_in(&self, root: &std::path::Path) -> usize {
         self.agents
             .iter()
             .filter(|a| {
-                a.status.is_live()
+                self.live_session(a)
                     && a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
                     && a.project.as_ref().is_some_and(|p| p.root == root)
             })

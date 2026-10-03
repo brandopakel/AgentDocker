@@ -15,8 +15,8 @@ pub(crate) mod windows;
 #[cfg(windows)]
 pub use windows::{
     check_private_dir, check_socket_parent, create_private_file, ensure_private_dir,
-    initialize_sqlite_protection, open_private, private_file, read_private_file, secure_state_dir,
-    sqlite_create_file,
+    initialize_sqlite_protection, open_private, open_private_snapshot, private_file,
+    read_private_file, secure_state_dir, sqlite_create_file,
 };
 #[cfg(windows)]
 pub(crate) use windows::{current_sid, process_sid};
@@ -86,6 +86,26 @@ pub fn open_private(path: &Path) -> io::Result<std::fs::File> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     validate_file(&file.metadata()?, path)?;
+    Ok(file)
+}
+
+/// Read a private atomic record through its opened handle. Replacement can
+/// unlink that handle before validation; zero links still names an owned,
+/// immutable snapshot. Multiple links, foreign owners, writable permissions
+/// and final symlinks remain forbidden. This never opens a file for writing.
+#[cfg(unix)]
+pub fn open_private_snapshot(path: &Path) -> io::Result<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.nlink() > 1 {
+        return Err(io::Error::other(
+            "private snapshot must be a regular file without hard links",
+        ));
+    }
+    validate_owner(&metadata, path)?;
     Ok(file)
 }
 

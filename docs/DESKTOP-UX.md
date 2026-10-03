@@ -231,7 +231,17 @@ receiver started. Claude Chrome native-host helpers are also omitted, for native
 and interpreter entry points; enabling Chrome in a real session keeps the agent
 visible. A discovery row overlapping a live registration is hidden only
 when its PID and process birth time both match. Separate registrations are never
-merged by display name.
+merged by display name. Two live records for one provider session — the same
+process (PID and birth time), tool, project and session id, which a hook run
+from a subdirectory could leave before the daemon stopped comparing the
+directory — are one row and one count everywhere (the project's live count, the
+sessions list, a project's agents, Needs you), under the record that stays,
+until the daemon folds the other into it. A browser agent that came in through
+the connector has no process here; it counts as live while it is heard from
+and, after an hour without a tool call, reads **not connected** under
+**Earlier**. A conversation or session that only loads the connector is not
+using it. It is still registered, messages still wait for it, and its next
+tool call makes it current again.
 Installation or configuration alone does not prove that an agent is working.
 
 **Stop session…** turns solid red as **Confirm stop** for five seconds, with

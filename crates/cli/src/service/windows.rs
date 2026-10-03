@@ -190,7 +190,11 @@ fn task_context(layout: &Layout, receipt: Option<&Receipt>) -> String {
 }
 
 fn desired(layout: &Layout, owner: Option<&Receipt>) -> Result<Definition> {
-    let controller = agentdocker_host::procinfo::executable_path()?;
+    let controller = crate::desktop::setup_executable()?;
+    #[cfg(windows)]
+    let daemon = agentdocker_host::installation::windows::stable_executable(&layout.agentd)?;
+    #[cfg(not(windows))]
+    let daemon = layout.agentd.clone();
     let endpoint = layout
         .socket
         .clone()
@@ -199,7 +203,7 @@ fn desired(layout: &Layout, owner: Option<&Receipt>) -> Result<Definition> {
         "& {} daemon supervise --home {} --agentd {} --endpoint {}; exit $LASTEXITCODE",
         quoted(&controller.to_string_lossy()),
         quoted(&layout.home.to_string_lossy()),
-        quoted(&layout.agentd.to_string_lossy()),
+        quoted(&daemon.to_string_lossy()),
         quoted(&endpoint.to_string_lossy()),
     );
     Ok(Definition {

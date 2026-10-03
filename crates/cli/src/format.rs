@@ -302,6 +302,20 @@ pub fn event_line(event: &Event) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        EventKind::SessionDuplicatesFolded {
+            agent,
+            retired,
+            pid,
+            ..
+        } => format!(
+            "duplicates folded {} took {} (pid {pid})",
+            agent.short(),
+            retired
+                .iter()
+                .map(|id| id.short())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         EventKind::ProviderAvailabilityReported {
             agent,
             availability,

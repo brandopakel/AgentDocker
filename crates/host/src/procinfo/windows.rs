@@ -1,5 +1,6 @@
 //! Native Windows process snapshots and full-resolution process identities.
 use std::io;
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::PathBuf;
 
@@ -10,9 +11,54 @@ use windows_sys::Win32::{
     Foundation::{FILETIME, WAIT_TIMEOUT},
     System::Threading::{
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-        PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+        PROCESS_TERMINATE, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
     },
 };
+
+/// Read the loaded image through an owned process handle, never argv or PATH.
+/// The caller still compares the expected process birth around this lookup.
+pub(super) fn executable_path_of(pid: u32) -> io::Result<PathBuf> {
+    // SAFETY: OpenProcess returns null or an owned handle, immediately adopted
+    // by RAII. QueryFullProcessImageNameW receives a live handle and the exact
+    // capacity of its writable UTF-16 buffer; it retains neither argument.
+    let raw = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        )
+    };
+    if raw.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let gone = || io::Error::new(io::ErrorKind::NotFound, "the process has already exited");
+    if start_time_of(&handle).is_none() {
+        return Err(gone());
+    }
+    // Windows extended paths have at most 32,767 UTF-16 units plus NUL.
+    let mut buffer = vec![0_u16; 32_768];
+    let mut length = buffer.len() as u32;
+    if unsafe {
+        QueryFullProcessImageNameW(handle.as_raw_handle(), 0, buffer.as_mut_ptr(), &mut length)
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let length = length as usize;
+    if length == 0 || length >= buffer.len() || buffer[length] != 0 || buffer[..length].contains(&0)
+    {
+        return Err(io::Error::other("invalid kernel executable path"));
+    }
+    let path = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
+    if !path.is_absolute() {
+        return Err(io::Error::other("kernel executable path is not absolute"));
+    }
+    if start_time_of(&handle).is_none() {
+        return Err(gone());
+    }
+    Ok(path)
+}
 
 /// Discover PIDs first, then verify tokens before requesting command/cwd data.
 /// sysinfo's optional cached user field is not the authority for ownership.
@@ -209,6 +255,82 @@ fn start_time_of(handle: &OwnedHandle) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "owned child for the native executable-path regression"]
+    fn executable_lookup_child() {
+        use std::io::Read;
+        if std::env::var("AGENTDOCKER_IMAGE_PATH_CHILD").as_deref() == Ok("1") {
+            std::io::stdin().read_exact(&mut [0_u8; 1]).unwrap();
+        }
+    }
+
+    #[test]
+    fn kernel_image_lookup_preserves_unicode_and_refuses_exited_processes() {
+        use std::io::Write;
+        use std::process::{Child, Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        struct OwnedChild(Child);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let this = std::env::current_exe().unwrap();
+        assert_eq!(
+            super::super::executable_path()
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            this.canonicalize().unwrap()
+        );
+        assert!(super::super::executable_path_of(0).is_err());
+        assert!(super::super::executable_path_of(u32::MAX).is_err());
+        let temp = tempfile::Builder::new()
+            .prefix("image lookup ü ")
+            .tempdir()
+            .unwrap();
+        let image = temp.path().join("provider image ü.exe");
+        std::fs::copy(this, &image).unwrap();
+        let mut child = OwnedChild(
+            Command::new(&image)
+                .args([
+                    "--exact",
+                    "procinfo::imp::tests::executable_lookup_child",
+                    "--ignored",
+                ])
+                .env("AGENTDOCKER_IMAGE_PATH_CHILD", "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        assert!(child.0.try_wait().unwrap().is_none());
+        assert_eq!(
+            super::super::executable_path_of(child.0.id())
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            image.canonicalize().unwrap()
+        );
+        child.0.stdin.take().unwrap().write_all(b"x").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "owned image lookup child did not exit"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(super::super::executable_path_of(child.0.id()).is_err());
+    }
 
     #[test]
     fn current_process_identity_and_arguments_are_available_without_a_shell() {

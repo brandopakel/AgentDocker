@@ -410,8 +410,14 @@ installed tools first and expands technical details on request. Full daemon
 records remain intact: these are view filters, not registry deletion or migration.
 Discovery suppresses known Codex Node launchers with a native child; the UI also
 suppresses overlapping discovery/registration snapshots with matching known
-PID and birth time. Unknown identities and distinct registered sessions remain
-separate. Legacy duplicate registry reconciliation is the offline `identity-repair`
+PID and birth time. Live records the daemon holds for one provider session
+(same known PID and birth time, runtime, project and `session_id`) are one row
+and one count, under the record that stays (`identity::keeper`: input
+delivered through it, then the first registered) until the daemon's sweep folds
+the other into it. A browser agent from the connector counts as live only
+within an hour of its last tool call (`AgentRecord::is_present`); past that it
+reads **not connected** under **Earlier**, still registered. Unknown identities
+and distinct registered sessions remain separate. Legacy duplicate registry reconciliation is the offline `identity-repair`
 command (IDENTITY-REPAIR.md (in git history)); applying it to the production
 database remains a manual step.
 

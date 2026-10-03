@@ -557,7 +557,7 @@ impl App {
         let sessions: Vec<_> = self
             .agents
             .iter()
-            .filter(|agent| agent.spec.runtime == runtime.name && agent.status.is_live())
+            .filter(|agent| agent.spec.runtime == runtime.name && self.live_session(agent))
             .collect();
         let ready = self.connected.is_ok()
             && sessions.iter().any(|agent| {
@@ -2548,6 +2548,16 @@ impl App {
                 facts.push(("Daemon".into(), text(summary.to_owned()).size(13).into()));
             }
             body = body.push(kv_list(facts, c));
+        }
+        if let Some(cleanup) = report.get("extraction_cleanup") {
+            body = body.push(note(
+                format!(
+                    "The operation completed, but temporary update files could not be removed: {} ({})",
+                    field(cleanup, "path"),
+                    field(cleanup, "error")
+                ),
+                c,
+            ));
         }
         let mut card = column![container(body).padding([14, 16])].width(Fill);
         if preview {

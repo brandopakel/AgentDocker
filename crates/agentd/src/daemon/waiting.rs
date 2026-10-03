@@ -47,6 +47,16 @@ impl<'a> Waiting<'a> {
         self.ticket
     }
 
+    /// Wait as `requester` instead, before any place is taken: the record
+    /// a claim resolved was folded into the one that stays. A record with
+    /// a place in a queue is never folded, so there is no ticket to move.
+    pub(super) fn follow(&mut self, requester: AgentId) {
+        debug_assert!(self.ticket.is_none(), "a waiting record is not folded");
+        if self.ticket.is_none() {
+            self.requester = requester;
+        }
+    }
+
     /// Take a place, announcing where in the queue it landed.
     ///
     /// Takes the lock the caller already holds. The deadlock check and
