@@ -618,14 +618,14 @@ ownership phases. It resets above 64 KiB before another operation, excludes
 arguments and credentials, creates no missing cold state home, and preserves
 the 20-second command bound. An earlier Scheduler timeout remains unexplained.
 
-Native `f28d85ae` passed 17 portable and 21 installed connector checks, including
+Native `6c830458` passed 17 portable and 21 installed connector checks, including
 relative-path startup/HTTP, repeated enable, stale/foreign ownership refusal,
 interrupted registration repair, replacement, crash restart and graceful
 uninstall. Daemon identity and seeded grant bytes survived; owned tasks,
 processes and scratch were removed without forced cleanup or errors. The same
 run passed 62 portable package, 44 installer, 11 portable daemon-service and
 13 installed daemon-service checks with matching source/tree/binary hashes.
-Full local verification passed 1,471 Rust and 169 Python checks (one skipped),
+Full local verification passed 1,496 Rust and 169 Python checks (one skipped),
 with zero retries. Original failures and exact trial pins remain in
 [the verification index](verification/INDEX.md).
 
