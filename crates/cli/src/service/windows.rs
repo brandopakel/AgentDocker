@@ -149,6 +149,35 @@ fn evaluate(layout: &Layout, script: &str) -> Result<String> {
     evaluate_at(&layout.user_home, script)
 }
 
+// Ownership checks can repeat two long task actions and the replacement action.
+// Base64 on the command line expands that beyond CreateProcessW's 32,767 UTF-16
+// unit limit. Keep only this short loader in argv; the bounded script lives in a
+// fresh owner-only temporary file until the entire bounded command has ended.
+fn stage_script(script: &str) -> Result<(tempfile::TempPath, String)> {
+    use std::io::Write;
+    if script.len() > 512 * 1024 {
+        bail!("Windows service operation script exceeds its size bound");
+    }
+    let mut file = tempfile::Builder::new()
+        .prefix("agentdocker-service-")
+        .make_in(
+            std::env::temp_dir(),
+            agentdocker_host::dirs::create_private_file,
+        )?;
+    file.write_all(script.as_bytes())?;
+    // Close the writer before .NET opens its read-only handle (FileShare.Read).
+    // TempPath still removes this private file on success, error or timeout.
+    let path = file.into_temp_path();
+    let loader = encoded(&format!(
+        "$ErrorActionPreference='Stop'; & ([ScriptBlock]::Create([IO.File]::ReadAllText({},[Text.UTF8Encoding]::new($false,$true))))",
+        quoted(&path.to_string_lossy()),
+    ));
+    if loader.len() > 30_000 {
+        bail!("Windows service temporary script path exceeds the command-line bound");
+    }
+    Ok((path, loader))
+}
+
 pub(crate) fn evaluate_at(user_home: &Path, script: &str) -> Result<String> {
     use std::io::Write;
     // Opt-in diagnostics survive the bounded command's private capture files.
@@ -190,12 +219,13 @@ pub(crate) fn evaluate_at(user_home: &Path, script: &str) -> Result<String> {
     let script = format!(
         "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();{tracing}Write-AgentDockerServiceTrace 'powershell-start';{script};Write-AgentDockerServiceTrace 'powershell-complete'"
     );
+    let (_script_file, loader) = stage_script(&script)?;
     let argv = vec![
         powershell()?.to_string_lossy().into_owned(),
         "-NoProfile".into(),
         "-NonInteractive".into(),
         "-EncodedCommand".into(),
-        encoded(&script),
+        loader,
     ];
     emit("rust-start");
     let result =
@@ -669,6 +699,20 @@ mod tests {
         assert!(script.contains("-ExecutionTimeLimit ([TimeSpan]::Zero)"));
         assert!(!script.contains("-Password"));
         assert!(stop_task_script(&layout, Some(&receipt)).contains("AddSeconds(10)"));
+    }
+
+    #[test]
+    fn long_scheduler_operations_keep_exact_private_content_off_the_command_line() {
+        let script = format!("# {}\n'ü literal $(not code)'", "long action ".repeat(4000));
+        assert!(encoded(&script).len() > 32_767);
+        let (path, loader) = stage_script(&script).unwrap();
+        let retained = path.to_path_buf();
+        agentdocker_host::dirs::read_private_file(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), script);
+        assert!(loader.len() < 30_000);
+        drop(path);
+        assert!(!retained.exists());
+        assert!(stage_script(&"x".repeat(512 * 1024 + 1)).is_err());
     }
 
     #[test]

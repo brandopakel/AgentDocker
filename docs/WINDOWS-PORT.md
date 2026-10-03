@@ -639,3 +639,12 @@ above64KiB before another operation and contains no task arguments or credential
 It is best effort, creates no missing cold state home, and leaves the existing
 20-second command bound unchanged. Both native service fixtures retain it. This
 narrows future Scheduler timeouts; it does not diagnose historical failures.
+
+Scheduler operations stage at most 512 KiB of UTF-8 script in a fresh private
+temporary file, retained only until the bounded command exits. A short encoded
+loader reads its exact contents, avoiding command-line expansion of repeated
+current/previous ownership checks. The writer is closed before PowerShell reads
+it; Task Scheduler actions and ownership comparisons remain exact. On
+`1b240a64`, phase traces worked and daemon lifecycle/startup/HTTP passed, but
+repeated enablement exceeded the Windows command-line limit before PowerShell
+started. The corrected full connector lifecycle remains unaccepted.

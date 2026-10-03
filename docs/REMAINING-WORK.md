@@ -32,24 +32,18 @@ physical and actual-provider acceptance, and login/reboot remain. These trials
 do not update the published beta.4 package or prove a hosted Windows upgrade. See
 [the Windows port](WINDOWS-PORT.md) for the exact scope.
 
-A separate Windows browser-connector login-service candidate now has source for
-owned Task Scheduler registration, conservative desktop enablement and graceful
-process-generation-scoped shutdown. It requires the already installed owned
-daemon login task; it does not install or replace that dependency automatically.
-Strict native compilation passed. The first lifecycle trial exited at startup:
-PowerShell 5.1 treated ordinary stderr as an error under `Stop`. Paired controls
-reproduced that behavior; native exit-code handling then reached serving HTTP on
-`0de2747f`. That trial stopped at a fixture ACL module-load error and cleaned all
-owned tasks/processes without force. Configured relative paths are now captured
-before registration, and tunnel lookup includes native `.exe` names. Full native
-lifecycle on `17bbbdae` confirmed those paths and reached HTTP, then failed
-identical enablement because it reopened the running task's unshared log for
-writing. Identical enablement now preserves that handle. Cleanup passed without
-force/errors. The next8215b78c run failed earlier in daemon install at the
-unchanged20-second PowerShell bound, before connector acceptance. Opt-in service
-phase traces now distinguish process entry, task lookup and ownership; the cause
-remains open. Both full local gates passed; corrected native lifecycle, daemon
-survival, crash/reboot and actual browser/tunnel acceptance remain unverified.
+A separate Windows browser-connector candidate implements owned login-task
+registration, relative-path capture, conservative enablement and graceful
+process-generation-scoped shutdown. It requires an already installed owned
+daemon task. Native trials reached serving HTTP with the selected daemon;
+identical enablement now preserves the running task's log handle. Scheduler
+operations use a bounded private temporary script so repeated ownership checks
+do not exceed Windows' command-line limit. Opt-in phase traces distinguish
+process entry, task lookup and ownership; an earlier 20-second Scheduler timeout
+remains unexplained. Full local gates passed, but corrected portable/installed
+connector lifecycle, crash/reboot and actual browser/tunnel acceptance remain
+unverified. Exact failures and partial passes are retained in
+[the verification index](verification/INDEX.md).
 
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its
