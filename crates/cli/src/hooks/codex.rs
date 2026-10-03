@@ -192,8 +192,7 @@ async fn finish_report<B: Backend>(
                 .workdir
                 .as_ref()
                 .and_then(|p| p.canonicalize().ok())
-                .as_ref()
-                .map(PathBuf::as_path)
+                .as_deref()
                 == Some(checkout)
             && agent.spec.labels.get("session_id") == Some(&input.session_id),
         "Codex activity requires an exact verified session binding"
