@@ -75,9 +75,7 @@ impl Session {
             return Err(Error::Budget);
         }
         let mut file = crate::files::open_regular(path)?;
-        if Generation::capture(&file)? != self.cursor.generation {
-            return Err(Error::Changed);
-        }
+        self.cursor.generation.check(Generation::capture(&file)?)?;
         let start = Instant::now();
         file.seek(SeekFrom::Start(self.checked))?;
         let allowance = bytes.min(self.cursor.offset - self.checked);
@@ -103,11 +101,12 @@ impl Session {
             }
         }
         let bytes_read = allowance - reader.get_ref().limit();
-        if Generation::capture(reader.get_ref().get_ref())? != self.cursor.generation
-            || Generation::capture(&crate::files::open_regular(path)?)? != self.cursor.generation
-        {
-            return Err(Error::Changed);
-        }
+        self.cursor
+            .generation
+            .check(Generation::capture(reader.get_ref().get_ref())?)?;
+        self.cursor
+            .generation
+            .check(Generation::capture(&crate::files::open_regular(path)?)?)?;
         self.ready = self.checked == self.cursor.offset;
         if self.ready && (!self.line.is_empty() || self.prefix != self.cursor.prefix_digest) {
             self.ready = false;
@@ -153,9 +152,9 @@ impl Session {
         if !self.ready || cursor != &self.cursor {
             return Err(Error::Cursor);
         }
-        if Generation::capture(&crate::files::open_regular(path)?)? != cursor.generation {
-            return Err(Error::Changed);
-        }
+        cursor
+            .generation
+            .check(Generation::capture(&crate::files::open_regular(path)?)?)?;
         Ok(())
     }
 }
@@ -184,6 +183,54 @@ mod tests {
                 return Ok(passes);
             }
         }
+    }
+
+    #[test]
+    fn growth_defers_each_snapshot_stage_but_a_rewritten_prefix_still_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("growing.jsonl");
+        std::fs::write(&path, row(0)).unwrap();
+        let accepted = scan(&path, Runtime::Claude, None, Budget::default()).unwrap();
+        let mut session = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
+        let append = |id| {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .unwrap()
+                .write_all(row(id).as_bytes())
+                .unwrap();
+        };
+        append(1);
+        assert!(matches!(
+            prepare(&mut session, &path),
+            Err(Error::SnapshotAdvanced)
+        ));
+        let mut session = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
+        prepare(&mut session, &path).unwrap();
+        append(2);
+        assert!(matches!(
+            session.scan(&path, Budget::default()),
+            Err(Error::SnapshotAdvanced)
+        ));
+        let mut session = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
+        prepare(&mut session, &path).unwrap();
+        let proposal = session.scan(&path, Budget::default()).unwrap();
+        assert_eq!(proposal.samples.len(), 2);
+        append(3);
+        assert!(matches!(
+            session.validate(&path, &proposal.cursor),
+            Err(Error::SnapshotAdvanced)
+        ));
+
+        // Growth alone cannot certify an append-only writer. A changed accepted
+        // record, even alongside an append, must fail the fresh prefix proof.
+        std::fs::write(
+            &path,
+            format!("{}{}{}{}{}", row(9), row(1), row(2), row(3), row(4)),
+        )
+        .unwrap();
+        let mut changed = Session::open(&path, Runtime::Claude, Some(&accepted.cursor)).unwrap();
+        assert!(matches!(prepare(&mut changed, &path), Err(Error::Changed)));
     }
 
     #[test]
@@ -318,7 +365,7 @@ mod tests {
         assert!(matches!(prepare(&mut changed, &path), Err(Error::Changed)));
         assert!(matches!(
             session.validate(&path, &last),
-            Err(Error::Changed)
+            Err(Error::SnapshotAdvanced)
         ));
         std::fs::OpenOptions::new()
             .write(true)
