@@ -18,6 +18,10 @@ on:
         description: In capability_only mode, build and test the shared-server receiver after one explicit fixture turn
         type: boolean
         default: false
+      witnessed_birth:
+        description: With receiver_acceptance, manually witness the new native thread and test first input without a warmup
+        type: boolean
+        default: false
       startup_samples:
         description: Additional fresh-home samples per ancestry type (0..20)
         type: choice
@@ -199,10 +203,12 @@ jobs:
         env:
           CAPABILITY_APPROVAL: ${{ inputs.capability_approval }}
           RECEIVER_ACCEPTANCE: ${{ inputs.receiver_acceptance }}
+          WITNESSED_BIRTH: ${{ inputs.witnessed_birth }}
         run: |
           $options = @()
           if ($env:CAPABILITY_APPROVAL -eq 'true') { $options += '--approval' }
           if ($env:RECEIVER_ACCEPTANCE -eq 'true') { $options += '--binary-dir'; $options += 'target/release' }
+          if ($env:WITNESSED_BIRTH -eq 'true') { $options += '--witnessed-birth' }
           python scripts/windows_codex_remote_capability.py --codex artifacts/codex.exe --output artifacts/capability @options
       - name: Preserve bounded capability evidence
         if: always()

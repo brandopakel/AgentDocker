@@ -44,7 +44,10 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--approval', action='store_true', help='Check a private native command approval')
     parser.add_argument('--binary-dir', type=Path, help='Also test AgentDocker shared-server receiver after one explicit user turn')
+    parser.add_argument('--witnessed-birth', action='store_true', help='Manually witness a fresh owned thread and test first input without a warmup; requires --binary-dir')
     args = parser.parse_args()
+    if args.witnessed_birth and args.binary_dir is None:
+        parser.error('--witnessed-birth requires --binary-dir')
     if os.name != 'nt':
         parser.error('requires native Windows')
     import psutil
@@ -75,6 +78,7 @@ def main():
     report['approval_requested'] = args.approval
     report['observer_approval_requests'] = []
     report['receiver_requested'] = args.binary_dir is not None
+    report['witnessed_birth_requested'] = args.witnessed_birth
     report['source_commit'] = subprocess.check_output(
         ['git', 'rev-parse', 'HEAD'], cwd=Path(__file__).resolve().parents[1], text=True, timeout=10).strip()
 
@@ -251,6 +255,40 @@ def main():
                 wrong.close()
                 status = None
             step('dedicated server rejects an invalid capability token', status in (401, 403), status)
+            sequence = 0
+
+            def call(method, params):
+                nonlocal sequence
+                sequence += 1
+                channel.send(json.dumps({'id': sequence, 'method': method, 'params': params}))
+                deadline = time.monotonic() + 10
+                for _ in range(100):
+                    remaining = deadline - time.monotonic()
+                    assert remaining > 0, 'provider request deadline exceeded'
+                    value = json.loads(channel.recv(timeout=remaining))
+                    if value.get('id') == sequence and 'method' not in value:
+                        if 'error' in value:
+                            raise ProviderRefusal(method, value['error'])
+                        assert 'result' in value, {'method': method, 'reply': value}
+                        return value['result']
+                    if value.get('method') == 'thread/started':
+                        report.setdefault('thread_started_events', []).append(value)
+                    if 'method' in value and 'id' in value:
+                        assert args.approval, 'unexpected provider request in startup-only probe'
+                        assert value['method'] == 'item/commandExecution/requestApproval', value['method']
+                        assert len(report['observer_approval_requests']) < 20
+                        report['observer_approval_requests'].append({'id': value['id'], 'method': value['method']})
+                        # Observe only. The native terminal must own the decision;
+                        # this client never responds to server-initiated requests.
+                raise AssertionError('provider exceeded notification bound')
+
+            if args.witnessed_birth:
+                call('initialize', {'clientInfo': {'name': 'agentdocker_private_startup_probe', 'version': '0'},
+                                    'capabilities': {'experimentalApi': True}})
+                channel.send(json.dumps({'method': 'initialized'}))
+                before = call('thread/loaded/list', {})
+                step('owned server is empty before its native TUI starts', before.get('data') == [] and before.get('nextCursor') is None)
+                report['before_tui_threads'] = before
             tui = PtyProcess.spawn(
                 [str(codex), '--no-alt-screen'] +
                 (['--dangerously-bypass-hook-trust'] if receiver is not None else []) +
@@ -282,35 +320,11 @@ def main():
             while time.monotonic() < deadline and 'fixture-model' not in ''.join(output):
                 assert tui.isalive(), 'native TUI exited before initialization'
                 time.sleep(0.1)
-            step('native TUI initializes before the observing client', 'fixture-model' in ''.join(output))
-            sequence = 0
-
-            def call(method, params):
-                nonlocal sequence
-                sequence += 1
-                channel.send(json.dumps({'id': sequence, 'method': method, 'params': params}))
-                deadline = time.monotonic() + 10
-                for _ in range(100):
-                    remaining = deadline - time.monotonic()
-                    assert remaining > 0, 'provider request deadline exceeded'
-                    value = json.loads(channel.recv(timeout=remaining))
-                    if value.get('id') == sequence and 'method' not in value:
-                        if 'error' in value:
-                            raise ProviderRefusal(method, value['error'])
-                        assert 'result' in value, {'method': method, 'reply': value}
-                        return value['result']
-                    if 'method' in value and 'id' in value:
-                        assert args.approval, 'unexpected provider request in startup-only probe'
-                        assert value['method'] == 'item/commandExecution/requestApproval', value['method']
-                        assert len(report['observer_approval_requests']) < 20
-                        report['observer_approval_requests'].append({'id': value['id'], 'method': value['method']})
-                        # Observe only. The native terminal must own the decision;
-                        # this client never responds to server-initiated requests.
-                raise AssertionError('provider exceeded notification bound')
-
-            call('initialize', {'clientInfo': {'name': 'agentdocker_private_startup_probe', 'version': '0'},
-                                'capabilities': {'experimentalApi': True}})
-            channel.send(json.dumps({'method': 'initialized'}))
+            step('native TUI displays its initialized model', 'fixture-model' in ''.join(output))
+            if not args.witnessed_birth:
+                call('initialize', {'clientInfo': {'name': 'agentdocker_private_startup_probe', 'version': '0'},
+                                    'capabilities': {'experimentalApi': True}})
+                channel.send(json.dumps({'method': 'initialized'}))
             deadline = time.monotonic() + 20
             ids = []
             while time.monotonic() < deadline and not ids:
@@ -326,6 +340,11 @@ def main():
             step('initialization caused no model requests', not report['requests'])
             report['thread'] = thread
             report['reported_source'] = metadata.get('source')
+            if args.witnessed_birth:
+                births = report.get('thread_started_events', [])
+                step('observer witnesses the sole new native thread before any input',
+                     len(births) == 1 and births[0]['params']['thread']['id'] == thread and not report['requests'])
+                report['thread_started_before_first_queue'] = json.loads(json.dumps(births))
 
             def read_thread(include_turns=False):
                 # Native materialization briefly exposes an empty rollout.
@@ -359,31 +378,35 @@ def main():
                 expected = (f'thread {thread} is not materialized yet; '
                             'thread/turns/list is unavailable before first user message')
                 step('fresh thread explicitly refuses pre-materialization turn pagination',
-                     error.error.get('code') == -32600 and error.error.get('message') == expected,
+                     (error.error.get('code') == -32600 and error.error.get('message') == expected) or
+                     (args.witnessed_birth and error.error == {'code': -32601, 'message': 'list_turns is not supported yet'}),
                      error.error)
             else:
                 raise AssertionError('pinned provider unexpectedly accepted unmaterialized turn history')
 
             if args.binary_dir is not None:
-                receiver.prepare(codex, tui, provider, thread, port, token_file)
+                receiver.prepare(codex, tui, provider, thread, port, token_file,
+                                 birth_created_at=metadata['createdAt'] if args.witnessed_birth else None)
                 first_message = receiver.send(queue_text)
-                receiver.refuse_empty_history()
-                step('AgentDocker refuses pre-first-message history without binding or input', not report['requests'])
-                report['explicit_initial_user_turn'] = 'AD_EXPLICIT_ESTABLISHED_SESSION'
-                tui.write(report['explicit_initial_user_turn']); time.sleep(0.3); tui.write('\r')
-                deadline = time.monotonic() + 30
-                while time.monotonic() < deadline:
-                    if report['requests'] and read_thread()['status']['type'] == 'idle':
-                        break
-                    time.sleep(0.2)
-                else:
-                    raise TimeoutError('explicit fixture user turn did not finish')
-
+                if not args.witnessed_birth:
+                    receiver.refuse_empty_history()
+                    step('AgentDocker refuses pre-first-message history without binding or input', not report['requests'])
+                    report['explicit_initial_user_turn'] = 'AD_EXPLICIT_ESTABLISHED_SESSION'
+                    tui.write(report['explicit_initial_user_turn']); time.sleep(0.3); tui.write('\r')
+                    deadline = time.monotonic() + 30
+                    while time.monotonic() < deadline:
+                        if report['requests'] and read_thread()['status']['type'] == 'idle':
+                            break
+                        time.sleep(0.2)
+                    else:
+                        raise TimeoutError('explicit fixture user turn did not finish')
             # The API's source label is diagnostic only, never process identity.
             time.sleep(1)
             tui.write(draft_text)
             time.sleep(0.3)
             if receiver is not None:
+                if args.witnessed_birth:
+                    step('receiver starts with no explicit user turn or model request', not report['requests'])
                 receiver.start()
             else:
                 call('thread/queue/add', {'threadId': thread, 'clientUserMessageId': 'ad-private-' + secrets.token_hex(8),
@@ -471,7 +494,7 @@ def main():
                 time.sleep(0.1)
             users = history(draft_text)
             step('native Return submits the preserved draft exactly once',
-                 any(v['draft_nonce_present'] for v in report['requests']) and len(users) == 2 + int(receiver is not None) and
+                 any(v['draft_nonce_present'] for v in report['requests']) and len(users) == 2 + int(receiver is not None and not args.witnessed_birth) and
                  sum(queue_text in json.dumps(v) for v in users) == 1 and
                  sum(draft_text in json.dumps(v) for v in users) == 1 and tui.isalive())
             deadline = time.monotonic() + 25
@@ -488,7 +511,7 @@ def main():
                 receiver.received(second_message)
                 users = history(replacement_text)
                 step('replacement preserves native server terminal and all exact receipts without replay',
-                     provider.poll() is None and tui.isalive() and len(users) == 4 and
+                     provider.poll() is None and tui.isalive() and len(users) == 4 - int(args.witnessed_birth) and
                      all(sum(text in json.dumps(item) for item in users) == 1
                          for text in (queue_text, draft_text, replacement_text)) and
                      [item['message'] for item in receiver.ledger()['completed']] == [first_message, busy_message, second_message])

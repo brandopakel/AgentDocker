@@ -200,7 +200,7 @@ class Receiver:
         assert not any(a.get('pid') == server.pid and a.get('spec', {}).get('runtime') == 'codex'
                        for a in agents), 'MCP registered the app-server as a conversation'
 
-    def prepare(self, codex, tui, server, thread, port, token_file):
+    def prepare(self, codex, tui, server, thread, port, token_file, birth_created_at=None):
         assert self.daemon is not None and self.daemon.poll() is None
         agent = self.rpc({'op': 'register', 'spec': {'name': 'native-remote-fixture', 'runtime': 'codex',
                          'workdir': str(self.repo), 'labels': {'session_id': thread}}, 'pid': tui.pid})['agent']
@@ -213,6 +213,10 @@ class Receiver:
                       'executable': canonical(codex), 'cwd': canonical(self.repo), 'port': port,
                       'token_file': canonical(token_file),
                       'token_sha256': hashlib.sha256(token_file.read_bytes()).hexdigest()}
+        if birth_created_at is not None:
+            descriptor['version'] = 2
+            descriptor['birth'] = {'launcher': {'pid': os.getpid(), 'started_at': process_birth(os.getpid())},
+                                   'created_at': birth_created_at}
         record = self.root / 'server.json'
         record.write_text(json.dumps(descriptor), encoding='utf-8')
         self.command = [self.cli, '--socket', self.socket, 'codex-queue', '--agent', self.agent,

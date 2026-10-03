@@ -732,3 +732,11 @@ fixture still uses an explicit initial user turn. Private configuration stays
 unchanged; teardown explicitly kills pinned provider processes and joins the
 readers, with no receiver cleanup errors and removed scratch. This does not
 prove graceful provider exit, real-account acceptance or automatic startup.
+
+The optional `witnessed_birth=true` manual workflow input (with capability-only
+and receiver acceptance enabled) initializes the observer before its sole native
+TUI, requires an empty server and that exact thread-start notification, then
+publishes a private version-2 birth receipt. It exercises first queued input
+without the established-session warmup, retaining the draft, approval, original
+hook/MCP attribution and receiver-replacement checks. This manual fixture is
+not the automatic product launcher; its native execution remains pending.
