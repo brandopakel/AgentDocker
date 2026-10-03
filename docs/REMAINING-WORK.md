@@ -108,7 +108,10 @@ acceptance remain open.
 Native Codex startup remains blocked before the first ordinary prompt. A
 provider-only Windows remote-TUI capability fixture now isolates the shared
 server path already observed on Mac; exact170884eb passed eight checks including
-first queued input and two exact receipts with the typed draft preserved. This
+first queued input and two exact receipts with the typed draft preserved.
+The optional native command-approval scenario also passed twelve checks on
+`9af3a42c`, including a visible held print command, one synthetic native Return,
+unchanged rule/configuration and complete process/reader/scratch cleanup. This
 is provider capability evidence only. Product bootstrap,
 process-generation ownership, shared transport, restart/adoption and actual
 provider acceptance still require implementation and evidence.

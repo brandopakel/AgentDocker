@@ -694,17 +694,14 @@ Integration with accepted growing-source accounting requires final checks and
 follow-up review; hosted distribution, physical and actual-provider/logon/reboot
 acceptance remain open.
 
-The provider-only remote-TUI probe also has an optional private command-approval
+The provider-only remote-TUI probe has an optional private command-approval
 scenario. It installs one prompt rule in its disposable profile, requires the
 native terminal to display and hold the print command, and supplies a single
 synthetic Return before checking the result and retained draft. The observing
-WebSocket client never answers an approval. Windows acceptance of this scenario
-is pending; neither it nor the startup probe proves AgentDocker receiver
-integration, a real provider account or a human permission interaction.
-
-The first Windows remote approval trial (`ceaff20a`) passed all twelve functional
-checks, including the visible pending command, native one-time decision,
-unchanged prompt rule, retained draft and two exact receipts. It remains failed:
-all fixture processes and scratch were removed, but pywinpty's forwarding socket
-kept the terminal reader blocked. Cleanup now cancels private PTY I/O, shuts down
-its socket and verifies both readers exit; corrected acceptance is pending.
+WebSocket client never answers an approval. Exact `9af3a42c` passed all twelve
+checks, with two exact input receipts, unchanged configuration/rule and complete
+owned process, reader and scratch cleanup. Cleanup explicitly cancels private
+PTY I/O and shuts down pywinpty's forwarding socket before joining both readers;
+the earlier `ceaff20a` cleanup failure remains in the verification index. This
+is provider capability evidence, not AgentDocker receiver integration, a real
+provider account or a human permission interaction.
