@@ -362,7 +362,6 @@ pub(crate) async fn run(client: crate::client::Client, mut args: RunArgs) -> Res
         let client = client.with_start_timeout(None);
         let until = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
-            use crate::client::Backend;
             if matches!(client.call(&agentdocker_core::Request::Ping).await, Ok(agentdocker_core::Response::Pong { .. })) {
                 break;
             }
@@ -380,11 +379,28 @@ pub(crate) async fn run(client: crate::client::Client, mut args: RunArgs) -> Res
         .await
     }
     .await;
+    let mut cleanup_errors = Vec::new();
     for name in ["windows-running.json", "windows-stop.json"] {
         let path = root.join(name);
-        if read::<Running>(&path)?.as_ref() == Some(&running) {
-            std::fs::remove_file(path)?;
+        let cleanup = (|| -> Result<()> {
+            if read::<Running>(&path)?.as_ref() == Some(&running) {
+                std::fs::remove_file(&path)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = cleanup {
+            cleanup_errors.push(format!("{}: {error:#}", path.display()));
         }
+    }
+    if !cleanup_errors.is_empty() {
+        let detail = format!(
+            "connector service record cleanup failed: {}",
+            cleanup_errors.join("; ")
+        );
+        return match result {
+            Ok(()) => Err(anyhow::anyhow!(detail)),
+            Err(error) => Err(error.context(detail)),
+        };
     }
     result
 }

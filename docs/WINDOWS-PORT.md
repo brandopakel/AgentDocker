@@ -627,3 +627,13 @@ from the environment. Differently configured/foreign tasks and browser grants
 are preserved. This candidate is unvalidated: native fresh-home/install/enable/
 replace/uninstall, interrupted update, daemon-survival, crash and login/reboot
 checks remain required.
+
+The connector candidate has an opt-in extracted-package fixture for the owned
+Task Scheduler/HTTP lifecycle: missing daemon dependency, conservative enable,
+stale stop generation, changed/foreign task refusal, interrupted registration,
+explicit replacement, crash restart and graceful uninstall. It checks the daemon
+identity and seeded grant bytes are retained. No public tunnel, real consent or
+reboot is exercised. The initial Windows build failed strict unused-code checks;
+platform-specific helpers/imports are corrected, and native acceptance remains
+pending. Cleanup attempts both service records and retains the original serving
+error if record cleanup also fails.

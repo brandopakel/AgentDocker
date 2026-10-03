@@ -11,13 +11,16 @@ use anyhow::{Context, Result, bail};
 use super::ServeArgs;
 #[cfg(not(windows))]
 use crate::service::execute;
+#[cfg(any(not(windows), test))]
 use crate::service::{Cmd, Plan};
 
 #[cfg(any(windows, test))]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod windows;
 
+#[cfg(any(not(windows), test))]
 pub const LABEL: &str = "dev.agentdocker.connector";
+#[cfg(any(not(windows), test))]
 pub const UNIT: &str = "agentdocker-connector.service";
 
 /// What a serving connector writes about itself lives in the host crate,
@@ -29,17 +32,22 @@ pub use agentdocker_host::connector::{
 /// The service's files and commands, from the executable, the state home
 /// and the arguments `serve` was given.
 pub struct Layout {
+    #[cfg_attr(windows, allow(dead_code))]
     pub agentdocker: PathBuf,
     pub home: PathBuf,
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub socket: Option<PathBuf>,
     pub user_home: PathBuf,
+    #[cfg_attr(windows, allow(dead_code))]
     pub uid: u32,
     pub serve_args: Vec<String>,
     /// Directories the service's PATH must have: where cloudflared is.
+    #[cfg_attr(windows, allow(dead_code))]
     pub path_dirs: Vec<PathBuf>,
 }
 
 impl Layout {
+    #[cfg(any(not(windows), test))]
     pub fn argv(&self) -> Vec<String> {
         let mut argv = vec![
             self.agentdocker.to_string_lossy().into_owned(),
@@ -54,24 +62,29 @@ impl Layout {
         self.home.join("connector").join("serve.log")
     }
 
+    #[cfg(any(not(windows), test))]
     pub fn plist_path(&self) -> PathBuf {
         self.user_home
             .join("Library/LaunchAgents")
             .join(format!("{LABEL}.plist"))
     }
 
+    #[cfg(any(not(windows), test))]
     pub fn unit_path(&self) -> PathBuf {
         self.user_home.join(".config/systemd/user").join(UNIT)
     }
 
+    #[cfg(any(not(windows), test))]
     fn domain(&self) -> String {
         format!("gui/{}", self.uid)
     }
 
+    #[cfg(any(not(windows), test))]
     fn target(&self) -> String {
         format!("gui/{}/{LABEL}", self.uid)
     }
 
+    #[cfg(any(not(windows), test))]
     fn path_value(&self) -> String {
         let mut dirs: Vec<String> = self
             .path_dirs
@@ -87,12 +100,14 @@ impl Layout {
     }
 }
 
+#[cfg(any(not(windows), test))]
 fn xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
 
+#[cfg(any(not(windows), test))]
 fn systemd_quote(s: &str) -> String {
     if s.chars()
         .all(|c| c.is_ascii_alphanumeric() || "/-._=:@".contains(c))
@@ -106,6 +121,7 @@ fn systemd_quote(s: &str) -> String {
 /// A launchd agent: starts at login, restarts after a crash, not after a
 /// clean exit; its output is the serve log, which holds the banner and
 /// so the pairing code.
+#[cfg(any(not(windows), test))]
 pub fn launchd_plist(layout: &Layout) -> String {
     let args: String = layout
         .argv()
@@ -151,6 +167,7 @@ pub fn launchd_plist(layout: &Layout) -> String {
     )
 }
 
+#[cfg(any(not(windows), test))]
 pub fn systemd_unit(layout: &Layout) -> String {
     let exec: Vec<String> = layout.argv().iter().map(|a| systemd_quote(a)).collect();
     format!(
@@ -173,6 +190,7 @@ pub fn systemd_unit(layout: &Layout) -> String {
     )
 }
 
+#[cfg(any(not(windows), test))]
 pub fn install_plan(layout: &Layout, macos: bool) -> Plan {
     if macos {
         let plist = layout.plist_path();
@@ -219,6 +237,7 @@ pub fn install_plan(layout: &Layout, macos: bool) -> Plan {
     }
 }
 
+#[cfg(any(not(windows), test))]
 pub fn uninstall_plan(layout: &Layout, macos: bool) -> Plan {
     if macos {
         Plan {
