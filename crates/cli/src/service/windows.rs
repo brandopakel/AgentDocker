@@ -8,27 +8,27 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-const RECORD_FORMAT: u32 = 1;
-const RECORD_LIMIT: u64 = 32 * 1024;
+pub(crate) const RECORD_FORMAT: u32 = 1;
+pub(crate) const RECORD_LIMIT: u64 = 32 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct Definition {
-    task: String,
-    home: PathBuf,
-    description: String,
-    executable: PathBuf,
-    arguments: String,
+pub(crate) struct Definition {
+    pub(crate) task: String,
+    pub(crate) home: PathBuf,
+    pub(crate) description: String,
+    pub(crate) executable: PathBuf,
+    pub(crate) arguments: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Receipt {
-    format: u32,
-    current: Definition,
+pub(crate) struct Receipt {
+    pub(crate) format: u32,
+    pub(crate) current: Definition,
     // A prepared update accepts either exact definition after interruption.
-    previous: Option<Definition>,
+    pub(crate) previous: Option<Definition>,
 }
 
-fn quoted(value: &str) -> String {
+pub(crate) fn quoted(value: &str) -> String {
     // PowerShell treats typographic single quotes as delimiters too.
     // Double the original scalar so paths retain their exact spelling.
     let mut out = String::with_capacity(value.len() + 2);
@@ -46,7 +46,7 @@ fn quoted(value: &str) -> String {
     out
 }
 
-fn encoded(script: &str) -> String {
+pub(crate) fn encoded(script: &str) -> String {
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
@@ -56,7 +56,7 @@ fn task_name(home: &Path) -> String {
     format!("AgentDocker-{:x}", hash)
 }
 
-fn powershell() -> Result<PathBuf> {
+pub(crate) fn powershell() -> Result<PathBuf> {
     let root = std::env::var_os("SystemRoot").context("Windows SystemRoot is not set")?;
     let executable = PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
     if !executable.is_absolute() || !executable.is_file() {
@@ -65,7 +65,7 @@ fn powershell() -> Result<PathBuf> {
     Ok(executable)
 }
 
-fn matches_definition(definition: &Definition) -> String {
+pub(crate) fn matches_definition(definition: &Definition) -> String {
     format!(
         "($task.Description -ceq {} -and @($task.Actions).Count -eq 1 -and $task.Actions[0].Execute -ieq {} -and $task.Actions[0].Arguments -ceq {})",
         quoted(&definition.description),
@@ -146,6 +146,10 @@ fn write_receipt(layout: &Layout, receipt: &Receipt) -> Result<()> {
 }
 
 fn evaluate(layout: &Layout, script: &str) -> Result<String> {
+    evaluate_at(&layout.user_home, script)
+}
+
+pub(crate) fn evaluate_at(user_home: &Path, script: &str) -> Result<String> {
     let script = format!(
         "$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';[Console]::OutputEncoding=[Text.UTF8Encoding]::new();{script}"
     );
@@ -156,11 +160,8 @@ fn evaluate(layout: &Layout, script: &str) -> Result<String> {
         "-EncodedCommand".into(),
         encoded(&script),
     ];
-    let output = agentdocker_host::command::run(
-        &layout.user_home,
-        &argv,
-        std::time::Duration::from_secs(20),
-    )?;
+    let output =
+        agentdocker_host::command::run(user_home, &argv, std::time::Duration::from_secs(20))?;
     if !output.success {
         let detail = output.text.trim();
         bail!(
@@ -176,6 +177,10 @@ fn evaluate(layout: &Layout, script: &str) -> Result<String> {
 }
 
 fn task_context(layout: &Layout, receipt: Option<&Receipt>) -> String {
+    task_context_named(&task_name(&layout.home), receipt)
+}
+
+pub(crate) fn task_context_named(name: &str, receipt: Option<&Receipt>) -> String {
     // A missing -TaskName is a cmdlet error even with SilentlyContinue. If
     // nothing follows the ownership guard, powershell.exe can exit 1 without
     // printing that suppressed error. Enumerate successfully, then select the
@@ -184,7 +189,7 @@ fn task_context(layout: &Layout, receipt: Option<&Receipt>) -> String {
     // permission to replace a task we could not inspect.
     format!(
         "$taskPath='\\';$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$found=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {{$_.TaskPath -ieq $taskPath -and $_.TaskName -ieq {}}}); if($found.Count -gt 1){{throw 'The Windows service task lookup was ambiguous; no task was changed.'}}; $task=$null; if($found.Count -eq 1){{$task=$found[0]}};{};",
-        quoted(&task_name(&layout.home)),
+        quoted(name),
         ownership_guard(receipt),
     )
 }
@@ -240,11 +245,46 @@ fn install_script(layout: &Layout, receipt: &Receipt) -> String {
 }
 
 fn stop_task_script(layout: &Layout, receipt: Option<&Receipt>) -> String {
-    let task = quoted(&task_name(&layout.home));
+    stop_task_named(&task_name(&layout.home), receipt)
+}
+
+pub(crate) fn stop_task_named(name: &str, receipt: Option<&Receipt>) -> String {
+    let task = quoted(name);
     format!(
         "{} if($null -ne $task){{Stop-ScheduledTask -TaskPath $taskPath -TaskName {task}; $until=[DateTime]::UtcNow.AddSeconds(10); do{{$task=Get-ScheduledTask -TaskPath $taskPath -TaskName {task}; if($task.State.ToString() -ne 'Running'){{break}}; Start-Sleep -Milliseconds 100}}while([DateTime]::UtcNow -lt $until); if($task.State.ToString() -eq 'Running'){{throw 'The owned task did not stop within 10 seconds.'}}}}",
-        task_context(layout, receipt),
+        task_context_named(name, receipt),
     )
+}
+
+/// Connector login tasks must start the daemon through its own verified task,
+/// so stopping a connector never retires a daemon inherited in its task tree.
+pub(crate) fn connector_dependency(home: &Path, user_home: &Path, start: bool) -> Result<()> {
+    let layout = Layout {
+        home: home.to_owned(),
+        user_home: user_home.to_owned(),
+        agentd: PathBuf::new(),
+        socket: None,
+        uid: 0,
+    };
+    let receipt = read_receipt(&layout)?.context(
+        "Windows connector startup requires the daemon login service; run `agentdocker daemon install` first",
+    )?;
+    let action = if start {
+        format!(
+            "Start-ScheduledTask -TaskPath $taskPath -TaskName {}",
+            quoted(&receipt.current.task)
+        )
+    } else {
+        String::new()
+    };
+    evaluate(
+        &layout,
+        &format!(
+            "{} if($null -eq $task){{throw 'The owned daemon login task is missing; run agentdocker daemon install first.'}}; {action}",
+            task_context(&layout, Some(&receipt))
+        ),
+    )?;
+    Ok(())
 }
 
 /// Only exact owned definitions may be started, stopped or removed. The

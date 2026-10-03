@@ -152,7 +152,8 @@ crash, and what that means for a person:
 - Live daemon reload and the descriptor handover (`daemon reload`): the
   daemon holds no descriptors a successor could inherit; stop and start it.
 - Container workspace transport and grants: the endpoint is a Unix socket.
-- The connector service remains unavailable. Per-user desktop installation and
+- The connector login-service candidate is being implemented separately; its
+  native acceptance remains pending. Per-user desktop installation and
   local preview update/rollback passed the native lifecycle described below.
   Daemon login startup is now implemented through
   a limited per-user Task Scheduler task, with a private ownership receipt and
@@ -607,3 +608,16 @@ does not impose Windows sharing restrictions. The fixture now requests directory
 read access, first proves deletion fails with a sharing violation in a separate
 control, and records its observed handle path and open errors. The original
 failure is retained; product cleanup handling is unchanged by this fixture fix.
+
+Windows browser-connector service source now provides `connector install`,
+`enable` and `uninstall` through a distinct limited per-user login task.
+The owned daemon login service is a prerequisite, started through its own task;
+no on-demand daemon is launched within the connector task. Registration checks
+the exact action, ownership marker and current-user principal before mutation.
+A private run record pins PID, kernel birth and a new nonce; uninstall requests
+that generation's graceful exit and tunnel teardown before removing its task.
+The task action retains the selected daemon endpoint and strips session identity
+from the environment. Differently configured/foreign tasks and browser grants
+are preserved. This candidate is unvalidated: native fresh-home/install/enable/
+replace/uninstall, interrupted update, daemon-survival, crash and login/reboot
+checks remain required.

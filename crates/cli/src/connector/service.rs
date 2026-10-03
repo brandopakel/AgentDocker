@@ -9,7 +9,13 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 
 use super::ServeArgs;
-use crate::service::{Cmd, Plan, execute};
+#[cfg(not(windows))]
+use crate::service::execute;
+use crate::service::{Cmd, Plan};
+
+#[cfg(any(windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod windows;
 
 pub const LABEL: &str = "dev.agentdocker.connector";
 pub const UNIT: &str = "agentdocker-connector.service";
@@ -25,6 +31,7 @@ pub use agentdocker_host::connector::{
 pub struct Layout {
     pub agentdocker: PathBuf,
     pub home: PathBuf,
+    pub socket: Option<PathBuf>,
     pub user_home: PathBuf,
     pub uid: u32,
     pub serve_args: Vec<String>,
@@ -249,6 +256,8 @@ pub fn uninstall_plan(layout: &Layout, macos: bool) -> Plan {
 fn layout(args: &ServeArgs) -> Result<Layout> {
     let agentdocker = std::env::current_exe().context("cannot locate this executable")?;
     let home = agentdocker_host::dirs::home();
+    #[cfg(windows)]
+    let home = home.canonicalize().unwrap_or(home);
     let user_home = std::env::home_dir().context("no home directory")?;
     let mut serve_args = args.to_argv();
     let mut path_dirs = Vec::new();
@@ -280,6 +289,7 @@ fn layout(args: &ServeArgs) -> Result<Layout> {
     Ok(Layout {
         agentdocker,
         home,
+        socket: args.service_socket.clone(),
         user_home,
         uid: crate::service::current_uid_for_service(),
         serve_args,
@@ -290,6 +300,7 @@ fn layout(args: &ServeArgs) -> Result<Layout> {
 /// launchd unloads a job asynchronously: a `bootstrap` right after
 /// `bootout` can meet the old job still there and fail with I/O error 5.
 /// Wait, briefly, until the label is gone.
+#[cfg(not(windows))]
 fn wait_for_bootout(target: &str) {
     for _ in 0..50 {
         let present = std::process::Command::new("launchctl")
@@ -305,6 +316,7 @@ fn wait_for_bootout(target: &str) {
     }
 }
 
+#[cfg(not(windows))]
 pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
     let macos = cfg!(target_os = "macos");
     if !macos && !cfg!(target_os = "linux") {
@@ -346,6 +358,7 @@ pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
 /// Desktop setup must not replace a service configured outside this action.
 /// A complete, synced definition is published exclusively. A concurrent creator
 /// is compared, never overwritten or observed while its content is incomplete.
+#[cfg(any(not(windows), test))]
 fn ensure_definition(path: &std::path::Path, contents: &str) -> Result<()> {
     use std::io::{Read, Write};
     let parent = path.parent().context("service definition has no parent")?;
@@ -378,6 +391,7 @@ fn ensure_definition(path: &std::path::Path, contents: &str) -> Result<()> {
 
 /// Start an identical installed service, or install it without overwriting any
 /// existing definition. This is the conservative entry point for desktop setup.
+#[cfg(not(windows))]
 pub fn enable(args: &ServeArgs, dry_run: bool) -> Result<()> {
     let macos = cfg!(target_os = "macos");
     anyhow::ensure!(
@@ -429,6 +443,7 @@ pub fn enable(args: &ServeArgs, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(windows))]
 pub fn uninstall(dry_run: bool) -> Result<()> {
     let macos = cfg!(target_os = "macos");
     if !macos && !cfg!(target_os = "linux") {
@@ -436,6 +451,29 @@ pub fn uninstall(dry_run: bool) -> Result<()> {
     }
     let layout = layout(&ServeArgs::default())?;
     execute(&uninstall_plan(&layout, macos), dry_run)
+}
+
+#[cfg(windows)]
+fn windows_layout(args: &ServeArgs) -> Result<Layout> {
+    if args.tunnel.is_none() && args.public_url.is_none() {
+        bail!("choose a tunnel or provide its public URL");
+    }
+    layout(args)
+}
+
+#[cfg(windows)]
+pub fn install(args: &ServeArgs, dry_run: bool) -> Result<()> {
+    windows::install(&windows_layout(args)?, dry_run, false)
+}
+
+#[cfg(windows)]
+pub fn enable(args: &ServeArgs, dry_run: bool) -> Result<()> {
+    windows::install(&windows_layout(args)?, dry_run, true)
+}
+
+#[cfg(windows)]
+pub fn uninstall(dry_run: bool) -> Result<()> {
+    windows::uninstall(&layout(&ServeArgs::default())?, dry_run)
 }
 
 #[cfg(test)]
@@ -446,6 +484,7 @@ mod tests {
         Layout {
             agentdocker: "/opt/agentdocker".into(),
             home: "/Users/p/.agentdocker".into(),
+            socket: None,
             user_home: "/Users/p".into(),
             uid: 501,
             serve_args: vec![

@@ -26,6 +26,13 @@ physical and actual-provider acceptance, and login/reboot remain. These trials
 do not update the published beta.4 package or prove a hosted Windows upgrade. See
 [the Windows port](WINDOWS-PORT.md) for the exact scope.
 
+A separate Windows browser-connector login-service candidate now has source for
+owned Task Scheduler registration, conservative desktop enablement and graceful
+process-generation-scoped shutdown. It requires the already installed owned
+daemon login task; it does not install or replace that dependency automatically.
+Compilation, native task lifecycle, daemon survival, crash/reboot and actual
+browser/tunnel acceptance remain unverified.
+
 **The rollout is not complete.** The user requires macOS, Linux and native
 Windows. A labeled portable Windows preview can collect feedback while its
 installer and service are unfinished; it does not fulfill the full Windows
