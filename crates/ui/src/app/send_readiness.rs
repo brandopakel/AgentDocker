@@ -1,14 +1,15 @@
 //! Compact send-time warnings belong to the draft destination they answered.
 use super::{
     Message,
+    messages::look::{link, status_line},
     shell::{ChannelDraft, DeliveryTarget},
-    style::Colors,
+    style::{Colors, RADIUS_MD, alpha, weight},
     view::small,
 };
 use crate::controls::button as action;
 use iced::{
     Element, Fill,
-    widget::{column, row, scrollable, text},
+    widget::{column, container, row, scrollable, text},
 };
 
 pub(super) fn notice(
@@ -28,6 +29,9 @@ pub(super) fn composer_notice(
     notice_content(draft, target, c, false)
 }
 
+/// One status line — an amber dot, `Queued · 1 session needs attention`
+/// and a quiet Details link — and, opened, who needs what and the two
+/// things to do about each, in a quiet box under it.
 fn notice_content(
     draft: &ChannelDraft,
     target: DeliveryTarget,
@@ -43,63 +47,67 @@ fn notice_content(
         DeliveryTarget::Session(key) => format!("session-{key}"),
         DeliveryTarget::Channel(key) => format!("channel-{key}"),
     };
-    let mut body = column![
-        row![
-            text(format!(
-                "Queued · {} {}",
-                report.needs_attention,
-                if report.needs_attention == 1 {
-                    "session needs attention"
-                } else {
-                    "sessions need attention"
-                }
-            ))
-            .size(13)
-            .color(c.amber)
-            .width(Fill),
-            action(
-                format!("delivery-details-{key}"),
-                if draft.readiness_expanded {
-                    "Hide details"
-                } else {
-                    "Delivery details"
-                },
-                Some(Message::DeliveryDetails(target)),
-                false
-            ),
-        ]
-        .spacing(6)
-    ]
-    .spacing(4);
-    if draft.readiness_expanded {
+    let expanded = draft.readiness_expanded;
+    let toggle = link(
+        format!("delivery-details-{key}"),
+        if expanded {
+            "Hide details"
+        } else {
+            "Delivery details"
+        },
+        if expanded { "Hide details" } else { "Details" },
+        Some(Message::DeliveryDetails(target)),
+        c.accent,
+    );
+    let mut body = column![status_line(
+        c.amber,
+        format!(
+            "Queued · {} {}",
+            report.needs_attention,
+            if report.needs_attention == 1 {
+                "session needs attention"
+            } else {
+                "sessions need attention"
+            }
+        ),
+        c.amber,
+        vec![toggle],
+        c,
+    )]
+    .spacing(6);
+    if expanded {
         let mut details = column![small(
             "As it was when sent. Sent means waiting for the agent, not yet read.",
             c
         )]
-        .spacing(8);
+        .spacing(10);
         for recipient in &report.details {
             let guidance = recipient.guidance();
             details = details.push(
                 column![
-                    text(format!("{} · {}", recipient.name, recipient.issue.label())).size(13),
+                    text(format!("{} · {}", recipient.name, recipient.issue.label()))
+                        .size(13)
+                        .font(weight(iced::font::Weight::Medium)),
                     small(guidance.clone(), c),
                     row![
-                        action(
+                        link(
                             format!("delivery-session-{key}-{}", recipient.agent),
                             "Open session",
+                            "Open session",
                             Some(Message::OpenSession(recipient.agent.to_string())),
-                            false
+                            c.accent,
                         ),
-                        action(
+                        link(
                             format!("delivery-copy-{key}-{}", recipient.agent),
                             "Copy instructions",
+                            "Copy instructions",
                             Some(Message::CopyGuidance(guidance)),
-                            false
+                            c.accent,
                         ),
                     ]
-                    .spacing(6)
+                    .spacing(2)
                 ]
-                .spacing(3),
+                .spacing(4),
             );
         }
         if report.omitted() > 0 {
@@ -111,11 +119,25 @@ fn notice_content(
                 c,
             ));
         }
-        body = if scroll_details {
-            body.push(scrollable(details).height(180))
+        let details: Element<'static, Message> = if scroll_details {
+            scrollable(details).height(180).into()
         } else {
-            body.push(details)
+            details.into()
         };
+        body = body.push(
+            container(details)
+                .padding([10, 12])
+                .width(Fill)
+                .style(move |_| container::Style {
+                    background: Some(alpha(c.text, if c.dark { 0.04 } else { 0.03 }).into()),
+                    border: iced::Border {
+                        color: c.line,
+                        width: 1.0,
+                        radius: RADIUS_MD.into(),
+                    },
+                    ..Default::default()
+                }),
+        );
     }
     Some(body.into())
 }
