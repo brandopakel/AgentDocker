@@ -655,3 +655,12 @@ fixture now disables that tooltip; it still requires byte-identical configuratio
 and hooks after delivery. Corrected acceptance remains pending. The provider's
 MCP initialization supplies client capabilities/version, without a root thread
 identity, so it does not provide an alternate zero-prompt binding by itself.
+
+The native workflow also accepts `capability_only=true` for a separate, bounded
+Codex 0.160.0 ConPTY experiment. It uses a fresh restricted profile and loopback
+model, rejects an invalid token on a dedicated authenticated app-server, opens
+the actual remote TUI before the observing client, and checks empty-thread
+identity, first queued input, preserved draft and exact user receipts. It does
+not create an AgentDocker controller or read an account. This tests whether the
+Mac-observed transport capability exists on Windows; it does not replace the
+strict product startup gate or establish native permission/physical acceptance.

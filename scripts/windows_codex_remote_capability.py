@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+"""Provider-only Windows Codex remote-TUI startup capability probe.
+
+Uses a fresh private profile, a loopback model and an authenticated dedicated
+app-server. No AgentDocker binding, real account, physical input, permission
+approval or production configuration is exercised. A pass is capability evidence,
+not acceptance of AgentDocker's native controller.
+"""
+import argparse
+import csv
+import datetime
+import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
+import json
+import os
+from pathlib import Path
+import secrets
+import socket
+import subprocess
+import tempfile
+import threading
+import time
+import traceback
+
+from windows_native_codex_smoke import current_user_objects, remove_fixture, response_events
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--codex', type=Path, required=True)
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    if os.name != 'nt':
+        parser.error('requires native Windows')
+    import psutil
+    from websockets.sync.client import connect
+    from winpty import PtyProcess
+    from winpty.enums import Backend
+
+    current_user_objects()
+    codex = args.codex.resolve(strict=True)
+    out = args.output.resolve()
+    out.mkdir(parents=True, exist_ok=False)
+    root = Path(tempfile.mkdtemp(prefix='AgentDocker remote Codex ü ')).resolve()
+    report = {'result': 'failed', 'scope': __doc__, 'steps': [], 'requests': [],
+              'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'provider_sha256': hashlib.sha256(codex.read_bytes()).hexdigest(),
+              'driver_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+              'cleanup_errors': [], 'retired_processes': [], 'reader_errors': []}
+    owned, output = [], []
+    closing = threading.Event()
+    provider = tui = channel = server = reader = None
+    queue_text = 'AD_PRIVATE_FIRST_QUEUE_' + secrets.token_hex(8)
+    draft_text = 'AD_PRIVATE_RETAINED_DRAFT_' + secrets.token_hex(8)
+
+    def step(name, passed, detail=None):
+        report['steps'].append({'step': name, 'passed': bool(passed), 'detail': detail})
+        assert passed, name
+
+    def remember(pid):
+        process = psutil.Process(pid)
+        assert os.path.samefile(process.exe(), codex)
+        owned.append(process)
+        return process
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            self.send_error(404)
+
+        def do_POST(self):
+            try:
+                self.connection.settimeout(5)
+                length = int(self.headers.get('Content-Length', 0))
+                assert 0 < length <= 8 * 1024 * 1024
+                assert len(report['requests']) < 20
+                body = json.loads(self.rfile.read(length))
+                encoded = json.dumps(body)
+                report['requests'].append({
+                    'path': self.path, 'queue_nonce_present': queue_text in encoded,
+                    'draft_nonce_present': draft_text in encoded,
+                    'title_request': 'Generate a concise, single-line task title' in encoded})
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.end_headers()
+                for event in response_events(len(report['requests'])):
+                    self.wfile.write(('data: ' + json.dumps(event) + '\n\n').encode())
+                    self.wfile.flush()
+            except Exception as error:
+                report.setdefault('fixture_errors', []).append(str(error))
+
+    with (out / 'app-server.log').open('wb') as log:
+        try:
+            # Restrict only this newly created directory before writing the
+            # ephemeral capability token; no saved account/profile is accessed.
+            identity = subprocess.check_output(['whoami.exe', '/user', '/fo', 'csv', '/nh'],
+                                               text=True, timeout=10)
+            sid = next(csv.reader(io.StringIO(identity.strip())))[1]
+            assert sid.startswith('S-1-5-')
+            subprocess.run(['icacls.exe', str(root), '/inheritance:r', '/grant:r',
+                            '*' + sid + ':(OI)(CI)F'], check=True, capture_output=True, timeout=10)
+            profile, repo = root / 'profile', root / 'project'
+            profile.mkdir(); repo.mkdir()
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True, timeout=10)
+            server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            with socket.socket() as reservation:
+                reservation.bind(('127.0.0.1', 0))
+                port = reservation.getsockname()[1]
+            endpoint = f'ws://127.0.0.1:{port}'
+            token = secrets.token_urlsafe(32)
+            token_file = root / 'token'
+            token_file.write_text(token, encoding='utf-8')
+            config = ('model = "fixture-model"\nmodel_provider = "fixture"\n'
+                      'approval_policy = "on-request"\nsandbox_mode = "danger-full-access"\n'
+                      'check_for_update_on_startup = false\n'
+                      '[features]\napps = false\n[analytics]\nenabled = false\n'
+                      '[model_providers.fixture]\nname = "Private startup probe"\n'
+                      'base_url = ' + json.dumps(f'http://127.0.0.1:{server.server_port}/v1') + '\n'
+                      'wire_api = "responses"\nenv_key = "AGENTDOCKER_FIXTURE_KEY"\n'
+                      'request_max_retries = 0\nstream_max_retries = 0\nsupports_websockets = false\n'
+                      '[projects.' + json.dumps(str(repo)) + ']\ntrust_level = "trusted"\n'
+                      '[tui]\nscreen_reader_detection_done = true\nshow_tooltips = false\n')
+            (profile / 'config.toml').write_text(config, encoding='utf-8')
+            env = {k: v for k, v in os.environ.items() if k.upper() in {
+                'PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP',
+                'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)'}}
+            env.update(CODEX_HOME=str(profile), AGENTDOCKER_FIXTURE_KEY='fixture-only',
+                       TERM='xterm-256color', AD_PRIVATE_WS_TOKEN=token)
+            report['provider_version'] = subprocess.check_output(
+                [str(codex), '--version'], env=env, text=True, timeout=10).strip()
+            assert report['provider_version'] == 'codex-cli 0.160.0'
+            provider = subprocess.Popen(
+                [str(codex), 'app-server', '--listen', endpoint, '--ws-auth', 'capability-token',
+                 '--ws-token-file', str(token_file)], cwd=repo, env=env,
+                stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+            remember(provider.pid)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                try:
+                    channel = connect(endpoint, additional_headers={'Authorization': 'Bearer ' + token},
+                                      proxy=None, open_timeout=2, close_timeout=2,
+                                      ping_interval=None, max_size=2 * 1024 * 1024)
+                    break
+                except OSError:
+                    assert provider.poll() is None, 'owned app-server exited before listening'
+                    time.sleep(0.1)
+            assert channel is not None, 'private app-server did not become ready'
+            try:
+                wrong = connect(endpoint, additional_headers={'Authorization': 'Bearer invalid-fixture-token'},
+                                proxy=None, open_timeout=2, close_timeout=2, ping_interval=None)
+            except Exception as error:
+                status = getattr(getattr(error, 'response', None), 'status_code', None)
+            else:
+                wrong.close()
+                status = None
+            step('dedicated server rejects an invalid capability token', status in (401, 403), status)
+            tui = PtyProcess.spawn(
+                [str(codex), '--no-alt-screen', '--remote', endpoint,
+                 '--remote-auth-token-env', 'AD_PRIVATE_WS_TOKEN'],
+                cwd=str(repo), env=env, dimensions=(40, 160), backend=Backend.ConPTY)
+            remember(tui.pid)
+
+            def drain():
+                tail = ''
+                try:
+                    while tui.isalive():
+                        data = tui.read(65536)
+                        output.append(data)
+                        if '\x1b[6n' in tail + data:
+                            tui.write('\x1b[1;1R')
+                        tail = data[-3:]
+                        if sum(map(len, output)) > 2 * 1024 * 1024:
+                            raise ValueError('terminal output exceeded its bound')
+                except EOFError:
+                    pass
+                except Exception as error:
+                    if not closing.is_set():
+                        report['reader_errors'].append(str(error))
+
+            reader = threading.Thread(target=drain, daemon=True)
+            reader.start()
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline and 'fixture-model' not in ''.join(output):
+                assert tui.isalive(), 'native TUI exited before initialization'
+                time.sleep(0.1)
+            step('native TUI initializes before the observing client', 'fixture-model' in ''.join(output))
+            sequence = 0
+
+            def call(method, params):
+                nonlocal sequence
+                sequence += 1
+                channel.send(json.dumps({'id': sequence, 'method': method, 'params': params}))
+                deadline = time.monotonic() + 10
+                for _ in range(100):
+                    remaining = deadline - time.monotonic()
+                    assert remaining > 0, 'provider request deadline exceeded'
+                    value = json.loads(channel.recv(timeout=remaining))
+                    if value.get('id') == sequence and 'method' not in value:
+                        assert 'result' in value, {'method': method, 'reply': value}
+                        return value['result']
+                    if 'method' in value and 'id' in value:
+                        raise AssertionError('probe will not answer a provider approval request')
+                raise AssertionError('provider exceeded notification bound')
+
+            call('initialize', {'clientInfo': {'name': 'agentdocker_private_startup_probe', 'version': '0'},
+                                'capabilities': {'experimentalApi': True}})
+            channel.send(json.dumps({'method': 'initialized'}))
+            deadline = time.monotonic() + 20
+            ids = []
+            while time.monotonic() < deadline and not ids:
+                assert tui.isalive(), 'native TUI exited before thread discovery'
+                ids = call('thread/loaded/list', {}).get('data', [])
+                if not ids:
+                    time.sleep(0.2)
+            step('dedicated server exposes exactly one native thread before any prompt', len(ids) == 1)
+            thread = ids[0]
+            metadata = call('thread/read', {'threadId': thread, 'includeTurns': False})['thread']
+            step('empty thread belongs to the private checkout', os.path.samefile(metadata['cwd'], repo))
+            step('initialization caused no model requests', not report['requests'])
+            report['thread'] = thread
+            report['reported_source'] = metadata.get('source')
+            # The API's source label is diagnostic only, never process identity.
+            time.sleep(1)
+            tui.write(draft_text)
+            time.sleep(0.3)
+            call('thread/queue/add', {'threadId': thread, 'clientUserMessageId': 'ad-private-' + secrets.token_hex(8),
+                                    'input': [{'type': 'text', 'text': queue_text, 'text_elements': []}]})
+
+            def history(expected):
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    entries = call('thread/items/list', {'threadId': thread, 'limit': 20,
+                                                         'sortDirection': 'asc'}).get('data', [])
+                    users = [v['item'] for v in entries if v.get('item', {}).get('type') == 'userMessage']
+                    if any(expected in json.dumps(item) for item in users):
+                        return users
+                    time.sleep(0.2)
+                raise TimeoutError('provider history did not contain submitted input')
+
+            first = history(queue_text)
+            deadline = time.monotonic() + 25
+            idle = False
+            while time.monotonic() < deadline:
+                status = call('thread/read', {'threadId': thread, 'includeTurns': False})['thread']['status']
+                idle = status['type'] == 'idle'
+                if report['requests'] and idle:
+                    break
+                time.sleep(0.2)
+            step('first queued input finishes without submitting the typed draft',
+                 idle and any(v['queue_nonce_present'] for v in report['requests']) and
+                 not any(v['draft_nonce_present'] for v in report['requests']) and
+                 sum(queue_text in json.dumps(v) for v in first) == 1)
+            tui.write('\r')
+            users = history(draft_text)
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline and not any(v['draft_nonce_present'] for v in report['requests']):
+                time.sleep(0.1)
+            step('native Return submits the preserved draft exactly once',
+                 any(v['draft_nonce_present'] for v in report['requests']) and len(users) == 2 and
+                 sum(queue_text in json.dumps(v) for v in users) == 1 and
+                 sum(draft_text in json.dumps(v) for v in users) == 1 and tui.isalive())
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline:
+                if call('thread/read', {'threadId': thread, 'includeTurns': False})['thread']['status']['type'] == 'idle':
+                    break
+                time.sleep(0.2)
+            else:
+                raise TimeoutError('draft turn did not finish before cleanup')
+            report['user_receipts'] = users
+            step('private configuration is unchanged',
+                 (profile / 'config.toml').read_text(encoding='utf-8') == config)
+            report['result'] = 'capability_observed'
+        except Exception:
+            report['error'] = traceback.format_exc()
+        finally:
+            closing.set()
+            if channel is not None:
+                try:
+                    channel.close()
+                except Exception as error:
+                    report['cleanup_errors'].append(str(error))
+            if tui is not None and tui.isalive():
+                try:
+                    tui.write('\x03\x03')
+                    time.sleep(1)
+                except Exception as error:
+                    report['cleanup_errors'].append(str(error))
+            # The provider can detach an app-server from the native TUI. Only
+            # an exact image inside this fresh profile's private cache qualifies.
+            cache = root / 'profile/packages/app-server-daemon/releases'
+            for pid in psutil.pids():
+                try:
+                    process = psutil.Process(pid)
+                    image = Path(process.exe()).resolve(strict=True)
+                    if image.is_relative_to(cache):
+                        assert image.name.lower() == 'codex.exe' and 'app-server' in process.cmdline()
+                        owned.append(process)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, FileNotFoundError):
+                    pass
+                except Exception as error:
+                    report['cleanup_errors'].append(str(error))
+            # Only captured fixture processes and their still-owned descendants.
+            # psutil pins kernel birth identities before signalling.
+            for process in reversed(owned):
+                try:
+                    if process.is_running():
+                        children = process.children(recursive=True)
+                        for child in [*reversed(children), process]:
+                            if child.is_running():
+                                report['retired_processes'].append({'pid': child.pid, 'birth': child.create_time()})
+                                child.kill()
+                        _, alive = psutil.wait_procs([process, *children], timeout=5)
+                        assert not alive, 'owned processes remain alive'
+                except psutil.NoSuchProcess:
+                    pass
+                except Exception as error:
+                    report['cleanup_errors'].append(str(error))
+            if provider is not None:
+                try:
+                    provider.wait(timeout=5)
+                except Exception as error:
+                    report['cleanup_errors'].append(str(error))
+            if reader is not None:
+                reader.join(timeout=2)
+                if reader.is_alive():
+                    report['cleanup_errors'].append('terminal reader did not retire')
+            if server is not None:
+                server.shutdown(); server.server_close()
+            (out / 'terminal.txt').write_text(''.join(output), encoding='utf-8')
+            try:
+                remove_fixture(root)
+            except Exception as error:
+                report['cleanup_errors'].append(str(error))
+            report['scratch_removed'] = not root.exists()
+            if report['cleanup_errors'] or report['reader_errors'] or report.get('fixture_errors'):
+                report['result'] = 'failed'
+            (out / 'result.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+    print(json.dumps({k: report[k] for k in ('result', 'steps', 'cleanup_errors', 'scratch_removed')}))
+    return 0 if report['result'] == 'capability_observed' else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

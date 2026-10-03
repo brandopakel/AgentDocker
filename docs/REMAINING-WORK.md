@@ -98,3 +98,9 @@ the intermittent cause. The `e190d919` source also passed both full gates:
 skipped), with zero retries. Final integration checks and substantive review remain
 required. Start menu/PATH, physical/actual-provider and login/reboot
 acceptance remain open.
+
+Native Codex startup remains blocked before the first ordinary prompt. A
+provider-only Windows remote-TUI capability fixture now isolates the shared
+server path already observed on Mac; its result is pending. Product bootstrap,
+process-generation ownership, shared transport, restart/adoption and actual
+provider acceptance still require implementation and evidence.

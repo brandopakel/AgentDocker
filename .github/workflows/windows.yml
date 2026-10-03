@@ -6,6 +6,10 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      capability_only:
+        description: Probe provider-only authenticated remote ConPTY startup (no product acceptance)
+        type: boolean
+        default: false
       startup_samples:
         description: Additional fresh-home samples per ancestry type (0..20)
         type: choice
@@ -31,6 +35,7 @@ env:
 
 jobs:
   native-foundations:
+    if: ${{ !inputs.capability_only }}
     runs-on: windows-latest
     # Extra diagnostic samples include bounded CLI capture and cleanup for
     # every home. Leave the ordinary CI/build budget unchanged.
@@ -151,4 +156,31 @@ jobs:
             artifacts/windows-established-package/native-codex/
             artifacts/windows-desktop-package/service/
             artifacts/windows-desktop-package/installation/
+          if-no-files-found: warn
+
+  remote-tui:
+    if: ${{ inputs.capability_only }}
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Prepare pinned provider and native terminal dependencies
+        run: |
+          python -m pip install --disable-pip-version-check pywinpty==3.0.5 psutil==7.0.0 websockets==15.0.1
+          if ($LASTEXITCODE -ne 0) { throw "capability dependencies failed" }
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          curl.exe --fail --location --max-time 180 --output artifacts/codex.exe "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-x86_64-pc-windows-msvc.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Codex download failed" }
+          $actual = (Get-FileHash artifacts/codex.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne 'fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d') { throw "Codex digest mismatch" }
+      - name: Dedicated server and native ConPTY capability
+        run: python scripts/windows_codex_remote_capability.py --codex artifacts/codex.exe --output artifacts/capability
+      - name: Preserve bounded capability evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-codex-remote-capability
+          path: artifacts/capability/
           if-no-files-found: warn
