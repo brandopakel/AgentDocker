@@ -107,8 +107,11 @@ fn desired(layout: &Layout, previous: Option<&Receipt>) -> Result<Definition> {
     // The dependency is started by ServiceRun through Task Scheduler, never
     // as an on-demand child of this connector's task. Neither environment nor
     // the task definition carries an AgentDocker agent identity or credentials.
+    // Windows PowerShell 5.1 turns redirected native stderr into error
+    // records. Stop would abort the task on the connector's normal banner.
+    // Keep setup strict, then use the native exit code at this boundary.
     let script = format!(
-        "$ErrorActionPreference='Stop';$env:AGENTDOCKER_HOME={};$env:AGENTDOCKER_NO_AUTOSTART='1';Remove-Item Env:AGENTDOCKER_AGENT_ID,Env:AGENTDOCKER_AGENT_NAME,Env:AGENTDOCKER_SOCKET,Env:AGENTDOCKER_TOKEN_FILE -ErrorAction SilentlyContinue; & {} --socket {} connector service-run --owner {} {args} *> {}; exit $LASTEXITCODE",
+        "$ErrorActionPreference='Stop';$env:AGENTDOCKER_HOME={};$env:AGENTDOCKER_NO_AUTOSTART='1';Remove-Item Env:AGENTDOCKER_AGENT_ID,Env:AGENTDOCKER_AGENT_NAME,Env:AGENTDOCKER_SOCKET,Env:AGENTDOCKER_TOKEN_FILE -ErrorAction SilentlyContinue; $ErrorActionPreference='Continue'; & {} --socket {} connector service-run --owner {} {args} *> {}; $code=$LASTEXITCODE; if($null -eq $code){{exit 1}}; exit $code",
         scheduler::quoted(&layout.home.to_string_lossy()),
         scheduler::quoted(&controller.to_string_lossy()),
         scheduler::quoted(&endpoint.to_string_lossy()),

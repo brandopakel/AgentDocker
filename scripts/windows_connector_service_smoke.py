@@ -14,10 +14,35 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
 import uuid
+
+
+def read_snapshot(path):
+    """Read fixture snapshots without blocking the product's atomic replacement."""
+    import ctypes as c
+    import msvcrt
+    from ctypes import wintypes as w
+    kernel = c.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, c.c_void_p,
+                                  w.DWORD, w.DWORD, w.HANDLE]
+    kernel.CreateFileW.restype = w.HANDLE
+    kernel.CloseHandle.argtypes = [w.HANDLE]
+    handle = kernel.CreateFileW(str(path), 0x80000000, 7, None, 3, 0, None)
+    if handle == c.c_void_p(-1).value:
+        raise c.WinError(c.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except BaseException:
+        kernel.CloseHandle(handle)
+        raise
+    with os.fdopen(descriptor, 'rb') as snapshot:
+        raw = snapshot.read(32769)
+    assert len(raw) <= 32768, 'fixture service snapshot exceeds its bound'
+    return json.loads(raw)
 
 
 def main():
@@ -95,7 +120,7 @@ def main():
     def quote(value):
         return "'" + value.replace("'", "''") + "'"
 
-    def powershell(script):
+    def powershell(script, check=True):
         executable = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
         script = ("$ErrorActionPreference='Stop';$ProgressPreference='SilentlyContinue';"
                   "[Console]::OutputEncoding=[Text.UTF8Encoding]::new();" + script)
@@ -108,6 +133,8 @@ def main():
                  'stderr': result.stderr.decode('utf-8', errors='replace')}
         with (output / 'scheduler-fixture.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(value) + '\n')
+        if not check:
+            return value
         assert result.returncode == 0, value
         return value['stdout'].strip()
 
@@ -175,10 +202,18 @@ def main():
         last = None
         while time.monotonic() < until:
             try:
-                status = json.loads((root / 'serve.json').read_text(encoding='utf-8'))
-                running = json.loads(running_path.read_text(encoding='utf-8'))
-                assert status['pid'] == running['process']['pid']
-                process = remember(status['pid'], selected_cli, ['connector', 'service-run'])
+                status = read_snapshot(root / 'serve.json')
+                running = read_snapshot(running_path)
+                # Separate atomic snapshots can straddle a crash replacement.
+                # Only a matching live generation can establish readiness.
+                if status['pid'] != running['process']['pid']:
+                    time.sleep(0.1)
+                    continue
+                candidate = psutil.Process(status['pid'])
+                birth = datetime.datetime.fromisoformat(running['process']['started_at']).timestamp()
+                assert abs(candidate.create_time() - birth) < 0.000002
+                process = remember(status['pid'], selected_cli,
+                                   ['connector', 'service-run', '--owner', running['owner'], endpoint])
                 if args.installed_prefix:
                     bootstrap = process.parent()
                     assert bootstrap is not None
@@ -207,6 +242,19 @@ def main():
 
     save()
     try:
+        native_code = "import sys;sys.stderr.write('fixture-stderr\\n');sys.stderr.flush();print('fixture-stdout')"
+        controls = {}
+        for preference in ('Stop', 'Continue'):
+            control_log = output / ('native-stderr-' + preference + '.log')
+            controls[preference] = powershell(
+                f"$ErrorActionPreference={quote(preference)}; & {quote(sys.executable)} "
+                f"-c {quote(native_code)} *> {quote(str(control_log))}; exit $LASTEXITCODE", check=False)
+        step('Windows PowerShell Stop treats normal native stderr as a task failure',
+             controls['Stop']['exit'] != 0, controls['Stop']['exit'])
+        log_bytes = (output / 'native-stderr-Continue.log').read_bytes()
+        control_text = log_bytes.decode('utf-16' if log_bytes.startswith(b'\xff\xfe') else 'utf-8', errors='replace')
+        step('native exit handling preserves success and captures normal stderr',
+             controls['Continue']['exit'] == 0 and 'fixture-stderr' in control_text and 'fixture-stdout' in control_text)
         run('connector', 'enable', *serve_args, '--dry-run')
         step('cold dry-run leaves no state home', not home.exists())
         missing = run('connector', 'enable', *serve_args, check=False)
@@ -219,7 +267,7 @@ def main():
         connector_installed = True
         run('connector', 'enable', *serve_args)
         first, identity, running = connector_ready()
-        receipt = json.loads(receipt_path.read_text(encoding='utf-8'))
+        receipt = read_snapshot(receipt_path)
         task = receipt['current']['task']
         report['task'] = task
         step('connector serves HTTP through its owned task and selected daemon endpoint',
@@ -254,7 +302,7 @@ def main():
         refused = run('connector', 'uninstall', check=False)
         step('changed task ownership is refused before touching the running connector',
              refused['exit'] != 0 and task_xml(task) == altered_xml and
-             connector_ready()[1] == identity and json.loads(stop_path.read_text()) == stale)
+             connector_ready()[1] == identity and read_snapshot(stop_path) == stale)
         restore_task(task, original_xml)
         modified_task = original_xml = None
 
@@ -272,7 +320,7 @@ def main():
         step('explicit install repairs the previous definition and replaces only the connector',
              replacement != identity and ping()['pid'] == daemon_identity[0] and
              state_path.read_bytes() == state_bytes and
-             json.loads(receipt_path.read_text())['previous'] is None)
+             read_snapshot(receipt_path)['previous'] is None)
         second.kill()
         second.wait(timeout=10)
         recovered, recovered_identity, _ = connector_ready(

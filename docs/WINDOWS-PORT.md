@@ -620,3 +620,14 @@ additional compile failure exposed Unix service-label constants still imported
 by the shared maintenance module; those constants remain available on Windows.
 The initial compiler failures and corrected acceptance are tracked separately;
 no native connector pass is claimed yet.
+
+The first compiled connector lifecycle (`53cb17ea`) passed read-only cold setup
+and missing-dependency refusal, then failed readiness: a run/status record named
+a process which exited, while its redirected log stayed empty. Owned cleanup
+completed without forced processes or errors. The task used Windows PowerShell
+5.1's Stop policy around native stderr, including the connector's normal banner.
+The correction retains strict setup, switches the native-command boundary to
+Continue, and propagates the executable exit code. A paired native-stderr
+control plus the full lifecycle must pass before this is accepted. Fixture
+snapshot reads also permit atomic replacement and require one matching live
+process generation; no longer readiness deadline or replay is introduced.
