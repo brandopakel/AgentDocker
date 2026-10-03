@@ -222,6 +222,17 @@ pub(super) fn verify_mcp_host(
     Ok(())
 }
 
+pub(super) fn hook_ancestor(descriptor: &Descriptor, binding: &Binding) -> Result<ProcessIdentity> {
+    ensure!(descriptor.valid(), "invalid native server descriptor");
+    let (record, digest) = read(&descriptor.record)?;
+    ensure!(
+        digest == descriptor.sha256,
+        "native server record changed after binding"
+    );
+    verify(&descriptor.record, &record, binding)?;
+    Ok(record.server)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -147,14 +147,19 @@ fn verified(request: &Request, binding: &Binding) -> Result<bool> {
     {
         return Ok(false);
     }
+    let ancestor = if let Some(remote) = &binding.remote {
+        super::remote::hook_ancestor(remote, binding)?
+    } else {
+        binding.provider.process.clone()
+    };
     let table = procinfo::processes()?;
     let mut pid = request.process.pid;
     for _ in 0..12 {
         let Some(p) = table.iter().find(|p| p.pid == pid) else {
             return Ok(false);
         };
-        if p.ppid == binding.provider.process.pid {
-            return Ok(procinfo::start_time(p.ppid) == Some(binding.provider.process.started_at));
+        if p.ppid == ancestor.pid {
+            return Ok(procinfo::start_time(p.ppid) == Some(ancestor.started_at));
         }
         if p.ppid == pid {
             break;

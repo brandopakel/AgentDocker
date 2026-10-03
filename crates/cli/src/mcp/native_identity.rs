@@ -38,7 +38,7 @@ fn profile_from_executable(executable: &Path) -> Result<PathBuf> {
         .to_owned())
 }
 
-pub(super) struct Context {
+pub(crate) struct Context {
     host: ProcessIdentity,
     executable: PathBuf,
     // A dedicated host proves its profile through the accepted remote ledger,
@@ -59,6 +59,16 @@ impl Context {
         }
         let pid = super::parent_id();
         let table = procinfo::processes()?;
+        Self::from_host(pid, std::env::current_dir()?.canonicalize()?, &table)
+    }
+
+    /// Hooks stop at the first Codex host just as MCP does. Never climb past a
+    /// server into an unrelated launcher or containing provider session.
+    pub(crate) fn from_host(
+        pid: u32,
+        cwd: PathBuf,
+        table: &[procinfo::Process],
+    ) -> Result<Option<Self>> {
         let Some(host) = table.iter().find(|p| p.pid == pid) else {
             return Ok(None);
         };
@@ -90,7 +100,7 @@ impl Context {
             },
             executable,
             profile,
-            cwd: std::env::current_dir()?.canonicalize()?,
+            cwd,
         }))
     }
 
@@ -105,7 +115,7 @@ impl Context {
         }
     }
 
-    pub(super) async fn resolve<B: super::Backend>(
+    pub(crate) async fn resolve<B: super::Backend>(
         &self,
         backend: &B,
         meta: &Value,
