@@ -3696,7 +3696,13 @@ fn print_agents(
                     .to_owned(),
                 a.spec.runtime.clone(),
                 a.spec.model.clone().unwrap_or_else(|| "-".to_owned()),
-                a.status.to_string(),
+                // A browser agent no process ends: registered until its
+                // grant is revoked, but not connected once unheard from.
+                if a.connector_absent(chrono::Utc::now()) {
+                    "not connected".to_owned()
+                } else {
+                    a.status.to_string()
+                },
                 if a.spec.runtime == agentdocker_core::HUMAN_RUNTIME {
                     "App inbox".into()
                 } else if let Some((_, state)) = agentdocker_core::provider_block(a, input_sources)

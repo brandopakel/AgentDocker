@@ -138,7 +138,10 @@ this machine's own stable `*.ts.net` name (`--tunnel cloudflared` for a quick
 tunnel instead), prints the URL to add as a custom connector in Claude or
 ChatGPT and a pairing code for the consent page, and each consent becomes a
 browser agent in the project chosen on that page (any folder on this machine)
-with the messaging tools and nothing that touches a checkout. `connector
+with the messaging tools and nothing that touches a checkout. It stays
+registered until revoked but counts as connected only while it is heard from:
+an hour after its last tool call, `ps` and the desktop show it `not connected`
+until it calls one again. `connector
 install` runs the same as a login service; `connector status` and the
 desktop's Tools screen show its address and pairing code. On macOS and Linux,
 open a browser tool's **Details** and choose **Enable with Tailscale** or

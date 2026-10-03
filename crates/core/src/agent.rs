@@ -436,7 +436,50 @@ pub const GENERATED_NAME: &str = "generated";
 /// the process 96813 is a chosen name, not the adapter's.
 pub const CHOSEN_NAME: &str = "chosen";
 
+/// Label the remote connector puts on the browser agent it registers
+/// (`connector=true`): an external agent with no process on this machine.
+pub const CONNECTOR_LABEL: &str = "connector";
+
+/// How long a browser agent reached through the remote connector counts as
+/// connected after its last tool call: one access token's lifetime. Such an
+/// agent has no process here whose end could retire it, and its record stays
+/// registered until its grant is revoked, so its last tool call is the only
+/// evidence that anyone is still on the other side (the connector does not
+/// count a client initializing or listing tools). Past this, the vendor
+/// has to come back with a refresh before it can say anything at all.
+pub const CONNECTOR_PRESENCE: chrono::Duration = chrono::Duration::hours(1);
+
 impl AgentRecord {
+    /// A browser agent the remote connector registered: labelled
+    /// `connector=true`, external and without a process here.
+    pub fn via_connector(&self) -> bool {
+        !self.managed
+            && self.pid.is_none()
+            && self
+                .spec
+                .labels
+                .get(CONNECTOR_LABEL)
+                .is_some_and(|value| value == "true")
+    }
+
+    /// A live connector agent nothing has been heard from for longer than
+    /// [`CONNECTOR_PRESENCE`]: still registered (its grant stands, messages
+    /// wait for it, and its next request makes it connected again), but not
+    /// a session anybody is working in now. `now` is the caller's clock.
+    pub fn connector_absent(&self, now: DateTime<Utc>) -> bool {
+        self.status.is_live()
+            && self.via_connector()
+            && now.signed_duration_since(self.last_seen) > CONNECTOR_PRESENCE
+    }
+
+    /// Whether the agent counts as present now: live, and, for a connector
+    /// agent, heard from within [`CONNECTOR_PRESENCE`]. Counts of live
+    /// agents count these; [`AgentStatus::is_live`] still says whether the
+    /// record has ended.
+    pub fn is_present(&self, now: DateTime<Utc>) -> bool {
+        self.status.is_live() && !self.connector_absent(now)
+    }
+
     /// The role this agent holds, when it has one.
     pub fn role(&self) -> Option<&str> {
         self.spec.labels.get(ROLE_LABEL).map(String::as_str)
@@ -542,6 +585,56 @@ mod tests {
         assert_eq!(id.short().len(), 12);
         assert!(id.as_str().starts_with(id.short()));
         assert_eq!(AgentId::from("abc").short(), "abc");
+    }
+
+    /// A browser agent the connector registered has no process to end it, so
+    /// before this it counted as a live session for as long as its grant
+    /// stood: weeks after anybody last used it. Its last tool call is the
+    /// evidence; a call after the window makes it present again.
+    #[test]
+    fn a_connector_agent_is_present_only_while_it_is_heard_from() {
+        let registered = chrono::DateTime::from_timestamp(1_000_000, 0).unwrap();
+        let mut browser = AgentRecord::new(
+            AgentSpec {
+                name: "chatgpt-browser-nsq1".into(),
+                runtime: "chatgpt-browser".into(),
+                labels: BTreeMap::from([
+                    (CONNECTOR_LABEL.into(), "true".into()),
+                    ("vendor".into(), "ChatGPT".into()),
+                ]),
+                ..Default::default()
+            },
+            false,
+            registered,
+        );
+        browser.status = AgentStatus::Running;
+        assert!(browser.via_connector());
+        assert!(browser.is_present(registered));
+        assert!(browser.is_present(registered + CONNECTOR_PRESENCE));
+        let later = registered + CONNECTOR_PRESENCE + chrono::Duration::seconds(1);
+        assert!(browser.connector_absent(later));
+        assert!(!browser.is_present(later));
+        assert!(
+            browser.status.is_live(),
+            "absent is not ended: the grant stands"
+        );
+        // Heard from again: present again.
+        browser.last_seen = later;
+        assert!(browser.is_present(later));
+        // Only connector agents go quiet this way. A terminal session's
+        // liveness is its process, however long it has been silent, and an
+        // ended record is simply not present.
+        let mut terminal = browser.clone();
+        terminal.spec.labels.remove(CONNECTOR_LABEL);
+        terminal.last_seen = registered;
+        assert!(!terminal.connector_absent(later) && terminal.is_present(later));
+        let mut with_process = browser.clone();
+        with_process.last_seen = registered;
+        with_process.pid = Some(42);
+        assert!(with_process.is_present(later));
+        let mut ended = browser.clone();
+        ended.status = AgentStatus::Exited { code: None };
+        assert!(!ended.is_present(registered) && !ended.connector_absent(later));
     }
 
     #[test]

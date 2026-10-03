@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use agentdocker_core::agent::{GENERATED_NAME, NAME_LABEL};
+use agentdocker_core::agent::{CONNECTOR_LABEL, GENERATED_NAME, NAME_LABEL};
 use agentdocker_core::{AgentSpec, ErrorCode, Request, Response};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -798,14 +798,15 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
     }
 
     /// One external, pidless agent per redeemed consent, in the project
-    /// the consent chose. It stays live until revoked.
+    /// the consent chose. It stays registered until revoked, and counts as
+    /// connected while it is heard from (`AgentRecord::is_present`).
     async fn register_agent(&self, consent: &oauth::Consent) -> Result<AgentIdentity> {
         let vendor = consent.vendor;
         let generated = consent.generated;
         let mut attempt = consent.agent_name.clone();
         for _ in 0..3 {
             let mut labels = std::collections::BTreeMap::from([
-                ("connector".to_owned(), "true".to_owned()),
+                (CONNECTOR_LABEL.to_owned(), "true".to_owned()),
                 ("vendor".to_owned(), vendor.label().to_owned()),
             ]);
             if generated {
@@ -1003,13 +1004,20 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 );
             }
         };
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_millis(250),
-            self.backend.call(Request::Heartbeat {
-                agent: grant.agent_id.clone(),
-            }),
-        )
-        .await;
+        // Only a tool call is somebody using the agent. A vendor's client
+        // initializes and lists tools whenever a conversation or session
+        // loads the connector — Claude Code loads the claude.ai connectors
+        // at every start — and counting those kept a browser agent
+        // connected an hour after each, with nobody on the other side.
+        if calls_a_tool(&incoming) {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                self.backend.call(Request::Heartbeat {
+                    agent: grant.agent_id.clone(),
+                }),
+            )
+            .await;
+        }
         let server = {
             let mut servers = self.servers.lock().unwrap_or_else(|e| e.into_inner());
             servers
@@ -1035,6 +1043,15 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             Some(reply) => HttpResponse::json(200, &reply),
             None => HttpResponse::new(202),
         }
+    }
+}
+
+/// Whether a JSON-RPC body, one message or a batch, calls a tool.
+fn calls_a_tool(incoming: &Value) -> bool {
+    let calls = |message: &Value| message["method"] == "tools/call";
+    match incoming {
+        Value::Array(batch) => batch.iter().any(calls),
+        message => calls(message),
     }
 }
 
@@ -1589,7 +1606,6 @@ mod tests {
         let (connector, mock, down) = connector_with_switch(vec![
             live_agent("b"), // Register
             live_agent("b"), // Inspect, once the daemon is back
-            Response::Ok,    // Heartbeat
         ]);
         let access = connected(&connector, "https://claude.ai/api/mcp/auth_callback").await;
         down.store(true, Ordering::Relaxed);
@@ -1620,10 +1636,11 @@ mod tests {
             .await;
         assert_eq!(back.status, 200, "{}", String::from_utf8_lossy(&back.body));
         assert!(
-            mock.requests()
+            !mock
+                .requests()
                 .iter()
                 .any(|r| matches!(r, Request::Heartbeat { .. })),
-            "the daemon saw the agent again"
+            "a ping is answered, but it is nobody using the agent"
         );
     }
 
@@ -1713,9 +1730,7 @@ mod tests {
             Response::error(ErrorCode::NotFound, "no such agent"), // Inspect: the typed name is free
             live_agent("claude-browser-test"), // Register, at the token exchange
             live_agent("claude-browser-test"), // Inspect before initialize
-            Response::Ok,                      // Heartbeat
             live_agent("claude-browser-test"), // Inspect before tools/list
-            Response::Ok,                      // Heartbeat
             live_agent("claude-browser-test"), // Inspect before send_message
             Response::Ok,                      // Heartbeat
             Response::Ok,                      // Send
@@ -1723,7 +1738,6 @@ mod tests {
             Response::Ok,                      // Heartbeat
             Response::Ok,                      // Send to the project
             live_agent("claude-browser-test"), // Inspect before the notification
-            Response::Ok,                      // Heartbeat
             live_agent("claude-browser-test"), // Inspect before the refused claim
             Response::Ok,                      // Heartbeat
         ]);
@@ -1894,10 +1908,14 @@ mod tests {
         assert_eq!(sent.status, 200);
         assert!(json_body(&sent)["error"].is_null());
         let requests = mock.requests();
-        assert!(
+        // Initializing and listing tools is a client loading the connector,
+        // not anybody using the agent: only the tool call is heard from.
+        assert_eq!(
             requests
                 .iter()
-                .any(|r| matches!(r, Request::Heartbeat { .. }))
+                .filter(|r| matches!(r, Request::Heartbeat { .. }))
+                .count(),
+            1
         );
         assert!(matches!(
             requests.last().unwrap(),
@@ -1944,6 +1962,21 @@ mod tests {
                 .unwrap()
                 .contains("no checkout here")
         );
+        // A refused call was still somebody asking; the notification was not.
+        assert_eq!(
+            mock.requests()
+                .iter()
+                .filter(|r| matches!(r, Request::Heartbeat { .. }))
+                .count(),
+            3
+        );
+        assert!(calls_a_tool(&serde_json::json!([
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "whoami"}}
+        ])));
+        assert!(!calls_a_tool(
+            &serde_json::json!([{"jsonrpc": "2.0", "id": 6, "method": "tools/list"}])
+        ));
     }
 
     /// An agent the daemon has ended (revoked, or deregistered by hand)

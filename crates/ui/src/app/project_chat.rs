@@ -82,14 +82,12 @@ impl App {
             .into()
     }
 
-    /// The live agents of this project, one row per identity.
-    fn chat_agents(&self) -> Vec<&agentdocker_core::AgentRecord> {
-        let naming = self.naming();
+    /// The live agents of this project, one row per session.
+    pub(super) fn chat_agents(&self) -> Vec<&agentdocker_core::AgentRecord> {
         self.agents
             .iter()
             .filter(|a| {
-                a.status.is_live()
-                    && !naming.folded(a)
+                self.live_session(a)
                     && a.spec.runtime != agentdocker_core::HUMAN_RUNTIME
                     && self.has_project(a.project.as_ref())
             })

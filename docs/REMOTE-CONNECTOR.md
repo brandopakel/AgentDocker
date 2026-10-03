@@ -56,7 +56,13 @@ its project when it consents.
   admitted here, which both Claude and ChatGPT prefer — or by dynamic client
   registration; either way only the vendors' callback URLs are admitted.
 - One browser-agent identity per consent, in the project the consent chose,
-  alive until revoked.
+  registered until revoked. It has no process here whose end could retire it,
+  so it counts as connected only while it is heard from: within an hour (one
+  access token's lifetime) of its last tool call. Initializing and listing
+  tools is a client loading the connector — Claude Code loads the claude.ai
+  connectors at every start — and does not count. Past that, `ps` and the
+  desktop show it **not connected** and do not count it as a live session; its
+  grant, record and queue stand, and its next tool call makes it connected again.
 - A messaging-only tool surface. A browser agent has no checkout here.
 
 ## The flow
