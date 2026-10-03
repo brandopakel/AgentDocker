@@ -656,24 +656,19 @@ and hooks after delivery. Corrected acceptance remains pending. The provider's
 MCP initialization supplies client capabilities/version, without a root thread
 identity, so it does not provide an alternate zero-prompt binding by itself.
 
-The native workflow also accepts `capability_only=true` for a separate, bounded
-Codex 0.160.0 ConPTY experiment. It uses a fresh restricted profile and loopback
-model, rejects an invalid token on a dedicated authenticated app-server, opens
-the actual remote TUI before the observing client, and checks empty-thread
-identity, first queued input, preserved draft and exact user receipts. It does
-not create an AgentDocker controller or read an account. This tests whether the
-Mac-observed transport capability exists on Windows; it does not replace the
-strict product startup gate or establish native permission/physical acceptance.
+The native workflow accepts `capability_only=true` for a separate bounded Codex
+0.160.0 ConPTY experiment. Exact `170884eb` passed all eight checks: a restricted
+fresh profile and loopback model, wrong-token refusal on a dedicated authenticated
+server, actual native TUI initialization before the observer, sole empty-thread
+identity before any prompt, first queued delivery, preserved draft submitted
+once, and unchanged private configuration. Full history proved two exact user
+receipts. One observed empty-rollout materialization read was retried within the
+fixture's explicit bound; input submission was never retried. All captured
+fixture processes and scratch were retired, with no cleanup/reader errors.
 
-The first Windows remote capability run (`412d0f50`) exposed the sole empty
-native thread, rejected a wrong token and delivered the first queued input to
-the loopback model while the draft remained visible. Its receipt assertion
-failed because that provider store does not support `thread/items/list`; no
-complete capability pass is recorded. The two-input fixture now uses bounded
-`thread/read` history hydration, retaining exact thread/cwd/user-receipt checks.
-
-A subsequent probe (`04518eba`) observed the provider's transient empty-rollout
-read during first-input materialization before its receipt check. The fixture
-records and retries only that exact read error for the bound private rollout,
-at most twenty times; it never retries input submission. Unrelated refusals and
-exhausted reads remain failures. Native capability acceptance is still pending.
+This is provider capability evidence. It creates no AgentDocker binding and
+uses no account, physical input or permission request. Product launch/bootstrap,
+process-generation ownership, shared transport and restart/adoption remain. The
+provider API's `vscode` source label is not process identity. Earlier unsupported
+history and transient-read failures remain in the verification index; later
+passes do not erase them or replace the strict product startup gate.
