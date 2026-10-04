@@ -778,8 +778,7 @@ Cancellation and five-minute expiry return `action: "cancel"`; an exact human
 Accept returns `action: "accept"` with no form content. Provider resolution
 acknowledges the decision, not completion of the external website action. There
 is no page polling, completion inference or automatic tool retry. Existing
-uncertain-write and no-replay recovery rules apply; ledger version 12 rejects
-URL reviews fabricated in older records. Source tests cover the route. Actual Codex 0.160 with Mac ARM64
+uncertain-write and no-replay recovery rules apply; URL reviews require ledger version 12 or later and cannot be fabricated in older records. Source tests cover the route. Actual Codex 0.160 with Mac ARM64
 release binaries and private model/MCP fixtures passed Accept, Decline, Cancel
 and route cancellation, eight distinct ordinary input receipts, exact server-side
 decisions and independently verified cleanup. The fixture preserves normal
@@ -1089,5 +1088,11 @@ API keys and payment credentials belong in URL elicitation, never these forms.
 Terminal users can answer with a JSON object: `agentdocker answer <id>
 '{"count":2}'`, or with `Decline` or `Cancel`. Cancel/expiry sends no form content.
 An accepted answer requires the original question's exact daemon receipt, and an
-uncertain provider write is retained without replay. Source validation and actual
-provider/package acceptance are still in progress.
+uncertain provider write is retained without replay. Source `5bda72d0` passed the full 1,558-Rust/179-Python gate (8/1 skipped),
+zero retries, and an actual Codex 0.160 Mac ARM64 release-binary trial. Four
+form decision/cancellation paths preserved exact schemas and values, refused
+invalid answers while pending, delivered eight unique ordinary-input receipts
+and left no private processes or scratch. These used synthetic answers and a
+private model/MCP server; account, final-package, other-platform/version,
+pending-restart and longer-wait acceptance remain open. Later source hardens
+stale form submission and oversized edits; its validation is separate.

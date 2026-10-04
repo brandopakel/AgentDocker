@@ -81,7 +81,12 @@ bridge, additional adapters, container log following and proposed CLI
 conveniences remain deferred. See [architecture](ARCHITECTURE.md#planned-protocol-and-event-additions),
 [containers](CONTAINER-ENGINES.md) and [local trial](LOCAL-TRIAL.md).
 
-MCP nonsecret form review is in development on `codex/mcp-form-review`: typed
-fields, bounded schema/value validation, explicit decisions and exact receipts.
-Seven focused source tests passed; full validation, actual-provider acceptance, final CI and independent review remain
-required before calling this implemented or including it in a preview.
+MCP nonsecret form review is in source on `codex/mcp-form-review`: typed fields,
+bounded schema/value validation, explicit decisions and exact receipts. Source
+`5bda72d0` passed the full 1,558-Rust/179-Python gate (8/1 skipped), zero retries,
+and actual Mac Codex 0.160 with private model/MCP fixtures: four decision paths,
+eight unique input receipts and independently verified clean process retirement.
+Later UI stale-submit/oversized-edit hardening, final CI and independent review
+still need acceptance. Account, final packages, other platforms/versions,
+pending restart, longer waits, extended forms/device verification and secret
+input remain open. No published preview includes this work yet.
