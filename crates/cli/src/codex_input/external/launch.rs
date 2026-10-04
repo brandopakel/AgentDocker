@@ -434,7 +434,10 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
     dirs::ensure_private_dir(&directory)?;
     let directory = directory.canonicalize()?;
     let token = uuid::Uuid::new_v4().simple().to_string();
-    let mut capability = dirs::create_private_file(&directory.join("capability"))?;
+    // Own cleanup before the first fallible write/spawn. A startup failure must
+    // not leave the capability behind before the normal shutdown path exists.
+    let capability_path = tempfile::TempPath::try_from_path(directory.join("capability"))?;
+    let mut capability = dirs::create_private_file(&capability_path)?;
     capability.write_all(token.as_bytes())?;
     capability.sync_all()?;
     drop(capability);
@@ -518,7 +521,7 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
             .and_then(|r| r),
     );
     // Retain bounded private diagnostics/record; revoke the dead server capability.
-    cleanup = cleanup.and(std::fs::remove_file(directory.join("capability")).map_err(Into::into));
+    cleanup = cleanup.and(capability_path.close().map_err(Into::into));
     result.and(cleanup)
 }
 

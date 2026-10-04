@@ -983,7 +983,10 @@ record used ordinary history with no birth allowance. Windows also verified
 actual MCP identity in both terminal generations. The Unix trials configured
 MCP but did not invoke it. These private loopback-model and synthetic-terminal
 trials do not establish real-account or physical-input acceptance. The launcher retires its own children on exit, revokes its capability
-and retains bounded private server diagnostics. Source `e3445323` passed the full
+and retains bounded private server diagnostics. Capability cleanup is owned before
+fallible file writes and server creation, so a failed initial spawn also revokes
+the file; a real CLI/daemon regression covers a non-executable provider path.
+Source `e3445323` passed the full
 1,528-Rust/169-Python gate (zero retries) and an actual Mac Release trial: automatic
 binding before the first prompt, original queued receipt, receiver replacement
 and retained draft submitted once with unchanged private configuration. Launcher
