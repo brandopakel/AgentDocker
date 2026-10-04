@@ -133,7 +133,7 @@ what it reads on web pages.
 | `connector status` | Whether a connector is serving here: its address, listening socket, pairing code, proposed project, tunnel, admitted prefixes, and how many browser agents the daemon holds live. |
 | `connector install <serve arguments> [--dry-run]` | Run the connector as a login service — a launchd agent (`dev.agentdocker.connector`) or a systemd user unit (Windows login-task candidate described below) — with those arguments, `AGENTDOCKER_HOME` and a PATH that includes where cloudflared was found; its log is `$AGENTDOCKER_HOME/connector/serve.log`. A quick tunnel gets a new hostname at every start and says so. |
 | `connector enable <serve arguments> [--dry-run]` | Install/start a new login service or start its byte-identical definition. A synced temporary file is published atomically without replacement; exact comparison refuses symlinks or different existing settings. Failed staging leaves no partial definition to block retry. The desktop uses this conservative entry point; `install` remains the explicit replacement command. |
-| `connector uninstall [--dry-run]` | Remove the service. |
+| `connector uninstall [--dry-run]` | Stop and remove the service. On Linux, stop/disable runs while the definition exists; an installed-service stop failure preserves it. Systemd reload runs after removal. |
 | `connector grants` | Every consent: agent, runtime, vendor, project, when connected and last used, whether active, and whether the daemon still holds the agent live. |
 | `connector revoke <agent>` | Ends the grant (tokens stop) and marks the agent finished. A serving connector notices on that agent's next request. |
 

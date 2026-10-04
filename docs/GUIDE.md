@@ -82,6 +82,11 @@ agentdocker daemon install    # launchd, systemd user unit, or Windows login tas
 agentdocker daemon status     # what is running, and where
 ```
 
+On Linux, `daemon uninstall` stops and disables the user service before
+removing its definition, then reloads systemd. If stopping an installed service
+fails, its definition remains available for diagnosis and retry. The browser
+connector follows the same order with `connector uninstall`.
+
 On Windows, installation creates a Task Scheduler task for the current user
 and starts it immediately. It runs with limited privileges at login without
 storing a password; an interactive sign-in is required. `daemon start`, `stop`,
