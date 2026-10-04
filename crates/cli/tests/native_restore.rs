@@ -800,3 +800,49 @@ fn native_launch_and_restore_use_the_owning_daemon_context() {
     assert!(!root.join("unrelated.sock").exists());
     daemon.stop();
 }
+
+#[test]
+fn native_codex_failed_spawn_revokes_its_capability_before_returning() {
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let home = tmp.path().join("state");
+    let socket = tmp.path().join("d.sock");
+    let profile = tmp.path().join("profile");
+    std::fs::create_dir(&profile).unwrap();
+    let program = tmp.path().join("not-executable");
+    std::fs::write(&program, "deliberately not an executable").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut daemon = RunningDaemon::start(&home, &socket);
+    let output = agentdocker_host::command::run(
+        tmp.path(),
+        &[
+            "/usr/bin/env".into(),
+            "-u".into(),
+            "AGENTDOCKER_AGENT_ID".into(),
+            "-u".into(),
+            "AGENTDOCKER_TOKEN_FILE".into(),
+            format!("AGENTDOCKER_HOME={}", home.display()),
+            format!("AGENTDOCKER_SOCKET={}", socket.display()),
+            "AGENTDOCKER_NO_AUTOSTART=1".into(),
+            env!("CARGO_BIN_EXE_agentdocker").into(),
+            "--socket".into(),
+            socket.display().to_string(),
+            "codex-native".into(),
+            "--program".into(),
+            program.display().to_string(),
+            "--profile".into(),
+            profile.display().to_string(),
+        ],
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert!(!output.success);
+    assert!(output.text.contains("cannot start dedicated Codex server"));
+    let attempts: Vec<_> = std::fs::read_dir(home.join("codex-native"))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(attempts.len(), 1, "the real startup path must be reached");
+    assert!(!attempts[0].path().join("capability").exists());
+    assert!(!attempts[0].path().join("server.json").exists());
+    daemon.stop();
+}

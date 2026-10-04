@@ -44,6 +44,9 @@ shlex = "2"
 tempfile = "3"
 thiserror = "2"
 tokio = { version = "1.44", features = ["full"] }
+# Authenticated loopback Codex app-server transport; no TLS/DNS/proxy connector.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 toml = { version = "1", features = ["preserve_order"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

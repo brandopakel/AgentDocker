@@ -87,7 +87,7 @@ Reads are served from memory; every mutation is written through to SQLite (`rusq
 
 An unresolved Codex hook offer may be settled only by exact provider evidence or
 explicit `codex-queue-resolve` readback. The latter is receiver-local administration,
-not a new daemon receipt kind: ledger version 4 retains the generation-bound input
+not a new daemon receipt kind: ledger version 5 retains the generation-bound input
 digest, hook nonce, operator process and resolution ID; existing `journal_add`
 records the manual disposition before token-bound `provider_inbox` ACK. It never
 emits `report_input(received)` for manual reading. Retries retain the same intent;
@@ -1697,7 +1697,12 @@ budget. Source `89ceabe` passed eight focused reader tests and the full 1,034-Ru
 Session resumption treats an unreadable observation record as a daemon storage failure. Identity lists are SQL parameters, and accepted empty observation documents for retired identities are removed in the same resume transaction; canonical and retired observations now join by stored path, retaining the latest capture. Conflicting versions or heads at the same capture time refuse the fold, even for older captures. The combined input is bounded to 4 MiB and the joined working set to 1,000 paths. One transaction commits the canonical agent, removal of retired records and their journal cursors, the deduplicated queue, observations, aliases, eligible typed documents and the `SessionResumed` event. Those documents include channel memberships, `opened_by` and review `by`/`of` references; task assignees and creators; and eligible question, checkpoint, validation, handoff and contest references. A rewrite that would create self-review or otherwise violate a typed document guard refuses the fold. Card text, column, timestamps and archive state stay unchanged, and this transaction creates no task lease. A fenced or failed write preserves all records.
 
 The experimental existing-Codex receiver also offers bounded input at verified
-PreToolUse/PostToolUse boundaries through its private hook socket. The same
+PreToolUse/PostToolUse boundaries through a private local hook endpoint: a Unix
+socket or a Windows named pipe. Both authenticate the kernel peer PID and current
+user before reading protocol input; the generation, birth and ancestry checks
+still apply. Windows carries deadlines with GetTickCount64 and retains transcript
+volume/file identity from an open handle. Ledger and bootstrap marker publication
+use private staged files and the shared durable publication helper. The same
 controller reserves the offer in private ledger version 3 before removing its
 own native-queue entry. It uses an exact persisted provider hook context as the
 Codex thread/turn/item receipt (bounded tagged transcript records on CLI 0.154,
@@ -1795,6 +1800,39 @@ Initial binding runs after the accepted `turn/start` response so daemon binding
 failure cannot introduce a new pre-submission uncertainty window. Samples
 collected before binding are reassigned by existing usage reconciliation;
 receipt recovery remains required for uncertain provider submissions.
+
+The external native Codex receiver prefers read-only item pagination. Only the
+provider's exact `-32601` “thread/items/list is not supported yet” refusal on
+the first page enables a fallback to `thread/turns/list`, one complete turn per
+page. It preserves exact turn/item receipts and anchors, rejects cursor cycles,
+and bounds each lookup to 100 pages, 5,000 items, 8 MiB and one minute. Transport
+frames remain limited to 4 MiB. Errors after partial pagination, absent/partial
+items, limits and missing receipts retain delivery for recovery; they never
+cause a resubmission or resume the TUI.
+
+The native receiver's optional authenticated WebSocket transport attaches only
+to numeric IPv4 loopback after validating a private immutable server record.
+That record binds both native TUI/server PID births, kernel executable paths,
+server checkout, thread/profile and capability file/digest. Both server and TUI
+arguments must select the same exact loopback endpoint without duplicate options.
+Ledger version 5
+retains its absolute path and SHA-256; migration from versions 2/3/4 accepts no
+preexisting remote descriptor and preserves all delivery state. Reconnect
+revalidates generations and capability before and after connection, and checks
+the initialized profile and thread. A maintained WebSocket implementation bounds
+frames to 4 MiB and connection/write/close to five seconds. Each 30-second RPC
+discards at most 512 notifications/4 MiB; it never buffers unbounded broadcasts
+or answers native approval requests. Unexpected requests, foreign responses and
+limits fail closed. Socket shutdown never terminates the shared native server.
+The hidden record argument is an internal integration point. The experimental
+`codex-native` launcher owns the dedicated server and native TUI. An observed
+empty server and unique new root thread permit a private version-2 birth record,
+usable only with a pristine ledger before the first durable input attempt.
+Explicit UUID reopen instead requires ordinary persisted history and a version-1
+record; the daemon hands the unique dead predecessor's canonical queue to the
+new generation and starts its receiver. The launcher reaps its initial receiver
+while the TUI runs so Linux zombies cannot prevent daemon-owned replacement.
+Desktop/default-launch integration remains unfinished.
 
 The Windows connector task supervises failed native exits with a two-second
 backoff and at most three retries; a run lasting ten minutes resets that budget.
