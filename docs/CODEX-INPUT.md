@@ -974,11 +974,15 @@ same sole loaded thread, checks its checkout/root identity, requires normal
 persisted history, and publishes a version-1 record with no birth allowance. A
 unique dead predecessor hands off the canonical identity, original queued IDs
 and retained receipts through the daemon; a live or ambiguous predecessor
-refuses. The daemon alone starts the replacement receiver. This candidate
-reopen path passed native Mac acceptance on `d60efc14`: after native exit,
-an original message queued while offline arrived once in the same canonical
-conversation without a warmup; prior receipts and the earlier draft remained
-exact. Windows/Linux reopen acceptance remains pending. The launcher retires its own children on exit, revokes its capability
+refuses. The daemon alone starts the replacement receiver. The integrated candidate `d139c06c` passed actual Codex 0.160 reopen trials on
+Mac ARM64, Oracle Linux x86-64 and Windows x64: after native exit, an original
+message queued while offline arrived once under the same canonical agent,
+thread and profile with a new provider/server generation. Both original receipts
+and the earlier draft survived; only three user items existed, and the resumed
+record used ordinary history with no birth allowance. Windows also verified
+actual MCP identity in both terminal generations. The Unix trials configured
+MCP but did not invoke it. These private loopback-model and synthetic-terminal
+trials do not establish real-account or physical-input acceptance. The launcher retires its own children on exit, revokes its capability
 and retains bounded private server diagnostics. Source `e3445323` passed the full
 1,528-Rust/169-Python gate (zero retries) and an actual Mac Release trial: automatic
 binding before the first prompt, original queued receipt, receiver replacement
@@ -994,5 +998,5 @@ its receiver while the terminal continues, allowing daemon-owned replacement.
 Source `4e3c447f` passed the native Linux zombie regression and fresh Oracle
 first-receipt/replacement/draft/exit acceptance with complete unforced cleanup. The first Mac attempt
 stopped after binding on a fixture process-group assumption, before model input;
-that failure is retained. Reopen/adoption acceptance and desktop integration remain open;
+that failure is retained. Broader adoption and desktop/default launch remain open;
 ordinary `codex` and the current managed bridge are unchanged.

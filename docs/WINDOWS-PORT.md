@@ -758,8 +758,13 @@ The automatic-launcher workflow now additionally reopens the explicit persisted
 UUID after native exit, with an original message queued while the provider is
 down. It requires the canonical identity, prior receipts and draft to survive,
 normal version-1 history with no fresh-birth allowance, actual MCP identity in
-the new terminal, and native exit again. Windows execution is pending; Mac
-`d60efc14` passed the corresponding private loopback reopen trial.
+the new terminal, and native exit again. Integrated source `d139c06c` passed all
+12 Windows checks in run `37163585944`, including actual MCP identity before
+and after reopen. No forced fixture cleanup, errors, live readers or scratch
+remained. The same source passed Mac ARM64 and Oracle Linux x86-64 native
+reopen trials (Linux CI used an identical full tree). Full local verification
+passed 1,535 Rust and 169 Python tests with zero retries. Review, desktop/default
+launch integration, actual accounts and physical input remain open.
 
 Windows browser-connector service source provides `connector install`, `enable`
 and `uninstall` through a distinct limited per-user login task. The owned daemon
