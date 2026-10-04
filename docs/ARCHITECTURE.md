@@ -1147,8 +1147,11 @@ backfill for old stores. The separate discovery manifest retains its existing
 10,000-file/4 MiB-frontier bounds.
 
 A sample's baseline, bucket and fingerprint either all fit or are rolled back to
-a savepoint. A refused file cursor can be rediscovered; preserved dedupe evidence
-prevents recounting. Reconciliation that cannot fit leaves the old attribution
+a savepoint. Cursor metadata is admitted separately under the same byte budget;
+it can advance over capacity-refused samples while the durable gap keeps their
+accounting coverage partial. Scan completion does not erase that gap or recover
+those uncounted records automatically. A refused file cursor can be rediscovered;
+preserved dedupe evidence prevents recounting. Reconciliation that cannot fit leaves the old attribution
 and total intact. Its first capacity gap emits an event; unchanged refusals
 on later reconciliation ticks do not append empty accounting events. A single reserved, constant-size capacity gap keeps affected
 reports partial and appears in the CLI and desktop. Ordinary SQLite errors still
