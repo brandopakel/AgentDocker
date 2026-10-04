@@ -12,6 +12,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     process::Command,
+    task::JoinSet,
     time::timeout,
 };
 
@@ -75,19 +76,31 @@ pub(super) async fn connect(value: &std::ffi::OsStr) -> Result<TcpStream> {
 
 async fn accept(listener: &TcpListener, nonce: &str) -> Result<TcpStream> {
     timeout(Duration::from_secs(10), async {
+        // Unauthenticated local peers must not serialize the owner's startup.
+        // Bound both concurrent reads and their lifetime; dropping this set
+        // cancels every remaining read and closes its socket on all exits.
+        let mut pending = JoinSet::new();
         loop {
-            let (mut stream, peer) = listener.accept().await?;
-            ensure!(peer.ip().is_loopback(), "native lifetime peer is not local");
-            let mut offered = [0; 32];
-            if !matches!(
-                timeout(Duration::from_secs(1), stream.read_exact(&mut offered)).await,
-                Ok(Ok(_))
-            ) || offered != nonce.as_bytes()
-            {
-                continue;
+            tokio::select! {
+                accepted = listener.accept(), if pending.len() < 64 => {
+                    let (mut stream, peer) = accepted?;
+                    ensure!(peer.ip().is_loopback(), "native lifetime peer is not local");
+                    let expected = nonce.as_bytes().to_vec();
+                    pending.spawn(async move {
+                        let mut offered = [0; 32];
+                        match timeout(Duration::from_secs(1), stream.read_exact(&mut offered)).await {
+                            Ok(Ok(_)) if offered == expected.as_slice() => Some(stream),
+                            _ => None,
+                        }
+                    });
+                }
+                completed = pending.join_next(), if !pending.is_empty() => {
+                    if let Some(Ok(Some(mut stream))) = completed {
+                        stream.write_u8(1).await?;
+                        return Ok(stream);
+                    }
+                }
             }
-            stream.write_u8(1).await?;
-            return Ok(stream);
         }
     })
     .await
@@ -182,6 +195,47 @@ mod tests {
                 .await
                 .is_err()
         );
+        drop(frontend);
+        timeout(Duration::from_secs(1), disconnected(&mut child))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn stalled_handshakes_do_not_delay_the_owner_and_are_closed_after_acceptance() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let nonce = "0123456789abcdef0123456789abcdef";
+        let accepting = tokio::spawn(async move { accept(&listener, nonce).await });
+        let mut stalled = Vec::new();
+        for _ in 0..16 {
+            let mut peer = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+                .await
+                .unwrap();
+            peer.write_u8(b'x').await.unwrap();
+            stalled.push(peer);
+        }
+        let mut child = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+            .await
+            .unwrap();
+        child.write_all(nonce.as_bytes()).await.unwrap();
+        let acknowledgement = timeout(Duration::from_secs(2), child.read_u8()).await;
+        if acknowledgement.is_err() {
+            accepting.abort();
+        }
+        assert_eq!(acknowledgement.unwrap().unwrap(), 1);
+        let frontend = accepting.await.unwrap().unwrap();
+        for mut peer in stalled {
+            let mut byte = [0];
+            assert_eq!(
+                timeout(Duration::from_secs(2), peer.read(&mut byte))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                0
+            );
+        }
         drop(frontend);
         timeout(Duration::from_secs(1), disconnected(&mut child))
             .await

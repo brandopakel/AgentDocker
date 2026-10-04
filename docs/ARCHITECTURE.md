@@ -1829,7 +1829,10 @@ limits fail closed. Socket shutdown never terminates the shared native server.
 The hidden record argument is an internal integration point. The experimental
 `codex-native` launcher owns the dedicated server and native TUI. Its child owner
 verifies the exact live front-end parent and image, authenticates a private
-loopback lifetime connection and owns the provider children. EOF retires those
+loopback lifetime connection and owns the provider children. Nonce reads run
+concurrently with at most 64 pending peers, a one-second per-peer deadline and
+a ten-second overall startup deadline; accepting the owner closes the remaining
+unauthenticated sockets. EOF retires those
 children using the ordinary bounded cleanup and revokes the capability, even
 after front-end SIGKILL. The internal invitation is removed from provider and
 receiver environments. Existing birth records name the owner; v1/v2 record
