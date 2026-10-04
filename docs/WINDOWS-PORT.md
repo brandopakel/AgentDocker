@@ -142,13 +142,17 @@ the daemon make it. On a refusal the smoke records the owner and the
 access-control entries of the home and its ancestors, since the runner is
 the only place to observe them.
 
+The native Codex queue now shares the receiver, hook and explicit recovery code
+with Unix. Its Windows endpoints are private named pipes, authenticated by the
+kernel peer PID and same-user token before protocol input. Process birth, provider
+generation, hook ancestry and exact transcript receipts remain required. Windows
+uses a host-wide monotonic deadline, file-handle identity and write-through private
+ledger publication. Native CI and actual Windows Codex delivery acceptance remain
+open; source support alone does not establish idle, busy or draft preservation.
+
 What the slice refuses on Windows, in words rather than with a hang or a
 crash, and what that means for a person:
 
-- The native Codex queue (`codex-queue`): its hook endpoint is a Unix socket
-  checked by peer credentials. The Codex hook adapter sees no receiver and
-  takes its ordinary path, so a Codex session on Windows reads its messages
-  at its next prompt, never live.
 - Live daemon reload and the descriptor handover (`daemon reload`): the
   daemon holds no descriptors a successor could inherit; stop and start it.
 - Container workspace transport and grants: the endpoint is a Unix socket.
@@ -198,7 +202,9 @@ Work still required before platform support can be claimed:
 - `attach` from a real Windows console, by a person: the console modes,
   the keystroke reader and the size polling are in source and unexercised
   by the runner, which has no console.
-- The native Codex queue over the named pipe with the same peer checks.
+- Direct-Codex/default-path delivery and zero-prompt startup acceptance,
+  real accounts and physical input. The owned launcher's scoped synthetic
+  trials below do not establish these remaining paths.
 - Windows provider configuration: a provider's own tool under a pseudo
   console, and a person's setup on a Windows machine. What is in source: an
   npm-installed provider is a `.cmd` shim on `PATH` (`claude.cmd`,
@@ -455,6 +461,44 @@ sets identical last-write times explicitly; a timing delay is not its fix.
 
 ## Provider setup and message acceptance
 
+The native Codex draft adds `scripts/windows_native_codex_smoke.py` to extracted
+archive acceptance. It launches the actual pinned Codex 0.155.1 TUI in ConPTY
+with a private profile and loopback Responses fixture. Assertions cover real
+SessionStart bootstrap, idle wake, an unsent draft, FIFO input during a held
+provider request, exact receipts, read-only recovery preview and automatic
+receiver replacement without replay. The workflow checks the provider download's
+SHA-256 and retains its version, binary/driver hashes, logs and result. Its
+fixture process selects its own user as the default object owner before creating
+files, matching ordinary desktop ownership on elevated CI; no existing file ACL
+or saved provider configuration is changed. The first native run passed all 62 existing package checks, then exposed an
+immediate-ping race in the new harness before Codex started. The harness now
+observes its original daemon within the existing ten-second bound. The second
+run reached readiness in 0.81 seconds, then exposed a separate harness error:
+it parsed plain-text CLI `ping` output as JSON. Only the JSON recovery preview
+now receives JSON parsing, and the restart predicate waits through a missing
+binding instead of treating that transient state as a replacement. The corrected
+Windows run reached the actual TUI, then failed zero-prompt startup after 45
+seconds with no receiver, hook or model request observed and clean cleanup.
+The workflow retains that strict failure and separately runs the explicit
+`established` scenario, which begins one fixture prompt before testing delivery.
+A narrower pass cannot change the failed startup result or make that workflow
+pass. Its first established-session run reached SessionStart and one model
+response, then exposed a missing Windows host primitive: querying another
+process's loaded executable still returned the unsupported-platform error.
+Windows now reads that image with `QueryFullProcessImageNameW` through an owned
+process handle, checks liveness before and after, preserves UTF-16 paths and
+refuses failed/truncated queries. Existing provider birth and ancestry checks
+remain required. A native regression covers a separate executable in a path
+with spaces and Unicode, plus invalid and exited processes. All 314 native
+core/host tests passed. The `c479a014` extracted-package diagnostic then passed
+after an explicit initial prompt: idle delivery, draft preservation, busy FIFO,
+five exact receipts and receiver replacement without replay, with clean cleanup.
+The separate zero-prompt startup trial still failed, leaving the overall workflow
+failed and lifecycle acceptance open. Separate Mac trials on the same receiver
+source passed delivery after an initial prompt but failed fresh startup and
+reopen without a prompt; both complete trial failures remain recorded. It does not establish real-account, physical keyboard or service
+acceptance; the held HTTP response is not a tool or permission wait.
+
 Setup publishes flushed receipts and configuration files through the host's
 native helper (write-through moves on Windows; rename and directory sync on
 Unix). Undo uses native deletion without a directory-file open. Receipt staging
@@ -571,6 +615,69 @@ and bounded retirement refusal passed; hashes match the clean native build,
 and both service fixtures removed owned tasks/scratch without cleanup errors.
 No hosted Windows update, physical console or login/reboot result is implied.
 
+The native Codex candidate now includes these installer/current-main prerequisites
+and tests pinned Codex 0.160.0 by default, with an explicit 0.155.1 workflow option.
+Both downloads require their recorded SHA-256. Its private fixture also collects
+detached 0.160 app-server processes by kernel executable path and process birth,
+and retains bounded provider logs. The earlier zero-prompt startup failure is
+still open; this version refresh alone is not native acceptance.
+Native `2d88d19f` on Codex 0.160.0 still failed zero-prompt startup with no model
+request. The established-session diagnostic bound and delivered four queued
+inputs, then its ordinary Python ledger read returned permission denied during
+delivery; the retained ledger later contained all four exact receipts. This is
+consistent with a publication/read-sharing race, but does not prove data loss.
+Both fixture cleanups succeeded. The candidate now publishes native ledgers
+through the existing atomic snapshot API, permits verified concurrent readback,
+and gives the fixture Windows read/write/delete sharing. A held-reader regression
+checks old/new complete records. Corrected native acceptance remains required;
+no timeout or private-file ownership check was relaxed.
+The first corrected native run (`70120fdd`) stopped earlier in an unchanged
+accounting fixture: a valid cooperative `Budget` return was mistaken for a
+required single-pass `Complete`. The fixture now resumes its two records within
+three bounded passes and verifies progress, identical counters and prefix proof.
+Product scan deadlines are unchanged; native delivery acceptance is still open.
+Native `68e020ba` then passed all 322 core/host checks and progressed through
+five exact delivery receipts, preserved drafts, receiver replacement without
+replay, and recovery preview in its established-session diagnostic. That trial
+still failed its final byte-for-byte fixture-profile assertion; it is not an
+overall pass. The fixture now retains its two synthetic configuration files'
+before/after bytes and hashes to diagnose the mutation without relaxing that
+assertion. Strict zero-prompt startup still timed out. Codex 0.160.0 source queues
+SessionStart on session creation and executes it in turn processing, explaining
+why the hook alone cannot provide startup-before-first-turn registration. A
+verified alternative startup route remains required.
+The `5daffdfd` diagnostic identified the profile difference in both strict and
+established controls: Codex normalized TOML line endings and persisted only
+`tui.screen_reader_detection_done` plus its `gpt-6.1-sol` introduction counter.
+The hook file was identical. The fixture now starts with LF and those observed
+0.160.0 TUI defaults, retaining its strict final byte assertion. This does not
+establish physical screen-reader acceptance or fix pre-first-turn registration.
+The `4c1c2777` trial retained all five established-session receipts, draft and
+restart checks, but failed the same strict profile assertion: the introduction
+counter advanced from one to two. Pinned 0.160.0 source confirms it increments
+on startup until four displays, unless TUI tooltips are disabled. The isolated
+fixture now disables that tooltip; it still requires byte-identical configuration
+and hooks after delivery. Corrected acceptance remains pending. The provider's
+MCP initialization supplies client capabilities/version, without a root thread
+identity, so it does not provide an alternate zero-prompt binding by itself.
+
+The native workflow accepts `capability_only=true` for a separate bounded Codex
+0.160.0 ConPTY experiment. Exact `170884eb` passed all eight checks: a restricted
+fresh profile and loopback model, wrong-token refusal on a dedicated authenticated
+server, actual native TUI initialization before the observer, sole empty-thread
+identity before any prompt, first queued delivery, preserved draft submitted
+once, and unchanged private configuration. Full history proved two exact user
+receipts. One observed empty-rollout materialization read was retried within the
+fixture's explicit bound; input submission was never retried. All captured
+fixture processes and scratch were retired, with no cleanup/reader errors.
+
+This is provider capability evidence. It creates no AgentDocker binding and
+uses no account, physical input or permission request. Product launch/bootstrap,
+process-generation ownership, shared transport and restart/adoption remain. The
+provider API's `vscode` source label is not process identity. Earlier unsupported
+history and transient-read failures remain in the verification index; later
+passes do not erase them or replace the strict product startup gate.
+
 Installer review corrections clean update extractions, preserve inactive releases
 on idempotent install, compare canonical daemon paths and retain unrecognized
 retirement directories while collecting verified siblings. Uninstall refuses
@@ -590,6 +697,76 @@ The earlier fixture failures are retained in the verification index.
 Integration with accepted growing-source accounting requires final checks and
 follow-up review; hosted distribution, physical and actual-provider/logon/reboot
 acceptance remain open.
+
+The provider-only remote-TUI probe has an optional private command-approval
+scenario. It installs one prompt rule in its disposable profile, requires the
+native terminal to display and hold the print command, and supplies a single
+synthetic Return before checking the result and retained draft. The observing
+WebSocket client never answers an approval. Exact `9af3a42c` passed all twelve
+checks, with two exact input receipts, unchanged configuration/rule and complete
+owned process, reader and scratch cleanup. Cleanup explicitly cancels private
+PTY I/O and shuts down pywinpty's forwarding socket before joining both readers;
+the earlier `ceaff20a` cleanup failure remains in the verification index. This
+is provider capability evidence, not AgentDocker receiver integration, a real
+provider account or a human permission interaction.
+
+The same manual workflow accepts `capability_only=true` with
+`receiver_acceptance=true` to build the candidate CLI/daemon and exercise its
+private shared-server receiver. The fixture registers exact native generations,
+requires refusal before the first user message, then explicitly starts one
+fixture user turn before checking queued delivery, a retained draft and automatic
+receiver replacement with exact receipts. `capability_approval=true` also checks
+the native print-command approval while the receiver is connected. The record
+uses native 100ns process birth and canonical Windows paths; no account or saved
+configuration is used. The first integrated run on `3591b3ad` built successfully,
+proved the pre-first-message refusal and accepted the native binding, then failed
+the fixture's command comparison: its manual launch used ordinary Windows paths
+and a `Z` timestamp while the stored restart command used canonical paths and
+the equivalent UTC offset. The fixture now supplies that exact canonical command;
+corrected acceptance is pending. Automatic launcher/bootstrap
+and zero-prompt input are separate gates. Source `873e7663` passed the corresponding
+nine-check Mac ARM64 shared-server trial and the full local suite; that pass
+does not establish Windows acceptance.
+
+The strengthened shared-server trial on `3ac2c7f0` passed 19 native Windows
+checks with Codex 0.160.0: command approval, original-terminal MCP and hooks,
+busy input once through an active PostToolUse hook with a receipt in the same
+turn, preserved draft, three original receipts and receiver replacement. The
+fixture still uses an explicit initial user turn. Private configuration stays
+unchanged; teardown explicitly kills pinned provider processes and joins the
+readers, with no receiver cleanup errors and removed scratch. This does not
+prove graceful provider exit, real-account acceptance or automatic startup.
+
+The optional `witnessed_birth=true` manual workflow input (with capability-only
+and receiver acceptance enabled) initializes the observer before its sole native
+TUI, requires an empty server and that exact thread-start notification, then
+publishes a private version-2 birth receipt. It exercises first queued input
+without the established-session warmup, retaining the draft, approval, original
+hook/MCP attribution and receiver-replacement checks. This manual fixture is
+not the automatic product launcher. Source `f21ca717` passed all 21 checks,
+including first queued input without a warmup, original-TUI hooks/MCP, native
+approval, same-turn busy input, draft and receiver replacement.
+
+With `automatic_launcher=true`, the capability-only receiver workflow invokes
+the product-owned `codex-native` launcher instead. Source `a3091852` passed seven
+checks: automatic birth/binding before input, exact child ownership, first
+receipt and original-terminal MCP identity, receiver replacement, retained draft
+submitted once, native terminal exit/token revocation and unchanged configuration.
+No fixture forced fallback, remaining reader or scratch remained. The launcher
+uses native process termination for its owned server; this is not graceful
+server-protocol shutdown, real-account, physical-input or reopen acceptance.
+
+The automatic-launcher workflow now additionally reopens the explicit persisted
+UUID after native exit, with an original message queued while the provider is
+down. It requires the canonical identity, prior receipts and draft to survive,
+normal version-1 history with no fresh-birth allowance, actual MCP identity in
+the new terminal, and native exit again. Integrated source `d139c06c` passed all
+12 Windows checks in run `37163585944`, including actual MCP identity before
+and after reopen. No forced fixture cleanup, errors, live readers or scratch
+remained. The same source passed Mac ARM64 and Oracle Linux x86-64 native
+reopen trials (Linux CI used an identical full tree). Full local verification
+passed 1,535 Rust and 169 Python tests with zero retries. Review, desktop/default
+launch integration, actual accounts and physical input remain open.
 
 Windows browser-connector service source provides `connector install`, `enable`
 and `uninstall` through a distinct limited per-user login task. The owned daemon
@@ -629,7 +806,8 @@ Full local verification passed 1,497 Rust and 169 Python checks (one skipped),
 with zero retries. Original failures and exact trial pins remain in
 [the verification index](verification/INDEX.md).
 
-Final integration/review, public tunnels, real browser consent/CIMD and
+Connector #284 merged as `dd452946` after the final `5e47a0e4` local gate,
+CI and substantive review. Public tunnels, real browser consent/CIMD and
 login/reboot remain open. Seeded grant preservation does not establish OAuth
 acceptance, and the native fixture does not exercise a public tunnel or reboot.
 
@@ -648,3 +826,23 @@ current-version feed discovery only. An optional earlier
 then the trial requires actual hosted update, rollback and reapply. A portable-only
 older release is refused before execution. It does not establish account,
 physical-console, Start menu or logon/reboot acceptance.
+
+The automatic native Codex workflow also refuses a deliberately invalid executable
+before the first successful launch and requires its capability file to be gone
+without a model request. This covers cleanup before server creation, complementing
+the successful native exit/reopen checks. Source `8388c2ee` passed all 13 native
+Windows checks, including this control and actual MCP identity before and after
+reopen. No forced cleanup, reader errors or scratch remained. The same source
+passed the full local 1,536-Rust/169-Python gate with zero retries. This covers
+the private loopback fixture, not real accounts or physical/default desktop use.
+
+The package workflow now selects `--codex-scenario automatic` to run those same
+13 checks against the extracted archive's binaries, from a Unicode directory
+outside the source tree. Acceptance checks the executed binary hashes, exact
+source and complete lifecycle/cleanup report. The older direct-Codex `startup`
+diagnostic remains available and its zero-prompt refusal remains open; a product
+launcher pass does not establish ordinary/default desktop adoption. Source
+`abfe623f` passed the extracted trial: 62 package, 42 installer and all 13 native
+Codex checks. CI synthetic `54a4a876` has the exact candidate tree; the archived
+EXE bytes, executed hashes, driver/provider pins and both MCP identities were
+independently checked. No forced cleanup, reader errors or scratch remained.

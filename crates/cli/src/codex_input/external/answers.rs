@@ -2,13 +2,11 @@
 use super::super::{
     ledger::Receipt,
     mcp_answers::{self, Origin},
-    recovery,
     transport::Provider,
 };
 use agentdocker_core::Envelope;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
-use std::collections::HashSet;
 
 pub(super) enum Route {
     Input,
@@ -118,28 +116,16 @@ pub(super) async fn route(
         return Ok(Route::Input);
     }
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
-        let mut cursor: Option<String> = None;
-        let mut cursors = HashSet::new();
-        for _ in 0..100 {
-            let value = provider
-                .request(
-                    "thread/items/list",
-                    json!({"threadId":thread,"limit":50,"sortDirection":"desc","cursor":cursor}),
-                )
-                .await?;
-            let (items, next) = recovery::page(&value, &mut cursors)?;
+        let mut history = super::history::History::new(thread, 50);
+        while let Some(items) = history.next(provider).await? {
             for entry in items {
-                match classify(origin, thread, entry, envelope, agent)? {
+                match classify(origin, thread, &entry, envelope, agent)? {
                     Route::Waiting => (),
                     route => return Ok(route),
                 }
             }
-            cursor = next;
-            if cursor.is_none() {
-                return Ok(Route::Waiting);
-            }
         }
-        bail!("question receipt history exceeds the recovery limit")
+        Ok(Route::Waiting)
     })
     .await
     .context("question receipt lookup exceeded one minute")?

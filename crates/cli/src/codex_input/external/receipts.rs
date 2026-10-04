@@ -8,25 +8,21 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 
 pub(super) async fn latest_item(provider: &mut Provider, thread: &str) -> Result<Option<String>> {
-    let value = provider
-        .request(
-            "thread/items/list",
-            json!({"threadId":thread,"limit":1,"sortDirection":"desc"}),
-        )
-        .await?;
-    let items = value["data"]
-        .as_array()
-        .context("Codex history has no items")?;
-    ensure!(items.len() <= 1, "Codex history exceeded requested limit");
-    items
-        .first()
-        .map(|entry| {
-            entry["item"]["id"]
-                .as_str()
-                .map(str::to_owned)
-                .context("Codex history item has no ID")
-        })
-        .transpose()
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        let mut history = super::history::History::new(thread, 1);
+        while let Some(items) = history.next(provider).await? {
+            if let Some(entry) = items.first() {
+                return entry["item"]["id"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .map(|id| Some(id.to_owned()))
+                    .context("Codex history item has no ID");
+            }
+        }
+        Ok(None)
+    })
+    .await
+    .context("native history anchor lookup exceeded one minute")?
 }
 
 pub(super) async fn find(
@@ -47,17 +43,9 @@ pub(super) async fn find(
         }
     }
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
-        let mut cursor: Option<String> = None;
-        let mut cursors = HashSet::new();
+        let mut history = super::history::History::new(thread, 50);
         let mut found = None;
-        for _ in 0..100 {
-            let value = provider
-                .request(
-                    "thread/items/list",
-                    json!({"threadId":thread,"limit":50,"sortDirection":"desc","cursor":cursor}),
-                )
-                .await?;
-            let (items, next) = recovery::page(&value, &mut cursors)?;
+        while let Some(items) = history.next(provider).await? {
             for entry in items {
                 if entry["item"]["id"]
                     .as_str()
@@ -78,12 +66,8 @@ pub(super) async fn find(
                     found = Some(receipt);
                 }
             }
-            cursor = next;
-            if cursor.is_none() {
-                return Ok(found);
-            }
         }
-        bail!("native queue receipt history exceeds the recovery limit")
+        Ok(found)
     })
     .await
     .context("native queue receipt lookup exceeded one minute")?

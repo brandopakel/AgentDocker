@@ -29,7 +29,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use crate::client::{Backend, Client};
 
 mod channel;
-mod native_identity;
+pub(crate) mod native_identity;
 pub(crate) const CLAUDE_CHANNEL_INPUT: &str = "AGENTDOCKER_CLAUDE_CHANNEL_INPUT";
 
 pub(crate) fn channel_input_active(

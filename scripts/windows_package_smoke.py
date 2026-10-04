@@ -50,10 +50,33 @@ def extract_checked(archive, destination, manifest):
     return app
 
 
+def validate_native_report(native, info, scenario):
+    """A passing process must still identify the exact extracted payload."""
+    automatic = scenario == "automatic"
+    hashes = native.get("receiver_binary_sha256" if automatic else "binary_sha256", {})
+    if native.get("result") != "passed" or any(
+        hashes.get(name) != info["binary_sha256"][name]
+        for name in ("agentdocker.exe", "agentd.exe")
+    ):
+        raise ValueError("native Codex acceptance did not pass on the exact archive binaries")
+    if automatic and (
+        native.get("source_commit") != info["source_commit"]
+        or native.get("scratch_removed") is not True
+        or any(native.get(key) != [] for key in ("cleanup_errors", "reader_errors", "forced_processes"))
+        or len(native.get("steps", [])) != 13
+        or not all(step.get("passed") is True for step in native["steps"])
+    ):
+        raise ValueError("automatic native Codex acceptance has incomplete source, lifecycle or cleanup evidence")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native-manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--codex", type=Path,
+                        help="actual native Codex executable for private ConPTY/loopback receiver acceptance")
+    parser.add_argument("--codex-scenario", choices=("startup", "established", "automatic"), default="startup",
+                        help="automatic tests the product-owned launcher; startup retains the strict direct-Codex diagnostic")
     parser.add_argument("--startup-samples", type=int, default=0,
                         help="additional fresh-home samples per Windows ancestry type (0..20)")
     parser.add_argument("--service", action="store_true",
@@ -119,6 +142,34 @@ def main():
                 raise ValueError("installation trial did not pass on the exact archive binaries")
             report["installation"] = {"result": "passed", "steps": len(installed["steps"])}
             report.update(result="passed", steps=len(observed["steps"]), desktop=observed.get("desktop"))
+            if args.codex:
+                report["result"] = "failed"
+                import psutil
+                automatic = args.codex_scenario == "automatic"
+                driver = "windows_native_launcher_smoke.py" if automatic else "windows_native_codex_smoke.py"
+                trial = subprocess.Popen([sys.executable, str(ROOT / "scripts" / driver),
+                                          "--binary-dir", str(app), "--codex", str(args.codex.resolve(strict=True)),
+                                          *([] if automatic else ["--scenario", args.codex_scenario]),
+                                          "--output", str(output / "native-codex")], cwd=scratch)
+                owner = psutil.Process(trial.pid)
+                try:
+                    if trial.wait(timeout=300) != 0:
+                        raise ValueError("native Codex acceptance failed; see its retained report")
+                except subprocess.TimeoutExpired:
+                    children = owner.children(recursive=True)
+                    for process in reversed(children):
+                        try:
+                            process.kill()
+                        except psutil.NoSuchProcess:
+                            pass
+                    owner.kill()
+                    _, alive = psutil.wait_procs([owner, *children], timeout=5)
+                    report["native_codex_timeout_survivors"] = [p.pid for p in alive]
+                    trial.wait(timeout=5)
+                    raise
+                native = json.loads((output / "native-codex/result.json").read_text(encoding="utf-8"))
+                validate_native_report(native, info, args.codex_scenario)
+                report.update(result="passed", native_codex=native, native_codex_scenario=args.codex_scenario)
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
         raise

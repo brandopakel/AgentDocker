@@ -1,4 +1,5 @@
 """Windows archives bind PE architecture and extracted bytes to their provenance."""
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -50,6 +51,50 @@ class WindowsDesktopPackaging(unittest.TestCase):
     def save_manifest(self):
         self.manifest["binary_sha256"] = {name: PACKAGE.sha256(self.binaries / name) for name in self.names}
         (self.binaries / "native-build.json").write_text(json.dumps(self.manifest), encoding="utf-8")
+
+    def automatic_report(self):
+        # Synthetic records exercise acceptance of provenance and cleanup;
+        # the Windows job separately establishes actual execution.
+        return {"result": "passed", "source_commit": self.manifest["source_commit"],
+                "receiver_binary_sha256": dict(self.manifest["binary_sha256"]),
+                "scratch_removed": True, "cleanup_errors": [], "reader_errors": [],
+                "forced_processes": [], "steps": [{"passed": True} for _ in range(13)]}
+
+    def test_automatic_native_report_requires_extracted_binary_and_source_provenance(self):
+        native = self.automatic_report()
+        SMOKE.validate_native_report(native, self.manifest, "automatic")
+        for change in (lambda r: r.update(source_commit="d" * 40),
+                       lambda r: r["receiver_binary_sha256"].update({"agentd.exe": "d" * 64}),
+                       lambda r: r.update(receiver_binary_sha256={})):
+            invalid = copy.deepcopy(native)
+            change(invalid)
+            with self.assertRaises(ValueError):
+                SMOKE.validate_native_report(invalid, self.manifest, "automatic")
+
+    def test_automatic_native_report_refuses_partial_or_forced_success(self):
+        native = self.automatic_report()
+        changes = [lambda r: r.update(result="failed"),
+                   lambda r: r.update(scratch_removed=False),
+                   lambda r: r["steps"].pop(),
+                   lambda r: r["steps"][0].update(passed=False)]
+        for key in ("cleanup_errors", "reader_errors", "forced_processes"):
+            changes.extend((lambda r, k=key: r.update({k: ["failure"]}),
+                            lambda r, k=key: r.pop(k)))
+        for change in changes:
+            invalid = copy.deepcopy(native)
+            change(invalid)
+            with self.assertRaises(ValueError):
+                SMOKE.validate_native_report(invalid, self.manifest, "automatic")
+
+    def test_direct_native_report_cannot_borrow_launcher_provenance(self):
+        native = self.automatic_report()
+        with self.assertRaises(ValueError):
+            SMOKE.validate_native_report(native, self.manifest, "startup")
+        native["binary_sha256"] = native.pop("receiver_binary_sha256")
+        SMOKE.validate_native_report(native, self.manifest, "established")
+        native["binary_sha256"]["agentdocker.exe"] = "d" * 64
+        with self.assertRaises(ValueError):
+            SMOKE.validate_native_report(native, self.manifest, "established")
 
     def test_native_bootstrap_contract_is_preserved_in_portable_metadata(self):
         self.manifest['launcher_redirect'] = 2

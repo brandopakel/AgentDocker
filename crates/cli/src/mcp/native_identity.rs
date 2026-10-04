@@ -38,10 +38,12 @@ fn profile_from_executable(executable: &Path) -> Result<PathBuf> {
         .to_owned())
 }
 
-pub(super) struct Context {
+pub(crate) struct Context {
     host: ProcessIdentity,
     executable: PathBuf,
-    profile: PathBuf,
+    // A dedicated host proves its profile through the accepted remote ledger,
+    // rather than inferring it from an arbitrary environment variable.
+    profile: Option<PathBuf>,
     cwd: PathBuf,
 }
 
@@ -57,21 +59,41 @@ impl Context {
         }
         let pid = super::parent_id();
         let table = procinfo::processes()?;
+        Self::from_host(pid, std::env::current_dir()?.canonicalize()?, &table)
+    }
+
+    /// Hooks stop at the first Codex host just as MCP does. Never climb past a
+    /// server into an unrelated launcher or containing provider session.
+    pub(crate) fn from_host(
+        pid: u32,
+        cwd: PathBuf,
+        table: &[procinfo::Process],
+    ) -> Result<Option<Self>> {
         let Some(host) = table.iter().find(|p| p.pid == pid) else {
             return Ok(None);
         };
-        // The daemon refuses to register this host by the same predicate.
-        if !procinfo::detached_codex_app_server(&host.argv) {
+        // Reuse the daemon's cached-host predicate while also supporting the
+        // explicitly authenticated dedicated server accepted by this receiver.
+        let cached = procinfo::detached_codex_app_server(&host.argv);
+        let dedicated = procinfo::is_codex_binary(&host.argv)
+            && host.argv.iter().any(|v| v == "app-server")
+            && host.argv.iter().any(|v| v == "--listen");
+        if !cached && !dedicated {
             return Ok(None);
         }
         let executable = procinfo::executable_path_of(pid)?.canonicalize()?;
-        let profile = profile_from_executable(&executable)?.canonicalize()?;
-        if let Some(configured) = std::env::var_os("CODEX_HOME") {
-            ensure!(
-                PathBuf::from(configured).canonicalize()? == profile,
-                "detached Codex MCP host executable disagrees with its provider profile"
-            );
-        }
+        let profile = if cached {
+            let profile = profile_from_executable(&executable)?.canonicalize()?;
+            if let Some(configured) = std::env::var_os("CODEX_HOME") {
+                ensure!(
+                    PathBuf::from(configured).canonicalize()? == profile,
+                    "detached Codex MCP host executable disagrees with its provider profile"
+                );
+            }
+            Some(profile)
+        } else {
+            None
+        };
         Ok(Some(Self {
             host: ProcessIdentity {
                 pid,
@@ -80,7 +102,7 @@ impl Context {
             },
             executable,
             profile,
-            cwd: std::env::current_dir()?.canonicalize()?,
+            cwd,
         }))
     }
 
@@ -95,7 +117,7 @@ impl Context {
         }
     }
 
-    pub(super) async fn resolve<B: super::Backend>(
+    pub(crate) async fn resolve<B: super::Backend>(
         &self,
         backend: &B,
         meta: &Value,
@@ -115,9 +137,19 @@ impl Context {
         else {
             anyhow::bail!("cannot inspect native Codex bindings");
         };
-        self.select(agents, meta, |process| {
-            procinfo::start_time(process.pid) == Some(process.started_at)
-        })
+        self.select(
+            agents,
+            meta,
+            |process| procinfo::start_time(process.pid) == Some(process.started_at),
+            |agent| {
+                crate::codex_input::external::verify_mcp_host(
+                    agent,
+                    &self.host,
+                    &self.executable,
+                    &self.cwd,
+                )
+            },
+        )
     }
 
     fn select(
@@ -125,6 +157,7 @@ impl Context {
         agents: Vec<AgentRecord>,
         meta: &Value,
         alive: impl Fn(&ProcessIdentity) -> bool,
+        dedicated: impl Fn(&AgentRecord) -> Result<()>,
     ) -> Result<AgentRecord> {
         // Codex 0.160 supplies these outside model-controlled tool arguments.
         // A child's thread differs from its root session; never route it into
@@ -146,7 +179,10 @@ impl Context {
             let provider = &binding.provider;
             agent.spec.runtime == "codex"
                 && provider.session == thread
-                && std::path::Path::new(&provider.profile) == self.profile
+                && self
+                    .profile
+                    .as_ref()
+                    .is_none_or(|profile| Path::new(&provider.profile) == profile)
                 && agent.spec.workdir.as_ref() == Some(&self.cwd)
                 && agent.pid == Some(provider.process.pid)
                 && agent.process_started_at == Some(provider.process.started_at)
@@ -159,6 +195,9 @@ impl Context {
             matches.next().is_none(),
             "Codex conversation binding is ambiguous"
         );
+        if self.profile.is_none() {
+            dedicated(&agent)?;
+        }
         Ok(agent)
     }
 }
@@ -202,7 +241,7 @@ mod tests {
                 started_at: now,
             },
             executable: "/profile/server".into(),
-            profile: "/profile".into(),
+            profile: Some("/profile".into()),
             cwd: "/project".into(),
         };
         let mut agent = AgentRecord::new(
@@ -243,7 +282,7 @@ mod tests {
         let (context, agent, meta) = fixture();
         assert_eq!(
             context
-                .select(vec![agent.clone()], &meta, |_| true)
+                .select(vec![agent.clone()], &meta, |_| true, |_| Ok(()))
                 .unwrap()
                 .id,
             agent.id
@@ -256,15 +295,75 @@ mod tests {
         ] {
             assert!(
                 context
-                    .select(vec![agent.clone()], &invalid, |_| true)
+                    .select(vec![agent.clone()], &invalid, |_| true, |_| Ok(()))
                     .is_err()
             );
         }
-        assert!(context.select(vec![], &meta, |_| true).is_err());
+        assert!(context.select(vec![], &meta, |_| true, |_| Ok(())).is_err());
         assert!(
             context
-                .select(vec![agent.clone(), agent], &meta, |_| true)
+                .select(vec![agent.clone(), agent], &meta, |_| true, |_| Ok(()))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn dedicated_identity_requires_accepted_host_proof_after_root_selection() {
+        let (mut context, agent, meta) = fixture();
+        context.profile = None;
+        let calls = std::cell::Cell::new(0);
+        let proof = |selected: &AgentRecord| {
+            calls.set(calls.get() + 1);
+            ensure!(selected.id == agent.id, "unexpected selection");
+            Ok(())
+        };
+        assert_eq!(
+            context
+                .select(vec![agent.clone()], &meta, |_| true, proof)
+                .unwrap()
+                .id,
+            agent.id
+        );
+        assert_eq!(calls.get(), 1);
+        for invalid in [
+            Value::Null,
+            json!({"threadId":"child-thread","sessionId":"root-thread"}),
+        ] {
+            assert!(
+                context
+                    .select(vec![agent.clone()], &invalid, |_| true, proof)
+                    .is_err()
+            );
+        }
+        assert_eq!(calls.get(), 1);
+        assert!(
+            context
+                .select(
+                    vec![agent.clone()],
+                    &meta,
+                    |_| true,
+                    |_| { anyhow::bail!("server birth or capability record changed") }
+                )
+                .is_err()
+        );
+        assert!(
+            context
+                .select(vec![agent.clone(), agent.clone()], &meta, |_| true, proof)
+                .is_err()
+        );
+        assert_eq!(calls.get(), 1);
+        // Cached detached hosts retain their existing profile proof and do not
+        // depend on a dedicated-server descriptor that those versions lack.
+        context.profile = Some("/profile".into());
+        assert!(
+            context
+                .select(
+                    vec![agent],
+                    &meta,
+                    |_| true,
+                    |_| { anyhow::bail!("dedicated proof must not run for a cached host") }
+                )
+                .is_ok()
         );
     }
 
@@ -294,9 +393,17 @@ mod tests {
         wrong.process_started_at = Some(Utc::now() + chrono::Duration::seconds(1));
         variants.push(wrong);
         for wrong in variants {
-            assert!(context.select(vec![wrong], &meta, |_| true).is_err());
+            assert!(
+                context
+                    .select(vec![wrong], &meta, |_| true, |_| Ok(()))
+                    .is_err()
+            );
         }
-        assert!(context.select(vec![agent], &meta, |_| false).is_err());
+        assert!(
+            context
+                .select(vec![agent], &meta, |_| false, |_| Ok(()))
+                .is_err()
+        );
     }
 
     #[cfg(unix)]

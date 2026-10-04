@@ -160,8 +160,30 @@ pub(super) async fn report<B: Backend>(
         };
         ensure!(agent.id == id, "session binding changed the Codex identity");
     }
+    finish_report(
+        backend,
+        input,
+        agent,
+        &checkout,
+        pid,
+        process_started_at,
+        observed_at,
+    )
+    .await
+}
+
+async fn finish_report<B: Backend>(
+    backend: &B,
+    input: &Input,
+    agent: AgentRecord,
+    checkout: &std::path::Path,
+    pid: u32,
+    process_started_at: chrono::DateTime<Utc>,
+    observed_at: chrono::DateTime<Utc>,
+) -> Result<Option<AgentRecord>> {
     ensure!(
-        agent.status.is_live()
+        input.is_root()
+            && agent.status.is_live()
             && agent.pid == Some(pid)
             && agent.process_started_at == Some(process_started_at)
             && agent.spec.runtime == "codex"
@@ -170,8 +192,8 @@ pub(super) async fn report<B: Backend>(
                 .workdir
                 .as_ref()
                 .and_then(|p| p.canonicalize().ok())
-                .as_ref()
-                == Some(&checkout)
+                .as_deref()
+                == Some(checkout)
             && agent.spec.labels.get("session_id") == Some(&input.session_id),
         "Codex activity requires an exact verified session binding"
     );
@@ -184,7 +206,7 @@ pub(super) async fn report<B: Backend>(
     .await;
     // SessionStart also runs after compaction. It establishes the verified
     // receiver identity, but says nothing about whether a turn is active.
-    let Some(activity) = activity else {
+    let Some(activity) = activity(&input.hook_event_name) else {
         return Ok(Some(agent));
     };
     match backend
@@ -203,6 +225,22 @@ pub(super) async fn report<B: Backend>(
     }
 }
 
+fn nearest_codex_host(table: &[agentdocker_host::procinfo::Process], mut pid: u32) -> Option<u32> {
+    for _ in 0..12 {
+        let process = table.iter().find(|p| p.pid == pid)?;
+        // Inventory deliberately hides sidecars. An ancestry proof must stop
+        // there, otherwise it can attribute a hook to an outer Codex session.
+        if agentdocker_host::procinfo::is_codex_binary(&process.argv) {
+            return Some(pid);
+        }
+        if process.ppid == pid {
+            break;
+        }
+        pid = process.ppid;
+    }
+    None
+}
+
 pub(super) async fn run(client: &Client) -> Result<()> {
     // stdin is a provider-owned pipe. Poll before every read, with bounded
     // retained bytes; a malformed or never-closed stream cannot hang a turn.
@@ -216,24 +254,10 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     let observed_at = Utc::now();
     let table = agentdocker_host::procinfo::processes().context("cannot inspect hook parent")?;
     #[cfg(unix)]
-    let mut pid = std::os::unix::process::parent_id();
+    let parent = std::os::unix::process::parent_id();
     #[cfg(windows)]
-    let mut pid = agentdocker_host::procinfo::parent_id();
-    let mut host = None;
-    for _ in 0..12 {
-        let Some(process) = table.iter().find(|p| p.pid == pid) else {
-            break;
-        };
-        if agentdocker_host::procinfo::runtime_of(&process.argv) == Some("codex") {
-            host = Some(pid);
-            break;
-        }
-        if process.ppid == pid {
-            break;
-        }
-        pid = process.ppid;
-    }
-    let pid = host.context("hook has no Codex CLI ancestor")?;
+    let parent = agentdocker_host::procinfo::parent_id();
+    let pid = nearest_codex_host(&table, parent).context("hook has no Codex CLI ancestor")?;
     if std::env::var(agentdocker_host::provider_input::CODEX_INPUT_ENV).as_deref() == Ok("1") {
         let id = std::env::var("AGENTDOCKER_AGENT_ID").context("Codex bridge hook has no owner")?;
         let response = tokio::time::timeout(
@@ -263,7 +287,23 @@ pub(super) async fn run(client: &Client) -> Result<()> {
         agentdocker_host::procinfo::start_time(pid).context("cannot verify Codex process birth")?;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(4);
     let delivery = tokio::time::timeout_at(deadline, async {
-        let agent = report(client, &input, pid, started_at, observed_at).await?;
+        let checkout = input.cwd.canonicalize()?;
+        let native = crate::mcp::native_identity::Context::from_host(pid, checkout.clone(), &table)?;
+        let agent = if let Some(context) = native {
+            let agent = context.resolve(client, &json!({
+                "threadId":input.session_id, "sessionId":input.session_id
+            })).await?;
+            let owner = agent.pid.context("native hook binding lacks a terminal PID")?;
+            let birth = agent.process_started_at.context("native hook binding lacks a process birth")?;
+            finish_report(client, &input, agent, &checkout, owner, birth, observed_at).await?
+        } else {
+            ensure!(
+                table.iter().find(|p| p.pid == pid).is_some_and(|p|
+                    agentdocker_host::procinfo::runtime_of(&p.argv) == Some("codex")),
+                "Codex hook host has no supported native binding"
+            );
+            report(client, &input, pid, started_at, observed_at).await?
+        };
         if input.hook_event_name == "PreToolUse"
             && let Some(agent) = &agent
             && let Some(denied) = claim_edits(client, &input, agent).await?
@@ -473,6 +513,38 @@ fn read_input(fd: i32, timeout: std::time::Duration) -> Result<Input> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hook_ancestry_stops_at_hidden_sidecars_before_an_outer_codex_session() {
+        use agentdocker_host::procinfo::Process;
+        let process = |pid, ppid, args: &[&str]| Process {
+            pid,
+            ppid,
+            argv: args.iter().map(|s| s.to_string()).collect(),
+        };
+        for arguments in [
+            vec!["codex", "app-server", "--listen", "ws://127.0.0.1:1234"],
+            vec!["codex", "app-server", "--managed-daemon"],
+            vec!["codex", "app-server", "--stdio"],
+            vec!["node", "/x/@openai/codex/bin/codex.js", "app-server"],
+        ] {
+            let table = vec![
+                process(10, 1, &["codex"]),
+                process(20, 10, &["python3", "trial.py"]),
+                process(30, 20, &arguments),
+                process(40, 30, &["sh", "-c", "hook"]),
+                process(50, 40, &["python3", "hook.py"]),
+            ];
+            assert_eq!(nearest_codex_host(&table, 50), Some(30));
+            assert_eq!(nearest_codex_host(&table, 99), None);
+        }
+        let ordinary = vec![
+            process(30, 1, &["codex", "--no-alt-screen"]),
+            process(40, 30, &["sh", "-c", "hook"]),
+        ];
+        assert_eq!(nearest_codex_host(&ordinary, 40), Some(30));
+        assert_eq!(nearest_codex_host(&[process(40, 40, &["sh"])], 40), None);
+    }
     use crate::client::mock::Mock;
 
     fn input(event: &str) -> Input {

@@ -22,6 +22,26 @@ on:
         description: Exact expected commit of the optional baseline
         type: string
         default: ''
+      capability_only:
+        description: Probe provider-only authenticated remote ConPTY startup (no product acceptance)
+        type: boolean
+        default: false
+      capability_approval:
+        description: Include one private command approval through the native ConPTY UI
+        type: boolean
+        default: false
+      receiver_acceptance:
+        description: In capability_only mode, build and test the shared-server receiver after one explicit fixture turn
+        type: boolean
+        default: false
+      witnessed_birth:
+        description: With receiver_acceptance, manually witness the new native thread and test first input without a warmup
+        type: boolean
+        default: false
+      automatic_launcher:
+        description: With capability_only and receiver_acceptance, test the product-owned native launcher without fixture binding
+        type: boolean
+        default: false
       startup_samples:
         description: Additional fresh-home samples per ancestry type (0..20)
         type: choice
@@ -31,6 +51,11 @@ on:
         description: Test extracted daemon and connector Task Scheduler lifecycles
         type: boolean
         default: false
+      codex_version:
+        description: Pinned provider for native TUI acceptance
+        type: choice
+        default: '0.160.0'
+        options: ['0.160.0', '0.155.1']
 
 permissions:
   contents: read
@@ -42,7 +67,7 @@ env:
 
 jobs:
   native-foundations:
-    if: ${{ !inputs.hosted_tag }}
+    if: ${{ !inputs.capability_only && !inputs.hosted_tag }}
     runs-on: windows-latest
     # Extra diagnostic samples include bounded CLI capture and cleanup for
     # every home. Leave the ordinary CI/build budget unchanged.
@@ -82,7 +107,23 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force artifacts | Out-Null
           python scripts/build_native.py --target x86_64-pc-windows-msvc > artifacts/native-build.json
+      - name: Prepare pinned native Codex and ConPTY acceptance dependencies
+        env:
+          CODEX_TEST_VERSION: ${{ inputs.codex_version || '0.160.0' }}
+        run: |
+          python -m pip install --disable-pip-version-check pywinpty==3.0.5 psutil==7.0.0 websockets==15.0.1
+          if ($LASTEXITCODE -ne 0) { throw "acceptance dependencies failed" }
+          $digests = @{
+            '0.155.1' = 'eba0f32c976667cb9298efafd98513e823eeda7b576a03ec658bb8be8d336316'
+            '0.160.0' = 'fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d'
+          }
+          if (-not $digests.ContainsKey($env:CODEX_TEST_VERSION)) { throw "unsupported fixture Codex version" }
+          curl.exe --fail --location --max-time 180 --output artifacts/codex.exe "https://github.com/openai/codex/releases/download/rust-v$env:CODEX_TEST_VERSION/codex-x86_64-pc-windows-msvc.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Codex download failed" }
+          $actual = (Get-FileHash artifacts/codex.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $digests[$env:CODEX_TEST_VERSION]) { throw "Codex digest mismatch" }
       - name: Extracted Windows desktop package acceptance
+        id: package
         # Every command in it is bounded; a hang is a finding, not a wait.
         # Forty samples can exceed ten minutes within their command bounds;
         # reserve time to finish cleanup and retain the diagnostic report.
@@ -98,7 +139,12 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "service acceptance dependency failed" }
             $extra += '--service'
           }
-          python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES" @extra
+          python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES" --codex artifacts/codex.exe --codex-scenario automatic @extra
+      - name: Diagnose established-session native Codex after startup failure
+        # A narrower pass never changes the failed strict startup outcome.
+        if: ${{ !cancelled() && steps.package.outcome == 'failure' }}
+        timeout-minutes: 10
+        run: python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-established-package --codex artifacts/codex.exe --codex-scenario established
       - name: Preserve tested unsigned portable preview
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -136,11 +182,68 @@ jobs:
             artifacts/native-build.json
             artifacts/windows-desktop-package/package-acceptance.json
             artifacts/windows-desktop-package/smoke/
+            artifacts/windows-desktop-package/native-codex/
+            artifacts/windows-established-package/package-acceptance.json
+            artifacts/windows-established-package/smoke/
+            artifacts/windows-established-package/native-codex/
             artifacts/windows-desktop-package/service/
             artifacts/windows-desktop-package/connector-service/
             artifacts/windows-desktop-package/installation/
           if-no-files-found: warn
 
+  remote-tui:
+    if: ${{ inputs.capability_only && !inputs.hosted_tag }}
+    runs-on: windows-latest
+    timeout-minutes: ${{ inputs.receiver_acceptance && 60 || 10 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
+        if: inputs.receiver_acceptance
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        if: inputs.receiver_acceptance
+        with:
+          key: windows-native-foundations
+          cache-on-failure: true
+      - name: Build the shared-server receiver candidate
+        if: inputs.receiver_acceptance
+        run: cargo build --locked --release -p agentdocker --bins
+      - name: Prepare pinned provider and native terminal dependencies
+        run: |
+          python -m pip install --disable-pip-version-check pywinpty==3.0.5 psutil==7.0.0 websockets==15.0.1
+          if ($LASTEXITCODE -ne 0) { throw "capability dependencies failed" }
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          curl.exe --fail --location --max-time 180 --output artifacts/codex.exe "https://github.com/openai/codex/releases/download/rust-v0.160.0/codex-x86_64-pc-windows-msvc.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Codex download failed" }
+          $actual = (Get-FileHash artifacts/codex.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne 'fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d') { throw "Codex digest mismatch" }
+      - name: Dedicated server and native ConPTY capability
+        env:
+          CAPABILITY_APPROVAL: ${{ inputs.capability_approval }}
+          RECEIVER_ACCEPTANCE: ${{ inputs.receiver_acceptance }}
+          WITNESSED_BIRTH: ${{ inputs.witnessed_birth }}
+          AUTOMATIC_LAUNCHER: ${{ inputs.automatic_launcher }}
+        run: |
+          if ($env:AUTOMATIC_LAUNCHER -eq 'true') {
+            if ($env:RECEIVER_ACCEPTANCE -ne 'true') { throw 'automatic launcher requires receiver_acceptance' }
+            python scripts/windows_native_launcher_smoke.py --codex artifacts/codex.exe --binary-dir target/release --output artifacts/capability
+            exit $LASTEXITCODE
+          }
+          $options = @()
+          if ($env:CAPABILITY_APPROVAL -eq 'true') { $options += '--approval' }
+          if ($env:RECEIVER_ACCEPTANCE -eq 'true') { $options += '--binary-dir'; $options += 'target/release' }
+          if ($env:WITNESSED_BIRTH -eq 'true') { $options += '--witnessed-birth' }
+          python scripts/windows_codex_remote_capability.py --codex artifacts/codex.exe --output artifacts/capability @options
+      - name: Preserve bounded capability evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-codex-remote-capability
+          path: artifacts/capability/
+          if-no-files-found: warn
   hosted-preview:
     if: github.event_name == 'workflow_dispatch' && inputs.hosted_tag != ''
     runs-on: windows-latest
