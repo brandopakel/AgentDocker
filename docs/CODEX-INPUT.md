@@ -1003,7 +1003,9 @@ record used ordinary history with no birth allowance. Windows also verified
 actual MCP identity in both terminal generations. The Unix trials configured
 MCP but did not invoke it. These private loopback-model and synthetic-terminal
 trials do not establish real-account or physical-input acceptance. If receiver binding and its cleanup both fail, the original binding error is
-retained with the cleanup failure as additional context. The launcher retires its own children on exit, revokes its capability
+retained with the cleanup failure as additional context. On Unix, the front end now creates a dedicated group for the internal owner and retains its unreaped child identity until that group is retired. It also owns the capability path before startup, so an internal-owner crash can revoke it. A controlling terminal is handed to the owner group directly, with foreground and mode restoration on cleanup and suspension; stdin is never proxied. This correction still needs actual-provider, startup-crash and controlling-terminal acceptance. Windows process containment after internal-owner death remains open.
+
+The launcher retires its own children on exit, revokes its capability
 and retains bounded private server diagnostics. Capability cleanup is owned before
 fallible file writes and server creation, so a failed initial spawn also revokes
 the file; a real CLI/daemon regression covers a non-executable provider path.

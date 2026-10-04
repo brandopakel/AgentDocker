@@ -440,11 +440,7 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
     let options = provider_input::codex_arguments(&args.arguments)?;
     crate::codex_input::call(&client, Request::Ping).await?;
     let home = dirs::home();
-    let parent = home.join("codex-native");
-    dirs::ensure_private_dir(&parent)?;
-    let directory = parent.join(uuid::Uuid::new_v4().simple().to_string());
-    dirs::ensure_private_dir(&directory)?;
-    let directory = directory.canonicalize()?;
+    let directory = owner.directory.clone();
     let token = uuid::Uuid::new_v4().simple().to_string();
     // Own cleanup before the first fallible write/spawn. A startup failure must
     // not leave the capability behind before the normal shutdown path exists.
@@ -495,7 +491,7 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
     };
     let result = tokio::select! {
         _ = stop_signal() => Ok(()),
-        result = lifetime::disconnected(&mut owner) => result,
+        result = lifetime::disconnected(&mut owner.stream) => result,
         result = async {
             let mut binding = startup.witness(&mut server,&mut tui).await?;
             let prior = if resume.is_some() {
