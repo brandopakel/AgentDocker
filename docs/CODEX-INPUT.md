@@ -617,7 +617,7 @@ navigation and reopening. These bounded trials use the upstream experimental
 `write_stdin_approval` feature for that launch only; they do not change saved
 provider policy or establish physical input/accessibility acceptance. The clean
 candidate passed 1,430 Rust tests and 155 Python checks with zero retries.
-Broader permission forms, elicitation and secret input still require completion.
+Broader permission forms, MCP form elicitation and secret input still require completion.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
@@ -759,8 +759,31 @@ provider record. The local gate passed 813 Rust tests, 65 Python checks and
 actual source inspection of `1d76a88`; its parent integration gate passed
 814 Rust tests and 65 Python checks.
 
+MCP URL elicitation (`mcpServer/elicitation/request`, `mode: "url"`) now has a
+bounded human route. The request must name the bound thread during an active
+input turn; a supplied turn must match, while absent/null turn correlation uses
+the current local turn as the request's lifetime boundary. The server, message
+and full original destination are reviewed before choosing **Accept**,
+**Decline** or **Cancel**. Copy the link and open it in your own browser only if
+you consent; AgentDocker neither fetches the page nor sees its input. Terminal
+clients use `agentdocker answer <question-id> Accept|Decline|Cancel`. The desktop
+has no free-text input for this question, and the daemon refuses other pending
+answers before storing them. Copying the link does not answer the request.
+
+Only HTTPS or canonical loopback HTTP addresses with a bounded printable ASCII
+URL are supported. Credentials, hidden display controls and ambiguous authorities
+are rejected before question publication. The review records the opaque
+elicitation ID unchanged, but does not confuse it with Codex's request ID.
+Cancellation and five-minute expiry return `action: "cancel"`; an exact human
+Accept returns `action: "accept"` with no form content. Provider resolution
+acknowledges the decision, not completion of the external website action. There
+is no page polling, completion inference or automatic tool retry. Existing
+uncertain-write and no-replay recovery rules apply; ledger version 12 rejects
+URL reviews fabricated in older records. Source tests cover the route; actual
+Codex/MCP, browser interaction and final-package acceptance remain pending.
+
 Unknown callbacks,
-session-wide file grants, unsupported permission selectors, MCP elicitation, secret inputs
+session-wide file grants, unsupported permission selectors, MCP form/device-verification elicitation, secret inputs
 and oversized requests currently return an explicit provider error. Complete
 those review surfaces before treating the adapter as a general replacement for
 the provider terminal. Automatic provider review and configured approval policy

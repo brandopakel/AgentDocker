@@ -862,6 +862,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mcp_url_questions_survive_restart_and_reject_extra_input_before_storage() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        let presentation = QuestionPresentation::McpUrl {
+            server: "example-tools".into(),
+            elicitation_id: "one".into(),
+            message: "Connect the example account.".into(),
+            url: "https://example.com/consent".into(),
+        };
+        let Response::Sent { message, .. } = daemon
+            .post_question(
+                "asker".into(),
+                "recipient".into(),
+                presentation.text(),
+                Some(presentation.clone()),
+                300,
+            )
+            .await
+        else {
+            panic!("not posted");
+        };
+        drop(daemon);
+        let daemon = state(&dir);
+        assert_eq!(
+            lock(&daemon.state).questions[&message]
+                .presentation
+                .as_ref(),
+            Some(&presentation)
+        );
+        for payload in [
+            json!({"text":"private input"}),
+            json!({"text":"Accept","secret":"private input"}),
+        ] {
+            let mut state = lock(&daemon.state);
+            let before = state.next_seq;
+            let response = state.send(
+                recipient.id.to_string(),
+                Destination::Agent(asker.id.clone()),
+                "chat".into(),
+                payload,
+                Some(message.clone()),
+            );
+            assert!(matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ));
+            assert_eq!(state.next_seq, before);
+            assert!(state.questions.contains_key(&message));
+            assert!(state.inboxes.get(&asker.id).is_none_or(|q| q.is_empty()));
+        }
+        let Response::Sent {
+            message: answer, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: message.clone(),
+                text: "Decline".into(),
+            })
+            .await
+        else {
+            panic!("not answered");
+        };
+        drop(daemon);
+        let daemon = state(&dir);
+        let state = lock(&daemon.state);
+        assert!(!state.questions.contains_key(&message));
+        let queued = state.inboxes[&asker.id]
+            .iter()
+            .find(|m| m.id == answer)
+            .unwrap();
+        assert_eq!(queued.payload, json!({"text":"Decline"}));
+        assert_eq!(queued.reply_to, Some(message));
+    }
+
+    #[tokio::test]
     async fn an_empty_question_does_not_register_a_human_or_publish_state() {
         for wait in [false, true] {
             let dir = TempDir::new().unwrap();

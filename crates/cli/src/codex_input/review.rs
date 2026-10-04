@@ -25,6 +25,7 @@ enum Kind {
     Files,
     Permissions,
     UserInput,
+    McpUrl,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -386,18 +387,53 @@ impl Pending {
             valid_request_id(&event["id"]),
             "Codex request has no valid ID"
         );
-        let turn = turn.context("provider request has no active input turn")?;
         let params = &event["params"];
-        ensure!(
-            params["threadId"].as_str() == Some(thread) && params["turnId"].as_str() == Some(turn),
-            "provider request does not belong to the active input turn"
-        );
         let method = event["method"]
             .as_str()
             .context("Codex request has no method")?;
+        let mcp_url = method == "mcpServer/elicitation/request" && params["mode"] == "url";
+        // MCP's turnId is optional correlation, not its request identity. This
+        // controller accepts these requests only during its own active turn;
+        // a supplied turn must still match. The local turn bounds their life.
+        let turn = turn.context("provider request has no active input turn")?;
+        ensure!(
+            params["threadId"].as_str() == Some(thread)
+                && (params["turnId"].as_str() == Some(turn)
+                    || (mcp_url && params["turnId"].is_null())),
+            "provider request does not belong to the active input turn"
+        );
         let mut questions = Vec::new();
         let mut command_denial = CommandDenial::Decline;
         let kind = match method {
+            "mcpServer/elicitation/request" => {
+                ensure!(
+                    params["mode"] == "url",
+                    "MCP forms and device verification need a separate review flow"
+                );
+                ensure!(
+                    params["requestedSchema"].is_null(),
+                    "URL elicitation cannot collect form input"
+                );
+                let presentation = QuestionPresentation::McpUrl {
+                    server: text(&params["serverName"])?.into(),
+                    elicitation_id: text(&params["elicitationId"])?.into(),
+                    message: text(&params["message"])?.into(),
+                    url: text(&params["url"])?.into(),
+                };
+                ensure!(
+                    presentation.valid_for(&presentation.text()),
+                    "MCP URL request cannot be completely reviewed"
+                );
+                questions.push(Question {
+                    field: "elicitation".into(),
+                    text: presentation.text(),
+                    presentation: Some(presentation),
+                    message: None,
+                    answer: None,
+                    closure: Closure::Open,
+                });
+                Kind::McpUrl
+            }
             "item/permissions/requestApproval" => {
                 ensure!(
                     params["environmentId"].is_null()
@@ -565,6 +601,14 @@ impl Pending {
         matches!(self.kind, Kind::Stdin)
     }
 
+    pub fn is_mcp_url_review(&self) -> bool {
+        matches!(self.kind, Kind::McpUrl)
+            || self
+                .questions
+                .iter()
+                .any(|q| matches!(q.presentation, Some(QuestionPresentation::McpUrl { .. })))
+    }
+
     pub fn is_file_review(&self) -> bool {
         matches!(self.kind, Kind::Files)
             || self.questions.iter().any(|q| {
@@ -681,15 +725,38 @@ impl Pending {
             .iter()
             .any(|q| q.closure == Closure::Cancelled)
         {
+            if self.is_mcp_url_review() {
+                return Ok(Some(
+                    json!({"id":self.id,"result":{"action":"cancel","content":null}}),
+                ));
+            }
             return Ok(Some(
                 json!({"id":self.id,"error":{"code":-32000,"message":"The human question was cancelled or expired."}}),
             ));
         }
         if self.questions.iter().any(|q| q.answer.is_none()) {
+            if self.is_mcp_url_review() {
+                return Ok((now >= self.expires_at)
+                    .then(|| json!({"id":self.id,"result":{"action":"cancel","content":null}})));
+            }
             return Ok((now >= self.expires_at).then(|| json!({"id":self.id,"error":{"code":-32000,"message":"The human question expired before a complete response."}})));
         }
         ensure!(self.questions.iter().all(|q| matches!(&q.closure, Closure::Answered { message } if q.answer.as_ref().is_some_and(|a| &a.id == message))), "provider response has no exact daemon answer receipt");
         let result = match self.kind {
+            Kind::McpUrl => {
+                let answer = answer_text(
+                    self.questions[0]
+                        .answer
+                        .as_ref()
+                        .context("MCP URL request has no answer")?,
+                )?;
+                let action = match answer {
+                    "Accept" => "accept",
+                    "Decline" => "decline",
+                    _ => "cancel",
+                };
+                json!({"action":action,"content":null})
+            }
             Kind::Permissions => {
                 let question = &self.questions[0];
                 let Some(QuestionPresentation::CodexPermissions { permissions, .. }) =
@@ -754,13 +821,26 @@ impl Pending {
         ensure!(
             !matches!(
                 self.kind,
-                Kind::Command | Kind::Network | Kind::Stdin | Kind::Files | Kind::Permissions
+                Kind::Command
+                    | Kind::Network
+                    | Kind::Stdin
+                    | Kind::Files
+                    | Kind::Permissions
+                    | Kind::McpUrl
             ) || self.questions.len() == 1,
             "approval review has multiple questions"
         );
         let mut fields = HashSet::new();
         let mut routes = HashSet::new();
         for question in &self.questions {
+            ensure!(
+                matches!(self.kind, Kind::McpUrl)
+                    == matches!(
+                        question.presentation,
+                        Some(QuestionPresentation::McpUrl { .. })
+                    ),
+                "MCP URL review kind and presentation disagree"
+            );
             ensure!(
                 !self.has_command_cancellation()
                     || matches!(&question.presentation, Some(QuestionPresentation::CodexCommand { reason, .. }) if reason.ends_with(CANCEL_REASON))
@@ -869,6 +949,123 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mcp_url_event() -> Value {
+        json!({"id":"url-callback","method":"mcpServer/elicitation/request","params":{
+            "threadId":"thread","turnId":"turn","serverName":"example-tools","mode":"url",
+            "message":"Connect the example account.","elicitationId":"opaque-id",
+            "url":"https://accounts.example.com/consent?state=fixture"
+        }})
+    }
+
+    #[test]
+    fn mcp_url_consent_requires_the_addressed_human_and_exact_answer_receipt() {
+        for (choice, action) in [
+            ("Accept", "accept"),
+            ("Decline", "decline"),
+            ("Cancel", "cancel"),
+            ("accept", "cancel"),
+        ] {
+            let mut request = Pending::plan(
+                &mcp_url_event(),
+                "thread",
+                Some("turn"),
+                "human",
+                Utc::now(),
+            )
+            .unwrap();
+            request.questions[0].message = Some("question".to_owned().into());
+            assert!(
+                !request
+                    .capture(&[answer("peer", "Accept")], "owner", false)
+                    .unwrap()
+            );
+            let response = answer("human", choice);
+            assert!(
+                !request
+                    .capture(std::slice::from_ref(&response), "owner", false)
+                    .unwrap()
+            );
+            assert!(request.reply(Utc::now()).unwrap().is_none());
+            request
+                .observe(
+                    &EventKind::QuestionClosed {
+                        question: "question".to_owned().into(),
+                        answer: Some(response.id.clone()),
+                    },
+                    "owner",
+                )
+                .unwrap();
+            request.capture(&[response], "owner", false).unwrap();
+            let reply = request.reply(Utc::now()).unwrap().unwrap();
+            assert_eq!(
+                reply,
+                json!({"id":"url-callback","result":{"action":action,"content":null}})
+            );
+            request.response = Some(reply);
+            let restored: Pending =
+                serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
+            restored.validate(Some("thread"), "owner").unwrap();
+            assert!(
+                restored.reply(Utc::now()).unwrap().is_none(),
+                "an uncertain decision is never replayed"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_url_optional_turn_stays_scoped_to_the_controllers_active_input() {
+        let mut event = mcp_url_event();
+        for value in [Value::Null, json!("turn")] {
+            event["params"]["turnId"] = value;
+            let request =
+                Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+            assert_eq!(request.turn, "turn");
+            assert!(Pending::plan(&event, "thread", None, "human", Utc::now()).is_err());
+        }
+        event["params"].as_object_mut().unwrap().remove("turnId");
+        assert!(Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_ok());
+        for (field, value) in [
+            ("threadId", json!("other")),
+            ("turnId", json!("other")),
+            ("turnId", json!(17)),
+            ("serverName", json!("name\nWebsite: spoofed")),
+            ("elicitationId", json!("")),
+            ("mode", json!("form")),
+            ("mode", json!("openai/form")),
+            ("mode", json!("openai/userVerification")),
+            ("requestedSchema", json!({"type":"object"})),
+            ("url", json!("https://user:secret@host/")),
+            ("message", json!("text\u{202e}hidden")),
+        ] {
+            let mut event = mcp_url_event();
+            event["params"][field] = value;
+            assert!(
+                Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_url_expiry_and_cancellation_never_infer_consent() {
+        let now = Utc::now();
+        let mut request =
+            Pending::plan(&mcp_url_event(), "thread", Some("turn"), "human", now).unwrap();
+        assert!(request.reply(now).unwrap().is_none());
+        assert_eq!(
+            request.reply(request.expires_at).unwrap().unwrap()["result"],
+            json!({"action":"cancel","content":null})
+        );
+        request.questions[0].closure = Closure::Cancelled;
+        assert_eq!(
+            request.reply(now).unwrap().unwrap()["result"]["action"],
+            "cancel"
+        );
+        request.validate(Some("thread"), "owner").unwrap();
+        request.kind = Kind::UserInput;
+        assert!(request.validate(Some("thread"), "owner").is_err());
+    }
 
     fn stdin_event(input: &str) -> Value {
         let command = shlex::try_join(["write_stdin", "--session-id", "123", input]).unwrap();

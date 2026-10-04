@@ -298,6 +298,15 @@ Project tabs provide:
 
 ## Messages, Inbox and tools
 
+A Codex MCP request to continue on a website shows the requesting server, its
+message, the destination and the full URL. **Copy link** leaves the decision
+pending. Open that link in your own browser if you consent, and choose **Accept**,
+**Decline** or **Cancel** in the card. Accept records consent; it does not confirm
+that sign-in or another website action finished. The card has no text field:
+private information belongs on the website. Expired requests disable the controls;
+a failed decision send keeps its error visible. The app never opens or fetches
+the website automatically.
+
 Sessions are shown by name. Default app launches and adapter-generated names
 carry the same generated-name marker. A name generated from a runtime and
 an identifier (the record says so, or it is exactly that adapter's form for the

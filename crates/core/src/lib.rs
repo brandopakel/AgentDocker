@@ -47,7 +47,7 @@ pub use link::{Link, LinkKind};
 pub use message::{
     AnswerRoute, Destination, Envelope, HUMAN, HUMAN_RUNTIME, MessageId, Question,
     QuestionFileChange, QuestionFileChangeKind, QuestionOption, QuestionPresentation,
-    topic_matches,
+    mcp_url_authority, topic_matches,
 };
 pub use notification::NotificationTarget;
 pub use permissions::{

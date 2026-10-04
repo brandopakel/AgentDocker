@@ -175,6 +175,12 @@ pub enum AnswerRoute {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QuestionPresentation {
+    McpUrl {
+        server: String,
+        elicitation_id: String,
+        message: String,
+        url: String,
+    },
     CodexCommand {
         command: String,
         cwd: String,
@@ -238,6 +244,14 @@ impl QuestionFileChange {
 impl QuestionPresentation {
     pub fn text(&self) -> String {
         match self {
+            Self::McpUrl {
+                server,
+                message,
+                url,
+                ..
+            } => format!(
+                "Continue on the website requested by {server}?\n\n{message}\n\nFull URL:\n{url}\n\nCopy the link and open it in your browser if you consent. Enter any private information only on that website. Accept records your consent; it does not confirm the website interaction finished. Reply Accept, Decline or Cancel."
+            ),
             Self::CodexPermissions {
                 cwd,
                 reason,
@@ -280,6 +294,20 @@ impl QuestionPresentation {
     pub fn valid_for(&self, text: &str) -> bool {
         let bounded = |s: &str| !s.trim().is_empty() && s.len() <= 16_000;
         let valid = match self {
+            Self::McpUrl {
+                server,
+                elicitation_id,
+                message,
+                url,
+            } => {
+                let identifier =
+                    |s: &str| bounded(s) && s.len() <= 256 && !s.chars().any(display_control);
+                identifier(server)
+                    && identifier(elicitation_id)
+                    && bounded(message)
+                    && !message.chars().any(display_control)
+                    && mcp_url_authority(url).is_some()
+            }
             Self::CodexPermissions {
                 cwd,
                 reason,
@@ -336,12 +364,80 @@ impl QuestionPresentation {
 
     pub fn permits_choice(&self, value: &str) -> bool {
         match self {
+            Self::McpUrl { .. } => matches!(value, "Accept" | "Decline" | "Cancel"),
             Self::CodexCommand { .. } | Self::CodexFiles { .. } | Self::CodexPermissions { .. } => {
                 matches!(value, "Allow" | "Deny")
             }
             Self::Choices { options, .. } => options.iter().any(|o| o.label == value),
         }
     }
+}
+
+fn display_control(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// A deliberately narrow, printable web URL. No fetching, rewriting or decoding
+/// takes place here; clients show/copy the original string. HTTP is limited to
+/// canonical loopback addresses for local development. The authority parser is
+/// shared with HTTP transports; additional checks exclude browser-normalized
+/// userinfo, encoded hosts, legacy IP spellings and ambiguous DNS labels.
+pub fn mcp_url_authority(value: &str) -> Option<&str> {
+    if value.len() > 8_192
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-._~:/?#[]@!$&'()*+,;=%".contains(&b))
+    {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'%'
+            && !bytes
+                .get(index + 1..index + 3)
+                .is_some_and(|pair| pair.iter().all(u8::is_ascii_hexdigit))
+        {
+            return None;
+        }
+    }
+    let (scheme, rest) = value.split_once("://")?;
+    if !matches!(scheme, "https" | "http") {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.contains(['@', '%']) || authority.ends_with(':') {
+        return None;
+    }
+    let parsed: http::uri::Authority = authority.parse().ok()?;
+    if parsed.port().is_some() && parsed.port_u16().is_none_or(|p| p == 0) {
+        return None;
+    }
+    let host = parsed.host();
+    if let Some(ipv6) = host.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        ipv6.parse::<std::net::Ipv6Addr>().ok()?;
+    } else if host.rsplit('.').next()?.bytes().all(|b| b.is_ascii_digit()) {
+        let ip: std::net::Ipv4Addr = host.parse().ok()?;
+        if ip.to_string() != host {
+            return None;
+        }
+    } else if host.len() > 253
+        || !host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.as_bytes()[0].is_ascii_alphanumeric()
+                && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+    {
+        return None;
+    }
+    if scheme == "http" && !matches!(host, "localhost" | "127.0.0.1" | "[::1]") {
+        return None;
+    }
+    Some(authority)
 }
 
 impl Question {
@@ -379,6 +475,79 @@ pub fn topic_matches(pattern: &str, topic: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_url_review_keeps_the_destination_and_only_three_decisions() {
+        let presentation = QuestionPresentation::McpUrl {
+            server: "example-tools".into(),
+            elicitation_id: "opaque-id".into(),
+            message: "Connect your example account.".into(),
+            url: "https://accounts.example.com/consent?state=a%20b#confirm".into(),
+        };
+        assert!(presentation.valid_for(&presentation.text()));
+        assert!(
+            presentation
+                .text()
+                .contains("https://accounts.example.com/consent?state=a%20b#confirm")
+        );
+        assert!(!presentation.valid_for("A different website"));
+        for answer in ["Accept", "Decline", "Cancel"] {
+            assert!(presentation.permits_choice(answer));
+        }
+        for answer in ["accept", " Accept", "Allow", "a password"] {
+            assert!(!presentation.permits_choice(answer));
+        }
+        let decoded: QuestionPresentation =
+            serde_json::from_value(serde_json::to_value(&presentation).unwrap()).unwrap();
+        assert_eq!(decoded, presentation);
+    }
+
+    #[test]
+    fn mcp_urls_exclude_ambiguous_hosts_credentials_and_non_web_actions() {
+        for url in [
+            "https://example.com/path?scope=a%20b",
+            "https://example.com:8443/#state",
+            "https://[2001:db8::1]/",
+            "http://127.0.0.1:1234/",
+            "http://[::1]:1234/",
+            "http://localhost:1234/",
+            "https://xn--bcher-kva.example/",
+        ] {
+            assert!(mcp_url_authority(url).is_some(), "{url}");
+        }
+        for url in [
+            "https:///path",
+            "https://",
+            "http://remote.example/",
+            "http://127.1/",
+            "https://127.1/",
+            "https://0177.0.0.1/",
+            "https://0x7f.0.0.1/",
+            "javascript:alert(1)",
+            "file:///tmp/x",
+            "https://user:pass@example.com/",
+            "https://@example.com/",
+            "https://good.example\\@bad.example/",
+            "https://examp\nle.com/",
+            " https://example.com/",
+            "https://example.com/a b",
+            "https://%65xample.com/",
+            "https://example.com:999999/",
+            "https://example.com:no/",
+            "https://example.com:/",
+            "https://example.com:0/",
+            "https://-example.com/",
+            "https://example..com/",
+            "https://[nonsense]/",
+            "https://bücher.example/",
+            "https://example.com/%",
+            "https://example.com/%0g",
+            "https://example.com/\u{202e}abc",
+            "https://example.com/\"onclick=bad",
+        ] {
+            assert!(mcp_url_authority(url).is_none(), "{url}");
+        }
+    }
 
     #[test]
     fn structured_questions_match_fallback_text_and_bound_unambiguous_choices() {
