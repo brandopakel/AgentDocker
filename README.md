@@ -70,21 +70,21 @@ Idle message delivery needs a provider input adapter as well. Managed Claude cha
 ## Install
 
 **Trying the desktop preview with coworkers:** download
-[v0.2.0-beta.3](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.3)
+[v0.2.0-beta.4](https://github.com/brandopakel/AgentDocker/releases/tag/v0.2.0-beta.4)
 explicitly. The default installer and Homebrew commands below still select the
 stable v0.1.0 release. For a source trial, follow
 [the local build instructions](docs/LOCAL-BUILD.md) at an agreed commit. The
 release checklist is in [Remaining work](docs/REMAINING-WORK.md).
 
-The next preview candidate is **0.2.0-beta.4** and is not yet published. It adds
-required local Codex connectivity, review before sending input to an existing
-Codex terminal, historical Claude token formats, and lower ARM accounting CPU
-cost. The published beta.3 includes the preview updater, browser service controls,
-bounded accounting and Windows reliability changes. Packages target macOS and
-Linux on ARM64/x86-64, plus an unsigned Windows x64 portable ZIP. Windows installer,
-service acceptance, updater and native Codex input support remain unfinished;
-[the trial requirements](docs/LOCAL-TRIAL.md#stage-5--other-machines-and-systems)
-distinguish an early preview from completed platform acceptance.
+The next preview candidate is **0.2.0-beta.5** and is not yet published. It
+includes per-user Windows installation, update/rollback and Task Scheduler
+startup, plus accounting and desktop improvements since beta.4. Its source and
+hosted-package acceptance are still being completed. Published beta.4 includes
+required local Codex connectivity, terminal-input review and usage-accounting
+corrections. Packages target macOS and Linux on ARM64/x86-64, plus an unsigned
+Windows x64 portable ZIP. Native Windows Codex startup, actual-provider and
+physical acceptance remain open; [the trial requirements](docs/LOCAL-TRIAL.md#stage-5--other-machines-and-systems)
+distinguish a preview from completed platform acceptance.
 
 End users download native executables; Rust build caches are development files.
 CLI/daemon tarballs are separate from self-contained desktop archives, with no
@@ -141,7 +141,7 @@ The daemon keeps scanning for agent processes on its own and announces them as `
 
 - **One host.** Agents on two machines do not see each other; a hand-off bundle carries work across, a shared registry does not.
 - **Waking an idle Claude Code session.** A Claude session takes a message the moment it is next at a prompt, or live if it was launched with the AgentDocker channel (`agentdocker setup claude-code` writes the MCP entry; the session must start with `--dangerously-load-development-channels server:agentdocker` and accept the consent prompt, or be relaunched so — the app tells you when a recipient cannot be woken). **Reconnect here** now resumes an eligible ended Claude session in the app with its conversation and queue; Claude displays its own consent. **Wake terminal sessions** in Tools (or `agentdocker setup --shell`) previews the shell configuration for future Claude launches. Existing plain sessions need a normal exit/reconnect. Codex uses its separate [input adapter](docs/CODEX-INPUT.md), whose startup and version limits remain explicit.
-- **Linux:** the CLI and daemon are exercised in CI on x86-64 and ARM64 and the desktop app builds and packages there, but no release has been tried on a real distribution by a person yet. **Windows:** the merged daemon/CLI foundation answers over native named pipes. Merged #214 (superseding #210) adds managed sessions and ConPTY, with native coverage for owner lifetime, database crash recovery and fresh-home window startup. Merged #219 packages an unsigned portable ZIP; its recorded extracted-archive trial passed 284 native tests and 51 daemon/CLI/terminal/desktop steps. A later integrated candidate failed its first daemon-start check and remains under investigation. Broader graphical/input, service, installer and real-provider acceptance remain, and no Windows desktop download is published. See the [Windows port status](docs/WINDOWS-PORT.md).
+- **Linux:** the CLI and daemon are exercised in CI on x86-64 and ARM64 and the desktop app builds and packages there, but no release has been tried on a real distribution by a person yet. **Windows:** the merged daemon/CLI foundation answers over native named pipes. Merged #214 (superseding #210) adds managed sessions and ConPTY, with native coverage for owner lifetime, database crash recovery and fresh-home window startup. Merged #219 packages an unsigned portable ZIP; its recorded extracted-archive trial passed 284 native tests and 51 daemon/CLI/terminal/desktop steps. A later integrated candidate failed its first daemon-start check and remains under investigation. Broader graphical/input, service, installer and real-provider acceptance remain, and beta.4 has no Windows installer or update feed. See the [Windows port status](docs/WINDOWS-PORT.md).
 - **Accessibility and input:** external accessibility-tree inspection and More/Agents/Chat navigation passed on the installed macOS preview. Physical keyboard, VoiceOver and IME acceptance remain open.
 - **Provider limits and account resets** are detected and recovered in bounded trials, not over days of real use.
 
