@@ -823,5 +823,8 @@ The package workflow now selects `--codex-scenario automatic` to run those same
 outside the source tree. Acceptance checks the executed binary hashes, exact
 source and complete lifecycle/cleanup report. The older direct-Codex `startup`
 diagnostic remains available and its zero-prompt refusal remains open; a product
-launcher pass does not establish ordinary/default desktop adoption. Extracted
-package execution of the new scenario remains pending.
+launcher pass does not establish ordinary/default desktop adoption. Source
+`abfe623f` passed the extracted trial: 62 package, 42 installer and all 13 native
+Codex checks. CI synthetic `54a4a876` has the exact candidate tree; the archived
+EXE bytes, executed hashes, driver/provider pins and both MCP identities were
+independently checked. No forced cleanup, reader errors or scratch remained.
