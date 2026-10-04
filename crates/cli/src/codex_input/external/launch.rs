@@ -26,8 +26,10 @@ pub struct Args {
     /// Provider profile; defaults to CODEX_HOME or ~/.codex. Never modified.
     #[arg(long)]
     profile: Option<PathBuf>,
+    /// Checkout for both children; defaults to the current directory and is canonicalized.
     #[arg(long)]
     cwd: Option<PathBuf>,
+    /// Agent name to register; defaults to codex-<terminal pid>.
     #[arg(long)]
     name: Option<String>,
     /// Reopen this exact persisted root conversation UUID without a new prompt.
@@ -134,7 +136,9 @@ async fn bind(client: &Client, binding: &Binding, directory: &Path) -> Result<Ch
         .context("cannot start owned native receiver")?;
     let result = wait_binding(client, binding, Some(&mut child)).await;
     if let Err(error) = result {
-        retire(&mut child).await?;
+        if let Err(cleanup) = retire(&mut child).await {
+            return Err(error.context(format!("receiver cleanup also failed: {cleanup:#}")));
+        }
         return Err(error);
     }
     Ok(child)

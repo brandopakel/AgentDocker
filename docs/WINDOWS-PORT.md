@@ -202,7 +202,9 @@ Work still required before platform support can be claimed:
 - `attach` from a real Windows console, by a person: the console modes,
   the keystroke reader and the size polling are in source and unexercised
   by the runner, which has no console.
-- The native Codex queue over the named pipe with the same peer checks.
+- Direct-Codex/default-path delivery and zero-prompt startup acceptance,
+  real accounts and physical input. The owned launcher's scoped synthetic
+  trials below do not establish these remaining paths.
 - Windows provider configuration: a provider's own tool under a pseudo
   console, and a person's setup on a Windows machine. What is in source: an
   npm-installed provider is a `.cmd` shim on `PATH` (`claude.cmd`,

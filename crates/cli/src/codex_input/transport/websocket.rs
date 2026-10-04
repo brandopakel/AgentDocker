@@ -166,6 +166,29 @@ mod tests {
             assert_eq!(read(&mut socket).await["method"], "initialized");
             let request = read(&mut socket).await;
             assert_eq!(request["method"], "thread/read");
+            // Native providers broadcast tool/plan output to each observer
+            // unless it opted out. This burst exceeds the reader's event
+            // budget without suppression, although none is a durable receipt.
+            let noisy = [
+                "item/commandExecution/outputDelta",
+                "item/fileChange/outputDelta",
+                "turn/diff/updated",
+                "turn/plan/updated",
+            ];
+            let opted_out = initialize["params"]["capabilities"]["optOutNotificationMethods"]
+                .as_array()
+                .unwrap();
+            for index in 0..600 {
+                let method = noisy[index % noisy.len()];
+                if !opted_out.contains(&json!(method)) {
+                    socket
+                        .send(Message::text(
+                            json!({"method":method,"params":{}}).to_string(),
+                        ))
+                        .await
+                        .unwrap();
+                }
+            }
             for _ in 0..100 {
                 socket
                     .send(Message::text(

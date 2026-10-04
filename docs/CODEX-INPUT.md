@@ -69,10 +69,12 @@ record path and digest; reconnect verifies both processes and the capability
 again, then checks the initialized profile and existing thread. It does not
 create or resume a conversation. The WebSocket observer bounds frames and
 notifications, reads durable history for receipts, refuses provider requests
-and cannot answer approvals. Closing it closes only its socket. This internal
-path is not an automatic launcher: owned server/TUI startup, initial empty
-history admission, hook/MCP bootstrap and restart/adoption acceptance remain.
-An unavailable pre-first-message history API still refuses delivery.
+and cannot answer approvals. It opts out of streamed message, reasoning, command,
+file-change, diff and plan notifications on its own connection, keeping unused
+output from exhausting its bounded reader. Closing it closes only its socket.
+The `--app-server-record` argument alone launches nothing; the owned `codex-native`
+launcher and version-2 birth admission are described below. Without a valid birth
+receipt, an unavailable pre-first-message history API still refuses delivery.
 
 For a first installation, preview **Tools → Codex → Review setup** (or
 `agentdocker setup codex --preview`), then apply the reviewed plan. The plan
@@ -982,7 +984,8 @@ and the earlier draft survived; only three user items existed, and the resumed
 record used ordinary history with no birth allowance. Windows also verified
 actual MCP identity in both terminal generations. The Unix trials configured
 MCP but did not invoke it. These private loopback-model and synthetic-terminal
-trials do not establish real-account or physical-input acceptance. The launcher retires its own children on exit, revokes its capability
+trials do not establish real-account or physical-input acceptance. If receiver binding and its cleanup both fail, the original binding error is
+retained with the cleanup failure as additional context. The launcher retires its own children on exit, revokes its capability
 and retains bounded private server diagnostics. Capability cleanup is owned before
 fallible file writes and server creation, so a failed initial spawn also revokes
 the file; a real CLI/daemon regression covers a non-executable provider path.

@@ -243,7 +243,11 @@ impl Provider {
                 "remoteControl/status/changed",
                 "item/agentMessage/delta",
                 "item/reasoning/textDelta",
-                "item/reasoning/summaryTextDelta"
+                "item/reasoning/summaryTextDelta",
+                "item/commandExecution/outputDelta",
+                "item/fileChange/outputDelta",
+                "turn/diff/updated",
+                "turn/plan/updated"
             ]);
         }
         let initialized = self.request("initialize", json!({"clientInfo": {
