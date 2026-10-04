@@ -461,7 +461,7 @@ sets identical last-write times explicitly; a timing delay is not its fix.
 
 ## Provider setup and message acceptance
 
-The native Codex draft adds `scripts/windows_native_codex_smoke.py` to extracted
+The native Codex acceptance workflow adds `scripts/windows_native_codex_smoke.py` to extracted
 archive acceptance. It launches the actual pinned Codex 0.155.1 TUI in ConPTY
 with a private profile and loopback Responses fixture. Assertions cover real
 SessionStart bootstrap, idle wake, an unsent draft, FIFO input during a held
