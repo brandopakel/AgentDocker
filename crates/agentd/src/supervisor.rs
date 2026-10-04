@@ -665,6 +665,18 @@ async fn relay_until_exit(
         let dropped = loop {
             tokio::select! {
                 biased;
+                // A chatty terminal or full keyboard can keep the other
+                // branches ready indefinitely. A pending stop goes first;
+                // its owner's grace period starts only after it is sent.
+                Ok(()) = spawned.stop.changed() => {
+                    let pending = *spawned.stop.borrow_and_update();
+                    if let Some(force) = pending
+                        && let Err(error) = spawned.controller.send(&OwnerCommand::Stop { force }).await
+                    {
+                        // The reconnect path retains the desired stop state.
+                        break Some(error);
+                    }
+                }
                 report = spawned.controller.next() => match report {
                     Ok(Some(OwnerReport::Output { offset, bytes })) => spawned.relay(offset, &bytes),
                     Ok(Some(OwnerReport::Gap { from, to })) => {
@@ -710,12 +722,6 @@ async fn relay_until_exit(
                 Some((cols, rows)) = async { resizes.as_mut().expect("guarded").recv().await }, if resizes.is_some() => {
                     if let Err(error) = spawned.controller.send(&OwnerCommand::Resize { cols, rows }).await {
                         break Some(error);
-                    }
-                }
-                Ok(()) = spawned.stop.changed() => {
-                    let pending = *spawned.stop.borrow_and_update();
-                    if let Some(force) = pending {
-                        let _ = spawned.controller.send(&OwnerCommand::Stop { force }).await;
                     }
                 }
             }
