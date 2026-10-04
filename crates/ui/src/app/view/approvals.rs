@@ -2052,6 +2052,22 @@ mod tests {
         let _ = app.update(Message::FormEdit(id.clone(), "count".into(), "3".into()));
         let _ = app.update(Message::FormInclude(id.clone(), "optional".into(), false));
         assert_eq!(commands.try_iter().count(), 0, "editing is not submission");
+        let saved_schema = app.shell.forms[&id].schema.clone();
+        app.shell.forms.get_mut(&id).unwrap().schema["required"] = serde_json::json!([]);
+        let _ = app.update(Message::FormSubmit(id.clone()));
+        assert_eq!(
+            commands.try_iter().count(),
+            0,
+            "stale form must be reviewed again"
+        );
+        assert_eq!(app.shell.forms[&id].schema, saved_schema);
+        let _ = app.update(Message::FormEdit(id.clone(), "count".into(), "3".into()));
+        let _ = app.update(Message::FormSelect(
+            id.clone(),
+            "yes".into(),
+            "false".into(),
+        ));
+        let _ = app.update(Message::FormInclude(id.clone(), "optional".into(), false));
         let _ = app.update(Message::FormSubmit(id.clone()));
         let _ = app.update(Message::FormSubmit(id.clone()));
         let sent = commands.try_iter().collect::<Vec<_>>();

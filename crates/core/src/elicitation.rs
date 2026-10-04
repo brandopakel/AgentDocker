@@ -384,10 +384,15 @@ impl FormField {
                 "{} · {min}–{max} characters",
                 format.as_deref().unwrap_or("Text")
             ),
-            FormKind::Number { integer, min, max } => format!(
-                "{} · {min} to {max}",
-                if *integer { "Whole number" } else { "Number" }
-            ),
+            FormKind::Number { integer, min, max } => {
+                let kind = if *integer { "Whole number" } else { "Number" };
+                match (*min == -MAX_NUMBER, *max == MAX_NUMBER) {
+                    (true, true) => kind.into(),
+                    (false, true) => format!("{kind} · at least {min}"),
+                    (true, false) => format!("{kind} · at most {max}"),
+                    (false, false) => format!("{kind} · {min} to {max}"),
+                }
+            }
             FormKind::Boolean => "Choose Yes or No".into(),
             FormKind::Select {
                 multiple, min, max, ..

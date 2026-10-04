@@ -170,12 +170,20 @@ impl App {
             return;
         };
         let initial = Draft::new(&schema, &form);
-        let draft = self
+        if self
             .shell
             .forms
             .get(&id)
-            .filter(|d| d.schema == schema)
-            .unwrap_or(&initial);
+            .is_some_and(|draft| draft.schema != schema)
+        {
+            self.shell.forms.insert(id.clone(), initial);
+            self.shell.answer_errors.insert(
+                id,
+                "The form changed. Review the new fields before submitting.".into(),
+            );
+            return;
+        }
+        let draft = self.shell.forms.get(&id).unwrap_or(&initial);
         let answer = match draft.answer(&form) {
             Ok(answer) => answer,
             Err(error) => {
