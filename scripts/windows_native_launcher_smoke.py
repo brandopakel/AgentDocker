@@ -17,6 +17,7 @@ from pathlib import Path
 import secrets
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -25,6 +26,22 @@ from types import SimpleNamespace
 
 from windows_native_codex_smoke import current_user_objects, remove_fixture, response_events, wait
 from windows_remote_receiver_fixture import Receiver, fixture_controller, process_birth
+
+
+# pywinpty closes ConPTY when its root process exits. Keep a separate console
+# host alive so killing only the product front end cannot also close its console.
+# This host neither reads nor proxies terminal input and never owns a binding.
+CONSOLE_HOST = '''import pathlib, subprocess, sys, time
+pid_file, release_file = map(pathlib.Path, sys.argv[1:3])
+child = subprocess.Popen(sys.argv[3:])
+pid_file.write_text(str(child.pid), encoding="ascii")
+child.wait(timeout=90)
+deadline = time.monotonic() + 45
+while not release_file.exists():
+    if time.monotonic() >= deadline:
+        raise TimeoutError("fixture console host was not released")
+    time.sleep(0.05)
+'''
 
 
 def main():
@@ -285,15 +302,21 @@ def main():
              not terminal.isalive() and not Path(descriptor['token_file']).exists())
         close_console()
         # A third, prompt-free reopen exercises Windows TerminateProcess on
-        # only the front end. Do not close ConPTY until the owner has cleaned up.
+        # only the front end while an independent host keeps ConPTY open.
         previous_records = set((receiver.home / 'codex-native').glob('*/server.json'))
         output.clear(); closing.clear()
-        terminal = PtyProcess.spawn([str(receiver.cli), '--socket', receiver.socket, 'codex-native',
+        pid_file, release_file = root / 'front-end.pid', root / 'release-console'
+        terminal = PtyProcess.spawn([sys.executable, '-c', CONSOLE_HOST, str(pid_file), str(release_file),
+                    str(receiver.cli), '--socket', receiver.socket, 'codex-native',
                     '--program', str(codex), '--profile', str(profile), '--cwd', str(repo),
                     '--name', 'native-auto-exit-probe', '--resume', thread],
                     cwd=str(repo), env=receiver.env, dimensions=(40, 160), backend=Backend.ConPTY)
-        launcher = psutil.Process(terminal.pid); owned.append(launcher)
+        console_host = psutil.Process(terminal.pid); owned.append(console_host)
         reader = threading.Thread(target=drain, daemon=True); reader.start()
+        wait(lambda: pid_file.is_file() and pid_file.read_text(encoding='ascii').isdigit(), 10)
+        launcher = psutil.Process(int(pid_file.read_text(encoding='ascii'))); owned.append(launcher)
+        assert launcher.ppid() == console_host.pid
+        assert Path(launcher.exe()).resolve() == receiver.cli.resolve()
         wait(ready, 65)
         records = set((receiver.home / 'codex-native').glob('*/server.json')) - previous_records
         assert len(records) == 1
@@ -311,21 +334,30 @@ def main():
         requests_before_exit = len(report['requests'])
         report['front_end_exit'] = {'pid': launcher.pid, 'birth': launcher.create_time(),
                                    'watched': [{'pid': p.pid, 'birth': p.create_time()} for p in watched],
-                                   'descriptor': descriptor, 'binding': generation}
+                                   'descriptor': descriptor, 'binding': generation,
+                                   'console_host': {'pid': console_host.pid, 'birth': console_host.create_time(),
+                                                    'script_sha256': hashlib.sha256(CONSOLE_HOST.encode()).hexdigest()}}
         assert launcher.is_running()
         launcher.kill()
         launcher.wait(timeout=10)
         _, alive = psutil.wait_procs(watched, timeout=15)
-        wait(lambda: not Path(descriptor['token_file']).exists(), 10)
+        # Save failure observations too, before an assertion or fixture cleanup.
         report['front_end_exit']['remaining'] = [p.pid for p in alive]
         report['front_end_exit']['capability_revoked'] = not Path(descriptor['token_file']).exists()
         report['front_end_exit']['receipts_preserved'] = receiver.ledger()['completed'] == [first, second]
         report['front_end_exit']['additional_model_requests'] = len(report['requests']) - requests_before_exit
+        report['front_end_exit']['console_host']['alive_after_cleanup'] = console_host.is_running() and terminal.isalive()
+        terminal.setwinsize(40, 160)
+        report['front_end_exit']['console_host']['resize_after_cleanup'] = True
         step('front-end termination retires owner and provider generations before fixture cleanup',
-             not alive and not Path(descriptor['token_file']).exists())
+             not alive and not Path(descriptor['token_file']).exists()
+             and report['front_end_exit']['console_host']['alive_after_cleanup'])
         step('front-end termination preserves receipts without another model request',
              receiver.ledger()['completed'] == [first, second] and len(report['requests']) == requests_before_exit)
         step('private provider configuration is unchanged', (profile / 'config.toml').read_text(encoding='utf-8') == config)
+        release_file.touch()
+        wait(lambda: not terminal.isalive(), 10)
+        assert console_host.wait(timeout=10) == 0
         report['result'] = 'passed'
     except Exception:
         report['error'] = traceback.format_exc()

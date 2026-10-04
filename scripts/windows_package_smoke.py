@@ -75,6 +75,12 @@ def validate_native_report(native, info, scenario):
                 or exited.get("receipts_preserved") is not True
                 or exited.get("additional_model_requests") != 0):
             raise ValueError("automatic native Codex acceptance lacks front-end exit evidence")
+        host = exited.get("console_host")
+        if (not isinstance(host, dict) or not isinstance(host.get("pid"), int)
+                or host["pid"] <= 0 or host["pid"] == exited.get("pid")
+                or host.get("alive_after_cleanup") is not True
+                or host.get("resize_after_cleanup") is not True):
+            raise ValueError("automatic native Codex exit acceptance did not keep its console open")
 
 
 def main():
