@@ -133,6 +133,28 @@ pub fn is_metadata_client_id(client_id: &str) -> bool {
         })
 }
 
+/// The plural field declares capabilities; the legacy singular field is only
+/// a preference when both are present. Never turn an explicit JWT-only or
+/// secret-only declaration into a public client. Older documents that omit
+/// both fields retain this connector's existing public-client default.
+fn metadata_supports_public_client(document: &Value) -> bool {
+    let preference = match document.get("token_endpoint_auth_method") {
+        None => None,
+        Some(Value::String(method)) if !method.trim().is_empty() => Some(method.as_str()),
+        _ => return false,
+    };
+    match document.get("token_endpoint_auth_methods_supported") {
+        Some(Value::Array(methods)) => {
+            methods
+                .iter()
+                .all(|m| m.as_str().is_some_and(|m| !m.trim().is_empty()))
+                && methods.iter().any(|m| m.as_str() == Some("none"))
+        }
+        None => preference.is_none_or(|method| method == "none"),
+        _ => false,
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Client {
     pub redirect_uris: Vec<String>,
@@ -502,9 +524,8 @@ impl Store {
     /// rules as registration, plus the document's: it names itself
     /// exactly, it comes from a vendor's host, and its callbacks are that
     /// vendor's. What it says about itself otherwise is not trusted: the
-    /// consent page shows the host, and the client is public whatever
-    /// authentication method it prefers, since this server issues no
-    /// secrets and accepts none.
+    /// consent page shows the host. This server only supports public
+    /// clients, so any declared authentication methods must allow `none`.
     pub fn admit_metadata_client(
         &mut self,
         client_id: &str,
@@ -537,6 +558,12 @@ impl Store {
             return Err(OAuthError::new(
                 "invalid_client_metadata",
                 "the metadata document does not name its own URL as client_id",
+            ));
+        }
+        if !metadata_supports_public_client(document) {
+            return Err(OAuthError::new(
+                "invalid_client_metadata",
+                "the metadata document must support public-client (none) token exchange",
             ));
         }
         let uris: Vec<String> = document["redirect_uris"]
@@ -1369,6 +1396,7 @@ mod tests {
             "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
+            "token_endpoint_auth_methods_supported": ["none", "private_key_jwt"],
             "token_endpoint_auth_method": "private_key_jwt",
         });
         let admitted = store
@@ -1509,6 +1537,72 @@ mod tests {
         );
         assert_eq!(consent.client_id, url);
         assert_eq!(consent.project, PathBuf::from("/p/keel"));
+    }
+
+    #[test]
+    fn metadata_authentication_methods_require_public_pkce_without_downgrading_or_mutation() {
+        let url = "https://chatgpt.com/oauth/client.json";
+        let document = |methods: Value| {
+            let mut value = json!({
+                "client_id": url,
+                "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"]
+            });
+            value
+                .as_object_mut()
+                .unwrap()
+                .extend(methods.as_object().unwrap().clone());
+            value
+        };
+        let mut store = Store::default();
+        for methods in [
+            json!({}), // Existing metadata with no declaration remains public.
+            json!({"token_endpoint_auth_method":"none"}),
+            json!({"token_endpoint_auth_methods_supported":["none"]}),
+            json!({"token_endpoint_auth_methods_supported":["private_key_jwt","none"],
+                   "token_endpoint_auth_method":"private_key_jwt"}),
+            json!({"token_endpoint_auth_methods_supported":["none","future_method"]}),
+        ] {
+            assert!(
+                store
+                    .admit_metadata_client(url, &document(methods.clone()), &[], now())
+                    .is_ok(),
+                "{methods}"
+            );
+        }
+        let before = serde_json::to_value(&store).unwrap();
+        for methods in [
+            json!({"token_endpoint_auth_method":"private_key_jwt"}),
+            json!({"token_endpoint_auth_method":"client_secret_basic"}),
+            json!({"token_endpoint_auth_method":null}),
+            json!({"token_endpoint_auth_method":false}),
+            json!({"token_endpoint_auth_methods_supported":["private_key_jwt"],
+                   "token_endpoint_auth_method":"none"}),
+            json!({"token_endpoint_auth_methods_supported":[]}),
+            json!({"token_endpoint_auth_methods_supported":null}),
+            json!({"token_endpoint_auth_methods_supported":"none"}),
+            json!({"token_endpoint_auth_methods_supported":["none",null]}),
+            json!({"token_endpoint_auth_methods_supported":["none",""]}),
+            json!({"token_endpoint_auth_methods_supported":["none"],
+                   "token_endpoint_auth_method":false}),
+        ] {
+            let mut changed = document(methods.clone());
+            changed["client_name"] = json!("must not persist");
+            assert!(
+                store
+                    .admit_metadata_client(url, &changed, &[], now() + Duration::hours(2))
+                    .is_err(),
+                "{methods}"
+            );
+            assert_eq!(serde_json::to_value(&store).unwrap(), before, "{methods}");
+            let mut fresh = Store::default();
+            assert!(
+                fresh
+                    .admit_metadata_client(url, &changed, &[], now())
+                    .is_err(),
+                "{methods}"
+            );
+            assert!(fresh.clients.is_empty());
+        }
     }
 
     fn redeem_consent(store: &mut Store, form: &str) -> Consent {
