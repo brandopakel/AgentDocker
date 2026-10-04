@@ -95,7 +95,7 @@ jobs:
         env:
           CODEX_TEST_VERSION: ${{ inputs.codex_version || '0.160.0' }}
         run: |
-          python -m pip install --disable-pip-version-check pywinpty==3.0.5 psutil==7.0.0
+          python -m pip install --disable-pip-version-check pywinpty==3.0.5 psutil==7.0.0 websockets==15.0.1
           if ($LASTEXITCODE -ne 0) { throw "acceptance dependencies failed" }
           $digests = @{
             '0.155.1' = 'eba0f32c976667cb9298efafd98513e823eeda7b576a03ec658bb8be8d336316'
@@ -123,7 +123,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "service acceptance dependency failed" }
             $extra += '--service'
           }
-          python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES" --codex artifacts/codex.exe @extra
+          python scripts/windows_package_smoke.py --native-manifest artifacts/native-build.json --output artifacts/windows-desktop-package --startup-samples "$env:STARTUP_SAMPLES" --codex artifacts/codex.exe --codex-scenario automatic @extra
       - name: Diagnose established-session native Codex after startup failure
         # A narrower pass never changes the failed strict startup outcome.
         if: ${{ !cancelled() && steps.package.outcome == 'failure' }}

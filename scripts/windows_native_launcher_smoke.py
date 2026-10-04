@@ -44,7 +44,8 @@ def main():
     root = Path(tempfile.mkdtemp(prefix='AgentDocker native launcher ü ')).resolve()
     report = {'result': 'failed', 'scope': __doc__, 'steps': [], 'requests': [],
               'cleanup_errors': [], 'reader_errors': [], 'forced_processes': [],
-              'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'source_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'],
+                                                       cwd=Path(__file__).resolve().parents[1], text=True).strip(),
               'driver_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
               'receiver_helper_sha256': hashlib.sha256(Path(__file__).with_name('windows_remote_receiver_fixture.py').read_bytes()).hexdigest(),
               'provider_sha256': hashlib.sha256(args.codex.read_bytes()).hexdigest()}

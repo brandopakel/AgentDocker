@@ -817,3 +817,11 @@ Windows checks, including this control and actual MCP identity before and after
 reopen. No forced cleanup, reader errors or scratch remained. The same source
 passed the full local 1,536-Rust/169-Python gate with zero retries. This covers
 the private loopback fixture, not real accounts or physical/default desktop use.
+
+The package workflow now selects `--codex-scenario automatic` to run those same
+13 checks against the extracted archive's binaries, from a Unicode directory
+outside the source tree. Acceptance checks the executed binary hashes, exact
+source and complete lifecycle/cleanup report. The older direct-Codex `startup`
+diagnostic remains available and its zero-prompt refusal remains open; a product
+launcher pass does not establish ordinary/default desktop adoption. Extracted
+package execution of the new scenario remains pending.
