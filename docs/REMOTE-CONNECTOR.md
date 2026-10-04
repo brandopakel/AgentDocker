@@ -229,8 +229,10 @@ Uninstall requests an exact connector generation's graceful exit, preserving
 the daemon and saved browser grants. A changed or foreign task is refused.
 Native isolated lifecycle acceptance passed on reviewed-correction source `30e78859`: 17 portable and
 21 installed connector checks, including exact generation cleanup and preserved
-daemon/grants. Hosted distribution, reboot and actual-account acceptance remain
-open; the candidate is not yet a published Windows connector service.
+daemon/grants. Published beta.5 subsequently passed 24 installed connector
+checks using its actual hosted binaries, including preserved daemon/grants and
+clean owned task/process/scratch removal. Reboot, public tunnels and actual-account
+acceptance remain open.
 
 Windows login-service setup resolves configured project, egress-feed and tunnel
 executable paths at installation time, so a relative shell path does not become

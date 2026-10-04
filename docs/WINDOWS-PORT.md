@@ -639,8 +639,11 @@ GitHub asset digests, checksum, archive layout and executable provenance before
 running a fresh private-prefix installation, the default installed preview feed,
 and installed daemon/connector service lifecycles. It confirms stable and the
 Homebrew tap are unchanged and preserves failed scratch as evidence. This
-prepared route has not yet passed a hosted trial. With no baseline it proves
-first installation and current-version feed discovery only. An optional earlier
+route passed on published beta.5: 12 hosted checks, 13 installed daemon and
+24 installed connector checks, with independently verified source/archive/EXE
+hashes and clean owned cleanup. The first two driver failures are retained in
+the verification index. With no baseline this proves first installation and
+current-version feed discovery only. An optional earlier
 `baseline_tag`/`baseline_source` must support native installation contract 2;
 then the trial requires actual hosted update, rollback and reapply. A portable-only
 older release is refused before execution. It does not establish account,
