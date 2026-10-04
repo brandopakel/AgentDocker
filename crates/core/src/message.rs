@@ -410,13 +410,26 @@ pub fn mcp_url_authority(value: &str) -> Option<&str> {
         return None;
     }
     let parsed: http::uri::Authority = authority.parse().ok()?;
-    if parsed.port().is_some() && parsed.port_u16().is_none_or(|p| p == 0) {
+    let host = parsed.host();
+    let port = authority.strip_prefix(host)?;
+    if !port.is_empty()
+        && !port.strip_prefix(':').is_some_and(|p| {
+            !p.is_empty()
+                && p.bytes().all(|b| b.is_ascii_digit())
+                && p.parse::<u16>().is_ok_and(|port| port > 0)
+        })
+    {
         return None;
     }
-    let host = parsed.host();
     if let Some(ipv6) = host.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
         ipv6.parse::<std::net::Ipv6Addr>().ok()?;
-    } else if host.rsplit('.').next()?.bytes().all(|b| b.is_ascii_digit()) {
+    } else if host.rsplit('.').next().is_some_and(|last| {
+        last.bytes().all(|b| b.is_ascii_digit())
+            || last
+                .to_ascii_lowercase()
+                .strip_prefix("0x")
+                .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit()))
+    }) {
         let ip: std::net::Ipv4Addr = host.parse().ok()?;
         if ip.to_string() != host {
             return None;
@@ -523,6 +536,7 @@ mod tests {
             "https://127.1/",
             "https://0177.0.0.1/",
             "https://0x7f.0.0.1/",
+            "https://0x7f000001/",
             "javascript:alert(1)",
             "file:///tmp/x",
             "https://user:pass@example.com/",
