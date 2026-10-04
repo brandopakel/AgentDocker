@@ -986,6 +986,12 @@ trials do not establish real-account or physical-input acceptance. The launcher 
 and retains bounded private server diagnostics. Capability cleanup is owned before
 fallible file writes and server creation, so a failed initial spawn also revokes
 the file; a real CLI/daemon regression covers a non-executable provider path.
+The original `d139c06c` failed-spawn capability leak remains recorded. Corrected
+runtime `87776874` passed the Mac negative control and native startup/reopen
+trial; Windows `8388c2ee` passed the same startup refusal plus all 12 positive
+checks, including actual MCP identity in both terminal generations. These
+sources have identical runtime compilation inputs. The full `8388c2ee` gate
+passed 1,536 Rust and 169 Python tests with zero retries.
 Source `e3445323` passed the full
 1,528-Rust/169-Python gate (zero retries) and an actual Mac Release trial: automatic
 binding before the first prompt, original queued receipt, receiver replacement

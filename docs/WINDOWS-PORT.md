@@ -812,5 +812,8 @@ acceptance, and the native fixture does not exercise a public tunnel or reboot.
 The automatic native Codex workflow also refuses a deliberately invalid executable
 before the first successful launch and requires its capability file to be gone
 without a model request. This covers cleanup before server creation, complementing
-the successful native exit/reopen checks; execution of this added Windows control
-is still pending.
+the successful native exit/reopen checks. Source `8388c2ee` passed all 13 native
+Windows checks, including this control and actual MCP identity before and after
+reopen. No forced cleanup, reader errors or scratch remained. The same source
+passed the full local 1,536-Rust/169-Python gate with zero retries. This covers
+the private loopback fixture, not real accounts or physical/default desktop use.
