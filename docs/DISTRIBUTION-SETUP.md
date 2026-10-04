@@ -349,7 +349,7 @@ The next source candidate is **0.2.0-beta.5**, with matching workspace packages,
 internal dependency requirements and both Cargo lockfiles, including the excluded
 fuzz workspace. It carries the merged Windows installer/service/update lifecycle,
 growing-source accounting corrections and desktop changes. Windows connector
-service integration is under review and must settle before the final candidate.
+#284 is merged. Final-candidate checks and hosted Windows verification remain open.
 The intended tag is `v0.2.0-beta.5`; changing the source version does not publish
 or install it. Finish substantive review and final integrated local/CI checks
 before creating the tag, then complete the protected-tag workflow and hosted
