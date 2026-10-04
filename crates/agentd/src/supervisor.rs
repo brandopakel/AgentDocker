@@ -979,6 +979,7 @@ mod tests {
             spawned.control.send(Some(force)).unwrap();
             let mut keys = spawned.keystrokes.take();
             let mut sizes = spawned.resizes.take();
+            let (finished, mut relay_finished) = tokio::sync::oneshot::channel();
             let peer = async {
                 let (reader, mut writer) = peer.into_split();
                 let mut reader = BufReader::new(reader);
@@ -990,11 +991,28 @@ mod tests {
                 let mut exit = serde_json::to_vec(&OwnerReport::Exited { status: report }).unwrap();
                 exit.push(b'\n');
                 writer.write_all(&exit).await.unwrap();
+                // Keep both halves alive and consume in-flight input until the
+                // relay observes exit, like a real owner awaiting its ACK.
+                let mut partial = Vec::new();
+                loop {
+                    tokio::select! {
+                        _ = &mut relay_finished => break,
+                        result = read_frame(&mut reader, &mut partial, 512 * 1024) => {
+                            assert!(result.unwrap().is_some());
+                        }
+                    }
+                }
                 serde_json::from_str::<OwnerCommand>(&first).unwrap()
             };
             let (outcome, first) = tokio::time::timeout(Duration::from_secs(5), async {
                 tokio::join!(
-                    relay_until_exit(&daemon, &id, &mut spawned, &mut keys, &mut sizes),
+                    async {
+                        let result =
+                            relay_until_exit(&daemon, &id, &mut spawned, &mut keys, &mut sizes)
+                                .await;
+                        let _ = finished.send(());
+                        result
+                    },
                     peer
                 )
             })
