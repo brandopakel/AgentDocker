@@ -908,6 +908,98 @@ mod tests {
     use super::*;
     use agentdocker_core::session::ChildIdentity;
 
+    /// A full terminal queue must not put an already-requested stop behind
+    /// more input or output. Exercise the real relay with an owner wire peer,
+    /// keeping both report and input branches ready before its first poll.
+    #[tokio::test]
+    async fn pending_stop_precedes_ready_terminal_traffic() {
+        for force in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let daemon =
+                Daemon::open(dir.path().join("state"), dir.path().join("daemon.sock")).unwrap();
+            let id = AgentId::from("stop-priority");
+            let now = chrono::Utc::now();
+            let (stream, peer) = agentdocker_host::ipc::pair().await.unwrap();
+            let (reader, writer) = stream.into_split();
+            let (control, stop) = watch::channel(None);
+            let mut output = serde_json::to_vec(&OwnerReport::Output {
+                offset: 0,
+                bytes: b"still writing".to_vec(),
+            })
+            .unwrap();
+            output.push(b'\n');
+            let owner = SessionOwner {
+                pid: std::process::id(),
+                started_at: now,
+            };
+            let report = ExitReport {
+                agent: id.clone(),
+                owner: owner.clone(),
+                child: ChildIdentity {
+                    pid: std::process::id(),
+                    started_at: now,
+                    tty: true,
+                },
+                code: Some(0),
+                signal: None,
+                log_flushed: true,
+                at: now,
+            };
+            let mut spawned = Spawned {
+                pid: std::process::id(),
+                process_started_at: now,
+                owner,
+                link: OwnerLink::Detached,
+                controller: Controller {
+                    reader: BufReader::new(reader),
+                    writer,
+                    partial: output,
+                },
+                launch_error: None,
+                activated: true,
+                control,
+                stop,
+                session: None,
+                keystrokes: None,
+                resizes: None,
+                output: None,
+                scrollback: None,
+                relayed: 0,
+            };
+            spawned.open_session();
+            let session = spawned.session.as_ref().unwrap();
+            session.input.try_send(vec![b'x'; 65536]).unwrap();
+            session.resize.try_send((100, 30)).unwrap();
+            spawned.control.send(Some(force)).unwrap();
+            let mut keys = spawned.keystrokes.take();
+            let mut sizes = spawned.resizes.take();
+            let peer = async {
+                let (reader, mut writer) = peer.into_split();
+                let mut reader = BufReader::new(reader);
+                let first = read_frame(&mut reader, &mut Vec::new(), 512 * 1024)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                // Always finish the relay, including the failing control.
+                let mut exit = serde_json::to_vec(&OwnerReport::Exited { status: report }).unwrap();
+                exit.push(b'\n');
+                writer.write_all(&exit).await.unwrap();
+                serde_json::from_str::<OwnerCommand>(&first).unwrap()
+            };
+            let (outcome, first) = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(
+                    relay_until_exit(&daemon, &id, &mut spawned, &mut keys, &mut sizes),
+                    peer
+                )
+            })
+            .await
+            .expect("terminal traffic must not strand a pending stop");
+            assert!(matches!(outcome, Outcome::Exited(_)));
+            assert!(matches!(first, OwnerCommand::Stop { force: seen } if seen == force));
+            assert_eq!(spawned.relayed, b"still writing".len() as u64);
+        }
+    }
+
     /// A launch that ends before it is activated is described as a person
     /// reads it — its exit code, its signal, or that the program could
     /// not be executed — and never as the report's fields spelled out.
