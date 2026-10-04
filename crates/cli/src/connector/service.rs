@@ -718,7 +718,9 @@ mod tests {
         assert!(install.commands.iter().any(|c| c.argv[1] == "bootstrap"));
         let uninstall = uninstall_plan(&layout, false);
         assert_eq!(uninstall.remove, vec![layout.unit_path()]);
-        assert!(uninstall.commands[0].argv.contains(&"disable".to_owned()));
+        assert!(uninstall.commands[0].argv.contains(&"stop".to_owned()));
+        assert!(uninstall.commands[1].argv.contains(&"disable".to_owned()));
+        assert!(uninstall.after_remove[0].argv.contains(&"daemon-reload".to_owned()));
     }
 
     #[test]
