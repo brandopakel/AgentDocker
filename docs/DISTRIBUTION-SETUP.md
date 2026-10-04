@@ -59,8 +59,11 @@ Before the first successful promotion, the channel URL returns 404.
 The `channel-preview` tag remains at its first promotion's commit; subsequent
 promotions replace only the feed and its record. Use the feed's versioned URLs
 and source identities, not the channel tag's commit, to identify a build. The
-feed has four fixed macOS/Linux targets. Adding Windows requires a feed and
-client compatibility change first; its current portable ZIP is excluded.
+macOS/Linux feed retains its four fixed targets. Windows installation uses the
+separate `channel-preview-windows` release and `updates-preview-windows.json`
+asset. The next preview will publish and verify that channel; published beta.4
+contains only its portable Windows ZIP. Neither Windows feed is added to the
+four-target feed or the stable update channel.
 
 The publisher checks the actual versioned release, source commit, four target
 assets, sizes and available GitHub digests before copying the feed. Promotions
@@ -315,8 +318,9 @@ blocks the prerelease; stable tags skip this preview-only job.
 
 Windows assets have separate `windows-preview-manifest.json` and
 `windows-preview-acceptance.json` files and `WINDOWS-PREVIEW.txt` instructions.
-They are not inputs to the four-target update feed. Release notes identify the
-unsigned portable preview and its missing Windows installer and updater. Optional
+They are not inputs to the four-target update feed. The next preview also publishes the installed-package manifest and separate
+Windows update feed after installer lifecycle acceptance. Release notes identify
+the unsigned distribution and remaining native/physical acceptance. Optional
 per-user Task Scheduler startup is implemented, with login/reboot and managed-provider
 survival acceptance still open. The package instructions require finishing managed
 work, quitting the app, uninstalling an enabled task with `daemon uninstall`, and
@@ -328,27 +332,29 @@ Windows promotion refusal and exact-byte retention have fixture coverage. The
 beta.2 protected-tag Windows job passed, and its hosted ZIP passed 61 native
 checks on AWBP. An actual Claude trial exposed a transcript ownership problem;
 the corrected CI package passed delivery and automatic receipt checks. Repeat
-the hosted-package lifecycle on the next candidate. Native Codex input and the
-Windows installer, service lifecycle and updater remain separate open gates.
+the hosted-package lifecycle on the next candidate. Native Codex input, hosted Windows installer/update/rollback, physical terminal
+attachment and service login/reboot remain separate open gates.
 
 ## Coworker preview releases
 
 The failed immutable `v0.2.0-beta.1` tag remains at `d46db1f2`; it published no
-release. **0.2.0-beta.2** was published from `f37998dd`. The current published
-preview is **0.2.0-beta.3**, immutable source `5b146e20`; protected-tag run
-35945751437 passed, all 28 hosted assets were verified, and explicit-version
-installation, upgrade and rollback passed on Mac ARM64 and independent Oracle
-Ubuntu x86_64. The fixed preview channel advertises beta.3. Stable v0.1.0 and the
-Homebrew tap are unchanged. Detailed scopes remain in the verification index.
+release. The current published preview is **0.2.0-beta.4**, immutable source
+`479b5793`; protected-tag run 36958662700 passed. All 28 hosted assets were
+verified, and explicit-version installation, update, rollback and reapplication
+passed on Mac ARM64 and independent Oracle Ubuntu x86_64. The fixed preview
+channel advertises beta.4. Stable v0.1.0 and the Homebrew tap are unchanged.
+Earlier releases retain their exact trial scopes in the verification index.
 
-The next source candidate is **0.2.0-beta.4**, with matching workspace packages,
+The next source candidate is **0.2.0-beta.5**, with matching workspace packages,
 internal dependency requirements and both Cargo lockfiles, including the excluded
-fuzz workspace. It adds the reviewed local Codex MCP startup correction, historical
-Claude format recovery and ARM hashing improvement, plus terminal-input review.
-The intended tag is `v0.2.0-beta.4`; changing the source version does not publish
+fuzz workspace. It carries the merged Windows installer/service/update lifecycle,
+growing-source accounting corrections and desktop changes. Windows connector
+#284 is merged. Final-candidate checks and hosted Windows verification remain open.
+The intended tag is `v0.2.0-beta.5`; changing the source version does not publish
 or install it. Finish substantive review and final integrated local/CI checks
-before creating that tag, then complete the protected-tag workflow and hosted
-lifecycle acceptance. Beta.3 assets must remain immutable.
+before creating the tag, then complete the protected-tag workflow and hosted
+lifecycle acceptance, including the separate Windows installation feed. All
+previously published versioned releases remain immutable.
 
 Before announcing the preview, download its actual hosted archives and sidecar
 checksums, verify package provenance, and exercise the explicit-version install
@@ -374,5 +380,5 @@ The beta.2 hosted updater has a macOS staging defect: an installed ad-hoc previe
 can discover the next preview without new consent, but staging still requests a
 Gatekeeper assessment unless `--local-preview` is supplied explicitly. Source now
 passes the computed preview consent through both staging and activation; a signed
-preview still receives Gatekeeper assessment. Publish the correction in a new
-immutable candidate; do not replace beta.2 assets.
+preview still receives Gatekeeper assessment. The correction shipped in later previews and passed beta.4 hosted lifecycle
+acceptance; do not replace beta.2 assets.
