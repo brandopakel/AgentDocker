@@ -58,7 +58,10 @@ class WindowsDesktopPackaging(unittest.TestCase):
         return {"result": "passed", "source_commit": self.manifest["source_commit"],
                 "receiver_binary_sha256": dict(self.manifest["binary_sha256"]),
                 "scratch_removed": True, "cleanup_errors": [], "reader_errors": [],
-                "forced_processes": [], "steps": [{"passed": True} for _ in range(13)]}
+                "forced_processes": [], "steps": [{"passed": True} for _ in range(16)],
+                "front_end_exit": {"watched": [1, 2, 3], "remaining": [],
+                                   "capability_revoked": True, "receipts_preserved": True,
+                                   "additional_model_requests": 0}}
 
     def test_automatic_native_report_requires_extracted_binary_and_source_provenance(self):
         native = self.automatic_report()
@@ -95,6 +98,20 @@ class WindowsDesktopPackaging(unittest.TestCase):
         native["binary_sha256"]["agentdocker.exe"] = "d" * 64
         with self.assertRaises(ValueError):
             SMOKE.validate_native_report(native, self.manifest, "established")
+
+    def test_native_exit_report_refuses_missing_or_partial_cleanup_evidence(self):
+        native = self.automatic_report()
+        for change in (lambda r: r.pop("front_end_exit"),
+                       lambda r: r.update(front_end_exit=None),
+                       lambda r: r["front_end_exit"].update(watched=[]),
+                       lambda r: r["front_end_exit"].update(remaining=[1]),
+                       lambda r: r["front_end_exit"].update(capability_revoked=False),
+                       lambda r: r["front_end_exit"].update(receipts_preserved=False),
+                       lambda r: r["front_end_exit"].update(additional_model_requests=1)):
+            invalid = copy.deepcopy(native)
+            change(invalid)
+            with self.assertRaises(ValueError):
+                SMOKE.validate_native_report(invalid, self.manifest, "automatic")
 
     def test_native_bootstrap_contract_is_preserved_in_portable_metadata(self):
         self.manifest['launcher_redirect'] = 2

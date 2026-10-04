@@ -63,10 +63,18 @@ def validate_native_report(native, info, scenario):
         native.get("source_commit") != info["source_commit"]
         or native.get("scratch_removed") is not True
         or any(native.get(key) != [] for key in ("cleanup_errors", "reader_errors", "forced_processes"))
-        or len(native.get("steps", [])) != 13
+        or len(native.get("steps", [])) != 16
         or not all(step.get("passed") is True for step in native["steps"])
     ):
         raise ValueError("automatic native Codex acceptance has incomplete source, lifecycle or cleanup evidence")
+    if automatic:
+        exited = native.get("front_end_exit", {})
+        if (not isinstance(exited, dict) or len(exited.get("watched", [])) < 3
+                or exited.get("remaining") != []
+                or exited.get("capability_revoked") is not True
+                or exited.get("receipts_preserved") is not True
+                or exited.get("additional_model_requests") != 0):
+            raise ValueError("automatic native Codex acceptance lacks front-end exit evidence")
 
 
 def main():

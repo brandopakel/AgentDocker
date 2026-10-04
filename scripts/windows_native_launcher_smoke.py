@@ -310,13 +310,17 @@ def main():
         watched = [*descendants, controller]
         requests_before_exit = len(report['requests'])
         report['front_end_exit'] = {'pid': launcher.pid, 'birth': launcher.create_time(),
-                                   'watched': [{'pid': p.pid, 'birth': p.create_time()} for p in watched]}
+                                   'watched': [{'pid': p.pid, 'birth': p.create_time()} for p in watched],
+                                   'descriptor': descriptor, 'binding': generation}
         assert launcher.is_running()
         launcher.kill()
         launcher.wait(timeout=10)
         _, alive = psutil.wait_procs(watched, timeout=15)
         wait(lambda: not Path(descriptor['token_file']).exists(), 10)
         report['front_end_exit']['remaining'] = [p.pid for p in alive]
+        report['front_end_exit']['capability_revoked'] = not Path(descriptor['token_file']).exists()
+        report['front_end_exit']['receipts_preserved'] = receiver.ledger()['completed'] == [first, second]
+        report['front_end_exit']['additional_model_requests'] = len(report['requests']) - requests_before_exit
         step('front-end termination retires owner and provider generations before fixture cleanup',
              not alive and not Path(descriptor['token_file']).exists())
         step('front-end termination preserves receipts without another model request',
