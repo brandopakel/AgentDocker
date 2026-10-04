@@ -779,8 +779,14 @@ Accept returns `action: "accept"` with no form content. Provider resolution
 acknowledges the decision, not completion of the external website action. There
 is no page polling, completion inference or automatic tool retry. Existing
 uncertain-write and no-replay recovery rules apply; ledger version 12 rejects
-URL reviews fabricated in older records. Source tests cover the route; actual
-Codex/MCP, browser interaction and final-package acceptance remain pending.
+URL reviews fabricated in older records. Source tests cover the route. Actual Codex 0.160 with Mac ARM64
+release binaries and private model/MCP fixtures passed Accept, Decline, Cancel
+and route cancellation, eight distinct ordinary input receipts, exact server-side
+decisions and independently verified cleanup. The fixture preserves normal
+on-request policy and explicitly configures only its synthetic tool for use;
+`never` policy declined the URL request before human review. These are synthetic
+human decisions, not account/browser consent. Browser interaction, final packages,
+other platforms/versions, pending restart and longer waits remain open.
 
 Unknown callbacks,
 session-wide file grants, unsupported permission selectors, MCP form/device-verification elicitation, secret inputs
