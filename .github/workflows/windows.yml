@@ -6,6 +6,22 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      hosted_tag:
+        description: Published prerelease tag to test instead of building (optional)
+        type: string
+        default: ''
+      hosted_source:
+        description: Exact expected commit of the hosted prerelease
+        type: string
+        default: ''
+      baseline_tag:
+        description: Optional earlier published installed preview for update/rollback
+        type: string
+        default: ''
+      baseline_source:
+        description: Exact expected commit of the optional baseline
+        type: string
+        default: ''
       capability_only:
         description: Probe provider-only authenticated remote ConPTY startup (no product acceptance)
         type: boolean
@@ -51,7 +67,7 @@ env:
 
 jobs:
   native-foundations:
-    if: ${{ !inputs.capability_only }}
+    if: ${{ !inputs.capability_only && !inputs.hosted_tag }}
     runs-on: windows-latest
     # Extra diagnostic samples include bounded CLI capture and cleanup for
     # every home. Leave the ordinary CI/build budget unchanged.
@@ -176,7 +192,7 @@ jobs:
           if-no-files-found: warn
 
   remote-tui:
-    if: ${{ inputs.capability_only }}
+    if: ${{ inputs.capability_only && !inputs.hosted_tag }}
     runs-on: windows-latest
     timeout-minutes: ${{ inputs.receiver_acceptance && 60 || 10 }}
     steps:
@@ -227,4 +243,40 @@ jobs:
         with:
           name: windows-codex-remote-capability
           path: artifacts/capability/
+          if-no-files-found: warn
+  hosted-preview:
+    if: github.event_name == 'workflow_dispatch' && inputs.hosted_tag != ''
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install native service acceptance dependency
+        run: python -m pip install --disable-pip-version-check psutil==7.0.0
+      - name: Accept actual hosted Windows preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOSTED_TAG: ${{ inputs.hosted_tag }}
+          HOSTED_SOURCE: ${{ inputs.hosted_source }}
+          BASELINE_TAG: ${{ inputs.baseline_tag }}
+          BASELINE_SOURCE: ${{ inputs.baseline_source }}
+        run: |
+          $extra = @()
+          if ($env:BASELINE_TAG -or $env:BASELINE_SOURCE) {
+            $extra += @('--baseline-tag', $env:BASELINE_TAG, '--baseline-source', $env:BASELINE_SOURCE)
+          }
+          python scripts/windows_hosted_smoke.py --tag "$env:HOSTED_TAG" --source "$env:HOSTED_SOURCE" --output artifacts/windows-hosted @extra
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve hosted acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-hosted-preview
+          path: |
+            artifacts/windows-hosted/*.json
+            artifacts/windows-hosted/candidate/*.json
+            artifacts/windows-hosted/baseline/*.json
+            artifacts/windows-hosted/daemon-service/
+            artifacts/windows-hosted/connector-service/
           if-no-files-found: warn

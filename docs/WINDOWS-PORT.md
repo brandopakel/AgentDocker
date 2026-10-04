@@ -461,7 +461,7 @@ sets identical last-write times explicitly; a timing delay is not its fix.
 
 ## Provider setup and message acceptance
 
-The native Codex draft adds `scripts/windows_native_codex_smoke.py` to extracted
+The native Codex acceptance workflow adds `scripts/windows_native_codex_smoke.py` to extracted
 archive acceptance. It launches the actual pinned Codex 0.155.1 TUI in ConPTY
 with a private profile and loopback Responses fixture. Assertions cover real
 SessionStart bootstrap, idle wake, an unsent draft, FIFO input during a held
@@ -810,6 +810,22 @@ Connector #284 merged as `dd452946` after the final `5e47a0e4` local gate,
 CI and substantive review. Public tunnels, real browser consent/CIMD and
 login/reboot remain open. Seeded grant preservation does not establish OAuth
 acceptance, and the native fixture does not exercise a public tunnel or reboot.
+
+The native Windows workflow also accepts `hosted_tag` and `hosted_source` for an
+immutable published preview. `scripts/windows_hosted_smoke.py` verifies the tag,
+GitHub asset digests, checksum, archive layout and executable provenance before
+running a fresh private-prefix installation, the default installed preview feed,
+and installed daemon/connector service lifecycles. It confirms stable and the
+Homebrew tap are unchanged and preserves failed scratch as evidence. This
+route passed on published beta.5: 12 hosted checks, 13 installed daemon and
+24 installed connector checks, with independently verified source/archive/EXE
+hashes and clean owned cleanup. The first two driver failures are retained in
+the verification index. With no baseline this proves first installation and
+current-version feed discovery only. An optional earlier
+`baseline_tag`/`baseline_source` must support native installation contract 2;
+then the trial requires actual hosted update, rollback and reapply. A portable-only
+older release is refused before execution. It does not establish account,
+physical-console, Start menu or logon/reboot acceptance.
 
 The automatic native Codex workflow also refuses a deliberately invalid executable
 before the first successful launch and requires its capability file to be gone

@@ -61,8 +61,8 @@ promotions replace only the feed and its record. Use the feed's versioned URLs
 and source identities, not the channel tag's commit, to identify a build. The
 macOS/Linux feed retains its four fixed targets. Windows installation uses the
 separate `channel-preview-windows` release and `updates-preview-windows.json`
-asset. The next preview will publish and verify that channel; published beta.4
-contains only its portable Windows ZIP. Neither Windows feed is added to the
+asset. Published beta.5 verifies that installed channel; beta.4 contains only
+its portable Windows ZIP and cannot serve as an installed baseline. Neither Windows feed is added to the
 four-target feed or the stable update channel.
 
 The publisher checks the actual versioned release, source commit, four target
@@ -318,7 +318,7 @@ blocks the prerelease; stable tags skip this preview-only job.
 
 Windows assets have separate `windows-preview-manifest.json` and
 `windows-preview-acceptance.json` files and `WINDOWS-PREVIEW.txt` instructions.
-They are not inputs to the four-target update feed. The next preview also publishes the installed-package manifest and separate
+They are not inputs to the four-target update feed. Beta.5 also publishes the installed-package manifest and separate
 Windows update feed after installer lifecycle acceptance. Release notes identify
 the unsigned distribution and remaining native/physical acceptance. Optional
 per-user Task Scheduler startup is implemented, with login/reboot and managed-provider
@@ -331,30 +331,32 @@ The public upload selects only release assets, excluding diagnostic artifacts.
 Windows promotion refusal and exact-byte retention have fixture coverage. The
 beta.2 protected-tag Windows job passed, and its hosted ZIP passed 61 native
 checks on AWBP. An actual Claude trial exposed a transcript ownership problem;
-the corrected CI package passed delivery and automatic receipt checks. Repeat
-the hosted-package lifecycle on the next candidate. Native Codex input, hosted Windows installer/update/rollback, physical terminal
+the corrected CI package passed delivery and automatic receipt checks. Beta.5
+passed hosted installation and both installed service lifecycles. Native Codex
+input, hosted two-version Windows update/rollback, physical terminal
 attachment and service login/reboot remain separate open gates.
 
 ## Coworker preview releases
 
 The failed immutable `v0.2.0-beta.1` tag remains at `d46db1f2`; it published no
-release. The current published preview is **0.2.0-beta.4**, immutable source
-`479b5793`; protected-tag run 36958662700 passed. All 28 hosted assets were
+release. The current published preview is **0.2.0-beta.5**, immutable source
+`fc54edc9`; protected-tag run 37170176926 passed. All 31 hosted assets were
 verified, and explicit-version installation, update, rollback and reapplication
-passed on Mac ARM64 and independent Oracle Ubuntu x86_64. The fixed preview
-channel advertises beta.4. Stable v0.1.0 and the Homebrew tap are unchanged.
+passed on Mac ARM64 and independent Oracle Ubuntu x86_64. Both platforms also
+passed hosted startup, terminal and graphical draft/reopen checks with synthetic
+providers; the retained Linux fixture lifetime failure and corrected driver are
+recorded separately. The fixed preview channels advertise beta.5. Stable v0.1.0
+and the Homebrew tap are unchanged.
 Earlier releases retain their exact trial scopes in the verification index.
 
-The next source candidate is **0.2.0-beta.5**, with matching workspace packages,
-internal dependency requirements and both Cargo lockfiles, including the excluded
-fuzz workspace. It carries the merged Windows installer/service/update lifecycle,
-growing-source accounting corrections and desktop changes. Windows connector
-#284 is merged. Final-candidate checks and hosted Windows verification remain open.
-The intended tag is `v0.2.0-beta.5`; changing the source version does not publish
-or install it. Finish substantive review and final integrated local/CI checks
-before creating the tag, then complete the protected-tag workflow and hosted
-lifecycle acceptance, including the separate Windows installation feed. All
-previously published versioned releases remain immutable.
+Windows hosted run 37172231392 passed 12 installation/feed/uninstall checks,
+13 installed daemon and 24 installed connector checks. Exact hosted archive and
+executable bytes, driver source and cleanup were independently verified. The
+first two runs retained test-driver metadata mistakes; neither is reported as a
+pass. Beta.5 is the first compatible Windows installed baseline, so its
+current-version no-op does not establish a two-release update/rollback. Native
+Codex #256 is excluded, and real accounts, physical input and login/reboot remain
+open. All previously published versioned releases remain immutable.
 
 Before announcing the preview, download its actual hosted archives and sidecar
 checksums, verify package provenance, and exercise the explicit-version install

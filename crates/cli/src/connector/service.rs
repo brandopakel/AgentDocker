@@ -12,7 +12,7 @@ use super::ServeArgs;
 #[cfg(not(windows))]
 use crate::service::execute;
 #[cfg(any(not(windows), test))]
-use crate::service::{Cmd, Plan};
+use crate::service::{Cmd, Plan, systemd_uninstall_plan};
 
 #[cfg(any(windows, test))]
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -210,6 +210,7 @@ pub fn install_plan(layout: &Layout, macos: bool) -> Plan {
                     tolerated: false,
                 },
             ],
+            ..Plan::default()
         }
     } else {
         Plan {
@@ -231,6 +232,7 @@ pub fn install_plan(layout: &Layout, macos: bool) -> Plan {
                     tolerated: false,
                 },
             ],
+            ..Plan::default()
         }
     }
 }
@@ -245,28 +247,10 @@ pub fn uninstall_plan(layout: &Layout, macos: bool) -> Plan {
                 argv: vec!["launchctl".into(), "bootout".into(), layout.target()],
                 tolerated: true,
             }],
+            ..Plan::default()
         }
     } else {
-        Plan {
-            files: vec![],
-            remove: vec![layout.unit_path()],
-            commands: vec![
-                Cmd {
-                    argv: vec![
-                        "systemctl".into(),
-                        "--user".into(),
-                        "disable".into(),
-                        "--now".into(),
-                        UNIT.into(),
-                    ],
-                    tolerated: true,
-                },
-                Cmd {
-                    argv: vec!["systemctl".into(), "--user".into(), "daemon-reload".into()],
-                    tolerated: true,
-                },
-            ],
-        }
+        systemd_uninstall_plan(UNIT, layout.unit_path())
     }
 }
 
@@ -734,7 +718,13 @@ mod tests {
         assert!(install.commands.iter().any(|c| c.argv[1] == "bootstrap"));
         let uninstall = uninstall_plan(&layout, false);
         assert_eq!(uninstall.remove, vec![layout.unit_path()]);
-        assert!(uninstall.commands[0].argv.contains(&"disable".to_owned()));
+        assert!(uninstall.commands[0].argv.contains(&"stop".to_owned()));
+        assert!(uninstall.commands[1].argv.contains(&"disable".to_owned()));
+        assert!(
+            uninstall.after_remove[0]
+                .argv
+                .contains(&"daemon-reload".to_owned())
+        );
     }
 
     #[test]

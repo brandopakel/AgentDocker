@@ -82,13 +82,15 @@ pub enum DaemonCommand {
 }
 
 /// What a subcommand would do: files to write and commands to run, in
-/// order. `tolerated` commands may fail without aborting (unloading a
+/// order: write files, run commands, remove files, run `after_remove`.
+/// `tolerated` commands may fail without aborting (unloading a
 /// service that is not loaded, say).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Plan {
     pub files: Vec<(PathBuf, String)>,
     pub remove: Vec<PathBuf>,
     pub commands: Vec<Cmd>,
+    pub after_remove: Vec<Cmd>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -325,6 +327,7 @@ pub fn install_plan(layout: &Layout, macos: bool) -> Plan {
                     &plist.to_string_lossy(),
                 ]),
             ],
+            ..Plan::default()
         }
     } else {
         Plan {
@@ -334,6 +337,7 @@ pub fn install_plan(layout: &Layout, macos: bool) -> Plan {
                 cmd(&["systemctl", "--user", "daemon-reload"]),
                 cmd(&["systemctl", "--user", "enable", "--now", UNIT]),
             ],
+            ..Plan::default()
         }
     }
 }
@@ -344,16 +348,35 @@ pub fn uninstall_plan(layout: &Layout, macos: bool) -> Plan {
             files: Vec::new(),
             remove: vec![layout.plist_path()],
             commands: vec![tolerated(&["launchctl", "bootout", &layout.target()])],
+            ..Plan::default()
         }
     } else {
-        Plan {
-            files: Vec::new(),
-            remove: vec![layout.unit_path()],
-            commands: vec![
-                tolerated(&["systemctl", "--user", "disable", "--now", UNIT]),
-                tolerated(&["systemctl", "--user", "daemon-reload"]),
-            ],
-        }
+        systemd_uninstall_plan(UNIT, layout.unit_path())
+    }
+}
+
+/// systemd needs the definition while stopping/disabling a service. Keep it
+/// available if that operation fails, then reload only after removing it.
+pub(crate) fn systemd_uninstall_plan(unit: &str, path: PathBuf) -> Plan {
+    let missing = !path.exists();
+    Plan {
+        commands: vec![
+            Cmd {
+                argv: ["systemctl", "--user", "stop", unit]
+                    .map(str::to_owned)
+                    .into(),
+                tolerated: missing,
+            },
+            Cmd {
+                argv: ["systemctl", "--user", "disable", unit]
+                    .map(str::to_owned)
+                    .into(),
+                tolerated: missing,
+            },
+        ],
+        remove: vec![path],
+        after_remove: vec![cmd(&["systemctl", "--user", "daemon-reload"])],
+        ..Plan::default()
     }
 }
 
@@ -436,6 +459,7 @@ pub(crate) fn execute(plan: &Plan, dry_run: bool) -> Result<()> {
             .with_context(|| format!("cannot write {}", path.display()))?;
         println!("wrote {}", path.display());
     }
+    execute_commands(&plan.commands, dry_run)?;
     for path in &plan.remove {
         if dry_run {
             println!("# would remove {}", path.display());
@@ -449,7 +473,11 @@ pub(crate) fn execute(plan: &Plan, dry_run: bool) -> Result<()> {
             }
         }
     }
-    for Cmd { argv, tolerated } in &plan.commands {
+    execute_commands(&plan.after_remove, dry_run)
+}
+
+fn execute_commands(commands: &[Cmd], dry_run: bool) -> Result<()> {
+    for Cmd { argv, tolerated } in commands {
         let line = argv.join(" ");
         if dry_run {
             println!("# would run: {line}");
@@ -905,5 +933,70 @@ mod tests {
         lay.user_home = dir.path().to_path_buf();
         execute(&install_plan(&lay, true), true).unwrap();
         assert!(!lay.plist_path().exists());
+    }
+
+    #[cfg(unix)]
+    fn fixture_command(script: &str, paths: &[&Path]) -> Cmd {
+        let mut argv = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            script.into(),
+            "fixture".into(),
+        ];
+        argv.extend(paths.iter().map(|p| p.to_string_lossy().into_owned()));
+        Cmd {
+            argv,
+            tolerated: false,
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uninstall_stops_before_removing_the_definition_and_reloads_afterwards() {
+        for unit in [UNIT, crate::connector::service::UNIT] {
+            let dir = tempfile::tempdir().unwrap();
+            let definition = dir.path().join(unit);
+            let running = dir.path().join("running");
+            let reload = dir.path().join("reloaded");
+            std::fs::write(&definition, "owned definition").unwrap();
+            std::fs::write(&running, "running").unwrap();
+            let mut plan = systemd_uninstall_plan(unit, definition.clone());
+            assert!(plan.commands.iter().all(|c| !c.tolerated));
+            assert_eq!(plan.commands[0].argv, ["systemctl", "--user", "stop", unit]);
+            assert_eq!(
+                plan.commands[1].argv,
+                ["systemctl", "--user", "disable", unit]
+            );
+            plan.commands = vec![fixture_command(
+                "test -f \"$1\" && rm \"$2\"",
+                &[&definition, &running],
+            )];
+            plan.after_remove = vec![fixture_command(
+                "test ! -e \"$1\" && test ! -e \"$2\" && touch \"$3\"",
+                &[&definition, &running, &reload],
+            )];
+            execute(&plan, true).unwrap();
+            assert!(definition.exists() && running.exists() && !reload.exists());
+            execute(&plan, false).unwrap();
+            assert!(!definition.exists() && !running.exists() && reload.exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_service_stop_preserves_definition_and_skips_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let definition = dir.path().join(UNIT);
+        let reload = dir.path().join("reloaded");
+        std::fs::write(&definition, "owned definition").unwrap();
+        let mut plan = systemd_uninstall_plan(UNIT, definition.clone());
+        plan.commands[0].argv = fixture_command("exit 1", &[]).argv;
+        plan.after_remove = vec![fixture_command("touch \"$1\"", &[&reload])];
+        assert!(execute(&plan, false).is_err());
+        assert_eq!(
+            std::fs::read_to_string(definition).unwrap(),
+            "owned definition"
+        );
+        assert!(!reload.exists());
     }
 }
