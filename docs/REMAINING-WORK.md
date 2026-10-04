@@ -15,7 +15,9 @@ The protected-tag publication includes reviewed Windows installation and connect
 services, accounting attribution and growing-source recovery. Native Codex #256
 remains a separate change excluded from this release. The first hosted Windows
 trial installed the exact package but stopped at a test-driver error: `--build-info`
-belongs to the daemon, not the CLI. #287 corrects the probe; hosted Windows service
+belongs to the daemon, not the CLI; its metadata also has no source-commit field.
+#287 checks installed selection and exact executable hashes alongside the daemon
+version/schema metadata. Hosted Windows service
 acceptance and a two-release installed update/rollback trial remain open.
 
 **The rollout is incomplete.** Full macOS, Linux and native Windows support

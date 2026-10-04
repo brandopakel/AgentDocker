@@ -1,5 +1,6 @@
 """Hosted acceptance must reject wrong provenance/channels before execution."""
 import copy
+import hashlib
 import importlib.util
 from pathlib import Path
 import sys
@@ -77,6 +78,33 @@ class HostedWindowsAcceptance(unittest.TestCase):
             with self.subTest(tag=tag, source=source):
                 with self.assertRaises(ValueError):
                     HOSTED.identity(tag, source)
+
+    def test_installed_provenance_uses_real_daemon_metadata_and_exact_selected_bytes(self):
+        with tempfile.TemporaryDirectory() as root:
+            store = Path(root)
+            release = 'c' * 64
+            payload = store / 'versions' / release / 'AgentDocker'
+            payload.mkdir(parents=True)
+            binary = payload / 'agentd.exe'
+            binary.write_bytes(b'accepted daemon')
+            manifest = dict(self.manifest, state_schema=23,
+                            binary_sha256={'agentd.exe': hashlib.sha256(binary.read_bytes()).hexdigest()})
+            # Actual daemon --build-info contains no source_commit field.
+            info = {'format': 1, 'os': 'windows', 'arch': 'x86_64', 'version': self.tag[1:],
+                    'state_schema': 23, 'installation_lock': 1, 'launcher_redirect': 2}
+            current = {'id': release, 'source_commit': self.source,
+                       'version': self.tag[1:], 'target': HOSTED.TARGET}
+            HOSTED.validate_installed_payload(store, {'current': current}, manifest, info)
+            for changed, metadata in [
+                    (dict(current, source_commit='d' * 40), info),
+                    (dict(current, id='../elsewhere'), info),
+                    (current, dict(info, version='0.2.0-beta.4')),
+                    (current, dict(info, launcher_redirect=1))]:
+                with self.assertRaises(ValueError):
+                    HOSTED.validate_installed_payload(store, {'current': changed}, manifest, metadata)
+            binary.write_bytes(b'unrelated executable')
+            with self.assertRaisesRegex(ValueError, 'executable bytes'):
+                HOSTED.validate_installed_payload(store, {'current': current}, manifest, info)
 
 
 if __name__ == '__main__':

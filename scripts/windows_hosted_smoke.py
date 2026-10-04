@@ -111,6 +111,19 @@ def validate_update(update, manifest, expected_upgrade):
         raise ValueError('default installed channel does not offer the exact hosted candidate')
 
 
+def validate_installed_payload(store, installation, manifest, build_info):
+    current = installation['current']
+    if (not re.fullmatch(r'[0-9a-f]{64}', current.get('id', ''))
+            or any(current.get(key) != manifest[key] for key in ('source_commit', 'version', 'target'))
+            or any(build_info.get(key) != manifest[key]
+                   for key in ('version', 'state_schema', 'installation_lock', 'launcher_redirect'))
+            or build_info.get('os') != 'windows' or build_info.get('arch') != 'x86_64'):
+        raise ValueError('installed selection or daemon metadata differs from the hosted candidate')
+    selected = store / 'versions' / current['id'] / 'AgentDocker'
+    if any(digest(selected / name) != expected for name, expected in manifest['binary_sha256'].items()):
+        raise ValueError('installed executable bytes differ from the hosted candidate')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tag', required=True)
@@ -179,10 +192,12 @@ def main():
         def desktop(*argv, **kwargs):
             return command('desktop', '--prefix', prefix, *argv, **kwargs)
 
-        def installed_source():
-            # Build metadata is the daemon's offline command. The CLI exposes
-            # --version, but deliberately has no --build-info option.
-            return command('--build-info', executable=store / 'bin/agentd.exe')['source_commit']
+        def installed_matches(expected):
+            # Offline daemon metadata has version/schema, not source identity.
+            # Bind the selected installation to the verified executable bytes.
+            validate_installed_payload(store, desktop('status')['installation'], expected,
+                                       command('--build-info', executable=store / 'bin/agentd.exe'))
+            return True
 
         initial = baseline_app / 'agentdocker.exe'
         cold = desktop('status', executable=initial)
@@ -195,7 +210,7 @@ def main():
         installed = desktop('status')['installation']
         step('fresh hosted installation boots its exact immutable payload',
              installed['current']['id'] == first and installed['previous'] is None
-             and installed_source() == baseline['source_commit'])
+             and installed_matches(baseline))
         checked = desktop('update', '--check')['update']
         validate_update(checked, manifest, bool(args.baseline_tag))
         step('installed default channel verifies the exact hosted preview without downloading',
@@ -209,14 +224,14 @@ def main():
             active = desktop('status')['installation']
             step('hosted update preserves the actual prior release',
                  active['current']['id'] == second and active['previous']['id'] == first
-                 and installed_source() == args.source)
+                 and installed_matches(manifest))
             desktop('rollback', '--local-preview', '--expect-current', second, '--expect-release', first)
             step('rollback restores the exact earlier hosted binaries',
-                 installed_source() == args.baseline_source
+                 installed_matches(baseline)
                  and desktop('status')['installation']['current']['id'] == first)
             desktop('update', '--apply')
             step('default feed reapplies the hosted candidate after rollback',
-                 installed_source() == args.source
+                 installed_matches(manifest)
                  and desktop('status')['installation']['current']['id'] == second)
         else:
             unchanged = desktop('update', '--apply')
