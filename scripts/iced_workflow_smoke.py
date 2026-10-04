@@ -390,8 +390,12 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                 # would forward it.
                 card = rpc(endpoint, {"op": "task_create", "from": "user", "project": str(project), "title": "Fix the fixture login",
                                       "acceptance": "Login works with SSO and a password", "column": "ready"})["task"]
+                # This agent belongs to the full sequence of bounded windows,
+                # not a guessed wall-clock duration. Stop it explicitly below;
+                # the owned daemon's shutdown also retires it on failure.
                 narrow = rpc(endpoint, {"op": "run", "spec": {"name": "narrow-fixture", "runtime": "fixture",
-                              "command": ["/bin/sleep", "150"], "workdir": str(project), "restore": False}})["agent"]
+                              "command": [sys.executable, "-c", "import signal; signal.pause()"],
+                              "workdir": str(project), "restore": False}})["agent"]
                 routed = rpc(endpoint, {"op": "send", "from": narrow["id"], "to": human["id"],
                                         "kind": "chat", "payload": {"text": "NARROW ROUTE TARGET"}})["message"]
                 route = {"home": str(state), "socket": str(endpoint),
