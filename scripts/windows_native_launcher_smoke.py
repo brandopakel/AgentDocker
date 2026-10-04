@@ -55,10 +55,10 @@ def main():
     queue_text = 'AD_AUTO_QUEUE_' + secrets.token_hex(8)
     draft_text = 'AD_AUTO_DRAFT_' + secrets.token_hex(8)
     reopen_text = 'AD_AUTO_REOPEN_' + secrets.token_hex(8)
-    closed_consoles = set()
+    closed_consoles = []
 
     def close_console():
-        if terminal is None or id(terminal) in closed_consoles:
+        if terminal is None or any(terminal is closed for closed in closed_consoles):
             return
         closing.set()
         terminal.pty.cancel_io()
@@ -70,7 +70,7 @@ def main():
         if reader is not None:
             reader.join(timeout=2)
             assert not reader.is_alive(), 'terminal reader did not retire'
-        closed_consoles.add(id(terminal))
+        closed_consoles.append(terminal)
 
     def normalized_birth(value):
         assert value.endswith('Z')
