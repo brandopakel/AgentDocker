@@ -86,7 +86,14 @@ bounded schema/value validation, explicit decisions and exact receipts. Source
 `5bda72d0` passed the full 1,558-Rust/179-Python gate (8/1 skipped), zero retries,
 and actual Mac Codex 0.160 with private model/MCP fixtures: four decision paths,
 eight unique input receipts and independently verified clean process retirement.
-Later UI stale-submit/oversized-edit hardening, final CI and independent review
-still need acceptance. Account, final packages, other platforms/versions,
-pending restart, longer waits, extended forms/device verification and secret
-input remain open. No published preview includes this work yet.
+Final `4737ed1a` passed the same full gate plus 39 rendered native Mac UI steps,
+including typed Submit/Decline/Cancel, invalid input, exact values, native
+accessibility extraction and clean process retirement. Its identical-tree Linux
+CI CLI archive passed all four paths with Codex 0.160 and 0.155.1, eight exact
+ordinary-input receipts each and independently verified cleanup. An initial
+fixture's separate-turn assumption failed; the corrected assertion checks the
+documented post-review steering behavior and retains the original evidence.
+Final CI and independent review remain required. Account, final desktop
+packages, Windows, broader versions, physical interaction, pending restart,
+longer waits, extended forms/device verification and secret input remain open.
+No published preview includes this work yet.

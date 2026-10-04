@@ -617,7 +617,7 @@ navigation and reopening. These bounded trials use the upstream experimental
 `write_stdin_approval` feature for that launch only; they do not change saved
 provider policy or establish physical input/accessibility acceptance. The clean
 candidate passed 1,430 Rust tests and 155 Python checks with zero retries.
-Broader permission forms, MCP form elicitation and secret input still require completion.
+Broader permission forms, extended MCP elicitation and secret input still require completion.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
@@ -1092,7 +1092,16 @@ uncertain provider write is retained without replay. Source `5bda72d0` passed th
 zero retries, and an actual Codex 0.160 Mac ARM64 release-binary trial. Four
 form decision/cancellation paths preserved exact schemas and values, refused
 invalid answers while pending, delivered eight unique ordinary-input receipts
-and left no private processes or scratch. These used synthetic answers and a
-private model/MCP server; account, final-package, other-platform/version,
-pending-restart and longer-wait acceptance remain open. Later source hardens
-stale form submission and oversized edits; its validation is separate.
+and left no private processes or scratch. Final `4737ed1a` passed the same full
+gate, including stale-schema submission and oversized-edit refusal. Its native
+Mac UI passed 39 rendered-control steps for Submit/Decline/Cancel, invalid input,
+exact typed values and omitted optional input; native accessibility extraction,
+screenshots, six ordinary-input receipts and clean process retirement passed.
+The identical-tree Linux CI archive passed all four decision/cancellation paths
+with both actual Codex 0.160 and 0.155.1, eight unique input receipts per version
+and independently verified cleanup. Peer input stayed queued during review and
+resumed only after the exact MCP answer, either in the active turn or a new one.
+An initial fixture incorrectly required separate turns; that failure and its
+corrected assertion are retained. These use private model/MCP fixtures and
+synthetic answers; account, final desktop packages, Windows, broader versions,
+physical interaction, pending restart and longer waits remain open.
