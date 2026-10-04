@@ -6,17 +6,17 @@ failed trials, subsequent corrections and raw evidence locations remain in
 publication and installed acceptance are separate: use `agentdocker desktop
 status` and `agentdocker daemon status` to identify what a machine runs.
 
-Published `0.2.0-beta.4` is reviewed source `479b5793`. Its 28 hosted assets,
+Published `0.2.0-beta.5` is reviewed source `fc54edc9`. Its 31 hosted assets,
 nine archives and five manifests passed integrity checks; explicit installation
-and beta.3 → beta.4 update, rollback and reapplication passed on Mac ARM64 and
+and beta.4 → beta.5 update, rollback and reapplication passed on Mac ARM64 and
 Oracle Ubuntu x86_64. Stable `v0.1.0` and Homebrew remain separate.
 
-The next candidate is **`0.2.0-beta.5`, unpublished**. Windows installer PR #279
-merged as `05cab841` after the full local gate, final CI and substantive review.
-Accounting attribution #280 and growing-source recovery #281 also merged.
-Windows connector #284 merged as `dd452946` after corrected native lifecycle
-acceptance, the full local gate, final CI and substantive review. Native Codex
-#256 remains a separate draft excluded from this candidate. Candidate validation does not establish hosted acceptance.
+The protected-tag publication includes reviewed Windows installation and connector
+services, accounting attribution and growing-source recovery. Native Codex #256
+remains a separate change excluded from this release. The first hosted Windows
+trial installed the exact package but stopped at a test-driver error: `--build-info`
+belongs to the daemon, not the CLI. #287 corrects the probe; hosted Windows service
+acceptance and a two-release installed update/rollback trial remain open.
 
 **The rollout is incomplete.** Full macOS, Linux and native Windows support
 requires the engineering and acceptance gates below. Preview distribution does
@@ -26,7 +26,7 @@ not establish stable signing, a fresh account or physical accessibility.
 
 | Requirement | Current evidence | Remaining work |
 | --- | --- | --- |
-| Publish the next preview | Beta.4 is published. The beta.5 source candidate includes the reviewed Windows installer and separate installed Windows preview-feed contract. | Complete final combined-candidate local checks, CI and review, then use the protected-tag workflow. Verify all hosted downloads and explicit-version installation, update, rollback and reapplication on Mac/Linux/Windows. Keep `channel-preview-windows` separate from the four-target Mac/Linux feed, stable release and Homebrew. [Distribution contract](DISTRIBUTION-SETUP.md). |
+| Publish and verify the preview | Beta.5 is published after final local checks, CI and review. All hosted assets and both preview feeds passed; actual beta.4 → beta.5 installation/update/rollback/reapply passed on Mac ARM64 and Oracle Ubuntu. Stable and Homebrew are unchanged. | Finish hosted Windows installed/service acceptance. Beta.5 is the first compatible installed Windows baseline, so its current-version no-op cannot prove two-release update/rollback. Keep `channel-preview-windows` separate from the four-target Mac/Linux feed, stable release and Homebrew. [Distribution contract](DISTRIBUTION-SETUP.md). |
 | First run on every supported platform | Hosted beta.3 passed Mac ARM64/Oracle installation, terminal and graphical workflows; beta.4 passed hosted update/rollback. Actual-model Ubuntu Codex delivery and physical AWBP Claude idle/busy/draft receipts exist for their recorded older packages. | Test the actual final downloads with fresh configuration and provider authentication, trust and channel consent; idle/busy delivery, preserved drafts, restart and reopen. Existing-account reuse, synthetic providers and CI do not prove fresh-account acceptance. |
 | Independent machines and distributions | Oracle is Ubuntu 24.04.4 x86_64 with private graphical dependencies/Xvfb. AWBP is Windows 11 Home build 26200 x64. Local Mac, Intel/ARM CI and Rosetta evidence is separately pinned. | Independent second Mac, physical Intel, normal target Linux desktop prerequisites, physical Linux input and current-candidate Windows service/provider trials. AWBP testing is currently deferred at the user's request. [Trial procedure](LOCAL-TRIAL.md). |
 | Stable macOS signing | Previews are ad-hoc signed; Developer ID/notarization is not configured. | Configure private signing/notary credentials, sign/notarize/staple the final app and DMG, and test Gatekeeper on an independent Mac. |

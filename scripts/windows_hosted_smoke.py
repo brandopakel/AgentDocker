@@ -179,6 +179,11 @@ def main():
         def desktop(*argv, **kwargs):
             return command('desktop', '--prefix', prefix, *argv, **kwargs)
 
+        def installed_source():
+            # Build metadata is the daemon's offline command. The CLI exposes
+            # --version, but deliberately has no --build-info option.
+            return command('--build-info', executable=store / 'bin/agentd.exe')['source_commit']
+
         initial = baseline_app / 'agentdocker.exe'
         cold = desktop('status', executable=initial)
         step('cold hosted status does not create the prefix or provider state',
@@ -190,7 +195,7 @@ def main():
         installed = desktop('status')['installation']
         step('fresh hosted installation boots its exact immutable payload',
              installed['current']['id'] == first and installed['previous'] is None
-             and command('--build-info')['source_commit'] == baseline['source_commit'])
+             and installed_source() == baseline['source_commit'])
         checked = desktop('update', '--check')['update']
         validate_update(checked, manifest, bool(args.baseline_tag))
         step('installed default channel verifies the exact hosted preview without downloading',
@@ -204,14 +209,14 @@ def main():
             active = desktop('status')['installation']
             step('hosted update preserves the actual prior release',
                  active['current']['id'] == second and active['previous']['id'] == first
-                 and command('--build-info')['source_commit'] == args.source)
+                 and installed_source() == args.source)
             desktop('rollback', '--local-preview', '--expect-current', second, '--expect-release', first)
             step('rollback restores the exact earlier hosted binaries',
-                 command('--build-info')['source_commit'] == args.baseline_source
+                 installed_source() == args.baseline_source
                  and desktop('status')['installation']['current']['id'] == first)
             desktop('update', '--apply')
             step('default feed reapplies the hosted candidate after rollback',
-                 command('--build-info')['source_commit'] == args.source
+                 installed_source() == args.source
                  and desktop('status')['installation']['current']['id'] == second)
         else:
             unchanged = desktop('update', '--apply')
