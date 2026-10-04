@@ -283,6 +283,44 @@ def main():
         wait(lambda: not Path(descriptor['token_file']).exists(), 10)
         step('resumed terminal exits natively and revokes its capability',
              not terminal.isalive() and not Path(descriptor['token_file']).exists())
+        close_console()
+        # A third, prompt-free reopen exercises Windows TerminateProcess on
+        # only the front end. Do not close ConPTY until the owner has cleaned up.
+        previous_records = set((receiver.home / 'codex-native').glob('*/server.json'))
+        output.clear(); closing.clear()
+        terminal = PtyProcess.spawn([str(receiver.cli), '--socket', receiver.socket, 'codex-native',
+                    '--program', str(codex), '--profile', str(profile), '--cwd', str(repo),
+                    '--name', 'native-auto-exit-probe', '--resume', thread],
+                    cwd=str(repo), env=receiver.env, dimensions=(40, 160), backend=Backend.ConPTY)
+        launcher = psutil.Process(terminal.pid); owned.append(launcher)
+        reader = threading.Thread(target=drain, daemon=True); reader.start()
+        wait(ready, 65)
+        records = set((receiver.home / 'codex-native').glob('*/server.json')) - previous_records
+        assert len(records) == 1
+        descriptor = json.loads(records.pop().read_text(encoding='utf-8'))
+        generation = receiver.binding()
+        step('exit probe reopens the same canonical provider without input',
+             'AgentDocker native input ready: ' + receiver.agent in ''.join(output) and
+             descriptor['version'] == 1 and descriptor['provider']['session'] == thread and
+             generation['provider'] == descriptor['provider'] and receiver.ledger()['completed'] == [first, second])
+        descendants = launcher.children(recursive=True); owned.extend(descendants)
+        controller = fixture_controller(psutil, generation, receiver.cli)
+        receiver.owned.append(controller)
+        # The daemon may own the resumed receiver, so include it explicitly.
+        watched = [*descendants, controller]
+        requests_before_exit = len(report['requests'])
+        report['front_end_exit'] = {'pid': launcher.pid, 'birth': launcher.create_time(),
+                                   'watched': [{'pid': p.pid, 'birth': p.create_time()} for p in watched]}
+        assert launcher.is_running()
+        launcher.kill()
+        launcher.wait(timeout=10)
+        _, alive = psutil.wait_procs(watched, timeout=15)
+        wait(lambda: not Path(descriptor['token_file']).exists(), 10)
+        report['front_end_exit']['remaining'] = [p.pid for p in alive]
+        step('front-end termination retires owner and provider generations before fixture cleanup',
+             not alive and not Path(descriptor['token_file']).exists())
+        step('front-end termination preserves receipts without another model request',
+             receiver.ledger()['completed'] == [first, second] and len(report['requests']) == requests_before_exit)
         step('private provider configuration is unchanged', (profile / 'config.toml').read_text(encoding='utf-8') == config)
         report['result'] = 'passed'
     except Exception:

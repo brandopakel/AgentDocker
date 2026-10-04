@@ -975,6 +975,9 @@ UUID reopen also passed. These used actual Codex 0.160 with a private loopback
 model and synthetic PTY; Linux/Windows repeat and independent review are still
 required. This does not protect against killing the owner itself or establish
 pending-input recovery; those trials remain open.
+The Windows fixture also reopens without new input and terminates only the front
+end, checking owner/provider/receiver exit, capability revocation and unchanged
+receipts before closing its synthetic console; this trial is not yet accepted.
 It observes an empty server before launching the terminal, requires the sole new
 thread birth, then registers the exact TUI and publishes its private birth
 receipt before starting the receiver. The TUI inherits the terminal; the launcher
