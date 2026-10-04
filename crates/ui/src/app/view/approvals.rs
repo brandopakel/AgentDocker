@@ -2046,6 +2046,13 @@ mod tests {
             "yes".into(),
             "false".into(),
         ));
+        let _ = app.update(Message::FormEdit(
+            id.clone(),
+            "optional".into(),
+            "x".repeat(4097),
+        ));
+        assert_eq!(app.shell.forms[&id].fields["optional"].text, "retained");
+        assert!(app.shell.answer_errors[&id].contains("too long"));
         let _ = app.update(Message::FormEdit(id.clone(), "count".into(), "4".into()));
         let _ = app.update(Message::FormSubmit(id.clone()));
         assert_eq!(commands.try_iter().count(), 0);

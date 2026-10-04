@@ -115,6 +115,14 @@ impl App {
         let Some(field) = form.fields.iter().find(|f| f.key == key) else {
             return;
         };
+        if matches!(&edit, Edit::Text(text) if text.len() > agentdocker_core::elicitation::MAX_FORM_TEXT)
+        {
+            self.shell.answer_errors.insert(
+                id,
+                "That entry is too long. Shorten it before pasting.".into(),
+            );
+            return;
+        }
         if !self.shell.forms.contains_key(&id) && self.shell.forms.len() >= 64 {
             self.shell
                 .answer_errors
