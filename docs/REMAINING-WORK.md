@@ -23,6 +23,13 @@ Linux service trial found that beta.5 uninstall can leave its process running;
 release notes disclose the workaround. The corrected candidate passed 17
 real-systemd checks and still requires a replacement preview.
 
+The source candidate is `0.2.0-beta.6`, with the corrected Linux service
+removal and the experimental owned native Codex launcher. It is not yet
+published. Final review, protected-tag publication and hosted acceptance are
+required, including actual beta.5 → beta.6 Windows update and rollback. Native
+launcher abnormal-termination cleanup, desktop/default adoption and the other
+acceptance gaps below remain open.
+
 **The rollout is incomplete.** Full macOS, Linux and native Windows support
 requires the engineering and acceptance gates below. Preview distribution does
 not establish stable signing, a fresh account or physical accessibility.
