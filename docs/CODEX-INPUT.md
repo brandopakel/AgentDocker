@@ -968,8 +968,13 @@ A separate invocation of the same loaded CLI owns those children. The front end
 keeps an authenticated private loopback connection open; its closure, including
 front-end SIGKILL, requests bounded child cleanup and capability revocation. The
 owner verifies its exact parent generation/image before starting a provider. The
-TUI still inherits the terminal directly. This does not protect against killing
-the owner itself or establish pending-input recovery; those trials remain open.
+TUI still inherits the terminal directly. Mac ARM64 `8dc1e614` passed front-end
+SIGKILL after a receipt and during pre-binding provider startup, SIGTERM and
+failed-spawn cleanup. Receiver replacement, preserved draft and the original
+UUID reopen also passed. These used actual Codex 0.160 with a private loopback
+model and synthetic PTY; Linux/Windows repeat and independent review are still
+required. This does not protect against killing the owner itself or establish
+pending-input recovery; those trials remain open.
 It observes an empty server before launching the terminal, requires the sole new
 thread birth, then registers the exact TUI and publishes its private birth
 receipt before starting the receiver. The TUI inherits the terminal; the launcher
