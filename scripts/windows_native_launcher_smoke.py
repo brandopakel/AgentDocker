@@ -171,15 +171,17 @@ def main():
         report['descriptor'] = descriptor
         report['receiver_generation'] = descriptor['provider']
         report['receiver_initial_binding'] = receiver.binding()
-        step('product launcher publishes its own exact birth and binding before any input',
-             descriptor['version'] == 2 and descriptor['birth']['launcher']['pid'] == terminal.pid and
-             normalized_birth(descriptor['birth']['launcher']['started_at']) == normalized_birth(process_birth(terminal.pid)) and
+        owner = psutil.Process(descriptor['birth']['launcher']['pid'])
+        step('product child owner publishes its exact birth and binding before any input',
+             descriptor['version'] == 2 and owner.pid != terminal.pid and owner.ppid() == terminal.pid and
+             Path(owner.exe()).resolve() == receiver.cli.resolve() and
+             normalized_birth(descriptor['birth']['launcher']['started_at']) == normalized_birth(process_birth(owner.pid)) and
              receiver.binding()['provider'] == descriptor['provider'] and not report['requests'])
         for process in launcher.children(recursive=True): owned.append(process)
         native = SimpleNamespace(pid=descriptor['provider']['process']['pid'])
         provider = SimpleNamespace(pid=descriptor['server']['pid'])
-        step('server and native terminal remain direct children of the product launcher',
-             psutil.Process(native.pid).ppid() == terminal.pid and psutil.Process(provider.pid).ppid() == terminal.pid)
+        step('server and native terminal remain direct children of the exact product owner',
+             psutil.Process(native.pid).ppid() == owner.pid and psutil.Process(provider.pid).ppid() == owner.pid)
         token = Path(descriptor['token_file']).read_text(encoding='utf-8')
         channel = connect(f"ws://127.0.0.1:{descriptor['port']}", additional_headers={'Authorization': 'Bearer ' + token},
                           proxy=None, open_timeout=3, close_timeout=2, ping_interval=None, max_size=2 * 1024 * 1024)
