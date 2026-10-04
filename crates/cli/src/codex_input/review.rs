@@ -963,6 +963,15 @@ impl Pending {
                 );
             }
             if let Some(answer) = &question.answer {
+                if let Some(presentation @ QuestionPresentation::McpForm { .. }) =
+                    &question.presentation
+                {
+                    ensure!(
+                        answer.payload.as_object().is_some_and(|p| p.len() == 1)
+                            && presentation.permits_answer(answer_text(answer)?),
+                        "stored form answer differs from its reviewed schema"
+                    );
+                }
                 ensure!(
                     question.message.as_ref() == answer.reply_to.as_ref(),
                     "answer has another review route"
@@ -993,6 +1002,14 @@ impl Pending {
             answer_text(answer)?;
         }
         if let Some(response) = &self.response {
+            if self.is_mcp_form_review() {
+                let mut original = self.clone();
+                original.response = None;
+                ensure!(
+                    original.reply(self.expires_at)?.as_ref() == Some(response),
+                    "stored form response differs from the original human decision"
+                );
+            }
             ensure!(
                 response["id"] == self.id
                     && (response.get("result").is_some() ^ response.get("error").is_some())
@@ -1055,6 +1072,13 @@ mod tests {
                 serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
             restored.validate(Some("thread"), "owner").unwrap();
             assert!(restored.reply(now).unwrap().is_none());
+            let mut altered = restored.clone();
+            altered.response.as_mut().unwrap()["result"] =
+                json!({"action":"accept","content":{"count":99}});
+            assert!(altered.validate(Some("thread"), "owner").is_err());
+            let mut altered = restored;
+            altered.questions[0].answer.as_mut().unwrap().payload["extra"] = json!(true);
+            assert!(altered.validate(Some("thread"), "owner").is_err());
         }
         let request = Pending::plan(&event, "thread", Some("turn"), "human", now).unwrap();
         assert_eq!(

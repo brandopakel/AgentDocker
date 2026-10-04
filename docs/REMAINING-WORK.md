@@ -83,5 +83,5 @@ conveniences remain deferred. See [architecture](ARCHITECTURE.md#planned-protoco
 
 MCP nonsecret form review is in development on `codex/mcp-form-review`: typed
 fields, bounded schema/value validation, explicit decisions and exact receipts.
-Source tests, actual-provider acceptance, final CI and independent review remain
+Seven focused source tests passed; full validation, actual-provider acceptance, final CI and independent review remain
 required before calling this implemented or including it in a preview.
