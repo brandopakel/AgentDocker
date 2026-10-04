@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
-    fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
 };
@@ -43,6 +42,8 @@ pub(super) struct Binding {
     pub socket: PathBuf,
     pub cwd: PathBuf,
     pub executable: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<super::remote::Descriptor>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,7 +95,7 @@ pub(super) struct Ledger {
     record: Record,
 }
 
-pub(super) fn directory(home: &Path, agent: &str) -> Result<PathBuf> {
+fn directory_path(home: &Path, agent: &str) -> Result<PathBuf> {
     ensure!(
         !agent.is_empty()
             && agent.len() <= 128
@@ -103,9 +104,13 @@ pub(super) fn directory(home: &Path, agent: &str) -> Result<PathBuf> {
                 .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
         "invalid native queue agent ID"
     );
+    Ok(home.join("codex-queue").join(agent))
+}
+
+pub(super) fn directory(home: &Path, agent: &str) -> Result<PathBuf> {
+    let directory = directory_path(home, agent)?;
     let parent = home.join("codex-queue");
     dirs::secure_state_dir(&parent)?;
-    let directory = parent.join(agent);
     dirs::secure_state_dir(&directory)?;
     Ok(directory)
 }
@@ -128,9 +133,12 @@ pub(super) fn upgrade_credential(
     agent: &str,
     accepted: &InputBinding,
 ) -> Result<(Binding, String)> {
-    let path = directory(home, agent)?.join("delivery.json");
+    let directory = directory_path(home, agent)?;
+    dirs::check_private_dir(&home.join("codex-queue"))?;
+    dirs::check_private_dir(&directory)?;
+    let path = directory.join("delivery.json");
     let mut data = Vec::new();
-    dirs::read_private_file(&path)?
+    dirs::open_private_snapshot(&path)?
         .take((MAX_STATE + 1) as u64)
         .read_to_end(&mut data)?;
     ensure!(
@@ -175,7 +183,7 @@ impl Ledger {
                     "bound native input ledger is missing; retained input needs reconciliation"
                 );
                 Record {
-                    version: 4,
+                    version: 5,
                     binding: binding.clone(),
                     token: uuid::Uuid::new_v4().simple().to_string(),
                     attempt: None,
@@ -224,6 +232,15 @@ impl Ledger {
         };
         ledger.save(ledger.record.clone())?;
         Ok(ledger)
+    }
+
+    /// Fresh admission is one-way: a prepared, completed, failed or manually
+    /// disposed input can never acquire another empty-history allowance.
+    pub fn pristine(&self) -> bool {
+        self.record.attempt.is_none()
+            && self.record.completed.is_empty()
+            && self.record.failed_turn.is_none()
+            && self.record.manual_reads.is_empty()
     }
 
     pub fn record(&self) -> &Record {
@@ -471,11 +488,10 @@ impl Ledger {
             .path
             .parent()
             .context("native queue ledger has no directory")?;
-        let mut file = tempfile::NamedTempFile::new_in(directory)?;
+        let mut file = tempfile::Builder::new().make_in(directory, dirs::create_private_file)?;
         file.write_all(&data)?;
         file.as_file().sync_all()?;
-        file.persist(&self.path)?;
-        File::open(directory)?.sync_all()?;
+        agentdocker_host::files::publish_snapshot(&file.into_temp_path(), &self.path)?;
         self.record = next;
         Ok(())
     }
@@ -509,12 +525,19 @@ impl Record {
             );
             self.version = 4;
         }
+        if self.version == 4 {
+            ensure!(
+                self.binding.remote.is_none(),
+                "old native record contains a remote server"
+            );
+            self.version = 5;
+        }
         Ok(())
     }
 
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
-            self.version == 4 && &self.binding == binding,
+            self.version == 5 && &self.binding == binding,
             "native queue provider binding changed; reconcile retained input before reconnecting"
         );
         ensure!(
@@ -522,7 +545,11 @@ impl Record {
                 && Path::new(&binding.provider.profile).is_absolute()
                 && binding.cwd.is_absolute()
                 && binding.executable.is_absolute()
-                && binding.socket.is_absolute(),
+                && binding.socket.is_absolute()
+                && binding
+                    .remote
+                    .as_ref()
+                    .is_none_or(super::remote::Descriptor::valid),
             "invalid native queue binding"
         );
         ensure!(
@@ -643,6 +670,67 @@ impl Record {
 mod tests {
     use super::*;
     use agentdocker_core::{Destination, ProcessIdentity};
+
+    #[test]
+    fn first_input_admission_is_spent_before_submission_and_survives_restart() {
+        let home = tempfile::tempdir().unwrap();
+        let bound = binding(home.path());
+        let envelope = Envelope::new(
+            "peer",
+            Destination::parse("agent"),
+            "chat",
+            serde_json::json!({"text":"first input"}),
+            None,
+            chrono::Utc::now(),
+        );
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
+        assert!(ledger.pristine());
+        ledger.prepare(&envelope, None).unwrap();
+        assert!(!ledger.pristine());
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
+        assert!(!ledger.pristine());
+        ledger
+            .received(Receipt {
+                thread: "thread".into(),
+                turn: "turn".into(),
+                item: "item".into(),
+            })
+            .unwrap();
+        ledger.acknowledge().unwrap();
+        assert!(!ledger.pristine());
+        drop(ledger);
+        assert!(!Ledger::open(home.path(), bound, None).unwrap().pristine());
+    }
+
+    #[test]
+    fn publication_preserves_a_held_readback_and_exposes_only_complete_records() {
+        let home = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(home.path(), binding(home.path()), None).unwrap();
+        let mut before = dirs::open_private_snapshot(&ledger.path).unwrap();
+        let envelope = Envelope::new(
+            "peer",
+            Destination::parse("agent"),
+            "chat",
+            serde_json::json!({"text":"queued during readback"}),
+            None,
+            chrono::Utc::now(),
+        );
+        ledger.prepare(&envelope, None).unwrap();
+        let mut old = String::new();
+        before.read_to_string(&mut old).unwrap();
+        let old: Record = serde_json::from_str(&old).unwrap();
+        assert!(old.attempt.is_none());
+        let mut new = String::new();
+        dirs::open_private_snapshot(&ledger.path)
+            .unwrap()
+            .read_to_string(&mut new)
+            .unwrap();
+        let new: Record = serde_json::from_str(&new).unwrap();
+        assert_eq!(old.binding, new.binding);
+        assert_eq!(old.token, new.token);
+        assert_eq!(new.attempt.unwrap().message, envelope.id.as_str());
+    }
     fn binding(home: &Path) -> Binding {
         Binding {
             agent: "agent".into(),
@@ -657,6 +745,7 @@ mod tests {
             socket: home.join("sock"),
             cwd: home.into(),
             executable: home.join("codex"),
+            remote: None,
         }
     }
 
@@ -904,9 +993,32 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let ledger = Ledger::open(home.path(), binding, None).unwrap();
         let mut upgraded = serde_json::to_value(&ledger.record).unwrap();
-        assert_eq!(upgraded["version"], 4);
+        assert_eq!(upgraded["version"], 5);
         upgraded["version"] = serde_json::json!(2);
         assert_eq!(upgraded, old);
+    }
+
+    #[test]
+    fn remote_binding_is_immutable_and_cannot_be_smuggled_into_an_old_ledger() {
+        let home = tempfile::tempdir().unwrap();
+        let mut binding = binding(home.path());
+        let ledger = Ledger::open(home.path(), binding.clone(), None).unwrap();
+        let path = ledger.path.clone();
+        let original = std::fs::read(&path).unwrap();
+        drop(ledger);
+        binding.remote = Some(super::super::remote::Descriptor {
+            record: home.path().join("server.json"),
+            sha256: "a".repeat(64),
+        });
+        assert!(Ledger::open(home.path(), binding.clone(), None).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let mut old: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        old["binding"] = serde_json::to_value(&binding).unwrap();
+        old["version"] = serde_json::json!(4);
+        let changed = serde_json::to_vec(&old).unwrap();
+        std::fs::write(&path, &changed).unwrap();
+        assert!(Ledger::open(home.path(), binding, None).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), changed);
     }
 
     #[test]
@@ -944,6 +1056,12 @@ mod tests {
         accepted.token_sha256 = "wrong".into();
         assert!(upgrade_credential(home.path(), "agent", &accepted).is_err());
         assert_eq!(std::fs::read(&ledger.path).unwrap(), bytes);
+        let missing = tempfile::tempdir().unwrap();
+        assert!(upgrade_credential(missing.path(), "agent", &accepted).is_err());
+        assert!(
+            !missing.path().join("codex-queue").exists(),
+            "an identity probe must not create missing receiver state"
+        );
     }
 
     #[test]

@@ -722,6 +722,9 @@ enum Command {
     /// Feed an existing Codex conversation through its native input queue.
     #[command(hide = true)]
     CodexQueue(codex_input::external::Args),
+    /// Experimental owned Codex native-terminal launcher.
+    #[command(hide = true)]
+    CodexNative(codex_input::external::launch::Args),
     /// Upgrade only an existing Codex session's receiver to this CLI release.
     #[command(hide = true)]
     CodexQueueUpgrade(codex_input::external::upgrade::Args),
@@ -3047,6 +3050,7 @@ async fn run() -> Result<()> {
         Command::Connector(args) => connector::run(client, args).await?,
         Command::CodexInput(args) => codex_input::run(client, socket, args).await?,
         Command::CodexQueue(args) => codex_input::external::run(client, socket, args).await?,
+        Command::CodexNative(args) => codex_input::external::launch::run(client, args).await?,
         Command::CodexQueueUpgrade(args) => {
             codex_input::external::upgrade::run(client, args).await?
         }

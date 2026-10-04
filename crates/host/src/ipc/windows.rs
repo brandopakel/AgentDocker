@@ -21,7 +21,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use windows_sys::Win32::{
     Foundation::{ERROR_PIPE_BUSY, HANDLE},
     Storage::FileSystem::SECURITY_IDENTIFICATION,
-    System::Pipes::GetNamedPipeServerProcessId,
+    System::Pipes::{GetNamedPipeClientProcessId, GetNamedPipeServerProcessId},
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -152,6 +152,32 @@ pub enum Stream {
 pub type OwnedReadHalf = tokio::io::ReadHalf<Stream>;
 pub type OwnedWriteHalf = tokio::io::WriteHalf<Stream>;
 impl Stream {
+    pub(super) fn peer_pid(&self) -> io::Result<u32> {
+        let (handle, server_end) = match self {
+            Self::Closed => return Err(closed()),
+            Self::Client(pipe) => (pipe.as_raw_handle(), false),
+            Self::Server { pipe, .. } => (pipe.as_raw_handle(), true),
+        };
+        peer(handle, server_end)?;
+        let mut pid = 0;
+        // SAFETY: connected pipe handle remains live; pid is a writable output.
+        let ok = unsafe {
+            if server_end {
+                GetNamedPipeClientProcessId(handle, &mut pid)
+            } else {
+                GetNamedPipeServerProcessId(handle, &mut pid)
+            }
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if pid == 0 {
+            return Err(io::Error::other(
+                "named-pipe peer process identity unavailable",
+            ));
+        }
+        Ok(pid)
+    }
     pub async fn connect(path: impl AsRef<Path>) -> io::Result<Self> {
         client(path.as_ref()).await.map(Self::Client)
     }
@@ -388,6 +414,11 @@ impl Write for BlockingStream {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn closed_stream_has_no_peer_identity() {
+        assert!(super::super::peer_pid(&Stream::Closed).is_err());
+    }
 
     fn name() -> PathBuf {
         PathBuf::from(format!(

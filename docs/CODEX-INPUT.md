@@ -60,6 +60,22 @@ Hooks keep their normal delivery while that probe is pending or unsupported;
 only an accepted daemon binding suppresses their competing reads. An incompatible
 provider version on an existing binding keeps the queue and reports a pause.
 
+The candidate receiver also has a hidden `--app-server-record` integration path
+for an existing authenticated loopback app-server. Its private immutable record
+pins the native terminal and server process births, executable, checkout, profile,
+thread, numeric loopback port and capability-file digest. Both processes must
+select that exact endpoint in their arguments. The ledger retains the
+record path and digest; reconnect verifies both processes and the capability
+again, then checks the initialized profile and existing thread. It does not
+create or resume a conversation. The WebSocket observer bounds frames and
+notifications, reads durable history for receipts, refuses provider requests
+and cannot answer approvals. It opts out of streamed message, reasoning, command,
+file-change, diff and plan notifications on its own connection, keeping unused
+output from exhausting its bounded reader. Closing it closes only its socket.
+The `--app-server-record` argument alone launches nothing; the owned `codex-native`
+launcher and version-2 birth admission are described below. Without a valid birth
+receipt, an unavailable pre-first-message history API still refuses delivery.
+
 For a first installation, preview **Tools → Codex → Review setup** (or
 `agentdocker setup codex --preview`), then apply the reviewed plan. The plan
 installs MCP, hooks and the shared coordination skill; it does not start a
@@ -236,7 +252,9 @@ an input still scheduled under its original client or queue ID, even if its text
 was edited. A missing project journal refuses before any disposition is written.
 The existing provider, receiver ownership and queue order remain intact.
 
-Ledger version 4 migrates versions 2/3 without changing their input or token. It
+Ledger version 5 migrates versions 2/3/4 without changing their input or token.
+It adds the optional immutable remote-server descriptor and refuses a remote
+descriptor in an older record. The existing manual readback protocol
 persists the manual intent, journals its resolution ID, acknowledges that one ID
 through the existing token-bound inbox, then records completion. Loss of a journal
 reply can produce duplicate notes with the same resolution ID; lost ACK/reply or
@@ -246,10 +264,9 @@ that bound refuses further resolution without discarding the audit. Resolved hoo
 nonces cannot advance a later head. The receiver serves recovery while paused.
 A same-user local process can make this explicit administrative request; this
 permission does not prove a human or provider child made it.
-On Windows the command reports the same explicit unavailable status as the
-native queue; it does not inspect or alter a Unix receiver ledger. The first
-Windows CI run caught the missing command surface; the matching refusal keeps
-the existing native Windows CLI build intact.
+Windows uses the same generation-bound recovery protocol over a private named
+pipe. Kernel peer identity binds the caller and receiver before retained input
+is read or acknowledged. Actual Windows provider/recovery acceptance remains open.
 
 The first version-3 replacement trial exposed a fixture race: the preceding
 idle message was visible before its receiver acknowledgement was persisted.
@@ -924,3 +941,74 @@ Binding after acceptance avoids an additional pre-submission failure window:
 an unavailable daemon cannot make this accounting step strand an input that
 Codex never received. Existing receipt recovery still prevents replay; the
 collector reconciles samples scanned before the label becomes available.
+
+The native shared-server candidate also accepts a private version-2 birth receipt
+for a launcher that observed an empty dedicated server and then its sole TUI
+creating a new thread. Initial history admission requires both children still
+belong to that exact live launcher, matching empty/idle root-thread metadata,
+an empty native queue and a receiver ledger with no attempted, completed, failed
+or manually disposed input. This establishes an initial anchor without treating
+any history error as empty history. Writing the first attempt permanently spends
+that allowance; receipt recovery, explicit resolution and upgrades keep normal
+history requirements. Version-1 records cannot opt into it. Codex reconstructs both timestamps from
+its current clock while a thread remains unmaterialized. They must be equal and
+bounded by the witnessed creation and current read time; they are not thread
+identity. Thread/session IDs, canonical checkout, live generations and all empty
+state checks remain required. The experimental owned launcher and its scoped
+platform acceptance are described below.
+
+`AGENTDOCKER_TRACE_NATIVE_STARTUP=1` optionally records fixed startup refusal
+stages (launcher generation/child ancestry, empty-thread metadata or queue). It
+does not log arguments, capability contents or environment values and does not
+change admission or retry a submitted message.
+
+The experimental hidden `codex-native --program <native-codex-executable>`
+launcher owns one dedicated authenticated loopback server and its native TUI.
+It observes an empty server before launching the terminal, requires the sole new
+thread birth, then registers the exact TUI and publishes its private birth
+receipt before starting the receiver. The TUI inherits the terminal; the launcher
+never types a warmup or answers approvals. Configuration flags after `--` use the
+existing conservative app-server mapping. `--profile` and `--cwd` select existing
+paths without editing the provider profile. Initial prompts and positional
+resume commands are refused. The explicit `--resume <UUID>` option asks the native
+TUI to reopen that exact persisted root conversation. The launcher observes the
+same sole loaded thread, checks its checkout/root identity, requires normal
+persisted history, and publishes a version-1 record with no birth allowance. A
+unique dead predecessor hands off the canonical identity, original queued IDs
+and retained receipts through the daemon; a live or ambiguous predecessor
+refuses. The daemon alone starts the replacement receiver. The integrated candidate `d139c06c` passed actual Codex 0.160 reopen trials on
+Mac ARM64, Oracle Linux x86-64 and Windows x64: after native exit, an original
+message queued while offline arrived once under the same canonical agent,
+thread and profile with a new provider/server generation. Both original receipts
+and the earlier draft survived; only three user items existed, and the resumed
+record used ordinary history with no birth allowance. Windows also verified
+actual MCP identity in both terminal generations. The Unix trials configured
+MCP but did not invoke it. These private loopback-model and synthetic-terminal
+trials do not establish real-account or physical-input acceptance. If receiver binding and its cleanup both fail, the original binding error is
+retained with the cleanup failure as additional context. The launcher retires its own children on exit, revokes its capability
+and retains bounded private server diagnostics. Capability cleanup is owned before
+fallible file writes and server creation, so a failed initial spawn also revokes
+the file; a real CLI/daemon regression covers a non-executable provider path.
+The original `d139c06c` failed-spawn capability leak remains recorded. Corrected
+runtime `87776874` passed the Mac negative control and native startup/reopen
+trial; Windows `8388c2ee` passed the same startup refusal plus all 12 positive
+checks, including actual MCP identity in both terminal generations. These
+sources have identical runtime compilation inputs. The full `8388c2ee` gate
+passed 1,536 Rust and 169 Python tests with zero retries.
+Source `e3445323` passed the full
+1,528-Rust/169-Python gate (zero retries) and an actual Mac Release trial: automatic
+binding before the first prompt, original queued receipt, receiver replacement
+and retained draft submitted once with unchanged private configuration. Launcher
+exit retired its own provider children and revoked the token. A stronger repeat
+also verified the replacement receiver retired before fixture cleanup; only the
+private test daemon was terminated by the fixture. Windows `a3091852` passed
+seven automatic product-launch checks, including actual MCP identity and native
+terminal exit; the launcher terminates its owned server through the native
+process API. Oracle Linux first binding/receipt passed, but replacement failed
+because the original receiver remained a zombie child. The launcher now reaps
+its receiver while the terminal continues, allowing daemon-owned replacement.
+Source `4e3c447f` passed the native Linux zombie regression and fresh Oracle
+first-receipt/replacement/draft/exit acceptance with complete unforced cleanup. The first Mac attempt
+stopped after binding on a fixture process-group assumption, before model input;
+that failure is retained. Broader adoption and desktop/default launch remain open;
+ordinary `codex` and the current managed bridge are unchanged.

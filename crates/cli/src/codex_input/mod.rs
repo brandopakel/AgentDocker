@@ -2,12 +2,6 @@
 mod availability;
 mod config;
 mod daemon_io;
-// The native queue's receiver is a Unix socket with peer credentials
-// and an owner process; Windows gets its surface answering `unavailable`.
-#[cfg(unix)]
-pub mod external;
-#[cfg(windows)]
-#[path = "external_windows.rs"]
 pub mod external;
 mod file_changes;
 mod ledger;
