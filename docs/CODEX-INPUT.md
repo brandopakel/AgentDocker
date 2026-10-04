@@ -1102,6 +1102,9 @@ with both actual Codex 0.160 and 0.155.1, eight unique input receipts per versio
 and independently verified cleanup. Peer input stayed queued during review and
 resumed only after the exact MCP answer, either in the active turn or a new one.
 An initial fixture incorrectly required separate turns; that failure and its
-corrected assertion are retained. These use private model/MCP fixtures and
+corrected assertion are retained. A separate Linux/Codex 0.160 trial held an
+unanswered form to its five-minute expiry: 1,126 observations retained peer
+input, one exact cancellation shared no content, two ordinary-input receipts
+followed, and all private processes retired cleanly. These use private model/MCP fixtures and
 synthetic answers; account, final desktop packages, Windows, broader versions,
-physical interaction, pending restart and longer waits remain open.
+physical interaction, pending restart and waits beyond five minutes remain open.

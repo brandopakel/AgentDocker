@@ -93,7 +93,10 @@ CI CLI archive passed all four paths with Codex 0.160 and 0.155.1, eight exact
 ordinary-input receipts each and independently verified cleanup. An initial
 fixture's separate-turn assumption failed; the corrected assertion checks the
 documented post-review steering behavior and retains the original evidence.
+A separate Linux/Codex 0.160 five-minute expiry passed with no valid human
+answer: one exact cancellation without content, retained peer input, two
+ordinary-input receipts and independently verified graceful cleanup.
 Final CI and independent review remain required. Account, final desktop
 packages, Windows, broader versions, physical interaction, pending restart,
-longer waits, extended forms/device verification and secret input remain open.
+waits beyond five minutes, extended forms/device verification and secret input remain open.
 No published preview includes this work yet.
