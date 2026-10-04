@@ -1,4 +1,6 @@
 //! Own a dedicated server and native TUI for zero-prompt input binding.
+mod lifetime;
+
 use super::{birth::Witness, bootstrap, ledger::Binding, remote};
 use crate::{client::Client, codex_input::transport::birth::BirthObserver};
 use agentdocker_core::{AgentSpec, ProcessIdentity, ProviderGeneration, Request, Response};
@@ -56,6 +58,7 @@ fn command(program: &Path, cwd: &Path, profile: &Path, home: &Path, client: &Cli
         .env("AGENTDOCKER_HOME", home)
         .env("AGENTDOCKER_SOCKET", client.socket_path())
         .env_remove("AGENTDOCKER_AGENT_ID")
+        .env_remove(lifetime::ENV)
         .kill_on_drop(true);
     command
 }
@@ -123,6 +126,7 @@ async fn bind(client: &Client, binding: &Binding, directory: &Path) -> Result<Ch
         .args(&descriptor.args)
         .envs(&descriptor.env)
         .env_remove("AGENTDOCKER_AGENT_ID")
+        .env_remove(lifetime::ENV)
         .env("AGENTDOCKER_HOME", dirs::home())
         .current_dir(&descriptor.cwd)
         .stdin(Stdio::null())
@@ -414,6 +418,10 @@ impl Startup<'_> {
 }
 
 pub async fn run(client: Client, args: Args) -> Result<()> {
+    let Some(invitation) = std::env::var_os(lifetime::ENV) else {
+        return lifetime::supervise(&client).await;
+    };
+    let mut owner = lifetime::connect(&invitation).await?;
     let program = args
         .program
         .canonicalize()
@@ -487,6 +495,7 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
     };
     let result = tokio::select! {
         _ = stop_signal() => Ok(()),
+        result = lifetime::disconnected(&mut owner) => result,
         result = async {
             let mut binding = startup.witness(&mut server,&mut tui).await?;
             let prior = if resume.is_some() {
