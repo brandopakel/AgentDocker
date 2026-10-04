@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 mod board;
+mod forms;
 mod icons;
 mod logos;
 mod messages;
@@ -1227,12 +1228,16 @@ impl App {
                     if self.shell.answers.len() != before {
                         self.shell.drafts.changed();
                     }
+                    self.shell.forms.retain(|id, draft| questions.iter().any(|q| q.id == *id
+                        && !q.expired(Utc::now()) && matches!(&q.presentation,
+                            Some(agentdocker_core::QuestionPresentation::McpForm { schema, .. }) if schema == &draft.schema)));
                     self.questions = questions;
                 }
                 Msg::Answered(id, result) => {
                     self.sending.remove(&id);
                     match result {
                         Ok(()) => {
+                            self.shell.forms.remove(&id);
                             if self.shell.answers.remove(&id).is_some() {
                                 self.shell.drafts.changed();
                             }

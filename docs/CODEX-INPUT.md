@@ -796,7 +796,7 @@ provider trial. Browser interaction, final packages, Windows/other versions,
 pending restart and real-account waits remain open.
 
 Unknown callbacks,
-session-wide file grants, unsupported permission selectors, MCP form/device-verification elicitation, secret inputs
+session-wide file grants, unsupported permission selectors, extended MCP forms/device-verification elicitation, secret inputs
 and oversized requests currently return an explicit provider error. Complete
 those review surfaces before treating the adapter as a general replacement for
 the provider terminal. Automatic provider review and configured approval policy
@@ -1066,3 +1066,28 @@ first-receipt/replacement/draft/exit acceptance with complete unforced cleanup. 
 stopped after binding on a fixture process-group assumption, before model input;
 that failure is retained. Broader adoption and desktop/default launch remain open;
 ordinary `codex` and the current managed bridge are unchanged.
+
+## Nonsecret MCP form review
+
+Managed `mcpServer/elicitation/request` form requests use typed desktop fields
+with explicit Submit, Decline and Cancel controls. Only the bound active thread
+can ask; absent provider turn correlation stays bounded by the local active turn.
+Forms support flat strings, numbers/integers, booleans and titled/untitled
+single/multiple selections, required fields, defaults and bounds. Email, URI,
+date and date-time formats are validated without fetching or changing values.
+Unknown constraints, nested schemas, secret/extended formats and device
+verification fail explicitly. Requests are limited to 16 fields, 32 options,
+16,000-byte schemas/responses and 4,096-byte text fields; numeric magnitudes may
+not exceed 2^53 − 1. The generated Codex 0.160 schema does not carry regex patterns,
+so such constraints are unsupported rather than ignored.
+
+Defaults are editable suggestions. Optional fields can be omitted; submitting
+shares only included values with the named server. Unsubmitted edits remain in
+window memory and disappear when it closes. Existing ordinary drafts are kept
+separate. Submitted answers are retained in the conversation; passwords, tokens,
+API keys and payment credentials belong in URL elicitation, never these forms.
+Terminal users can answer with a JSON object: `agentdocker answer <id>
+'{"count":2}'`, or with `Decline` or `Cancel`. Cancel/expiry sends no form content.
+An accepted answer requires the original question's exact daemon receipt, and an
+uncertain provider write is retained without replay. Source validation and actual
+provider/package acceptance are still in progress.

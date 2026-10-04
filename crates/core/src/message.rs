@@ -175,6 +175,11 @@ pub enum AnswerRoute {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QuestionPresentation {
+    McpForm {
+        server: String,
+        message: String,
+        schema: serde_json::Value,
+    },
     McpUrl {
         server: String,
         elicitation_id: String,
@@ -244,6 +249,14 @@ impl QuestionFileChange {
 impl QuestionPresentation {
     pub fn text(&self) -> String {
         match self {
+            Self::McpForm {
+                server,
+                message,
+                schema,
+            } => format!(
+                "Provide information to {server}?\n\n{message}\n\nReview the fields before submitting. Do not enter passwords, API keys, access tokens or payment credentials. Form answers are retained in this conversation.\n\nSchema:\n{}\n\nUse the form in the desktop app, or reply with a JSON object containing the field values. Reply Decline or Cancel to dismiss without sharing values.",
+                serde_json::to_string_pretty(schema).unwrap_or_default()
+            ),
             Self::McpUrl {
                 server,
                 message,
@@ -294,6 +307,18 @@ impl QuestionPresentation {
     pub fn valid_for(&self, text: &str) -> bool {
         let bounded = |s: &str| !s.trim().is_empty() && s.len() <= 16_000;
         let valid = match self {
+            Self::McpForm {
+                server,
+                message,
+                schema,
+            } => {
+                bounded(server)
+                    && server.len() <= 256
+                    && !server.chars().any(display_control)
+                    && bounded(message)
+                    && !message.chars().any(display_control)
+                    && crate::McpForm::parse(schema).is_ok()
+            }
             Self::McpUrl {
                 server,
                 elicitation_id,
@@ -362,8 +387,19 @@ impl QuestionPresentation {
         valid && text.len() <= 16_000 && self.text() == text
     }
 
+    pub fn permits_answer(&self, value: &str) -> bool {
+        match self {
+            Self::McpForm { schema, .. } => crate::McpForm::parse(schema)
+                .ok()
+                .and_then(|form| form.response(value))
+                .is_some(),
+            _ => self.permits_choice(value),
+        }
+    }
+
     pub fn permits_choice(&self, value: &str) -> bool {
         match self {
+            Self::McpForm { .. } => matches!(value, "Decline" | "Cancel"),
             Self::McpUrl { .. } => matches!(value, "Accept" | "Decline" | "Cancel"),
             Self::CodexCommand { .. } | Self::CodexFiles { .. } | Self::CodexPermissions { .. } => {
                 matches!(value, "Allow" | "Deny")

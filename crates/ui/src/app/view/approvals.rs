@@ -387,6 +387,9 @@ fn ask_summary(question: &Question) -> String {
         .as_ref()
         .filter(|p| p.valid_for(&question.text))
     {
+        Some(QuestionPresentation::McpForm { server, .. }) => {
+            format!("Provide information to {server}")
+        }
         Some(QuestionPresentation::McpUrl { server, .. }) => {
             format!("Continue on a website for {server}")
         }
@@ -755,6 +758,11 @@ impl App {
             .as_ref()
             .filter(|p| p.valid_for(&question.text));
         let card = match presentation {
+            Some(QuestionPresentation::McpForm {
+                server,
+                message,
+                schema,
+            }) => self.form_card(question, server, message, schema, enabled, chosen, c),
             Some(QuestionPresentation::McpUrl {
                 server,
                 message,
@@ -868,6 +876,159 @@ impl App {
         };
         container(card)
             .id(format!("notification-question-{id}"))
+            .into()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn form_card(
+        &self,
+        question: &Question,
+        server: &str,
+        message: &str,
+        schema: &serde_json::Value,
+        enabled: bool,
+        chosen: Option<String>,
+        c: Colors,
+    ) -> Element<'_, Message> {
+        use super::super::forms::Draft;
+        use agentdocker_core::{FormKind, McpForm};
+        let id = question.id.clone();
+        // The caller validated the complete presentation; keep rendering safe
+        // if another caller later supplies an unsupported schema.
+        let Ok(form) = McpForm::parse(schema) else {
+            return text("This form cannot be reviewed. Use the provider terminal.").into();
+        };
+        let initial = Draft::new(schema, &form);
+        let draft = self
+            .shell
+            .forms
+            .get(&id)
+            .filter(|d| &d.schema == schema)
+            .unwrap_or(&initial);
+        let mut body = column![
+            text(format!("Provide information to {server}?")).size(15).font(weight(iced::font::Weight::Semibold)),
+            self.answer_window(question, c),
+            text(message.to_owned()).size(13),
+            text("Review the fields before submitting. Do not enter passwords, API keys, access tokens or payment credentials. Submitted form answers are retained in this conversation. Unsubmitted form edits last until this window closes.").size(13).color(c.muted),
+        ].spacing(12).width(Fill);
+        for (index, field) in form.fields.iter().enumerate() {
+            let initial_value = super::super::forms::FieldValue::initial(field);
+            let value = draft.fields.get(&field.key).unwrap_or(&initial_value);
+            let label = if field.title == field.key {
+                field.title.clone()
+            } else {
+                format!("{} ({})", field.title, field.key)
+            };
+            let mut item = column![
+                text(format!(
+                    "{label} · {}",
+                    if field.required {
+                        "Required"
+                    } else {
+                        "Optional"
+                    }
+                ))
+                .size(14),
+                text(field.hint()).size(12).color(c.muted),
+            ]
+            .spacing(6)
+            .width(Fill);
+            if !field.description.is_empty() {
+                item = item.push(text(field.description.clone()).size(13));
+            }
+            if !field.required {
+                item = item.push(action(
+                    format!("form-include-{id}-{index}"),
+                    if value.included {
+                        "Omit this field"
+                    } else {
+                        "Include this field"
+                    },
+                    enabled.then(|| {
+                        Message::FormInclude(id.clone(), field.key.clone(), !value.included)
+                    }),
+                    false,
+                ));
+            }
+            let edit_enabled = enabled && value.included;
+            match &field.kind {
+                FormKind::Text { .. } | FormKind::Number { .. } => {
+                    let (edit_id, key) = (id.clone(), field.key.clone());
+                    item = item.push(crate::controls::input_enabled(
+                        format!("form-input-{id}-{index}"),
+                        &label,
+                        &value.text,
+                        move |text| Message::FormEdit(edit_id.clone(), key.clone(), text),
+                        edit_enabled,
+                    ));
+                }
+                FormKind::Boolean => {
+                    for (value_text, label) in [("true", "Yes"), ("false", "No")] {
+                        item = item.push(action(
+                            format!("form-option-{id}-{index}-{value_text}"),
+                            label,
+                            edit_enabled.then(|| {
+                                Message::FormSelect(
+                                    id.clone(),
+                                    field.key.clone(),
+                                    value_text.into(),
+                                )
+                            }),
+                            value.text == value_text,
+                        ));
+                    }
+                }
+                FormKind::Select {
+                    options, multiple, ..
+                } => {
+                    for (option_index, (key, title)) in options.iter().enumerate() {
+                        let label = if key == title {
+                            title.clone()
+                        } else {
+                            format!("{title} ({key})")
+                        };
+                        item = item.push(action(
+                            format!("form-option-{id}-{index}-{option_index}"),
+                            label,
+                            edit_enabled.then(|| {
+                                Message::FormSelect(id.clone(), field.key.clone(), key.clone())
+                            }),
+                            if *multiple {
+                                value.selected.contains(key)
+                            } else {
+                                value.text == *key
+                            },
+                        ));
+                    }
+                }
+            }
+            body = body.push(item);
+        }
+        if let Some(chosen) = chosen {
+            body = body.push(receipt(chosen, Some("Sending your response".into()), c));
+        } else {
+            body = body.push(action(
+                format!("form-submit-{id}"),
+                "Submit",
+                enabled.then(|| Message::FormSubmit(id.clone())),
+                false,
+            ));
+            for label in ["Decline", "Cancel"] {
+                body = body.push(action(
+                    format!("form-{}-{id}", label.to_ascii_lowercase()),
+                    label,
+                    enabled.then(|| Message::AnswerChoice(id.clone(), label.into())),
+                    false,
+                ));
+            }
+        }
+        if let Some(error) = self.shell.answer_errors.get(&id) {
+            body = body.push(text(error.clone()).size(13).color(c.red));
+        }
+        container(body)
+            .padding(16)
+            .width(Fill)
+            .style(move |_| c.card_style())
             .into()
     }
 
@@ -1851,6 +2012,67 @@ mod tests {
     /// Each option is one control named by its label with its consequence
     /// as its value; the written answer stays beside them; choosing one
     /// leaves only the chosen row, as the receipt, until the answer lands.
+    #[test]
+    fn mcp_form_edits_validate_before_one_explicit_submission() {
+        let (mut app, commands) = app();
+        let question = asked(
+            &mut app,
+            "form",
+            QuestionPresentation::McpForm {
+                server: "fixture-tools".into(),
+                message: "Choose a count and confirm.".into(),
+                schema: serde_json::json!({"type":"object","required":["count","yes"],"properties":{
+                    "count":{"type":"integer","minimum":1,"maximum":3,"default":2},
+                    "optional":{"type":"string","default":"retained"},
+                    "yes":{"type":"boolean"}
+                }}),
+            },
+        );
+        let id = question.id.clone();
+        app.shell
+            .answers
+            .insert(id.clone(), "unrelated old draft".into());
+        let before = seen(app.question_card(&question, Colors::new(false)));
+        assert!(before.reads("fixture-tools"));
+        assert!(before.control("form-submit-form").unwrap().3);
+        assert!(before.control("form-decline-form").unwrap().3);
+        assert!(before.control("form-cancel-form").unwrap().3);
+        assert!(before.control("answer-form").is_none());
+        let _ = app.update(Message::FormSubmit(id.clone()));
+        assert!(app.shell.answer_errors.contains_key(&id));
+        assert_eq!(commands.try_iter().count(), 0);
+        let _ = app.update(Message::FormSelect(
+            id.clone(),
+            "yes".into(),
+            "false".into(),
+        ));
+        let _ = app.update(Message::FormEdit(id.clone(), "count".into(), "4".into()));
+        let _ = app.update(Message::FormSubmit(id.clone()));
+        assert_eq!(commands.try_iter().count(), 0);
+        let _ = app.update(Message::FormEdit(id.clone(), "count".into(), "3".into()));
+        let _ = app.update(Message::FormInclude(id.clone(), "optional".into(), false));
+        assert_eq!(commands.try_iter().count(), 0, "editing is not submission");
+        let _ = app.update(Message::FormSubmit(id.clone()));
+        let _ = app.update(Message::FormSubmit(id.clone()));
+        let sent = commands.try_iter().collect::<Vec<_>>();
+        let [super::super::super::Cmd::Answer(message, answer)] = sent.as_slice() else {
+            panic!("expected one answer");
+        };
+        assert_eq!(message, &id);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(answer).unwrap(),
+            serde_json::json!({"count":3,"yes":false})
+        );
+        assert_eq!(app.shell.answers[&id], "unrelated old draft");
+        assert!(
+            seen(app.question_card(&question, Colors::new(false))).reads("Sending your response")
+        );
+        app.sending.clear();
+        app.questions[0].expires_at = Utc::now() - chrono::Duration::seconds(1);
+        let _ = app.update(Message::FormSubmit(id));
+        assert_eq!(commands.try_iter().count(), 0);
+    }
+
     #[test]
     fn mcp_url_card_exposes_the_full_destination_without_a_private_input_field() {
         let (mut app, _commands) = app();

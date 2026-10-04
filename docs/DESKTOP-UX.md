@@ -555,3 +555,11 @@ Text inputs and the terminal support native input methods. Focus indicators and
 status words complement color. Native accessibility adapters expose control
 labels, values and actions. Platform screen-reader and input-method trials remain
 part of release acceptance; see [the design and validation contracts](ICED-DESIGN.md).
+
+MCP form questions name the requesting server and show typed fields, requirements,
+format/bounds, descriptions and editable defaults. Optional fields can be omitted.
+Submit validates the whole form before sending; Decline and Cancel share no values.
+Editing alone never submits. Form edits stay in window memory until submission,
+expiry or closing the window; ordinary saved drafts remain separate. The card
+explains that submitted answers enter the conversation and that secrets must be
+entered through website requests instead.

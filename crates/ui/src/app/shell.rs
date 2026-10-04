@@ -21,6 +21,8 @@ pub(super) struct State {
     pub session_drafts: BTreeMap<String, SessionDraft>,
     /// Text only, keyed by the original question ID. Never restores approval or sending state.
     pub answers: BTreeMap<MessageId, String>,
+    /// Nonsecret form edits stay in memory; ordinary drafts never receive them.
+    pub forms: BTreeMap<MessageId, super::forms::Draft>,
     /// Card text belongs to its original project; filing state is never restored.
     pub task_drafts: BTreeMap<String, TaskDraft>,
     pub drafts: crate::drafts::Persistence,
@@ -722,6 +724,10 @@ pub enum Message {
     Answer(MessageId),
     AnswerChoice(MessageId, String),
     CopyQuestionUrl(MessageId),
+    FormEdit(MessageId, String, String),
+    FormInclude(MessageId, String, bool),
+    FormSelect(MessageId, String, String),
+    FormSubmit(MessageId),
     DismissInbox(Vec<MessageId>),
     Adopt(u32),
     AdoptAll,
@@ -1996,13 +2002,26 @@ impl App {
                     }
                 }
             }
+            Message::FormEdit(id, key, text) => {
+                self.edit_form(id, key, super::forms::Edit::Text(text))
+            }
+            Message::FormInclude(id, key, included) => {
+                self.edit_form(id, key, super::forms::Edit::Include(included))
+            }
+            Message::FormSelect(id, key, selected) => {
+                self.edit_form(id, key, super::forms::Edit::Select(selected))
+            }
+            Message::FormSubmit(id) => self.submit_form(id),
             Message::Draft(id, value) => {
                 if !self.sending.contains(&id)
                     && !self.questions.iter().any(|q| {
                         q.id == id
                             && matches!(
                                 q.presentation,
-                                Some(agentdocker_core::QuestionPresentation::McpUrl { .. })
+                                Some(
+                                    agentdocker_core::QuestionPresentation::McpUrl { .. }
+                                        | agentdocker_core::QuestionPresentation::McpForm { .. }
+                                )
                             )
                     })
                 {
@@ -2066,7 +2085,10 @@ impl App {
                         q.id == id
                             && !matches!(
                                 q.presentation,
-                                Some(agentdocker_core::QuestionPresentation::McpUrl { .. })
+                                Some(
+                                    agentdocker_core::QuestionPresentation::McpUrl { .. }
+                                        | agentdocker_core::QuestionPresentation::McpForm { .. }
+                                )
                             )
                             && !q.expired(Utc::now())
                             && (!matches!(
