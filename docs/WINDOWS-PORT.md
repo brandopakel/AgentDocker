@@ -808,3 +808,9 @@ Connector #284 merged as `dd452946` after the final `5e47a0e4` local gate,
 CI and substantive review. Public tunnels, real browser consent/CIMD and
 login/reboot remain open. Seeded grant preservation does not establish OAuth
 acceptance, and the native fixture does not exercise a public tunnel or reboot.
+
+The automatic native Codex workflow also refuses a deliberately invalid executable
+before the first successful launch and requires its capability file to be gone
+without a model request. This covers cleanup before server creation, complementing
+the successful native exit/reopen checks; execution of this added Windows control
+is still pending.

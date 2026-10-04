@@ -129,6 +129,16 @@ def main():
                   '[projects.' + json.dumps(str(repo)) + ']\ntrust_level = "trusted"\n'
                   '[tui]\nscreen_reader_detection_done = true\nshow_tooltips = false\n' + receiver.mcp_config())
         (profile / 'config.toml').write_text(config, encoding='utf-8')
+        invalid_program = root / 'not-a-provider.exe'
+        invalid_program.write_bytes(b'private non-executable startup fixture')
+        refused = subprocess.run([str(receiver.cli), '--socket', receiver.socket, 'codex-native',
+                    '--program', str(invalid_program), '--profile', str(profile), '--cwd', str(repo)],
+                    cwd=repo, env=receiver.env, capture_output=True, text=True, encoding='utf-8', timeout=20)
+        report['failed_spawn'] = {'exit_code': refused.returncode, 'stderr': refused.stderr[-4096:]}
+        step('failed server creation revokes its private capability before returning',
+             refused.returncode != 0 and 'cannot start dedicated Codex server' in refused.stderr
+             and not list((receiver.home / 'codex-native').glob('*/capability'))
+             and not report['requests'])
         terminal = PtyProcess.spawn([str(receiver.cli), '--socket', receiver.socket, 'codex-native',
                     '--program', str(codex), '--profile', str(profile), '--cwd', str(repo), '--name', 'native-auto-fixture'],
                     cwd=str(repo), env=receiver.env, dimensions=(40, 160), backend=Backend.ConPTY)
