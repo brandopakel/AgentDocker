@@ -971,13 +971,16 @@ owner verifies its exact parent generation/image before starting a provider. The
 TUI still inherits the terminal directly. Mac ARM64 `8dc1e614` passed front-end
 SIGKILL after a receipt and during pre-binding provider startup, SIGTERM and
 failed-spawn cleanup. Receiver replacement, preserved draft and the original
-UUID reopen also passed. These used actual Codex 0.160 with a private loopback
-model and synthetic PTY; Linux/Windows repeat and independent review are still
-required. This does not protect against killing the owner itself or establish
-pending-input recovery; those trials remain open.
-The Windows fixture also reopens without new input and terminates only the front
-end, checking owner/provider/receiver exit, capability revocation and unchanged
-receipts before closing its synthetic console; this trial is not yet accepted.
+UUID reopen also passed. The same five scopes passed on Oracle Linux x86-64 from the extracted CI
+package for `39bf8ae2` (compiled merge `569662e9`, identical source tree). Windows
+x64 passed 62 package, 42 installer and 16 native checks from that same source,
+including a third prompt-free reopen followed by front-end termination. Its
+owner/provider/receiver exit, capability revocation, unchanged receipts and no
+additional model request were verified before closing the synthetic console.
+These trials used actual Codex 0.160 with a private loopback model and synthetic
+terminals. Independent review remains required. This does not protect against
+killing the owner itself or establish pending-input recovery; those trials,
+real-account and physical-terminal acceptance remain open.
 It observes an empty server before launching the terminal, requires the sole new
 thread birth, then registers the exact TUI and publishes its private birth
 receipt before starting the receiver. The TUI inherits the terminal; the launcher
