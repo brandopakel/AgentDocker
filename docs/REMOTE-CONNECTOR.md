@@ -103,7 +103,7 @@ its project when it consents.
 | `GET /.well-known/oauth-protected-resource[/mcp]` | RFC 9728: `resource` is `<public-url>/mcp`, `authorization_servers` is `[<public-url>]`, the one scope is `agentdocker`. |
 | `GET /.well-known/oauth-authorization-server[/mcp]` | RFC 8414: the three endpoints below, `code` only, `authorization_code` and `refresh_token`, PKCE `S256` only, public clients only, `client_id_metadata_document_supported` and `authorization_response_iss_parameter_supported` (RFC 9207: every authorization response, success or error, carries `iss=<public-url>`, which is what lets ChatGPT use its one stable client and callback). |
 | `POST /register` | RFC 7591. `redirect_uris` must all be vendors' callbacks (`https://claude.ai/api/mcp/auth_callback`, `https://chatgpt.com/connector_platform_oauth_redirect`, `https://chatgpt.com/connector/oauth/<id>`) or ones passed with `--allow-callback`; `token_endpoint_auth_method` must be `none`. At most 200 clients are kept. |
-| `GET /authorize` | Validates the request. A `client_id` that is an `https://` URL with a path is a Client ID Metadata Document: it is fetched (`connector/cimd.rs`: HTTPS only, no redirects, 10 s, 64 KiB, once an hour per URL) only when its host is a vendor's (`claude.ai`, `chatgpt.com`) or the host of an `--allow-callback`, and admitted only when the document names its own URL as `client_id` and every `redirect_uris` entry is that vendor's callback — what it says otherwise is not trusted, and it is a public client whatever authentication it prefers. A bad client, host, document or callback is a page (nothing is sent to an untrusted callback); any other problem goes back to the callback as an OAuth error. Otherwise the consent page, which lists the projects the daemon has seen agents in. |
+| `GET /authorize` | Validates the request. A `client_id` that is an `https://` URL with a path is a Client ID Metadata Document: it is fetched (`connector/cimd.rs`: HTTPS only, no redirects, 10 s, 64 KiB, once an hour per URL) only when its host is a vendor's (`claude.ai`, `chatgpt.com`) or the host of an `--allow-callback`, and admitted only when the document names its own URL as `client_id` and every `redirect_uris` entry is that vendor's callback — explicit token authentication methods must support the public-client `none` method. Unsupported or malformed method declarations are refused before client state changes. A bad client, host, document or callback is a page (nothing is sent to an untrusted callback); any other problem goes back to the callback as an OAuth error. Otherwise the consent page, which lists the projects the daemon has seen agents in. |
 | `POST /authorize` | The consent form: pairing code (case, spaces and the dash are forgiven), the project (`project`, one of the listed roots, or `project_path`, any absolute directory on this machine; a folder that is not here is refused on the page, with the choices kept), agent name, and the request's fields. Five wrong codes close consent until the process restarts. A name that is a live agent's is refused on the page. |
 | `POST /token` | `authorization_code` (code, `code_verifier`, client and callback must match; single use; five-minute lifetime) registers the agent and issues tokens; `refresh_token` rotates. Errors are RFC 6749 codes: a rotated or revoked refresh token is `invalid_grant`. |
 | `POST /mcp` | Streamable HTTP, JSON-RPC in `application/json`, plain JSON out (`202` for a notification). No bearer, an expired or revoked token, or an agent the daemon answers is no longer live: `401` with `WWW-Authenticate: Bearer resource_metadata="…"`, and the grant ends. A daemon that is not answering: `503` with `Retry-After`, and the grant stands. `GET`/`DELETE` are `405`: the server opens no stream. |
@@ -113,6 +113,17 @@ rotate on every use. Clients and grants persist in
 `$AGENTDOCKER_HOME/connector/state.json` (mode `0600`) as hashes — no token is
 ever written down — so a connector restart costs the vendor one refresh; codes
 and access tokens live in memory only.
+
+The connector advertises only public-client token exchange (`none`) with PKCE.
+For CIMD, `token_endpoint_auth_methods_supported` must include `none` when
+present; the older singular `token_endpoint_auth_method` is a preference when
+both fields exist. A document offering both `none` and `private_key_jwt` can
+therefore use public PKCE even if it prefers the latter. A singular declaration
+alone must be `none`; legacy documents omitting both fields retain the existing
+public-client default. An incompatible refresh leaves prior client/grant state
+unchanged. This follows the [OpenAI method-intersection contract](https://developers.openai.com/plugins/build/auth).
+It does not implement JWT client assertions or establish real-account CIMD
+consent and messaging acceptance.
 
 ## Tools
 
