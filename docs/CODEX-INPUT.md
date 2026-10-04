@@ -785,8 +785,15 @@ and route cancellation, eight distinct ordinary input receipts, exact server-sid
 decisions and independently verified cleanup. The fixture preserves normal
 on-request policy and explicitly configures only its synthetic tool for use;
 `never` policy declined the URL request before human review. These are synthetic
-human decisions, not account/browser consent. Browser interaction, final packages,
-other platforms/versions, pending restart and longer waits remain open.
+human decisions, not account/browser consent. A separate actual-provider-binary
+trial held the request until its five-minute expiry with no human answer: the
+MCP server received one cancellation and the queued peer input received its own
+ordinary-turn receipt. Private processes and scratch were independently confirmed
+gone. Oracle Linux x86-64 repeated all four decision/cancellation paths from the
+CI CLI archive with the same source tree, eight exact input receipts and clean
+process retirement. That short private fixture overlapped the separate 48-hour
+provider trial. Browser interaction, final packages, Windows/other versions,
+pending restart and real-account waits remain open.
 
 Unknown callbacks,
 session-wide file grants, unsupported permission selectors, MCP form/device-verification elicitation, secret inputs
