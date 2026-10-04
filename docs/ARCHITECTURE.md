@@ -1827,7 +1827,16 @@ discards at most 512 notifications/4 MiB; it never buffers unbounded broadcasts
 or answers native approval requests. Unexpected requests, foreign responses and
 limits fail closed. Socket shutdown never terminates the shared native server.
 The hidden record argument is an internal integration point. The experimental
-`codex-native` launcher owns the dedicated server and native TUI. An observed
+`codex-native` launcher owns the dedicated server and native TUI. Its child owner
+verifies the exact live front-end parent and image, authenticates a private
+loopback lifetime connection and owns the provider children. Nonce reads run
+concurrently with at most 64 pending peers, a one-second per-peer deadline and
+a ten-second overall startup deadline; accepting the owner closes the remaining
+unauthenticated sockets. EOF retires those
+children using the ordinary bounded cleanup and revokes the capability, even
+after front-end SIGKILL. The internal invitation is removed from provider and
+receiver environments. Existing birth records name the owner; v1/v2 record
+formats, provider history and receipt semantics are unchanged. An observed
 empty server and unique new root thread permit a private version-2 birth record,
 usable only with a pristine ledger before the first durable input attempt.
 Explicit UUID reopen instead requires ordinary persisted history and a version-1
