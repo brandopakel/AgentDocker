@@ -128,9 +128,10 @@ def validate_mcp_review_report(observed, info, mode="form"):
                 and request.get("turn") == receipts[ids[0]]["turn"]
                 and request.get("response") == {"id": case["provider_request"], "result": response})
         reply = case.get("mcp_reply", {})
-        # The app-server response includes content:null; Codex omits absent
-        # content when forwarding a decline/cancel or URL decision to MCP.
-        wire_response = response if mode == "form" and action == "accept" else {"action": action}
+        # The app-server response includes content:null. Codex forwards URL
+        # Accept with an empty object and omits content on decline/cancel.
+        wire_response = ({"action": action, "content": content if mode == "form" else {}}
+                         if action == "accept" else {"action": action})
         require(reply.get("result") == wire_response and bool(reply.get("id")))
         mcp_ids.append(reply["id"])
     require(len(set(all_ids)) == 8 and set(all_ids) == set(receipts) and len(set(mcp_ids)) == 4)

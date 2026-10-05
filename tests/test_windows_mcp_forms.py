@@ -66,7 +66,8 @@ class WindowsMcpForms(unittest.TestCase):
             request["questions"][0]["presentation"] = copy.deepcopy(presentation)
             case["submitted_content"] = None
             request["response"]["result"] = {"action": action, "content": None}
-            case["mcp_reply"]["result"] = {"action": action}
+            case["mcp_reply"]["result"] = ({"action": action, "content": {}}
+                                            if action == "accept" else {"action": action})
         return report, info
 
     def test_url_decisions_require_original_destination_and_no_form_content(self):
@@ -83,6 +84,8 @@ class WindowsMcpForms(unittest.TestCase):
             lambda r: r["cases"][0].update(decision="Submit"),
             lambda r: r["cases"][0].update(submitted_content={"name": "must not be shared"}),
             lambda r: r["cases"][0]["mcp_reply"]["result"].update(content={"name": "must not be shared"}),
+            lambda r: r["cases"][0]["mcp_reply"]["result"].update(content=None),
+            lambda r: r["cases"][0]["mcp_reply"]["result"].pop("content"),
             lambda r: replace_presentation(r, server="another_server"),
             lambda r: replace_presentation(r, url="https://example.com/changed"),
             lambda r: replace_presentation(r, elicitation_id="another_callback"),

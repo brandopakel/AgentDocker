@@ -1284,5 +1284,21 @@ refused because its metadata did not satisfy the root-conversation contract;
 the retained managed wire and pinned upstream source show the older nested
 session/thread identity shape. Source now accepts that complete shape while
 refusing conflicting fields and preserving host/generation/child checks.
-Corrected native acceptance is pending. Neither failed package job is full
-native acceptance. See the trial index.
+Source `0d4f0ca5` passed separate 11-check established-session native MCP
+trials on Mac Codex 0.160 and Oracle Linux Codex 0.155.1: original-TUI identity,
+two exact input receipts, preserved draft and receiver replacement. The Linux
+archive has the identical CI source tree; all six recorded processes were
+independently absent. The Mac check independently confirmed five recorded PIDs
+and both signalled groups absent; other descendant cleanup uses its fixture
+report. These private-model trials require an explicit warmup/manual binding.
+Corrected full Windows native acceptance is pending. Neither original failed
+package job is full native acceptance. See the trial index.
+
+The first Windows URL harness run on `0d4f0ca5` failed its observer assertion on
+both pinned providers after the initial Accept and two exact input receipts.
+The app-server closure retained `content: null`, while Codex forwarded
+`content: {}` to the MCP server. This carries no form fields. The observer and
+package validator now require that exact empty object on URL Accept and omitted
+content on Decline/Cancel; nonempty content still fails. The remaining three
+paths and corrected full Windows package acceptance are pending, and both
+original failed reports remain indexed.

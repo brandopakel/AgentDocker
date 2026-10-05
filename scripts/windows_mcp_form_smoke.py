@@ -207,7 +207,10 @@ try:
             assert len(done['completed'])==len(report['cases'])*2
             replies=[v['value'] for v in map(json.loads,mcp_log.read_text(encoding='utf-8').splitlines()) if v['direction']=='in' and 'method' not in v['value'] and str(v['value'].get('id','')).startswith('fixture-elicitation-')]
             assert replies[-1]['result']['action']==expected
-            assert replies[-1]['result'].get('content')==(content if decision=='Submit' else None)
+            # Codex forwards URL Accept as an empty MCP object, while the
+            # app-server closure above retains content:null. No fields are sent.
+            wire_content=content if decision=='Submit' else {} if decision=='Accept' else None
+            assert replies[-1]['result'].get('content')==wire_content
             entry['mcp_reply']=replies[-1];entry['result']='passed'
         assert len(replies)==4 and len({v['id'] for v in replies})==4
         report['final_ledger']=ledger();report['final_agent']=inspect()
