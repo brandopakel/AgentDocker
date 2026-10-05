@@ -282,10 +282,20 @@ were independently checked. Separate actual Mac journal-boundary trials at
 when a committed journal response was discarded or a project pause arrived before
 that response. Retry after clearing the fault remained read-only. A provider-rate
 hold injected at that boundary exposed a missing admission recheck; the receiver
-now checks admission again after journaling, with fresh acceptance pending. A
+now checks admission again after journaling. Corrected release `a810409e` passed
+all six private-model Mac and Oracle Linux cases: normal recovery, lost local
+response, existing holds, lost committed journal response, and post-journal
+pause/provider-limit refusal. All 58 Mac and 66 Linux recorded PIDs were
+independently absent; refused cases kept their original receipt and queue without
+a new input, and successful starts delivered one new input with two exact receipts. A
 Windows repeat reached recovery after its exact receipt had retired the attempt;
 the fixture now accepts that outcome only with the matching completed receipt,
-empty preview and no additional input. Original failed trials remain indexed.
+empty preview and no additional input. The corrected `a810409e` Windows archive
+passed 62 daemon/42 installer/22 launcher checks and both nine-check recovery
+scenarios. Its normal retry exercised that already-delivered refusal with three
+exact receipts and one new input; holds refused before intent. Source/archive/EXE
+and driver hashes and cleanup reports were independently verified. Original
+failed trials remain indexed.
 Full review, lost provider replies, broader concurrent pause/limit races, actual
 accounts and physical input remain. Windows discarded
 client replies are not covered, and these trials do not establish automatic
