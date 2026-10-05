@@ -123,7 +123,20 @@ impl Process {
     }
 
     pub(super) async fn finish(&mut self) -> Result<ExitStatus> {
-        self.signal_group(libc::SIGKILL)?;
+        if let Err(error) = self.signal_group(libc::SIGKILL) {
+            // Darwin reports EPERM when the reserved group contains only a
+            // zombie leader. Prove that narrow case; a permission refusal with
+            // any other member or an uncertain scan is still a cleanup error.
+            #[cfg(target_os = "macos")]
+            let ended = error.raw_os_error() == Some(libc::EPERM)
+                && self.event(libc::WEXITED | libc::WNOWAIT)?
+                && only_reserved_leader(self.child.id() as i32)?;
+            #[cfg(not(target_os = "macos"))]
+            let ended = false;
+            if !ended {
+                return Err(error.into());
+            }
+        }
         let terminal = self
             .terminal
             .as_mut()
@@ -137,6 +150,32 @@ impl Process {
         terminal?;
         Ok(status?)
     }
+}
+
+#[cfg(target_os = "macos")]
+fn only_reserved_leader(leader: i32) -> io::Result<bool> {
+    let mut members = [0_i32; 2];
+    // SAFETY: libproc writes at most the supplied buffer size and returns a
+    // count of pids. Two entries suffice to refuse any additional member;
+    // clearing/checking thread-local errno distinguishes an empty result from
+    // libproc's zero-on-error convention. The leader remains unreaped.
+    let (count, error) = unsafe {
+        *libc::__error() = 0;
+        let count = libc::proc_listpgrppids(
+            leader,
+            members.as_mut_ptr().cast(),
+            std::mem::size_of_val(&members) as i32,
+        );
+        (count, *libc::__error())
+    };
+    if count < 0 || (count == 0 && error != 0) {
+        return Err(io::Error::from_raw_os_error(if error == 0 {
+            libc::EIO
+        } else {
+            error
+        }));
+    }
+    Ok(count == 0 || (count == 1 && members[0] == leader))
 }
 
 impl Drop for Process {
