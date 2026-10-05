@@ -41,7 +41,11 @@ A local loopback trial exposed questions attributed to that server's separate
 agent, leaving the native conversation without asynchronous answer delivery.
 The candidate resolves each detached-host tool call using Codex's `threadId`
 and `sessionId` metadata against one existing live native binding in the same
-canonical provider profile and checkout. It verifies the app-server process
+canonical provider profile and checkout. Codex 0.155.1 instead supplies the root
+session as `x-codex-turn-metadata.session_id`; when top-level `sessionId` is
+absent, both nested `session_id` and `thread_id` must exactly match `threadId`.
+All supplied identity fields must agree; null, malformed or conflicting newer
+fields cannot fall back to the older representation. It verifies the app-server process
 birth and executable. The canonical package-cache path supplies the host profile
 when Codex filters `CODEX_HOME` from the MCP environment; an explicitly supplied
 profile must agree. It requires the root thread/session to agree and refuses
@@ -1277,5 +1281,8 @@ acceptance now reads the exact daemon binding, provider generation and durable
 ledger, and retains those observations before asserting. A displayed banner
 alone cannot establish identity. Windows 0.155.1's native MCP identity call was
 refused because its metadata did not satisfy the root-conversation contract;
-that compatibility investigation remains open without relaxing child isolation.
-Neither failed package job is full native acceptance. See the trial index.
+the retained managed wire and pinned upstream source show the older nested
+session/thread identity shape. Source now accepts that complete shape while
+refusing conflicting fields and preserving host/generation/child checks.
+Corrected native acceptance is pending. Neither failed package job is full
+native acceptance. See the trial index.

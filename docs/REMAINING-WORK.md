@@ -131,7 +131,10 @@ separate native-launcher checks: 0.160 saw a readiness banner interleaved with
 TUI redraws, and 0.155.1 refused MCP root-conversation identity. The native
 observer now checks exact binding/ledger state and records reopen snapshots;
 corrected full-package acceptance remains pending. The older native identity
-refusal remains open; form support does not establish native MCP compatibility.
+refusal exposed 0.155.1's nested session/thread metadata. Source now validates
+that complete older shape without weakening root/child, host or generation
+checks; corrected native acceptance remains pending. Form support alone does
+not establish native MCP compatibility.
 All original failures remain retained.
 Final CI and independent review remain required. Account, final desktop
 packages, broader versions, physical interaction, provider/controller

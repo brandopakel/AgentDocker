@@ -5,7 +5,12 @@ This document describes implemented behavior and later design intent. The Septem
 The delivery priorities are native local orchestration, automatic discovery and setup, an installed desktop GUI, and macOS/Linux/Windows support; the road to v1 is [REMAINING-WORK.md](REMAINING-WORK.md). Container engines are optional execution adapters. The historical phase order below does not make container expansion or a browser dashboard prerequisites for that desktop product.
 
 Detached Codex app-server MCP calls are scoped to an already verified native
-root binding by provider-supplied thread/session metadata. The host process,
+root binding by provider-supplied thread/session metadata. Top-level `threadId`
+must equal `sessionId`, or, only when `sessionId` is absent, both older
+`x-codex-turn-metadata.thread_id` and `session_id`. When nested metadata is
+present its identities must also agree; malformed/conflicting values refuse.
+These fields come from the provider envelope, never model tool arguments.
+The host process,
 profile (derived from the kernel-verified app-server package cache), checkout
 and live provider generation must agree; an explicit `CODEX_HOME` must match. Missing, child,
 ambiguous or stale identities are refused without helper registration. This
