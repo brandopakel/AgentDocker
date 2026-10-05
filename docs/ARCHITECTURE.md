@@ -92,6 +92,15 @@ digest, hook nonce, operator process and resolution ID; existing `journal_add`
 records the manual disposition before token-bound `provider_inbox` ACK. It never
 emits `report_input(received)` for manual reading. Retries retain the same intent;
 late hook requests are fenced, and matching scheduled input refuses the operation.
+Explicit queued-entry recovery is separate from manual readback: the operator's
+start digest binds the full input, original submission ID and current provider
+binding. Only the launcher-owned shared server can start it, after exact receipt,
+queue-head and daemon delivery checks. Native ledger version 6 stores a one-shot
+intent before the journal and `thread/queue/start`; old versions cannot contain
+that state. An intent fences duplicate starts and hook handoff through receiver
+restart, without manufacturing an acknowledgement. A lost or refused write stays
+for ordinary receipt reconciliation. There is no automatic start based on elapsed
+time, public idle status or historical interruption.
 The prior native receipt remains unchanged. See [recovery](CODEX-INPUT.md#retained-hook-recovery-september-21-candidate).
 
 Codex child hooks share the parent's session ID. The hook adapter therefore

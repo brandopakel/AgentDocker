@@ -233,6 +233,29 @@ transcript capacity cannot turn missing evidence into delivery. The installed
 Codex receiver exposed both cases together: an uncertain hook offer blocked later
 messages, then transcript growth hid that original reason behind the 4 MiB error.
 
+The same read-only preview also exposes a separate `start_confirmation` when an
+original native queue entry is retained without a hook offer or provider receipt.
+Codex can intentionally hold that entry after interruption even while its public
+thread status is idle. An operator who wants to continue that reviewed message
+can use the launcher-owned shared server's explicit recovery path:
+
+```sh
+agentdocker codex-queue-resolve --agent <id> --message <message-id> \
+  --start-queued <start-confirmation-from-preview> --note 'Continue this reviewed queued message'
+```
+
+This starts the existing submission ID; it never adds a replacement input.
+The receiver checks the live generation, original content and queue head, absence
+of an existing receipt, and the daemon's ownership/pause/provider-limit checks.
+The provider itself refuses a newly active or pending turn. A private version-6
+ledger persists one start intent before the journal write and provider call;
+repeating the same confirmation only reports that intent. Lost replies, refused
+starts or interrupted journal writes leave it retained without an automatic
+retry or hook handoff. The ordinary exact provider receipt is still required
+before acknowledgement. A reply naming a turn is not a delivery receipt.
+This candidate needs final review and actual CLI recovery/negative-path trials;
+the earlier direct-RPC diagnostic is not acceptance of this command.
+
 `agentdocker codex-queue-resolve --agent <id>` asks the owning receiver for a
 read-only preview of its complete retained envelope and a confirmation digest.
 After actually reading that message, an operator can run:

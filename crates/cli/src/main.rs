@@ -728,7 +728,7 @@ enum Command {
     /// Upgrade only an existing Codex session's receiver to this CLI release.
     #[command(hide = true)]
     CodexQueueUpgrade(codex_input::external::upgrade::Args),
-    /// Review and explicitly resolve a retained Codex hook message after reading it.
+    /// Review retained Codex input and explicitly confirm readback or start its queued entry.
     CodexQueueResolve(codex_input::external::resolve::Args),
     /// Start the agents in an Agentfile.toml that are not already running.
     Up {

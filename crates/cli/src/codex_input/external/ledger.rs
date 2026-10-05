@@ -55,6 +55,21 @@ pub(super) struct HookOffer {
     pub transcript: Option<super::hook_receipts::Snapshot>,
 }
 
+/// One explicit start of an existing provider queue entry. Persist before any
+/// provider write; a lost reply never permits another start or hook handoff.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct QueuedStart {
+    pub id: String,
+    pub queued: String,
+    pub confirmation: String,
+    pub provider: ProviderGeneration,
+    pub operator: ProcessIdentity,
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub note: String,
+    pub turn: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Attempt {
@@ -65,6 +80,8 @@ pub(super) struct Attempt {
     pub receipt: Option<Receipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook: Option<HookOffer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<QueuedStart>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -183,7 +200,7 @@ impl Ledger {
                     "bound native input ledger is missing; retained input needs reconciliation"
                 );
                 Record {
-                    version: 5,
+                    version: 6,
                     binding: binding.clone(),
                     token: uuid::Uuid::new_v4().simple().to_string(),
                     attempt: None,
@@ -283,6 +300,7 @@ impl Ledger {
             queued: None,
             receipt: None,
             hook: None,
+            start: None,
             anchor,
         });
         self.save(next)
@@ -313,7 +331,7 @@ impl Ledger {
             .as_mut()
             .context("no native input to hand off")?;
         ensure!(
-            attempt.hook.is_none() && attempt.receipt.is_none(),
+            attempt.hook.is_none() && attempt.receipt.is_none() && attempt.start.is_none(),
             "native input was already offered"
         );
         attempt.hook = Some(HookOffer {
@@ -355,6 +373,95 @@ impl Ledger {
                 attempt.hook.as_ref().map(|h| &h.request),
             ))?)
         ))
+    }
+
+    pub fn start_confirmation(&self) -> Result<String> {
+        let attempt = self
+            .record
+            .attempt
+            .as_ref()
+            .context("no retained input to start")?;
+        let queued = attempt
+            .queued
+            .as_ref()
+            .context("no verified native queue entry")?;
+        ensure!(
+            attempt.hook.is_none() && attempt.receipt.is_none(),
+            "input already offered or received"
+        );
+        Ok(format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&(
+                "explicit-native-queue-start-v1",
+                &self.record.binding,
+                &attempt.message,
+                &attempt.input,
+                queued,
+            ))?)
+        ))
+    }
+
+    pub fn begin_queued_start(
+        &mut self,
+        message: &str,
+        confirmation: &str,
+        note: &str,
+        operator: ProcessIdentity,
+    ) -> Result<QueuedStart> {
+        ensure!(
+            self.pending_manual_read().is_none(),
+            "manual readback is pending"
+        );
+        let attempt = self
+            .record
+            .attempt
+            .as_ref()
+            .context("no retained input to start")?;
+        ensure!(
+            attempt.start.is_none(),
+            "this queued entry already has a start intent; await its original receipt"
+        );
+        ensure!(
+            attempt.message == message && self.start_confirmation()? == confirmation,
+            "queued input or provider generation changed; review it again"
+        );
+        ensure!(
+            valid_note(note),
+            "queued start requires a short nonempty audit note"
+        );
+        let start = QueuedStart {
+            id: uuid::Uuid::new_v4().simple().to_string(),
+            queued: attempt
+                .queued
+                .clone()
+                .context("no verified native queue entry")?,
+            confirmation: confirmation.into(),
+            provider: self.record.binding.provider.clone(),
+            operator,
+            at: chrono::Utc::now(),
+            note: note.into(),
+            turn: None,
+        };
+        let mut next = self.record.clone();
+        next.attempt.as_mut().expect("checked attempt").start = Some(start.clone());
+        self.save(next)?;
+        Ok(start)
+    }
+
+    pub fn queued_start_replied(&mut self, id: &str, turn: &str) -> Result<()> {
+        ensure!(valid_id(turn), "invalid queued start turn");
+        let mut next = self.record.clone();
+        let start = next
+            .attempt
+            .as_mut()
+            .and_then(|a| a.start.as_mut())
+            .context("no queued start intent")?;
+        ensure!(
+            start.id == id && start.turn.as_deref().is_none_or(|old| old == turn),
+            "queued start reply differs from its original intent"
+        );
+        start.turn = Some(turn.into());
+        self.save(next)
     }
 
     pub fn pending_manual_read(&self) -> Option<&ManualRead> {
@@ -532,12 +639,19 @@ impl Record {
             );
             self.version = 5;
         }
+        if self.version == 5 {
+            ensure!(
+                self.attempt.as_ref().is_none_or(|a| a.start.is_none()),
+                "old native record contains a queued start intent"
+            );
+            self.version = 6;
+        }
         Ok(())
     }
 
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
-            self.version == 5 && &self.binding == binding,
+            self.version == 6 && &self.binding == binding,
             "native queue provider binding changed; reconcile retained input before reconnecting"
         );
         ensure!(
@@ -595,6 +709,23 @@ impl Record {
             }
             if let Some(id) = &attempt.queued {
                 ensure!(valid_id(id), "invalid provider queue ID");
+            }
+            if let Some(start) = &attempt.start {
+                ensure!(
+                    valid_id(&start.id)
+                        && valid_id(&start.queued)
+                        && attempt.queued.as_deref() == Some(&start.queued)
+                        && attempt.hook.is_none()
+                        && digest(&start.confirmation)
+                        && start.provider.valid()
+                        && start.provider.session == binding.provider.session
+                        && start.provider.profile == binding.provider.profile
+                        && start.operator.pid > 0
+                        && start.operator.started_at <= start.at
+                        && valid_note(&start.note)
+                        && start.turn.as_deref().is_none_or(valid_id),
+                    "invalid queued start intent"
+                );
             }
             if let Some(receipt) = &attempt.receipt {
                 ensure!(
@@ -670,6 +801,142 @@ impl Record {
 mod tests {
     use super::*;
     use agentdocker_core::{Destination, ProcessIdentity};
+
+    #[test]
+    fn queued_start_is_durable_once_only_and_still_requires_a_provider_receipt() {
+        let home = tempfile::tempdir().unwrap();
+        let bound = binding(home.path());
+        let envelope = Envelope::new(
+            "peer",
+            Destination::parse("agent"),
+            "chat",
+            serde_json::json!({"text":"original queued input"}),
+            None,
+            chrono::Utc::now(),
+        );
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
+        ledger.prepare(&envelope, None).unwrap();
+        ledger.queued("native-entry").unwrap();
+        let confirmation = ledger.start_confirmation().unwrap();
+        assert_ne!(confirmation, ledger.confirmation().unwrap());
+        let operator = ProcessIdentity {
+            pid: 2,
+            started_at: chrono::Utc::now(),
+        };
+        let start = ledger
+            .begin_queued_start(
+                envelope.id.as_str(),
+                &confirmation,
+                "continue the reviewed entry",
+                operator.clone(),
+            )
+            .unwrap();
+        assert!(ledger.acknowledge().is_err());
+        drop(ledger); // The provider or CLI reply can be lost after this point.
+        let mut ledger = Ledger::open(home.path(), bound, None).unwrap();
+        assert_eq!(
+            ledger
+                .record
+                .attempt
+                .as_ref()
+                .unwrap()
+                .start
+                .as_ref()
+                .unwrap()
+                .id,
+            start.id
+        );
+        assert!(
+            ledger
+                .begin_queued_start(envelope.id.as_str(), &confirmation, "retry", operator)
+                .is_err()
+        );
+        assert!(
+            ledger
+                .offer_hook("hook", input(&envelope).unwrap(), None)
+                .is_err()
+        );
+        ledger.queued_start_replied(&start.id, "turn").unwrap();
+        assert!(
+            ledger
+                .queued_start_replied(&start.id, "different-turn")
+                .is_err()
+        );
+        assert!(ledger.acknowledge().is_err());
+        assert!(ledger.latest_receipt().is_none());
+        assert_eq!(
+            ledger.record.attempt.as_ref().unwrap().input,
+            input(&envelope).unwrap()
+        );
+        ledger
+            .received(Receipt {
+                thread: "thread".into(),
+                turn: "turn".into(),
+                item: "item".into(),
+            })
+            .unwrap();
+        ledger.acknowledge().unwrap();
+        assert!(ledger.prepare(&envelope, None).is_err());
+        assert_eq!(ledger.latest_receipt().unwrap().turn, "turn");
+    }
+
+    #[test]
+    fn queued_start_confirmation_binds_entry_and_generation_and_refuses_legacy_intents() {
+        let home = tempfile::tempdir().unwrap();
+        let bound = binding(home.path());
+        let envelope = Envelope::new(
+            "peer",
+            Destination::parse("agent"),
+            "chat",
+            serde_json::json!({"text":"reviewed"}),
+            None,
+            chrono::Utc::now(),
+        );
+        let mut ledger = Ledger::open(home.path(), bound.clone(), None).unwrap();
+        ledger.prepare(&envelope, None).unwrap();
+        assert!(ledger.start_confirmation().is_err());
+        ledger.queued("entry").unwrap();
+        let confirmation = ledger.start_confirmation().unwrap();
+        let operator = ProcessIdentity {
+            pid: 2,
+            started_at: chrono::Utc::now(),
+        };
+        assert!(
+            ledger
+                .begin_queued_start("other", &confirmation, "review", operator.clone())
+                .is_err()
+        );
+        assert!(
+            ledger
+                .begin_queued_start(
+                    envelope.id.as_str(),
+                    &ledger.confirmation().unwrap(),
+                    "manual-read digest cannot authorize start",
+                    operator.clone()
+                )
+                .is_err()
+        );
+        ledger.record.attempt.as_mut().unwrap().queued = Some("different-entry".into());
+        assert_ne!(ledger.start_confirmation().unwrap(), confirmation);
+        ledger.record.attempt.as_mut().unwrap().queued = Some("entry".into());
+        ledger.record.binding.provider.process.pid += 1;
+        assert_ne!(ledger.start_confirmation().unwrap(), confirmation);
+        ledger.record.binding = bound.clone();
+        ledger
+            .begin_queued_start(envelope.id.as_str(), &confirmation, "review", operator)
+            .unwrap();
+        let mut record = ledger.record.clone();
+        let path = ledger.path.clone();
+        record.version = 5;
+        drop(ledger);
+        std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(Ledger::open(home.path(), bound.clone(), None).is_err());
+        record.attempt.as_mut().unwrap().start = None;
+        std::fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
+        let ledger = Ledger::open(home.path(), bound, None).unwrap();
+        assert_eq!(ledger.record.version, 6);
+        assert!(ledger.record.attempt.as_ref().unwrap().start.is_none());
+    }
 
     #[test]
     fn first_input_admission_is_spent_before_submission_and_survives_restart() {
@@ -993,7 +1260,7 @@ mod tests {
         std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         let ledger = Ledger::open(home.path(), binding, None).unwrap();
         let mut upgraded = serde_json::to_value(&ledger.record).unwrap();
-        assert_eq!(upgraded["version"], 5);
+        assert_eq!(upgraded["version"], 6);
         upgraded["version"] = serde_json::json!(2);
         assert_eq!(upgraded, old);
     }
