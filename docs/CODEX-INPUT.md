@@ -270,8 +270,11 @@ retry returned that same intent/turn with one new input and two exact receipts.
 The Linux normal-reply trial also passed. These do not cover lost provider or
 journal replies. A private Mac trial refused a provider-rate hold but exposed
 project-pause bypass in the earlier candidate; the separate pause checks above
-correct its admission path and still require actual acceptance. Full review,
-pause/limit races, Windows and real-account acceptance remain; this does not
+correct its admission path. Actual Mac `3cd4fd47` then refused both holds before
+intent while preserving the read-only preview, and passed fresh normal-reply and
+discarded-client-reply recovery trials. All 27 recorded processes retired across
+those three trials. Full review, pause/limit races, Windows and real-account
+acceptance remain; this does not
 establish automatic crash/reopen recovery.
 
 `agentdocker codex-queue-resolve --agent <id>` asks the owning receiver for a
