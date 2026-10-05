@@ -257,6 +257,34 @@ mod tests {
     use tokio::{io::AsyncReadExt, process::Command, time::timeout};
 
     #[tokio::test]
+    async fn a_stopped_owner_is_not_an_exited_owner() {
+        let mut command = Command::new("/bin/sleep");
+        command
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut owner = Process::spawn(command).unwrap();
+        owner.signal_group(libc::SIGSTOP).unwrap();
+        timeout(Duration::from_secs(5), async {
+            while !owner.event(libc::WSTOPPED | libc::WNOWAIT).unwrap() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(!owner.event(libc::WEXITED | libc::WNOWAIT).unwrap());
+        assert!(owner.event(libc::WSTOPPED).unwrap());
+        owner.signal_group(libc::SIGCONT).unwrap();
+        owner.child.kill().unwrap();
+        timeout(Duration::from_secs(5), owner.exited())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!owner.finish().await.unwrap().success());
+    }
+
+    #[tokio::test]
     async fn exited_and_killed_owners_keep_their_group_reserved_through_cleanup() {
         for killed in [false, true] {
             let mut other = Command::new("/bin/sleep")
