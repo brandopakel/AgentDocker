@@ -920,8 +920,6 @@ mod tests {
     #[tokio::test]
     async fn a_failed_reconnect_keeps_stop_owed_before_terminal_reattachment() {
         use agentdocker_host::procinfo;
-        use nix::libc;
-        use std::os::fd::AsRawFd;
         let dir = tempfile::tempdir().unwrap();
         let id = AgentId::from("stop-reconnect");
         let socket = endpoint(dir.path(), &id);
@@ -985,18 +983,14 @@ mod tests {
             let (finished, mut attempt_finished) = tokio::sync::oneshot::channel();
             let peer = async {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                if refuse {
-                    // Refuse writes while still supplying the complete valid
-                    // handshake. The failure must be in stop dispatch.
-                    assert_eq!(
-                        unsafe { libc::shutdown(stream.as_raw_fd(), libc::SHUT_RD) },
-                        0
-                    );
-                }
                 let mut bytes = serde_json::to_vec(&hello).unwrap();
                 bytes.push(b'\n');
                 stream.write_all(&bytes).await.unwrap();
                 if refuse {
+                    // Close after a complete valid handshake, before the
+                    // caller sends its stop. Read-side shutdown alone may
+                    // discard writes successfully on some Unix platforms.
+                    drop(stream);
                     let _ = (&mut attempt_finished).await;
                     return Vec::new();
                 }
