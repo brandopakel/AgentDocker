@@ -28,6 +28,10 @@ from windows_native_codex_smoke import current_user_objects, read_shared_file, r
 from windows_remote_receiver_fixture import Receiver, fixture_controller, process_birth
 
 
+class RecoveryComplete(Exception):
+    """A separate bounded recovery scenario completed its own native cleanup."""
+
+
 # pywinpty closes ConPTY when its root process exits. Keep a separate console
 # host alive so killing only the product front end cannot also close its console.
 # This host neither reads nor proxies terminal input and never owns a binding.
@@ -49,6 +53,7 @@ def main():
     parser.add_argument('--codex', type=Path, required=True)
     parser.add_argument('--binary-dir', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--queued-recovery', choices=['normal', 'holds', 'client-reply-loss'])
     args = parser.parse_args()
     if os.name != 'nt':
         parser.error('requires native Windows')
@@ -73,6 +78,9 @@ def main():
     queue_text = 'AD_AUTO_QUEUE_' + secrets.token_hex(8)
     draft_text = 'AD_AUTO_DRAFT_' + secrets.token_hex(8)
     reopen_text = 'AD_AUTO_REOPEN_' + secrets.token_hex(8)
+    held_text = 'AD_RECOVERY_HOLD_' + secrets.token_hex(8)
+    recovery_text = 'AD_RECOVERY_START_' + secrets.token_hex(8)
+    held_model, release_model = threading.Event(), threading.Event()
     closed_consoles = []
 
     def close_console():
@@ -110,7 +118,7 @@ def main():
                 assert 0 < length <= 8 * 1024 * 1024 and len(report['requests']) < 20
                 body = json.loads(self.rfile.read(length)); encoded = json.dumps(body)
                 title = 'Generate a concise, single-line task title' in encoded
-                report['requests'].append({'queue': queue_text in encoded, 'draft': draft_text in encoded, 'reopen': reopen_text in encoded, 'title': title})
+                report['requests'].append({'queue': queue_text in encoded, 'draft': draft_text in encoded, 'reopen': reopen_text in encoded, 'title': title, 'recovery': recovery_text in encoded})
                 for item in body.get('input', []):
                     if item.get('type') == 'function_call_output' and item.get('call_id') == 'call_private_identity':
                         report['mcp_output'] = item
@@ -120,6 +128,11 @@ def main():
                     events = receiver.mcp_events(len(report['requests']), body)
                 else:
                     events = response_events(len(report['requests']))
+                if args.queued_recovery and held_text in encoded and recovery_text not in encoded and not title and not held_model.is_set():
+                    self.wfile.write(('data: ' + json.dumps(events[0]) + '\n\n').encode()); self.wfile.flush()
+                    held_model.set()
+                    assert release_model.wait(180), 'private recovery response hold exceeded deadline'
+                    return
                 for event in events:
                     self.wfile.write(('data: ' + json.dumps(event) + '\n\n').encode()); self.wfile.flush()
             except Exception as error:
@@ -218,11 +231,31 @@ def main():
         call('initialize', {'clientInfo': {'name': 'agentdocker_private_auto_observer', 'version': '0'}, 'capabilities': {'experimentalApi': True}})
         channel.send(json.dumps({'method': 'initialized'}))
         thread = descriptor['provider']['session']
-        terminal.write(draft_text); time.sleep(0.3)
+        if not args.queued_recovery:
+            terminal.write(draft_text); time.sleep(0.3)
         message = receiver.send(queue_text); first = receiver.received(message)
         wait(lambda: report.get('mcp_output'), 30)
         receiver.check_mcp_identity(report['mcp_output'], native, provider)
         step('first original receipt and actual MCP identify the native TUI without a warmup', first['message'] == message and not any(r['draft'] for r in report['requests']))
+        if args.queued_recovery:
+            from windows_native_queue_recovery import exercise
+            report['first_receipt'] = first
+            report['queue_recovery_helper_sha256'] = hashlib.sha256(Path(__file__).with_name('windows_native_queue_recovery.py').read_bytes()).hexdigest()
+            wait(lambda: call('thread/read', {'threadId': thread, 'includeTurns': False})['thread']['status']['type'] == 'idle', 20)
+            exercise(args.queued_recovery, receiver, call, thread, held_text, recovery_text,
+                     held_model, release_model, report, step)
+            owned.extend(launcher.children(recursive=True))
+            receiver.owned.append(fixture_controller(psutil, receiver.binding(), receiver.cli))
+            report['recovery_processes'] = [{'pid': p.pid, 'birth': p.create_time()} for p in owned + receiver.owned if p.is_running()]
+            channel.close(); channel = None
+            terminal.write('\x04')
+            wait(lambda: not terminal.isalive(), 30)
+            wait(lambda: not Path(descriptor['token_file']).exists(), 10)
+            wait(lambda: not any(p.is_running() for p in owned + receiver.owned if p.pid != receiver.daemon.pid), 15)
+            step('recovery scenario exits natively with all providers retired and capability revoked', True)
+            step('private provider configuration is unchanged', (profile / 'config.toml').read_text(encoding='utf-8') == config)
+            report['result'] = 'passed'
+            raise RecoveryComplete()
         receiver.replace()
         step('receiver replacement preserves the original receipt and provider generation', receiver.ledger()['completed'] == [first] and receiver.binding()['provider'] == descriptor['provider'])
         wait(lambda: call('thread/read', {'threadId': thread, 'includeTurns': False})['thread']['status']['type'] == 'idle', 20)
@@ -396,9 +429,12 @@ def main():
             (out / (probe_key + '-terminal.txt')).write_text(''.join(output), encoding='utf-8')
         step('private provider configuration is unchanged', (profile / 'config.toml').read_text(encoding='utf-8') == config)
         report['result'] = 'passed'
+    except RecoveryComplete:
+        pass
     except Exception:
         report['error'] = traceback.format_exc()
     finally:
+        release_model.set()
         closing.set()
         if channel is not None: channel.close()
         if receiver is not None:
@@ -424,6 +460,17 @@ def main():
         if receiver is not None:
             try: receiver.close()
             except Exception as error: report['cleanup_errors'].append(str(error))
+        if args.queued_recovery and 'recovery_processes' in report:
+            remaining = []
+            for entry in report['recovery_processes']:
+                try:
+                    process = psutil.Process(entry['pid'])
+                    if process.create_time() == entry['birth']:
+                        remaining.append(entry)
+                except psutil.NoSuchProcess:
+                    pass
+            report['recovery_remaining'] = remaining
+            if remaining: report['cleanup_errors'].append('recovery process generation survived cleanup')
         if terminal is not None:
             try: close_console()
             except Exception as error: report['cleanup_errors'].append(str(error))

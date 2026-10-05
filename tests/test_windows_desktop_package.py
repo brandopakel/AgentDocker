@@ -196,6 +196,137 @@ class WindowsDesktopPackaging(unittest.TestCase):
             metadata = json.loads(bundle.read('AgentDocker/build.json'))
         self.assertEqual(metadata['launcher_redirect'], 2)
 
+    def queued_recovery_report(self, mode):
+        native = self.automatic_report()
+        native.update(steps=[{"passed": True} for _ in range(9)],
+                      descriptor={"provider": {"session": "thread"}},
+                      recovery_processes=[{"pid": n, "birth": n * 10} for n in range(1, 5)],
+                      recovery_remaining=[], requests=[])
+        rows = [{"message": str(n), "receipt": {"thread": "thread", "turn": "turn" + str(n),
+                                               "item": "item" + str(n)}} for n in range(3)]
+        before = {"completed": rows[:2], "attempt": {"message": "2", "queued": "entry", "receipt": None}}
+        preview = {"pending": {"message": "2", "start_confirmation": "digest", "start_intent": None}}
+        cases = (["provider_rate_hold", "project_pause"] if mode == "holds" else
+                 ["wrong_digest", "wrong_message", "manual_read_is_not_start", "foreign_head"])
+        proof = {"mode": mode, "hold_seconds": 30, "ledger_before": before,
+                 "message": "2", "preview": {"exit_code": 0, "stdout": json.dumps(preview)},
+                 "refusals": [{"case": case, "reply": {"exit_code": 1, "stderr": "daemon is holding this input; project is paused"},
+                               "ledger_after": copy.deepcopy(before)} for case in cases],
+                 "completed_after": rows[:2] if mode == "holds" else rows}
+        if mode == "holds":
+            proof.update(paused_preview=copy.deepcopy(proof["preview"]),
+                         pause={"pause": {"project": "project"}}, pauses_after={"pauses": [{"project": "project"}]})
+        else:
+            first = {"message": "2", "turn": "turn2", "queued_start": "intent", "already_attempted": False}
+            proof.update(response={"exit_code": 0, "stdout": "intent\n", "stderr": json.dumps(first)},
+                         repeat={"exit_code": 0, "stdout": "intent\n", "stderr": json.dumps(dict(first, already_attempted=True))})
+            native["requests"] = [{"recovery": True, "title": False}]
+        proof["final_history"] = {"data": [{"turnId": row["receipt"]["turn"],
+                                           "item": {"type": "userMessage", "clientId": row["message"],
+                                                    "id": row["receipt"]["item"]}} for row in proof["completed_after"]]}
+        native["queued_recovery"] = proof
+        return native
+
+    def test_queued_recovery_rejects_duplicate_input_and_invented_retry_or_cleanup(self):
+        native = self.queued_recovery_report("normal")
+        SMOKE.validate_queue_recovery_report(native, self.manifest, "normal")
+        for change in (lambda r: r["requests"].append(dict(r["requests"][0])),
+                       lambda r: r["queued_recovery"]["final_history"]["data"].pop(),
+                       lambda r: r["queued_recovery"]["completed_after"][-1]["receipt"].update(turn="wrong"),
+                       lambda r: r["queued_recovery"]["repeat"].update(stderr=r["queued_recovery"]["response"]["stderr"]),
+                       lambda r: r["queued_recovery"]["response"].update(stdout="other-intent\n"),
+                       lambda r: r["queued_recovery"]["repeat"].update(stdout="intent\nextra-output\n"),
+                       lambda r: r["queued_recovery"]["refusals"][0]["ledger_after"]["attempt"].update(start={"id": "unexpected"}),
+                       lambda r: r["recovery_remaining"].append({"pid": 2, "birth": 20}),
+                       lambda r: r.update(source_commit="wrong")):
+            invalid = copy.deepcopy(native); change(invalid)
+            with self.assertRaises(ValueError):
+                SMOKE.validate_queue_recovery_report(invalid, self.manifest, "normal")
+
+    def test_queued_recovery_hold_requires_real_refusal_and_preserved_preview(self):
+        native = self.queued_recovery_report("holds")
+        SMOKE.validate_queue_recovery_report(native, self.manifest, "holds")
+        for change in (lambda r: r["queued_recovery"]["refusals"][-1]["reply"].update(exit_code=0),
+                       lambda r: r["queued_recovery"]["refusals"][-1]["reply"].update(stderr="unrelated failure"),
+                       lambda r: r["queued_recovery"]["pauses_after"].update(pauses=[]),
+                       lambda r: r["queued_recovery"]["paused_preview"].update(stdout='{"pending":{"message":"2","start_confirmation":"changed","start_intent":null}}'),
+                       lambda r: r["requests"].append({"recovery": True, "title": False})):
+            invalid = copy.deepcopy(native); change(invalid)
+            with self.assertRaises(ValueError):
+                SMOKE.validate_queue_recovery_report(invalid, self.manifest, "holds")
+
+    def test_completed_recovery_retry_requires_exact_receipt_and_empty_preview(self):
+        native = self.queued_recovery_report("normal")
+        proof = native["queued_recovery"]
+        proof.update(repeat_disposition="already_delivered",
+                     repeat={"exit_code": 1, "stdout": "", "stderr": "Error: no retained native input to start\n"},
+                     ledger_after_repeat={"completed": copy.deepcopy(proof["completed_after"]), "attempt": None},
+                     retired_preview={"exit_code": 0, "stdout": '{"pending":null}'})
+        SMOKE.validate_queue_recovery_report(native, self.manifest, "normal")
+        for change in (lambda p: p["repeat"].update(stderr="Error: daemon unavailable"),
+                       lambda p: p["ledger_after_repeat"]["completed"][-1].update(message="other"),
+                       lambda p: p["ledger_after_repeat"].update(attempt={"message": "2"}),
+                       lambda p: p["ledger_after_repeat"].pop("attempt"),
+                       lambda p: p["retired_preview"].update(stdout='{"pending":{"message":"2"}}'),
+                       lambda p: p["retired_preview"].update(stdout='{}'),
+                       lambda p: p.update(repeat_disposition="pending_intent")):
+            invalid = copy.deepcopy(native); change(invalid["queued_recovery"])
+            with self.assertRaises(ValueError):
+                SMOKE.validate_queue_recovery_report(invalid, self.manifest, "normal")
+
+    def lost_client_recovery_report(self):
+        native = self.queued_recovery_report("client-reply-loss")
+        proof = native["queued_recovery"]
+        proof.pop("response")
+        proof["ledger_before"]["binding"] = {"agent": "agent"}
+        request = {"action": "start_queued", "agent": "agent", "message": "2",
+                   "provider": native["descriptor"]["provider"],
+                   "confirmation": "digest", "note": "Private loss trial"}
+        proof["local_client_reply_loss"] = {
+            "endpoint_kind": "private resolve named pipe", "command": request,
+            "request_bytes": len((json.dumps(request) + '\n').encode('utf-8')),
+            "response_read_calls": 0, "client_closed_after_send": True,
+            "closed_after_durable_intent": True,
+            "durable_intent_observed": {"id": "intent", "queued": "entry",
+                                        "confirmation": "digest", "note": request["note"],
+                                        "provider": request["provider"],
+                                        "transmission": "prepared", "turn": None}}
+        return native
+
+    def test_lost_client_recovery_requires_unread_reply_and_exact_original_intent(self):
+        native = self.lost_client_recovery_report()
+        SMOKE.validate_queue_recovery_report(native, self.manifest, "client-reply-loss")
+        for change in (lambda p: p.update(response={}),
+                       lambda p: p["local_client_reply_loss"].update(response_read_calls=1),
+                       lambda p: p["local_client_reply_loss"].update(client_closed_after_send=False),
+                       lambda p: p["local_client_reply_loss"].update(closed_after_durable_intent=False),
+                       lambda p: p["local_client_reply_loss"].update(request_bytes=0),
+                       lambda p: p["local_client_reply_loss"]["command"].update(agent="wrong"),
+                       lambda p: p["local_client_reply_loss"]["durable_intent_observed"].update(id="wrong"),
+                       lambda p: p["local_client_reply_loss"]["durable_intent_observed"].update(queued="other"),
+                       lambda p: p["local_client_reply_loss"]["durable_intent_observed"].update(confirmation="wrong"),
+                       lambda p: p["local_client_reply_loss"]["durable_intent_observed"].update(transmission="unknown"),
+                       lambda p: p["local_client_reply_loss"]["durable_intent_observed"].update(turn="other")):
+            invalid = copy.deepcopy(native); change(invalid["queued_recovery"])
+            with self.assertRaises(ValueError):
+                SMOKE.validate_queue_recovery_report(invalid, self.manifest, "client-reply-loss")
+
+    def test_lost_client_retry_after_retirement_requires_completed_receipt(self):
+        native = self.lost_client_recovery_report()
+        proof = native["queued_recovery"]
+        proof.update(repeat_disposition="already_delivered",
+                     repeat={"exit_code": 1, "stdout": "", "stderr": "Error: no retained native input to start\n"},
+                     ledger_after_repeat={"completed": copy.deepcopy(proof["completed_after"]), "attempt": None},
+                     retired_preview={"exit_code": 0, "stdout": '{"pending":null}'})
+        SMOKE.validate_queue_recovery_report(native, self.manifest, "client-reply-loss")
+        for change in (lambda p: p["repeat"].update(stderr="Error: daemon unavailable"),
+                       lambda p: p["ledger_after_repeat"]["completed"][-1].update(message="other"),
+                       lambda p: p["ledger_after_repeat"].update(attempt={"message": "2"}),
+                       lambda p: p["retired_preview"].update(stdout='{"pending":{"message":"2"}}')):
+            invalid = copy.deepcopy(native); change(invalid["queued_recovery"])
+            with self.assertRaises(ValueError):
+                SMOKE.validate_queue_recovery_report(invalid, self.manifest, "client-reply-loss")
+
     def build(self):
         info = PACKAGE.package(self.args)
         return info, self.output / next(iter(info["artifacts"]))

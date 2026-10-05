@@ -846,3 +846,24 @@ launcher pass does not establish ordinary/default desktop adoption. Source
 Codex checks. CI synthetic `54a4a876` has the exact candidate tree; the archived
 EXE bytes, executed hashes, driver/provider pins and both MCP identities were
 independently checked. No forced cleanup, reader errors or scratch remained.
+
+The native package workflow also enables `windows_package_smoke.py
+--queue-recovery` with automatic-launcher acceptance. Two separate private
+ConPTY scenarios use the exact extracted archive: normal explicit queued-entry
+recovery after a deliberate interruption, and refusal during provider-rate and
+project holds. Each retains the next entry for 30 seconds. The normal scenario
+checks distinct confirmation/action/order refusals, one existing-entry start,
+same-intent retry and exact receipts. The hold scenario requires refusal before
+intent, unchanged original receipts and a still-readable preview during pause.
+Both require native exit, unchanged configuration and recorded process-generation
+retirement. The original 22 launcher/lifetime checks remain separate and required.
+The report validator rejects duplicate inputs, invented retry results, missing
+pause evidence and incomplete cleanup. Source `a80697fd` passed both nine-check
+scenarios on its extracted archive, plus 62 daemon, 42 installer and the 22
+original launcher checks. CI merge `ff5b505f` has the identical source tree;
+archive/EXE/driver/helper hashes and retained reports were independently checked.
+Normal recovery preserved three exact receipts and one new model input; hold
+refusals preserved the two prior receipts and readable preview. Both retired all
+recorded process generations without forced cleanup. Actual accounts, physical
+input, discarded client/provider/journal replies and concurrent pause races
+remain outside this acceptance.

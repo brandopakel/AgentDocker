@@ -1,7 +1,6 @@
-//! Explicit recovery for an offered hook whose native receipt cannot be proven.
-//! Reading history never silently authorizes this. A caller reviews the retained
-//! input, then confirms its generation-bound digest; the sole receiver journals
-//! that manual disposition and acknowledges only that message, without a receipt.
+//! Explicit recovery of retained input, bound to a reviewed provider generation.
+//! Manual hook readback and starting an existing native queue entry use distinct
+//! confirmations. History or elapsed time never silently authorizes either.
 pub(super) use super::local::Listener;
 use super::{Client, Ledger, Provider, call, identity, local, receipts, verify_provider};
 use agentdocker_core::{ProcessIdentity, ProviderGeneration, Request, Response};
@@ -18,14 +17,17 @@ pub struct Args {
     /// Exact Codex agent whose retained input should be reviewed.
     #[arg(long, env = "AGENTDOCKER_AGENT_ID")]
     pub agent: String,
-    /// Message ID from the review. Omit all three options for a read-only preview.
-    #[arg(long, requires_all = ["confirm_read", "note"])]
+    /// Message ID from the review. Omit action options for a read-only preview.
+    #[arg(long, requires = "note")]
     pub message: Option<String>,
     /// Confirm that you read the complete message, using the preview's digest.
-    #[arg(long, requires_all = ["message", "note"])]
+    #[arg(long, requires_all = ["message", "note"], conflicts_with = "start_queued")]
     pub confirm_read: Option<String>,
-    /// Why manual readback resolves this message (recorded in the journal).
-    #[arg(long, requires_all = ["message", "confirm_read"])]
+    /// Explicitly start the existing queued entry using its preview digest.
+    #[arg(long, requires_all = ["message", "note"], conflicts_with = "confirm_read")]
+    pub start_queued: Option<String>,
+    /// Why this readback or queued start is requested (recorded in the journal).
+    #[arg(long, requires = "message")]
     pub note: Option<String>,
 }
 
@@ -38,6 +40,14 @@ enum Command {
         socket: PathBuf,
     },
     Confirm {
+        agent: String,
+        provider: ProviderGeneration,
+        socket: PathBuf,
+        message: String,
+        confirmation: String,
+        note: String,
+    },
+    StartQueued {
         agent: String,
         provider: ProviderGeneration,
         socket: PathBuf,
@@ -79,12 +89,15 @@ fn preview(ledger: &Ledger) -> Result<Value> {
                 "hook_offer": attempt.hook.is_some(),
                 "native_receipt": attempt.receipt,
                 "manual_read": ledger.pending_manual_read(),
+                "queued_submission": attempt.queued,
+                "start_confirmation": if attempt.start.as_ref().is_none_or(|s| !s.may_have_transmitted()) { ledger.start_confirmation().ok() } else { None },
+                "start_intent": attempt.start,
             }))
         })
         .transpose()?;
     Ok(
         json!({"agent":record.binding.agent,"provider":record.binding.provider,"pending":pending,
-        "notice":"Review the complete envelope before confirming. Confirmation records manual readback, not automatic provider delivery. It never replays the input."}),
+        "notice":"Review the complete envelope. --confirm-read records manual readback of a hook offer; --start-queued explicitly starts the existing native queue entry. Neither creates a replacement input, and a start reply is not a delivery receipt."}),
     )
 }
 
@@ -173,6 +186,12 @@ async fn handle(
             provider,
             socket,
             ..
+        }
+        | Command::StartQueued {
+            agent,
+            provider,
+            socket,
+            ..
         } => (agent, provider, socket),
     };
     ensure!(
@@ -184,6 +203,23 @@ async fn handle(
     let current = identity(client, &ledger.record().binding).await?;
     match command {
         Command::Preview { .. } => preview(ledger),
+        Command::StartQueued {
+            message,
+            confirmation,
+            note,
+            ..
+        } => {
+            super::queued_start::start(
+                client,
+                provider,
+                ledger,
+                &message,
+                &confirmation,
+                &note,
+                operator,
+            )
+            .await
+        }
         Command::Confirm {
             message,
             confirmation,
@@ -321,8 +357,13 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
                 == Some(accepted.controller.started_at),
         "recovery endpoint is not owned by the bound receiver"
     );
-    let command = match (args.message, args.confirm_read, args.note) {
-        (Some(message), Some(confirmation), Some(note)) => Command::Confirm {
+    let command = match (
+        args.message,
+        args.confirm_read,
+        args.start_queued,
+        args.note,
+    ) {
+        (Some(message), Some(confirmation), None, Some(note)) => Command::Confirm {
             agent: agent.id.to_string(),
             provider: accepted.provider.clone(),
             socket: client.socket_path().into(),
@@ -330,12 +371,20 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
             confirmation,
             note,
         },
-        (None, None, None) => Command::Preview {
+        (Some(message), None, Some(confirmation), Some(note)) => Command::StartQueued {
+            agent: agent.id.to_string(),
+            provider: accepted.provider.clone(),
+            socket: client.socket_path().into(),
+            message,
+            confirmation,
+            note,
+        },
+        (None, None, None, None) => Command::Preview {
             agent: agent.id.to_string(),
             provider: accepted.provider.clone(),
             socket: client.socket_path().into(),
         },
-        _ => bail!("confirming readback requires --message, --confirm-read and --note together"),
+        _ => bail!("use --message and --note with exactly one of --confirm-read or --start-queued"),
     };
     tokio::time::timeout(Duration::from_secs(90), async {
         write(&mut stream, &serde_json::to_value(command)?).await?;
@@ -345,10 +394,14 @@ pub async fn run(client: Client, args: Args) -> Result<()> {
         }
         let value = response.get("ok").context("invalid recovery response")?;
         // A preview is a report and prints as one. A confirmation creates a
-        // resolution: its id alone goes to stdout, as every command that
+        // resolution or start intent: its id alone goes to stdout, as every command that
         // creates something prints its id, and the rest of the report goes
         // to stderr for the person reading.
-        match value.get("resolution").and_then(Value::as_str) {
+        match value
+            .get("resolution")
+            .or_else(|| value.get("queued_start"))
+            .and_then(Value::as_str)
+        {
             Some(resolution) => {
                 eprintln!("{}", serde_json::to_string_pretty(value)?);
                 println!("{resolution}");
