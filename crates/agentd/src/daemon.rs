@@ -6667,6 +6667,23 @@ impl State {
             .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
             .filter(|pending| pending.addressed_to(&AgentId::from(envelope.from.as_str())))
             .map(|pending| pending.id.clone());
+        if let Some(presentation @ agentdocker_core::QuestionPresentation::McpUrl { .. }) = closed
+            .as_ref()
+            .and_then(|id| self.questions.get(id))
+            .and_then(|q| q.presentation.as_ref())
+            && !envelope.payload.as_object().is_some_and(|payload| {
+                payload.len() == 1
+                    && payload
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|value| presentation.permits_choice(value))
+            })
+        {
+            return Response::error(
+                ErrorCode::Invalid,
+                "a website request accepts only Accept, Decline or Cancel; enter private information on the website",
+            );
+        }
         let mut envelope = envelope;
         if closed.is_some() {
             envelope.kind = "answer".to_owned();

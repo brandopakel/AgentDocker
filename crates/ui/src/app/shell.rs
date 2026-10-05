@@ -721,6 +721,7 @@ pub enum Message {
     Draft(MessageId, String),
     Answer(MessageId),
     AnswerChoice(MessageId, String),
+    CopyQuestionUrl(MessageId),
     DismissInbox(Vec<MessageId>),
     Adopt(u32),
     AdoptAll,
@@ -1996,9 +1997,36 @@ impl App {
                 }
             }
             Message::Draft(id, value) => {
-                if !self.sending.contains(&id) {
+                if !self.sending.contains(&id)
+                    && !self.questions.iter().any(|q| {
+                        q.id == id
+                            && matches!(
+                                q.presentation,
+                                Some(agentdocker_core::QuestionPresentation::McpUrl { .. })
+                            )
+                    })
+                {
                     self.shell
                         .edit_draft(DraftKind::Answer, id.to_string(), value);
+                }
+            }
+            Message::CopyQuestionUrl(id) => {
+                if self.connected.is_ok()
+                    && !self.sending.contains(&id)
+                    && let Some(question) = self
+                        .questions
+                        .iter()
+                        .find(|q| q.id == id && !q.expired(Utc::now()))
+                    && let Some(
+                        presentation @ agentdocker_core::QuestionPresentation::McpUrl {
+                            url, ..
+                        },
+                    ) = &question.presentation
+                    && presentation.valid_for(&question.text)
+                {
+                    let url = url.clone();
+                    self.say("Link copied. Open it in your browser if you consent.");
+                    return iced::clipboard::write(url);
                 }
             }
             Message::AnswerChoice(id, value) => {
@@ -2036,6 +2064,10 @@ impl App {
                     && !self.sending.contains(&id)
                     && self.questions.iter().any(|q| {
                         q.id == id
+                            && !matches!(
+                                q.presentation,
+                                Some(agentdocker_core::QuestionPresentation::McpUrl { .. })
+                            )
                             && !q.expired(Utc::now())
                             && (!matches!(
                                 q.presentation,
@@ -3628,6 +3660,46 @@ mod tests {
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
         assert_eq!(commands.try_iter().count(), 0);
         assert_eq!(app.shell.answers[&id], "earlier draft");
+    }
+
+    #[test]
+    fn mcp_url_questions_never_submit_or_save_a_typed_draft() {
+        let (mut app, commands, _) = app();
+        app.connected = Ok(());
+        let presentation = agentdocker_core::QuestionPresentation::McpUrl {
+            server: "example-tools".into(),
+            elicitation_id: "one".into(),
+            message: "Connect your example account.".into(),
+            url: "https://example.com/consent".into(),
+        };
+        let id = MessageId::from("mcp-url".to_owned());
+        app.questions.push(Question {
+            id: id.clone(),
+            from: "asker".into(),
+            to: agentdocker_core::Destination::Agent("human".into()),
+            text: presentation.text(),
+            presentation: Some(presentation),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        });
+        let _ = app.update(Message::Draft(id.clone(), "private input".into()));
+        assert!(!app.shell.answers.contains_key(&id));
+        app.shell.answers.insert(id.clone(), "earlier draft".into());
+        let _ = app.update(Message::Answer(id.clone()));
+        let _ = app.update(Message::AnswerChoice(id.clone(), "private input".into()));
+        let _ = app.update(Message::CopyQuestionUrl(id.clone()));
+        assert_eq!(commands.try_iter().count(), 0, "copying is not a decision");
+        let _ = app.update(Message::AnswerChoice(id.clone(), "Accept".into()));
+        let _ = app.update(Message::AnswerChoice(id.clone(), "Decline".into()));
+        assert!(
+            matches!(commands.try_iter().collect::<Vec<_>>().as_slice(), [Cmd::Answer(q, value)] if q == &id && value == "Accept")
+        );
+        assert_eq!(app.shell.answers[&id], "earlier draft");
+        app.sending.clear();
+        app.questions[0].expires_at = Utc::now() - chrono::Duration::seconds(1);
+        let _ = app.update(Message::CopyQuestionUrl(id.clone()));
+        let _ = app.update(Message::AnswerChoice(id, "Accept".into()));
+        assert_eq!(commands.try_iter().count(), 0);
     }
 
     #[test]

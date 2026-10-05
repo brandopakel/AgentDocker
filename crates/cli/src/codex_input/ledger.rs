@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const VERSION: u32 = 11;
+const VERSION: u32 = 12;
 const MAX_STATE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const RETAINED_RECEIPTS: usize = 128;
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn legacy_delivery_state_upgrades_without_replacing_prepared_input() {
-        for version in 1..=6 {
+        for version in 1..=11 {
             let home = tempfile::tempdir().unwrap();
             let binding = binding(home.path());
             let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
@@ -495,6 +495,57 @@ mod tests {
                     .unwrap()
                     .to_string()
                     .contains("legacy input cannot supply terminal input review receipts")
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            std::fs::write(&path, &original).unwrap();
+            let reopened = Ledger::open(home.path(), binding).unwrap();
+            assert_eq!(reopened.record().version, VERSION);
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn mcp_url_reviews_require_version_twelve_in_open_and_closed_history() {
+        for closed in [false, true] {
+            let home = tempfile::tempdir().unwrap();
+            let binding = binding(home.path());
+            let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+            ledger.bind_thread("thread".into()).unwrap();
+            ledger.prepare(&message()).unwrap();
+            let event = serde_json::json!({"id":"url","method":"mcpServer/elicitation/request","params":{
+                "threadId":"thread","turnId":null,"serverName":"fixture","mode":"url",
+                "elicitationId":"one","message":"Connect the fixture.","url":"https://example.com/consent"
+            }});
+            let pending =
+                review::Pending::plan(&event, "thread", Some("turn"), "human", chrono::Utc::now())
+                    .unwrap();
+            ledger
+                .update_reviews(|reviews, history| {
+                    if closed {
+                        history.push_back(review::Closed {
+                            request: pending,
+                            outcome: review::Outcome::Cancelled,
+                            acknowledged: true,
+                        });
+                    } else {
+                        reviews.push(pending);
+                    }
+                    Ok(true)
+                })
+                .unwrap();
+            let path = ledger.path.clone();
+            drop(ledger);
+            let original = std::fs::read(&path).unwrap();
+            let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            legacy["version"] = serde_json::json!(11);
+            let bytes = serde_json::to_vec(&legacy).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(
+                Ledger::open(home.path(), binding.clone())
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("legacy input cannot supply MCP URL review receipts")
             );
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
             std::fs::write(&path, &original).unwrap();
@@ -818,6 +869,15 @@ fn valid_id(id: &str) -> bool {
 impl Record {
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
+            self.version >= 12
+                || (self.reviews.iter().all(|r| !r.is_mcp_url_review())
+                    && self
+                        .closed_reviews
+                        .iter()
+                        .all(|r| !r.request.is_mcp_url_review())),
+            "legacy input cannot supply MCP URL review receipts"
+        );
+        ensure!(
             self.version >= 11
                 || (self.reviews.iter().all(|r| !r.is_stdin_review())
                     && self
@@ -874,7 +934,7 @@ impl Record {
         );
         ensure!(
             self.version == VERSION
-                || matches!(self.version, 3..=10)
+                || matches!(self.version, 3..=11)
                 || (matches!(self.version, 1 | 2)
                     && self.reviews.is_empty()
                     && self.closed_reviews.is_empty()

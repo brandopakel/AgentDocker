@@ -697,7 +697,7 @@ navigation and reopening. These bounded trials use the upstream experimental
 `write_stdin_approval` feature for that launch only; they do not change saved
 provider policy or establish physical input/accessibility acceptance. The clean
 candidate passed 1,430 Rust tests and 155 Python checks with zero retries.
-Broader permission forms, elicitation and secret input still require completion.
+Broader permission forms, MCP form elicitation and secret input still require completion.
 
 Schema 15 also supports bounded file-change approval. Inbox lists the complete
 file operations and offers **Review changes**, **Allow once** and **Deny**.
@@ -839,8 +839,44 @@ provider record. The local gate passed 813 Rust tests, 65 Python checks and
 actual source inspection of `1d76a88`; its parent integration gate passed
 814 Rust tests and 65 Python checks.
 
+MCP URL elicitation (`mcpServer/elicitation/request`, `mode: "url"`) now has a
+bounded human route. The request must name the bound thread during an active
+input turn; a supplied turn must match, while absent/null turn correlation uses
+the current local turn as the request's lifetime boundary. The server, message
+and full original destination are reviewed before choosing **Accept**,
+**Decline** or **Cancel**. Copy the link and open it in your own browser only if
+you consent; AgentDocker neither fetches the page nor sees its input. Terminal
+clients use `agentdocker answer <question-id> Accept|Decline|Cancel`. The desktop
+has no free-text input for this question, and the daemon refuses other pending
+answers before storing them. Copying the link does not answer the request.
+
+Only HTTPS or canonical loopback HTTP addresses with a bounded printable ASCII
+URL are supported. Credentials, hidden display controls and ambiguous authorities
+are rejected before question publication. The review records the opaque
+elicitation ID unchanged, but does not confuse it with Codex's request ID.
+Cancellation and five-minute expiry return `action: "cancel"`; an exact human
+Accept returns `action: "accept"` with no form content. Provider resolution
+acknowledges the decision, not completion of the external website action. There
+is no page polling, completion inference or automatic tool retry. Existing
+uncertain-write and no-replay recovery rules apply; ledger version 12 rejects
+URL reviews fabricated in older records. Source tests cover the route. Actual Codex 0.160 with Mac ARM64
+release binaries and private model/MCP fixtures passed Accept, Decline, Cancel
+and route cancellation, eight distinct ordinary input receipts, exact server-side
+decisions and independently verified cleanup. The fixture preserves normal
+on-request policy and explicitly configures only its synthetic tool for use;
+`never` policy declined the URL request before human review. These are synthetic
+human decisions, not account/browser consent. A separate actual-provider-binary
+trial held the request until its five-minute expiry with no human answer: the
+MCP server received one cancellation and the queued peer input received its own
+ordinary-turn receipt. Private processes and scratch were independently confirmed
+gone. Oracle Linux x86-64 repeated all four decision/cancellation paths from the
+CI CLI archive with the same source tree, eight exact input receipts and clean
+process retirement. That short private fixture overlapped the separate 48-hour
+provider trial. Browser interaction, final packages, Windows/other versions,
+pending restart and real-account waits remain open.
+
 Unknown callbacks,
-session-wide file grants, unsupported permission selectors, MCP elicitation, secret inputs
+session-wide file grants, unsupported permission selectors, MCP form/device-verification elicitation, secret inputs
 and oversized requests currently return an explicit provider error. Complete
 those review surfaces before treating the adapter as a general replacement for
 the provider terminal. Automatic provider review and configured approval policy
@@ -920,6 +956,15 @@ checks and the same full gate. The final release-TUI legacy-reply trial at
 `b2c3938` then passed idle wake, preserved drafts, mixed-origin FIFO, automatic
 receiver restart and exact legacy human-answer consumption without another turn
 (nine model requests). Source and executable hashes stayed fixed.
+
+The `c6ee1d49` Linux CI archive also passed four URL decision paths with actual
+Codex 0.155.1 and a private model/MCP server: four exact replies, eight distinct
+input receipts and one controller generation. Post-review peer input may be
+steered into the existing provider turn, so distinct message/item receipts do
+not imply distinct turns. The earlier fixture that required different turns
+remains failed; its corrected repeat independently confirmed all 12 recorded
+processes had retired. This adds provider-version coverage, not browser/account
+consent or final-package acceptance.
 
 ## Active-turn steering acceptance (September 16)
 

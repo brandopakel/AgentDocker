@@ -387,6 +387,9 @@ fn ask_summary(question: &Question) -> String {
         .as_ref()
         .filter(|p| p.valid_for(&question.text))
     {
+        Some(QuestionPresentation::McpUrl { server, .. }) => {
+            format!("Continue on a website for {server}")
+        }
         Some(QuestionPresentation::CodexCommand { command, .. }) => {
             format!("Run: {}", first_line(command, 80))
         }
@@ -752,6 +755,67 @@ impl App {
             .as_ref()
             .filter(|p| p.valid_for(&question.text));
         let card = match presentation {
+            Some(QuestionPresentation::McpUrl {
+                server,
+                message,
+                url,
+                ..
+            }) => {
+                let id = question.id.clone();
+                let authority = agentdocker_core::mcp_url_authority(url).unwrap_or_default();
+                let mut body = column![
+                    text(format!("Continue on the website requested by {server}?"))
+                        .size(15).font(weight(iced::font::Weight::Semibold)),
+                    small(format!("{} · asked {}", self.name_of(&question.from), ago(now, question.asked_at)), c),
+                    self.answer_window(question, c),
+                    text(message.clone()).size(13),
+                    text(format!("Website: {authority}")).size(14).font(weight(iced::font::Weight::Semibold)),
+                    text(url.clone()).size(13).font(Font::MONOSPACE)
+                        .wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+                    text("Copy the link and open it in your browser if you consent. Enter any private information only on that website. Accept records your consent; it does not confirm the website interaction finished.").size(13).color(c.muted),
+                ].spacing(12).width(Fill);
+                if authority
+                    .to_ascii_lowercase()
+                    .split('.')
+                    .any(|part| part.starts_with("xn--"))
+                {
+                    body = body.push(text("This address uses an encoded international domain name. Check it carefully before opening.").size(13).color(c.amber));
+                }
+                if let Some(chosen) = chosen {
+                    body = body.push(receipt(chosen, Some("Sending your decision".into()), c));
+                } else {
+                    body = body.push(action(
+                        format!("copy-question-url-{id}"),
+                        "Copy link",
+                        enabled.then(|| Message::CopyQuestionUrl(id.clone())),
+                        false,
+                    ));
+                    for (index, (label, description)) in [
+                        ("Accept", "I consent to continue on this website"),
+                        ("Decline", "I do not consent to this request"),
+                        ("Cancel", "Dismiss without a decision"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        body = body.push(choice(
+                            format!("answer-choice-{id}-{index}"),
+                            label.into(),
+                            description,
+                            enabled.then(|| Message::AnswerChoice(id.clone(), label.into())),
+                            c,
+                        ));
+                    }
+                }
+                if let Some(error) = self.shell.answer_errors.get(&id) {
+                    body = body.push(notice_line("Not sent", Some(error.clone()), c.amber, c));
+                }
+                container(body)
+                    .padding(16)
+                    .width(Fill)
+                    .style(move |_| c.card_style())
+                    .into()
+            }
             Some(QuestionPresentation::CodexCommand {
                 command,
                 cwd,
@@ -1787,6 +1851,47 @@ mod tests {
     /// Each option is one control named by its label with its consequence
     /// as its value; the written answer stays beside them; choosing one
     /// leaves only the chosen row, as the receipt, until the answer lands.
+    #[test]
+    fn mcp_url_card_exposes_the_full_destination_without_a_private_input_field() {
+        let (mut app, _commands) = app();
+        let question = asked(
+            &mut app,
+            "url",
+            QuestionPresentation::McpUrl {
+                server: "example-tools".into(),
+                elicitation_id: "one".into(),
+                message: "Connect your example account.".into(),
+                url: "https://xn--bcher-kva.example/consent?state=fixture".into(),
+            },
+        );
+        let before = seen(app.question_card(&question, Colors::new(false)));
+        assert!(before.reads("https://xn--bcher-kva.example/consent?state=fixture"));
+        assert!(before.reads("Website: xn--bcher-kva.example"));
+        assert!(before.reads("This address uses an encoded international domain name. Check it carefully before opening."));
+        assert!(before.control("copy-question-url-url").unwrap().3);
+        for (index, label) in ["Accept", "Decline", "Cancel"].iter().enumerate() {
+            assert_eq!(
+                before
+                    .control(&format!("answer-choice-url-{index}"))
+                    .unwrap()
+                    .1,
+                *label
+            );
+        }
+        assert!(before.control("answer-url").is_none());
+        assert!(before.control("send-answer-url").is_none());
+        let _ = app.update(Message::AnswerChoice(question.id.clone(), "Accept".into()));
+        let during = seen(app.question_card(&question, Colors::new(false)));
+        assert!(during.control("copy-question-url-url").is_none());
+        assert!(during.reads("Sending your decision"));
+        app.sending.clear();
+        let mut expired = question;
+        expired.expires_at = Utc::now() - chrono::Duration::seconds(1);
+        let after = seen(app.question_card(&expired, Colors::new(false)));
+        assert!(!after.control("copy-question-url-url").unwrap().3);
+        assert!(!after.control("answer-choice-url-0").unwrap().3);
+    }
+
     #[test]
     fn a_choice_becomes_the_cards_receipt_while_its_answer_goes() {
         let (mut app, _commands) = app();
