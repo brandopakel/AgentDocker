@@ -2,7 +2,12 @@
 //!
 //! The front end holds one authenticated loopback connection. Its child owns
 //! the provider processes and observes EOF before performing ordinary cleanup.
-//! No terminal input is proxied, and no process is adopted by name or group.
+//! No terminal input is proxied. Unix also reserves the owner's process group
+//! until its children are retired, including when the owner itself crashes.
+#[cfg(unix)]
+mod unix;
+#[cfg(windows)]
+mod windows;
 use agentdocker_core::ProcessIdentity;
 use agentdocker_host::{dirs, procinfo};
 use anyhow::{Context, Result, ensure};
@@ -15,6 +20,8 @@ use tokio::{
     task::JoinSet,
     time::timeout,
 };
+#[cfg(windows)]
+pub(super) use windows::contain_owner_until_process_exit;
 
 pub(super) const ENV: &str = "AGENTDOCKER_NATIVE_LIFETIME";
 
@@ -24,6 +31,13 @@ struct Invitation {
     owner: ProcessIdentity,
     port: u16,
     nonce: String,
+    directory: std::path::PathBuf,
+}
+
+#[derive(Debug)]
+pub(super) struct Connection {
+    pub stream: TcpStream,
+    pub directory: std::path::PathBuf,
 }
 
 fn owner_matches(owner: &ProcessIdentity) -> bool {
@@ -39,12 +53,12 @@ fn owner_matches(owner: &ProcessIdentity) -> bool {
 }
 
 /// Called only in the child, before any provider or capability is created.
-pub(super) async fn connect(value: &std::ffi::OsStr) -> Result<TcpStream> {
+pub(super) async fn connect(value: &std::ffi::OsStr) -> Result<Connection> {
     let value = value
         .to_str()
         .context("native lifetime invitation is not UTF-8")?;
     ensure!(
-        value.len() <= 1024,
+        value.len() <= 8192,
         "native lifetime invitation exceeds limit"
     );
     let invitation: Invitation =
@@ -55,6 +69,18 @@ pub(super) async fn connect(value: &std::ffi::OsStr) -> Result<TcpStream> {
             && invitation.nonce.bytes().all(|b| b.is_ascii_hexdigit())
             && owner_matches(&invitation.owner),
         "native lifetime owner is not this invocation's exact live parent"
+    );
+    let parent = dirs::home().join("codex-native").canonicalize()?;
+    ensure!(
+        invitation.directory.is_absolute()
+            && invitation.directory.parent() == Some(parent.as_path())
+            && invitation.directory.canonicalize()? == invitation.directory
+            && invitation
+                .directory
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| { n.len() == 32 && n.bytes().all(|b| b.is_ascii_hexdigit()) }),
+        "native lifetime directory is not an owned private launch directory"
     );
     let stream = timeout(Duration::from_secs(10), async {
         let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, invitation.port)).await?;
@@ -71,7 +97,10 @@ pub(super) async fn connect(value: &std::ffi::OsStr) -> Result<TcpStream> {
     })
     .await
     .context("native lifetime handshake timed out")??;
-    Ok(stream)
+    Ok(Connection {
+        stream,
+        directory: invitation.directory,
+    })
 }
 
 async fn accept(listener: &TcpListener, nonce: &str) -> Result<TcpStream> {
@@ -120,6 +149,14 @@ pub(super) async fn disconnected(stream: &mut TcpStream) -> Result<()> {
 /// inherits the terminal directly; only this private control socket is new.
 pub(super) async fn supervise(client: &crate::client::Client) -> Result<()> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let parent = dirs::home().join("codex-native");
+    dirs::ensure_private_dir(&parent)?;
+    let directory = parent.join(uuid::Uuid::new_v4().simple().to_string());
+    dirs::ensure_private_dir(&directory)?;
+    let directory = directory.canonicalize()?;
+    // Both participants own revocation. The child still revokes after front-end
+    // death; the front end can revoke even if its child dies before binding.
+    let _capability = tempfile::TempPath::try_from_path(directory.join("capability"))?;
     let owner = ProcessIdentity {
         pid: std::process::id(),
         started_at: procinfo::start_time(std::process::id())
@@ -129,8 +166,10 @@ pub(super) async fn supervise(client: &crate::client::Client) -> Result<()> {
         owner,
         port: listener.local_addr()?.port(),
         nonce: uuid::Uuid::new_v4().simple().to_string(),
+        directory,
     };
-    let mut child = Command::new(procinfo::executable_path()?)
+    let mut command = Command::new(procinfo::executable_path()?);
+    command
         .args(std::env::args_os().skip(1))
         .env(ENV, serde_json::to_string(&invitation)?)
         .env("AGENTDOCKER_HOME", dirs::home())
@@ -140,32 +179,51 @@ pub(super) async fn supervise(client: &crate::client::Client) -> Result<()> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         // It must survive the front end long enough to retire its own children.
-        .kill_on_drop(false)
-        .spawn()
-        .context("cannot start native lifetime owner")?;
+        .kill_on_drop(false);
+    let mut child = Process::spawn(command).context("cannot start native lifetime owner")?;
     let result = tokio::select! {
         _ = super::stop_signal() => Ok(()),
         result = async {
             let stream = tokio::select! {
                 result = accept(&listener, &invitation.nonce) => result?,
-                status = child.wait() => {
-                    anyhow::bail!("native lifetime owner exited before binding: {}", status?);
+                exited = child.exited() => {
+                    exited?;
+                    anyhow::bail!("native lifetime owner exited before binding");
                 },
             };
             drop(listener);
-            let status = child.wait().await?;
+            child.exited().await?;
             // On graceful stop, EOF asks the owner to execute the same bounded
             // cleanup as terminal exit. SIGKILL closes this descriptor in-kernel.
             drop(stream);
-            ensure!(status.success(), "native lifetime owner exited unsuccessfully");
             Ok(())
         } => result,
     };
-    let exited = timeout(Duration::from_secs(30), child.wait())
+    timeout(Duration::from_secs(30), child.exited())
         .await
         .context("native lifetime owner cleanup did not finish")??;
+    let exited = child.finish().await?;
     ensure!(exited.success(), "native lifetime owner cleanup failed");
     result
+}
+
+#[cfg(unix)]
+use unix::Process;
+
+#[cfg(windows)]
+struct Process(tokio::process::Child);
+#[cfg(windows)]
+impl Process {
+    fn spawn(mut command: Command) -> Result<Self> {
+        Ok(Self(command.spawn()?))
+    }
+    async fn exited(&mut self) -> Result<()> {
+        self.0.wait().await?;
+        Ok(())
+    }
+    async fn finish(&mut self) -> Result<std::process::ExitStatus> {
+        Ok(self.0.wait().await?)
+    }
 }
 
 #[cfg(test)]
@@ -252,6 +310,7 @@ mod tests {
             },
             port: 1,
             nonce: "0123456789abcdef0123456789abcdef".into(),
+            directory: std::path::PathBuf::from("forged"),
         })
         .unwrap();
         assert!(
