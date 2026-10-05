@@ -103,7 +103,13 @@ archive, provider, helper, copied evidence and process retirement independently
 verified. Windows `552272e4` passed all eight active/idle/native/recovery scopes;
 each idle mode completed its initial turn before external callbacks, held peer
 input, and required four explicit decisions/five exact receipts with no early
-model call. Those precursor Windows/Linux trials do not prove schema26.
+model call. Those precursor Windows/Linux trials do not prove schema 26. Review candidate `c3cf464f`
+Linux CI package acceptance separately passed actual hosted beta.7 → schema 26
+installation and unchanged rollback/older-package refusal on Oracle. The final
+full local gate also passed on `c3cf464f`. Windows CI aggregate budgets now
+cover the eight sequential native/MCP/recovery trials while retaining their
+individual deadlines; observed precursor steps took 5 min 53 s ordinarily and
+9 min 16 s with services/forty startups.
 
 Final PR CI/review/integration, broader versions and provider/GUI restarts remain
 pending. Command/file/permission questions still require their exact active

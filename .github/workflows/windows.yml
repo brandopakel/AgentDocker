@@ -70,8 +70,8 @@ jobs:
     if: ${{ !inputs.capability_only && !inputs.hosted_tag }}
     runs-on: windows-latest
     # Extra diagnostic samples include bounded CLI capture and cleanup for
-    # every home. Leave the ordinary CI/build budget unchanged.
-    timeout-minutes: ${{ inputs.startup_samples && inputs.startup_samples != '0' && 180 || 60 }}
+    # every home. Package-step budgets also leave room for build and artifact upload.
+    timeout-minutes: ${{ inputs.startup_samples && inputs.startup_samples != '0' && 180 || inputs.service_acceptance && 150 || 120 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -128,9 +128,14 @@ jobs:
         # Forty samples can exceed ten minutes within their command bounds;
         # reserve time to finish cleanup and retain the diagnostic report.
         # This changes no daemon/client readiness deadline.
-        # Three recovery scenarios retain input for 30s; managed MCP forms
-        # and URL reviews each exercise four human decisions on the archive.
-        timeout-minutes: ${{ inputs.startup_samples && inputs.startup_samples != '0' && 100 || inputs.service_acceptance && 35 || 20 }}
+        # The idle-review precursor passed this step in 5m53s; services plus
+        # forty startups took 9m16s on final beta.7. Healthy runs stay short,
+        # but eight sequential native/MCP/recovery trials each allow 300s,
+        # installation allows 900s, and smoke/cleanup also need headroom.
+        # Active/idle forms and URLs each require four explicit decisions.
+        # Optional services add two 600s bounds. These are aggregate CI budgets;
+        # individual product/fixture deadlines and assertions stay unchanged.
+        timeout-minutes: ${{ inputs.startup_samples && inputs.startup_samples != '0' && 100 || inputs.service_acceptance && 95 || 70 }}
         env:
           STARTUP_SAMPLES: ${{ inputs.startup_samples || '0' }}
           SERVICE_ACCEPTANCE: ${{ inputs.service_acceptance && '1' || '0' }}
